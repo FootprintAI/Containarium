@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 	"golang.org/x/sync/errgroup"
@@ -170,6 +171,16 @@ type Backend interface {
 	// Config & devices
 	SetConfig(containerName, key, value string) error
 	SetCPULimit(containerName, cpu string) error
+	// SetCPUConfig writes limits.cpu and limits.cpu.allowance exactly as
+	// given (empty unsets the key) — the raw setter the process responder
+	// (#2636) uses to apply a throttle allowance while keeping the core
+	// count, and to restore exactly what it recorded. SetCPULimit is the
+	// translating resize path; this does no translation.
+	SetCPUConfig(containerName, count, allowance string) error
+	// FreezeContainer pauses a running instance (cgroup freezer): memory
+	// and disk kept, no process scheduled until UnfreezeContainer.
+	FreezeContainer(name string) error
+	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
 	UpdateContainerConfig(name, key, value string) error
@@ -535,8 +546,17 @@ type ContainerInfo struct {
 	Labels       map[string]string
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
-	CreatedAt    time.Time
-	BackendID    string // Backend this container runs on (populated by PeerPool fan-out)
+	// Managed is true when the instance carries any user.containarium.* config
+	// key, i.e. Containarium created or adopted it. An instance made directly
+	// with `incus launch` has none.
+	Managed   bool
+	CreatedAt time.Time
+	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
+	// Pid is the container's init process id in the HOST pid namespace, from
+	// the same InstanceState read that supplies IPAddress; 0 when the
+	// container is not running or the state read failed. The exec-telemetry
+	// watcher (#2637) resolves /proc/<Pid>/cgroup from it.
+	Pid int64
 
 	// MonitoringEnabled is true when the container has OTel
 	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
@@ -1032,6 +1052,29 @@ func (c *Client) StopContainer(name string, force bool) error {
 	return nil
 }
 
+// FreezeContainer pauses a running instance through the cgroup freezer.
+// Memory and disk are kept; the instance reports status "Frozen" until
+// UnfreezeContainer. This is the process responder's FREEZE action (#2636).
+func (c *Client) FreezeContainer(name string) error {
+	return c.updateState(name, "freeze")
+}
+
+// UnfreezeContainer resumes a frozen instance.
+func (c *Client) UnfreezeContainer(name string) error {
+	return c.updateState(name, "unfreeze")
+}
+
+func (c *Client) updateState(name, action string) error {
+	op, err := c.server.UpdateInstanceState(name, api.InstanceStatePut{Action: action, Timeout: 30}, "")
+	if err != nil {
+		return fmt.Errorf("failed to %s container: %w", action, err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to %s container (operation failed): %w", action, err)
+	}
+	return nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(name string) error {
 	op, err := c.server.DeleteInstance(name)
@@ -1149,6 +1192,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			Labels:                    extractLabelsFromConfig(inst.Config),
 			Role:                      Role(inst.Config[RoleKey]),
 			Tenant:                    inst.Config[TenantLabelKey],
+			Managed:                   hasContainariumConfig(inst.Config),
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
@@ -1207,8 +1251,11 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 
 		// Get IP address - need to get state separately
 		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
-		if err == nil && state.Network != nil {
-			info.IPAddress = primaryNetworkInterface(state.Network)
+		if err == nil {
+			info.Pid = state.Pid
+			if state.Network != nil {
+				info.IPAddress = primaryNetworkInterface(state.Network)
+			}
 		}
 
 		return info, true
@@ -1229,6 +1276,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		Labels:               extractLabelsFromConfig(inst.Config),
 		Role:                 Role(inst.Config[RoleKey]),
 		Tenant:               inst.Config[TenantLabelKey],
+		Managed:              hasContainariumConfig(inst.Config),
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
@@ -1997,6 +2045,30 @@ func (c *Client) SetCPULimit(containerName, cpu string) error {
 		inst.Config["limits.cpu.allowance"] = cl.Allowance
 	}
 
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
+	return nil
+}
+
+// SetCPUConfig writes limits.cpu and limits.cpu.allowance verbatim; an
+// empty value unsets that key. See Backend.SetCPUConfig.
+func (c *Client) SetCPUConfig(containerName, count, allowance string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+	for key, value := range map[string]string{"limits.cpu": count, "limits.cpu.allowance": allowance} {
+		if value == "" {
+			delete(inst.Config, key)
+		} else {
+			inst.Config[key] = value
+		}
+	}
 	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
@@ -2814,6 +2886,29 @@ func formatBytesHuman(b int64) string {
 	}
 	units := []string{"KB", "MB", "GB", "TB"}
 	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
+}
+
+// postureMarkerKeys are host-side posture markers the daemon stamps on any
+// instance it brings under a policy, INCLUDING instances it does not own (a
+// VM or container made directly in Incus). They record "this check ran", not
+// "a tenant owns this", so they must not make an instance count as managed
+// (#2619). Add any new such marker here; an unknown user.containarium.* key is
+// deliberately treated as ownership, because mistaking an owned tenant box for
+// an unmanaged one would hide an unguarded tenant.
+var postureMarkerKeys = map[string]bool{
+	sshdpolicy.MarkerKey: true,
+}
+
+// hasContainariumConfig reports whether config carries an ownership-bearing
+// user.containarium.* key: the signal that separates an instance Containarium
+// manages from one created directly in Incus. Posture markers do not count.
+func hasContainariumConfig(config map[string]string) bool {
+	for k := range config {
+		if strings.HasPrefix(k, "user.containarium.") && !postureMarkerKeys[k] {
+			return true
+		}
+	}
+	return false
 }
 
 // extractLabelsFromConfig extracts labels from container config

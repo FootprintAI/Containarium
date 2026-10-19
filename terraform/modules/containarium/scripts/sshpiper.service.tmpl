@@ -16,6 +16,14 @@ ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
+  /usr/local/bin/containarium sentinel ssh-authz-plugin \
+  --ssh-authz-grace 5m \
+  --ssh-authz-timeout 3s \
+%{ if ssh_authz_enforce ~}
+  --ssh-authz-enforce \
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
+  -- \
   /usr/local/bin/containarium sentinel ssh-session-plugin \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
@@ -34,6 +42,9 @@ ExecStart=/usr/local/bin/sshpiperd \
 %{ for prefix in ssh_ban_ignore_cidrs ~}
   --ignore-ip ${prefix} \
 %{ endfor ~}
+%{ if ssh_ban_audit_records ~}
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
   --ban-duration ${ssh_ban_duration_seconds}s
 Restart=always
 RestartSec=5

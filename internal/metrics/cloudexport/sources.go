@@ -114,4 +114,11 @@ type PlatformSources interface {
 	// this, alone among PlatformSources methods, carries a tenant
 	// identifier.
 	BackupHealth() []BackupHealthState
+
+	// BackupHealthReadFailures is the cumulative number of export ticks
+	// on which BackupHealth could not read its source (#2305). A failed
+	// read returns an empty snapshot, which is otherwise
+	// indistinguishable from "no tenant has any backup" — this counter
+	// is the out-of-band signal that the collector itself is broken.
+	BackupHealthReadFailures() int64
 }

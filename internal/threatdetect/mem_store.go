@@ -168,6 +168,12 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 		if filter.State != "" && f.State != filter.State {
 			continue
 		}
+		if filter.Rule != pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED && f.Rule != filter.Rule {
+			continue
+		}
+		if filter.BackendID != "" && f.BackendID != filter.BackendID {
+			continue
+		}
 		matches = append(matches, f)
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].LastSeen.After(matches[j].LastSeen) })
@@ -175,6 +181,36 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 		matches = matches[:limit]
 	}
 	return matches, nil
+}
+
+// SetResponse mirrors FindingStore.SetResponse without Postgres.
+func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
+	s.mu.Lock()
+	var f *Finding
+	for _, cand := range s.ring {
+		if cand.ID == id {
+			f = cand
+			break
+		}
+	}
+	if f == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
+	}
+	cp := r
+	f.Response = &cp
+	// The webhook worker reads its finding after this returns; hand it a
+	// snapshot so a later write to the ring entry (the resolve an operator
+	// release makes next) cannot change what this delivery says.
+	snap := *f
+	snapResp := cp
+	snap.Response = &snapResp // its own copy: f.Response is the stored one
+	s.mu.Unlock()
+	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(&snap) // a response transition is delivered (#2718)
+	}
+	return f, nil
 }
 
 // Resolve transitions a finding to FindingStateResolved (mirrors
@@ -213,5 +249,8 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 		log.Printf("threatdetect: audit log resolve for finding %d (degraded mode): %v", f.ID, err)
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+	}
 	return f, nil
 }

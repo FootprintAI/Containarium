@@ -18,6 +18,16 @@ const (
 	EnvThreatDenyBurstWindowMinutes = "CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES"
 )
 
+// EnvThreatDenyBurstCountLogOnly makes the deny-burst rule also count
+// would-deny events from tenants whose policy is observation-only (#2612).
+// Off by default: the rule counts enforced drops only.
+const EnvThreatDenyBurstCountLogOnly = "CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY"
+
+// EnvThreatWebhookRenotifyMinutes sets how long an open finding stays quiet
+// on the webhook after a delivery before the same condition is delivered
+// again (#2643). Unset or non-positive keeps the 1h default.
+const EnvThreatWebhookRenotifyMinutes = "CONTAINARIUM_THREAT_WEBHOOK_RENOTIFY_MINUTES"
+
 // ThreatDetect is the typed view of the CONTAINARIUM_THREAT_* namespace.
 type ThreatDetect struct {
 	// SentryEnabled arms the background detection engine. Requires the eBPF
@@ -31,6 +41,12 @@ type ThreatDetect struct {
 	// override when the operator actually set one.
 	DenyBurstN      int
 	DenyBurstWindow time.Duration
+	// DenyBurstCountLogOnly counts observation-only would-deny events too
+	// (EnvThreatDenyBurstCountLogOnly). Default false: enforced drops only.
+	DenyBurstCountLogOnly bool
+	// WebhookRenotify is the re-delivery interval for a finding that stays
+	// open (EnvThreatWebhookRenotifyMinutes). Zero means the default.
+	WebhookRenotify time.Duration
 }
 
 // LoadThreatDetect reads the CONTAINARIUM_THREAT_* namespace once, using the
@@ -40,5 +56,8 @@ func LoadThreatDetect() ThreatDetect {
 		SentryEnabled:   getBool(EnvThreatSentry),
 		DenyBurstN:      getInt(EnvThreatDenyBurstN, 0),
 		DenyBurstWindow: time.Duration(getInt(EnvThreatDenyBurstWindowMinutes, 0)) * time.Minute,
+
+		DenyBurstCountLogOnly: getBool(EnvThreatDenyBurstCountLogOnly),
+		WebhookRenotify:       time.Duration(getInt(EnvThreatWebhookRenotifyMinutes, 0)) * time.Minute,
 	}
 }

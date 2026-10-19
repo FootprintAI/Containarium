@@ -21,6 +21,14 @@ type DenyEvent struct {
 	Proto    uint8  // IP protocol number (1=ICMP, 6=TCP, 17=UDP)
 	Reason   uint8  // why the flow was denied (DenyReason*); 0 on objects predating #660
 	SigID    uint16 // matched signature id when Reason==SIGNATURE, else 0 (#661); 0 on objects predating it
+
+	// LogOnly is NOT part of the wire struct: the program emits the event
+	// whether or not it drops, so the consumer sets this from the tenant's
+	// effective mode before handing the event on (#2612). True means the
+	// flow was only observed (log_only), not dropped. The zero value means
+	// "treat as a real drop", so a producer that never sets it keeps the
+	// pre-#2612 behavior.
+	LogOnly bool
 }
 
 // Deny reasons carried in DenyEvent.Reason — mirror the DENY_REASON_* #defines

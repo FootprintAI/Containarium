@@ -33,6 +33,25 @@ run "custom_policy" {
   }
 }
 
+# The text after the last ssh-ban-plugin mention is that plugin's own flags
+# (it is the final plugin in each chain).
+run "audit_records_off_by_default" {
+  command = plan
+  assert {
+    condition     = alltrue([for unit in [local.sshpiper_service_unit, local.sshpiper_anon_service_unit] : !strcontains(element(split("ssh-ban-plugin", unit), length(split("ssh-ban-plugin", unit)) - 1), "--records-file")])
+    error_message = "Without ssh_ban_audit_records the ban plugin must not be given --records-file (an older binary rejects the flag)."
+  }
+}
+
+run "audit_records_on" {
+  command = plan
+  variables { ssh_ban_audit_records = true }
+  assert {
+    condition     = alltrue([for unit in [local.sshpiper_service_unit, local.sshpiper_anon_service_unit] : strcontains(element(split("ssh-ban-plugin", unit), length(split("ssh-ban-plugin", unit)) - 1), "--records-file /var/log/containarium/ssh-sessions.jsonl")])
+    error_message = "With ssh_ban_audit_records both listeners' ban plugins must write to the shared session records file."
+  }
+}
+
 run "invalid_threshold" {
   command = plan
   variables { ssh_ban_max_failures = 0 }
@@ -47,4 +66,21 @@ run "invalid_prefix" {
   command = plan
   variables { ssh_ban_ignore_cidrs = ["192.0.2.4/32 --control-socket=/tmp/evil"] }
   expect_failures = [var.ssh_ban_ignore_cidrs]
+}
+
+run "ssh_authz_audit_only_by_default" {
+  command = plan
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "ssh-authz-plugin") && !strcontains(local.sshpiper_service_unit, "--ssh-authz-enforce")
+    error_message = "The tenant listener must stay audit-only unless enforcement is requested."
+  }
+}
+
+run "ssh_authz_enforce" {
+  command = plan
+  variables { ssh_authz_enforce = true }
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "--ssh-authz-enforce \\\n  --records-file /var/log/containarium/ssh-sessions.jsonl \\\n  -- \\\n  /usr/local/bin/containarium sentinel ssh-session-plugin")
+    error_message = "Enforcement must be passed to ssh-authz-plugin, with its denied-record sink, before the session plugin."
+  }
 }

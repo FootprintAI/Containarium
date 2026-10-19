@@ -192,7 +192,7 @@ func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east", nil); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "us-east", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if gotBody["region"] != "us-east" {
@@ -217,7 +217,7 @@ func TestHTTPCreateContainer_SendsLabels(t *testing.T) {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
 	labels := map[string]string{"cloud_org_id": "org-a", "team": "dev"}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", labels); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", labels); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	got, _ := gotBody["labels"].(map[string]any)
@@ -227,7 +227,7 @@ func TestHTTPCreateContainer_SendsLabels(t *testing.T) {
 
 	// No labels → no field, so an older daemon sees the same body as before.
 	gotBody = nil
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["labels"]; present {
@@ -251,7 +251,7 @@ func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["region"]; present {

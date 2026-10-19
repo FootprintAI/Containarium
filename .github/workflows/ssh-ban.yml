@@ -164,10 +164,53 @@ jobs:
           terraform_wrapper: false
       - name: Validate real policy templates without cloud credentials
         run: bash scripts/test-ssh-ban-templates.sh
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ssh-ban-verification
           path: |
             ${{ runner.temp }}/ssh-ban/*.log
             ${{ runner.temp }}/ssh-ban/evidence
+
+  # The ssh-authz plugin is the enforce-mode security boundary (#2520); its
+  # integration tests skip unless these binaries are provided, so a job that
+  # does not provide them would pass while proving nothing (#2646).
+  ssh-authz-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+      - name: Install pinned upstream SSH binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh-authz"
+          gh release download v1.6.1 --repo tg123/sshpiper \
+            --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-authz"
+          tar -xzf "$RUNNER_TEMP/ssh-authz/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
+            -C "$RUNNER_TEMP/ssh-authz" sshpiperd plugins/yaml
+      - name: Build production plugin and run the real-chain tests
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/ssh-authz/containariumd" ./cmd/containariumd
+          export SSH_AUTHZ_SSHPIPERD="$RUNNER_TEMP/ssh-authz/sshpiperd"
+          export SSH_AUTHZ_YAML="$RUNNER_TEMP/ssh-authz/plugins/yaml"
+          export SSH_AUTHZ_CONTAINARIUM="$RUNNER_TEMP/ssh-authz/containariumd"
+          go test -race -tags integration -count=1 -timeout 3m -v -run Integration \
+            ./internal/sentinel/sshauthz | tee "$RUNNER_TEMP/ssh-authz/verification.log"
+          # A skipped test proves nothing: fail unless each one actually ran.
+          for t in TestIntegrationAuditOnlyChain TestIntegrationEnforceChain TestIntegrationEnforceMultiOfferGap; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ssh-authz-verification
+          path: ${{ runner.temp }}/ssh-authz/verification.log

@@ -132,9 +132,24 @@ jobs:
         # serves every little-endian backend (amd64/arm64). UAPI-only program, so
         # portable across kernel versions; the verifier still runs at load time.
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          make build-bpf BPFTOOL="$BPFTOOL"
 
       - name: Build all release artifacts
         # `make build-release` builds containariumd (server) + mcp-server +
@@ -145,6 +160,39 @@ jobs:
         # release if containarium-* is not the client build. The eBPF object
         # built above is embedded in containariumd-* only (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Tunnel client and sentinel interoperate (#2469)
+        # Runs the built containariumd as BOTH the sentinel and the tunnel
+        # client: reads the pin with `sentinel tunnel-identity`, registers a
+        # spot over TLS and round-trips a request through the tunnel. Every
+        # in-process tunnel test builds both halves from one tree, so none of
+        # them noticed v0.101.0/.1 shipping a client that required a pin the
+        # sentinel could not yet supply. Needs passwordless sudo (the sentinel
+        # adds a loopback alias), which the runner has. Fails the release
+        # before anything is published.
+        run: |
+          chmod +x bin/containariumd-linux-amd64
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64
+
+      - name: Previous release's tunnel client still registers (#2469)
+        # The upgrade path: a tunnel host on the last release talking to the
+        # NEW sentinel. A rollout upgrades sentinels and hosts at different
+        # times, so this is the combination operators actually run. Skipped
+        # (with a notice) when there is no previous release to fetch, e.g. the
+        # first release or a rehearsal on a fork.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prev="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' || true)"
+          if [ -z "${prev}" ] || [ "${prev}" = "${GITHUB_REF_NAME}" ]; then
+            echo "::notice::no previous release to test as a tunnel client; skipping"
+            exit 0
+          fi
+          mkdir -p prev-release
+          gh release download "${prev}" --repo "${GITHUB_REPOSITORY}" -p 'containariumd-linux-amd64' -D prev-release --clobber
+          chmod +x prev-release/containariumd-linux-amd64
+          echo "tunnel client under test: ${prev}"
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64 prev-release/containariumd-linux-amd64
 
       - name: Build macOS 11 client (best effort)
         # Stock Go >= 1.25 targets macOS 12+; this builds the CLIENT with a
@@ -182,6 +230,26 @@ jobs:
         # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
         # recipe and `containarium code install`).
         run: make bundle-sdlc-skills
+
+      - name: Install syft (SBOM generator)
+        id: syft
+        # Pinned to an exact tool version: the SPDX output differs between
+        # syft releases and a release's SBOMs should be reproducible by
+        # rerunning the same version.
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: v1.54.1
+
+      - name: Generate SBOMs for the Linux binaries (#2561)
+        # One SPDX document per distinct program, read from the shipped binary
+        # itself (Go embeds its module list), then listed in SHA256SUMS.txt so
+        # verifying the release's checksums covers them. Fails the release if a
+        # document is empty. The container images carry their own SBOM.
+        env:
+          # The download action returns the binary's path as an output rather
+          # than promising it is on PATH.
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: scripts/release/generate-sboms.sh bin
 
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
@@ -297,6 +365,26 @@ jobs:
 
           Verify checksums via `SHA256SUMS.txt`.
 
+          ### SBOMs
+
+          Each Linux binary has an SPDX 2.3 SBOM next to it (`<binary>-linux-amd64.spdx.json`), generated from the shipped file and listed in `SHA256SUMS.txt`. The container images carry their own SBOM and provenance attestations.
+
+          ### Signatures
+
+          Every file on this page has a keyless cosign signature next to it, `<file>.sigstore.json`, made by this release workflow through GitHub OIDC. Verify with `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity https://github.com/footprintai/containarium/.github/workflows/release.yml@refs/tags/__RELEASE_REF__ --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`. See `docs/security/VERIFYING-RELEASES.md`.
+
+          ### Kubernetes (Helm)
+
+          Chart version `__CHART_VERSION__` (installs the `__RELEASE_REF__` daemon image):
+
+          ```bash
+          helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
+            --version __CHART_VERSION__ \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+            --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+            --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
+          ```
+
           ### MCP client setup
 
           Wire the platform MCP into Claude Code (`~/.claude.json`):
@@ -338,6 +426,7 @@ jobs:
           # substitutes the value as a literal string, full stop.
           notes="$(cat release_notes.md)"
           notes="${notes//__RELEASE_REF__/$RELEASE_REF}"
+          notes="${notes//__CHART_VERSION__/${RELEASE_REF#v}}"
           printf '%s\n' "$notes" > release_notes.md
 
           # Changelog first, boilerplate under it — a reader wants to know
@@ -384,7 +473,13 @@ jobs:
             bin/sdlc-skills.tar.gz
             bin/sdlc-skills.tar.gz.sha256
             bin/caddy-linux-amd64
+            bin/containariumd-linux-amd64.spdx.json
+            bin/containarium-linux-amd64.spdx.json
+            bin/mcp-server-linux-amd64.spdx.json
+            bin/agent-box-linux-amd64.spdx.json
             bin/SHA256SUMS.txt
+            LICENSE
+            NOTICE
           draft: false
           # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
           # pre-release: it is left out of releases/latest, so the daemon's
@@ -490,8 +585,23 @@ jobs:
         # bundle's containarium binary embeds it (-tags embed_bpf, auto-enabled
         # by the Makefile when internal/netbpf/netpolicy.bpf.o is present).
         run: |
+          set -euo pipefail
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          make build-bpf BPFTOOL="$BPFTOOL"
 
       - name: Build per-platform binaries
         # build-bundle depends on build-release; calling explicitly so
@@ -563,6 +673,80 @@ jobs:
   # repo's release surface already reads this file for "what does a tag
   # publish", and a `push:`-tag-triggered job needs no `needs:` on
   # build-and-release to run — it fires independently, so a slow or failing
+  # Publishes the Helm chart for the tag (#2574): stamped with the release
+  # version and its exact image tag, pushed to GHCR as an OCI chart and
+  # attached to the GitHub Release. A rehearsal packages and renders it and
+  # pushes nothing. Independent of the image jobs' success, like them it is
+  # job-scoped for packages:write.
+  helm-chart:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.16.2
+
+      - name: Derive version
+        id: v
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Package chart stamped with the release
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          helm package charts/containarium-k8s \
+            --version "${VERSION}" --app-version "v${VERSION}" --destination dist-chart
+          ls -l dist-chart
+
+      - name: Render and check the daemon and gateway images
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          rendered="$(helm template containarium "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            --set gateway.upstreamKeySecret=release-render-check)"
+          grep -q "image: ghcr.io/footprintai/containarium:v${VERSION}\$" <<<"$rendered" || {
+            echo "::error::chart does not pin ghcr.io/footprintai/containarium:v${VERSION}"
+            exit 1
+          }
+          grep -q "image: ghcr.io/footprintai/containarium-sshpiper:v${VERSION}\$" <<<"$rendered" || {
+            echo "::error::chart does not pin ghcr.io/footprintai/containarium-sshpiper:v${VERSION}"
+            exit 1
+          }
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push chart (OCI) and attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          helm push "dist-chart/containarium-k8s-${VERSION}.tgz" oci://ghcr.io/footprintai/charts
+          # SHA256SUMS.txt is already written by build-and-release before this
+          # job runs, so the chart ships its own .sha256 (same convention as
+          # the SDLC skills and air-gapped bundles) rather than racing a
+          # re-upload of that file. Relative name so `sha256sum -c` works
+          # from the download directory.
+          (cd dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz" > "containarium-k8s-${VERSION}.tgz.sha256")
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz.sha256" --clobber
+
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).
   model-gateway-image:
@@ -655,3 +839,50 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-model-gateway-results.sarif
+
+  # Signs every file on the Release (#2561). Runs last because the binaries
+  # come from build-and-release, the bundle from build-bundle and the chart
+  # from helm-chart: signing what the Release actually serves, after all
+  # three have uploaded, covers all of it with one identity. Keyless: the
+  # job's OIDC token (id-token: write) is exchanged for a short-lived Fulcio
+  # certificate naming this workflow at this tag; there is no key to store or
+  # rotate. Tag pushes only. A rehearsal would write a public Rekor entry for
+  # a build that is not a release, so it stops before this job.
+  sign-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-and-release, build-bundle, helm-chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Download the Release's files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir release-files
+          gh release download "$TAG" --dir release-files --pattern '*' --clobber
+          # A rerun finds the last run's bundles; they are re-made below.
+          rm -f release-files/*.sigstore.json
+          ls -l release-files
+
+      - name: Sign and verify every file
+        run: scripts/release/sign-assets.sh release-files
+
+      - name: Attach the signatures to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-files/*.sigstore.json --clobber

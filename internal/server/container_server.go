@@ -117,6 +117,11 @@ type ContainerServer struct {
 	// sshKeys is the ssh_keys registry the key write paths record into
 	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
 	sshKeys sshauthz.KeyRegistry
+	// collabAccess and hostSessionKill are test seams for
+	// TerminateUserSessions (terminate_user_sessions.go); nil means the
+	// collaborator store and container.TerminateJumpAccountSessions.
+	collabAccess    collaboratorAccess
+	hostSessionKill func(account string) bool
 	// sshKeyNow and authorizedKeys are test seams for the key write paths;
 	// zero values mean time.Now and the host's real authorized_keys files.
 	sshKeyNow      func() time.Time
@@ -552,6 +557,13 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// 0 = no auto-sleep; > 0 enables it with that idle threshold (minutes).
 	if req.IdleStopMinutes < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "idle_stop_minutes must be >= 0, got %d", req.IdleStopMinutes)
+	}
+	// disable_auto_sleep (#2759) means "no idle-stop timer"; asking for one in
+	// the same breath is a contradiction, not something to resolve by guessing.
+	// A standalone daemon otherwise ignores the flag: it never enables
+	// auto-sleep unless idle_stop_minutes > 0.
+	if req.DisableAutoSleep && req.IdleStopMinutes > 0 {
+		return nil, status.Error(codes.InvalidArgument, "disable_auto_sleep and idle_stop_minutes > 0 are contradictory: set one")
 	}
 	// Birth stopped→delete (#525): same — reject a negative window early.
 	// 0 = never delete on stop; > 0 reaps a box left stopped that long.

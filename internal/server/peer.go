@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -931,6 +932,50 @@ func (pc *PeerClient) ForwardRequestCtx(ctx context.Context, method, path, authT
 		return nil, resp.StatusCode, err
 	}
 	return respBody, resp.StatusCode, nil
+}
+
+// installForwardTimeout bounds one forwarded ClamAV install: a package download
+// plus the first signature fetch inside the box.
+const installForwardTimeout = 20 * time.Minute
+
+// errPeerRouteMissing: the peer answered 404 for a route it should serve, i.e. a
+// backend older than the feature. Callers report it as "backend too old", not as
+// a failed operation.
+var errPeerRouteMissing = errors.New("peer has no such route (backend too old)")
+
+// ForwardInstallClamav asks the peer that OWNS a box to install ClamAV inside it
+// (POST /v1/security/clamav-install, #2659) and returns the peer's typed answer
+// (#2683).
+//
+// Two differences from ForwardRequest, both because an install takes minutes:
+// the HTTP client's overall 30 s timeout is lifted for this call (the context,
+// not the client, bounds it), and the body is marshalled rather than formatted
+// by hand so a name cannot break or inject into the JSON.
+func (pc *PeerClient) ForwardInstallClamav(ctx context.Context, authToken, containerName string) (*pb.InstallClamavResponse, error) {
+	payload, err := json.Marshal(map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	long := *pc
+	lc := *pc.client
+	lc.Timeout = 0
+	long.client = &lc
+
+	body, status, err := long.ForwardRequestCtx(ctx, "POST", "/v1/security/clamav-install", authToken, payload)
+	if err != nil {
+		return nil, fmt.Errorf("forward install to %s: %w", pc.ID, err)
+	}
+	if status == http.StatusNotFound {
+		return nil, fmt.Errorf("peer %s: %w", pc.ID, errPeerRouteMissing)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for install", pc.ID, status)
+	}
+	var resp pb.InstallClamavResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode install reply from %s: %w", pc.ID, err)
+	}
+	return &resp, nil
 }
 
 // ForwardGetMetrics fetches container metrics from a peer.

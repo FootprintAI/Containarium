@@ -16,13 +16,55 @@ policy there fires precisely when that series stops arriving. Nothing on
 the backend needs to survive for the alert to work — that is the whole
 point.
 
+## Metric names and resource type (v0.100.0 and later)
+
+Since the OTLP exporter (#2008, v0.100.0) the series are written through
+Google's Telemetry API, which puts them in the **Prometheus namespace** on a
+**`prometheus_target`** resource. The deprecated exporter used
+`workload.googleapis.com/<name>` on `gce_instance`; a policy or dashboard
+filter written for it silently selects nothing on a current host.
+
+| Instrument kind | Cloud Monitoring metric type | Metric kind |
+|---|---|---|
+| gauge | `prometheus.googleapis.com/<name>/gauge` | `GAUGE` |
+| monotonic counter | `prometheus.googleapis.com/<name>/counter` | `CUMULATIVE` |
+
+The monitored resource is `prometheus_target` with `job`, `instance` (the
+numeric GCE instance id, **not** the instance name), `location` and
+`cluster`. Select by the metric labels (`backend_id`, `hostname`, ...), not by
+resource labels. Metrics also carry `otel_scope_name`. Integer instruments are
+stored as `DOUBLE`.
+
+Observed on a v0.106.0 GCE host: `export.heartbeat`, `host.*`,
+`platform.peers.connected` and `backup.last_success_age_seconds` as
+`/gauge`; `platform.api.*` and `platform.provision.*` as `/counter`. The
+`containarium.sentinel.*` and `containarium.platform.tunnel.state` types below
+follow from the instrument kinds in the code but have **not** been observed on
+a live host: confirm with the descriptor query in "Prerequisites" before
+relying on them.
+
+A fleet that mixes hosts below and above v0.100.0 writes both namespaces; a
+policy needs a condition per namespace (combiner `OR`) until the older hosts
+are upgraded. Always confirm a filter selects data before trusting a policy
+built on it:
+
+```bash
+START=$(date -u -d '10 minutes ago' +%FT%TZ 2>/dev/null || date -u -v-10M +%FT%TZ)  # GNU, else BSD/macOS
+END=$(date -u +%FT%TZ)
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/timeSeries" \
+  --data-urlencode 'filter=<the policy filter>' \
+  --data-urlencode "interval.startTime=${START}" \
+  --data-urlencode "interval.endTime=${END}"
+```
+
 ## The heartbeat series
 
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.export.heartbeat` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.export.heartbeat` |
-| Monitored resource | `gce_instance` (GCP resource detector) |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.export.heartbeat/gauge` |
+| Monitored resource | `prometheus_target` (`job`, `instance` = numeric GCE instance id, `location`, `cluster`) |
 | Kind / value | gauge, constant `1` |
 | Labels | `backend_id`, `hostname`, `daemon_version` |
 | Emit cadence | every export interval (default 60s, floor 60s) |
@@ -43,12 +85,15 @@ instead visible through the *primary's* connectivity series
 alert section below for the same `gcloud`/JSON recipe pattern applied to a
 `tunnel.state = 0` condition instead.
 
-**This alert does not cover a GCE instance that is stopped or deleted
-outright.** Cloud Monitoring's metric-absence evaluation explicitly
-excludes `TERMINATED`/`DELETED` resources from consideration, so
-`conditionAbsent` will not open an incident for an instance that was
-intentionally or accidentally shut down or removed — only for one that
-is still running but has stopped reporting. Catching a stopped/deleted
+**Do not rely on this alert for a GCE instance that is stopped or deleted
+outright.** For the `gce_instance` resource (what exporters before v0.100.0
+wrote) Cloud Monitoring's metric-absence evaluation excludes
+`TERMINATED`/`DELETED` resources, so `conditionAbsent` did not open an
+incident for an instance that was shut down or removed — only for one that
+was still running but had stopped reporting. Since v0.100.0 the series is
+written against `prometheus_target`, which is not a Compute Engine instance
+entity; whether the same exclusion applies to it has **not been verified**,
+so treat a stopped instance as covered by neither outcome. Catching a stopped/deleted
 instance needs a separate instance-state check (an uptime check, or an
 inventory alert over `compute.instances.list`); read "host down"
 throughout this runbook as "host unreachable while the resource still
@@ -67,9 +112,9 @@ exists," not "resource gone."
    exists (it is created on first ingest, usually within ~2 minutes):
 
    ```bash
-   gcloud monitoring metrics-descriptors list \
-     --project="${PROJECT_ID}" \
-     --filter='metric.type = "workload.googleapis.com/containarium.export.heartbeat"'
+   curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/metricDescriptors" \
+     --data-urlencode 'filter=metric.type = "prometheus.googleapis.com/containarium.export.heartbeat/gauge"'
    ```
 
 3. A notification channel to page (email/PagerDuty/Slack/etc.). To list
@@ -98,7 +143,7 @@ channel id.
     {
       "displayName": "Heartbeat absent for 5m (per backend)",
       "conditionAbsent": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.export.heartbeat\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.export.heartbeat/gauge\"",
         "duration": "300s",
         "aggregations": [
           {
@@ -153,7 +198,7 @@ real project with real ingestion — it is not reproducible in CI:
 
 1. With export enabled and the policy created, confirm the series in
    Metrics Explorer (metric
-   `workload.googleapis.com/containarium.export.heartbeat`) shows a flat
+   `prometheus.googleapis.com/containarium.export.heartbeat/gauge`) shows a flat
    line at `1`.
 2. Stop the daemon on the backend (`systemctl stop containarium` or the
    equivalent for your deployment).
@@ -191,8 +236,8 @@ disk full, k8s operator down).
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.platform.provision.failures` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.platform.provision.failures` |
-| Monitored resource | `gce_instance` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.platform.provision.failures/counter` |
+| Monitored resource | `prometheus_target` |
 | Kind / value | cumulative counter |
 | Labels | `backend_id`, `hostname`, `region`, `operation` (`create` \| `delete`) |
 | Emit cadence | every export interval |
@@ -218,7 +263,7 @@ Write the policy to a file (`provision-failure-policy.json`), replacing
     {
       "displayName": "Provisioning failures > 0 for 10m (per backend, per operation)",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.failures\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.provision.failures/counter\"",
         "comparison": "COMPARISON_GT",
         "thresholdValue": 0,
         "duration": "600s",
@@ -275,7 +320,7 @@ gcloud alpha monitoring policies create \
 Also not reproducible in CI — verify against a real project:
 
 1. Confirm the series in Metrics Explorer
-   (`workload.googleapis.com/containarium.platform.provision.failures`)
+   (`prometheus.googleapis.com/containarium.platform.provision.failures/counter`)
    is present (it may be flat at 0 if the backend is healthy — that's
    correct; #1083's collector emits an explicit 0 point rather than
    omitting the series when there are no failures yet).
@@ -322,8 +367,8 @@ actionable.
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.backup.last_success_age_seconds` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.backup.last_success_age_seconds` |
-| Monitored resource | `gce_instance` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge` |
+| Monitored resource | `prometheus_target` |
 | Kind / value | gauge, seconds since that tenant's most recent stored backup |
 | Labels | `backend_id`, `hostname`, `region`, `username` |
 | Emit cadence | every export interval, recomputed fresh each tick from the daemon's on-disk backup index — not cached, so it is correct immediately after a daemon restart |
@@ -356,7 +401,7 @@ enough that a truly skipped night does by the next morning):
     {
       "displayName": "Backup age over threshold for ${USERNAME}",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.backup.last_success_age_seconds\" AND metric.label.username = \"${USERNAME}\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge\" AND metric.label.username = \"${USERNAME}\"",
         "comparison": "COMPARISON_GT",
         "thresholdValue": ${THRESHOLD_SECONDS},
         "duration": "0s",
@@ -465,6 +510,29 @@ Not reproducible in CI, same as every policy in this runbook:
   Metrics Explorer or via the API, not an alert policy on the metric
   itself.
 
+### Is the backup-health collector itself working? (#2305)
+
+`last_success_age_seconds` goes **empty for every tenant at once** when the
+daemon cannot read its backup index (permissions, disk, corruption) — the
+same shape as "no tenant has ever been backed up", and `conditionThreshold`
+stays silent on a series with no points. The companion counter makes that
+failure visible:
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.backup.health_read_failures` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.backup.health_read_failures/counter` (monitored resource `prometheus_target`; derived from the instrument kind, not yet observed on a live host) |
+| Kind / value | cumulative counter: export ticks on which the backup index could not be read |
+| Labels | `backend_id`, `hostname`, `region` (no tenant label) |
+| Emit cadence | every export interval, **including at zero** — a present flat series means "reading fine" |
+
+Alert when it **increases** (`ALIGN_DELTA` over a few minutes, threshold
+`> 0`); a single transient blip is one count, a persistent fault keeps
+counting every tick. Because it is cumulative it resets on a daemon
+restart, which the delta aligner handles. The daemon log line to look for
+is `[metrics-export] backup health snapshot failed`.
+
+
 ## Sentinel alerts (#2484)
 
 **Goal:** page an operator when the *sentinel* — the always-on front door
@@ -495,8 +563,8 @@ series needs a sentinel build that includes #2485 (the first release cut after v
 
 | Field | Value |
 |---|---|
-| Metric types | `workload.googleapis.com/containarium.sentinel.primary_preferred`, `.backend_healthy`, `.failover_total` |
-| Monitored resource | `gce_instance` (the sentinel's own instance) |
+| Metric types | `prometheus.googleapis.com/containarium.sentinel.primary_preferred/gauge`, `.../backend_healthy/gauge`, `.../failover_total/counter` |
+| Monitored resource | `prometheus_target` (the sentinel's own instance) |
 | `primary_preferred` | gauge: `1` on the best-priority backend (or nothing elected), `0` on a fallback |
 | `backend_healthy` | gauge: `1` healthy, `0` unhealthy, one series per `backend` |
 | `failover_total` | cumulative counter of primary switches |
@@ -506,8 +574,9 @@ series needs a sentinel build that includes #2485 (the first release cut after v
 Confirm ingestion before creating policies:
 
 ```bash
-gcloud monitoring metrics-descriptors list --project="${PROJECT_ID}" \
-  --filter='metric.type = starts_with("workload.googleapis.com/containarium.sentinel.")'
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/metricDescriptors" \
+  --data-urlencode 'filter=metric.type = starts_with("prometheus.googleapis.com/containarium.sentinel.")'
 ```
 
 ### Alert 1 — stuck on a fallback
@@ -527,7 +596,7 @@ Write `sentinel-fallback-policy.json`, replacing `${PROJECT_ID}` and
     {
       "displayName": "primary_preferred == 0 for 5m",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.sentinel.primary_preferred\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.sentinel.primary_preferred/gauge\"",
         "comparison": "COMPARISON_LT",
         "thresholdValue": 1,
         "duration": "300s",
@@ -571,7 +640,7 @@ Write `sentinel-backend-down-policy.json`:
     {
       "displayName": "backend_healthy == 0 for 10m (per backend)",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.sentinel.backend_healthy\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.sentinel.backend_healthy/gauge\"",
         "comparison": "COMPARISON_LT",
         "thresholdValue": 1,
         "duration": "600s",
@@ -604,7 +673,7 @@ gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
 A backend that bounces every few minutes may never hold a `0` long
 enough to trip alerts 1 or 2. Alert on the failover rate instead:
 `conditionThreshold` on
-`workload.googleapis.com/containarium.sentinel.failover_total` with
+`prometheus.googleapis.com/containarium.sentinel.failover_total/counter` with
 `perSeriesAligner: ALIGN_DELTA`, `alignmentPeriod: 3600s`,
 `comparison: COMPARISON_GT`, `thresholdValue: 3` (more than three
 failovers in an hour), `duration: 0s`. Tune the threshold to how often
@@ -631,7 +700,7 @@ needs the daemon's `platform` group enabled (see
     {
       "displayName": "tunnel.state == 0 for 10m (per peer)",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.tunnel.state\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.tunnel.state/gauge\"",
         "comparison": "COMPARISON_LT",
         "thresholdValue": 1,
         "duration": "600s",

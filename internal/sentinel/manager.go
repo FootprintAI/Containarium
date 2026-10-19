@@ -47,6 +47,8 @@ type Config struct {
 	SSHUpstreamPolicy  string
 	SSHUpstreamState   string
 	SSHUpstreamSocket  string
+	// Private manager-to-sshpiperd bridge. Empty disables it for embedders.
+	SSHAuthzSocket     string
 	HealthPort         int
 	CheckInterval      time.Duration
 	HTTPPort           int
@@ -818,6 +820,15 @@ func (m *Manager) Run(ctx context.Context) error {
 	defer stopUpstream()
 	if ctx.Err() != nil {
 		return nil
+	}
+	if m.config.SSHAuthzSocket != "" {
+		stop, err := m.startSSHAuthzBridge(m.config.SSHAuthzSocket)
+		if err != nil {
+			// Audit-only must not bring down the sentinel on a sink failure.
+			log.Printf("[sentinel] ssh authz bridge unavailable: %v", err)
+		} else {
+			defer stop()
+		}
 	}
 	log.Printf("[sentinel] starting (check-interval=%s, health-port=%d, forwarded-ports=%v, hybrid=%v)",
 		m.config.CheckInterval, m.config.HealthPort, m.config.ForwardedPorts, m.config.HybridMode)

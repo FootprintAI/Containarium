@@ -31,13 +31,23 @@ func TestWaitForExitSidecar_FailureModesAreDistinct(t *testing.T) {
 	})
 	t.Run("sidecar appearing mid-wait is returned", func(t *testing.T) {
 		dir := t.TempDir()
+		// Publish the sidecar the way the run script does (write a temp
+		// file, then rename): a bare os.WriteFile creates the file before
+		// filling it, so a poll landing between the two reads "" on a
+		// loaded runner (#2600).
 		go func() {
 			time.Sleep(150 * time.Millisecond)
-			_ = os.WriteFile(filepath.Join(dir, "r.exit"), []byte("5 1"), 0o600)
+			tmp := filepath.Join(dir, "r.exit.tmp")
+			if err := os.WriteFile(tmp, []byte("5 1"), 0o600); err == nil {
+				_ = os.Rename(tmp, filepath.Join(dir, "r.exit"))
+			}
 		}()
-		raw, err := waitForExitSidecar(dir, "r", 5*time.Second)
-		if err != nil || string(raw) != "5 1" {
-			t.Fatalf("raw=%q err=%v", raw, err)
+		raw, err := waitForExitSidecar(dir, "r", 30*time.Second)
+		if err != nil {
+			t.Fatalf("sidecar never observed (writer publishes at ~150ms): %v", err)
+		}
+		if string(raw) != "5 1" {
+			t.Fatalf("waiter returned early with partial sidecar content %q, want %q", raw, "5 1")
 		}
 	})
 }

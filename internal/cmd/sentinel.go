@@ -351,6 +351,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				CertSyncInterval:          sentinelCertSyncInterval,
 				InFleetCertScope:          inFleetCertScope,
 				KeySyncInterval:           sentinelKeySyncInterval,
+				SSHAuthzSocket:            sentinelSSHAuthzSocket,
 				HybridMode:                true,
 				ProxyProtocol:             sentinelProxyProtocol,
 				AlertWebhookURL:           sentinelAlertWebhookURL,
@@ -464,6 +465,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			CertSyncInterval:          sentinelCertSyncInterval,
 			InFleetCertScope:          inFleetCertScope,
 			KeySyncInterval:           sentinelKeySyncInterval,
+			SSHAuthzSocket:            sentinelSSHAuthzSocket,
 			TunnelMode:                true,
 			ProxyProtocol:             sentinelProxyProtocol,
 			AlertWebhookURL:           sentinelAlertWebhookURL,
@@ -553,6 +555,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		CertSyncInterval:          sentinelCertSyncInterval,
 		InFleetCertScope:          inFleetCertScope,
 		KeySyncInterval:           sentinelKeySyncInterval,
+		SSHAuthzSocket:            sentinelSSHAuthzSocket,
 		ProxyProtocol:             sentinelProxyProtocol,
 		AlertWebhookURL:           sentinelAlertWebhookURL,
 	}

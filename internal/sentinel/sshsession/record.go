@@ -25,6 +25,12 @@ const (
 	SessionPhaseOpen   SessionPhase = "open"
 	SessionPhaseClose  SessionPhase = "close"
 	SessionPhaseDenied SessionPhase = "denied"
+	// SessionPhaseAuthFailed summarises the failed authentications from one
+	// source IP in one ban window; SessionPhaseBanned records a ban (#2419).
+	// Neither belongs to a session: the ban plugin writes them, with no
+	// login, target or credential.
+	SessionPhaseAuthFailed SessionPhase = "auth_failed"
+	SessionPhaseBanned     SessionPhase = "banned"
 )
 
 // AuthMethod is how the client's credential was presented.
@@ -135,4 +141,17 @@ type Record struct {
 	AuthzDecision pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
 	DenyReason    pb.SSHDenyReason    `json:"deny_reason,omitempty"`
 	Enforced      bool                `json:"enforced,omitempty"`
+
+	// The fields below are set only on SessionPhaseAuthFailed and
+	// SessionPhaseBanned records (#2419).
+	//
+	// FailureCount is the failed authentications counted; BannedUntil, set
+	// only when banned, is when the ban lapses; BanListener is the sentinel
+	// SSH listener that saw them. SuppressedCount, on an AuthFailed record
+	// with no ClientIP, is the failures from other sources not written one by
+	// one because the plugin's record rate cap was reached.
+	FailureCount    uint64            `json:"failure_count,omitempty"`
+	BannedUntil     *time.Time        `json:"banned_until,omitempty"`
+	BanListener     pb.SSHBanListener `json:"ban_listener,omitempty"`
+	SuppressedCount uint64            `json:"suppressed_count,omitempty"`
 }

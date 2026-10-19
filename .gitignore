@@ -106,8 +106,11 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# Compiled eBPF object — built by `make build-bpf` for embedding, never committed (#627)
+# Compiled eBPF objects — built by `make build-bpf` for embedding, never committed (#627, #2637)
 internal/netbpf/*.bpf.o
+# vmlinux.h is generated from the build host's kernel BTF by `make build-bpf` (#2637, #2711 Q1)
+internal/netbpf/vmlinux.h
+internal/netbpf/vmlinux.h.tmp
 
 # Local git worktrees (e.g. `git worktree add .worktrees/<name>`). These are
 # separate checkouts living under the repo root; never commit them as embedded

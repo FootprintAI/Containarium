@@ -2753,7 +2753,11 @@ type GuardStatus struct {
 	// table does not know (core guard). Reported, never guessed.
 	Unresolved []string `protobuf:"bytes,8,rep,name=unresolved,proto3" json:"unresolved,omitempty"`
 	// Number of distinct subjects (tenants for the tenant guard).
-	Subjects      int32 `protobuf:"varint,9,opt,name=subjects,proto3" json:"subjects,omitempty"`
+	Subjects int32 `protobuf:"varint,9,opt,name=subjects,proto3" json:"subjects,omitempty"`
+	// Instances carrying no user.containarium.* key (made directly in Incus,
+	// or a VM). Left unguarded and listed for information only; unlike
+	// unresolved they do not degrade the verdict (#2396).
+	Unmanaged     []string `protobuf:"bytes,10,rep,name=unmanaged,proto3" json:"unmanaged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2849,6 +2853,13 @@ func (x *GuardStatus) GetSubjects() int32 {
 		return x.Subjects
 	}
 	return 0
+}
+
+func (x *GuardStatus) GetUnmanaged() []string {
+	if x != nil {
+		return x.Unmanaged
+	}
+	return nil
 }
 
 type GetNetworkGuardStatusRequest struct {
@@ -3332,7 +3343,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\bacl_name\x18\x04 \x01(\tR\aaclName\x12\x1a\n" +
 	"\battached\x18\x05 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x06 \x01(\tR\tlastError\"\xd8\x02\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError\"\xf6\x02\n" +
 	"\vGuardStatus\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.containarium.v1.GuardModeR\x04mode\x12'\n" +
 	"\x0ffirewall_driver\x18\x02 \x01(\tR\x0efirewallDriver\x12 \n" +
@@ -3346,7 +3357,9 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\n" +
 	"unresolved\x18\b \x03(\tR\n" +
 	"unresolved\x12\x1a\n" +
-	"\bsubjects\x18\t \x01(\x05R\bsubjects\"\x1e\n" +
+	"\bsubjects\x18\t \x01(\x05R\bsubjects\x12\x1c\n" +
+	"\tunmanaged\x18\n" +
+	" \x03(\tR\tunmanaged\"\x1e\n" +
 	"\x1cGetNetworkGuardStatusRequest\"|\n" +
 	"\x12NetworkGuardStatus\x120\n" +
 	"\x04core\x18\x01 \x01(\v2\x1c.containarium.v1.GuardStatusR\x04core\x124\n" +

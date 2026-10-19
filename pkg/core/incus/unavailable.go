@@ -54,6 +54,9 @@ func (*UnavailableBackend) ReadFile(string, string) ([]byte, error)        { ret
 func (*UnavailableBackend) ListDir(string, string) ([]string, error)       { return nil, ErrUnavailable }
 func (*UnavailableBackend) SetConfig(string, string, string) error         { return ErrUnavailable }
 func (*UnavailableBackend) SetCPULimit(string, string) error               { return ErrUnavailable }
+func (*UnavailableBackend) SetCPUConfig(string, string, string) error      { return ErrUnavailable }
+func (*UnavailableBackend) FreezeContainer(string) error                   { return ErrUnavailable }
+func (*UnavailableBackend) UnfreezeContainer(string) error                 { return ErrUnavailable }
 func (*UnavailableBackend) UnsetConfig(string, string) error               { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceSize(string, string, string) error     { return ErrUnavailable }
 func (*UnavailableBackend) UpdateContainerConfig(string, string, string) error {

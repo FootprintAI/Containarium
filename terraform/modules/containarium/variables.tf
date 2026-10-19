@@ -63,6 +63,18 @@ variable "ssh_ban_ignore_cidrs" {
   }
 }
 
+variable "ssh_ban_audit_records" {
+  description = "Record failed SSH authentications and bans from both listeners' ssh-ban-plugin into the SSH session records file the shipper already delivers to the backend's audit chain (#2419). Needs a containariumd whose ssh-ban-plugin has --records-file; an older binary rejects the flag and sshpiper will not start, so this is off by default. See docs/SENTINEL-SSH-SESSION-AUDIT.md."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_enforce" {
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # Project & Region
 # -----------------------------------------------------------------------------
