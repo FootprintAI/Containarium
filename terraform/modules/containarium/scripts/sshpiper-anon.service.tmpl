@@ -27,6 +27,9 @@ ExecStart=/usr/local/bin/sshpiperd \
 %{ for prefix in ssh_ban_ignore_cidrs ~}
   --ignore-ip ${prefix} \
 %{ endfor ~}
+%{ if ssh_ban_audit_records ~}
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
   --ban-duration ${ssh_ban_duration_seconds}s
 Restart=always
 RestartSec=5
