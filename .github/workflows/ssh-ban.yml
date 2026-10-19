@@ -70,7 +70,7 @@ jobs:
           terraform_wrapper: false
       - name: Validate real policy templates without cloud credentials
         run: bash scripts/test-ssh-ban-templates.sh
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ssh-ban-verification
@@ -113,7 +113,7 @@ jobs:
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
               || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
           done
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ssh-authz-verification
