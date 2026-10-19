@@ -5,7 +5,12 @@ description: >
   pods on Kubernetes. Agents connect over SSH to a ForceCommand-pinned
   agent-box; no kube-apiserver token is mounted in the box.
 type: application
-version: 0.1.0
+# Development placeholders. The release workflow stamps both when it packages
+# the chart (#2574): `version` is the release without its leading "v" and
+# `appVersion` is the exact image tag (the release tag, "vX.Y.Z"), so a
+# published chart always installs the daemon image of its own release. Do not
+# bump these by hand.
+version: 0.0.0-dev
 appVersion: "latest"
 keywords:
   - agent
