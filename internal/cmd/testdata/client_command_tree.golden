@@ -184,6 +184,7 @@ security bad-destinations add
 security bad-destinations list
 security bad-destinations remove
 security clamav install
+security exec-events
 security findings
 security findings list
 security findings resolve
