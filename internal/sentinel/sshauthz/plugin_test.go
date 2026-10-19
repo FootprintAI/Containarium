@@ -203,6 +203,39 @@ func TestCacheTTLIsolationAndEviction(t *testing.T) {
 	}
 }
 
+// A control plane's TTL must not stretch the outage-admit window past grace:
+// an ALLOW is reused for at most min(ttl, grace) after it was checked.
+func TestCacheCapsAllowTTLAtGrace(t *testing.T) {
+	const grace = 2 * time.Minute
+	for _, tt := range []struct {
+		name      string
+		ttl, want time.Duration // want: the effective TTL
+	}{
+		{name: "above grace is capped", ttl: 10 * time.Minute, want: grace},
+		{name: "equal to grace is unchanged", ttl: grace, want: grace},
+		{name: "below grace is unchanged", ttl: 30 * time.Second, want: 30 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
+			now := start
+			c := NewCache(grace, 10, func() time.Time { return now })
+			key := CacheKey{"backend", "alice", "fp"}
+			c.Put(key, "user", tt.ttl)
+			now = start.Add(tt.want - time.Nanosecond)
+			if _, ok := c.Get(key, false); !ok {
+				t.Fatal("positive expired before its effective TTL")
+			}
+			now = start.Add(tt.want)
+			if _, ok := c.Get(key, false); ok {
+				t.Fatalf("positive still fresh at its effective TTL %v", tt.want)
+			}
+			if _, ok := c.Get(key, true); ok != (tt.want < grace) {
+				t.Fatalf("outage read at %v = %v, want %v", tt.want, ok, tt.want < grace)
+			}
+		})
+	}
+}
+
 func TestAuthorizationDeadline(t *testing.T) {
 	p, err := New(Config{Timeout: 10 * time.Millisecond, Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend", true, nil }), Authorizer: authorizerFunc(func(ctx context.Context, _ string, _ *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 		<-ctx.Done()
