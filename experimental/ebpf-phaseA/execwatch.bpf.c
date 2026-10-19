@@ -120,16 +120,20 @@ static __always_inline void exec_bump(__u32 idx) {
 // watched_ancestor returns the first ancestor cgroup id (level 1 outward to
 // EXEC_CGROUP_LEVELS) present in watched_cgroups, or 0 when none is — i.e. a
 // host or core-infra process. Level 0 is the root cgroup and is never
-// registered. A level deeper than the task's cgroup returns 0 from the
-// helper, which never matches (userspace never inserts key 0). The loop is
-// fully unrolled with a constant bound so the verifier sees straight-line
-// code.
+// registered. The loop is fully unrolled with a constant bound so the
+// verifier sees straight-line code; the early exit below is a plain
+// forward jump out of it.
+//
+// The helper returns 0 for a level deeper than the task's own cgroup, and
+// every level past that is 0 too, so the first 0 ends the walk: on a host
+// exec (the common case — a host process sits a few levels deep and matches
+// nothing) this saves the remaining helper calls and lookups.
 static __always_inline __u64 watched_ancestor(void) {
 #pragma unroll
     for (int level = 1; level <= EXEC_CGROUP_LEVELS; level++) {
         __u64 id = bpf_get_current_ancestor_cgroup_id(level);
         if (id == 0)
-            continue;
+            break; // past the task's depth: no deeper ancestor exists
         if (bpf_map_lookup_elem(&watched_cgroups, &id))
             return id;
     }
@@ -174,17 +178,16 @@ int execwatch(struct trace_event_raw_sched_process_exec *ctx) {
     unsigned long arg_end = BPF_CORE_READ(mm, arg_end);
     if (arg_end > arg_start) {
         unsigned long span = arg_end - arg_start;
-        __u32 len;
-        if (span > EXEC_ARGV_LEN) {
-            len = EXEC_ARGV_LEN;
-            ev->argv_truncated = 1;
-        } else {
-            len = (__u32)span;
-        }
+        __u32 len = span > EXEC_ARGV_LEN ? EXEC_ARGV_LEN : (__u32)span;
         // len is provably in [1, EXEC_ARGV_LEN] here, which is what the
         // verifier needs for a variable-size user read into a fixed buffer.
-        if (len > 0 && len <= EXEC_ARGV_LEN)
-            bpf_probe_read_user(&ev->argv, len, (const void *)arg_start);
+        // The truncation flag is set only once the capped read succeeded:
+        // a failed read (the argument pages are not resident) leaves argv
+        // empty and unflagged rather than claiming a cut-off vector.
+        if (len > 0 && len <= EXEC_ARGV_LEN &&
+            bpf_probe_read_user(&ev->argv, len, (const void *)arg_start) == 0 &&
+            span > EXEC_ARGV_LEN)
+            ev->argv_truncated = 1;
     }
 
     bpf_ringbuf_submit(ev, 0);

@@ -110,7 +110,10 @@ func cString(b []byte) string {
 
 // splitArgv splits a NUL-separated argument block. The block normally ends
 // with a NUL; a capped block may end mid-argument, which is kept as the last
-// element. Trailing zero padding after the final NUL is ignored.
+// element. Trailing zero padding after the final NUL is ignored — which also
+// means a trailing EMPTY argument (`cmd ""`) is indistinguishable from the
+// padding and is dropped; harmless for name/argv matching, noted here so
+// nobody counts on it.
 func splitArgv(b []byte) []string {
 	// Trim the zero fill after the last argument's terminator.
 	end := len(b)
@@ -141,8 +144,13 @@ type ExecWatch struct {
 // object's: the sibling execwatch.bpf.o in the same directory, so the one
 // CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT value drives both objects. A path
 // that already names execwatch.bpf.o is returned as is; a directory gets the
-// file appended.
+// file appended. An empty path returns "" — it must never resolve to a file
+// relative to the daemon's working directory.
 func ExecObjectPathFor(objPath string) string {
+	objPath = strings.TrimSpace(objPath)
+	if objPath == "" {
+		return ""
+	}
 	if strings.HasSuffix(objPath, "/") {
 		return objPath + ExecObjectName
 	}
@@ -155,10 +163,12 @@ func ExecObjectPathFor(objPath string) string {
 // ResolveExecWatch loads the execwatch object from the same operator value
 // Resolve takes: the embedded keyword selects the object compiled into this
 // binary; any other value is a netpolicy object path whose sibling
-// execwatch.bpf.o is loaded (ExecObjectPathFor).
+// execwatch.bpf.o is loaded (ExecObjectPathFor). An empty value means
+// embedded too (and fails when nothing is embedded) — never a file relative
+// to the daemon's working directory.
 func ResolveExecWatch(value string) (*ExecWatch, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "embedded", "1", "true", "yes", "on":
+	case "", "embedded", "1", "true", "yes", "on":
 		obj := EmbeddedExecObject()
 		if len(obj) == 0 {
 			return nil, fmt.Errorf("netbpf: no embedded execwatch BPF object in this build " +
@@ -318,8 +328,10 @@ type ringRecordReader interface {
 }
 
 // ConsumeExecEvents reads samples from the exec ring until the reader is
-// closed or ctx is cancelled, decoding each and handing it to the sink —
-// the ringbuf twin of ConsumeDenyEvents. A malformed sample is reported via
+// closed, decoding each and handing it to the sink — the ringbuf twin of
+// ConsumeDenyEvents, with the same contract: Read blocks, so cancelling ctx
+// alone does not return; the caller must also Close the reader when ctx
+// ends (the daemon and the lane test both do). A malformed sample is reported via
 // onError (nil to ignore) and skipped; a reader error other than ErrClosed is
 // reported and ends the loop (the caller owns restart policy). Ring
 // overflow is not visible here: the kernel counts it (ExecWatch.Stats), it
