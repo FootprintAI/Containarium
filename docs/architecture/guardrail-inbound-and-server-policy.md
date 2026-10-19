@@ -1,7 +1,7 @@
 # Design: inbound guardrail scan at the model gateway, and a server-side guardrail policy
 
 **Date:** 2026-10-07
-**Status:** proposed
+**Status:** implemented — the inbound scan at the model gateway (#2367, `internal/modelgateway`), the server-side policy service and CLI/MCP (#2368, `internal/guardrailpolicy`) and the non-skippable deploy gate (#2368, `DeployRecipe`) have landed. Kernel-level enforcement (Q1) remains out of scope (#2374). Where this document and the code differ, the code is authoritative.
 **Stack:** protobuf/gRPC (grpc-gateway) + Docker; Go only (no new language)
 **Issues:** #2367 (inbound scan), #2368 (server-side, non-skippable policy). Sprint umbrella #2373, decisions Q10 and Q11.
 **Builds on:** [`guardrail.md`](guardrail.md) (the local scan → redact → gate → attest flow).

@@ -1,9 +1,14 @@
 # Agent Tracker Broker — Design Note
 
-> Status: **Exploration / not yet approved.** This proposes a daemon-side
+> Status: **Implemented** (`internal/tracker`, `internal/runlease`, the
+> `tracker_*` tools in `internal/mcp/tracker_tools.go`); the accepted
+> implementation architecture is
+> [`architecture/agent-tracker-broker.md`](architecture/agent-tracker-broker.md).
+> This note is kept for the *why* and the threat model; where it says
+> something is not yet built, read the code. It described a daemon-side
 > *tracker broker* that lets an agent running in a box read and update issues
 > and open change requests on GitHub or GitLab **without the tracker
-> credential ever entering the box**. Nothing here is built yet. It applies
+> credential ever entering the box**. It applies
 > the custody model of the model gateway
 > (`docs/AGENT-MODEL-GATEWAY-DESIGN.md`) to a second kind of upstream, and
 > builds on the agent-skills mechanism (`docs/AGENT-SKILLS-CREWS-DESIGN.md`)
