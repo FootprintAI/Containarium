@@ -216,7 +216,8 @@ miner never gets its first minute of CPU.
       `cpuminer*`, `nanominer`, `t-rex`, `lolminer`, `nbminer`,
       `gminer`), argv markers (`--donate-level`, `stratum+tcp://`,
       `stratum+ssl://`, `--coin `, `-o <host>:<stratum port>`), and
-      optional SHA-256 of `exe_path` for the current upstream releases.
+      a `sha256` matcher kind for operator-added hashes (the shipped
+      baseline ships no hashes; decided 2026-10-19 on #2711).
       Operators add and remove entries via
       `containarium security miner-signatures add|remove|list` without
       a rebuild.

@@ -72,6 +72,10 @@ flowchart LR
    argv[512], argv_truncated}`. `argv` is read from `mm->arg_start` with
    CO-RE (`vmlinux.h`, kernel BTF required); `filename` comes from the
    tracepoint's `__data_loc`. Environment variables are never read.
+   `vmlinux.h` is generated at build time by `make build-bpf`
+   (`bpftool btf dump file /sys/kernel/btf/vmlinux format c`), gitignored,
+   never checked in; the target fails with a clear message when `bpftool`
+   or BTF is missing (decided on #2711 Q1).
 
    Userspace keeps `watched_cgroups` in sync with running containers: on
    the enforcer's 10 s reconcile it reads each container's init PID from
@@ -142,7 +146,10 @@ flowchart LR
    `threatdetect.miner_signatures.operator` in `DaemonConfigStore`. Three
    matcher kinds, each a typed entry: `name` (exact or glob on the
    basename of `filename` and on `comm`), `argv` (literal substring over
-   the joined argv), `sha256` (hex of the executable). Name and argv match
+   the joined argv), `sha256` (hex of the executable). The shipped baseline
+   carries name and argv entries only; `sha256` entries are operator-added
+   (decided on #2711 Q2: a hash list goes stale every upstream release and
+   nobody owns refreshing it). Name and argv match
    in the hot path. The hash matcher runs only when the set has hash
    entries and no cheaper matcher hit: the watcher hashes
    `/proc/<pid>/exe` (cap 64 MiB, 200 ms budget, best effort; the process
