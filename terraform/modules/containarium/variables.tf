@@ -33,6 +33,12 @@ variable "ssh_ban_ignore_cidrs" {
   }
 }
 
+variable "ssh_authz_enforce" {
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # Project & Region
 # -----------------------------------------------------------------------------

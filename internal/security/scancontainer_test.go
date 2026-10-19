@@ -3,46 +3,14 @@ package security
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
-
-// fakeScanBox stands in for the security container: `ls` lists the mount and
-// `clamdscan` returns the configured outcome.
-type fakeScanBox struct {
-	lsOut               string
-	scanOut, scanErrOut string
-	scanErr             error
-	scanned             bool
-}
-
-func (f *fakeScanBox) ExecWithOutput(_ string, cmd []string) (string, string, error) {
-	switch cmd[0] {
-	case "ls":
-		return f.lsOut, "", nil
-	case "clamdscan":
-		f.scanned = true
-		return f.scanOut, f.scanErrOut, f.scanErr
-	}
-	return "", "", errors.New("unexpected command " + cmd[0])
-}
-
-// fakeScanDevices records mount/unmount calls.
-type fakeScanDevices struct {
-	added, removed []string
-	addErr         error
-}
-
-func (f *fakeScanDevices) Remove(_ context.Context, device string) (string, error) {
-	f.removed = append(f.removed, device)
-	return "", nil
-}
-
-func (f *fakeScanDevices) Add(_ context.Context, device, _, _ string) (string, error) {
-	f.added = append(f.added, device)
-	return "boom", f.addErr
-}
 
 type fakeReports struct {
 	saved   []*Report
@@ -60,110 +28,249 @@ func (f *fakeReports) SaveReport(_ context.Context, r *Report) error {
 
 type hookCall struct{ container, username, status string }
 
-func newTestScanner(box *fakeScanBox, dev *fakeScanDevices, rep *fakeReports, hook *[]hookCall) *Scanner {
-	zero := time.Duration(0)
-	s := &Scanner{execer: box, devices: dev, reports: rep, settle: &zero, storagePool: "default"}
+// fakeTenantBox stands in for the tenant's container. Each scripted exec is keyed by
+// a substring of the joined argv.
+type fakeTenantBox struct {
+	info    *incus.ContainerInfo
+	infoErr error
+
+	hasClamscan   bool
+	hasSignatures bool
+	version       string
+	scanOut       string
+	scanCode      int
+	scanErr       error
+	scanArgv      []string
+	execs         [][]string
+}
+
+func (f *fakeTenantBox) GetContainer(string) (*incus.ContainerInfo, error) { return f.info, f.infoErr }
+
+func (f *fakeTenantBox) ExecWithExitCode(_ string, cmd []string) (string, string, int, error) {
+	f.execs = append(f.execs, cmd)
+	j := strings.Join(cmd, " ")
+	switch {
+	case strings.Contains(j, "command -v clamscan"):
+		if f.hasClamscan {
+			return "/usr/bin/clamscan\n", "", 0, nil
+		}
+		return "", "", 1, nil
+	case strings.Contains(j, "/var/lib/clamav"):
+		if f.hasSignatures {
+			return "", "", 0, nil
+		}
+		return "", "", 2, nil
+	case strings.HasSuffix(j, "--version") && cmd[0] == "clamscan":
+		return f.version + "\nsecond line\n", "", 0, nil
+	case cmd[0] == "timeout":
+		f.scanArgv = cmd
+		return f.scanOut, "", f.scanCode, f.scanErr
+	}
+	return "", "", 0, errors.New("unexpected command " + j)
+}
+
+func readyTenantBox() *fakeTenantBox {
+	return &fakeTenantBox{
+		info:          &incus.ContainerInfo{Name: "alice-container", State: "Running", Memory: "4GB"},
+		hasClamscan:   true,
+		hasSignatures: true,
+		version:       "ClamAV 1.0.7/27123/Sun Oct 18",
+	}
+}
+
+func newTestScanner(box *fakeTenantBox, rep *fakeReports, hook *[]hookCall) *Scanner {
+	s := &Scanner{box: box, reports: rep, timeout: time.Minute}
 	s.SetScanResultHook(func(c, u, st string) { *hook = append(*hook, hookCall{c, u, st}) })
 	return s
 }
 
-// #2589 / #2496: an incomplete clamdscan run must never be persisted or
-// handed to the quarantine hook as clean, proven at the ScanContainer level
-// (TestClassifyClamScan covers the classifier alone).
-func TestScanContainer_PersistsAndReportsTheClassifiedStatus(t *testing.T) {
-	exit1 := errors.New("command exited with code 1")
-	exit2 := errors.New("command exited with code 2")
-	found := "/mnt/scan-x/a: Eicar-Test-Signature FOUND\n"
-	for _, tc := range []struct {
-		name         string
-		out, errOut  string
-		err          error
-		wantStatus   string
-		wantCount    int
-		wantFindings string // substring
-	}{
-		{"exit 0 is clean", "", "", nil, ScanStatusClean, 0, ""},
-		{"exit 1 with FOUND is infected", found, "", exit1, ScanStatusInfected, 1, "Eicar-Test-Signature FOUND"},
-		{"exit 2 without FOUND is incomplete", "", "ERROR: Can't access file", exit2, ScanStatusIncomplete, 0, "code 2"},
-		{"exit 2 with FOUND is still infected", found, "WARNING: x", exit2, ScanStatusInfected, 1, "Eicar-Test-Signature FOUND"},
-		{"exec failure is incomplete", "", "", errors.New("failed to execute command"), ScanStatusIncomplete, 0, "failed to execute command"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			box := &fakeScanBox{lsOut: "bin\netc\n", scanOut: tc.out, scanErrOut: tc.errOut, scanErr: tc.err}
-			dev, rep := &fakeScanDevices{}, &fakeReports{}
-			var hook []hookCall
-			s := newTestScanner(box, dev, rep, &hook)
+func runScan(t *testing.T, box *fakeTenantBox) (*Report, []hookCall) {
+	t.Helper()
+	var hook []hookCall
+	rep := &fakeReports{}
+	if err := newTestScanner(box, rep, &hook).ScanContainer(context.Background(), "alice-container", "alice"); err != nil {
+		t.Fatalf("ScanContainer: %v", err)
+	}
+	if len(rep.saved) != 1 {
+		t.Fatalf("saved %d reports, want 1", len(rep.saved))
+	}
+	return rep.saved[0], hook
+}
 
-			if err := s.ScanContainer(context.Background(), "alice-container", "alice"); err != nil {
-				t.Fatalf("ScanContainer: %v", err)
+func TestScanContainer_Outcomes(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*fakeTenantBox)
+		wantStatus string
+		wantInText string // substring expected in Findings (the reason / version / signatures)
+		wantCount  int
+		wantScan   bool // whether clamscan itself must have been run
+	}{
+		{"clean run records only the scanner version", func(b *fakeTenantBox) {}, ScanStatusClean, "ClamAV 1.0.7/27123/Sun Oct 18", 0, true},
+		{"infected keeps signature names and counts, not paths", func(b *fakeTenantBox) {
+			b.scanCode = 1
+			b.scanOut = "/home/alice/secret plans/a.exe: Win.Test.EICAR_HDB-1 FOUND\n/home/alice/b.com: Win.Test.EICAR_HDB-1 FOUND\n/tmp/x: Eicar-Signature FOUND\n"
+		}, ScanStatusInfected, "Win.Test.EICAR_HDB-1 (2)", 3, true},
+		{"scan error is incomplete", func(b *fakeTenantBox) { b.scanCode = 2 }, ScanStatusIncomplete, "scan error", 0, true},
+		{"killed (OOM) is incomplete", func(b *fakeTenantBox) { b.scanCode = 137 }, ScanStatusIncomplete, "out of memory", 0, true},
+		{"timeout is incomplete", func(b *fakeTenantBox) { b.scanCode = 124 }, ScanStatusIncomplete, "timed out", 0, true},
+		{"unknown exit code is incomplete", func(b *fakeTenantBox) { b.scanCode = 77 }, ScanStatusIncomplete, "77", 0, true},
+		{"exec failure is incomplete", func(b *fakeTenantBox) { b.scanErr = errors.New("socket wedged") }, ScanStatusIncomplete, "socket wedged", 0, true},
+		{"stopped box is incomplete and not scanned", func(b *fakeTenantBox) { b.info.State = "Stopped" }, ScanStatusIncomplete, "not running", 0, false},
+		{"under 4 GB is unsupported_size and not scanned", func(b *fakeTenantBox) { b.info.Memory = "2GB" }, ScanStatusUnsupportedSize, "below the 4 GB", 0, false},
+		{"clamscan missing is not_installed", func(b *fakeTenantBox) { b.hasClamscan = false }, ScanStatusNotInstalled, "not installed", 0, false},
+		{"signatures missing is not_installed", func(b *fakeTenantBox) { b.hasSignatures = false }, ScanStatusNotInstalled, "signatures", 0, false},
+		{"lookup failure is incomplete", func(b *fakeTenantBox) { b.infoErr = errors.New("no such box") }, ScanStatusIncomplete, "no such box", 0, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			box := readyTenantBox()
+			tc.mutate(box)
+			r, hook := runScan(t, box)
+			if r.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q (findings %q)", r.Status, tc.wantStatus, r.Findings)
 			}
-			if len(rep.saved) != 1 {
-				t.Fatalf("saved %d reports, want 1", len(rep.saved))
+			if !strings.Contains(r.Findings, tc.wantInText) {
+				t.Errorf("findings %q should contain %q", r.Findings, tc.wantInText)
 			}
-			r := rep.saved[0]
-			if r.Status != tc.wantStatus || r.FindingsCount != tc.wantCount {
-				t.Errorf("saved status/count = %q/%d, want %q/%d", r.Status, r.FindingsCount, tc.wantStatus, tc.wantCount)
+			if r.FindingsCount != tc.wantCount {
+				t.Errorf("findings count = %d, want %d", r.FindingsCount, tc.wantCount)
 			}
-			if !strings.Contains(r.Findings, tc.wantFindings) {
-				t.Errorf("saved findings %q missing %q", r.Findings, tc.wantFindings)
+			if (box.scanArgv != nil) != tc.wantScan {
+				t.Errorf("clamscan ran = %v, want %v", box.scanArgv != nil, tc.wantScan)
 			}
-			if r.ContainerName != "alice-container" || r.Username != "alice" {
-				t.Errorf("saved identity = %q/%q", r.ContainerName, r.Username)
+			if r.Status != ScanStatusClean && len(hook) == 1 && hook[0].status == ScanStatusClean {
+				t.Fatalf("a %q outcome reached the hook as clean", r.Status)
 			}
-			want := hookCall{"alice-container", "alice", tc.wantStatus}
-			if len(hook) != 1 || hook[0] != want {
-				t.Errorf("hook calls = %+v, want exactly %+v", hook, want)
+			if len(hook) != 1 || hook[0].status != r.Status {
+				t.Fatalf("hook = %+v, want one call with %q", hook, r.Status)
 			}
-			if tc.wantStatus == ScanStatusIncomplete && hook[0].status == ScanStatusClean {
-				t.Error("an incomplete scan reached the quarantine hook as clean")
-			}
-			// The scan device is always removed again.
-			if len(dev.added) != 1 || len(dev.removed) < 2 {
-				t.Errorf("devices added=%v removed=%v, want one add and a stale + a cleanup remove", dev.added, dev.removed)
+			if strings.Contains(r.Findings, "/home/") || strings.Contains(r.Findings, "secret plans") {
+				t.Errorf("a file path leaked into the stored report: %q", r.Findings)
 			}
 		})
 	}
 }
 
-// Failures before or after the scan must not produce a verdict at all.
-func TestScanContainer_NoVerdictWhenTheScanCannotRun(t *testing.T) {
-	t.Run("mount fails", func(t *testing.T) {
-		box := &fakeScanBox{lsOut: "bin\n"}
-		dev, rep := &fakeScanDevices{addErr: errors.New("exit status 1")}, &fakeReports{}
-		var hook []hookCall
-		err := newTestScanner(box, dev, rep, &hook).ScanContainer(context.Background(), "c", "u")
-		if err == nil || !strings.Contains(err.Error(), "failed to mount rootfs") {
-			t.Fatalf("err = %v, want a mount failure", err)
+func TestScanContainer_SaveFailureIsAnError(t *testing.T) {
+	var hook []hookCall
+	rep := &fakeReports{saveErr: errors.New("db down")}
+	s := newTestScanner(readyTenantBox(), rep, &hook)
+	if err := s.ScanContainer(context.Background(), "alice-container", "alice"); err == nil {
+		t.Fatal("a report that could not be saved must fail the job")
+	}
+	if len(hook) != 0 {
+		t.Fatalf("hook must not fire when nothing was recorded: %+v", hook)
+	}
+}
+
+// The scan must run as the unprivileged nobody user with only the read-bypass
+// capability, bounded by timeout, over the whole filesystem minus pseudo-fs —
+// also for a privileged box, where it must never run as in-box root.
+func TestInBoxScanCommand_DropsPrivilegeAndKeepsReadOnly(t *testing.T) {
+	box := readyTenantBox()
+	box.info.Memory = "8GiB"
+	if _, _ = runScan(t, box); box.scanArgv == nil {
+		t.Fatal("scan did not run")
+	}
+	j := strings.Join(box.scanArgv, " ")
+	for _, want := range []string{
+		"timeout 60 setpriv", "--reuid=65534", "--regid=65534", "--clear-groups",
+		"--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search",
+		"clamscan -r -i --no-summary --stdout", "--exclude-dir=^/proc", "--exclude-dir=^/sys", "--exclude-dir=^/dev", "--exclude-dir=^/run", " /",
+	} {
+		if !strings.Contains(j, want) {
+			t.Errorf("scan argv %q is missing %q", j, want)
 		}
-		if box.scanned || len(rep.saved) != 0 || len(hook) != 0 {
-			t.Errorf("scanned=%v saved=%d hook=%d, want nothing", box.scanned, len(rep.saved), len(hook))
+	}
+	for _, bad := range []string{"--reuid=0", "dac_override", "sys_admin", "--no-clear-groups", "--remove"} {
+		if strings.Contains(j, bad) {
+			t.Errorf("scan argv %q must not contain %q", j, bad)
 		}
-	})
-	t.Run("empty mount is an error, not a clean scan", func(t *testing.T) {
-		box := &fakeScanBox{lsOut: "  \n"}
-		dev, rep := &fakeScanDevices{}, &fakeReports{}
-		var hook []hookCall
-		err := newTestScanner(box, dev, rep, &hook).ScanContainer(context.Background(), "c", "u")
-		if err == nil || !strings.Contains(err.Error(), "is empty") {
-			t.Fatalf("err = %v, want an empty-mount error", err)
+	}
+}
+
+func TestParseMemoryAndBoxTooSmall(t *testing.T) {
+	small := []string{"2GB", "3500MB", "3GiB", "512MiB", "3999999999"}
+	for _, v := range small {
+		if !boxTooSmall(v) {
+			t.Errorf("%q should be too small", v)
 		}
-		if box.scanned || len(rep.saved) != 0 || len(hook) != 0 {
-			t.Errorf("scanned=%v saved=%d hook=%d, want nothing", box.scanned, len(rep.saved), len(hook))
+	}
+	ok := []string{"4GB", "4GiB", "8GB", "16GiB", "1TB", "", "50%", "unlimited", "garbage"}
+	for _, v := range ok {
+		if boxTooSmall(v) {
+			t.Errorf("%q should be allowed (default box size is 4GB; unknown limits do not block)", v)
 		}
-		if len(dev.removed) < 2 {
-			t.Errorf("device not cleaned up after an empty mount: removed=%v", dev.removed)
+	}
+	if b, ok := parseMemoryBytes("4GiB"); !ok || b != 4<<30 {
+		t.Errorf("4GiB = %d,%v", b, ok)
+	}
+}
+
+func TestSummarizeFindings_DropsPathsKeepsSignatures(t *testing.T) {
+	out := "/home/a b/c: d: Sig.One FOUND\n/x/y: Sig.One FOUND\n/z: Sig.Two FOUND\nnot a finding\n"
+	count, sum := summarizeFindings(out)
+	if count != 3 || sum != "Sig.One (2)\nSig.Two (1)" {
+		t.Fatalf("count=%d summary=%q", count, sum)
+	}
+	if strings.Contains(sum, "/") {
+		t.Fatalf("summary contains a path: %q", sum)
+	}
+}
+
+func TestClassifyInBoxRun_NeverCleanOnError(t *testing.T) {
+	for _, code := range []int{2, 3, 124, 126, 127, 137, 143, -1} {
+		if st, _, _ := classifyInBoxRun(code, ""); st == ScanStatusClean {
+			t.Errorf("exit %d classified clean", code)
 		}
-	})
-	t.Run("a report that cannot be saved is not announced", func(t *testing.T) {
-		box := &fakeScanBox{lsOut: "bin\n"}
-		dev, rep := &fakeScanDevices{}, &fakeReports{saveErr: errors.New("db down")}
-		var hook []hookCall
-		err := newTestScanner(box, dev, rep, &hook).ScanContainer(context.Background(), "c", "u")
-		if err == nil || !strings.Contains(err.Error(), "failed to save report") {
-			t.Fatalf("err = %v, want a save failure", err)
+	}
+	if st, _, _ := classifyInBoxRun(1, ""); st == ScanStatusClean || st == ScanStatusInfected {
+		t.Errorf("exit 1 with no FOUND line must be incomplete, got %q", st)
+	}
+	if st, n, _ := classifyInBoxRun(2, "/a: Sig FOUND\n"); st != ScanStatusInfected || n != 1 {
+		t.Errorf("infection found despite exit 2 must stay infected, got %q %d", st, n)
+	}
+	if st, _, _ := classifyInBoxRun(0, "/a: Sig FOUND\n"); st != ScanStatusInfected {
+		t.Errorf("findings with exit 0 are never clean, got %q", st)
+	}
+}
+
+func TestStatusEnumAndReason(t *testing.T) {
+	if StatusEnum(ScanStatusNotInstalled).String() != "CLAMAV_SCAN_STATUS_NOT_INSTALLED" ||
+		StatusEnum("never").String() != "CLAMAV_SCAN_STATUS_NEVER_SCANNED" ||
+		StatusEnum("bogus").String() != "CLAMAV_SCAN_STATUS_UNSPECIFIED" {
+		t.Error("status → enum mapping is wrong")
+	}
+	if ReasonFor(ScanStatusClean, "ClamAV 1.0") != "" || ReasonFor(ScanStatusInfected, "Sig (1)") != "" {
+		t.Error("clean/infected must not carry a reason")
+	}
+	if ReasonFor(ScanStatusIncomplete, "timed out") != "timed out" {
+		t.Error("incomplete should expose its reason")
+	}
+}
+
+// The principle behind #2631: the platform must not mount a tenant's rootfs
+// into any platform container to scan it. Guard it at the source level so a
+// later change cannot quietly bring the disk-device path back.
+func TestSecurityPackageNeverMountsTenantRootfs(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
 		}
-		if len(hook) != 0 {
-			t.Errorf("hook called %v although the verdict was not persisted", hook)
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
+		src := string(b)
+		for _, bad := range []string{`"device", "add"`, "storage-pools", "/rootfs", "readonly=true"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("%s contains %q: tenant rootfs must not be mounted into a platform container (#2631)", f, bad)
+			}
+		}
+	}
 }

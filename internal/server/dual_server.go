@@ -350,10 +350,20 @@ type DualServer struct {
 	// GetSentryStatus regardless, reporting DISABLED/UNAVAILABLE explicitly
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
+	processResponder      *ProcessResponder               // process guardrail responder (#2636); nil when the sentry is off/unavailable
 	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
-	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
+	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless a finding store was built (armed + audit store) (#1643)
 	threatDetectSweepStop context.CancelFunc
+
+	// sentryHealthStore is the finding store the sentry-health loop (#2634)
+	// writes SENTRY_UNAVAILABLE into. Built whenever the sentry is armed and
+	// the audit store is up — independent of the eBPF object, because a
+	// missing object is exactly the fault the loop has to record. nil when
+	// unarmed (the loop never runs) or when no store could be built.
+	sentryHealthStore sentryHealthStore
+	threatSentryArmed bool               // CONTAINARIUM_THREAT_SENTRY=1
+	sentryHealthStop  context.CancelFunc // stops the sentry-health loop and the webhook notifier
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -1858,7 +1868,7 @@ skipAppHosting:
 					log.Printf("Warning: Failed to create incus client for security: %v", incusErr)
 				} else {
 					// Create scanner first so we can pass it to the server
-					securityScanner = security.NewScanner(securityIncusClient, securityStore)
+					securityScanner = security.NewScanner(securityStore, securityIncusClient)
 
 					// Auto-quarantine (#659): on malware detection, block the
 					// tenant's egress via a deny rule; release on a clean scan.
@@ -2261,6 +2271,14 @@ skipAppHosting:
 	threatCfg := appconfig.LoadThreatDetect()
 	var threatDetectEngine *threatdetect.Engine
 	var threatDetectStore threatdetect.FindingReader
+	// Process policy (#2636) is settable before the sentry is armed, like
+	// the bad-destination list; the responder that acts on it exists only
+	// with a running sentry.
+	var processResponder *ProcessResponder
+	processPolicyStore := threatdetect.NewProcessPolicyStore(nil)
+	if config.DaemonConfigStore != nil {
+		processPolicyStore = threatdetect.NewProcessPolicyStore(config.DaemonConfigStore)
+	}
 	var threatDetectNotifier *threatdetect.WebhookNotifier
 	sentryAvailable := networkPolicyEnforcer != nil && auditStore != nil
 	sentryUnavailableReason := ""
@@ -2274,7 +2292,13 @@ skipAppHosting:
 	// records into; it stays nil when the sentry is off or unavailable and
 	// the reconciler then logs instead.
 	var findingSink threatdetect.FindingSink
-	if threatCfg.SentryEnabled && sentryAvailable {
+	// The finding store (and its webhook notifier) is built whenever the
+	// sentry is armed and the audit store is up — NOT only when the eBPF
+	// object loaded too. The sentry-health loop (#2634) has to be able to
+	// record "the sentry is unavailable" precisely when the engine below is
+	// never constructed. The engine itself still needs the enforcer.
+	var healthStore sentryHealthStore
+	if threatCfg.SentryEnabled && auditStore != nil {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
 		degraded := true
@@ -2302,6 +2326,9 @@ skipAppHosting:
 			if reader, ok := sink.(threatdetect.FindingReader); ok {
 				threatDetectStore = reader
 			}
+			if hs, ok := sink.(sentryHealthStore); ok {
+				healthStore = hs
+			}
 			// Webhook delivery (#1643): deliberately independent of
 			// config.VictoriaMetricsURL — that's the vmalert/alertmanager
 			// pipeline this notifier bypasses on purpose (design doc): a
@@ -2321,6 +2348,7 @@ skipAppHosting:
 					}
 				}
 				threatDetectNotifier = threatdetect.NewWebhookNotifier(config.DaemonConfigStore, deliveryStore)
+				threatDetectNotifier.SetRenotifyInterval(threatCfg.WebhookRenotify)
 				switch st := sink.(type) {
 				case *threatdetect.FindingStore:
 					st.SetNotifier(threatDetectNotifier)
@@ -2329,6 +2357,40 @@ skipAppHosting:
 				}
 			}
 
+			// Process responder (#2636): acts on HIGH mining findings per the
+			// effective ProcessPolicy and releases on operator request or TTL.
+			// Wrapped around the sink so every finding write passes through
+			// it. Without Postgres for security_actions it runs ALERT-only:
+			// a throttle whose previous-limit row could vanish on restart is
+			// worse than an alert (decided on #2641 Q2).
+			var actionStore threatdetect.ActionStore
+			if findingsPool != nil {
+				if as, aerr := threatdetect.NewActionStore(context.Background(), findingsPool); aerr != nil {
+					log.Printf("Warning: security_actions store init failed (%v); process responder running ALERT-only", aerr)
+				} else {
+					actionStore = as
+				}
+			}
+			responderDegraded := degraded || actionStore == nil
+			if actionStore == nil {
+				actionStore = threatdetect.NewMemActionStore()
+			}
+			if lifecycle, ok := sink.(findingLifecycle); !ok {
+				log.Printf("Warning: process responder disabled: finding store %T cannot record responses", sink)
+			} else if responderIncus, ierr := incus.New(); ierr != nil {
+				log.Printf("Warning: process responder disabled: incus client: %v", ierr)
+			} else {
+				processResponder = NewProcessResponder(processPolicyStore, actionStore, lifecycle, incusActuator{c: responderIncus}, auditStore, responderDegraded)
+				sink = NewActingSink(sink, processResponder)
+				if responderDegraded {
+					log.Printf("Process responder enabled — DEGRADED (no persistence): responses disabled, ALERT only")
+				} else {
+					log.Printf("Process responder enabled (policy via `containarium security process-policy`)")
+				}
+			}
+
+		}
+		if sink != nil && networkPolicyEnforcer != nil {
 			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
@@ -2349,6 +2411,11 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
+	threatDetectServer.SetProcessResponder(processResponder)
+	if threatCfg.SentryEnabled && healthStore == nil {
+		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
+	}
 
 	// Box sshd posture reconciler (#2424): keeps every running box's sshd
 	// key-only by re-asserting the managed drop-in and recording tampering
@@ -2383,8 +2450,8 @@ skipAppHosting:
 	}
 	// Mining-behavior rule (#2635): sustained CPU plus a long-lived flow to a
 	// stratum port or a listed destination. CPU arrives from the metrics
-	// collector's tick (CPUSampler, wired where the collector starts), so the
-	// rule stays inert on a daemon without VictoriaMetrics. Thresholds are
+	// collector's tick, or from a standalone Incus-polling ticker where no
+	// collector runs (#2645; both wired in Start via wireCPUSampler). Thresholds are
 	// persisted under threatdetect.MiningThresholdsConfigKey.
 	if threatDetectEngine != nil {
 		var kv threatdetect.ConfigKV
@@ -2397,6 +2464,7 @@ skipAppHosting:
 			miningCfg, _ = threatdetect.NewMiningThresholdsConfig(context.Background(), nil)
 		}
 		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
+		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
@@ -2943,8 +3011,11 @@ skipAppHosting:
 		startTime:              time.Now(),
 		sandboxServer:          sandboxServer,
 		threatDetectEngine:     threatDetectEngine,
+		processResponder:       processResponder,
 		threatDetectServer:     threatDetectServer,
 		threatDetectNotifier:   threatDetectNotifier,
+		sentryHealthStore:      healthStore,
+		threatSentryArmed:      threatCfg.SentryEnabled,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -3129,9 +3200,9 @@ const defaultAuditAnchorPath = "/var/lib/containarium/audit-anchors.jsonl"
 // rules on a fixed tick, separate from ctx so it can be stopped independent
 // of the daemon's own shutdown (Stop() cancels it via threatDetectSweepStop
 // before the rest of teardown runs). Only called once the enforcer this
-// engine is hooked into has actually started. Also starts the webhook
-// notifier's delivery worker (#1643) on the same lifecycle — both only make
-// sense once the engine they're downstream of is actually running.
+// engine is hooked into has actually started. The webhook notifier (#1643)
+// is started separately by startSentryHealth: it must deliver the
+// sentry-health loop's findings (#2634) even when the engine never runs.
 func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithCancel(ctx)
 	ds.threatDetectSweepStop = cancel
@@ -3148,8 +3219,30 @@ func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// startSentryHealth starts the webhook notifier's delivery worker (#1643)
+// and, on an armed backend with a finding store, the sentry-health loop
+// (#2634). Called after the enforcer start attempt so the loop's first,
+// immediate check already sees an enforcer that failed to start.
+func (ds *DualServer) startSentryHealth(ctx context.Context) {
+	healthCtx, cancel := context.WithCancel(ctx)
+	ds.sentryHealthStop = cancel
 	if ds.threatDetectNotifier != nil {
-		ds.threatDetectNotifier.Start(sweepCtx)
+		ds.threatDetectNotifier.Start(healthCtx)
+	}
+	if ds.threatDetectServer == nil {
+		return
+	}
+	backendID := func() string {
+		if ds.peerPool == nil {
+			return ""
+		}
+		return ds.peerPool.LocalBackendID()
+	}
+	if h := newSentryHealthIfArmed(ds.threatSentryArmed, ds.threatDetectServer.sentryStatus, ds.sentryHealthStore, backendID); h != nil {
+		go h.Run(healthCtx)
+		log.Printf("Threat-detection sentry-health loop started (every %s)", sentryHealthInterval)
 	}
 }
 
@@ -3397,6 +3490,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.threatDetectEngine != nil {
 			ds.threatDetectEngine.SetBackendID(ds.peerPool.LocalBackendID())
 		}
+		if ds.processResponder != nil {
+			ds.processResponder.SetBackendID(ds.peerPool.LocalBackendID())
+		}
 		if ds.sshdPosture != nil {
 			ds.sshdPosture.SetBackendID(ds.peerPool.LocalBackendID())
 		}
@@ -3624,11 +3720,25 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				Collector: ds.trafficCollector,
 			})
 		}
-		// Feed per-container CPU to the threat-detection engine
-		// (mining-behavior rule, #2635) from this same tick.
-		if ds.threatDetectEngine != nil {
-			ds.metricsCollector.SetCPUHook(NewCPUSampler(ds.threatDetectEngine.OnCPU).Observe)
+	}
+	// Feed per-container CPU to the threat-detection engine (mining-behavior
+	// rule, #2635): from the metrics collector's tick when it runs, else from
+	// a standalone Incus-polling ticker (#2645) — never both. Wired before
+	// the collector starts so its first tick already carries the hook.
+	if ds.threatDetectEngine != nil {
+		var collector cpuHookTarget
+		if ds.metricsCollector != nil {
+			collector = ds.metricsCollector
 		}
+		cpuStatus := wireCPUSampler(ctx, ds.threatDetectEngine.OnCPU, collector,
+			func() (cpuMetricsSource, error) { return incus.New() },
+			newTimeTicker)
+		log.Printf("Threat-detection CPU sampler: %s", cpuStatus)
+		if ds.threatDetectServer != nil {
+			ds.threatDetectServer.SetCPUSamplerStatus(cpuStatus)
+		}
+	}
+	if ds.metricsCollector != nil {
 		ds.metricsCollector.Start()
 	}
 
@@ -3639,6 +3749,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.k8sNetPolicyReconciler.Start(ctx)
 	}
 
+	if ds.processResponder != nil {
+		// TTL backstop for process actions (#2636): every 60s, release
+		// expired throttles/freezes and raise PROCESS_ACTION_EXPIRED.
+		go ds.processResponder.Run(ctx)
+	}
 	if ds.sshdPosture != nil {
 		ds.sshdPosture.Start(ctx)
 	}
@@ -3646,33 +3761,6 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
-
-		// Subscribe to container creation events to auto-scan new containers
-		go func() {
-			sub := events.GetBus().Subscribe(&pb.SubscribeEventsRequest{
-				ResourceTypes: []pb.ResourceType{pb.ResourceType_RESOURCE_TYPE_CONTAINER},
-			})
-			defer events.GetBus().Unsubscribe(sub.ID)
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case event, ok := <-sub.Events:
-					if !ok {
-						return
-					}
-					if event.Type == pb.EventType_EVENT_TYPE_CONTAINER_CREATED {
-						if ce := event.GetContainerEvent(); ce != nil && ce.Container != nil {
-							name := ce.Container.Name
-							// Skip core containers
-							if !strings.HasPrefix(name, "containarium-core-") {
-								ds.securityScanner.EnqueueNewContainer(name)
-							}
-						}
-					}
-				}
-			}
-		}()
 	}
 
 	// Start pentest manager if available
@@ -3796,6 +3884,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Sentry-health loop + finding webhook delivery (#2634, #1643): after the
+	// enforcer block so a failed enforcer start is already reflected in
+	// GetSentryStatus when the loop's first check runs.
+	ds.startSentryHealth(ctx)
 
 	// Tier 3 PR-1 (#662): the WAF steering proxy. OFF by default — only starts
 	// when CONTAINARIUM_WAF_TPROXY_ADDR is set, and steering needs an
@@ -3998,6 +4091,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.threatDetectSweepStop != nil {
 			ds.threatDetectSweepStop()
+		}
+		if ds.sentryHealthStop != nil {
+			ds.sentryHealthStop()
 		}
 		if ds.k8sNetPolicyReconciler != nil {
 			ds.k8sNetPolicyReconciler.Stop()

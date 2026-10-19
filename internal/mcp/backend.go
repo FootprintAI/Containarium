@@ -106,6 +106,11 @@ type API interface {
 	// Threat-detection sentry (#1640).
 	GetSentryStatus() (*SentryStatusResponse, error)
 
+	// Process policy (#2636, #2666): what a HIGH mining finding does to its box.
+	GetProcessPolicy(container string) (*pb.GetProcessPolicyResponse, error)
+	SetProcessPolicy(req *pb.SetProcessPolicyRequest) (*pb.SetProcessPolicyResponse, error)
+	ReleaseProcessAction(container string) (*pb.ReleaseProcessActionResponse, error)
+
 	// Bridge DNS record status (#2188).
 	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
 
@@ -156,6 +161,9 @@ type API interface {
 	// security container. Host-level — a daemon manages exactly one
 	// security container, so there's no per-tenant scoping.
 	InstallZap() (*InstallZapResponse, error)
+	// InstallClamav installs ClamAV and its signatures inside one box so the
+	// tenant-run malware scan can run (#2659).
+	InstallClamav(containerName string) (*InstallClamavResponse, error)
 
 	// Transport-level escape hatches used by handlers that issue a raw
 	// request (compose, move, connect) or need the effective token (scope
@@ -220,12 +228,33 @@ func (cloudClient) InstallZap() (*InstallZapResponse, error) {
 	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
 }
 
+func (cloudClient) InstallClamav(string) (*InstallClamavResponse, error) {
+	return nil, errUnsupportedOnCloud("install_clamav", "run this against the box owner's own daemon")
+}
+
 func (cloudClient) SetMetricsExport(bool, string, []string) (*SetMetricsExportResponse, error) {
 	return nil, errUnsupportedOnCloud("set_metrics_export", "the credential probe is specific to a BYOC host; run this against the host's own daemon")
 }
 
 func (cloudClient) GetMetricsExport() (*GetMetricsExportResponse, error) {
 	return nil, errUnsupportedOnCloud("get_metrics_export", "")
+}
+
+// KMS is platform-wide and managed per OSS daemon; the control plane
+// deliberately does not proxy it (cloud#2679), so answer client-side instead
+// of a round-trip that can only return 501.
+const kmsCloudAlt = "run `containarium kms status|envelope-coverage` on the OSS daemon's own host"
+
+func (cloudClient) GetKMSStatus() (*KMSStatusResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_status", kmsCloudAlt)
+}
+
+func (cloudClient) GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_envelope_coverage", kmsCloudAlt)
+}
+
+func (cloudClient) MigrateToEnvelope(MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_migrate_to_envelope", "run `containarium kms migrate-to-envelope` on the OSS daemon's own host")
 }
 
 // newBackend builds the API the handlers use, classifying the target from the

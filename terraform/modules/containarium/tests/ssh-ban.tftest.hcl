@@ -40,3 +40,20 @@ run "invalid_prefix" {
   variables { ssh_ban_ignore_cidrs = ["192.0.2.4/32 --control-socket=/tmp/evil"] }
   expect_failures = [var.ssh_ban_ignore_cidrs]
 }
+
+run "ssh_authz_audit_only_by_default" {
+  command = plan
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "ssh-authz-plugin") && !strcontains(local.sshpiper_service_unit, "--ssh-authz-enforce")
+    error_message = "The tenant listener must stay audit-only unless enforcement is requested."
+  }
+}
+
+run "ssh_authz_enforce" {
+  command = plan
+  variables { ssh_authz_enforce = true }
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "--ssh-authz-enforce \\\n  --records-file /var/log/containarium/ssh-sessions.jsonl \\\n  -- \\\n  /usr/local/bin/containarium sentinel ssh-session-plugin")
+    error_message = "Enforcement must be passed to ssh-authz-plugin, with its denied-record sink, before the session plugin."
+  }
+}

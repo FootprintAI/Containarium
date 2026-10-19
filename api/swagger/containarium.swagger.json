@@ -6781,6 +6781,40 @@
         ]
       }
     },
+    "/v1/security/clamav-install": {
+      "post": {
+        "summary": "Install ClamAV in a box",
+        "description": "Installs ClamAV and its signatures inside the named box so the tenant-run scan can run. Idempotent. Requires a box with at least 4 GB RAM.",
+        "operationId": "SecurityService_InstallClamav",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/InstallClamavResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/InstallClamavRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -7011,6 +7045,105 @@
             "required": true,
             "type": "string",
             "format": "int64"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/process-policy": {
+      "get": {
+        "summary": "Get the process policy",
+        "description": "Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.",
+        "operationId": "ThreatDetectionService_GetProcessPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetProcessPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "container",
+            "description": "Empty reads the backend default; a container name reads that\ncontainer's override (policy is unset when none is stored).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      },
+      "put": {
+        "summary": "Set the process policy",
+        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.",
+        "operationId": "ThreatDetectionService_SetProcessPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetProcessPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetProcessPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/process-policy/release": {
+      "post": {
+        "summary": "Release a process action",
+        "description": "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.",
+        "operationId": "ThreatDetectionService_ReleaseProcessAction",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReleaseProcessActionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ReleaseProcessActionRequest"
+            }
           }
         ],
         "tags": [
@@ -10886,6 +11019,19 @@
       },
       "title": "ClamavContainerSummary provides per-container scan summary"
     },
+    "ClamavInstallOutcome": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+        "CLAMAV_INSTALL_OUTCOME_INSTALLED",
+        "CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE",
+        "CLAMAV_INSTALL_OUTCOME_FAILED"
+      ],
+      "default": "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+      "description": "ClamavInstallOutcome is the result of installing ClamAV inside a box (#2631).\n\n - CLAMAV_INSTALL_OUTCOME_INSTALLED: ClamAV and its signatures were installed.\n - CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT: Already present: nothing was run.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY: The box's OS family is not supported by this command; install manually.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB).\n - CLAMAV_INSTALL_OUTCOME_FAILED: The install ran and failed, or the box could not be reached."
+    },
     "ClamavReport": {
       "type": "object",
       "properties": {
@@ -10904,7 +11050,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Scan status: \"clean\" or \"infected\""
+          "description": "Scan status: \"clean\", \"infected\", \"incomplete\", \"unsupported_size\" or\n\"not_installed\" (see status_enum; a scan that could not finish is never\nreported clean, #2496). The verdict is produced by the scan running inside\nthe tenant's own box, so it is self-reported."
         },
         "findingsCount": {
           "type": "integer",
@@ -10930,9 +11076,31 @@
         "backendId": {
           "type": "string",
           "title": "Backend ID identifying which node performed the scan"
+        },
+        "statusEnum": {
+          "$ref": "#/definitions/ClamavScanStatus",
+          "description": "Typed form of status (#2631). status stays populated for compatibility."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why a scan produced no verdict (status other than clean/infected); empty\notherwise. Never contains file paths."
         }
       },
       "title": "ClamavReport represents a single ClamAV scan result for a container"
+    },
+    "ClamavScanStatus": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+        "CLAMAV_SCAN_STATUS_CLEAN",
+        "CLAMAV_SCAN_STATUS_INFECTED",
+        "CLAMAV_SCAN_STATUS_INCOMPLETE",
+        "CLAMAV_SCAN_STATUS_NEVER_SCANNED",
+        "CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE",
+        "CLAMAV_SCAN_STATUS_NOT_INSTALLED"
+      ],
+      "default": "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+      "description": "ClamavScanStatus is the outcome of a tenant-run, in-box ClamAV scan (#2631).\nOnly a clamscan run that exits 0 with no findings is CLEAN, and even then the\nverdict is self-reported by the scan inside the tenant's own box.\n\n - CLAMAV_SCAN_STATUS_INCOMPLETE: The scan could not finish or could not be started (error, timeout, out of\nmemory, box not running). Never treated as clean.\n - CLAMAV_SCAN_STATUS_NEVER_SCANNED: No scan has ever been requested for the box: no platform assurance.\n - CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB); no scan was attempted.\n - CLAMAV_SCAN_STATUS_NOT_INSTALLED: ClamAV or its signatures are not installed in the box."
     },
     "CleanupDiskBody": {
       "type": "object",
@@ -13255,9 +13423,50 @@
         "lastSeen": {
           "type": "string",
           "format": "date-time"
+        },
+        "response": {
+          "$ref": "#/definitions/FindingResponse",
+          "description": "What the process responder (#2636) did about this finding, if anything.\nUnset for findings no policy acts on."
         }
       },
       "description": "Finding is a single security finding raised by the threat-detection\nengine: an open or resolved instance of a rule firing for one tenant."
+    },
+    "FindingResponse": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/ProcessAction"
+        },
+        "state": {
+          "$ref": "#/definitions/ResponseState"
+        },
+        "processKilled": {
+          "type": "boolean",
+          "description": "Reserved for the signature rule's additive kill (#2638)."
+        },
+        "appliedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the TTL backstop will release the action if no operator does."
+        },
+        "releasedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "releasedBy": {
+          "type": "string",
+          "description": "\"operator\" or \"ttl\"; empty while the action is in effect."
+        },
+        "error": {
+          "type": "string",
+          "description": "Incus error text when state is FAILED."
+        }
+      },
+      "description": "FindingResponse records what the process responder did about a finding\nand when, so the finding itself tells the operator whether a box is\ncurrently throttled or frozen because of it."
     },
     "FindingState": {
       "type": "string",
@@ -13624,7 +13833,8 @@
           "type": "string",
           "title": "When the summary was last collected"
         }
-      }
+      },
+      "description": "Counts are self-reported: the scan runs inside each tenant's own box (#2631),\nso a compromised box can report \"clean\". Treat them as a tenant-visible\nsignal, not as platform assurance."
     },
     "GetClusterKubeconfigResponse": {
       "type": "object",
@@ -13971,6 +14181,23 @@
         }
       }
     },
+    "GetProcessPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/ProcessPolicy",
+          "description": "The policy stored at the requested level, unset if none is stored."
+        },
+        "isOverride": {
+          "type": "boolean",
+          "description": "True when `container` was given and an override is stored for it."
+        },
+        "effective": {
+          "$ref": "#/definitions/ProcessPolicy",
+          "description": "The fully-resolved policy the responder would apply at that level."
+        }
+      }
+    },
     "GetRecipeResponse": {
       "type": "object",
       "properties": {
@@ -14114,7 +14341,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE/\nDEGRADED, and also set while the state is OK but a rule is unhealthy\n(\"rule \u003cRULE\u003e unhealthy: \u003clast_error\u003e\"). The sentry-health loop (#2634)\nuses this exact string as the SENTRY_UNAVAILABLE finding's subject."
         },
         "rules": {
           "type": "array",
@@ -14122,6 +14349,10 @@
             "type": "object",
             "$ref": "#/definitions/RuleStatus"
           }
+        },
+        "cpuSampler": {
+          "type": "string",
+          "description": "Source of the per-container CPU samples the mining-behavior rule reads\n(#2645): \"metrics-collector\" (hook on the metrics collector's tick),\n\"standalone (30s)\" (the sentry polls Incus itself because no metrics\ncollector runs), or \"unavailable (\u003creason\u003e)\". Set only while the\nsentry is running (OK/DEGRADED)."
         }
       }
     },
@@ -14841,6 +15072,27 @@
         "duplicates": {
           "type": "integer",
           "format": "int32"
+        }
+      }
+    },
+    "InstallClamavRequest": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "description": "Box to install ClamAV into. Required."
+        }
+      }
+    },
+    "InstallClamavResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/ClamavInstallOutcome"
+        },
+        "message": {
+          "type": "string",
+          "description": "Short human-readable result. Never contains package-manager output or paths."
         }
       }
     },
@@ -15643,6 +15895,38 @@
           }
         }
       }
+    },
+    "MiningBehaviorThresholds": {
+      "type": "object",
+      "properties": {
+        "minCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Absolute CPU bar in cores [1.5]. The effective bar is\nmin(min_cores, min_fraction_of_limit x the box's limits.cpu); a box with\nno CPU limit uses min_cores alone."
+        },
+        "window": {
+          "type": "string",
+          "description": "Window the CPU mean is taken over [5m]."
+        },
+        "flowMinAge": {
+          "type": "string",
+          "description": "Minimum age of a qualifying flow, seen within the window [3m]."
+        },
+        "stratumPorts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "Destination ports treated as stratum (mining pool) ports\n[3333, 4444, 5555, 7777, 14444, 14433]."
+        },
+        "minFractionOfLimit": {
+          "type": "number",
+          "format": "double",
+          "description": "Fraction of the box's CPU limit that also trips the bar [0.75]."
+        }
+      },
+      "description": "MiningBehaviorThresholds tunes the mining-behavior rule (#2635). Persisted\nas protojson in the daemon config store under\n\"threatdetect.mining_behavior.thresholds\". A zero or empty field means\n\"use the default\" (in brackets below)."
     },
     "MintGatewayTokenRequest": {
       "type": "object",
@@ -16515,6 +16799,38 @@
       },
       "description": "PrepareEncryptedMigrationResponse tells the source whether to proceed,\nand where to put the container if so."
     },
+    "ProcessAction": {
+      "type": "string",
+      "enum": [
+        "PROCESS_ACTION_UNSPECIFIED",
+        "PROCESS_ACTION_ALERT",
+        "PROCESS_ACTION_THROTTLE",
+        "PROCESS_ACTION_FREEZE"
+      ],
+      "default": "PROCESS_ACTION_UNSPECIFIED",
+      "description": "ProcessAction is what a HIGH mining finding does to its container (#2636).\nEvery action is reversible with ReleaseProcessAction; none destroys data.\n\n - PROCESS_ACTION_ALERT: Record the finding, notify, do nothing to the container. The default.\n - PROCESS_ACTION_THROTTLE: Record the box's current limits.cpu / limits.cpu.allowance, then set\nlimits.cpu.allowance to ProcessPolicy.throttle_allowance.\n - PROCESS_ACTION_FREEZE: Pause the instance through Incus (cgroup freezer): memory and disk kept,\nno process runs until released."
+    },
+    "ProcessPolicy": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/ProcessAction"
+        },
+        "throttleAllowance": {
+          "type": "string",
+          "description": "limits.cpu.allowance applied by THROTTLE: an Incus allowance such as\n\"10%\" (share under contention) or \"10ms/100ms\" (hard CFS quota).\nDefault \"10%\"."
+        },
+        "ttl": {
+          "type": "string",
+          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h.\n\nField 4 is kill_process (signature rule, #2638); it is assigned there.\n Do not reuse the number."
+        },
+        "miningBehavior": {
+          "$ref": "#/definitions/MiningBehaviorThresholds",
+          "description": "Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured\nonly on the backend default (container empty), rejected on a container\noverride. Unset on Set leaves the stored thresholds untouched."
+        }
+      },
+      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h}. Empty fields inherit from the next level down."
+    },
     "ProfileBackendRequest": {
       "type": "object",
       "properties": {
@@ -16931,6 +17247,23 @@
         }
       }
     },
+    "ReleaseProcessActionRequest": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        }
+      }
+    },
+    "ReleaseProcessActionResponse": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding",
+          "description": "The finding the action belonged to, now resolved with its response in\nstate RELEASED."
+        }
+      }
+    },
     "RemediatePentestFindingBody": {
       "type": "object",
       "description": "RemediatePentestFindingRequest requests remediation of a Trivy finding by\nupgrading the OS package that contains the vulnerable binary."
@@ -17181,6 +17514,19 @@
       "default": "RESOURCE_TYPE_UNSPECIFIED",
       "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
       "title": "ResourceType identifies which resource type an event pertains to"
+    },
+    "ResponseState": {
+      "type": "string",
+      "enum": [
+        "RESPONSE_STATE_UNSPECIFIED",
+        "RESPONSE_STATE_NONE",
+        "RESPONSE_STATE_APPLIED",
+        "RESPONSE_STATE_FAILED",
+        "RESPONSE_STATE_RELEASED",
+        "RESPONSE_STATE_EXPIRED"
+      ],
+      "default": "RESPONSE_STATE_UNSPECIFIED",
+      "description": "ResponseState is the lifecycle of one FindingResponse.\n\n - RESPONSE_STATE_NONE: The policy was ALERT: nothing was done to the container.\n - RESPONSE_STATE_APPLIED: The action is in effect.\n - RESPONSE_STATE_FAILED: Incus refused the action; `error` says why. The responder does not retry\n— the rule's next sweep re-fires the finding, which is the retry.\n - RESPONSE_STATE_RELEASED: An operator released the action (ReleaseProcessAction).\n - RESPONSE_STATE_EXPIRED: The TTL backstop released the action with no operator decision."
     },
     "RestartAppBody": {
       "type": "object",
@@ -18333,6 +18679,30 @@
         }
       }
     },
+    "SetProcessPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string",
+          "description": "Empty sets the backend default; a container name sets that container's\noverride."
+        },
+        "policy": {
+          "$ref": "#/definitions/ProcessPolicy"
+        },
+        "clearOverride": {
+          "type": "boolean",
+          "description": "With `container` set, removes the override instead of writing one."
+        }
+      }
+    },
+    "SetProcessPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "effective": {
+          "$ref": "#/definitions/ProcessPolicy"
+        }
+      }
+    },
     "SetSecretRequest": {
       "type": "object",
       "properties": {
@@ -19162,10 +19532,12 @@
         "THREAT_RULE_ID_DENY_BURST",
         "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
         "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
-        "THREAT_RULE_ID_MINING_BEHAVIOR"
+        "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
+        "THREAT_RULE_ID_MINING_BEHAVIOR",
+        "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are\nassigned by their own stories.\n\nA process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
     },
     "ThreatSeverity": {
       "type": "string",
@@ -19620,7 +19992,7 @@
       "properties": {
         "containerName": {
           "type": "string",
-          "title": "Container name to scan (empty = scan all running user containers)"
+          "description": "Container name to scan. Required: the platform no longer scans every box\n(#2631); a scan is started per box by its owner."
         }
       }
     },

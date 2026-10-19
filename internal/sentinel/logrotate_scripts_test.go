@@ -21,9 +21,10 @@ var sentinelScripts = []struct {
 	name         string
 	path         string
 	retentionRef string // how `rotate <N>` references the configurable retention
+	authzHUP     bool   // the unit can run ssh-authz-plugin in enforce mode
 }{
-	{"module", "../../terraform/modules/containarium/scripts/startup-sentinel.sh", "${ssh_session_log_retention_days}"},
-	{"gce", "../../terraform/gce/scripts/startup-sentinel.sh", "$SSH_SESSION_LOG_RETENTION_DAYS"},
+	{"module", "../../terraform/modules/containarium/scripts/startup-sentinel.sh", "${ssh_session_log_retention_days}", true},
+	{"gce", "../../terraform/gce/scripts/startup-sentinel.sh", "$SSH_SESSION_LOG_RETENTION_DAYS", false},
 }
 
 func stanzaOf(t *testing.T, script string) string {
@@ -55,16 +56,50 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 				"postrotate", "endscript",
 				// Anchored: sshpiperd's own command line CONTAINS the plugin's,
 				// and it must not receive the SIGHUP.
-				"pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'",
+				"pkill -HUP -f '" + sessionReopenPattern + "'",
 			} {
 				if !strings.Contains(st, want) {
 					t.Errorf("stanza missing %q:\n%s", want, st)
 				}
 			}
+			// An enforce-mode ssh-authz-plugin appends denials to the sink
+			// (#2520). Only that one is signalled: a pre-enforce plugin
+			// exits on SIGHUP and takes sshpiperd down with it.
+			authzHUP := "pkill -HUP -f '" + authzReopenPattern + "'"
+			if got := strings.Contains(st, authzHUP); got != sc.authzHUP {
+				t.Errorf("stanza contains %q = %v, want %v:\n%s", authzHUP, got, sc.authzHUP, st)
+			}
+			if n := strings.Count(st, "pkill"); n != map[bool]int{false: 1, true: 2}[sc.authzHUP] {
+				t.Errorf("stanza has %d pkill lines; an unexpected one may signal a plugin that exits on SIGHUP:\n%s", n, st)
+			}
 			if strings.Contains(st, "copytruncate") {
 				t.Errorf("copytruncate loses records written between copy and truncate and breaks the shipper's inode tracking:\n%s", st)
 			}
 		})
+	}
+}
+
+const (
+	sessionReopenPattern = "^/usr/local/bin/containariumd? sentinel ssh-session-plugin"
+	authzReopenPattern   = "^/usr/local/bin/containariumd? sentinel ssh-authz-plugin .*--ssh-authz-enforce"
+)
+
+func TestSentinelScripts_ReopenPatternsTargetOnlyTheSinkWriters(t *testing.T) {
+	session := regexp.MustCompile(sessionReopenPattern)
+	authz := regexp.MustCompile(authzReopenPattern)
+	for cmdline, want := range map[string]struct{ session, authz bool }{
+		"/usr/local/bin/containariumd sentinel ssh-session-plugin --records-file " + sinkPath:                                            {true, false},
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-grace 5m --ssh-authz-enforce --records-file " + sinkPath:     {false, true},
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-socket /run/containarium/sentinel.sock --ssh-authz-grace 5m": {false, false},
+		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce":  {false, false},
+		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main":                                                           {false, false},
+	} {
+		if got := session.MatchString(cmdline); got != want.session {
+			t.Errorf("session pattern on %q = %v, want %v", cmdline, got, want.session)
+		}
+		if got := authz.MatchString(cmdline); got != want.authz {
+			t.Errorf("authz pattern on %q = %v, want %v", cmdline, got, want.authz)
+		}
 	}
 }
 

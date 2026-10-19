@@ -25,6 +25,9 @@ const (
 	ThreatDetectionService_RemoveBadDestination_FullMethodName = "/containarium.v1.ThreatDetectionService/RemoveBadDestination"
 	ThreatDetectionService_ListFindings_FullMethodName         = "/containarium.v1.ThreatDetectionService/ListFindings"
 	ThreatDetectionService_ResolveFinding_FullMethodName       = "/containarium.v1.ThreatDetectionService/ResolveFinding"
+	ThreatDetectionService_GetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/GetProcessPolicy"
+	ThreatDetectionService_SetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/SetProcessPolicy"
+	ThreatDetectionService_ReleaseProcessAction_FullMethodName = "/containarium.v1.ThreatDetectionService/ReleaseProcessAction"
 )
 
 // ThreatDetectionServiceClient is the client API for ThreatDetectionService service.
@@ -58,6 +61,17 @@ type ThreatDetectionServiceClient interface {
 	// ResolveFinding transitions an open finding to resolved. Fails if the
 	// finding is already resolved or doesn't exist.
 	ResolveFinding(ctx context.Context, in *ResolveFindingRequest, opts ...grpc.CallOption) (*ResolveFindingResponse, error)
+	// GetProcessPolicy returns the process policy stored at one level (backend
+	// default, or one container's override) and the effective policy the
+	// responder applies there (#2636).
+	GetProcessPolicy(ctx context.Context, in *GetProcessPolicyRequest, opts ...grpc.CallOption) (*GetProcessPolicyResponse, error)
+	// SetProcessPolicy writes the backend default, or one container's
+	// override (clear_override removes it). Admin-only: the policy decides
+	// what happens to a tenant's box.
+	SetProcessPolicy(ctx context.Context, in *SetProcessPolicyRequest, opts ...grpc.CallOption) (*SetProcessPolicyResponse, error)
+	// ReleaseProcessAction undoes the open action on a container: restores the
+	// recorded CPU limit or unfreezes it, and resolves the finding.
+	ReleaseProcessAction(ctx context.Context, in *ReleaseProcessActionRequest, opts ...grpc.CallOption) (*ReleaseProcessActionResponse, error)
 }
 
 type threatDetectionServiceClient struct {
@@ -128,6 +142,36 @@ func (c *threatDetectionServiceClient) ResolveFinding(ctx context.Context, in *R
 	return out, nil
 }
 
+func (c *threatDetectionServiceClient) GetProcessPolicy(ctx context.Context, in *GetProcessPolicyRequest, opts ...grpc.CallOption) (*GetProcessPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProcessPolicyResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_GetProcessPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) SetProcessPolicy(ctx context.Context, in *SetProcessPolicyRequest, opts ...grpc.CallOption) (*SetProcessPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetProcessPolicyResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_SetProcessPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) ReleaseProcessAction(ctx context.Context, in *ReleaseProcessActionRequest, opts ...grpc.CallOption) (*ReleaseProcessActionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseProcessActionResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_ReleaseProcessAction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ThreatDetectionServiceServer is the server API for ThreatDetectionService service.
 // All implementations must embed UnimplementedThreatDetectionServiceServer
 // for forward compatibility.
@@ -159,6 +203,17 @@ type ThreatDetectionServiceServer interface {
 	// ResolveFinding transitions an open finding to resolved. Fails if the
 	// finding is already resolved or doesn't exist.
 	ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error)
+	// GetProcessPolicy returns the process policy stored at one level (backend
+	// default, or one container's override) and the effective policy the
+	// responder applies there (#2636).
+	GetProcessPolicy(context.Context, *GetProcessPolicyRequest) (*GetProcessPolicyResponse, error)
+	// SetProcessPolicy writes the backend default, or one container's
+	// override (clear_override removes it). Admin-only: the policy decides
+	// what happens to a tenant's box.
+	SetProcessPolicy(context.Context, *SetProcessPolicyRequest) (*SetProcessPolicyResponse, error)
+	// ReleaseProcessAction undoes the open action on a container: restores the
+	// recorded CPU limit or unfreezes it, and resolves the finding.
+	ReleaseProcessAction(context.Context, *ReleaseProcessActionRequest) (*ReleaseProcessActionResponse, error)
 	mustEmbedUnimplementedThreatDetectionServiceServer()
 }
 
@@ -186,6 +241,15 @@ func (UnimplementedThreatDetectionServiceServer) ListFindings(context.Context, *
 }
 func (UnimplementedThreatDetectionServiceServer) ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveFinding not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) GetProcessPolicy(context.Context, *GetProcessPolicyRequest) (*GetProcessPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProcessPolicy not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) SetProcessPolicy(context.Context, *SetProcessPolicyRequest) (*SetProcessPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetProcessPolicy not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) ReleaseProcessAction(context.Context, *ReleaseProcessActionRequest) (*ReleaseProcessActionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseProcessAction not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) mustEmbedUnimplementedThreatDetectionServiceServer() {
 }
@@ -317,6 +381,60 @@ func _ThreatDetectionService_ResolveFinding_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ThreatDetectionService_GetProcessPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProcessPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).GetProcessPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_GetProcessPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).GetProcessPolicy(ctx, req.(*GetProcessPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_SetProcessPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProcessPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).SetProcessPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_SetProcessPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).SetProcessPolicy(ctx, req.(*SetProcessPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_ReleaseProcessAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseProcessActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).ReleaseProcessAction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_ReleaseProcessAction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).ReleaseProcessAction(ctx, req.(*ReleaseProcessActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ThreatDetectionService_ServiceDesc is the grpc.ServiceDesc for ThreatDetectionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -347,6 +465,18 @@ var ThreatDetectionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveFinding",
 			Handler:    _ThreatDetectionService_ResolveFinding_Handler,
+		},
+		{
+			MethodName: "GetProcessPolicy",
+			Handler:    _ThreatDetectionService_GetProcessPolicy_Handler,
+		},
+		{
+			MethodName: "SetProcessPolicy",
+			Handler:    _ThreatDetectionService_SetProcessPolicy_Handler,
+		},
+		{
+			MethodName: "ReleaseProcessAction",
+			Handler:    _ThreatDetectionService_ReleaseProcessAction_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

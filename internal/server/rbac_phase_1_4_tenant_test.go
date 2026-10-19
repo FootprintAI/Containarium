@@ -137,10 +137,17 @@ func TestTenantGates_AdminPasses_Blank(t *testing.T) {
 		_, e := srv.ListClamavReports(ctx, &pb.ListClamavReportsRequest{})
 		return e
 	})
-	mustPass(t, "TriggerClamavScan blank", func() error {
-		_, e := srv.TriggerClamavScan(ctx, &pb.TriggerClamavScanRequest{})
-		return e
-	})
+}
+
+// #2631: scan-all is gone. A blank container_name is InvalidArgument for an
+// admin (and PermissionDenied for a tenant, see TestTriggerClamavScan_
+// RejectsTenantBlankName), never "scan every box".
+func TestTriggerClamavScan_AdminBlankNameIsInvalidArgument(t *testing.T) {
+	srv := &SecurityServer{}
+	_, err := srv.TriggerClamavScan(adminCtx(), &pb.TriggerClamavScanRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v want InvalidArgument (scan-all removed)", err)
+	}
 }
 
 func TestTenantGates_AdminPasses_CrossTenant(t *testing.T) {
@@ -245,4 +252,22 @@ func TestEgressProxy_AdminPassesCrossTenant(t *testing.T) {
 		_, e := srv.StopEgressProxy(ctx, &pb.StopEgressProxyRequest{ContainerName: "alice-container"})
 		return e
 	})
+}
+
+// #2659: InstallClamav is authorized like the per-box scan trigger.
+func TestInstallClamav_Authz(t *testing.T) {
+	srv := &SecurityServer{}
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{ContainerName: "bob-container"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other tenant: got %v want PermissionDenied", err)
+	}
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant blank name: got %v want PermissionDenied", err)
+	}
+	if _, err := srv.InstallClamav(adminCtx(), &pb.InstallClamavRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("admin blank name: got %v want InvalidArgument", err)
+	}
+	// Owner passes the gate; with no runtime it then reports Unavailable, not PermissionDenied.
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{ContainerName: "alice-container"}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("owner: got %v want Unavailable (past the gate)", err)
+	}
 }

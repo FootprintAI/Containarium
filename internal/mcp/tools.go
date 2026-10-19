@@ -830,7 +830,7 @@ func (s *Server) registerTools() {
 				"on the daemon; this tool returns once the trigger is accepted. After waiting " +
 				"(see `pollHint` in the response), call `security_findings` to read results.\n\n" +
 				"Typical durations:\n" +
-				"  - clamav: seconds (file walk + signature match)\n" +
+				"  - clamav: minutes; runs inside the box (needs 4 GB RAM and ClamAV installed there), started by the box owner\n" +
 				"  - pentest: tens of seconds (per-target probe)\n" +
 				"  - zap: minutes (active spider + attack passes)\n\n" +
 				"For continuous/scheduled scanning, the cloud product offers a hosted " +
@@ -1063,6 +1063,27 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{},
 			},
 			Handler: handleInstallZap,
+		},
+		{
+			Name: "install_clamav",
+			Description: "Install ClamAV and its signatures inside ONE box so the tenant-run malware scan " +
+				"(`security_scan` with kind=clamav) can run. Started by the box owner; the platform " +
+				"runs the package install in the box and does not read the box's files.\n\n" +
+				"Requires a running Debian/Ubuntu box with at least 4 GB RAM and outbound access to the " +
+				"package mirror and the ClamAV signature servers. Idempotent: an already-installed box " +
+				"runs nothing and reports ALREADY_PRESENT. Other OS families report UNSUPPORTED_FAMILY. " +
+				"Can take several minutes.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"container_name": map[string]interface{}{
+						"type":        "string",
+						"description": "The box to install into, e.g. alice-container.",
+					},
+				},
+				"required": []string{"container_name"},
+			},
+			Handler: handleInstallClamav,
 		},
 		{
 			Name: "sync_ssh_config",
@@ -1808,6 +1829,11 @@ func (s *Server) registerTools() {
 	// Guardrail policy read (#2368, guardrail_tools.go); no write tool.
 	s.tools = append(s.tools, guardrailTools()...)
 
+	// Process policy get/set/release (#2666, process_policy_tools.go) —
+	// thin wrappers over the routes `containarium security process-policy`
+	// also calls.
+	s.tools = append(s.tools, processPolicyTools()...)
+
 	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
 	// — thin wrappers over the TrackerService gateway that
 	// `containarium tracker issue/change ...` also calls.
@@ -1955,6 +1981,11 @@ func toolScopeAssignments() map[string]string {
 		// server-side guardrail policy (#2368): a read of security config,
 		// gated like security_findings. The write has no tool.
 		"guardrail_policy_get": auth.ScopeSecurityRead,
+		// process policy (#2666): get is a read, set/release change what the
+		// responder does to a box — same split as the bad-destination list.
+		"security_process_policy_get":     auth.ScopeSecurityRead,
+		"security_process_policy_set":     auth.ScopeSecurityWrite,
+		"security_process_policy_release": auth.ScopeSecurityWrite,
 		// security tools
 		"security_scan":          auth.ScopeSecurityWrite,
 		"security_remediate":     auth.ScopeSecurityWrite,
@@ -1975,6 +2006,9 @@ func toolScopeAssignments() map[string]string {
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.
 		"install_zap": auth.ScopeSecurityWrite,
+		// install_clamav runs a package install inside one box; the daemon
+		// authorizes the box owner.
+		"install_clamav": auth.ScopeSecurityWrite,
 		// developer-loop tools
 		"push":            auth.ScopeCodeWrite,
 		"sync":            auth.ScopeCodeWrite,

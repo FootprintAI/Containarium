@@ -36,7 +36,8 @@ container. Default --kind=all runs all three. Scans run asynchronously
 on the daemon; use 'security-findings' to read results.
 
 Typical durations:
-  - clamav: seconds
+  - clamav: minutes; runs INSIDE the box (needs 4 GB RAM and ClamAV installed
+    there, see the install command), started by the box owner only
   - pentest: tens of seconds
   - zap: minutes
 

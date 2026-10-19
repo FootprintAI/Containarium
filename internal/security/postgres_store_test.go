@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -340,5 +341,20 @@ func TestSecurityStore_SchemaInitIsRepeatable(t *testing.T) {
 	if total != 1 {
 		t.Errorf("the report did not survive a schema re-init — a restart would erase the "+
 			"malware-scan history (%d rows)", total)
+	}
+}
+
+// #2658: a second scan request for a box that already has one pending or
+// running is refused (ErrScanActive), not silently merged into it.
+func TestScanner_EnqueueOneRefusesWhileActive(t *testing.T) {
+	ctx := context.Background()
+	store, container := securityTestStore(t)
+	s := &Scanner{store: store}
+
+	if _, err := s.EnqueueOne(ctx, container, "alice"); err != nil {
+		t.Fatalf("first EnqueueOne: %v", err)
+	}
+	if _, err := s.EnqueueOne(ctx, container, "alice"); !errors.Is(err, ErrScanActive) {
+		t.Fatalf("second EnqueueOne = %v, want ErrScanActive", err)
 	}
 }

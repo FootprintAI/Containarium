@@ -54,8 +54,8 @@ func TestGetSentryStatus_Degraded(t *testing.T) {
 	if resp.State != pb.SentryState_SENTRY_STATE_DEGRADED {
 		t.Errorf("state = %v, want DEGRADED", resp.State)
 	}
-	if resp.Reason == "" {
-		t.Error("reason is empty, want an explanation of the missing persistence")
+	if resp.Reason != "DEGRADED (no persistence): responses disabled" {
+		t.Errorf("reason = %q, want the process-responder degraded line (#2636)", resp.Reason)
 	}
 }
 
@@ -374,4 +374,27 @@ func (r *fakeRule) OnDeny(threatdetect.RuleContext, netbpf.DenyEvent) []threatde
 }
 func (r *fakeRule) Sweep(threatdetect.RuleContext, time.Time) []threatdetect.RawFinding {
 	return nil
+}
+
+// TestGetSentryStatus_CPUSampler pins that the CPU sampler's source (#2645)
+// rides the status response when the sentry is running.
+func TestGetSentryStatus_CPUSampler(t *testing.T) {
+	for _, src := range []string{"", "metrics-collector", "standalone (30s)", "unavailable (incus client unavailable: x)"} {
+		engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", false, nil, nil)
+		s := NewThreatDetectionServer(engine, true, true, "")
+		if src != "" {
+			s.SetCPUSamplerStatus(src)
+		}
+		resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
+		if err != nil {
+			t.Fatalf("GetSentryStatus: %v", err)
+		}
+		want := src
+		if want == "" {
+			want = "unavailable (not started)"
+		}
+		if resp.CpuSampler != want {
+			t.Errorf("cpu_sampler = %q, want %q", resp.CpuSampler, want)
+		}
+	}
 }
