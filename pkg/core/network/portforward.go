@@ -130,7 +130,7 @@ func caddyPreRoutingRule(port int, caddyIP string) []string {
 
 // ensurePreRoutingRule adds a PREROUTING DNAT rule if it's not already present.
 func (pf *PortForwarder) ensurePreRoutingRule(port int) error {
-	check := exec.Command("iptables", append([]string{"-t", "nat", "-C"}, caddyPreRoutingRule(port, pf.caddyIP)...)...)
+	check := exec.Command("iptables", append([]string{"-t", "nat", "-C"}, caddyPreRoutingRule(port, pf.caddyIP)...)...) // #nosec G204 -- fixed rule spec; only the port and the daemon-resolved Caddy IP vary
 	if check.Run() == nil {
 		return nil
 	}
@@ -207,7 +207,7 @@ func EnableConntrackAccounting() error {
 // Containers still reach external HTTPS services (registries, Let's Encrypt)
 // because the rule only matches traffic addressed to this host.
 func (pf *PortForwarder) addPreRoutingRule(port int) error {
-	cmd := exec.Command("iptables", append([]string{"-t", "nat", "-A"}, caddyPreRoutingRule(port, pf.caddyIP)...)...)
+	cmd := exec.Command("iptables", append([]string{"-t", "nat", "-A"}, caddyPreRoutingRule(port, pf.caddyIP)...)...) // #nosec G204 -- fixed rule spec; only the port and the daemon-resolved Caddy IP vary
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iptables failed: %w, output: %s", err, string(output))
@@ -253,7 +253,7 @@ func (pf *PortForwarder) RemovePortForwarding() error {
 
 // removePreRoutingRule removes a PREROUTING DNAT rule
 func (pf *PortForwarder) removePreRoutingRule(port int) {
-	cmd := exec.Command("iptables", append([]string{"-t", "nat", "-D"}, caddyPreRoutingRule(port, pf.caddyIP)...)...)
+	cmd := exec.Command("iptables", append([]string{"-t", "nat", "-D"}, caddyPreRoutingRule(port, pf.caddyIP)...)...) // #nosec G204 -- fixed rule spec; only the port and the daemon-resolved Caddy IP vary
 	if err := cmd.Run(); err != nil {
 		log.Printf("  removePreRoutingRule: rule may not exist (ignored): %v", err)
 	}
