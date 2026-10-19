@@ -1,7 +1,9 @@
 package network
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -82,36 +84,165 @@ func TestCaddyPreRoutingRule_ScopedToLocalNoSourceExclusion(t *testing.T) {
 // On upgrade the pre-#2732 shape (`! -s <bridge>`) must be cleared even when
 // it still points at the current Caddy IP, or a host keeps both shapes.
 // Rules are in the order `iptables -t nat -S` actually prints them.
-func TestCaddyNATRulesToClear_LegacyShape(t *testing.T) {
+func TestLegacyCaddyPreRoutingRules(t *testing.T) {
 	save := `-A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
 -A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.111:443
 -A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
 -A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
 -A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 50051 -j DNAT --to-destination 10.0.3.150:50051
+-A PREROUTING ! -s 192.168.50.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
 -A OUTPUT -d 127.0.0.0/8 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
 -A POSTROUTING -d 10.0.3.50/32 -j MASQUERADE`
 
-	got := caddyNATRulesToClear(save, "10.0.3.50")
+	got := legacyCaddyPreRoutingRules(save, "10.0.3.0/24")
 
-	// The legacy :443 rule is also stale by IP; it must be deleted once, not
-	// twice (the second -D would fail and log a spurious warning).
+	// Both legacy 80/443 rules on our bridge subnet, whatever their target.
+	// Not the new shape, not the passthrough on 50051, and not a `! -s` rule
+	// for some other subnet (an operator's, not ours).
 	want := [][]string{
-		{"-t", "nat", "-D", "PREROUTING", "!", "-s", "10.0.3.0/24", "-p", "tcp", "-m", "tcp", "--dport", "443", "-j", "DNAT", "--to-destination", "10.0.3.111:443"},
 		{"-t", "nat", "-D", "PREROUTING", "!", "-s", "10.0.3.0/24", "-p", "tcp", "-m", "tcp", "--dport", "80", "-j", "DNAT", "--to-destination", "10.0.3.50:80"},
+		{"-t", "nat", "-D", "PREROUTING", "!", "-s", "10.0.3.0/24", "-p", "tcp", "-m", "tcp", "--dport", "443", "-j", "DNAT", "--to-destination", "10.0.3.111:443"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("caddyNATRulesToClear mismatch.\n got: %v\nwant: %v", got, want)
+		t.Errorf("legacyCaddyPreRoutingRules mismatch.\n got: %v\nwant: %v", got, want)
 	}
 }
 
 // A host already on the new shape has nothing to clear.
-func TestCaddyNATRulesToClear_NewShapeNoOp(t *testing.T) {
+func TestLegacyCaddyPreRoutingRules_NewShapeNoOp(t *testing.T) {
 	save := `-A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
 -A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
 -A OUTPUT -d 127.0.0.0/8 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
 -A POSTROUTING -d 10.0.3.50/32 -j MASQUERADE`
 
-	if got := caddyNATRulesToClear(save, "10.0.3.50"); len(got) != 0 {
+	if got := legacyCaddyPreRoutingRules(save, "10.0.3.0/24"); len(got) != 0 {
 		t.Errorf("expected nothing to clear on the new shape, got %v", got)
+	}
+}
+
+// fakeNAT is an in-memory nat table behind PortForwarder.ipt. It records
+// every call and, like iptables, fails -C/-D for a rule that is not there.
+type fakeNAT struct {
+	rules  []string // "<chain> <spec>", as `iptables -S` prints after "-A "
+	calls  []string // "<op> <chain> <spec>"
+	failOn string   // a call prefix that returns an error, e.g. "-A PREROUTING"
+}
+
+func (f *fakeNAT) ipt(args ...string) ([]byte, error) {
+	op, rule := args[2], strings.Join(args[3:], " ")
+	f.calls = append(f.calls, strings.TrimSpace(op+" "+rule))
+	if f.failOn != "" && strings.HasPrefix(op+" "+rule, f.failOn) {
+		return nil, fmt.Errorf("injected failure")
+	}
+	idx := -1
+	for i, r := range f.rules {
+		if r == rule {
+			idx = i
+		}
+	}
+	switch op {
+	case "-S":
+		var b strings.Builder
+		for _, r := range f.rules {
+			b.WriteString("-A " + r + "\n")
+		}
+		return []byte(b.String()), nil
+	case "-A":
+		f.rules = append(f.rules, rule)
+		return nil, nil
+	case "-C", "-D":
+		if idx < 0 {
+			return nil, fmt.Errorf("no such rule")
+		}
+		if op == "-D" {
+			f.rules = append(f.rules[:idx], f.rules[idx+1:]...)
+		}
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unexpected op %q", op)
+}
+
+func (f *fakeNAT) index(call string) int {
+	for i, c := range f.calls {
+		if c == call {
+			return i
+		}
+	}
+	return -1
+}
+
+const (
+	legacy80  = "PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80"
+	legacy443 = "PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443"
+	legacyOld = "PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.111:443"
+)
+
+// On upgrade the new 80/443 rules go in before the old shape comes out, so
+// inbound 80/443 always has a DNAT to the current Caddy. Each old rule is
+// deleted exactly once, and a second run changes nothing.
+func TestApplyRules_AddsNewShapeBeforeRemovingLegacy(t *testing.T) {
+	f := &fakeNAT{rules: []string{legacyOld, legacy80, legacy443}}
+	pf := NewPortForwarderWithNetwork("10.0.3.50", "10.0.3.0/24")
+	pf.ipt = f.ipt
+
+	if err := pf.applyRules(); err != nil {
+		t.Fatalf("applyRules: %v", err)
+	}
+	for _, port := range []int{80, 443} {
+		add := f.index("-A " + strings.Join(caddyPreRoutingRule(port, "10.0.3.50"), " "))
+		if add < 0 {
+			t.Fatalf("new :%d rule never added; calls: %v", port, f.calls)
+		}
+		for _, old := range []string{legacy80, legacy443} {
+			if del := f.index("-D " + old); del < add {
+				t.Errorf("legacy rule %q deleted at call %d, before the new :%d rule was added at %d", old, del, port, add)
+			}
+		}
+	}
+	for _, old := range []string{legacyOld, legacy80, legacy443} {
+		n := 0
+		for _, c := range f.calls {
+			if c == "-D "+old {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("legacy rule %q deleted %d times, want 1", old, n)
+		}
+	}
+	want := []string{
+		strings.Join(caddyPreRoutingRule(80, "10.0.3.50"), " "),
+		strings.Join(caddyPreRoutingRule(443, "10.0.3.50"), " "),
+		"OUTPUT -p tcp -d 127.0.0.0/8 --dport 80 -j DNAT --to-destination 10.0.3.50:80",
+		"OUTPUT -p tcp -d 127.0.0.0/8 --dport 443 -j DNAT --to-destination 10.0.3.50:443",
+		"POSTROUTING -d 10.0.3.50 -j MASQUERADE",
+	}
+	if !reflect.DeepEqual(f.rules, want) {
+		t.Errorf("final nat table mismatch.\n got: %v\nwant: %v", f.rules, want)
+	}
+
+	f.calls = nil
+	if err := pf.applyRules(); err != nil {
+		t.Fatalf("second applyRules: %v", err)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "-A ") || strings.HasPrefix(c, "-D ") {
+			t.Errorf("second run is not a no-op: %q", c)
+		}
+	}
+}
+
+// If the new rule cannot be added, the old shape stays and keeps serving
+// inbound 80/443 instead of leaving the host with no DNAT at all.
+func TestApplyRules_AddFailureKeepsLegacyShape(t *testing.T) {
+	f := &fakeNAT{rules: []string{legacy80, legacy443}, failOn: "-A PREROUTING"}
+	pf := NewPortForwarderWithNetwork("10.0.3.50", "10.0.3.0/24")
+	pf.ipt = f.ipt
+
+	if err := pf.applyRules(); err == nil {
+		t.Fatal("applyRules succeeded although adding the PREROUTING rule failed")
+	}
+	if !reflect.DeepEqual(f.rules, []string{legacy80, legacy443}) {
+		t.Errorf("legacy rules were removed although the new ones were never added: %v", f.rules)
 	}
 }
