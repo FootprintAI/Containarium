@@ -102,7 +102,8 @@ func hasGlob(s string) bool { return strings.ContainsAny(s, "*?[") }
 
 // NormalizeMinerSignature validates pattern for kind and returns it in the
 // form it is stored and matched in: lowercased (matching is
-// case-insensitive), surrounding whitespace trimmed except for an argv
+// case-insensitive) except for an argv glob, whose option tokens match
+// case-sensitively; surrounding whitespace trimmed except for an argv
 // literal, whose trailing space is significant ("--coin ").
 func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string, error) {
 	switch kind {
@@ -119,12 +120,15 @@ func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string
 		}
 		return p, nil
 	case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV:
-		p := strings.ToLower(pattern)
-		if strings.TrimSpace(p) == "" {
+		if strings.TrimSpace(pattern) == "" {
 			return "", errors.New("argv pattern is empty")
 		}
-		if hasGlob(p) {
-			p = strings.Join(strings.Fields(p), " ")
+		// A literal is lowercased (case-insensitive substring). A glob keeps
+		// its case: option tokens ("-o") match case-sensitively, since "-O"
+		// is a different flag (gcc's optimisation level); see matchToken.
+		p := strings.ToLower(pattern)
+		if hasGlob(pattern) {
+			p = strings.Join(strings.Fields(pattern), " ")
 			for _, tok := range strings.Fields(p) {
 				if _, err := path.Match(tok, ""); err != nil {
 					return "", fmt.Errorf("argv pattern %q: %w", pattern, err)
@@ -234,7 +238,7 @@ func (m *minerSigMatcher) matchCheap(ev ExecEvent) (MinerSignatureEntry, bool) {
 		}
 	}
 	if len(m.argvGlobs) > 0 {
-		args := strings.Fields(argv)
+		args := strings.Fields(ev.Argv) // original case; matchToken folds where it should
 		for _, g := range m.argvGlobs {
 			if matchTokenRun(g.tokens, args) {
 				return g.entry, true
@@ -267,9 +271,16 @@ func matchTokenRun(tokens, args []string) bool {
 // "-o *:4444" would otherwise hit ssh's "-o ProxyJump=bastion:4444" (a
 // HIGH finding, and a kill with kill_process). A token that spells '=' out
 // ("--coin=*") matches the key=value form on purpose.
+//
+// An option token (leading '-') matches case-sensitively, so "-o *:3333"
+// does not hit "-O ..."; any other token is case-insensitive like the rest
+// of the rule.
 func matchToken(tok, arg string) bool {
 	if !strings.Contains(tok, "=") && strings.Contains(arg, "=") {
 		return false
+	}
+	if !strings.HasPrefix(tok, "-") {
+		tok, arg = strings.ToLower(tok), strings.ToLower(arg)
 	}
 	ok, _ := path.Match(tok, arg)
 	return ok

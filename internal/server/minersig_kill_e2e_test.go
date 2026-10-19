@@ -97,7 +97,7 @@ func TestMinerSignatureE2E_FindingKillAndAudit(t *testing.T) {
 	write("/tmp/launch-b", launcher("/tmp/gcc -O2"))
 	write("/tmp/launch-c", launcher("/tmp/worker -o stratum+tcp://pool.invalid:3333"))
 	t.Cleanup(func() {
-		_, _, _ = client.ExecWithOutput(name, []string{"sh", "-c", "pkill -f /tmp/gcc; rm -f /tmp/xmrig /tmp/gcc /tmp/worker /tmp/launch-a /tmp/launch-b /tmp/launch-c"})
+		_, _, _ = client.ExecWithOutput(name, []string{"sh", "-c", "pkill -f /tmp/xmrig; pkill -f /tmp/gcc; pkill -f /tmp/worker; rm -f /tmp/xmrig /tmp/gcc /tmp/worker /tmp/launch-a /tmp/launch-b /tmp/launch-c"})
 	})
 	run := func(path string) {
 		t.Helper()

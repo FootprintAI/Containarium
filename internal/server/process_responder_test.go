@@ -108,7 +108,8 @@ func (s *fakeFindings) Get(_ context.Context, id int64) (*threatdetect.Finding, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f, ok := s.rows[id]; ok {
-		return f, nil
+		cp := *f
+		return &cp, nil
 	}
 	return nil, threatdetect.ErrFindingNotFound
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,5 +101,139 @@ func TestAsyncActingSink_OnlyRespondableFindingsQueue(t *testing.T) {
 	}
 	if n := len(fx.r.queue); n != 1 {
 		t.Fatalf("queue holds %d jobs, want 1", n)
+	}
+}
+
+// queuedThrottle sets a THROTTLE default and returns a fixture plus the
+// async sink, with no worker running: jobs stay in fx.r.queue until a test
+// hands them to runJob.
+func queuedThrottle(t *testing.T) (*responderFixture, *ActingSink) {
+	t.Helper()
+	fx := newResponderFixture(t, false)
+	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+	return fx, NewAsyncActingSink(fx.findings, fx.r)
+}
+
+func queueOne(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+	t.Helper()
+	if _, err := sink.Upsert(context.Background(), &threatdetect.Finding{Rule: ruleMinerSignature,
+		Severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH, TenantID: "tenant-a", Container: "box-a", Subject: "name:xmrig"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case job := <-fx.r.queue:
+		return job
+	default:
+		t.Fatal("nothing queued")
+		return responseJob{}
+	}
+}
+
+func setCPUCalls(fx *responderFixture) int {
+	fx.act.mu.Lock()
+	defer fx.act.mu.Unlock()
+	n := 0
+	for _, c := range fx.act.calls {
+		if strings.HasPrefix(c, "SetCPULimit:") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestQueuedResponse_DoesNotUndoOperatorRelease (#2638 re-review blocker): a
+// response already queued when the operator releases the action must not
+// re-throttle the box or write APPLIED onto the resolved finding.
+func TestQueuedResponse_DoesNotUndoOperatorRelease(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	first := queueOne(t, fx, sink)
+	fx.r.runJob(ctx, first) // the throttle is applied
+	if _, err := fx.actions.Open(ctx, "box-a"); err != nil {
+		t.Fatalf("first job did not apply: %v", err)
+	}
+	stale := queueOne(t, fx, sink) // the rule re-fires while throttled
+	if _, err := fx.r.Release(ctx, "box-a"); err != nil {
+		t.Fatal(err)
+	}
+	before := setCPUCalls(fx)
+
+	fx.r.runJob(ctx, stale)
+
+	if n := setCPUCalls(fx); n != before {
+		t.Fatalf("worker touched the CPU limit %d time(s) after the release", n-before)
+	}
+	if _, err := fx.actions.Open(ctx, "box-a"); !errors.Is(err, threatdetect.ErrNoOpenAction) {
+		t.Fatalf("an action is open again after the release: %v", err)
+	}
+	f, _ := fx.findings.Get(ctx, stale.f.ID)
+	if f.State != threatdetect.FindingStateResolved || f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_RELEASED {
+		t.Fatalf("finding = state %s response %+v, want resolved with RELEASED", f.State, f.Response)
+	}
+	if d := auditDetails(fx.audit, "response-skipped"); len(d) != 1 || !strings.Contains(d[0], "no longer open") {
+		t.Fatalf("response-skipped audit = %v", d)
+	}
+}
+
+// TestQueuedResponse_SkipsFindingResolvedWhileQueued: a finding the sentry
+// (or an operator) resolved while its response waited is left alone.
+func TestQueuedResponse_SkipsFindingResolvedWhileQueued(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	job := queueOne(t, fx, sink)
+	if _, err := fx.findings.Resolve(ctx, job.f.ID); err != nil {
+		t.Fatal(err)
+	}
+	fx.r.runJob(ctx, job)
+	if setCPUCalls(fx) != 0 {
+		t.Fatal("throttled a box whose finding was resolved while queued")
+	}
+	if f, _ := fx.findings.Get(ctx, job.f.ID); f.Response != nil {
+		t.Fatalf("wrote response %+v onto a resolved finding", f.Response)
+	}
+	if len(auditDetails(fx.audit, "response-skipped")) != 1 {
+		t.Fatal("skip not audited")
+	}
+}
+
+// TestQueuedResponse_SkipsActionReleasedAfterQueueing: the TTL backstop (or
+// an operator) released the action after the job was queued, but the
+// finding is still open: the stale job must not re-apply.
+func TestQueuedResponse_SkipsActionReleasedAfterQueueing(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	job := queueOne(t, fx, sink)
+	if _, err := fx.findings.SetResponse(ctx, job.f.ID, threatdetect.FindingResponse{
+		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
+		ReleasedAt: fx.clock, ReleasedBy: threatdetect.ReleasedByTTL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fx.r.runJob(ctx, job)
+	if setCPUCalls(fx) != 0 {
+		t.Fatal("re-applied an action released after the job was queued")
+	}
+	if d := auditDetails(fx.audit, "response-skipped"); len(d) != 1 || !strings.Contains(d[0], "released by ttl") {
+		t.Fatalf("response-skipped audit = %v", d)
+	}
+}
+
+// TestQueuedResponse_StillOpenIsActedOn: the re-check does not swallow a
+// current job.
+func TestQueuedResponse_StillOpenIsActedOn(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	job := queueOne(t, fx, sink)
+	fx.r.runJob(ctx, job)
+	row, err := fx.actions.Open(ctx, "box-a")
+	if err != nil || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE {
+		t.Fatalf("open action = %+v, %v; want THROTTLE", row, err)
+	}
+	f, _ := fx.findings.Get(ctx, job.f.ID)
+	if f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_APPLIED {
+		t.Fatalf("response = %+v, want APPLIED", f.Response)
+	}
+	if len(auditDetails(fx.audit, "response-skipped")) != 0 {
+		t.Fatal("a current job was skipped")
 	}
 }

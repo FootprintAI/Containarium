@@ -50,7 +50,7 @@ func TestMinerSignatureBaselineParses(t *testing.T) {
 			t.Errorf("baseline missing name %q", name)
 		}
 	}
-	for _, marker := range []string{"--donate-level", "stratum+tcp://", "stratum+ssl://", "--coin ", "--coin=*", "-o *:3333", "-o *:14444"} {
+	for _, marker := range []string{"--donate-level", "stratum+tcp://", "stratum+ssl://", "--coin ", "--coin=*", "-o *:3333", "-o *:14444", "--url=*:3333", "--url *:14433", "-o[^/]*:7777"} {
 		if !hasEntry(entries, pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, marker) {
 			t.Errorf("baseline missing argv marker %q", marker)
 		}
@@ -111,6 +111,14 @@ func TestMinerSignatureRule_Matchers(t *testing.T) {
 		{"ssh -o ProxyJump=host:4444", execEv("/usr/bin/ssh", "ssh", "ssh -o ProxyJump=bastion:4444 host"), ""},
 		{"ssh -o Port=3333", execEv("/usr/bin/ssh", "ssh", "ssh -o Port=3333 host"), ""},
 		{"ssh -o key=value with stratum port", execEv("/usr/bin/ssh", "ssh", "ssh -o ProxyCommand=nc:3333 host"), ""},
+		{"--url=host:3333", execEv("/opt/x", "x", "./x --url=pool.example:3333"), "argv:--url=*:3333"},
+		{"--url host:4444", execEv("/opt/x", "x", "./x --url pool.example:4444"), "argv:--url *:4444"},
+		{"-ohost:5555 attached", execEv("/opt/x", "x", "./x -opool.example:5555"), "argv:-o[^/]*:5555"},
+		{"host part is case-insensitive", execEv("/opt/x", "x", "./x -o POOL.Example:3333"), "argv:-o *:3333"},
+		{"-O is not -o", execEv("/usr/bin/cc", "cc", "cc -O pool:3333"), ""},
+		{"-O attached is not -o", execEv("/usr/bin/cc", "cc", "cc -Opool:3333"), ""},
+		{"--url with a scheme is not host:port", execEv("/usr/bin/curl", "curl", "curl --url=http://h:3333/x"), ""},
+		{"-o attached path", execEv("/usr/bin/ld", "ld", "ld -o/out/a:3333"), ""},
 		{"gcc -O2", execEv("/usr/bin/gcc", "gcc", "gcc -O2 -o main main.c"), ""},
 		{"-o on a non-stratum port", execEv("/usr/bin/svc", "svc", "./svc -o pool.example:443"), ""},
 		{"-o output file named like a port", execEv("/usr/bin/ld", "ld", "ld -o out/a:3333.o"), ""},

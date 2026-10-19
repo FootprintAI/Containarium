@@ -176,12 +176,14 @@ with operator entries. Three matcher kinds:
 | Kind | Matches | Example |
 |------|---------|---------|
 | `name` | basename of the exec'd file, and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
-| `argv` | the joined command line, case-insensitive: a literal substring, or, with a glob character, space-separated globs over consecutive arguments | `--donate-level`, `-o *:3333` |
+| `argv` | the joined command line: a literal substring (case-insensitive), or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
 | `sha256` | hex SHA-256 of the executable (`/proc/<pid>/exe`) | operator-added only |
 
 The baseline ships `name` and `argv` entries only (xmrig, minerd,
 cpuminer*, nanominer, t-rex, lolminer, nbminer, gminer; `--donate-level`,
-`stratum+tcp://`, `stratum+ssl://`, `--coin `, `--coin=*`, `-o <host>:<port>` for each
+`stratum+tcp://`, `stratum+ssl://`, `--coin `, `--coin=*`, and for each
+default stratum port `-o <host>:<port>`, `-o<host>:<port>`, `--url <host>:<port>`
+and `--url=<host>:<port>`
 default stratum port). It carries **no hashes**: a hash list goes stale with
 every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
@@ -222,7 +224,11 @@ reason (`pid reused`, `process already exited`, …). The finding's response
 shows `process killed`, and an action row opened by the same finding records
 `killed_pid`. The kill and the throttle/freeze run on the responder's own
 worker, never on the exec event path; if its queue (256) is full the
-response is dropped, logged and audited as `response-dropped`. On a degraded backend (no Postgres) responses are off, the
+response is dropped, logged and audited as `response-dropped`. Before
+acting, the worker re-reads the finding: one resolved, or whose action was
+released (by an operator or the TTL backstop) after the response was
+queued, is left alone and audited as `response-skipped`, so a queued
+response never undoes a release. On a degraded backend (no Postgres) responses are off, the
 kill included.
 
 **Limits.** A rebuilt, renamed miner with a clean command line matches no
@@ -234,7 +240,16 @@ Literal argv markers match any command line that merely mentions them:
 `kill_process` it is killed. Keep that in mind before turning the kill on
 for boxes where people inspect miner configs. A glob token without `=`
 never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444`
-does not hit the `-o <host>:<port>` markers.
+does not hit the `-o <host>:<port>` markers, and `-o` is case-sensitive, so
+`cc -O ...` is not a match. Pool addresses in other spellings (a config file,
+`--url` with a scheme other than stratum, a non-default port) are a known
+gap here; the mining-behavior rule covers them by CPU and flow.
+
+The kill and policy action run on the responder's queue, so a little time
+can pass between the exec and the kill. The cgroup re-check stops a pid
+reused by another box or the host, but a pid reused by another process in
+the *same* box within that window would be killed; a process start-time
+check to close it is a follow-up (#2765).
 
 ## Triaging findings
 

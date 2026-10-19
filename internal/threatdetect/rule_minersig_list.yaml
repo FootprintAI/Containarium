@@ -11,7 +11,8 @@
 #            or (with a glob character) space-separated glob tokens matched
 #            against consecutive arguments. A token without '=' never
 #            matches a key=value argument, so "-o *:4444" does not hit
-#            ssh's "-o ProxyJump=bastion:4444".
+#            ssh's "-o ProxyJump=bastion:4444". Option tokens ("-o",
+#            "--url") match case-sensitively: "-O" is another flag.
 #   sha256 — hex SHA-256 of the executable. Deliberately none here: a hash
 #            list goes stale every upstream release and nobody owns
 #            refreshing it (decided on #2711 Q2). Operators add their own.
@@ -39,3 +40,21 @@ entries:
   - {kind: argv, pattern: "-o *:7777", label: "pool on stratum port 7777"}
   - {kind: argv, pattern: "-o *:14444", label: "pool on stratum port 14444"}
   - {kind: argv, pattern: "-o *:14433", label: "pool on stratum port 14433"}
+  - {kind: argv, pattern: "--url=*:3333", label: "pool on stratum port 3333 (--url=)"}
+  - {kind: argv, pattern: "--url *:3333", label: "pool on stratum port 3333 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:3333", label: "pool on stratum port 3333 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:4444", label: "pool on stratum port 4444 (--url=)"}
+  - {kind: argv, pattern: "--url *:4444", label: "pool on stratum port 4444 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:4444", label: "pool on stratum port 4444 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:5555", label: "pool on stratum port 5555 (--url=)"}
+  - {kind: argv, pattern: "--url *:5555", label: "pool on stratum port 5555 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:5555", label: "pool on stratum port 5555 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:7777", label: "pool on stratum port 7777 (--url=)"}
+  - {kind: argv, pattern: "--url *:7777", label: "pool on stratum port 7777 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:7777", label: "pool on stratum port 7777 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:14444", label: "pool on stratum port 14444 (--url=)"}
+  - {kind: argv, pattern: "--url *:14444", label: "pool on stratum port 14444 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:14444", label: "pool on stratum port 14444 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:14433", label: "pool on stratum port 14433 (--url=)"}
+  - {kind: argv, pattern: "--url *:14433", label: "pool on stratum port 14433 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:14433", label: "pool on stratum port 14433 (-o attached)"}

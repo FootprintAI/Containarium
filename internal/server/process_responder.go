@@ -132,12 +132,16 @@ func respondable(f *threatdetect.Finding) bool {
 type responseJob struct {
 	f      *threatdetect.Finding
 	target *threatdetect.ExecEvidence
+	// at is when the job was queued: a release stamped at or after it means
+	// an operator (or the TTL backstop) decided after this response was
+	// asked for, and the job must not undo that decision.
+	at time.Time
 }
 
 // enqueue offers a job to the worker without ever blocking the caller.
 func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect.ExecEvidence) bool {
 	cp := *f
-	job := responseJob{f: &cp}
+	job := responseJob{f: &cp, at: r.now()}
 	if target != nil {
 		t := *target
 		job.target = &t
@@ -166,10 +170,60 @@ func (r *ProcessResponder) runQueue(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case job := <-r.queue:
-			r.onFinding(ctx, job.f, job.target)
+			r.runJob(ctx, job)
 			r.auditDrops(ctx)
 		}
 	}
+}
+
+// runJob acts on one queued job, but only if it is still current. The queued
+// copy of the finding was taken when the rule fired; by the time the worker
+// gets to it an operator may have released the action (which resolves the
+// finding), the sentry may have resolved it, or the TTL backstop may have
+// released it. Acting on the stale copy would re-throttle a box the operator
+// just released and write APPLIED onto a resolved finding. So the finding is
+// re-read before the kill, and again under r.mu right before the policy
+// action; a stale job is skipped and audited as "response-skipped".
+func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
+	fresh, reason := r.currentFinding(ctx, job)
+	if reason != "" {
+		r.auditSkip(ctx, job, reason)
+		return
+	}
+	r.onFindingChecked(ctx, fresh, job.target, func() string {
+		_, reason := r.currentFinding(ctx, job)
+		if reason != "" {
+			r.auditSkip(ctx, job, reason)
+		}
+		return reason
+	})
+}
+
+// currentFinding re-reads a queued job's finding. reason is non-empty when
+// the job is stale: the finding is gone, no longer open, or its action was
+// released at or after the job was queued. The returned finding keeps the
+// job's container (the store's row may carry the first container that
+// opened it; the action belongs to the box whose exec fired).
+func (r *ProcessResponder) currentFinding(ctx context.Context, job responseJob) (*threatdetect.Finding, string) {
+	fresh, err := r.findings.Get(ctx, job.f.ID)
+	if err != nil {
+		return nil, "finding unreadable: " + err.Error()
+	}
+	if fresh.State != threatdetect.FindingStateOpen {
+		return nil, "finding no longer open"
+	}
+	if resp := fresh.Response; resp != nil && !resp.ReleasedAt.IsZero() && !resp.ReleasedAt.Before(job.at) {
+		return nil, "action released by " + resp.ReleasedBy + " after the response was queued"
+	}
+	out := *fresh
+	out.Container = job.f.Container
+	return &out, ""
+}
+
+func (r *ProcessResponder) auditSkip(ctx context.Context, job responseJob, reason string) {
+	r.auditLog(ctx, "response-skipped", job.f.Container, fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s queued_at=%s reason=%q",
+		job.f.ID, job.f.Rule, job.f.TenantID, job.f.Container, job.at.UTC().Format(time.RFC3339Nano), reason))
+	log.Printf("[process-responder] queued response for finding %d on %s skipped: %s", job.f.ID, job.f.Container, reason)
 }
 
 // auditDrops writes one audit row per batch of newly dropped responses, so a
@@ -221,6 +275,13 @@ func lastExec(f *threatdetect.Finding) *threatdetect.ExecEvidence {
 // the process that just matched, independent of how the store merged or
 // capped the stored evidence.
 func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence) *threatdetect.Finding {
+	return r.onFindingChecked(ctx, f, target, nil)
+}
+
+// onFindingChecked is onFinding with an optional recheck run under r.mu
+// before anything that touches the action store or the box; a non-empty
+// result aborts (the queued-job path, see runJob).
+func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence, recheck func() string) *threatdetect.Finding {
 	if !respondable(f) {
 		return nil
 	}
@@ -232,6 +293,9 @@ func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Findin
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if recheck != nil && recheck() != "" {
+		return nil
+	}
 	killed := killedPID != 0 || (f.Response != nil && f.Response.ProcessKilled)
 
 	if _, err := r.actions.Open(ctx, f.Container); err == nil {

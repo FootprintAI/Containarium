@@ -434,7 +434,8 @@ const (
 	// ("--donate-level"), or, when the pattern holds a glob character, a
 	// sequence of space-separated glob tokens matched against consecutive
 	// arguments ("-o *:3333"). A glob token without '=' never matches a
-	// key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444").
+	// key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444"),
+	// and a glob option token ("-o") matches case-sensitively.
 	MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV MinerSignatureKind = 2
 	// Lowercase hex SHA-256 of the executable (/proc/<pid>/exe), computed off
 	// the hot path only when a hash entry exists and nothing cheaper matched.
