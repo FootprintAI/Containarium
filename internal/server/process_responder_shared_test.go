@@ -721,3 +721,87 @@ func TestProcessKilled_ReleaseRecordIsPerBox(t *testing.T) {
 		t.Fatalf("box-b's release record = %+v, want RELEASED with process_killed=true: its own row has killed_pid 200", w)
 	}
 }
+
+// TestQueuedResponse_FailedApplyIsNotARelease (#2766 review): a failed apply
+// is released on insert by "error", but it is not an operator or TTL
+// decision, so a queued response on that box must still run. The worker got
+// to the job after the retry backoff, so only the released_by=error guard in
+// currentFinding stands between the job and a wrong skip.
+func TestQueuedResponse_FailedApplyIsNotARelease(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	job := queueFor(t, fx, sink, "box-a")
+	failed := &threatdetect.SecurityAction{
+		FindingID: job.f.ID, Container: "box-a", Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
+		Error: "incus: boom", AppliedAt: fx.clock, ReleasedAt: fx.clock, ReleasedBy: threatdetect.ReleasedByError,
+	}
+	if err := fx.actions.Insert(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	fx.clock = fx.clock.Add(processActionRetryBackoff + time.Minute)
+	fx.r.runJob(ctx, job)
+
+	if d := auditDetails(fx.audit, "response-skipped"); len(d) != 0 {
+		t.Fatalf("response-skipped audit = %v, want none: a failed apply is not a release", d)
+	}
+	if row, err := openAction(fx, "box-a"); err != nil || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE {
+		t.Fatalf("open action = %+v, %v; want THROTTLE", row, err)
+	}
+}
+
+// TestRelease_DroppedJobDoesNotKeepFindingOpen (#2766 review): a job the full
+// queue dropped never runs, so it must not count as pending. Otherwise
+// releasing the other box would keep the shared finding open forever,
+// waiting on a response that will never come.
+func TestRelease_DroppedJobDoesNotKeepFindingOpen(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
+	fx.r.queue = make(chan responseJob) // no receiver: every enqueue drops
+	if _, err := sink.Upsert(ctx, &threatdetect.Finding{Rule: ruleMinerSignature,
+		Severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH, TenantID: "tenant-a", Container: "box-b", Subject: "name:xmrig"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := fx.r.DroppedResponses(); n != 1 {
+		t.Fatalf("DroppedResponses = %d, want 1", n)
+	}
+	f, _, err := fx.r.Release(ctx, "box-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == nil || f.State != threatdetect.FindingStateResolved {
+		t.Fatalf("finding after release = %+v, want resolved: box-b's dropped job is not pending", f)
+	}
+	if d := auditDetails(fx.audit, "release"); len(d) != 1 || !strings.Contains(d[0], "finding_kept_open=false") {
+		t.Fatalf("release audit = %v, want finding_kept_open=false", d)
+	}
+}
+
+// TestQueuedResponse_ReleaseInSameMicrosecondSkips (#2766 review): Postgres
+// stores released_at in microseconds, so a release in the same microsecond
+// the job was queued comes back earlier than a nanosecond queue time. The
+// queue time is truncated to the microsecond, so that release still counts
+// as at-or-after the job and skips it.
+func TestQueuedResponse_ReleaseInSameMicrosecondSkips(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	fx.clock = fx.clock.Add(500 * time.Nanosecond)
+	job := queueFor(t, fx, sink, "box-a")
+	released := &threatdetect.SecurityAction{
+		FindingID: job.f.ID, Container: "box-a", Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
+		AppliedAt: fx.clock.Add(-time.Minute), ReleasedAt: fx.clock.Truncate(time.Microsecond),
+		ReleasedBy: threatdetect.ReleasedByOperator,
+	}
+	if err := fx.actions.Insert(ctx, released); err != nil {
+		t.Fatal(err)
+	}
+	fx.r.runJob(ctx, job)
+
+	d := auditDetails(fx.audit, "response-skipped")
+	if len(d) != 1 || !strings.Contains(d[0], "released by operator") {
+		t.Fatalf("response-skipped audit = %v, want one row for the operator release", d)
+	}
+	if _, err := openAction(fx, "box-a"); !errors.Is(err, threatdetect.ErrNoOpenAction) {
+		t.Fatalf("open action err = %v, want none", err)
+	}
+}

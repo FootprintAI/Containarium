@@ -151,14 +151,16 @@ type responseJob struct {
 	target *threatdetect.ExecEvidence
 	// at is when the job was queued: a release stamped at or after it means
 	// an operator (or the TTL backstop) decided after this response was
-	// asked for, and the job must not undo that decision.
+	// asked for, and the job must not undo that decision. Truncated to the
+	// microsecond, the precision Postgres stores released_at at, so a
+	// release in the same microsecond still counts as at-or-after.
 	at time.Time
 }
 
 // enqueue offers a job to the worker without ever blocking the caller.
 func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect.ExecEvidence) bool {
 	cp := *f
-	job := responseJob{f: &cp, at: r.now()}
+	job := responseJob{f: &cp, at: r.now().Truncate(time.Microsecond)}
 	if target != nil {
 		t := *target
 		job.target = &t
