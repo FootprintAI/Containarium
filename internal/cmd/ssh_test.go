@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func withSSHHome(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		t.Setenv("USERPROFILE", home)
 	}
-	t.Cleanup(func() {
+	resetFlags := func() {
 		authToken = ""
 		serverAddr = ""
 		sshSetupName = ""
@@ -38,7 +39,11 @@ func withSSHHome(t *testing.T) string {
 		sshRemoveServer = ""
 		sshPropagateServer = ""
 		sshPropagateBoxes = nil
-	})
+		sshRotateName = ""
+		sshRotateServer = ""
+	}
+	resetFlags()
+	t.Cleanup(resetFlags)
 	return home
 }
 
@@ -116,6 +121,43 @@ func (f *fakeSSHKeysServer) wireRemove() {
 		f.keys = out
 		w.WriteHeader(http.StatusOK)
 	})
+}
+
+func TestSSHHTTPClient_ListSSHKeys_GatewayJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+	}{
+		{"camelCase", `{"keys":[{"name":"laptop","publicKey":"ssh-ed25519 example","fingerprint":"SHA256:example","createdAt":"2026-10-01T00:00:00Z","expiresAt":"2026-11-01T00:00:00Z","retiredAt":"2026-10-20T00:00:00Z"},{"name":"active","retiredAt":null}]}`},
+		{"snake_case", `{"keys":[{"name":"laptop","public_key":"ssh-ed25519 example","fingerprint":"SHA256:example","created_at":"2026-10-01T00:00:00Z","expires_at":"2026-11-01T00:00:00Z","retired_at":"2026-10-20T00:00:00Z"},{"name":"active","retired_at":null}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/user/ssh-keys" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				_, _ = w.Write([]byte(tc.payload))
+			}))
+			defer srv.Close()
+			client := &sshHTTPClient{server: srv.URL, token: "test-token", hc: srv.Client()}
+			keys, err := client.ListSSHKeys(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(keys) != 2 {
+				t.Fatalf("got %d keys, want 2", len(keys))
+			}
+			key := keys[0]
+			if key.Name != "laptop" || key.PublicKey != "ssh-ed25519 example" || key.Fingerprint != "SHA256:example" ||
+				key.CreatedAt.Format(time.RFC3339) != "2026-10-01T00:00:00Z" ||
+				key.ExpiresAt.Format(time.RFC3339) != "2026-11-01T00:00:00Z" ||
+				key.RetiredAt == nil || key.RetiredAt.Format(time.RFC3339) != "2026-10-20T00:00:00Z" {
+				t.Fatalf("gateway fields were not decoded: %+v", key)
+			}
+			if keys[1].RetiredAt != nil {
+				t.Fatal("null retirement timestamp must remain unset")
+			}
+		})
+	}
 }
 
 // --- validators ---------------------------------------------------------
