@@ -390,7 +390,9 @@ bad-destination verbs; the cloud shim forwards them per org as it does
   `exec_events_lost` is reported, not panicked.
 - Overhead: a benchmark on the lane host runs 1,000 execs/s for 60 s with
   and without the program attached; the delta goes in the operator doc
-  and must be < 1 % of one core.
+  and must be < 1 % of host CPU (measured on the 8-core lane runner
+  2026-10-19: 2.95 % of one core = 0.37 % of the host at ~1,000 execs/s;
+  the per-core bar was relaxed on #2711, consumer optimisation is #2747).
 
 **CPUSampler**
 - Unit: `TestCPUSamplerDeltas` table: first sample dropped, steady 2.0

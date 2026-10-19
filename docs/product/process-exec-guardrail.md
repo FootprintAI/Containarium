@@ -73,7 +73,7 @@ risk and shapes the enforcement ladder below.
 | Time from miner start to our own HIGH finding | Never from us; provider alert 50 min+ after start | < 5 min on every backend with the sentry armed (incl. BYOC) |
 | Time from miner start to containment (CPU throttled or box frozen) | Hours, human-driven (1 h + 6 h in cloud#2438) | < 10 min, no human, when the policy is `throttle` or `freeze` |
 | Wrong containment of a legitimate workload | Unknown, instrument first (4 weeks in `alert` mode) | < 1 per month fleet-wide; every action reversible with one command |
-| Exec-telemetry overhead on a loaded host | n/a | < 1 % CPU at 1,000 execs/s, measured before the rule is armed |
+| Exec-telemetry overhead on a loaded host | n/a | < 1 % of host CPU at 1,000 execs/s (restated 2026-10-19 from per-core; lane measured 0.37 % of an 8-core host), measured before the rule is armed |
 
 ## MVP scope: the core journey
 
@@ -195,9 +195,9 @@ miner from a build.
       `containarium security exec-events [--container] [--since]`
       (gRPC streaming RPC behind it); they are **not** written to the
       audit log by default (volume), only matched events are.
-- [ ] Overhead measured on an 8-core host at 1,000 execs/s: < 1 % CPU
-      and no dropped events at 100 execs/s; the numbers go in the
-      operator doc.
+- [ ] Overhead measured on an 8-core host at 1,000 execs/s: < 1 % of host
+      CPU (restated 2026-10-19) and no dropped events at 100 execs/s; the
+      numbers go in the operator doc.
 - [ ] A backend whose kernel cannot attach the tracepoint reports
       `exec-telemetry: unavailable (<reason>)` in `sentry status` and
       Story 1's finding fires; the flow rules keep running.
