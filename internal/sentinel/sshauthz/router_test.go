@@ -154,3 +154,54 @@ func TestRouterFailsClosedOnConfigItCannotMirror(t *testing.T) {
 		})
 	}
 }
+
+// One pipe for login alice, with the given authorized_keys path and to block,
+// pins the upstream user and the fail-closed paths of key and file loading.
+func TestRouterPipeTarget(t *testing.T) {
+	dir := t.TempDir()
+	alice := testKey(t)
+	write := func(name string, data []byte) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	keys := write("authorized_keys", ssh.MarshalAuthorizedKey(alice.PublicKey()))
+	upstream := write("upstream_key", []byte("upstream-private-key"))
+	missing := filepath.Join(dir, "missing")
+	// A file literally named $DOWNSTREAM_USER, so a router that skipped the
+	// placeholder check would read it and route instead of refusing.
+	placeholder := write("$DOWNSTREAM_USER", ssh.MarshalAuthorizedKey(alice.PublicKey()))
+	for _, tt := range []struct {
+		name, authorizedKeys, to string
+		user                     string // "" expects a refusal
+	}{
+		{name: "to.username differs from login", authorizedKeys: keys, to: "username: \"ubuntu\"\n      private_key: " + upstream, user: "ubuntu"},
+		{name: "empty to.username falls back to login", authorizedKeys: keys, to: "private_key: " + upstream, user: "alice"},
+		{name: "no private_key never falls back to password auth", authorizedKeys: keys, to: "username: \"alice\""},
+		{name: "missing private_key file", authorizedKeys: keys, to: "private_key: " + missing},
+		{name: "unreadable private_key file", authorizedKeys: keys, to: "private_key: " + dir},
+		{name: "placeholder in private_key", authorizedKeys: keys, to: "private_key: " + placeholder},
+		{name: "missing authorized_keys file", authorizedKeys: missing, to: "private_key: " + upstream},
+		{name: "placeholder in authorized_keys", authorizedKeys: placeholder, to: "private_key: " + upstream},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := write("config.yaml", fmt.Appendf(nil, "version: \"1.0\"\npipes:\n  - from:\n      - username: \"alice\"\n        authorized_keys:\n          - %s\n    to:\n      host: 192.0.2.10:22\n      %s\n", tt.authorizedKeys, tt.to))
+			up, err := NewRouter(config).Route(&libplugin.ConnMeta{UserName: "alice"}, alice.PublicKey().Marshal())
+			if tt.user == "" {
+				if err == nil || up != nil {
+					t.Fatalf("want refusal, got upstream %v err %v", up, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want upstream, got %v", err)
+			}
+			if pk := up.GetPrivateKey(); up.UserName != tt.user || pk == nil || string(pk.PrivateKey) != "upstream-private-key" {
+				t.Fatalf("upstream = %+v", up)
+			}
+		})
+	}
+}
