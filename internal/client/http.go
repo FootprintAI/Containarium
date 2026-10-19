@@ -354,7 +354,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -400,6 +400,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	if ttlSeconds > 0 {
 		req.TTLSeconds = ttlSeconds
 	}
+	req.DisableAutoSleep = disableAutoSleep
 	if idleStopMinutes > 0 {
 		req.IdleStopMinutes = idleStopMinutes
 	}
