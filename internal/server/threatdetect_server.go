@@ -454,7 +454,7 @@ func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest
 	replay, ch, cancel := src.Subscribe(req.GetContainer(), since, execSubscriberBuffer)
 	defer cancel()
 	for _, rec := range replay {
-		if err := stream.Send(execEventProto(rec)); err != nil {
+		if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
 			return err
 		}
 	}
@@ -469,7 +469,7 @@ func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest
 			if !ok {
 				return status.Error(codes.ResourceExhausted, "exec-events subscriber fell behind and was dropped (the ring consumer never waits); reconnect")
 			}
-			if err := stream.Send(execEventProto(rec)); err != nil {
+			if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
 				return err
 			}
 		}

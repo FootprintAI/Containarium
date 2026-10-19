@@ -78,7 +78,7 @@ type ThreatDetectionServiceClient interface {
 	// daemon's short in-memory buffer first. Backs `containarium security
 	// exec-events`. UNAVAILABLE when exec telemetry is not running on this
 	// backend (see GetSentryStatus.exec_telemetry).
-	StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecEvent], error)
+	StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamExecEventsResponse], error)
 }
 
 type threatDetectionServiceClient struct {
@@ -179,13 +179,13 @@ func (c *threatDetectionServiceClient) ReleaseProcessAction(ctx context.Context,
 	return out, nil
 }
 
-func (c *threatDetectionServiceClient) StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecEvent], error) {
+func (c *threatDetectionServiceClient) StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamExecEventsResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ThreatDetectionService_ServiceDesc.Streams[0], ThreatDetectionService_StreamExecEvents_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[StreamExecEventsRequest, ExecEvent]{ClientStream: stream}
+	x := &grpc.GenericClientStream[StreamExecEventsRequest, StreamExecEventsResponse]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func (c *threatDetectionServiceClient) StreamExecEvents(ctx context.Context, in 
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ThreatDetectionService_StreamExecEventsClient = grpc.ServerStreamingClient[ExecEvent]
+type ThreatDetectionService_StreamExecEventsClient = grpc.ServerStreamingClient[StreamExecEventsResponse]
 
 // ThreatDetectionServiceServer is the server API for ThreatDetectionService service.
 // All implementations must embed UnimplementedThreatDetectionServiceServer
@@ -245,7 +245,7 @@ type ThreatDetectionServiceServer interface {
 	// daemon's short in-memory buffer first. Backs `containarium security
 	// exec-events`. UNAVAILABLE when exec telemetry is not running on this
 	// backend (see GetSentryStatus.exec_telemetry).
-	StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[ExecEvent]) error
+	StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[StreamExecEventsResponse]) error
 	mustEmbedUnimplementedThreatDetectionServiceServer()
 }
 
@@ -283,7 +283,7 @@ func (UnimplementedThreatDetectionServiceServer) SetProcessPolicy(context.Contex
 func (UnimplementedThreatDetectionServiceServer) ReleaseProcessAction(context.Context, *ReleaseProcessActionRequest) (*ReleaseProcessActionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseProcessAction not implemented")
 }
-func (UnimplementedThreatDetectionServiceServer) StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[ExecEvent]) error {
+func (UnimplementedThreatDetectionServiceServer) StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[StreamExecEventsResponse]) error {
 	return status.Error(codes.Unimplemented, "method StreamExecEvents not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) mustEmbedUnimplementedThreatDetectionServiceServer() {
@@ -475,11 +475,11 @@ func _ThreatDetectionService_StreamExecEvents_Handler(srv interface{}, stream gr
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(ThreatDetectionServiceServer).StreamExecEvents(m, &grpc.GenericServerStream[StreamExecEventsRequest, ExecEvent]{ServerStream: stream})
+	return srv.(ThreatDetectionServiceServer).StreamExecEvents(m, &grpc.GenericServerStream[StreamExecEventsRequest, StreamExecEventsResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ThreatDetectionService_StreamExecEventsServer = grpc.ServerStreamingServer[ExecEvent]
+type ThreatDetectionService_StreamExecEventsServer = grpc.ServerStreamingServer[StreamExecEventsResponse]
 
 // ThreatDetectionService_ServiceDesc is the grpc.ServiceDesc for ThreatDetectionService service.
 // It's only intended for direct use with grpc.RegisterService,

@@ -3,7 +3,7 @@
 // in a tenant box, attributed to the container, as the kernel saw it.
 // CLI-first per the repo convention; talks to the grpc-gateway REST route for
 // the server-streaming StreamExecEvents RPC (newline-delimited JSON, each
-// line `{"result": <ExecEvent>}` or `{"error": {...}}`) and decodes each
+// line `{"result": {"event": <ExecEvent>}}` or `{"error": {...}}`) and decodes each
 // event with the generated protobuf type (protojson), never an ad-hoc map.
 package cmd
 
@@ -150,14 +150,27 @@ func streamExecEvents(ctx context.Context, rawURL string, w io.Writer, jsonOut b
 			continue
 		}
 		if jsonOut {
-			fmt.Fprintln(w, string(chunk.Result))
+			// One ExecEvent object per line: the server's bytes, unwrapped
+			// from the StreamExecEventsResponse envelope.
+			var env struct {
+				Event json.RawMessage `json:"event"`
+			}
+			if err := json.Unmarshal(chunk.Result, &env); err != nil {
+				return fmt.Errorf("decode stream chunk: %w", err)
+			}
+			if len(env.Event) > 0 {
+				fmt.Fprintln(w, string(env.Event))
+			}
 			continue
 		}
-		var ev pb.ExecEvent
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(chunk.Result, &ev); err != nil {
+		var msg pb.StreamExecEventsResponse
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(chunk.Result, &msg); err != nil {
 			return fmt.Errorf("decode exec event: %w", err)
 		}
-		fmt.Fprintln(w, formatExecEvent(&ev))
+		if msg.GetEvent() == nil {
+			continue
+		}
+		fmt.Fprintln(w, formatExecEvent(msg.GetEvent()))
 	}
 	if err := sc.Err(); err != nil && ctx.Err() == nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("read stream: %w", err)

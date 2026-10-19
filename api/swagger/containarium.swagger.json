@@ -6946,7 +6946,7 @@
     "/v1/security/exec-events": {
       "get": {
         "summary": "Stream container exec events",
-        "description": "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON. `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.",
+        "description": "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.",
         "operationId": "ThreatDetectionService_StreamExecEvents",
         "responses": {
           "200": {
@@ -6955,13 +6955,13 @@
               "type": "object",
               "properties": {
                 "result": {
-                  "$ref": "#/definitions/ExecEvent"
+                  "$ref": "#/definitions/StreamExecEventsResponse"
                 },
                 "error": {
                   "$ref": "#/definitions/rpc.Status"
                 }
               },
-              "title": "Stream result of ExecEvent"
+              "title": "Stream result of StreamExecEventsResponse"
             }
           },
           "default": {
@@ -19378,6 +19378,15 @@
       ],
       "default": "STORAGE_ISOLATION_UNSPECIFIED",
       "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
+    },
+    "StreamExecEventsResponse": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ExecEvent"
+        }
+      },
+      "description": "StreamExecEventsResponse wraps one ExecEvent per stream message."
     },
     "SubmitTrackerChangeBody": {
       "type": "object",

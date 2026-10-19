@@ -60,12 +60,12 @@ type fakeExecStream struct {
 }
 
 func (s *fakeExecStream) Context() context.Context { return s.ctx }
-func (s *fakeExecStream) Send(ev *pb.ExecEvent) error {
+func (s *fakeExecStream) Send(resp *pb.StreamExecEventsResponse) error {
 	if s.err != nil {
 		return s.err
 	}
 	s.mu.Lock()
-	s.sent = append(s.sent, ev)
+	s.sent = append(s.sent, resp.GetEvent())
 	s.mu.Unlock()
 	return nil
 }

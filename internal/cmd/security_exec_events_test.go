@@ -56,9 +56,9 @@ func TestRunSecurityExecEvents_HitsExpectedPathAndRendersLines(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"result":` + execEventJSON(t, "box-a", 4242, "./xmrig -o pool:3333", false) + "}\n"))
+		w.Write([]byte(`{"result":{"event":` + execEventJSON(t, "box-a", 4242, "./xmrig -o pool:3333", false) + "}}\n"))
 		w.Write([]byte("\n")) // keep-alive blank line is ignored
-		w.Write([]byte(`{"result":` + execEventJSON(t, "box-a", 4243, "node --url=stratum+tcp://poo", true) + "}\n"))
+		w.Write([]byte(`{"result":{"event":` + execEventJSON(t, "box-a", 4243, "node --url=stratum+tcp://poo", true) + "}}\n"))
 	}))
 	defer srv.Close()
 
@@ -139,7 +139,7 @@ func TestRunSecurityExecEvents_ZeroSinceOmitsWindow(t *testing.T) {
 func TestStreamExecEvents_JSONPassthrough(t *testing.T) {
 	raw := execEventJSON(t, "box-b", 7, "sh -c true", false)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"result":` + raw + "}\n"))
+		w.Write([]byte(`{"result":{"event":` + raw + "}}\n"))
 	}))
 	defer srv.Close()
 	var buf bytes.Buffer
@@ -156,7 +156,7 @@ func TestStreamExecEvents_JSONPassthrough(t *testing.T) {
 // before it are still printed.
 func TestStreamExecEvents_MidStreamErrorSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"result":` + execEventJSON(t, "box-a", 1, "sh", false) + "}\n"))
+		w.Write([]byte(`{"result":{"event":` + execEventJSON(t, "box-a", 1, "sh", false) + "}}\n"))
 		w.Write([]byte(`{"error":{"code":8,"message":"exec-events subscriber fell behind and was dropped"}}` + "\n"))
 	}))
 	defer srv.Close()

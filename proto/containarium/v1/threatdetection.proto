@@ -410,6 +410,11 @@ message ExecEvent {
   ExecEvidence exec = 4;
 }
 
+// StreamExecEventsResponse wraps one ExecEvent per stream message.
+message StreamExecEventsResponse {
+  ExecEvent event = 1;
+}
+
 message StreamExecEventsRequest {
   // Only this container's execs; empty streams every watched container.
   string container = 1;
@@ -621,13 +626,13 @@ service ThreatDetectionService {
   // daemon's short in-memory buffer first. Backs `containarium security
   // exec-events`. UNAVAILABLE when exec telemetry is not running on this
   // backend (see GetSentryStatus.exec_telemetry).
-  rpc StreamExecEvents(StreamExecEventsRequest) returns (stream ExecEvent) {
+  rpc StreamExecEvents(StreamExecEventsRequest) returns (stream StreamExecEventsResponse) {
     option (google.api.http) = {
       get: "/v1/security/exec-events"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Stream container exec events";
-      description: "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON. `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.";
+      description: "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.";
       tags: "Security";
     };
   }
