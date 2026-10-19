@@ -725,7 +725,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				}
 			}
 
-			gs.terminalHandler.HandleTerminal(w, r)
+			// #2696: record that this bearer passed ValidateToken; the
+			// upgrader's no-Origin exemption reads this, not the raw
+			// headers. See checkTerminalOrigin.
+			gs.terminalHandler.HandleTerminal(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 		}))
 
 		// Console-attach WebSocket route (live VM serial console, #1751).
