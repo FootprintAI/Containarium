@@ -54,6 +54,25 @@ const (
 	originNotAllowed = "origin not allowed"
 )
 
+// validatedBearerKey is the request-context key under which the terminal
+// route wrapper records the source of a bearer it has validated.
+type validatedBearerKey struct{}
+
+// withValidatedBearer records that the request's bearer, found at src, has
+// passed ValidateToken. Call it only after validation succeeded.
+func withValidatedBearer(ctx context.Context, src auth.TokenSource) context.Context {
+	return context.WithValue(ctx, validatedBearerKey{}, src)
+}
+
+// validatedBearerSource returns the source recorded by withValidatedBearer,
+// or TokenSourceNone when no validated bearer was recorded.
+func validatedBearerSource(ctx context.Context) auth.TokenSource {
+	if src, ok := ctx.Value(validatedBearerKey{}).(auth.TokenSource); ok {
+		return src
+	}
+	return auth.TokenSourceNone
+}
+
 // checkTerminalOrigin applies the terminal WebSocket origin rule.
 //
 // The check defends against cross-site WebSocket hijacking: a page on
@@ -65,10 +84,15 @@ const (
 // client (a service, CLI or MCP server) and is allowed. The deprecated
 // ?token= form does not count. Token validation and the tenant check still
 // run in the route closure before the upgrade.
+//
+// The exemption follows a bearer the route wrapper VALIDATED and recorded
+// with withValidatedBearer, not a bearer that is merely present on the
+// request, so it cannot be unlocked by any path that reaches the upgrader
+// without ValidateToken.
 func checkTerminalOrigin(r *http.Request) (ok bool, reason string) {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		if _, src := auth.ExtractBearerForUpgrade(r); src == auth.TokenSourceSubprotocol || src == auth.TokenSourceAuthorizationHeader {
+		if src := validatedBearerSource(r.Context()); src == auth.TokenSourceSubprotocol || src == auth.TokenSourceAuthorizationHeader {
 			return true, ""
 		}
 		return false, originRequired

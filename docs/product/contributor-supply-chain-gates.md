@@ -40,7 +40,7 @@ What exists today (verified on `main`, 2026-10-18):
 | Floating tool installs | `go install .../xcaddy@latest` in `Makefile:320` and `scripts/setup-caddy.sh:103` |
 | Security lanes | gosec, govulncheck, Trivy, two repo-specific injection gates (#1732, #1596), `go mod tidy` drift |
 | Fork PR workflows | `first_time_contributors` approval; no `pull_request_target`; self-hosted runners never run on `pull_request`; PR workflows reference no secrets a fork could reach |
-| Release artefacts | container images carry provenance + SBOM; binaries are checksummed only (signing is #2561) |
+| Release artefacts | container images carry provenance + SBOM; binaries are checksummed, signed with keyless cosign, and listed in per-binary SBOMs (#2561) |
 | Contributor policy | `CONTRIBUTING.md` covers claiming and duplicate PRs; says nothing about dependency or CI changes; no PR template |
 
 Evidence that the gap is real, not theoretical:
