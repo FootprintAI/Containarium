@@ -117,6 +117,9 @@ func newTerminalUpgrader() websocket.Upgrader {
 		},
 		// Surface the origin reason instead of gorilla's generic body.
 		Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
+			// A custom Error replaces gorilla's default responder, which is
+			// what sets this header; keep it so refusals stay RFC 6455-shaped.
+			w.Header().Set("Sec-Websocket-Version", "13")
 			msg := reason.Error()
 			if status == http.StatusForbidden {
 				if _, why := checkTerminalOrigin(r); why != "" {
