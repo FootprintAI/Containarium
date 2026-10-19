@@ -478,9 +478,10 @@ func TestExecWatcher_Status(t *testing.T) {
 	}
 }
 
-// fakeExecRing is an execRingReader: it returns err from ReadInto, or — with no
-// err — blocks until Close and then reports ringbuf.ErrClosed, like the real
-// reader on shutdown.
+// fakeExecRing is an execRingReader. With err set it reports data and
+// returns err from ReadInto (a failing ring). With no err it is an empty
+// ring until Close, then reports ErrClosed — the shutdown path; the
+// consumer leaves on ctx cancellation either way.
 type fakeExecRing struct {
 	err    error
 	once   sync.Once
@@ -495,13 +496,22 @@ func (r *fakeExecRing) ReadInto(*ringbuf.Record) error {
 	if r.err != nil {
 		return r.err
 	}
-	<-r.closed
-	return ringbuf.ErrClosed
+	select {
+	case <-r.closed:
+		return ringbuf.ErrClosed
+	default:
+		return os.ErrDeadlineExceeded
+	}
 }
 
-// SetDeadline is a no-op: the fake blocks until Close regardless, which is
-// the shutdown path these tests exercise.
 func (r *fakeExecRing) SetDeadline(time.Time) {}
+
+func (r *fakeExecRing) AvailableBytes() int {
+	if r.err != nil {
+		return 1
+	}
+	return 0
+}
 
 func (r *fakeExecRing) Close() error {
 	r.once.Do(func() { close(r.closed) })

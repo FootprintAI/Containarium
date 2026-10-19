@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/ringbuf"
 	"golang.org/x/sys/unix"
 )
 
@@ -485,31 +486,46 @@ func (s *daemonShapedSink) counts() (events, drains, drained uint64) {
 	return s.events, s.drains, s.drained
 }
 
-// loadAttachedWakeThreshold is loadAttached with the kernel's forced-wakeup
-// threshold overridden at load time (exec_wake_threshold in .rodata). 0
-// forces a wakeup on every record: the per-event-wakeup shape #2774 removed.
-func loadAttachedWakeThreshold(t *testing.T, threshold uint64) *ExecWatch {
+// loadAttachedPerRecordWakeup is loadAttached with exec_wakeup_per_record
+// set at load time (.rodata): the program submits with the default wakeup,
+// as before #2774.
+func loadAttachedPerRecordWakeup(t *testing.T) *ExecWatch {
 	t.Helper()
 	spec, err := ebpf.LoadCollectionSpec(ebpfLoadExecObjPath)
 	if err != nil {
 		t.Fatalf("LoadCollectionSpec: %v", err)
 	}
-	v, ok := spec.Variables["exec_wake_threshold"]
+	v, ok := spec.Variables["exec_wakeup_per_record"]
 	if !ok {
-		t.Fatalf("object has no exec_wake_threshold variable (rebuild execwatch.bpf.o)")
+		t.Fatalf("object has no exec_wakeup_per_record variable (rebuild execwatch.bpf.o)")
 	}
-	if err := v.Set(threshold); err != nil {
-		t.Fatalf("set exec_wake_threshold: %v", err)
+	if err := v.Set(uint8(1)); err != nil {
+		t.Fatalf("set exec_wakeup_per_record: %v", err)
 	}
 	w, err := newExecWatchFromSpec(spec)
 	if err != nil {
-		t.Fatalf("load with exec_wake_threshold=%d: %v", threshold, err)
+		t.Fatalf("load with exec_wakeup_per_record=1: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
 	if err := w.Attach(); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	return w
+}
+
+// consumePerEvent is the pre-#2774 consumer: block in the reader (no
+// deadline) and handle each record as its wakeup delivers it. Kept here only
+// as the comparison point for the overhead measurement.
+func consumePerEvent(ctx context.Context, rd *ringbuf.Reader, sink ExecEventSink) {
+	var rec ringbuf.Record
+	for ctx.Err() == nil {
+		if err := rd.ReadInto(&rec); err != nil {
+			return
+		}
+		if ev, err := ParseExecEvent(rec.RawSample); err == nil {
+			sink.OnExecEvent(ctx, ev)
+		}
+	}
 }
 
 // overheadPhase is one measured window.
@@ -528,9 +544,9 @@ type overheadPhase struct {
 
 // measurePhase runs the generator for d with w attached (nil = baseline, no
 // program) and a daemon-shaped consumer draining w's ring through
-// ConsumeExecEvents — the exact loop the daemon's ExecWatcher runs — then
-// closes w.
-func measurePhase(t *testing.T, name string, w *ExecWatch, cg *testCgroup, rate int, d time.Duration) overheadPhase {
+// ConsumeExecEvents — the exact loop the daemon's ExecWatcher runs — or,
+// with perEvent, through the pre-#2774 blocking loop; then closes w.
+func measurePhase(t *testing.T, name string, w *ExecWatch, perEvent bool, cg *testCgroup, rate int, d time.Duration) overheadPhase {
 	t.Helper()
 	ph := overheadPhase{name: name, secs: d.Seconds()}
 	var sink *daemonShapedSink
@@ -548,6 +564,10 @@ func measurePhase(t *testing.T, name string, w *ExecWatch, cg *testCgroup, rate 
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			if perEvent {
+				consumePerEvent(ctx, rd, sink)
+				return
+			}
 			ConsumeExecEvents(ctx, rd, sink, func(err error) { t.Logf("consumer: %v", err) })
 		}()
 		stop = func() { cancel(); _ = rd.Close(); <-done }
@@ -592,8 +612,8 @@ func (ph overheadPhase) rate() float64 { return float64(ph.execs) / ph.secs }
 // acceptance load (1,000 execs/s for 60 s from a separate, steadily paced
 // process; EBPF_LOAD_OVERHEAD_SECONDS overrides the duration) in three
 // windows: a baseline with no program, the shipped batched path, and — for
-// comparison — the same object with a forced wakeup on every record, the
-// per-event shape #2774 replaced. Cost = the program's own run time
+// comparison — the per-event shape #2774 replaced (the object with
+// exec_wakeup_per_record set, read by the old blocking consumer loop). Cost = the program's own run time
 // (BPF_STATS_RUN_TIME) + this process's CPU above the baseline window (the
 // consumer goroutine draining and decoding through ConsumeExecEvents into a
 // daemon-shaped sink), reported per core and as a share of every CPU on the
@@ -624,9 +644,9 @@ func TestExecWatch_OverheadMeasurement(t *testing.T) {
 	}
 	defer func() { _ = statsOff.Close() }()
 
-	base := measurePhase(t, "baseline", nil, cg, rate, d)
-	batched := measurePhase(t, "batched", loadAttached(t), cg, rate, d)
-	perEvent := measurePhase(t, "per-event", loadAttachedWakeThreshold(t, 0), cg, rate, dCmp)
+	base := measurePhase(t, "baseline", nil, false, cg, rate, d)
+	batched := measurePhase(t, "batched", loadAttached(t), false, cg, rate, d)
+	perEvent := measurePhase(t, "per-event", loadAttachedPerRecordWakeup(t), true, cg, rate, dCmp)
 
 	baseSelfPerSec := base.selfCPU.Seconds() / base.secs
 	cost := func(ph overheadPhase) (kernelPct, consumerPct, totalPct, hostPct float64) {
