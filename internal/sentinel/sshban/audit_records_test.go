@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func runOnce(t *testing.T, cfg AuditConfig, feed func(a *AuditRecorder), sweep f
 		cfg.Listener = pb.SSHBanListener_SSH_BAN_LISTENER_MAIN
 	}
 	n := 0
-	cfg.NewID = func() string { n++; return "id-" + string(rune('a'+n)) }
+	cfg.NewID = func() string { n++; return "id-" + strconv.Itoa(n) }
 	cfg.Now = func() time.Time { return time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC) }
 	a := NewAuditRecorder(cfg)
 	feed(a)
@@ -97,7 +98,7 @@ func TestAuditRecorder_RateCapFoldsSummariesIntoOneOverflowRecordAndNeverCapsBan
 	until := time.Date(2026, 10, 19, 0, 5, 0, 0, time.UTC)
 	recs := runOnce(t, AuditConfig{MaxPerMinute: 2}, func(a *AuditRecorder) {
 		for i := 0; i < 5; i++ { // 5 sources, 4 failures each; only 2 fit
-			a.Emit(Event{Kind: EventWindowFailures, IP: "198.51.100." + string(rune('1'+i)), Failures: 4})
+			a.Emit(Event{Kind: EventWindowFailures, IP: "198.51.100." + strconv.Itoa(i+1), Failures: 4})
 		}
 		a.Emit(Event{Kind: "ban", IP: "198.51.100.9", Failures: 100, ExpiresAt: until})
 	}, nil)
