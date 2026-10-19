@@ -149,14 +149,16 @@ type responseJob struct {
 	target *threatdetect.ExecEvidence
 	// at is when the job was queued: a release stamped at or after it means
 	// an operator (or the TTL backstop) decided after this response was
-	// asked for, and the job must not undo that decision.
+	// asked for, and the job must not undo that decision. Truncated to the
+	// microsecond, the precision Postgres stores released_at at, so a
+	// release in the same microsecond still counts as at-or-after.
 	at time.Time
 }
 
 // enqueue offers a job to the worker without ever blocking the caller.
 func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect.ExecEvidence) bool {
 	cp := *f
-	job := responseJob{f: &cp, at: r.now()}
+	job := responseJob{f: &cp, at: r.now().Truncate(time.Microsecond)}
 	if target != nil {
 		t := *target
 		job.target = &t
@@ -626,7 +628,10 @@ func (r *ProcessResponder) undo(row *threatdetect.SecurityAction) error {
 // operator, records RELEASED on the finding and resolves it. A finding
 // another box still has a queued response for (a shared miner-signature
 // finding, #2766) is left open, so releasing this box does not cancel that
-// box's response; it is resolved when the last box is released. Returns the
+// box's response. Only queued or in-flight jobs keep it open: once none is
+// left, releasing a box resolves the finding even while another box still
+// holds an applied action (that action stays until its own release or TTL).
+// Returns the
 // finding (nil if its row is gone) and ErrNoOpenAction when nothing is
 // open. A failed Incus call leaves the action open so the operator can
 // retry.

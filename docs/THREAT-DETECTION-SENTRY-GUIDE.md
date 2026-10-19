@@ -290,9 +290,11 @@ alone and audited as `response-skipped`, so a queued response never undoes
 a release. A signature finding is per tenant and pattern, so two boxes of
 one tenant running the same miner share one finding; a release counts only
 for the box it was made on. Releasing box A does not cancel box B's queued
-response, and while B's response is still queued the release leaves the
-shared finding open (the `release` audit row says `finding_kept_open=true`);
-releasing the last box resolves it. Resolving the finding by hand skips
+response: while another box has a response queued or in flight, the release
+leaves the shared finding open (the `release` audit row says
+`finding_kept_open=true`). Once every queued response has run, releasing a
+box resolves the finding even if other boxes are still throttled or frozen;
+their actions stay in force until their own release or TTL. Resolving the finding by hand skips
 every box's queued response. On a degraded backend (no Postgres) responses are off, the
 kill included.
 

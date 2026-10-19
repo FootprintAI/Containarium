@@ -198,8 +198,10 @@ flowchart LR
    `EVENT_TYPE_SECURITY_FINDING` with the updated finding, and updates the
    finding's `response` field. `ReleaseProcessAction` reverses it, marks
    `released_by`, and resolves the finding with `remediated=true` (a
-   miner-signature finding shared with another box that still has a
-   response queued stays open until the last box is released, #2766). A TTL
+   miner-signature finding shared with another box stays open only while
+   that box has a response queued or in flight; once none is, a release
+   resolves it even if another box still holds an applied action, which
+   stays until its own release or TTL, #2766). A TTL
    sweep (60 s) releases expired actions and upserts a MEDIUM
    `PROCESS_ACTION_EXPIRED` finding so an unattended throttle does not
    silently become permanent (the `auto_quarantine.go` backstop, same
