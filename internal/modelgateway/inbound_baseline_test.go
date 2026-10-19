@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -56,6 +57,24 @@ func (h *inboundHarness) detectionsAll() []InboundDetection {
 	return h.audit.allDetections()
 }
 
+// forwardedWithoutBaseline is what the gateway sends the client for the same
+// upstream with the baseline off (an admin policy with no inbound rule, so
+// nothing is held either). The streaming path normalises SSE framing on its
+// own, so this, not the raw upstream body, is the byte-identical reference.
+func forwardedWithoutBaseline(t *testing.T, prov string, up upstreamFn) string {
+	t.Helper()
+	ref := newInboundHarness(t, prov, up, nil)
+	ref.provider.set(blockPolicy(pb.GuardrailKind_GUARDRAIL_KIND_SECRET), nil)
+	resp, got := ref.call(`{"model":"m"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("reference call status = %d", resp.StatusCode)
+	}
+	if dets := ref.detectionsAll(); len(dets) != 0 {
+		t.Fatalf("reference gateway ran the baseline: %+v", dets)
+	}
+	return string(got)
+}
+
 func TestBaseline_NoPolicy_SeededKeyIsFlaggedAndAudited(t *testing.T) {
 	cases := []struct {
 		name, prov, body string
@@ -77,8 +96,10 @@ func TestBaseline_NoPolicy_SeededKeyIsFlaggedAndAudited(t *testing.T) {
 			if resp.StatusCode != 200 {
 				t.Fatalf("status = %d body %q, want 200 pass-through", resp.StatusCode, got)
 			}
-			if !strings.Contains(string(got), "PRIVATE KEY") && !strings.Contains(string(got), "FAKEFAKE") {
-				t.Fatalf("model output did not reach the client: %q", got)
+			// Log-only adds nothing: the client gets exactly the bytes the
+			// gateway forwards with the baseline off.
+			if want := forwardedWithoutBaseline(t, tc.prov, tc.upstream(tc.body)); string(got) != want {
+				t.Fatalf("baseline changed the forwarded bytes:\n got %q\nwant %q", got, want)
 			}
 			dets := h.detectionsAll()
 			if len(dets) != 1 {
@@ -191,8 +212,8 @@ func TestBaseline_StreamIsNotHeldBack(t *testing.T) {
 
 	close(release)
 	restBody, _ := io.ReadAll(br)
-	if !strings.Contains(string(restBody), "PRIVATE KEY") {
-		t.Fatalf("rest of the stream did not reach the client unchanged: %q", restBody)
+	if want := forwardedWithoutBaseline(t, "anthropic", sseUpstream(firstEvent+rest)); f.line+string(restBody) != want {
+		t.Fatalf("baseline changed the forwarded stream:\n got %q\nwant %q", f.line+string(restBody), want)
 	}
 	dets := h.detectionsAll()
 	if len(dets) != 1 || dets[0].RuleID != guardrail.BaselineRulePEMPrivateKey {
@@ -269,5 +290,88 @@ func TestBaseline_NoProviderIsUnchanged(t *testing.T) {
 	}
 	if dets := h.detectionsAll(); len(dets) != 0 {
 		t.Errorf("detections without a policy source: %+v", dets)
+	}
+}
+
+// An encoded body is opaque to the rules: it passes through byte for byte,
+// is counted as unscanned, and never yields a detection. The body is plain
+// text carrying a seeded key, so a scan that ran anyway would find it.
+func TestBaseline_ContentEncodedPassesThroughUnscanned(t *testing.T) {
+	body := anthropicText(fakeKeyBody)
+	h := newBaselineHarness(t, "anthropic", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "br")
+		_, _ = io.WriteString(w, body)
+	})
+	req, _ := http.NewRequest("POST", h.srv.URL+h.path, strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("Authorization", "Bearer "+h.tok)
+	req.Header.Set("Accept-Encoding", "br") // keep the client from decoding or refusing it
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || string(got) != body || resp.Header.Get("Content-Encoding") != "br" {
+		t.Fatalf("status = %d encoding %q body %q, want 200, br and the upstream bytes", resp.StatusCode, resp.Header.Get("Content-Encoding"), got)
+	}
+	if dets := h.detectionsAll(); len(dets) != 0 {
+		t.Errorf("encoded response produced detections: %+v", dets)
+	}
+	if st := h.gw.InboundStatus(); st.BaselineUnscanned != 1 {
+		t.Errorf("baseline unscanned = %d, want 1", st.BaselineUnscanned)
+	}
+}
+
+// A store error after a "not configured" read keeps the last known mode
+// (inbound.resolve): the baseline stays on and the call is not refused.
+func TestBaseline_StoreErrorAfterNotConfiguredKeepsBaseline(t *testing.T) {
+	body := anthropicText(fakeKeyBody)
+	h := newBaselineHarness(t, "anthropic", jsonUpstream(body))
+	if resp, _ := h.call(`{"model":"m"}`); resp.StatusCode != 200 {
+		t.Fatalf("first call status = %d, want 200", resp.StatusCode)
+	}
+	h.provider.set(nil, errors.New("policy store unreachable"))
+	resp, got := h.call(`{"model":"m"}`)
+	if resp.StatusCode != 200 || string(got) != body {
+		t.Fatalf("status = %d body %q, want 200 and the upstream body", resp.StatusCode, got)
+	}
+	if dets := h.detectionsAll(); len(dets) != 2 {
+		t.Fatalf("detections = %+v, want one per call (baseline kept through the store error)", dets)
+	}
+	if !strings.Contains(h.logs.String(), "policy read failed") {
+		t.Errorf("store error was not logged")
+	}
+}
+
+// chunkReader returns at most n bytes per Read, like a network body.
+type chunkReader struct {
+	r io.Reader
+	n int
+}
+
+func (c chunkReader) Read(p []byte) (int, error) {
+	if len(p) > c.n {
+		p = p[:c.n]
+	}
+	return c.r.Read(p)
+}
+
+// The kept copy never grows past the limit: a doubling buffer could reach
+// about twice the limit before the cut-off.
+func TestBaselineTee_CopyNeverExceedsLimit(t *testing.T) {
+	for _, size := range []int{1000, 1001} {
+		const limit = 1000
+		tee := &baselineTee{src: io.NopCloser(chunkReader{strings.NewReader(strings.Repeat("x", size)), 7}), limit: limit}
+		got, err := io.ReadAll(tee)
+		if err != nil || len(got) != size {
+			t.Fatalf("size %d: read %d bytes, err %v; the tee must forward everything", size, len(got), err)
+		}
+		if cap(tee.buf) > limit {
+			t.Errorf("size %d: kept copy capacity %d exceeds limit %d", size, cap(tee.buf), limit)
+		}
+		if over := size > limit; tee.over != over {
+			t.Errorf("size %d: over = %v, want %v", size, tee.over, over)
+		}
 	}
 }

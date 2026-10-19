@@ -1,7 +1,6 @@
 package modelgateway
 
 import (
-	"bytes"
 	"io"
 	"net/http"
 	"strings"
@@ -42,15 +41,15 @@ func (br *baselineRequest) watch(resp *http.Response) {
 	}
 }
 
-// baselineTee passes reads through unchanged and keeps a bounded copy. Past
-// the limit the copy is dropped (the response still flows) and the response
-// is counted as unscanned.
+// baselineTee passes reads through unchanged and keeps a bounded copy whose
+// capacity never exceeds the limit. Past the limit the copy is dropped (the
+// response still flows) and the response is counted as unscanned.
 type baselineTee struct {
 	src       io.ReadCloser
 	br        *baselineRequest
 	limit     int
 	streaming bool
-	buf       bytes.Buffer
+	buf       []byte
 	over      bool
 	once      sync.Once
 }
@@ -58,11 +57,17 @@ type baselineTee struct {
 func (t *baselineTee) Read(p []byte) (int, error) {
 	n, err := t.src.Read(p)
 	if n > 0 && !t.over {
-		if t.buf.Len()+n > t.limit {
-			t.over = true
-			t.buf = bytes.Buffer{}
-		} else {
-			t.buf.Write(p[:n])
+		need := len(t.buf) + n
+		switch {
+		case need > t.limit:
+			t.over, t.buf = true, nil
+		case need > cap(t.buf):
+			// Double like append, but never past the limit.
+			grown := make([]byte, len(t.buf), min(max(2*cap(t.buf), need, 4096), t.limit))
+			copy(grown, t.buf)
+			t.buf = append(grown, p[:n]...)
+		default:
+			t.buf = append(t.buf, p[:n]...)
 		}
 	}
 	return n, err
@@ -81,19 +86,19 @@ func (t *baselineTee) finish() {
 		t.br.in.baselineUnscanned.Add(1)
 		return
 	}
-	if t.buf.Len() == 0 {
+	if len(t.buf) == 0 {
 		return
 	}
 	var units []*pb.GuardrailTextUnit
 	if t.streaming {
-		units = inboundUnitsSSE(t.buf.Bytes())
+		units = inboundUnitsSSE(t.buf)
 	} else {
-		units = inboundUnitsJSON(t.buf.Bytes())
+		units = inboundUnitsJSON(t.buf)
 	}
 	for _, d := range guardrail.ScanBaseline(units) {
 		t.br.in.detect(t.br.sub, d)
 	}
-	t.buf = bytes.Buffer{}
+	t.buf = nil
 }
 
 // detect records one baseline detection: a log line (ids and counts only),

@@ -95,6 +95,30 @@ func TestBaselineDetection_NoTextBearingField(t *testing.T) {
 	}
 }
 
+// The literal prefilter only skips text that cannot match: ScanBaseline must
+// find exactly what the bare patterns find, on hits, near-misses and text
+// with the literal but no match.
+func TestScanBaseline_PrefilterKeepsMatches(t *testing.T) {
+	corpus := []string{
+		fakePEMHeader, fakeOpenSSHKey, "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----", "PRIVATE KEY but no header",
+		fakeAWSKeyID, "ASIA" + "FAKEFAKEFAKEFAKE", "xAKIAFAKEFAKEFAKEFAKE", "AKIA too short", "AKIA" + "FAKEFAKEFAKEFAKEX",
+		fakeGoogleKey, "AIza short", "_" + fakeGoogleKey,
+		fakeAzureKey, "AccountKey=short==",
+		"no literal at all", strings.Repeat("filler ", 100) + fakeAWSKeyID + " " + fakePEMHeader,
+	}
+	for _, text := range corpus {
+		got := map[BaselineRuleID]int{}
+		for _, d := range ScanBaseline([]*pb.GuardrailTextUnit{{UnitId: "u", Text: text}}) {
+			got[d.RuleID] = d.Matches
+		}
+		for _, r := range BaselineRules() {
+			if want := len(r.pattern.FindAllStringIndex(text, -1)); got[r.ID] != want {
+				t.Errorf("%q: rule %s matches = %d, bare pattern finds %d", text, r.ID, got[r.ID], want)
+			}
+		}
+	}
+}
+
 func TestBaselineAction_String(t *testing.T) {
 	if s := BaselineActionLog.String(); s != "log" {
 		t.Errorf("BaselineActionLog = %q, want log", s)
