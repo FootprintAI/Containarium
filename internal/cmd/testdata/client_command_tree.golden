@@ -210,6 +210,7 @@ snapshot rollback
 ssh list
 ssh propagate
 ssh remove
+ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync

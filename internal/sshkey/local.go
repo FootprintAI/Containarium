@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -37,9 +38,42 @@ import (
 // REST shim will emit.
 type SSHKey struct {
 	Name        string    `json:"name"`
-	PublicKey   string    `json:"public_key"`
+	PublicKey   string    `json:"publicKey"`
 	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
+	CreatedAt   time.Time `json:"createdAt,omitempty"`
+	ExpiresAt   time.Time `json:"expiresAt,omitempty"`
+	// Expiry alone does not authorize local private-key deletion.
+	RetiredAt *time.Time `json:"retiredAt,omitempty"`
+}
+
+// UnmarshalJSON accepts the gateway's camelCase fields and the proto field
+// names used by servers configured to emit snake_case JSON.
+func (key *SSHKey) UnmarshalJSON(data []byte) error {
+	type keyJSON SSHKey
+	var wire struct {
+		keyJSON
+		PublicKey string     `json:"public_key"`
+		CreatedAt time.Time  `json:"created_at"`
+		ExpiresAt time.Time  `json:"expires_at"`
+		RetiredAt *time.Time `json:"retired_at"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*key = SSHKey(wire.keyJSON)
+	if key.PublicKey == "" {
+		key.PublicKey = wire.PublicKey
+	}
+	if key.CreatedAt.IsZero() {
+		key.CreatedAt = wire.CreatedAt
+	}
+	if key.ExpiresAt.IsZero() {
+		key.ExpiresAt = wire.ExpiresAt
+	}
+	if key.RetiredAt == nil {
+		key.RetiredAt = wire.RetiredAt
+	}
+	return nil
 }
 
 // DefaultPrivateKeyPath is the file we look at first when "find the
@@ -116,6 +150,10 @@ func Locate(opts LocateOpts) (pubPath string, pub string, err error) {
 // should call Locate first, or pass force=true to overwrite (the
 // containarium-prefixed variant only, not the personal keys).
 func Generate(opts LocateOpts, force bool) (pubPath string, pub string, err error) {
+	return generate(opts, force, containariumKeyName)
+}
+
+func generate(opts LocateOpts, force bool, keyName string) (pubPath string, pub string, err error) {
 	dir, err := sshDir(opts.HomeDir)
 	if err != nil {
 		return "", "", err
@@ -124,7 +162,7 @@ func Generate(opts LocateOpts, force bool) (pubPath string, pub string, err erro
 		return "", "", fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	privPath := filepath.Join(dir, containariumKeyName)
+	privPath := filepath.Join(dir, keyName)
 	pubPath = privPath + containariumPubKeySuffix
 
 	if !force {
