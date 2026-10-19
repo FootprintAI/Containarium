@@ -14,6 +14,13 @@ on:
       - 'go.sum'
       - 'scripts/ci/check-licenses.sh'
       - 'scripts/ci/notice.sh'
+      - 'scripts/ci/npm-licenses.sh'
+      - 'web-ui/package.json'
+      - 'web-ui/package-lock.json'
+      - 'web-ui/THIRD-PARTY-LICENSES.txt'
+      - 'web-ui/next.config.ts'
+      - 'agent-runtime/package.json'
+      - 'agent-runtime/package-lock.json'
       - 'NOTICE'
       - '.github/workflows/licenses.yml'
   # No `branches:` filter, deliberately (#1215): a base filter leaves stacked
@@ -24,6 +31,13 @@ on:
       - 'go.sum'
       - 'scripts/ci/check-licenses.sh'
       - 'scripts/ci/notice.sh'
+      - 'scripts/ci/npm-licenses.sh'
+      - 'web-ui/package.json'
+      - 'web-ui/package-lock.json'
+      - 'web-ui/THIRD-PARTY-LICENSES.txt'
+      - 'web-ui/next.config.ts'
+      - 'agent-runtime/package.json'
+      - 'agent-runtime/package-lock.json'
       - 'NOTICE'
       - '.github/workflows/licenses.yml'
   schedule:
@@ -58,6 +72,14 @@ jobs:
 
       - name: Check licences of every shipped binary's dependency graph
         run: scripts/ci/check-licenses.sh
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      - name: Check npm licences and the web UI attribution file (#2754)
+        run: scripts/ci/npm-licenses.sh check
 
       - name: Check NOTICE carries every dependency notice (#2561)
         run: scripts/ci/notice.sh check

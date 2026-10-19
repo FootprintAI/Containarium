@@ -161,8 +161,69 @@ Reports one of four states:
 panicked shows `healthy=false` with its last error, while the engine and
 every other rule keep running unaffected.
 
+Two more lines report the signal sources that feed the rules: `cpu-sampler`
+(#2645) and `exec-telemetry` (#2637, below). Each reads `ok` /
+`metrics-collector` / `standalone (30s)` when the source runs, or
+`unavailable (<reason>)` when it cannot; an `unavailable` source on an armed
+backend raises the MEDIUM `SENTRY_UNAVAILABLE` finding with the stable
+subject `cpu-sampler unavailable` or `exec-telemetry unavailable` (the
+reason is in the finding's evidence note), resolved when the source
+recovers. `exec-events-lost: N` appears when the kernel had to drop exec
+events because the ring buffer was full (a counter, not a fault).
+
 Add `--json` for the raw response. MCP equivalent: `security_sentry_status`
 (no arguments).
+
+## Exec telemetry (process guardrail)
+
+Since #2637 the daemon also watches **process execs** in tenant boxes from
+the host, with a second eBPF object (`execwatch.bpf.o`) on the
+`sched/sched_process_exec` tracepoint. Tenants have root in their box, so
+nothing inside it is trusted to report; the kernel filters in-kernel by the
+container's cgroup, so host and core-infra execs are never emitted. Each
+event carries the host pid/ppid/uid, the executable path and the argument
+vector (capped at 512 bytes, **never** the environment), attributed to the
+container. Events feed rules that implement `ExecConsumer` (the
+miner-signature rule, #2638) and a live stream; they are **not** written to
+the audit log — only matched findings are.
+
+```bash
+# the last five minutes of execs across all boxes (the daemon's in-memory buffer)
+containarium security exec-events
+
+# one box, live
+containarium security exec-events --container box-a --follow
+
+# machine-readable, one ExecEvent JSON per line
+containarium security exec-events --since 1h --json
+```
+
+Output, one line per exec:
+
+```
+2026-10-19T05:07:18Z  box-a  pid=4242 ppid=4100 uid=1000  /tmp/.x/xmrig  ./xmrig -o pool:3333
+```
+
+Requirements and failure mode: the exec object needs kernel ≥ 5.8 (ring
+buffer; 5.6 for the cgroup-ancestor helper) and kernel BTF
+(`/sys/kernel/btf/vmlinux`) for its CO-RE reads — Ubuntu 22.04 and 24.04
+LTS have both. The object is resolved from the same
+`CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` value as the network-policy object
+(`embedded`, or the sibling `execwatch.bpf.o` of a netpolicy object path).
+When it cannot be loaded or attached, `sentry status` reports
+`exec-telemetry: unavailable (<reason>)`, `exec-events` fails with the same
+reason, the `SENTRY_UNAVAILABLE` finding fires on an armed backend, and
+**the flow rules keep running** — the two objects are independent.
+
+Overhead, measured by `TestExecWatch_OverheadMeasurement` in the eBPF
+loading lane (paced 1,000 execs/s for 60 s, attached vs. not attached). On a
+lab host (kernel 6.8, 24 threads): ~971 execs/s sustained, **0 events
+lost**, kernel-side ≈ 25 µs per exec (≈ 2.4 % of one core, within the
+run-to-run noise of a ~300 µs fork+exec) plus ≈ 1.3 % of one core for the
+daemon's ring consumer — about 0.46 % of an 8-core host at that rate. A
+burst that outruns the consumer is counted in `exec-events-lost`
+(10,000 undrained execs → 1,272 kept, 8,729 counted lost, no crash). The
+acceptance number is re-measured on the sprint's verification guest.
 
 ## Triaging findings
 
@@ -236,6 +297,7 @@ Every CLI/MCP surface above is a thin wrapper over these RPCs
 | Method | Path |
 |--------|------|
 | `GET` | `/v1/security/sentry/status` |
+| `GET` | `/v1/security/exec-events` (server stream; `container`, `since`, `follow`) |
 | `GET` | `/v1/security/findings` |
 | `POST` | `/v1/security/findings/{id}/resolve` |
 | `GET` | `/v1/security/bad-destinations` |

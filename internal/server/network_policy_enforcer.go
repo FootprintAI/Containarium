@@ -105,6 +105,15 @@ type NetworkPolicyEnforcer struct {
 
 	loader *netbpf.Loader
 
+	// execWatcher is the exec-telemetry userspace half (#2637). It rides this
+	// enforcer's lifecycle and 10 s reconcile (the container list with init
+	// pids is already gathered here) but loads its own BPF object, so its
+	// failure never touches flow enforcement. nil = sentry off.
+	execWatcher *ExecWatcher
+	// lastContainers is the raw ListContainers result of the latest gather,
+	// handed to the exec watcher's reconcile. Only touched from reconcile.
+	lastContainers []incus.ContainerInfo
+
 	// vethCache maps a running container name -> its host veth name, so a steady
 	// reconcile resolves the ifindex with a cheap local netlink lookup
 	// (VethIndex) instead of an Incus inspect (GetRawInstance) every cycle (#654).
@@ -169,6 +178,11 @@ func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 // flowsToEBPF turns into traffic-view rows. Must be called before Start.
 // Nil (default) leaves detection off.
 func (e *NetworkPolicyEnforcer) SetFlowHook(fn func(flows []netbpf.FlowRecord)) { e.flowHook = fn }
+
+// SetExecWatcher wires the exec-telemetry watcher (#2637): Start loads its
+// object after this enforcer's, every reconcile hands it the container list,
+// Stop stops it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetExecWatcher(w *ExecWatcher) { e.execWatcher = w }
 
 // SetDenyHook wires the threat-detection engine's deny-event consumer
 // (#1640). Called synchronously from OnDenyEvent, alongside the existing
@@ -328,6 +342,18 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	e.loader = loader
 	e.ctx, e.cancel = context.WithCancel(ctx)
 
+	// Exec telemetry (#2637): the second object. Resolved from the same
+	// operator value; a failure (no BTF, verifier reject, object not built) is
+	// the watcher's own `unavailable (<reason>)` status and nothing else —
+	// the flow program above is already loaded and keeps running.
+	if e.execWatcher != nil {
+		if err := e.execWatcher.Start(e.ctx, e.objPath); err != nil {
+			log.Printf("[netpolicy] exec telemetry unavailable: %v (flow rules unaffected; see `containarium security sentry status`)", err)
+		} else {
+			log.Printf("[netpolicy] exec telemetry started (tracepoint sched/sched_process_exec)")
+		}
+	}
+
 	// Tier 2 (#661): load the built-in exploit signatures + arm the scan gate once
 	// (the set is static; no per-reconcile churn). No-op unless opted in.
 	e.armSignatures()
@@ -437,6 +463,9 @@ func (e *NetworkPolicyEnforcer) Stop() {
 		e.cancel()
 	}
 	e.wg.Wait()
+	if e.execWatcher != nil {
+		e.execWatcher.Stop()
+	}
 	if e.loader != nil {
 		if err := e.loader.Close(); err != nil {
 			log.Printf("[netpolicy] loader close: %v", err)
@@ -677,6 +706,11 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Exec telemetry (#2637): converge watched_cgroups with the same container
+	// list this pass gathered (no extra Incus call). Before the policy fetch:
+	// it needs only the container list, so a policy-store (Postgres) outage
+	// must not freeze the watched set.
+	e.reconcileExec()
 	policies, err := e.compiledPolicies(ctx)
 	if err != nil {
 		return err
@@ -770,6 +804,14 @@ func boolStr(b bool) string {
 	return "false"
 }
 
+// reconcileExec converges the exec watcher with the latest gathered
+// container list; a no-op without a watcher.
+func (e *NetworkPolicyEnforcer) reconcileExec() {
+	if e.execWatcher != nil {
+		e.execWatcher.Reconcile(e.lastContainers)
+	}
+}
+
 // gather snapshots the running containers into reconcile views, resolving each
 // one's host veth ifindex (Linux). It also returns the id->name map for the
 // audit sink.
@@ -778,6 +820,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	if err != nil {
 		return nil, nil, err
 	}
+	e.lastContainers = containers
 	views := make([]containerView, 0, len(containers))
 	idName := make(map[uint32]string)
 	running := make(map[string]bool, len(containers))
