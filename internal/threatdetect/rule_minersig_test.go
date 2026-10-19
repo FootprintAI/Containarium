@@ -24,6 +24,102 @@ func execEv(filename, comm, argv string) ExecEvent {
 		Comm: comm, Filename: filename, Argv: argv}
 }
 
+// TestNormalizeMinerSignature_RejectsCatchAll (#2638 review): a pattern that
+// would match every exec is refused at insert — with kill_process on it
+// would SIGKILL every process in every box. Name globs need a literal
+// character; argv markers need minMinerSigArgvLen of them.
+func TestNormalizeMinerSignature_RejectsCatchAll(t *testing.T) {
+	name, argv := pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV
+	tests := []struct {
+		kind    pb.MinerSignatureKind
+		pattern string
+		want    string // normalized form, or "" when refused
+		wantErr string // substring of the error when refused
+	}{
+		// name: anything-goes globs
+		{name, "*", "", "matches every basename"},
+		{name, "?*", "", "matches every basename"},
+		{name, "**", "", "matches every basename"},
+		{name, "?", "", "matches every basename"},
+		{name, "???", "", "matches every basename"},
+		{name, "[a-z]*", "", "matches every basename"},
+		{name, "[^.]*", "", "matches every basename"},
+		{name, " * ", "", "matches every basename"},
+		{name, "   ", "", "is empty"},
+		// name: one literal character is a choice, not a typo
+		{name, "*m*", "*m*", ""},
+		{name, "x*", "x*", ""},
+		{name, "\\*", "\\*", ""},
+		{name, "cpuminer*", "cpuminer*", ""},
+		{name, "XMRig", "xmrig", ""},
+		// argv literal: too short to single a miner out
+		{argv, "a", "", "too short to be a signature"},
+		{argv, "-o", "", "too short to be a signature"},
+		{argv, "abc", "", "too short to be a signature"},
+		{argv, " ab ", "", "too short to be a signature"},
+		{argv, "   ", "", "is empty"},
+		{argv, "abcd", "abcd", ""},
+		{argv, "--coin ", "--coin ", ""},
+		{argv, "stratum+tcp://", "stratum+tcp://", ""},
+		// argv glob: tokens must carry literal characters, enough of them
+		{argv, "*", "", "matches every command line"},
+		{argv, "* *", "", "matches every command line"},
+		{argv, "? *", "", "matches every command line"},
+		{argv, "[a-z]*", "", "matches every command line"},
+		{argv, "-o *", "", "too short to be a signature"},
+		{argv, "-o *:3333", "-o *:3333", ""},
+		{argv, "--coin=*", "--coin=*", ""},
+		{argv, "-o[^/]*:3333", "-o[^/]*:3333", ""},
+	}
+	for _, tt := range tests {
+		t.Run(MinerSignatureKindName(tt.kind)+":"+tt.pattern, func(t *testing.T) {
+			got, err := NormalizeMinerSignature(tt.kind, tt.pattern)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("accepted %q as %q, want an error containing %q", tt.pattern, got, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				if tt.wantErr != "is empty" && !errors.Is(err, ErrMinerSignatureCatchAll) {
+					t.Fatalf("error = %v, want ErrMinerSignatureCatchAll so the server maps it to InvalidArgument", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("refused %q: %v", tt.pattern, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalized = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMinerSignatureRule_AddRefusesCatchAll: the guard holds on the insert
+// path too, and a refused add leaves the list untouched.
+func TestMinerSignatureRule_AddRefusesCatchAll(t *testing.T) {
+	r := newTestMinerSigRule(t, nil)
+	before := len(r.ListSignatures())
+	for _, c := range []struct {
+		kind    pb.MinerSignatureKind
+		pattern string
+	}{
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, "*"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, "-o"},
+	} {
+		if _, err := r.AddSignature(context.Background(), c.kind, c.pattern, "typo"); !errors.Is(err, ErrMinerSignatureCatchAll) {
+			t.Fatalf("AddSignature(%s, %q) = %v, want ErrMinerSignatureCatchAll", MinerSignatureKindName(c.kind), c.pattern, err)
+		}
+	}
+	if n := len(r.ListSignatures()); n != before {
+		t.Fatalf("list grew from %d to %d on refused adds", before, n)
+	}
+	if got := r.OnExec(RuleContext{}, execEv("/usr/sbin/sshd", "sshd", "sshd -D")); len(got) != 0 {
+		t.Fatalf("sshd matched after refused adds: %+v", got)
+	}
+}
+
 // TestMinerSignatureBaselineParses fails the build on a malformed embedded
 // list, and pins the #2711 Q2 decision: the shipped baseline carries name
 // and argv entries only — no sha256.

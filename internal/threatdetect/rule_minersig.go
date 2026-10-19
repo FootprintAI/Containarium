@@ -40,6 +40,18 @@ var ErrMinerSignatureNotFound = errors.New("miner signature not found among oper
 // ErrMinerSignatureBuiltin reports a remove of a baseline entry.
 var ErrMinerSignatureBuiltin = errors.New("miner signature is a baseline entry and cannot be removed")
 
+// ErrMinerSignatureCatchAll reports a pattern that would match (nearly)
+// every exec: a name glob with no literal character ("*", "?*", "[a-z]*")
+// or an argv marker too short to single anything out. With kill_process on,
+// such an entry — a typo for "*miner*", say — would SIGKILL every process in
+// every box, so it is refused at insert (#2638 review).
+var ErrMinerSignatureCatchAll = errors.New("miner signature matches every process")
+
+// minMinerSigArgvLen is the fewest literal characters an argv marker must
+// carry — "-o *" or "ab" tell a miner from nothing. Baseline entries are
+// held to it too (TestMinerSignatureBaselineParses).
+const minMinerSigArgvLen = 4
+
 // MinerSignatureEntry is one entry of the miner-signature list, mirroring
 // pb.MinerSignature. Pattern is stored normalized (see
 // NormalizeMinerSignature).
@@ -100,6 +112,35 @@ func ParseMinerSignatureKind(s string) (pb.MinerSignatureKind, error) {
 // hasGlob reports whether s holds a path.Match metacharacter.
 func hasGlob(s string) bool { return strings.ContainsAny(s, "*?[") }
 
+// globLiteralLen counts the characters of a path.Match pattern that must
+// match literally: everything outside '*', '?' and a "[...]" class (an
+// escaped character counts as one literal). Zero means the pattern
+// constrains nothing but length. p has already passed path.Match.
+func globLiteralLen(p string) int {
+	n := 0
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
+		case '*', '?':
+		case '[':
+			// Skip the class up to its closing ']' (path.Match refuses ']'
+			// as a first member, so the first ']' is the closing one).
+			if k := strings.IndexByte(p[i+1:], ']'); k >= 0 {
+				i += k + 1
+			} else {
+				i = len(p)
+			}
+		case '\\':
+			if i+1 < len(p) {
+				i++
+			}
+			n++
+		default:
+			n++
+		}
+	}
+	return n
+}
+
 // NormalizeMinerSignature validates pattern for kind and returns it in the
 // form it is stored and matched in: lowercased (matching is
 // case-insensitive) except for an argv glob, whose option tokens match
@@ -118,6 +159,9 @@ func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string
 		if _, err := path.Match(p, ""); err != nil {
 			return "", fmt.Errorf("name pattern %q: %w", pattern, err)
 		}
+		if globLiteralLen(p) == 0 {
+			return "", fmt.Errorf("name pattern %q has no literal character and matches every basename: %w", pattern, ErrMinerSignatureCatchAll)
+		}
 		return p, nil
 	case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV:
 		if strings.TrimSpace(pattern) == "" {
@@ -127,13 +171,22 @@ func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string
 		// its case: option tokens ("-o") match case-sensitively, since "-O"
 		// is a different flag (gcc's optimisation level); see matchToken.
 		p := strings.ToLower(pattern)
+		literal := len(strings.TrimSpace(p))
 		if hasGlob(pattern) {
 			p = strings.Join(strings.Fields(pattern), " ")
+			literal = 0
 			for _, tok := range strings.Fields(p) {
 				if _, err := path.Match(tok, ""); err != nil {
 					return "", fmt.Errorf("argv pattern %q: %w", pattern, err)
 				}
+				literal += globLiteralLen(tok)
 			}
+			if literal == 0 {
+				return "", fmt.Errorf("argv pattern %q has no literal character and matches every command line: %w", pattern, ErrMinerSignatureCatchAll)
+			}
+		}
+		if literal < minMinerSigArgvLen {
+			return "", fmt.Errorf("argv pattern %q is too short to be a signature (want at least %d literal characters): %w", pattern, minMinerSigArgvLen, ErrMinerSignatureCatchAll)
 		}
 		return p, nil
 	case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256:

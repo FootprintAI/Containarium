@@ -60,8 +60,11 @@ func (s *ThreatDetectionServer) AddMinerSignature(ctx context.Context, req *pb.A
 	}
 	entry, err := s.minerSigRule.AddSignature(ctx, sig.GetKind(), sig.GetPattern(), sig.GetLabel())
 	if err != nil {
-		if errors.Is(err, threatdetect.ErrMinerSignatureBuiltin) {
+		switch {
+		case errors.Is(err, threatdetect.ErrMinerSignatureBuiltin):
 			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		case errors.Is(err, threatdetect.ErrMinerSignatureCatchAll):
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "add miner signature: %v", err)
 	}
