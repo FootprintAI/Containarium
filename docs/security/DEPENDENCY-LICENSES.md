@@ -39,7 +39,7 @@ obligations differ per binary and per distribution channel. Change
 ## What this does not cover
 
 - Node dependencies of `agent-runtime` and the web UI, and Python packages.
-- Go modules in container images built from `images/` and in `sidecars/`.
+- Software built into container images that is not this module: the sshpiper gateway image compiles upstream sshpiper and its plugins, and the OTel sidecar assembles an upstream collector. Their licences are not scanned here. The daemon, agent-box, MCP and model-gateway images build programs from this module, which the check does cover.
 - Transitive licences of base-image packages (the images carry their own SBOM).
 - Generating the `NOTICE` file from these licences, tracked in #2561.
 - Whether a dependency's licence text matches what it declares: the scanner
