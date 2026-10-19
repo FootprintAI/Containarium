@@ -152,6 +152,12 @@ func TestSentryHealthCheck(t *testing.T) {
 	cpuStandalone := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "standalone (30s)"}
 	cpuCollector := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "metrics-collector"}
 	degradedAndCPUDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_DEGRADED, Reason: degrade, CpuSampler: cpuBad}
+	const execBad = "unavailable (netbpf: execwatch: load collection: BTF not found)"
+	execDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "metrics-collector", ExecTelemetry: execBad}
+	execDownAgain := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "metrics-collector", ExecTelemetry: "unavailable (netbpf: execwatch: attach tracepoint sched/sched_process_exec: different text)"}
+	execOK := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "metrics-collector", ExecTelemetry: "ok", ExecEventsLost: 12}
+	execAndCPUDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: cpuBad, ExecTelemetry: execBad}
+	degradedAndExecDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_DEGRADED, Reason: degrade, CpuSampler: "metrics-collector", ExecTelemetry: execBad}
 	tests := []struct {
 		name         string
 		steps        []*pb.GetSentryStatusResponse
@@ -197,6 +203,36 @@ func TestSentryHealthCheck(t *testing.T) {
 			wantOpen:  []string{degrade + "; cpu-sampler unavailable"},
 			wantCount: 1,
 			wantNote:  degrade + "; cpu-sampler: " + cpuBad,
+		},
+		{
+			name:      "exec telemetry unavailable raises with a stable subject and the full status as the note",
+			steps:     []*pb.GetSentryStatusResponse{execDown},
+			wantOpen:  []string{"exec-telemetry unavailable"},
+			wantCount: 1,
+			wantNote:  "exec-telemetry: " + execBad,
+		},
+		{
+			name:      "exec telemetry unavailable with changing detail dedupes into one row",
+			steps:     []*pb.GetSentryStatusResponse{execDown, execDownAgain},
+			wantOpen:  []string{"exec-telemetry unavailable"},
+			wantCount: 2,
+			wantNote:  "exec-telemetry: " + execBad,
+		},
+		{name: "exec telemetry recovering to ok resolves", steps: []*pb.GetSentryStatusResponse{execDown, execOK}, wantResolved: 1},
+		{name: "exec telemetry ok with a lost count raises nothing (lost is a counter, not a fault)", steps: []*pb.GetSentryStatusResponse{execOK}},
+		{
+			name:      "exec telemetry and cpu sampler both down are one finding naming both",
+			steps:     []*pb.GetSentryStatusResponse{execAndCPUDown},
+			wantOpen:  []string{"cpu-sampler unavailable; exec-telemetry unavailable"},
+			wantCount: 1,
+			wantNote:  "cpu-sampler: " + cpuBad + "; exec-telemetry: " + execBad,
+		},
+		{
+			name:      "degraded plus exec telemetry unavailable reports both in one finding",
+			steps:     []*pb.GetSentryStatusResponse{degradedAndExecDown},
+			wantOpen:  []string{degrade + "; exec-telemetry unavailable"},
+			wantCount: 1,
+			wantNote:  degrade + "; exec-telemetry: " + execBad,
 		},
 		{name: "ok raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_OK, "")}},
 		{name: "disabled raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DISABLED, "CONTAINARIUM_THREAT_SENTRY is not set")}},
