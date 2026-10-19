@@ -19354,11 +19354,19 @@
         },
         "sessionId": {
           "type": "string",
-          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
+          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
         },
         "continueSession": {
           "type": "boolean",
           "description": "Resume the engine's own \"most recent session in this box's working\ndirectory\" instead of starting a fresh one (`code run --continue`'s\nmeaning, unchanged). Mutually exclusive with session_id."
+        },
+        "runName": {
+          "type": "string",
+          "description": "Names this run exactly \u003crun_name\u003e instead of the default (the session id\nwhen resuming, else \"code\"). Must match [A-Za-z0-9._-]{1,128} and not be\n\".\" or \"..\"; anything else is INVALID_ARGUMENT, as is a name ending in\n\".stderr\" or in \".\u003cdigits\u003e\" (those alias a run's stderr log and the\nrotation suffix of a finished run). The same collision rules\napply to the name as to any other: a finished run under it is rotated\naside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an\nexplicit name never collides with the default \"code\" run, so a caller\nthat picks a unique name per run keeps every log. ListBoxRuns,\nTailBoxRunLog and the CLI address the run by this name. Empty keeps the\nprevious naming. Capability \"box_run_name\" in SystemInfo.capabilities."
+        },
+        "structuredOutput": {
+          "type": "boolean",
+          "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in /tmp/agent-box/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -19758,6 +19766,13 @@
         "capabilityProfile": {
           "$ref": "#/definitions/CapabilityProfile",
           "description": "capability_profile is this backend's last-recorded hardware capability\nprofile (#681), or null until ProfileBackend has run — null stays\ndistinguishable from \"profiled CPU-only\". Carried here for the same\npeer fan-out as headroom (#2135)."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         }
       },
       "title": "SystemInfo contains information about the host system"
