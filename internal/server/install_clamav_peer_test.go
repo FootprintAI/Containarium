@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -102,7 +104,10 @@ func TestInstallClamav_ForwardCarriesAJSONSafeName(t *testing.T) {
 	// inject into) the body.
 	peer := newFakeOwningPeer(t, `we"ird-container`)
 	s := serverWithPeers(peer.client())
-	_, _ = s.InstallClamav(adminCtx(), &pb.InstallClamavRequest{ContainerName: `we"ird-container`})
+	// The control plane acting for an owner it already authorized (#2692).
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "driver", []string{auth.RoleAdmin},
+		[]string{auth.ScopeSecurityWrite, auth.ScopeSecurityTriggerForOwner})
+	_, _ = s.InstallClamav(ctx, &pb.InstallClamavRequest{ContainerName: `we"ird-container`})
 	var body map[string]string
 	if err := json.Unmarshal([]byte(peer.gotBody.Load().(string)), &body); err != nil {
 		t.Fatalf("forwarded body is not valid JSON: %q (%v)", peer.gotBody.Load(), err)

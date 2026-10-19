@@ -303,3 +303,45 @@ func TestInstallClamav_Authz(t *testing.T) {
 		t.Fatalf("owner: got %v want Unavailable (past the gate)", err)
 	}
 }
+
+// InstallClamav (#2692) follows the same owner-only rule as TriggerClamavScan
+// (#2655): the install runs commands inside the customer's box.
+func TestInstallClamav_OwnerOnly(t *testing.T) {
+	srv := &SecurityServer{} // no runtime: an authorized caller stops at Unavailable, not PermissionDenied
+	driver := auth.ContextWithTestSubjectScopes(context.Background(), "driver", []string{auth.RoleAdmin},
+		[]string{auth.ScopeSecurityWrite, auth.ScopeSecurityTriggerForOwner})
+	tests := []struct {
+		name     string
+		ctx      context.Context
+		box      string
+		wantCode codes.Code
+	}{
+		{"owner passes the gate", tenantCtx("alice"), "alice-container", codes.Unavailable},
+		{"other tenant is refused", tenantCtx("alice"), "bob-container", codes.PermissionDenied},
+		{"unscoped admin cannot install in a tenant box", adminCtx(), "alice-container", codes.PermissionDenied},
+		{"wildcard admin cannot either", auth.ContextWithTestSubjectScopes(context.Background(), "ops", []string{auth.RoleAdmin}, []string{auth.ScopeWildcard}), "alice-container", codes.PermissionDenied},
+		{"security:write admin cannot either", auth.ContextWithTestSubjectScopes(context.Background(), "ops", []string{auth.RoleAdmin}, []string{auth.ScopeSecurityWrite}), "alice-container", codes.PermissionDenied},
+		{"a system box is refused even to an admin", adminCtx(), "caddy", codes.PermissionDenied},
+		{"the control plane acting for the owner passes the gate", driver, "alice-container", codes.Unavailable},
+		{"a non-admin cannot borrow the delegation scope", auth.ContextWithTestSubjectScopes(context.Background(), "mallory", []string{"user"},
+			[]string{auth.ScopeSecurityWrite, auth.ScopeSecurityTriggerForOwner}), "alice-container", codes.PermissionDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := srv.InstallClamav(tt.ctx, &pb.InstallClamavRequest{ContainerName: tt.box})
+			if status.Code(err) != tt.wantCode {
+				t.Fatalf("got %v (%v), want %v", status.Code(err), err, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestInstallClamav_BlankNameNeedsAnAdminAndIsStillRefused(t *testing.T) {
+	srv := &SecurityServer{}
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant with a blank name: got %v, want PermissionDenied", err)
+	}
+	if _, err := srv.InstallClamav(adminCtx(), &pb.InstallClamavRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("admin with a blank name: got %v, want InvalidArgument", err)
+	}
+}
