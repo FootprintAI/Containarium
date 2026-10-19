@@ -10,6 +10,43 @@ the thin layer on top that the cloud doesn't give you — credential-scoped
 SSH/MCP access, the gateway key choreography, per-tenant isolation, and box
 lifecycle (start / stop / suspend / TTL).
 
+## Install a released chart
+
+Each release publishes the Helm chart as an OCI artifact next to the binaries.
+The chart version is the release version without its leading `v`; the chart
+pins the daemon image of its own release (`ghcr.io/footprintai/containarium:v<release>`),
+so a given `--version` always installs the same daemon.
+
+```bash
+helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
+  --version <release-without-v> \
+  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+```
+
+The cloud presets (`values-gke.yaml`, `values-eks.yaml`) live in the repository
+at the release tag; pass the one you need with `-f`. The release notes for each
+tag print the exact chart version. The chart in the repository
+(`charts/containarium-k8s`) carries development placeholders (`0.0.0-dev`,
+image tag `latest`); only the packaged chart attached to a release is stamped,
+so install from a release, not from a checkout, when you need a reproducible
+deployment.
+
+The gateway (`containarium-sshpiper`) and box (`containarium-agent-box`) images
+are still referenced by moving tags in `values.yaml`. Pin them with
+`--set gateway.sshpiper.image=...` and `--set agentBox.image=...` if you need
+those pinned as well.
+
+### What is tested
+
+| Target | Status |
+|---|---|
+| kind (`k8s-e2e`: throwaway kind v0.24.0 cluster, default node image) | exercised in CI on every change to the reconciler |
+| `helm lint` and template rendering (default, gateway disabled, release-stamped) | exercised in CI on every change under `charts/` |
+| EKS (`values-eks.yaml`) and GKE (`values-gke.yaml`) presets | **not** exercised in CI; rendered by the lint job only |
+
+No minimum Kubernetes version is enforced by the chart (`kubeVersion` is
+unset); the versions above are the ones actually run.
+
 ## Architecture
 
 ```

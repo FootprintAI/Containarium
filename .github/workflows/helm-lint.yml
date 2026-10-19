@@ -67,3 +67,23 @@ jobs:
           helm template containarium charts/containarium-k8s \
             --set gateway.enabled=false --set gateway.namespace="" \
             > /dev/null
+
+      - name: Packaged chart pins its own release image (#2574)
+        # The release workflow stamps `version` / `appVersion` with
+        # `helm package`. Prove the stamped chart renders exactly that
+        # release's daemon image (and not the in-repo `latest` placeholder),
+        # using the same flags release.yml uses.
+        run: |
+          helm package charts/containarium-k8s \
+            --version 9.8.7 --app-version v9.8.7 --destination "$RUNNER_TEMP"
+          rendered="$(helm template containarium "$RUNNER_TEMP/containarium-k8s-9.8.7.tgz" \
+            --set gateway.upstreamKeySecret=smoke-test-placeholder)"
+          if ! grep -q 'image: ghcr.io/footprintai/containarium:v9.8.7$' <<<"$rendered"; then
+            echo "::error::stamped chart does not render the daemon image ghcr.io/footprintai/containarium:v9.8.7"
+            grep -n 'image:' <<<"$rendered" || true
+            exit 1
+          fi
+          if grep -q 'containarium:latest' <<<"$rendered"; then
+            echo "::error::stamped chart still references the :latest daemon image"
+            exit 1
+          fi
