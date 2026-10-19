@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -375,5 +376,16 @@ func TestRBAC_AdminPassesGate(t *testing.T) {
 	_, err := srv.TriggerZapScan(ctx, &pb.TriggerZapScanRequest{})
 	if status.Code(err) == codes.PermissionDenied {
 		t.Fatalf("admin must pass the gate; got %v", err)
+	}
+}
+
+// #2759: asking for no auto-sleep and an idle-stop timer at once is a
+// contradiction, rejected up front rather than resolved by guessing.
+func TestCreateContainer_DisableAutoSleepConflictsWithIdleStop(t *testing.T) {
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", nil, []string{auth.ScopeContainersWrite, auth.ScopeContainersRead})
+	srv := &ContainerServer{}
+	_, err := srv.CreateContainer(ctx, &pb.CreateContainerRequest{Username: "alice", DisableAutoSleep: true, IdleStopMinutes: 30})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "contradictory") {
+		t.Fatalf("got %v, want InvalidArgument naming the contradiction", err)
 	}
 }
