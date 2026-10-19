@@ -1415,6 +1415,17 @@ func (c *Client) getInstanceStateWithRetry(what, name string) (*api.InstanceStat
 	})
 }
 
+// InitPID returns the host pid of the instance's init process (0 when it is
+// not running). The process responder's kill path (#2638) uses it to
+// re-check that a pid still belongs to the container before signalling it.
+func (c *Client) InitPID(name string) (int64, error) {
+	state, _, err := c.getInstanceStateWithRetry("init pid "+name, name)
+	if err != nil {
+		return 0, fmt.Errorf("get instance state %s: %w", name, err)
+	}
+	return state.Pid, nil
+}
+
 // stateWithRetry is the generic retry loop behind getInstanceStateWithRetry,
 // split out (mirroring execWithRetry) so tests can exercise the retry/backoff
 // behavior against a fake attempt func without a real Incus server.

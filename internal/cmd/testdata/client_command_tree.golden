@@ -188,6 +188,9 @@ security exec-events
 security findings
 security findings list
 security findings resolve
+security miner-signatures add
+security miner-signatures list
+security miner-signatures remove
 security process-policy get
 security process-policy release
 security process-policy set
@@ -207,6 +210,7 @@ snapshot rollback
 ssh list
 ssh propagate
 ssh remove
+ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync

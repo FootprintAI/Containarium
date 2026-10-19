@@ -373,3 +373,16 @@ func TestEngine_RuleContext_MiningThresholds(t *testing.T) {
 		t.Fatalf("MiningThresholds().MinCores = %v, want 3", got.MinCores)
 	}
 }
+
+// TestEngine_RedeliverExec_OnlyThatRule (#2638 review): a hashed exec goes
+// back to the rule that asked for it, not to every ExecConsumer again.
+func TestEngine_RedeliverExec_OnlyThatRule(t *testing.T) {
+	e := NewEngine(&fakeSink{}, "b1", false, nil, fixedClock(time.Unix(0, 0)))
+	var a, b int
+	e.Register(&execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE}, onExec: func(RuleContext, ExecEvent) []RawFinding { a++; return nil }})
+	e.Register(&execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR}, onExec: func(RuleContext, ExecEvent) []RawFinding { b++; return nil }})
+	e.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ExecEvent{PID: 1, SHA256: "x"})
+	if a != 1 || b != 0 {
+		t.Fatalf("deliveries: target=%d other=%d, want 1 and 0", a, b)
+	}
+}
