@@ -577,6 +577,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// succeeded, and the user can re-run `containarium ssh setup`
 	// later.
 	maybeRunPostLoginSSHSetup(out, srv, accessModel)
+	maybeCheckPostLoginSSHKeys(out, srv)
 	return nil
 }
 
