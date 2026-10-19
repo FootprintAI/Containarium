@@ -121,3 +121,94 @@ func TestWebhookNotifier_Gate(t *testing.T) {
 		}
 	})
 }
+
+// #2718: a response transition (applied, failed, released, expired) is news
+// the operator must not have to poll for. It is delivered at once, inside the
+// re-notify interval, the way a severity escalation is; an unchanged response
+// is still a repeat. A release by an operator resolves the finding in the
+// same call, and the pair is one delivery (the release), not two.
+func TestWebhookNotifier_ResponseTransitions(t *testing.T) {
+	resp := func(state pb.ResponseState, releasedBy string) *FindingResponse {
+		return &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: state, ReleasedBy: releasedBy}
+	}
+	type step struct {
+		name     string
+		response *FindingResponse // nil = no response yet
+		resolved bool
+		want     bool // delivered?
+	}
+	var (
+		none     = pb.ResponseState_RESPONSE_STATE_NONE
+		applied  = pb.ResponseState_RESPONSE_STATE_APPLIED
+		failed   = pb.ResponseState_RESPONSE_STATE_FAILED
+		released = pb.ResponseState_RESPONSE_STATE_RELEASED
+		expired  = pb.ResponseState_RESPONSE_STATE_EXPIRED
+	)
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"applied then operator release and resolve", []step{
+			{"upsert", nil, false, true},
+			{"responder applies", resp(applied, ""), false, true},
+			{"repeat upsert", resp(applied, ""), false, false},
+			{"repeat upsert again", resp(applied, ""), false, false},
+			{"operator releases", resp(released, ReleasedByOperator), false, true},
+			{"release resolves the finding", resp(released, ReleasedByOperator), true, false},
+		}},
+		{"actuator error", []step{
+			{"upsert", nil, false, true},
+			{"responder fails", resp(failed, ReleasedByError), false, true},
+			{"repeat upsert", resp(failed, ReleasedByError), false, false},
+		}},
+		{"ttl expiry", []step{
+			{"upsert", nil, false, true},
+			{"responder applies", resp(applied, ""), false, true},
+			{"ttl releases", resp(expired, ReleasedByTTL), false, true},
+			{"hand resolve later is still delivered", resp(expired, ReleasedByTTL), true, true},
+		}},
+		{"orphan-sweep release does not swallow a later resolve", []step{
+			{"upsert", nil, false, true},
+			{"sweep undoes a pending apply", resp(released, ReleasedByOrphanSweep), false, true},
+			{"hand resolve", resp(released, ReleasedByOrphanSweep), true, true},
+		}},
+		{"alert-only response is not a transition", []step{
+			{"upsert", nil, false, true},
+			{"responder records alert-only", &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: none}, false, false},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clock := gatedNotifier(time.Hour)
+			delivered := 0
+			for _, s := range tc.steps {
+				f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+				f.Response = s.response
+				if s.resolved {
+					f.State = FindingStateResolved
+				}
+				n.Notify(f)
+				*clock = clock.Add(time.Minute) // all well inside the interval
+				if s.want {
+					delivered++
+				}
+				if got := len(n.queue); got != delivered {
+					t.Fatalf("after %q: deliveries = %d, want %d", s.name, got, delivered)
+				}
+				if s.want {
+					// drain and check the payload carries the response
+					var last *Finding
+					for len(n.queue) > 0 {
+						last = <-n.queue
+					}
+					delivered = 0
+					if s.response != nil && last.ToProto().GetResponse().GetState() != s.response.State {
+						t.Errorf("after %q: delivered response = %s, want %s", s.name, last.ToProto().GetResponse().GetState(), s.response.State)
+					}
+				}
+			}
+			if s := tc.steps[len(tc.steps)-1]; s.resolved && len(n.gate.last) != 0 {
+				t.Errorf("gate still tracks a resolved finding: %v", n.gate.last)
+			}
+		})
+	}
+}

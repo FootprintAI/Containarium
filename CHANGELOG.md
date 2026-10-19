@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`InstallClamav` is owner-only, like the scan trigger** (#2692, follows #2655). Installing ClamAV runs commands inside the customer's box, so only the box's owner may ask: an administrator no longer bypasses the check, and a system container is refused. A service credential carrying the literal `security:trigger-for-owner` scope (the managed control plane acting for an owner it already authorized) still passes, as for `TriggerClamavScan`. A box on a peer backend is checked again by the daemon that owns it.
 - **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
 
+### Fixed
+
+- **The finding webhook now reports what the process responder did** (#2718, part of #2711). The webhook was queued when a finding was recorded, before the responder acted, and recording the response never notified, so the only delivery for a mining finding said `response: NONE` and an operator learned of the throttle, its release, expiry or failure only by polling. A response transition (`APPLIED`, `FAILED`, `RELEASED`, `EXPIRED`) is now delivered at once, inside the re-notify interval, the way a severity escalation is; a repeat with an unchanged response is still suppressed. An operator release, which also resolves the finding, is one delivery (the release), not two; a TTL expiry or orphan-sweep release leaves the finding open, so its later resolve is still delivered.
+
 ## [0.108.0] - 2026-10-19
 
 ### Added
