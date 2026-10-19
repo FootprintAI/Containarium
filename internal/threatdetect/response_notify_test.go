@@ -166,9 +166,9 @@ func TestMemFindingStore_SetResponseNotifiesAKillSnapshot(t *testing.T) {
 		t.Fatalf("kill under ALERT: deliveries = %d, want 1", len(n.queue))
 	}
 	stored.Response.KilledPID = 1
-	stored.Response.KillSkipped = "mutated"
+	stored.Response.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_OTHER
 	queued := <-n.queue
-	if queued.Response.KilledPID != 4242 || queued.Response.KillSkipped != "" || !queued.Response.ProcessKilled {
+	if queued.Response.KilledPID != 4242 || queued.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED || !queued.Response.ProcessKilled {
 		t.Errorf("queued kill changed with the store: %+v", *queued.Response)
 	}
 }

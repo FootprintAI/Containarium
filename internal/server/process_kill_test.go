@@ -264,8 +264,8 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		if f.Response == nil || f.Response.ProcessKilled {
 			t.Fatalf("response = %+v, want not killed", f.Response)
 		}
-		if !strings.Contains(f.Response.KillSkipped, "pid reused") || f.Response.KilledPID != 0 {
-			t.Fatalf("kill_skipped = %q killed_pid = %d, want the reason and no pid (#2775)", f.Response.KillSkipped, f.Response.KilledPID)
+		if f.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED || f.Response.KilledPID != 0 {
+			t.Fatalf("kill_skip_reason = %s killed_pid = %d, want PID_REUSED and no pid (#2775)", f.Response.KillSkipReason, f.Response.KilledPID)
 		}
 		d := auditDetails(fx.audit, "kill-skipped")
 		if len(d) != 1 || !strings.Contains(d[0], "pid reused") || len(auditDetails(fx.audit, "kill")) != 0 {
@@ -329,4 +329,67 @@ func TestHashProcExe(t *testing.T) {
 	if h.dropped.Load() != 5 {
 		t.Fatalf("dropped = %d, want 5 (Request must never block)", h.dropped.Load())
 	}
+}
+
+// #2775 review: the kill facts a webhook post carries stay true across
+// respawns, a second exec while an action is open, and a release.
+func TestProcessResponder_KillFactsAcrossRespawns(t *testing.T) {
+	ctx := context.Background()
+	stored := func(t *testing.T, fx *responderFixture, id int64) *threatdetect.FindingResponse {
+		t.Helper()
+		g, err := fx.findings.Get(ctx, id)
+		if err != nil || g.Response == nil {
+			t.Fatalf("get finding %d: %v %+v", id, err, g)
+		}
+		return g.Response
+	}
+	t.Run("a second distinct skip under ALERT is written, the same kind is not", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{err: fmt.Errorf("pid 1: %w", errKillPIDReused)}
+		fx.r.SetProcessKiller(k)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 1)
+		if got := stored(t, fx, f.ID).KillSkipReason; got != pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED {
+			t.Fatalf("first skip = %s", got)
+		}
+		k.err = fmt.Errorf("pid 2: %w", errKillProcessGone)
+		fx.fireSignature(t, "box-a", 2)
+		if got := stored(t, fx, f.ID).KillSkipReason; got != pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE {
+			t.Fatalf("second, different skip = %s, want PROCESS_GONE", got)
+		}
+	})
+	t.Run("a skip while an action is open is recorded", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{}
+		fx.r.SetProcessKiller(k)
+		fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 1)
+		k.err = fmt.Errorf("pid 2: %w", errKillContainerInit)
+		fx.fireSignature(t, "box-a", 2)
+		r := stored(t, fx, f.ID)
+		if r.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_CONTAINER_INIT || r.State != pb.ResponseState_RESPONSE_STATE_APPLIED || r.KilledPID != 1 {
+			t.Fatalf("response = %+v, want APPLIED, pid 1 kept, skip CONTAINER_INIT", r)
+		}
+	})
+	t.Run("a release after later kills names the latest pid and the count", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{}
+		fx.r.SetProcessKiller(k)
+		fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 1)
+		fx.fireSignature(t, "box-a", 2)
+		fx.fireSignature(t, "box-a", 3)
+		if r := stored(t, fx, f.ID); r.KilledPID != 3 || r.Kills != 3 {
+			t.Fatalf("before release: pid=%d kills=%d, want 3 and 3", r.KilledPID, r.Kills)
+		}
+		if _, err := fx.r.Release(ctx, "box-a"); err != nil {
+			t.Fatal(err)
+		}
+		r := stored(t, fx, f.ID)
+		if r.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !r.ProcessKilled || r.KilledPID != 3 || r.Kills != 3 {
+			t.Fatalf("released response = %+v, want RELEASED with pid 3, kills 3", r)
+		}
+	})
 }

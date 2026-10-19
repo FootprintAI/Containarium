@@ -218,16 +218,18 @@ type FindingResponse struct {
 	Action        pb.ProcessAction
 	State         pb.ResponseState
 	ProcessKilled bool
-	// KilledPID is the host pid the responder killed; KillSkipped is why an
-	// attempted kill did not happen. A change in either is a webhook delivery
-	// (#2775).
-	KilledPID   uint32
-	KillSkipped string
-	AppliedAt   time.Time
-	ExpiresAt   time.Time
-	ReleasedAt  time.Time
-	ReleasedBy  string
-	Error       string
+	// KilledPID is the host pid the responder last killed, Kills how many it
+	// has killed for this finding, and KillSkipReason why the last attempted
+	// kill did not happen. The webhook delivers them (#2775); see deliveryGate
+	// for how a respawning miner is bounded.
+	KilledPID      uint32
+	Kills          uint32
+	KillSkipReason pb.KillSkipReason
+	AppliedAt      time.Time
+	ExpiresAt      time.Time
+	ReleasedAt     time.Time
+	ReleasedBy     string
+	Error          string
 }
 
 // findingResponseJSON is the storage encoding of FindingResponse.
@@ -236,7 +238,8 @@ type findingResponseJSON struct {
 	State         string    `json:"state"`
 	ProcessKilled bool      `json:"process_killed,omitempty"`
 	KilledPID     uint32    `json:"killed_pid,omitempty"`
-	KillSkipped   string    `json:"kill_skipped,omitempty"`
+	Kills         uint32    `json:"kills,omitempty"`
+	KillSkip      string    `json:"kill_skip_reason,omitempty"`
 	AppliedAt     time.Time `json:"applied_at,omitzero"`
 	ExpiresAt     time.Time `json:"expires_at,omitzero"`
 	ReleasedAt    time.Time `json:"released_at,omitzero"`
@@ -244,11 +247,19 @@ type findingResponseJSON struct {
 	Error         string    `json:"error,omitempty"`
 }
 
+// skipName is the stored name of a skip reason; none stores nothing.
+func skipName(r pb.KillSkipReason) string {
+	if r == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
+		return ""
+	}
+	return r.String()
+}
+
 // MarshalJSON encodes enums by name.
 func (r FindingResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(findingResponseJSON{
 		Action: r.Action.String(), State: r.State.String(), ProcessKilled: r.ProcessKilled,
-		KilledPID: r.KilledPID, KillSkipped: r.KillSkipped,
+		KilledPID: r.KilledPID, Kills: r.Kills, KillSkip: skipName(r.KillSkipReason),
 		AppliedAt: r.AppliedAt, ExpiresAt: r.ExpiresAt, ReleasedAt: r.ReleasedAt,
 		ReleasedBy: r.ReleasedBy, Error: r.Error,
 	})
@@ -264,8 +275,9 @@ func (r *FindingResponse) UnmarshalJSON(b []byte) error {
 	*r = FindingResponse{
 		Action:        pb.ProcessAction(pb.ProcessAction_value[j.Action]),
 		State:         pb.ResponseState(pb.ResponseState_value[j.State]),
-		ProcessKilled: j.ProcessKilled, KilledPID: j.KilledPID, KillSkipped: j.KillSkipped,
-		AppliedAt: j.AppliedAt, ExpiresAt: j.ExpiresAt, ReleasedAt: j.ReleasedAt,
+		ProcessKilled: j.ProcessKilled, KilledPID: j.KilledPID, Kills: j.Kills,
+		KillSkipReason: pb.KillSkipReason(pb.KillSkipReason_value[j.KillSkip]),
+		AppliedAt:      j.AppliedAt, ExpiresAt: j.ExpiresAt, ReleasedAt: j.ReleasedAt,
 		ReleasedBy: j.ReleasedBy, Error: j.Error,
 	}
 	return nil
@@ -277,16 +289,17 @@ func (r *FindingResponse) ToProto() *pb.FindingResponse {
 		return nil
 	}
 	return &pb.FindingResponse{
-		Action:        r.Action,
-		State:         r.State,
-		ProcessKilled: r.ProcessKilled,
-		KilledPid:     r.KilledPID,
-		KillSkipped:   r.KillSkipped,
-		AppliedAt:     timestampProto(r.AppliedAt),
-		ExpiresAt:     timestampProto(r.ExpiresAt),
-		ReleasedAt:    timestampProto(r.ReleasedAt),
-		ReleasedBy:    r.ReleasedBy,
-		Error:         r.Error,
+		Action:         r.Action,
+		State:          r.State,
+		ProcessKilled:  r.ProcessKilled,
+		KilledPid:      r.KilledPID,
+		Kills:          r.Kills,
+		KillSkipReason: r.KillSkipReason,
+		AppliedAt:      timestampProto(r.AppliedAt),
+		ExpiresAt:      timestampProto(r.ExpiresAt),
+		ReleasedAt:     timestampProto(r.ReleasedAt),
+		ReleasedBy:     r.ReleasedBy,
+		Error:          r.Error,
 	}
 }
 

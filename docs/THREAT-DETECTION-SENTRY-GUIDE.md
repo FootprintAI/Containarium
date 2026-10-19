@@ -362,16 +362,30 @@ A finding is delivered when it is new, when its severity escalates, when
 the process responder's response changes, and once more when it
 resolves. A killed process is one of those changes: with
 `process-policy set --kill-process=true`, an `ALERT` policy delivers the
-new finding and then a second post whose `response` names the kill
-(`process_killed: true` and `killed_pid`, the host pid that was
-SIGKILLed; `response.state` stays `1`, `NONE`, because `ALERT` does
-nothing else to the box). Under `THROTTLE` or `FREEZE` the `APPLIED`
-post carries the kill. If the kill was attempted and did not happen (pid
-reused, process already gone), `response.kill_skipped` holds the reason
-and `process_killed` is absent. A second process killed on the same
-finding is delivered again with its own `killed_pid`. `response.state`
-is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4` RELEASED, `5`
-EXPIRED. Fields that are zero or empty are omitted from the JSON.
+new finding and then a second post whose `response` names the kill:
+`process_killed: true`, `killed_pid` (the **host** pid that was SIGKILLed,
+not the pid inside the box) and `kills` (how many processes have been
+killed for this finding). `response.state` stays `1`, `NONE`, because
+`ALERT` does nothing else to the box. Under `THROTTLE` or `FREEZE` the
+`APPLIED` post carries the kill.
+
+A miner that respawns is killed again each time, so later kills are
+rate-limited: the first kill is delivered at once, and further kills on
+the same finding at most once a minute, each carrying the latest
+`killed_pid` and the running `kills` count. A kill that lands inside that
+minute is delivered by the finding's next write after it, so the last
+kill of a burst can reach the webhook late; `findings list` always shows
+the current state.
+
+If a kill was attempted and did not happen, `response.kill_skip_reason`
+says why, as a number: `1` PID_REUSED (the pid now belongs to another
+cgroup), `2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's
+init, never signalled), `4` POLICY_UNREADABLE, `5` OTHER. The first skip is
+delivered at once and a different reason at most once a minute; the pid
+and error detail stay in the audit log (`kill-skipped`), not the webhook.
+`response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
+RELEASED, `5` EXPIRED. Fields that are zero or empty are omitted from the
+JSON.
 
 ## Managing the known-bad-destination list
 

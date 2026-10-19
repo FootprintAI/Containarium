@@ -357,6 +357,72 @@ func (ResponseState) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{4}
 }
 
+// KillSkipReason is why a kill_process attempt did not kill the process
+// (#2775). It is what the finding webhook carries; the audit row keeps the
+// full detail.
+type KillSkipReason int32
+
+const (
+	KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED KillSkipReason = 0
+	// The pid now belongs to a different cgroup than the container's.
+	KillSkipReason_KILL_SKIP_REASON_PID_REUSED KillSkipReason = 1
+	// The process exited before the signal.
+	KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE KillSkipReason = 2
+	// The pid is the container's init; killing it would stop the box.
+	KillSkipReason_KILL_SKIP_REASON_CONTAINER_INIT KillSkipReason = 3
+	// The effective process policy could not be read.
+	KillSkipReason_KILL_SKIP_REASON_POLICY_UNREADABLE KillSkipReason = 4
+	// Any other refusal (host or Incus error).
+	KillSkipReason_KILL_SKIP_REASON_OTHER KillSkipReason = 5
+)
+
+// Enum value maps for KillSkipReason.
+var (
+	KillSkipReason_name = map[int32]string{
+		0: "KILL_SKIP_REASON_UNSPECIFIED",
+		1: "KILL_SKIP_REASON_PID_REUSED",
+		2: "KILL_SKIP_REASON_PROCESS_GONE",
+		3: "KILL_SKIP_REASON_CONTAINER_INIT",
+		4: "KILL_SKIP_REASON_POLICY_UNREADABLE",
+		5: "KILL_SKIP_REASON_OTHER",
+	}
+	KillSkipReason_value = map[string]int32{
+		"KILL_SKIP_REASON_UNSPECIFIED":       0,
+		"KILL_SKIP_REASON_PID_REUSED":        1,
+		"KILL_SKIP_REASON_PROCESS_GONE":      2,
+		"KILL_SKIP_REASON_CONTAINER_INIT":    3,
+		"KILL_SKIP_REASON_POLICY_UNREADABLE": 4,
+		"KILL_SKIP_REASON_OTHER":             5,
+	}
+)
+
+func (x KillSkipReason) Enum() *KillSkipReason {
+	p := new(KillSkipReason)
+	*p = x
+	return p
+}
+
+func (x KillSkipReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KillSkipReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_threatdetection_proto_enumTypes[5].Descriptor()
+}
+
+func (KillSkipReason) Type() protoreflect.EnumType {
+	return &file_containarium_v1_threatdetection_proto_enumTypes[5]
+}
+
+func (x KillSkipReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KillSkipReason.Descriptor instead.
+func (KillSkipReason) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{5}
+}
+
 // SentryState is the overall on/off state of the background threat-detection
 // engine, as reported by GetSentryStatus.
 type SentryState int32
@@ -406,11 +472,11 @@ func (x SentryState) String() string {
 }
 
 func (SentryState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_threatdetection_proto_enumTypes[5].Descriptor()
+	return file_containarium_v1_threatdetection_proto_enumTypes[6].Descriptor()
 }
 
 func (SentryState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_threatdetection_proto_enumTypes[5]
+	return &file_containarium_v1_threatdetection_proto_enumTypes[6]
 }
 
 func (x SentryState) Number() protoreflect.EnumNumber {
@@ -419,7 +485,7 @@ func (x SentryState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SentryState.Descriptor instead.
 func (SentryState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{6}
 }
 
 // MinerSignatureKind is what a MinerSignature matches against (#2638).
@@ -470,11 +536,11 @@ func (x MinerSignatureKind) String() string {
 }
 
 func (MinerSignatureKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_threatdetection_proto_enumTypes[6].Descriptor()
+	return file_containarium_v1_threatdetection_proto_enumTypes[7].Descriptor()
 }
 
 func (MinerSignatureKind) Type() protoreflect.EnumType {
-	return &file_containarium_v1_threatdetection_proto_enumTypes[6]
+	return &file_containarium_v1_threatdetection_proto_enumTypes[7]
 }
 
 func (x MinerSignatureKind) Number() protoreflect.EnumNumber {
@@ -483,7 +549,7 @@ func (x MinerSignatureKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MinerSignatureKind.Descriptor instead.
 func (MinerSignatureKind) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{7}
 }
 
 // FlowEvidence captures one triggering flow's 5-tuple and volume, attached to
@@ -1400,13 +1466,18 @@ type FindingResponse struct {
 	ReleasedBy string `protobuf:"bytes,7,opt,name=released_by,json=releasedBy,proto3" json:"released_by,omitempty"`
 	// Incus error text when state is FAILED.
 	Error string `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
-	// Host pid of the process the responder SIGKILLed; set with process_killed.
-	// A kill is delivered by the finding webhook (#2775), so a consumer learns
-	// which process died.
+	// Host pid (not a pid inside the box) of the process the responder last
+	// SIGKILLed; set with process_killed. A kill is delivered by the finding
+	// webhook (#2775), so a consumer learns which process died.
 	KilledPid uint32 `protobuf:"varint,9,opt,name=killed_pid,json=killedPid,proto3" json:"killed_pid,omitempty"`
-	// Why a kill_process attempt did not kill (pid reused, already exited, ...);
-	// empty when nothing was skipped. Delivered by the finding webhook (#2775).
-	KillSkipped   string `protobuf:"bytes,10,opt,name=kill_skipped,json=killSkipped,proto3" json:"kill_skipped,omitempty"`
+	// Why the last kill_process attempt did not kill; UNSPECIFIED when nothing
+	// was skipped. The detail (pid, cgroup, error text) stays in the audit row.
+	KillSkipReason KillSkipReason `protobuf:"varint,10,opt,name=kill_skip_reason,json=killSkipReason,proto3,enum=containarium.v1.KillSkipReason" json:"kill_skip_reason,omitempty"`
+	// How many processes the responder has killed for this finding. A miner
+	// that respawns is killed again each time; the webhook delivers the first
+	// kill at once and later ones at most once a minute, carrying this count
+	// and the latest killed_pid.
+	Kills         uint32 `protobuf:"varint,11,opt,name=kills,proto3" json:"kills,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1504,11 +1575,18 @@ func (x *FindingResponse) GetKilledPid() uint32 {
 	return 0
 }
 
-func (x *FindingResponse) GetKillSkipped() string {
+func (x *FindingResponse) GetKillSkipReason() KillSkipReason {
 	if x != nil {
-		return x.KillSkipped
+		return x.KillSkipReason
 	}
-	return ""
+	return KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED
+}
+
+func (x *FindingResponse) GetKills() uint32 {
+	if x != nil {
+		return x.Kills
+	}
+	return 0
 }
 
 // ProcessPolicy says what a HIGH mining finding does to its container
@@ -3268,7 +3346,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
 	"first_seen\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tfirstSeen\x127\n" +
 	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\x12<\n" +
-	"\bresponse\x18\r \x01(\v2 .containarium.v1.FindingResponseR\bresponse\"\xd2\x03\n" +
+	"\bresponse\x18\r \x01(\v2 .containarium.v1.FindingResponseR\bresponse\"\x90\x04\n" +
 	"\x0fFindingResponse\x126\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x124\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1e.containarium.v1.ResponseStateR\x05state\x12%\n" +
@@ -3283,9 +3361,10 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"releasedBy\x12\x14\n" +
 	"\x05error\x18\b \x01(\tR\x05error\x12\x1d\n" +
 	"\n" +
-	"killed_pid\x18\t \x01(\rR\tkilledPid\x12!\n" +
-	"\fkill_skipped\x18\n" +
-	" \x01(\tR\vkillSkipped\"\xb0\x02\n" +
+	"killed_pid\x18\t \x01(\rR\tkilledPid\x12I\n" +
+	"\x10kill_skip_reason\x18\n" +
+	" \x01(\x0e2\x1f.containarium.v1.KillSkipReasonR\x0ekillSkipReason\x12\x14\n" +
+	"\x05kills\x18\v \x01(\rR\x05kills\"\xb0\x02\n" +
 	"\rProcessPolicy\x126\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x12-\n" +
 	"\x12throttle_allowance\x18\x02 \x01(\tR\x11throttleAllowance\x12+\n" +
@@ -3415,7 +3494,14 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x16RESPONSE_STATE_APPLIED\x10\x02\x12\x19\n" +
 	"\x15RESPONSE_STATE_FAILED\x10\x03\x12\x1b\n" +
 	"\x17RESPONSE_STATE_RELEASED\x10\x04\x12\x1a\n" +
-	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\x94\x01\n" +
+	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\xdf\x01\n" +
+	"\x0eKillSkipReason\x12 \n" +
+	"\x1cKILL_SKIP_REASON_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bKILL_SKIP_REASON_PID_REUSED\x10\x01\x12!\n" +
+	"\x1dKILL_SKIP_REASON_PROCESS_GONE\x10\x02\x12#\n" +
+	"\x1fKILL_SKIP_REASON_CONTAINER_INIT\x10\x03\x12&\n" +
+	"\"KILL_SKIP_REASON_POLICY_UNREADABLE\x10\x04\x12\x1a\n" +
+	"\x16KILL_SKIP_REASON_OTHER\x10\x05*\x94\x01\n" +
 	"\vSentryState\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +
@@ -3467,7 +3553,7 @@ func file_containarium_v1_threatdetection_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_threatdetection_proto_rawDescData
 }
 
-var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
 var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(ThreatSeverity)(0),                  // 0: containarium.v1.ThreatSeverity
@@ -3475,134 +3561,136 @@ var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(FindingState)(0),                    // 2: containarium.v1.FindingState
 	(ProcessAction)(0),                   // 3: containarium.v1.ProcessAction
 	(ResponseState)(0),                   // 4: containarium.v1.ResponseState
-	(SentryState)(0),                     // 5: containarium.v1.SentryState
-	(MinerSignatureKind)(0),              // 6: containarium.v1.MinerSignatureKind
-	(*FlowEvidence)(nil),                 // 7: containarium.v1.FlowEvidence
-	(*DenyEvidence)(nil),                 // 8: containarium.v1.DenyEvidence
-	(*ConfigEvidence)(nil),               // 9: containarium.v1.ConfigEvidence
-	(*ListenerEvidence)(nil),             // 10: containarium.v1.ListenerEvidence
-	(*CPUEvidence)(nil),                  // 11: containarium.v1.CPUEvidence
-	(*ExecEvidence)(nil),                 // 12: containarium.v1.ExecEvidence
-	(*Evidence)(nil),                     // 13: containarium.v1.Evidence
-	(*MiningBehaviorThresholds)(nil),     // 14: containarium.v1.MiningBehaviorThresholds
-	(*Finding)(nil),                      // 15: containarium.v1.Finding
-	(*FindingResponse)(nil),              // 16: containarium.v1.FindingResponse
-	(*ProcessPolicy)(nil),                // 17: containarium.v1.ProcessPolicy
-	(*GetProcessPolicyRequest)(nil),      // 18: containarium.v1.GetProcessPolicyRequest
-	(*GetProcessPolicyResponse)(nil),     // 19: containarium.v1.GetProcessPolicyResponse
-	(*SetProcessPolicyRequest)(nil),      // 20: containarium.v1.SetProcessPolicyRequest
-	(*SetProcessPolicyResponse)(nil),     // 21: containarium.v1.SetProcessPolicyResponse
-	(*ReleaseProcessActionRequest)(nil),  // 22: containarium.v1.ReleaseProcessActionRequest
-	(*ReleaseProcessActionResponse)(nil), // 23: containarium.v1.ReleaseProcessActionResponse
-	(*RuleStatus)(nil),                   // 24: containarium.v1.RuleStatus
-	(*GetSentryStatusRequest)(nil),       // 25: containarium.v1.GetSentryStatusRequest
-	(*GetSentryStatusResponse)(nil),      // 26: containarium.v1.GetSentryStatusResponse
-	(*ExecEvent)(nil),                    // 27: containarium.v1.ExecEvent
-	(*StreamExecEventsResponse)(nil),     // 28: containarium.v1.StreamExecEventsResponse
-	(*StreamExecEventsRequest)(nil),      // 29: containarium.v1.StreamExecEventsRequest
-	(*BadDestinationEntry)(nil),          // 30: containarium.v1.BadDestinationEntry
-	(*ListBadDestinationsRequest)(nil),   // 31: containarium.v1.ListBadDestinationsRequest
-	(*ListBadDestinationsResponse)(nil),  // 32: containarium.v1.ListBadDestinationsResponse
-	(*AddBadDestinationRequest)(nil),     // 33: containarium.v1.AddBadDestinationRequest
-	(*AddBadDestinationResponse)(nil),    // 34: containarium.v1.AddBadDestinationResponse
-	(*RemoveBadDestinationRequest)(nil),  // 35: containarium.v1.RemoveBadDestinationRequest
-	(*RemoveBadDestinationResponse)(nil), // 36: containarium.v1.RemoveBadDestinationResponse
-	(*MinerSignature)(nil),               // 37: containarium.v1.MinerSignature
-	(*ListMinerSignaturesRequest)(nil),   // 38: containarium.v1.ListMinerSignaturesRequest
-	(*ListMinerSignaturesResponse)(nil),  // 39: containarium.v1.ListMinerSignaturesResponse
-	(*AddMinerSignatureRequest)(nil),     // 40: containarium.v1.AddMinerSignatureRequest
-	(*AddMinerSignatureResponse)(nil),    // 41: containarium.v1.AddMinerSignatureResponse
-	(*RemoveMinerSignatureRequest)(nil),  // 42: containarium.v1.RemoveMinerSignatureRequest
-	(*RemoveMinerSignatureResponse)(nil), // 43: containarium.v1.RemoveMinerSignatureResponse
-	(*ListFindingsRequest)(nil),          // 44: containarium.v1.ListFindingsRequest
-	(*ListFindingsResponse)(nil),         // 45: containarium.v1.ListFindingsResponse
-	(*ResolveFindingRequest)(nil),        // 46: containarium.v1.ResolveFindingRequest
-	(*ResolveFindingResponse)(nil),       // 47: containarium.v1.ResolveFindingResponse
-	(*timestamppb.Timestamp)(nil),        // 48: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),          // 49: google.protobuf.Duration
+	(KillSkipReason)(0),                  // 5: containarium.v1.KillSkipReason
+	(SentryState)(0),                     // 6: containarium.v1.SentryState
+	(MinerSignatureKind)(0),              // 7: containarium.v1.MinerSignatureKind
+	(*FlowEvidence)(nil),                 // 8: containarium.v1.FlowEvidence
+	(*DenyEvidence)(nil),                 // 9: containarium.v1.DenyEvidence
+	(*ConfigEvidence)(nil),               // 10: containarium.v1.ConfigEvidence
+	(*ListenerEvidence)(nil),             // 11: containarium.v1.ListenerEvidence
+	(*CPUEvidence)(nil),                  // 12: containarium.v1.CPUEvidence
+	(*ExecEvidence)(nil),                 // 13: containarium.v1.ExecEvidence
+	(*Evidence)(nil),                     // 14: containarium.v1.Evidence
+	(*MiningBehaviorThresholds)(nil),     // 15: containarium.v1.MiningBehaviorThresholds
+	(*Finding)(nil),                      // 16: containarium.v1.Finding
+	(*FindingResponse)(nil),              // 17: containarium.v1.FindingResponse
+	(*ProcessPolicy)(nil),                // 18: containarium.v1.ProcessPolicy
+	(*GetProcessPolicyRequest)(nil),      // 19: containarium.v1.GetProcessPolicyRequest
+	(*GetProcessPolicyResponse)(nil),     // 20: containarium.v1.GetProcessPolicyResponse
+	(*SetProcessPolicyRequest)(nil),      // 21: containarium.v1.SetProcessPolicyRequest
+	(*SetProcessPolicyResponse)(nil),     // 22: containarium.v1.SetProcessPolicyResponse
+	(*ReleaseProcessActionRequest)(nil),  // 23: containarium.v1.ReleaseProcessActionRequest
+	(*ReleaseProcessActionResponse)(nil), // 24: containarium.v1.ReleaseProcessActionResponse
+	(*RuleStatus)(nil),                   // 25: containarium.v1.RuleStatus
+	(*GetSentryStatusRequest)(nil),       // 26: containarium.v1.GetSentryStatusRequest
+	(*GetSentryStatusResponse)(nil),      // 27: containarium.v1.GetSentryStatusResponse
+	(*ExecEvent)(nil),                    // 28: containarium.v1.ExecEvent
+	(*StreamExecEventsResponse)(nil),     // 29: containarium.v1.StreamExecEventsResponse
+	(*StreamExecEventsRequest)(nil),      // 30: containarium.v1.StreamExecEventsRequest
+	(*BadDestinationEntry)(nil),          // 31: containarium.v1.BadDestinationEntry
+	(*ListBadDestinationsRequest)(nil),   // 32: containarium.v1.ListBadDestinationsRequest
+	(*ListBadDestinationsResponse)(nil),  // 33: containarium.v1.ListBadDestinationsResponse
+	(*AddBadDestinationRequest)(nil),     // 34: containarium.v1.AddBadDestinationRequest
+	(*AddBadDestinationResponse)(nil),    // 35: containarium.v1.AddBadDestinationResponse
+	(*RemoveBadDestinationRequest)(nil),  // 36: containarium.v1.RemoveBadDestinationRequest
+	(*RemoveBadDestinationResponse)(nil), // 37: containarium.v1.RemoveBadDestinationResponse
+	(*MinerSignature)(nil),               // 38: containarium.v1.MinerSignature
+	(*ListMinerSignaturesRequest)(nil),   // 39: containarium.v1.ListMinerSignaturesRequest
+	(*ListMinerSignaturesResponse)(nil),  // 40: containarium.v1.ListMinerSignaturesResponse
+	(*AddMinerSignatureRequest)(nil),     // 41: containarium.v1.AddMinerSignatureRequest
+	(*AddMinerSignatureResponse)(nil),    // 42: containarium.v1.AddMinerSignatureResponse
+	(*RemoveMinerSignatureRequest)(nil),  // 43: containarium.v1.RemoveMinerSignatureRequest
+	(*RemoveMinerSignatureResponse)(nil), // 44: containarium.v1.RemoveMinerSignatureResponse
+	(*ListFindingsRequest)(nil),          // 45: containarium.v1.ListFindingsRequest
+	(*ListFindingsResponse)(nil),         // 46: containarium.v1.ListFindingsResponse
+	(*ResolveFindingRequest)(nil),        // 47: containarium.v1.ResolveFindingRequest
+	(*ResolveFindingResponse)(nil),       // 48: containarium.v1.ResolveFindingResponse
+	(*timestamppb.Timestamp)(nil),        // 49: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),          // 50: google.protobuf.Duration
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
-	48, // 0: containarium.v1.FlowEvidence.first_seen:type_name -> google.protobuf.Timestamp
-	48, // 1: containarium.v1.FlowEvidence.last_seen:type_name -> google.protobuf.Timestamp
-	7,  // 2: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
-	8,  // 3: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
-	9,  // 4: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
-	10, // 5: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
-	11, // 6: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
-	12, // 7: containarium.v1.Evidence.execs:type_name -> containarium.v1.ExecEvidence
-	49, // 8: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
-	49, // 9: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
+	49, // 0: containarium.v1.FlowEvidence.first_seen:type_name -> google.protobuf.Timestamp
+	49, // 1: containarium.v1.FlowEvidence.last_seen:type_name -> google.protobuf.Timestamp
+	8,  // 2: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
+	9,  // 3: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
+	10, // 4: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
+	11, // 5: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
+	12, // 6: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
+	13, // 7: containarium.v1.Evidence.execs:type_name -> containarium.v1.ExecEvidence
+	50, // 8: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
+	50, // 9: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
 	1,  // 10: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
 	0,  // 11: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
 	2,  // 12: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
-	13, // 13: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	48, // 14: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	48, // 15: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
-	16, // 16: containarium.v1.Finding.response:type_name -> containarium.v1.FindingResponse
+	14, // 13: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
+	49, // 14: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	49, // 15: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	17, // 16: containarium.v1.Finding.response:type_name -> containarium.v1.FindingResponse
 	3,  // 17: containarium.v1.FindingResponse.action:type_name -> containarium.v1.ProcessAction
 	4,  // 18: containarium.v1.FindingResponse.state:type_name -> containarium.v1.ResponseState
-	48, // 19: containarium.v1.FindingResponse.applied_at:type_name -> google.protobuf.Timestamp
-	48, // 20: containarium.v1.FindingResponse.expires_at:type_name -> google.protobuf.Timestamp
-	48, // 21: containarium.v1.FindingResponse.released_at:type_name -> google.protobuf.Timestamp
-	3,  // 22: containarium.v1.ProcessPolicy.action:type_name -> containarium.v1.ProcessAction
-	49, // 23: containarium.v1.ProcessPolicy.ttl:type_name -> google.protobuf.Duration
-	14, // 24: containarium.v1.ProcessPolicy.mining_behavior:type_name -> containarium.v1.MiningBehaviorThresholds
-	17, // 25: containarium.v1.GetProcessPolicyResponse.policy:type_name -> containarium.v1.ProcessPolicy
-	17, // 26: containarium.v1.GetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
-	17, // 27: containarium.v1.SetProcessPolicyRequest.policy:type_name -> containarium.v1.ProcessPolicy
-	17, // 28: containarium.v1.SetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
-	15, // 29: containarium.v1.ReleaseProcessActionResponse.finding:type_name -> containarium.v1.Finding
-	1,  // 30: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
-	48, // 31: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
-	5,  // 32: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
-	24, // 33: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
-	48, // 34: containarium.v1.ExecEvent.at:type_name -> google.protobuf.Timestamp
-	12, // 35: containarium.v1.ExecEvent.exec:type_name -> containarium.v1.ExecEvidence
-	27, // 36: containarium.v1.StreamExecEventsResponse.event:type_name -> containarium.v1.ExecEvent
-	49, // 37: containarium.v1.StreamExecEventsRequest.since:type_name -> google.protobuf.Duration
-	30, // 38: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
-	30, // 39: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
-	6,  // 40: containarium.v1.MinerSignature.kind:type_name -> containarium.v1.MinerSignatureKind
-	37, // 41: containarium.v1.ListMinerSignaturesResponse.signatures:type_name -> containarium.v1.MinerSignature
-	37, // 42: containarium.v1.AddMinerSignatureRequest.signature:type_name -> containarium.v1.MinerSignature
-	37, // 43: containarium.v1.AddMinerSignatureResponse.signature:type_name -> containarium.v1.MinerSignature
-	6,  // 44: containarium.v1.RemoveMinerSignatureRequest.kind:type_name -> containarium.v1.MinerSignatureKind
-	0,  // 45: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
-	48, // 46: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
-	2,  // 47: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
-	15, // 48: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
-	15, // 49: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
-	25, // 50: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
-	31, // 51: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
-	33, // 52: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
-	35, // 53: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
-	44, // 54: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
-	46, // 55: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
-	18, // 56: containarium.v1.ThreatDetectionService.GetProcessPolicy:input_type -> containarium.v1.GetProcessPolicyRequest
-	20, // 57: containarium.v1.ThreatDetectionService.SetProcessPolicy:input_type -> containarium.v1.SetProcessPolicyRequest
-	22, // 58: containarium.v1.ThreatDetectionService.ReleaseProcessAction:input_type -> containarium.v1.ReleaseProcessActionRequest
-	38, // 59: containarium.v1.ThreatDetectionService.ListMinerSignatures:input_type -> containarium.v1.ListMinerSignaturesRequest
-	40, // 60: containarium.v1.ThreatDetectionService.AddMinerSignature:input_type -> containarium.v1.AddMinerSignatureRequest
-	42, // 61: containarium.v1.ThreatDetectionService.RemoveMinerSignature:input_type -> containarium.v1.RemoveMinerSignatureRequest
-	29, // 62: containarium.v1.ThreatDetectionService.StreamExecEvents:input_type -> containarium.v1.StreamExecEventsRequest
-	26, // 63: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	32, // 64: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
-	34, // 65: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
-	36, // 66: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
-	45, // 67: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
-	47, // 68: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
-	19, // 69: containarium.v1.ThreatDetectionService.GetProcessPolicy:output_type -> containarium.v1.GetProcessPolicyResponse
-	21, // 70: containarium.v1.ThreatDetectionService.SetProcessPolicy:output_type -> containarium.v1.SetProcessPolicyResponse
-	23, // 71: containarium.v1.ThreatDetectionService.ReleaseProcessAction:output_type -> containarium.v1.ReleaseProcessActionResponse
-	39, // 72: containarium.v1.ThreatDetectionService.ListMinerSignatures:output_type -> containarium.v1.ListMinerSignaturesResponse
-	41, // 73: containarium.v1.ThreatDetectionService.AddMinerSignature:output_type -> containarium.v1.AddMinerSignatureResponse
-	43, // 74: containarium.v1.ThreatDetectionService.RemoveMinerSignature:output_type -> containarium.v1.RemoveMinerSignatureResponse
-	28, // 75: containarium.v1.ThreatDetectionService.StreamExecEvents:output_type -> containarium.v1.StreamExecEventsResponse
-	63, // [63:76] is the sub-list for method output_type
-	50, // [50:63] is the sub-list for method input_type
-	50, // [50:50] is the sub-list for extension type_name
-	50, // [50:50] is the sub-list for extension extendee
-	0,  // [0:50] is the sub-list for field type_name
+	49, // 19: containarium.v1.FindingResponse.applied_at:type_name -> google.protobuf.Timestamp
+	49, // 20: containarium.v1.FindingResponse.expires_at:type_name -> google.protobuf.Timestamp
+	49, // 21: containarium.v1.FindingResponse.released_at:type_name -> google.protobuf.Timestamp
+	5,  // 22: containarium.v1.FindingResponse.kill_skip_reason:type_name -> containarium.v1.KillSkipReason
+	3,  // 23: containarium.v1.ProcessPolicy.action:type_name -> containarium.v1.ProcessAction
+	50, // 24: containarium.v1.ProcessPolicy.ttl:type_name -> google.protobuf.Duration
+	15, // 25: containarium.v1.ProcessPolicy.mining_behavior:type_name -> containarium.v1.MiningBehaviorThresholds
+	18, // 26: containarium.v1.GetProcessPolicyResponse.policy:type_name -> containarium.v1.ProcessPolicy
+	18, // 27: containarium.v1.GetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
+	18, // 28: containarium.v1.SetProcessPolicyRequest.policy:type_name -> containarium.v1.ProcessPolicy
+	18, // 29: containarium.v1.SetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
+	16, // 30: containarium.v1.ReleaseProcessActionResponse.finding:type_name -> containarium.v1.Finding
+	1,  // 31: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
+	49, // 32: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	6,  // 33: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
+	25, // 34: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
+	49, // 35: containarium.v1.ExecEvent.at:type_name -> google.protobuf.Timestamp
+	13, // 36: containarium.v1.ExecEvent.exec:type_name -> containarium.v1.ExecEvidence
+	28, // 37: containarium.v1.StreamExecEventsResponse.event:type_name -> containarium.v1.ExecEvent
+	50, // 38: containarium.v1.StreamExecEventsRequest.since:type_name -> google.protobuf.Duration
+	31, // 39: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
+	31, // 40: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	7,  // 41: containarium.v1.MinerSignature.kind:type_name -> containarium.v1.MinerSignatureKind
+	38, // 42: containarium.v1.ListMinerSignaturesResponse.signatures:type_name -> containarium.v1.MinerSignature
+	38, // 43: containarium.v1.AddMinerSignatureRequest.signature:type_name -> containarium.v1.MinerSignature
+	38, // 44: containarium.v1.AddMinerSignatureResponse.signature:type_name -> containarium.v1.MinerSignature
+	7,  // 45: containarium.v1.RemoveMinerSignatureRequest.kind:type_name -> containarium.v1.MinerSignatureKind
+	0,  // 46: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
+	49, // 47: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
+	2,  // 48: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
+	16, // 49: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
+	16, // 50: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
+	26, // 51: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	32, // 52: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
+	34, // 53: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	36, // 54: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	45, // 55: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
+	47, // 56: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
+	19, // 57: containarium.v1.ThreatDetectionService.GetProcessPolicy:input_type -> containarium.v1.GetProcessPolicyRequest
+	21, // 58: containarium.v1.ThreatDetectionService.SetProcessPolicy:input_type -> containarium.v1.SetProcessPolicyRequest
+	23, // 59: containarium.v1.ThreatDetectionService.ReleaseProcessAction:input_type -> containarium.v1.ReleaseProcessActionRequest
+	39, // 60: containarium.v1.ThreatDetectionService.ListMinerSignatures:input_type -> containarium.v1.ListMinerSignaturesRequest
+	41, // 61: containarium.v1.ThreatDetectionService.AddMinerSignature:input_type -> containarium.v1.AddMinerSignatureRequest
+	43, // 62: containarium.v1.ThreatDetectionService.RemoveMinerSignature:input_type -> containarium.v1.RemoveMinerSignatureRequest
+	30, // 63: containarium.v1.ThreatDetectionService.StreamExecEvents:input_type -> containarium.v1.StreamExecEventsRequest
+	27, // 64: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	33, // 65: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	35, // 66: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	37, // 67: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	46, // 68: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
+	48, // 69: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
+	20, // 70: containarium.v1.ThreatDetectionService.GetProcessPolicy:output_type -> containarium.v1.GetProcessPolicyResponse
+	22, // 71: containarium.v1.ThreatDetectionService.SetProcessPolicy:output_type -> containarium.v1.SetProcessPolicyResponse
+	24, // 72: containarium.v1.ThreatDetectionService.ReleaseProcessAction:output_type -> containarium.v1.ReleaseProcessActionResponse
+	40, // 73: containarium.v1.ThreatDetectionService.ListMinerSignatures:output_type -> containarium.v1.ListMinerSignaturesResponse
+	42, // 74: containarium.v1.ThreatDetectionService.AddMinerSignature:output_type -> containarium.v1.AddMinerSignatureResponse
+	44, // 75: containarium.v1.ThreatDetectionService.RemoveMinerSignature:output_type -> containarium.v1.RemoveMinerSignatureResponse
+	29, // 76: containarium.v1.ThreatDetectionService.StreamExecEvents:output_type -> containarium.v1.StreamExecEventsResponse
+	64, // [64:77] is the sub-list for method output_type
+	51, // [51:64] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }
@@ -3616,7 +3704,7 @@ func file_containarium_v1_threatdetection_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_threatdetection_proto_rawDesc), len(file_containarium_v1_threatdetection_proto_rawDesc)),
-			NumEnums:      7,
+			NumEnums:      8,
 			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   1,

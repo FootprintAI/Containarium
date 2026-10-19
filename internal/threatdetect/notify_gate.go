@@ -31,9 +31,9 @@ const releaseResolveWindow = 30 * time.Second
 // A finding is delivered when it is new to the gate, when its severity
 // escalates, when its response state changes (#2718: NONE→APPLIED,
 // APPLIED→RELEASED/EXPIRED, anything→FAILED — what the process responder did
-// is news, not a repeat), when its kill outcome changes (#2775: a miner
-// process killed, or a kill skipped, with or without a state change; a second
-// pid is a second kill), when interval has passed since its last delivery,
+// is news, not a repeat), when its kill outcome changes (#2775: the first kill
+// and the first skipped kill at once, later ones at most once per
+// KillRenotifyInterval with the latest pid and the kill count), when interval has passed since its last delivery,
 // and once when it resolves. State is in memory: after a restart an open
 // finding is delivered again on its next write, which is a re-notify, not a
 // storm.
@@ -62,22 +62,54 @@ type gateEntry struct {
 	response   pb.ResponseState
 	releasedBy string
 	kill       killKey
+	killAt     time.Time // when a changed kill outcome was last delivered
 }
+
+// KillRenotifyInterval bounds the webhook posts a respawning miner can cause
+// (#2775): the first kill and the first skipped kill of a finding are
+// delivered at once, and any later change in its kill outcome (another pid,
+// a higher kill count, another skip reason) at most once per interval,
+// carrying the latest pid and the count. A change that lands inside the
+// interval is held back until the finding's next write after it, so the
+// webhook never sees one post per kill.
+const KillRenotifyInterval = time.Minute
 
 // killKey is the kill outcome on a finding's response: a change in it is news
 // (#2775). Under ALERT a kill leaves the response state at NONE, so the state
 // alone never shows it.
 type killKey struct {
-	killed  bool
-	pid     uint32
-	skipped string
+	killed bool
+	pid    uint32
+	kills  uint32
+	skip   pb.KillSkipReason
 }
 
 func killOf(f *Finding) killKey {
 	if f.Response == nil {
 		return killKey{}
 	}
-	return killKey{f.Response.ProcessKilled, f.Response.KilledPID, f.Response.KillSkipped}
+	r := f.Response
+	return killKey{r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason}
+}
+
+// killNews reports whether f's kill outcome should reach the webhook now,
+// given what was last delivered for it. Skipped kills are keyed on the reason
+// kind, never on text, so a process that exits before every kill is one
+// delivery, not one per pid.
+func killNews(prev gateEntry, f *Finding, now time.Time) bool {
+	cur := killOf(f)
+	if cur == prev.kill {
+		return false
+	}
+	if cur.killed && !prev.kill.killed {
+		return true // the first kill
+	}
+	if cur.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED && prev.kill.skip == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
+		return true // the first skip
+	}
+	changed := cur.killed && (cur.pid != prev.kill.pid || cur.kills != prev.kill.kills) ||
+		cur.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED && cur.skip != prev.kill.skip
+	return changed && now.Sub(prev.killAt) >= KillRenotifyInterval
 }
 
 // responseOf is f's response state and who released it; no response yet is
@@ -124,7 +156,7 @@ func (g *deliveryGate) shouldDeliver(f *Finding) bool {
 		return true
 	}
 	state, _ := responseOf(f)
-	return !seen || f.Severity > prev.severity || state != prev.response || killOf(f) != prev.kill || g.now().Sub(prev.at) >= g.interval
+	return !seen || f.Severity > prev.severity || state != prev.response || killNews(prev, f, g.now()) || g.now().Sub(prev.at) >= g.interval
 }
 
 // delivered records that f was queued. A resolved finding is forgotten: it
@@ -140,7 +172,14 @@ func (g *deliveryGate) delivered(f *Finding) {
 		return
 	}
 	state, by := responseOf(f)
-	g.last[f.ID] = gateEntry{at: g.now(), severity: f.Severity, response: state, releasedBy: by, kill: killOf(f)}
+	now := g.now()
+	e := gateEntry{at: now, severity: f.Severity, response: state, releasedBy: by, kill: killOf(f)}
+	if prev, ok := g.last[f.ID]; ok && prev.kill == e.kill {
+		e.killAt = prev.killAt
+	} else {
+		e.killAt = now
+	}
+	g.last[f.ID] = e
 	if len(g.last) > gateMaxEntries {
 		g.evictOldest()
 	}
