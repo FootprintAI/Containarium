@@ -161,6 +161,28 @@ func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
 	}
 }
 
+// Exec evidence (#2637) rides the same wire, cap and merge paths as the other
+// kinds.
+func TestEvidence_Execs_ToProtoCappedMerged(t *testing.T) {
+	f := &Finding{Evidence: Evidence{Execs: []ExecEvidence{{PID: 4242, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: "./xmrig -o pool:3333", ArgvTruncated: true, SHA256: "ab", Matched: "name:xmrig"}}}}
+	got := f.ToProto().GetEvidence().GetExecs()
+	if len(got) != 1 || got[0].Pid != 4242 || got[0].Ppid != 1 || got[0].Uid != 1000 || got[0].Comm != "xmrig" || got[0].Filename != "/tmp/.x/xmrig" ||
+		got[0].Argv != "./xmrig -o pool:3333" || !got[0].ArgvTruncated || got[0].Sha256 != "ab" || got[0].Matched != "name:xmrig" {
+		t.Fatalf("ToProto exec evidence = %v", got)
+	}
+	var many Evidence
+	for i := 0; i < EvidenceCap+3; i++ {
+		many.Execs = append(many.Execs, ExecEvidence{PID: uint32(i)}) // #nosec G115 -- small test loop
+	}
+	if capped := many.Capped(); len(capped.Execs) != EvidenceCap || capped.Execs[0].PID != 3 {
+		t.Fatalf("Capped Execs = %+v, want the most recent %d", capped.Execs, EvidenceCap)
+	}
+	merged := Evidence{Execs: []ExecEvidence{{PID: 1}}}.merged(Evidence{Execs: []ExecEvidence{{PID: 2}}})
+	if len(merged.Execs) != 2 || merged.Execs[1].PID != 2 {
+		t.Fatalf("merged Execs = %+v", merged.Execs)
+	}
+}
+
 // CPU evidence (#2635) rides the same wire, cap and merge paths as the other
 // evidence kinds.
 func TestEvidence_CPU_ToProtoCappedMerged(t *testing.T) {
