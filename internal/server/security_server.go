@@ -355,9 +355,12 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 
 // InstallClamav installs ClamAV and its signatures inside one box (#2659). The
 // platform runs the package install in the box and reports a typed outcome; it
-// does not read the box's files. Authorized like TriggerClamavScan (the box's
-// owner; admins pass until #2655 decides otherwise). Boxes on a peer backend
-// are not forwarded yet: the lookup fails with a clear message.
+// does not read the box's files. Authorized exactly like TriggerClamavScan
+// (#2692, following #2655): the install runs commands inside the customer's
+// box, so only its owner may ask. An administrator does not bypass this; a
+// service credential carrying security:trigger-for-owner (the control plane
+// acting for an owner it already authorized) does. A box on a peer backend is
+// installed by the daemon that owns it.
 func (s *SecurityServer) InstallClamav(ctx context.Context, req *pb.InstallClamavRequest) (*pb.InstallClamavResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
 		return nil, err
@@ -368,7 +371,7 @@ func (s *SecurityServer) InstallClamav(ctx context.Context, req *pb.InstallClama
 		}
 		return nil, status.Error(codes.InvalidArgument, "container_name is required")
 	}
-	if err := auth.AuthorizeContainerAccess(ctx, req.GetContainerName()); err != nil {
+	if err := auth.RequireContainerOwner(ctx, req.GetContainerName()); err != nil {
 		return nil, err
 	}
 	// A box on a peer backend is installed by the daemon that owns it, exactly
