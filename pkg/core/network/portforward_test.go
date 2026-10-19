@@ -246,3 +246,36 @@ func TestApplyRules_AddFailureKeepsLegacyShape(t *testing.T) {
 		t.Errorf("legacy rules were removed although the new ones were never added: %v", f.rules)
 	}
 }
+
+// The forwarder's subnet arrives in whatever form its caller has (Incus
+// reports the bridge in gateway form, `a.b.c.1/24`), while `iptables -S`
+// prints the network form (`a.b.c.0/24`). They must be compared as
+// networks, or the old rule is never cleared on upgrade.
+func TestLegacyCaddyPreRoutingRules_SubnetForms(t *testing.T) {
+	const (
+		ours24  = "-A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443"
+		ours16  = "-A PREROUTING ! -s 10.20.0.0/16 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.20.0.50:443"
+		other24 = "-A PREROUTING ! -s 10.20.5.0/24 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.20.0.50:80"
+		oper    = "-A PREROUTING ! -s 198.51.100.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 203.0.113.7:443"
+	)
+	save := strings.Join([]string{ours24, ours16, other24, oper}, "\n")
+	del := func(line string) []string { return append([]string{"-t", "nat", "-D"}, strings.Fields(line)[1:]...) }
+
+	for _, tc := range []struct {
+		name, subnet string
+		want         [][]string
+	}{
+		{"gateway form /24", "10.0.3.1/24", [][]string{del(ours24)}},
+		{"network form /24", "10.0.3.0/24", [][]string{del(ours24)}},
+		{"gateway form /16", "10.20.0.1/16", [][]string{del(ours16)}},
+		// Unparseable: leave every old rule in place (logged) rather than
+		// guess, so nothing that might not be ours is deleted.
+		{"unparseable subnet", "not-a-cidr", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legacyCaddyPreRoutingRules(save, tc.subnet); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("subnet %q:\n got: %v\nwant: %v", tc.subnet, got, tc.want)
+			}
+		})
+	}
+}
