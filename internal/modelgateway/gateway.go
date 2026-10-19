@@ -83,9 +83,12 @@ type Config struct {
 	// source exists, scanning is unavailable, and the gateway says so at
 	// startup. With a provider wired, responses are scanned by InboundEngine
 	// whenever the policy carries an inbound BLOCK rule, and every failure
-	// to scan blocks. InboundAudit receives one entry per block (nil = log
-	// only). InboundHoldLimit (bytes) and InboundScanTimeout take the
-	// Default* constants when zero.
+	// to scan blocks. When the provider answers "not configured", responses
+	// are instead scanned log-only against the baseline rules, never held
+	// (inbound_baseline.go). InboundAudit receives one entry per block or
+	// baseline detection (nil = log only). InboundHoldLimit (bytes; also
+	// the baseline's scan buffer) and InboundScanTimeout take the Default*
+	// constants when zero.
 	InboundPolicy      guardrailpolicy.PolicyProvider
 	InboundEngine      guardrail.Engine
 	InboundAudit       InboundAuditSink
@@ -380,6 +383,11 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
 		return
 	}
+	// No admin policy: the baseline scan, log-only and never held (#2736).
+	var bl *baselineRequest
+	if inMode.baseline {
+		bl = &baselineRequest{in: g.inbound, sub: inSub}
+	}
 	var ir *inboundRequest
 	if inMode.scan {
 		ir = &inboundRequest{in: g.inbound, mode: inMode, sub: inSub}
@@ -470,6 +478,11 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// Baseline (#2736): tee the final body, whatever the steps below
+			// make of it, and scan it once the proxy has written it all.
+			if bl != nil {
+				defer bl.watch(resp)
+			}
 			// Scanned mode (#2367): hold the whole response here, scan it,
 			// and either block (typed error via ErrorHandler, nothing
 			// committed to the client yet) or restore the held bytes for the
