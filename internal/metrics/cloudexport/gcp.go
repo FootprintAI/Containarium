@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	gcpdetector "go.opentelemetry.io/contrib/detectors/gcp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -21,11 +22,15 @@ const monitoringWriteScope = "https://www.googleapis.com/auth/monitoring.write"
 
 // gcpOTLPEndpoint is Google Cloud's Telemetry API OTLP ingestion endpoint
 // (see https://cloud.google.com/stackdriver/docs/otlp-metrics/overview).
-// It accepts standard OTLP-over-gRPC and maps each metric's OTLP name to
-// a Cloud Monitoring metric type by prefixing it with
-// "workload.googleapis.com/" — the same default the deprecated
-// opentelemetry-operations-go exporter used — so instrument names defined
-// in collector.go land under identical series names post-migration.
+// It accepts standard OTLP-over-gRPC and writes each metric into Google's
+// Prometheus namespace on a prometheus_target resource: a gauge becomes
+// prometheus.googleapis.com/<name>/gauge and a monotonic counter
+// prometheus.googleapis.com/<name>/counter. The deprecated
+// opentelemetry-operations-go exporter used workload.googleapis.com/<name> on
+// gce_instance, so series names and the monitored resource CHANGED with the
+// migration (v0.100.0): alert filters and dashboards written for the old type
+// select nothing. See "Metric names and resource type" in
+// docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md.
 const gcpOTLPEndpoint = "telemetry.googleapis.com:443"
 
 // projectHeader is the header Google Cloud's OTLP ingestion reads to
@@ -95,16 +100,69 @@ func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Ex
 	return exporter, nil
 }
 
-// DetectResource resolves this host's GCP monitored-resource identity so
-// exported series land tagged as a gce_instance in Metrics Explorer. It
+// DetectResource resolves this host's GCP identity (project, zone, instance
+// id) as OTel resource attributes for the exporter. Google's OTLP ingestion
+// maps the series onto a prometheus_target monitored resource (observed:
+// location = zone, instance = the numeric GCE instance id), not a
+// gce_instance, so filters must not assume the latter. It
 // uses the OTel contrib GCP resource detector; off GCP (or with the
 // metadata server unreachable) it returns whatever partial resource the
 // detector can assemble, which the exporter maps to a generic resource
 // rather than failing the whole export. gcpSink is the only type that
 // touches the GCP detector — the collector consumes the resulting
 // vendor-neutral *resource.Resource.
+//
+// Google's OTLP ingestion attributes series to a project via the
+// gcp.project_id resource attribute, which the detector does not set (it
+// reports the project as cloud.account.id) — withGCPProjectID bridges
+// that, falling back to the ADC project (#2590).
 func (g *gcpSink) DetectResource(ctx context.Context) (*resource.Resource, error) {
-	return resource.New(ctx, resource.WithDetectors(gcpdetector.NewDetector()))
+	res, err := resource.New(ctx, resource.WithDetectors(gcpdetector.NewDetector()))
+	if err != nil {
+		// A partial resource may still be returned alongside the error;
+		// the caller falls back to a default resource on error, which
+		// would lack gcp.project_id too, so try to repair what we have.
+		if res == nil {
+			res = resource.Empty()
+		}
+	}
+	adcProject := ""
+	if creds, cerr := gcpCredentialsLookup(ctx); cerr == nil && creds != nil {
+		adcProject = creds.ProjectID
+	}
+	fixed, ferr := withGCPProjectID(res, adcProject)
+	if ferr != nil {
+		return res, ferr
+	}
+	return fixed, err
+}
+
+// gcpProjectIDKey is the resource attribute Google Cloud's OTLP ingestion
+// requires to attribute series to a project.
+const gcpProjectIDKey = attribute.Key("gcp.project_id")
+
+// withGCPProjectID returns res with gcp.project_id set: kept if already
+// present, else taken from the detector's cloud.account.id, else from
+// fallback (the ADC project). When none is known res is returned
+// unchanged — the upload will fail loudly rather than guess a project.
+func withGCPProjectID(res *resource.Resource, fallback string) (*resource.Resource, error) {
+	var detected string
+	for _, kv := range res.Attributes() {
+		switch kv.Key {
+		case gcpProjectIDKey:
+			return res, nil
+		case "cloud.account.id":
+			detected = kv.Value.AsString()
+		}
+	}
+	project := detected
+	if project == "" {
+		project = fallback
+	}
+	if project == "" {
+		return res, nil
+	}
+	return resource.Merge(res, resource.NewSchemaless(gcpProjectIDKey.String(project)))
 }
 
 // Probe resolves ADC with the Cloud Monitoring write scope and confirms

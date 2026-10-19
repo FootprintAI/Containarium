@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// SentinelSSHBanService controls the enforcing plugin, not system fail2ban.
+// The sentinel mounts REST behind its admin HMAC and forwards to a local socket.
+service SentinelSSHBanService {
+  // Inspect one source IP, including tracked, banned, and exempt states.
+  rpc GetSSHBan(GetSSHBanRequest) returns (GetSSHBanResponse) {
+    option (google.api.http) = {get: "/sentinel/ssh-bans/{listener}/{ip}"};
+  }
+  // Page through current bans on one independently enforcing listener.
+  rpc ListSSHBans(ListSSHBansRequest) returns (ListSSHBansResponse) {
+    option (google.api.http) = {get: "/sentinel/ssh-bans/{listener}"};
+  }
+  // Atomically clear exactly one source's counter and ban; admin-only.
+  rpc UnbanSSHSource(UnbanSSHSourceRequest) returns (UnbanSSHSourceResponse) {
+    option (google.api.http) = {
+      post: "/sentinel/ssh-bans/{listener}/unban"
+      body: "*"
+    };
+  }
+}
+
+// SSHBanListener identifies independent plugin processes on one sentinel.
+enum SSHBanListener {
+  SSH_BAN_LISTENER_UNSPECIFIED = 0;
+  SSH_BAN_LISTENER_MAIN = 1;
+  SSH_BAN_LISTENER_ANONYMOUS = 2;
+}
+
+// SSHBanState distinguishes positive observations from an unavailable plugin.
+enum SSHBanState {
+  SSH_BAN_STATE_UNSPECIFIED = 0;
+  SSH_BAN_STATE_CLEAR = 1;
+  SSH_BAN_STATE_TRACKING = 2;
+  SSH_BAN_STATE_BANNED = 3;
+  SSH_BAN_STATE_EXEMPT = 4;
+}
+
+// SSHBanPolicy is the effective enforcing policy, not desired metadata.
+message SSHBanPolicy {
+  uint32 max_failures = 1;
+  // Fixed window beginning at first connection, as in sshpiper v1.6.1.
+  google.protobuf.Duration duration = 2;
+  repeated string ignore_cidrs = 3;
+  string hash = 4;
+  uint32 max_entries = 5;
+}
+
+// SSHBanStatus describes one source's live counter and fixed window deadline.
+message SSHBanStatus {
+  string ip = 1;
+  SSHBanState state = 2;
+  uint64 failures = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// GetSSHBanRequest requires a supported listener and a single bare IP.
+message GetSSHBanRequest {
+  SSHBanListener listener = 1;
+  string ip = 2;
+}
+// GetSSHBanResponse binds a live observation to its policy and process generation.
+message GetSSHBanResponse {
+  SSHBanStatus status = 1;
+  SSHBanPolicy policy = 2;
+  string generation = 3;
+  string sentinel_id = 4;
+  SSHBanListener listener = 5;
+  google.protobuf.Timestamp observed_at = 6;
+}
+// ListSSHBansRequest bounds pages to 1000 entries; zero selects 100.
+message ListSSHBansRequest {
+  SSHBanListener listener = 1;
+  uint32 page_size = 2;
+  // Last returned normalized IP; iteration is in lexical IP order.
+  string page_token = 3;
+}
+// ListSSHBansResponse returns current bans; pages are not a reserved snapshot.
+message ListSSHBansResponse {
+  repeated SSHBanStatus bans = 1;
+  string next_page_token = 2;
+  SSHBanPolicy policy = 3;
+  string generation = 4;
+  string sentinel_id = 5;
+  SSHBanListener listener = 6;
+  google.protobuf.Timestamp observed_at = 7;
+}
+// UnbanSSHSourceRequest targets one IP and requires a 1..1024 byte operator reason.
+message UnbanSSHSourceRequest {
+  SSHBanListener listener = 1;
+  string ip = 2;
+  string reason = 3;
+}
+// UnbanSSHSourceResponse reports whether any live counter was actually cleared.
+message UnbanSSHSourceResponse {
+  bool cleared = 1;
+  string generation = 2;
+  string sentinel_id = 3;
+  SSHBanListener listener = 4;
+  google.protobuf.Timestamp observed_at = 5;
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -30,6 +31,7 @@ import (
 	"github.com/rs/cors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -80,6 +82,11 @@ type GatewayServer struct {
 	// legacy HMAC. A daemon holding only this public key can verify the
 	// sentinel but cannot forge a request — the BYOC-safe configuration.
 	sentinelPubKey ed25519.PublicKey
+
+	// sshAuthzTokenFallback lets /v1/ssh/authorize also accept a JWT
+	// carrying ssh:authorize, for the jump host's AuthorizedKeysCommand
+	// (#2527). Off by default: the route stays sentinel-only.
+	sshAuthzTokenFallback bool
 
 	// containerExistsFn is the orphan filter used by
 	// /authorized-keys (#343). When set, the handler drops users
@@ -241,6 +248,15 @@ func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 // including BYOC, since a verifier cannot forge requests.
 func (gs *GatewayServer) SetSentinelPublicKey(pub ed25519.PublicKey) {
 	gs.sentinelPubKey = pub
+}
+
+// SetSSHAuthzTokenFallback turns on the token fallback on
+// /v1/ssh/authorize (#2527): an unsigned request authenticated by a JWT
+// that carries ssh:authorize explicitly reaches Authorize, alongside the
+// sentinel-signed path. Off by default. Source is the daemon's
+// --ssh-authz-keys-command flag.
+func (gs *GatewayServer) SetSSHAuthzTokenFallback(enabled bool) {
+	gs.sshAuthzTokenFallback = enabled
 }
 
 // SetAuthorizedKeysHandler overrides the default /authorized-keys handler
@@ -709,7 +725,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				}
 			}
 
-			gs.terminalHandler.HandleTerminal(w, r)
+			// #2696: record that this bearer passed ValidateToken; the
+			// upgrader's no-Origin exemption reads this, not the raw
+			// headers. See checkTerminalOrigin.
+			gs.terminalHandler.HandleTerminal(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 		}))
 
 		// Console-attach WebSocket route (live VM serial console, #1751).
@@ -908,6 +927,13 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Health check endpoint (no auth required)
 	httpMux.HandleFunc("/health", healthHandler)
 
+	// Policy-store readiness (#2483): grpc.health.v1 through the gateway.
+	healthConn, err := grpc.NewClient(grpcTarget, opts...)
+	if err != nil {
+		return fmt.Errorf("failed to dial gRPC server for the health endpoint: %w", err)
+	}
+	MountPolicyHealth(httpMux, mux, healthpb.NewHealthClient(healthConn))
+
 	mountInternalProxies(httpMux, gs)
 
 	// Session-cookie set/clear endpoint. Lets the webui promote its
@@ -987,10 +1013,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
 
-	// #2516: SSHAuthzService.Authorize, sentinel signature only (no JWT
-	// fallback). Same inner chain as the door: audited, identity from the
-	// verified signature.
-	MountSSHAuthz(httpMux, sentinelVerifier, anonInner)
+	// #2516: SSHAuthzService.Authorize, sentinel signature. Same inner
+	// chain as the door: audited, identity from the verified signature.
+	// #2527: when enabled, an ssh:authorize JWT is accepted too, for the
+	// jump host's AuthorizedKeysCommand; otherwise no JWT fallback.
+	var sshAuthzTokenAuth func(http.Handler) http.Handler
+	if gs.sshAuthzTokenFallback {
+		sshAuthzTokenAuth = gs.authMiddleware.HTTPMiddleware
+	}
+	MountSSHAuthz(httpMux, sentinelVerifier, sshAuthzTokenAuth, anonInner)
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
@@ -1152,4 +1183,14 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 		Status:  "healthy",
 		Version: version.GetVersion(),
 	})
+}
+
+// MountPolicyHealth serves grpc.health.v1.Health/Check through the
+// grpc-gateway at policyreadiness.HTTPPath (`?service=<name>`), so
+// `containarium doctor` can read policy-store readiness from the local
+// daemon (#2483). It is mounted outside the JWT chain: it carries a serving
+// status only, like /health.
+func MountPolicyHealth(httpMux *http.ServeMux, rest *runtime.ServeMux, client healthpb.HealthClient) {
+	runtime.WithHealthEndpointAt(client, policyreadiness.HTTPPath)(rest)
+	httpMux.Handle(policyreadiness.HTTPPath, rest)
 }

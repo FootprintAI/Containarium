@@ -69,7 +69,7 @@ func init() {
 	recipeDeployCmd.Flags().StringArrayVar(&recipeDeployParams, "param", nil,
 		"Recipe parameter as key=value (repeatable)")
 	recipeDeployCmd.Flags().StringVar(&recipeDeployGuardrailRef, "guardrail-staging-ref", "",
-		"Guardrail-gated recipes: the staged dataset's directory under <staging root>/<name>/ on the daemon host")
+		"Guardrail-gated recipes: the staged dataset's directory under <staging root>/<your authenticated subject>/ on the daemon host (not <name>)")
 	recipeDeployCmd.Flags().StringVar(&recipeDeployGuardrailAttestation, "guardrail-attestation", "",
 		"Guardrail-gated recipes: the attestation 'guardrail apply' wrote for that dataset")
 }

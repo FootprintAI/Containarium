@@ -290,7 +290,8 @@ reconcile_sshpiper_anon_service
 #  - delaycompress keeps the just-rotated file (.1) uncompressed for one more
 #    cycle, which is the file the shipper reads to finish its tail.
 #  - The pkill pattern is ANCHORED: sshpiperd's own command line contains the
-#    plugin's, and it must not receive the signal.
+#    plugin's, and it must not receive the signal. It matches both writers:
+#    ssh-authz-plugin appends enforced denials to the same file (#2520).
 #  - Retention = `rotate N` with `daily`, i.e. N days. Set via the Terraform
 #    variable ssh_session_log_retention_days (default 90).
 cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
@@ -304,6 +305,8 @@ cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
     create 0600 root root
     postrotate
         pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-ban-plugin .*--records-file' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-authz-plugin .*--ssh-authz-enforce' || true
     endscript
 }
 LOGROTATE_EOF

@@ -15,7 +15,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.cpu.load_1m\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.cpu.load_1m/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -25,7 +25,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.cpu.load_5m\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.cpu.load_5m/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -45,7 +45,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.memory.used_bytes\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.memory.used_bytes/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -55,7 +55,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.memory.total_bytes\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.memory.total_bytes/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -75,7 +75,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.disk.used_bytes\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.disk.used_bytes/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -85,7 +85,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.disk.total_bytes\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.disk.total_bytes/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -105,7 +105,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.container.count\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.host.container.count/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -115,7 +115,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.export.heartbeat\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.export.heartbeat/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
                   }
                 },
@@ -135,7 +135,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.api.requests\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.api.requests/counter\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.code_class"] }
                   }
                 },
@@ -145,7 +145,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.api.errors\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.api.errors/counter\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.code_class"] }
                   }
                 },
@@ -165,7 +165,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.attempts\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.provision.attempts/counter\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
                   }
                 },
@@ -175,7 +175,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.failures\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.provision.failures/counter\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
                   }
                 },
@@ -195,7 +195,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.duration_seconds_sum\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.provision.duration_seconds_sum/counter\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
                   }
                 },
@@ -213,7 +213,7 @@
           "scorecard": {
             "timeSeriesQuery": {
               "timeSeriesFilter": {
-                "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.peers.connected\"",
+                "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.peers.connected/gauge\"",
                 "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
               }
             },
@@ -230,7 +230,7 @@
               {
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.tunnel.state\"",
+                    "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.tunnel.state/gauge\"",
                     "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN", "groupByFields": ["metric.label.peer_id"] }
                   }
                 },

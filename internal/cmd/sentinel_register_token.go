@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/sentinel"
@@ -69,7 +68,7 @@ func init() {
 	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenSentinelURL, "url", "", "Sentinel binary-server base URL, e.g. http://asia-east1.containarium.dev:8888 (required)")
 	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenToken, "token", "", "Tunnel-join token to authorize (required)")
 	sentinelRegisterTokenCmd.Flags().StringSliceVar(&sentinelRegisterTokenPools, "pool", nil, "Pool this token may join. Repeatable. Omit for any pool (PoolAny) — the common case for a one-off BYOC token.")
-	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenSecret, "secret", os.Getenv(config.EnvSentinelAdminSecret), "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
+	secretEnvFlag(sentinelRegisterTokenCmd.Flags(), &sentinelRegisterTokenSecret, "secret", config.EnvSentinelAdminSecret, "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
 
 	sentinelRegisterTokenCmd.Flags().Var(&sentinelRegisterTokenKind, "kind", `Which credential to register: "tunnel-join" (default, BYOC join token) or "audit-ingest" (per-backend audit:ingest JWT for the SSH session shipper)`)
 	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenBackend, "backend", "", "Backend id the token belongs to (required for --kind audit-ingest)")

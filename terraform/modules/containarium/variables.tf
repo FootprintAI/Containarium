@@ -3,6 +3,48 @@
 # =============================================================================
 # Unified variable definitions for both dev and production consumers.
 
+variable "ssh_ban_max_failures" {
+  description = "Sentinel SSH failed-callback threshold per source IP."
+  type        = number
+  default     = 100
+  validation {
+    condition     = var.ssh_ban_max_failures >= 1 && var.ssh_ban_max_failures <= 4294967295 && floor(var.ssh_ban_max_failures) == var.ssh_ban_max_failures
+    error_message = "SSH ban max failures must be a positive uint32 integer."
+  }
+}
+
+variable "ssh_ban_duration_seconds" {
+  description = "Fixed sentinel SSH failure window from the first connection."
+  type        = number
+  default     = 300
+  validation {
+    condition     = var.ssh_ban_duration_seconds >= 1 && var.ssh_ban_duration_seconds <= 86400 && floor(var.ssh_ban_duration_seconds) == var.ssh_ban_duration_seconds
+    error_message = "SSH ban duration must be an integer from 1 to 86400 seconds."
+  }
+}
+
+variable "ssh_ban_ignore_cidrs" {
+  description = "Narrow IPv4/IPv6 CIDRs exempt from sentinel IP banning, never key authentication."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for prefix in var.ssh_ban_ignore_cidrs : can(cidrhost(prefix, 0)) && can(regex("^[0-9a-fA-F:.]+/[0-9]+$", prefix)) && !can(regex("(?i)::ffff:", prefix))])
+    error_message = "SSH ban exemptions must be IPv4/IPv6 CIDRs without whitespace, flags, or mapped IPv4 addresses."
+  }
+}
+
+variable "ssh_ban_audit_records" {
+  description = "Record failed SSH authentications and bans from both listeners' ssh-ban-plugin into the SSH session records file the shipper already delivers to the backend's audit chain (#2419). Needs a containariumd whose ssh-ban-plugin has --records-file; an older binary rejects the flag and sshpiper will not start, so this is off by default. See docs/SENTINEL-SSH-SESSION-AUDIT.md."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_enforce" {
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # Project & Region
 # -----------------------------------------------------------------------------
@@ -170,6 +212,18 @@ variable "fail2ban_whitelist_cidr" {
   description = "CIDR to whitelist in fail2ban (e.g., 10.128.0.0/9 for GCE default, 10.0.0.0/8 for VPC)"
   type        = string
   default     = "10.0.0.0/8"
+}
+
+variable "ssh_authz_keys_command" {
+  description = "Install sshd AuthorizedKeysCommand on the jump host so direct SSH logins (not through the sentinel) are checked against the daemon's SSH authorization, and start the daemon with --ssh-authz-keys-command (#2527). Off by default."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_keys_enforce" {
+  description = "With ssh_authz_keys_command: when the daemon cannot be asked, the AuthorizedKeysCommand exits 1 (enforce) instead of 0 (audit-only)."
+  type        = bool
+  default     = false
 }
 
 variable "jwt_secret" {

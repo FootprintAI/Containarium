@@ -62,6 +62,10 @@
       "description": "AppService provides application deployment and management"
     },
     {
+      "name": "SentinelSSHBanService",
+      "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
+    },
+    {
       "name": "AuditService",
       "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
     },
@@ -144,6 +148,142 @@
     "application/json"
   ],
   "paths": {
+    "/sentinel/ssh-bans/{listener}": {
+      "get": {
+        "summary": "Page through current bans on one independently enforcing listener.",
+        "operationId": "SentinelSSHBanService_ListSSHBans",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListSSHBansResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "description": "Last returned normalized IP; iteration is in lexical IP order.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
+    "/sentinel/ssh-bans/{listener}/unban": {
+      "post": {
+        "summary": "Atomically clear exactly one source's counter and ban; admin-only.",
+        "operationId": "SentinelSSHBanService_UnbanSSHSource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UnbanSSHSourceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UnbanSSHSourceBody"
+            }
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
+    "/sentinel/ssh-bans/{listener}/{ip}": {
+      "get": {
+        "summary": "Inspect one source IP, including tracked, banned, and exempt states.",
+        "operationId": "SentinelSSHBanService_GetSSHBan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSSHBanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "ip",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
     "/v1/actuation/containers/{containerId}/state": {
       "post": {
         "summary": "ReportContainerState records the calling host's observed state\nfor one of its assigned containers. The cloud uses this to\nsurface the user-facing containers.state field and (in a future\nslice) to react to FAILED reports with reassignment.",
@@ -3448,6 +3588,54 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-runs/{runName}:stop": {
+      "post": {
+        "summary": "Stop a box's code run",
+        "description": "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_StopBoxRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StopBoxRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StopBoxRunBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/console-log": {
       "get": {
         "summary": "Get a VM instance's console log",
@@ -6593,6 +6781,40 @@
         ]
       }
     },
+    "/v1/security/clamav-install": {
+      "post": {
+        "summary": "Install ClamAV in a box",
+        "description": "Installs ClamAV and its signatures inside the named box so the tenant-run scan can run. Idempotent. Requires a box with at least 4 GB RAM.",
+        "operationId": "SecurityService_InstallClamav",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/InstallClamavResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/InstallClamavRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -6721,6 +6943,62 @@
         ]
       }
     },
+    "/v1/security/exec-events": {
+      "get": {
+        "summary": "Stream container exec events",
+        "description": "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.",
+        "operationId": "ThreatDetectionService_StreamExecEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/StreamExecEventsResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpc.Status"
+                }
+              },
+              "title": "Stream result of StreamExecEventsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "container",
+            "description": "Only this container's execs; empty streams every watched container.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "since",
+            "description": "Replay buffered events from this far back before (or instead of) going\nlive. The daemon keeps a bounded in-memory ring of recent events (no\naudit-log writes); older than the ring holds is simply not there.\nUnset means no replay.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "follow",
+            "description": "Keep the stream open for new events after the replay. Unset returns\nonce the replay is sent — the `exec-events` CLI without --follow.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/findings": {
       "get": {
         "summary": "List security findings",
@@ -6823,6 +7101,105 @@
             "required": true,
             "type": "string",
             "format": "int64"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/process-policy": {
+      "get": {
+        "summary": "Get the process policy",
+        "description": "Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.",
+        "operationId": "ThreatDetectionService_GetProcessPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetProcessPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "container",
+            "description": "Empty reads the backend default; a container name reads that\ncontainer's override (policy is unset when none is stored).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      },
+      "put": {
+        "summary": "Set the process policy",
+        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.",
+        "operationId": "ThreatDetectionService_SetProcessPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetProcessPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetProcessPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/process-policy/release": {
+      "post": {
+        "summary": "Release a process action",
+        "description": "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.",
+        "operationId": "ThreatDetectionService_ReleaseProcessAction",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReleaseProcessActionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ReleaseProcessActionRequest"
+            }
           }
         ],
         "tags": [
@@ -8479,6 +8856,47 @@
         ]
       }
     },
+    "/v1/users/{username}/sessions:terminate": {
+      "post": {
+        "summary": "Terminate user sessions",
+        "description": "Ends every live SSH session the user holds on this backend (owner box and collaborator boxes). Deletes nothing; the user can connect again. Requires ssh:write; the admin role may name any user, any other caller only themselves.",
+        "operationId": "ContainerService_TerminateUserSessions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TerminateUserSessionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The user: the owner of \"\u003cusername\u003e-container\" and the collaborator of\nany \"\u003cowner\u003e-container-\u003cusername\u003e\" jump account. Same value as the\nself-host user id (sshauthz.UserIDForLogin).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TerminateUserSessionsBody"
+            }
+          }
+        ],
+        "tags": [
+          "SSHSessions"
+        ]
+      }
+    },
     "/v1/validate-gpu": {
       "post": {
         "summary": "Validate GPU passthrough",
@@ -9150,7 +9568,7 @@
         "ACCESS_TYPE_RDP"
       ],
       "default": "ACCESS_TYPE_SSH",
-      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\nKeep the established SSH zero value and its JSON name (#2481).\nbuf:lint:ignore ENUM_ZERO_VALUE_SUFFIX\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
+      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
       "title": "AccessType indicates how to connect to an instance"
     },
     "AddBadDestinationRequest": {
@@ -10313,6 +10731,17 @@
       "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
       "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
     },
+    "BoxRunStopSignal": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
+        "BOX_RUN_STOP_SIGNAL_NONE",
+        "BOX_RUN_STOP_SIGNAL_SIGTERM",
+        "BOX_RUN_STOP_SIGNAL_SIGKILL"
+      ],
+      "default": "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
+      "description": "BoxRunStopSignal is the signal StopBoxRun actually sent.\n\n - BOX_RUN_STOP_SIGNAL_NONE: The run had already exited, so nothing was signaled."
+    },
     "BridgeDNSState": {
       "type": "string",
       "enum": [
@@ -10362,6 +10791,32 @@
       ],
       "default": "CPU_ADMISSION_MODE_UNSPECIFIED",
       "description": "CPUAdmissionMode is the CPU overcommit admission gate's posture\n(docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of\nbare flags so a client switches on typed constants and cannot mistake\n\"factor set but not enforced\" for protection (#2284).\n\n - CPU_ADMISSION_MODE_UNSPECIFIED: The backend did not report a posture (pre-#2284 daemon).\n - CPU_ADMISSION_MODE_DISABLED: No factor configured: the gate never runs (the default).\n - CPU_ADMISSION_MODE_ADVISORY: A factor is configured but over-ceiling creates are only logged, never\nrejected.\n - CPU_ADMISSION_MODE_ENFORCING: Over-ceiling creates are rejected with ResourceExhausted."
+    },
+    "CPUEvidence": {
+      "type": "object",
+      "properties": {
+        "meanCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Mean cores over the window's samples."
+        },
+        "peakCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Highest single sample in the window."
+        },
+        "windowSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Length of the window the samples cover."
+        },
+        "samples": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of samples the mean was taken over."
+        }
+      },
+      "description": "CPUEvidence summarises a container's CPU usage over a detection window\n(#2635), measured in cores (1.0 = one core fully busy)."
     },
     "CapabilityBenchmark": {
       "type": "object",
@@ -10620,6 +11075,19 @@
       },
       "title": "ClamavContainerSummary provides per-container scan summary"
     },
+    "ClamavInstallOutcome": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+        "CLAMAV_INSTALL_OUTCOME_INSTALLED",
+        "CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE",
+        "CLAMAV_INSTALL_OUTCOME_FAILED"
+      ],
+      "default": "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+      "description": "ClamavInstallOutcome is the result of installing ClamAV inside a box (#2631).\n\n - CLAMAV_INSTALL_OUTCOME_INSTALLED: ClamAV and its signatures were installed.\n - CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT: Already present: nothing was run.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY: The box's OS family is not supported by this command; install manually.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB).\n - CLAMAV_INSTALL_OUTCOME_FAILED: The install ran and failed, or the box could not be reached."
+    },
     "ClamavReport": {
       "type": "object",
       "properties": {
@@ -10638,7 +11106,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Scan status: \"clean\" or \"infected\""
+          "description": "Scan status: \"clean\", \"infected\", \"incomplete\", \"unsupported_size\" or\n\"not_installed\" (see status_enum; a scan that could not finish is never\nreported clean, #2496). The verdict is produced by the scan running inside\nthe tenant's own box, so it is self-reported."
         },
         "findingsCount": {
           "type": "integer",
@@ -10664,9 +11132,31 @@
         "backendId": {
           "type": "string",
           "title": "Backend ID identifying which node performed the scan"
+        },
+        "statusEnum": {
+          "$ref": "#/definitions/ClamavScanStatus",
+          "description": "Typed form of status (#2631). status stays populated for compatibility."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why a scan produced no verdict (status other than clean/infected); empty\notherwise. Never contains file paths."
         }
       },
       "title": "ClamavReport represents a single ClamAV scan result for a container"
+    },
+    "ClamavScanStatus": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+        "CLAMAV_SCAN_STATUS_CLEAN",
+        "CLAMAV_SCAN_STATUS_INFECTED",
+        "CLAMAV_SCAN_STATUS_INCOMPLETE",
+        "CLAMAV_SCAN_STATUS_NEVER_SCANNED",
+        "CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE",
+        "CLAMAV_SCAN_STATUS_NOT_INSTALLED"
+      ],
+      "default": "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+      "description": "ClamavScanStatus is the outcome of a tenant-run, in-box ClamAV scan (#2631).\nOnly a clamscan run that exits 0 with no findings is CLEAN, and even then the\nverdict is self-reported by the scan inside the tenant's own box.\n\n - CLAMAV_SCAN_STATUS_INCOMPLETE: The scan could not finish or could not be started (error, timeout, out of\nmemory, box not running). Never treated as clean.\n - CLAMAV_SCAN_STATUS_NEVER_SCANNED: No scan has ever been requested for the box: no platform assurance.\n - CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB); no scan was attempted.\n - CLAMAV_SCAN_STATUS_NOT_INSTALLED: ClamAV or its signatures are not installed in the box."
     },
     "CleanupDiskBody": {
       "type": "object",
@@ -11732,6 +12222,10 @@
         "isolation": {
           "$ref": "#/definitions/IsolationType",
           "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
+        },
+        "disableAutoSleep": {
+          "type": "boolean",
+          "description": "Opt out of auto-sleep at create (#2759). Meaningful only on a hosted\ncontrol plane that turns auto-sleep on by default for some orgs (for\nexample a seat-billed org defaulting to 30 minutes): true asks for a box\nwith NO idle-stop timer. A standalone daemon never enables auto-sleep\nunless idle_stop_minutes \u003e 0, so it ignores this field. Setting it\ntogether with idle_stop_minutes \u003e 0 is contradictory and rejected with\nInvalidArgument."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -12845,9 +13339,23 @@
             "type": "object",
             "$ref": "#/definitions/ListenerEvidence"
           }
+        },
+        "cpu": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/CPUEvidence"
+          }
+        },
+        "execs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ExecEvidence"
+          }
         }
       },
-      "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
+      "description": "Evidence bundles the flow, deny, configuration, listener, CPU and exec\nrecords that triggered a finding. Capped by the store to the most recent\nentries — see FindingStore."
     },
     "ExchangeDelegatedTokenRequest": {
       "type": "object",
@@ -12905,6 +13413,71 @@
           "description": "The roles actually granted, after intersection. Empty is a normal\nand safe result: such a token still acts for its own subject, it\njust cannot reach admin-gated RPCs or other tenants."
         }
       }
+    },
+    "ExecEvent": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the daemon decoded the event (host wall clock)."
+        },
+        "exec": {
+          "$ref": "#/definitions/ExecEvidence"
+        }
+      },
+      "description": "ExecEvent is one live exec in a tenant container, as streamed by\nStreamExecEvents (#2637). Not persisted: the stream is a window onto the\nkernel's ring, plus a short in-memory replay (StreamExecEventsRequest.since)."
+    },
+    "ExecEvidence": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Process id in the HOST pid namespace (what `kill` on the host takes)."
+        },
+        "ppid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Parent process id, host pid namespace."
+        },
+        "uid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Real uid of the exec'ing task."
+        },
+        "comm": {
+          "type": "string",
+          "description": "Task comm after the exec (16 bytes max)."
+        },
+        "filename": {
+          "type": "string",
+          "description": "Resolved executable path, as the kernel saw it."
+        },
+        "argv": {
+          "type": "string",
+          "description": "Argument vector joined with single spaces. Capped at 512 bytes by the\nkernel program; never contains environment variables."
+        },
+        "argvTruncated": {
+          "type": "boolean",
+          "description": "True when argv exceeded 512 bytes and was cut."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Hex SHA-256 of the executable when a rule computed it (#2638); empty\nin the live stream."
+        },
+        "matched": {
+          "type": "string",
+          "description": "Which matcher hit, for a finding (#2638); empty in the live stream."
+        }
+      },
+      "description": "ExecEvidence is one process exec observed by the host-side exec telemetry\n(#2637): the record the execwatch eBPF program emitted, attributed to a\ncontainer. A rule that matches an exec (miner-signature, #2638) attaches it\nto its finding; the same shape is streamed live by StreamExecEvents."
     },
     "ExecInSandboxBody": {
       "type": "object",
@@ -12982,9 +13555,50 @@
         "lastSeen": {
           "type": "string",
           "format": "date-time"
+        },
+        "response": {
+          "$ref": "#/definitions/FindingResponse",
+          "description": "What the process responder (#2636) did about this finding, if anything.\nUnset for findings no policy acts on."
         }
       },
       "description": "Finding is a single security finding raised by the threat-detection\nengine: an open or resolved instance of a rule firing for one tenant."
+    },
+    "FindingResponse": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/ProcessAction"
+        },
+        "state": {
+          "$ref": "#/definitions/ResponseState"
+        },
+        "processKilled": {
+          "type": "boolean",
+          "description": "Reserved for the signature rule's additive kill (#2638)."
+        },
+        "appliedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the TTL backstop will release the action if no operator does."
+        },
+        "releasedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "releasedBy": {
+          "type": "string",
+          "description": "\"operator\" or \"ttl\"; empty while the action is in effect."
+        },
+        "error": {
+          "type": "string",
+          "description": "Incus error text when state is FAILED."
+        }
+      },
+      "description": "FindingResponse records what the process responder did about a finding\nand when, so the finding itself tells the operator whether a box is\ncurrently throttled or frozen because of it."
     },
     "FindingState": {
       "type": "string",
@@ -13024,6 +13638,19 @@
         "packets": {
           "type": "string",
           "format": "int64"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the flow was first and last seen (#2635). The kernel stamps flows\nwith a monotonic clock, so last_seen is the flow poll that reported the\nflow and first_seen is last_seen minus the flow's own age. Set by the\nmining-behavior rule; unset on other rules' evidence."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "matched": {
+          "type": "string",
+          "description": "What qualified the flow: \"port:\u003cn\u003e\" for a stratum port, or\n\"bad-destination:\u003ccidr\u003e\" for a listed destination (#2635)."
         }
       },
       "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."
@@ -13338,7 +13965,8 @@
           "type": "string",
           "title": "When the summary was last collected"
         }
-      }
+      },
+      "description": "Counts are self-reported: the scan runs inside each tenant's own box (#2631),\nso a compromised box can report \"clean\". Treat them as a tenant-visible\nsignal, not as platform assurance."
     },
     "GetClusterKubeconfigResponse": {
       "type": "object",
@@ -13685,6 +14313,23 @@
         }
       }
     },
+    "GetProcessPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/ProcessPolicy",
+          "description": "The policy stored at the requested level, unset if none is stored."
+        },
+        "isOverride": {
+          "type": "boolean",
+          "description": "True when `container` was given and an override is stored for it."
+        },
+        "effective": {
+          "$ref": "#/definitions/ProcessPolicy",
+          "description": "The fully-resolved policy the responder would apply at that level."
+        }
+      }
+    },
     "GetRecipeResponse": {
       "type": "object",
       "properties": {
@@ -13711,6 +14356,31 @@
           "title": "Total count"
         }
       }
+    },
+    "GetSSHBanResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/SSHBanStatus"
+        },
+        "policy": {
+          "$ref": "#/definitions/SSHBanPolicy"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "GetSSHBanResponse binds a live observation to its policy and process generation."
     },
     "GetSSHTrustBundleResponse": {
       "type": "object",
@@ -13803,7 +14473,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE/\nDEGRADED, and also set while the state is OK but a rule is unhealthy\n(\"rule \u003cRULE\u003e unhealthy: \u003clast_error\u003e\"). The sentry-health loop (#2634)\nuses this exact string as the SENTRY_UNAVAILABLE finding's subject."
         },
         "rules": {
           "type": "array",
@@ -13811,6 +14481,19 @@
             "type": "object",
             "$ref": "#/definitions/RuleStatus"
           }
+        },
+        "cpuSampler": {
+          "type": "string",
+          "description": "Source of the per-container CPU samples the mining-behavior rule reads\n(#2645): \"metrics-collector\" (hook on the metrics collector's tick),\n\"standalone (30s)\" (the sentry polls Incus itself because no metrics\ncollector runs), or \"unavailable (\u003creason\u003e)\". Set only while the\nsentry is running (OK/DEGRADED)."
+        },
+        "execTelemetry": {
+          "type": "string",
+          "description": "Host-side exec telemetry (#2637): \"ok\" while the execwatch eBPF object\nis attached and watching, or \"unavailable (\u003creason\u003e)\" when the second\nobject could not be loaded or attached (no BTF, verifier rejection,\nmissing tracepoint, object not built). The flow rules keep running\neither way; the sentry-health loop treats \"unavailable\" as a fault with\nthe stable subject \"exec-telemetry unavailable\". Set only while the\nsentry is running (OK/DEGRADED)."
+        },
+        "execEventsLost": {
+          "type": "string",
+          "format": "int64",
+          "description": "Exec events the kernel could not hand over because the ring buffer was\nfull, cumulative since the object loaded. Non-zero means a burst\noutran the consumer; the events are gone, never blocked the exec."
         }
       }
     },
@@ -14131,6 +14814,13 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of distinct subjects (tenants for the tenant guard)."
+        },
+        "unmanaged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Instances carrying no user.containarium.* key (made directly in Incus,\nor a VM). Left unguarded and listed for information only; unlike\nunresolved they do not degrade the verdict (#2396)."
         }
       },
       "description": "GuardStatus is one guard's last-pass snapshot."
@@ -14523,6 +15213,27 @@
         "duplicates": {
           "type": "integer",
           "format": "int32"
+        }
+      }
+    },
+    "InstallClamavRequest": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "description": "Box to install ClamAV into. Required."
+        }
+      }
+    },
+    "InstallClamavResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/ClamavInstallOutcome"
+        },
+        "message": {
+          "type": "string",
+          "description": "Short human-readable result. Never contains package-manager output or paths."
         }
       }
     },
@@ -15046,6 +15757,38 @@
         }
       }
     },
+    "ListSSHBansResponse": {
+      "type": "object",
+      "properties": {
+        "bans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SSHBanStatus"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/definitions/SSHBanPolicy"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "ListSSHBansResponse returns current bans; pages are not a reserved snapshot."
+    },
     "ListSecretsResponse": {
       "type": "object",
       "properties": {
@@ -15293,6 +16036,38 @@
           }
         }
       }
+    },
+    "MiningBehaviorThresholds": {
+      "type": "object",
+      "properties": {
+        "minCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Absolute CPU bar in cores [1.5]. The effective bar is\nmin(min_cores, min_fraction_of_limit x the box's limits.cpu); a box with\nno CPU limit uses min_cores alone."
+        },
+        "window": {
+          "type": "string",
+          "description": "Window the CPU mean is taken over [5m]."
+        },
+        "flowMinAge": {
+          "type": "string",
+          "description": "Minimum age of a qualifying flow, seen within the window [3m]."
+        },
+        "stratumPorts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "Destination ports treated as stratum (mining pool) ports\n[3333, 4444, 5555, 7777, 14444, 14433]."
+        },
+        "minFractionOfLimit": {
+          "type": "number",
+          "format": "double",
+          "description": "Fraction of the box's CPU limit that also trips the bar [0.75]."
+        }
+      },
+      "description": "MiningBehaviorThresholds tunes the mining-behavior rule (#2635). Persisted\nas protojson in the daemon config store under\n\"threatdetect.mining_behavior.thresholds\". A zero or empty field means\n\"use the default\" (in brackets below)."
     },
     "MintGatewayTokenRequest": {
       "type": "object",
@@ -16165,6 +16940,38 @@
       },
       "description": "PrepareEncryptedMigrationResponse tells the source whether to proceed,\nand where to put the container if so."
     },
+    "ProcessAction": {
+      "type": "string",
+      "enum": [
+        "PROCESS_ACTION_UNSPECIFIED",
+        "PROCESS_ACTION_ALERT",
+        "PROCESS_ACTION_THROTTLE",
+        "PROCESS_ACTION_FREEZE"
+      ],
+      "default": "PROCESS_ACTION_UNSPECIFIED",
+      "description": "ProcessAction is what a HIGH mining finding does to its container (#2636).\nEvery action is reversible with ReleaseProcessAction; none destroys data.\n\n - PROCESS_ACTION_ALERT: Record the finding, notify, do nothing to the container. The default.\n - PROCESS_ACTION_THROTTLE: Record the box's current limits.cpu / limits.cpu.allowance, then set\nlimits.cpu.allowance to ProcessPolicy.throttle_allowance.\n - PROCESS_ACTION_FREEZE: Pause the instance through Incus (cgroup freezer): memory and disk kept,\nno process runs until released."
+    },
+    "ProcessPolicy": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/ProcessAction"
+        },
+        "throttleAllowance": {
+          "type": "string",
+          "description": "limits.cpu.allowance applied by THROTTLE: an Incus allowance such as\n\"10%\" (share under contention) or \"10ms/100ms\" (hard CFS quota).\nDefault \"10%\"."
+        },
+        "ttl": {
+          "type": "string",
+          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h.\n\nField 4 is kill_process (signature rule, #2638); it is assigned there.\n Do not reuse the number."
+        },
+        "miningBehavior": {
+          "$ref": "#/definitions/MiningBehaviorThresholds",
+          "description": "Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured\nonly on the backend default (container empty), rejected on a container\noverride. Unset on Set leaves the stored thresholds untouched."
+        }
+      },
+      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h}. Empty fields inherit from the next level down."
+    },
     "ProfileBackendRequest": {
       "type": "object",
       "properties": {
@@ -16581,6 +17388,23 @@
         }
       }
     },
+    "ReleaseProcessActionRequest": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        }
+      }
+    },
+    "ReleaseProcessActionResponse": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding",
+          "description": "The finding the action belonged to, now resolved with its response in\nstate RELEASED."
+        }
+      }
+    },
     "RemediatePentestFindingBody": {
       "type": "object",
       "description": "RemediatePentestFindingRequest requests remediation of a Trivy finding by\nupgrading the OS package that contains the vulnerable binary."
@@ -16831,6 +17655,19 @@
       "default": "RESOURCE_TYPE_UNSPECIFIED",
       "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
       "title": "ResourceType identifies which resource type an event pertains to"
+    },
+    "ResponseState": {
+      "type": "string",
+      "enum": [
+        "RESPONSE_STATE_UNSPECIFIED",
+        "RESPONSE_STATE_NONE",
+        "RESPONSE_STATE_APPLIED",
+        "RESPONSE_STATE_FAILED",
+        "RESPONSE_STATE_RELEASED",
+        "RESPONSE_STATE_EXPIRED"
+      ],
+      "default": "RESPONSE_STATE_UNSPECIFIED",
+      "description": "ResponseState is the lifecycle of one FindingResponse.\n\n - RESPONSE_STATE_NONE: The policy was ALERT: nothing was done to the container.\n - RESPONSE_STATE_APPLIED: The action is in effect.\n - RESPONSE_STATE_FAILED: Incus refused the action; `error` says why. The responder does not retry\n— the rule's next sweep re-fires the finding, which is the retry.\n - RESPONSE_STATE_RELEASED: An operator released the action (ReleaseProcessAction).\n - RESPONSE_STATE_EXPIRED: The TTL backstop released the action with no operator decision."
     },
     "RestartAppBody": {
       "type": "object",
@@ -17172,6 +18009,75 @@
       ],
       "default": "SSH_AUTHZ_DECISION_UNSPECIFIED"
     },
+    "SSHBanListener": {
+      "type": "string",
+      "enum": [
+        "SSH_BAN_LISTENER_UNSPECIFIED",
+        "SSH_BAN_LISTENER_MAIN",
+        "SSH_BAN_LISTENER_ANONYMOUS"
+      ],
+      "default": "SSH_BAN_LISTENER_UNSPECIFIED",
+      "description": "SSHBanListener identifies independent plugin processes on one sentinel."
+    },
+    "SSHBanPolicy": {
+      "type": "object",
+      "properties": {
+        "maxFailures": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "duration": {
+          "type": "string",
+          "description": "Fixed window beginning at first connection, as in sshpiper v1.6.1."
+        },
+        "ignoreCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hash": {
+          "type": "string"
+        },
+        "maxEntries": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "description": "SSHBanPolicy is the effective enforcing policy, not desired metadata."
+    },
+    "SSHBanState": {
+      "type": "string",
+      "enum": [
+        "SSH_BAN_STATE_UNSPECIFIED",
+        "SSH_BAN_STATE_CLEAR",
+        "SSH_BAN_STATE_TRACKING",
+        "SSH_BAN_STATE_BANNED",
+        "SSH_BAN_STATE_EXEMPT"
+      ],
+      "default": "SSH_BAN_STATE_UNSPECIFIED",
+      "description": "SSHBanState distinguishes positive observations from an unavailable plugin."
+    },
+    "SSHBanStatus": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SSHBanState"
+        },
+        "failures": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "SSHBanStatus describes one source's live counter and fixed window deadline."
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -17243,7 +18149,7 @@
         "SSH_DENY_REASON_UPSTREAM_UNAVAILABLE"
       ],
       "default": "SSH_DENY_REASON_UNSPECIFIED",
-      "description": " - SSH_DENY_REASON_UPSTREAM_UNAVAILABLE: The daemon could not reach the cloud."
+      "description": " - SSH_DENY_REASON_UPSTREAM_UNAVAILABLE: The decision source could not be reached: the cloud, or the local\nssh_keys registry in self-host mode. The daemon fails closed."
     },
     "SSHDeviceApproval": {
       "type": "object",
@@ -17314,10 +18220,12 @@
         "SSH_SESSION_PHASE_UNSPECIFIED",
         "SSH_SESSION_PHASE_OPEN",
         "SSH_SESSION_PHASE_CLOSE",
-        "SSH_SESSION_PHASE_DENIED"
+        "SSH_SESSION_PHASE_DENIED",
+        "SSH_SESSION_PHASE_AUTH_FAILED",
+        "SSH_SESSION_PHASE_BANNED"
       ],
       "default": "SSH_SESSION_PHASE_UNSPECIFIED",
-      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel's ssh-authz plugin refused the connection (#2516); no\nCLOSE follows. To be stored as action ssh_session_denied (#2519); until\nthen ingest rejects it as an invalid phase."
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel's ssh-authz plugin refused the connection (#2516); no\nCLOSE follows. To be stored as action ssh_session_denied (#2519); until\nthen ingest rejects it as an invalid phase.\n - SSH_SESSION_PHASE_AUTH_FAILED: Failed authentications from one source IP within one ban window (#2419),\nwritten by the sentinel's ssh-ban-plugin when the window ends. No session\nexisted, so there is no routed backend, login or credential: the record\nships to the sentinel's default backend. failure_count carries the total.\nWith an empty client_ip it is the overflow record instead: see\nsuppressed_count.\n - SSH_SESSION_PHASE_BANNED: A source IP crossed the failure budget and is banned (#2419); one record\nper ban. failure_count is the failures that tripped it, banned_until when\nthe ban lapses."
     },
     "SSHSessionRecord": {
       "type": "object",
@@ -17373,6 +18281,25 @@
         "enforced": {
           "type": "boolean",
           "description": "True when the decision was enforced; false in audit-only mode, where a\nDENY decision is recorded but the session still opens."
+        },
+        "failureCount": {
+          "type": "string",
+          "format": "uint64",
+          "description": "AUTH_FAILED / BANNED only (#2419): failed authentications counted."
+        },
+        "bannedUntil": {
+          "type": "string",
+          "format": "date-time",
+          "description": "BANNED only: when the ban lapses."
+        },
+        "banListener": {
+          "$ref": "#/definitions/SSHBanListener",
+          "description": "AUTH_FAILED / BANNED only: which sentinel SSH listener saw the failures."
+        },
+        "suppressedCount": {
+          "type": "string",
+          "format": "uint64",
+          "description": "AUTH_FAILED with an empty client_ip only: failures from other sources that\nwere not written one by one because the plugin's record rate cap was\nreached (a scan), aggregated here so the volume is still visible."
         }
       },
       "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."
@@ -17914,6 +18841,30 @@
         }
       }
     },
+    "SetProcessPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string",
+          "description": "Empty sets the backend default; a container name sets that container's\noverride."
+        },
+        "policy": {
+          "$ref": "#/definitions/ProcessPolicy"
+        },
+        "clearOverride": {
+          "type": "boolean",
+          "description": "With `container` set, removes the override instead of writing one."
+        }
+      }
+    },
+    "SetProcessPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "effective": {
+          "$ref": "#/definitions/ProcessPolicy"
+        }
+      }
+    },
     "SetSecretRequest": {
       "type": "object",
       "properties": {
@@ -18339,6 +19290,32 @@
         }
       }
     },
+    "StopBoxRunBody": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean",
+          "description": "Send SIGKILL instead of SIGTERM."
+        }
+      },
+      "description": "StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,\nto the run's whole process group. Idempotent: stopping a run that has\nalready exited signals nothing and succeeds."
+    },
+    "StopBoxRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/BoxRun",
+          "description": "The run's record after the stop. A run stopped by this call is reported\nas exited with the conventional 128+signal status (143 for SIGTERM, 137\nfor SIGKILL)."
+        },
+        "signal": {
+          "$ref": "#/definitions/BoxRunStopSignal"
+        },
+        "exited": {
+          "type": "boolean",
+          "description": "True once the run's process group is gone. False means the signal was\nsent but the process had not exited when the call returned (SIGTERM\nignored); call again with force."
+        }
+      }
+    },
     "StopContainerBody": {
       "type": "object",
       "properties": {
@@ -18401,6 +19378,15 @@
       ],
       "default": "STORAGE_ISOLATION_UNSPECIFIED",
       "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
+    },
+    "StreamExecEventsResponse": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ExecEvent"
+        }
+      },
+      "description": "StreamExecEventsResponse wraps one ExecEvent per stream message."
     },
     "SubmitTrackerChangeBody": {
       "type": "object",
@@ -18665,6 +19651,26 @@
       },
       "description": "TailRunLogResponse is one window of a run's journal."
     },
+    "TerminateUserSessionsBody": {
+      "type": "object",
+      "description": "TerminateUserSessionsRequest names the user whose sessions to end."
+    },
+    "TerminateUserSessionsResponse": {
+      "type": "object",
+      "properties": {
+        "terminatedSessions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Accounts (in a box, or the host jump account) that had live processes,\nall of which were killed."
+        },
+        "boxesTouched": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Boxes on this backend the user reaches (owner box plus collaborator\nboxes) that were walked."
+        }
+      },
+      "description": "TerminateUserSessionsResponse reports what was ended."
+    },
     "TestWebhookRequest": {
       "type": "object",
       "title": "TestWebhookRequest triggers a test notification to the configured webhook"
@@ -18696,10 +19702,13 @@
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
         "THREAT_RULE_ID_DENY_BURST",
         "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
-        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+        "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
+        "THREAT_RULE_ID_MINING_BEHAVIOR",
+        "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are\nassigned by their own stories.\n\nA process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
     },
     "ThreatSeverity": {
       "type": "string",
@@ -19154,7 +20163,7 @@
       "properties": {
         "containerName": {
           "type": "string",
-          "title": "Container name to scan (empty = scan all running user containers)"
+          "description": "Container name to scan. Required: the platform no longer scans every box\n(#2631); a scan is started per box by its owner."
         }
       }
     },
@@ -19267,6 +20276,40 @@
           "title": "Human-readable message"
         }
       }
+    },
+    "UnbanSSHSourceBody": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "description": "UnbanSSHSourceRequest targets one IP and requires a 1..1024 byte operator reason."
+    },
+    "UnbanSSHSourceResponse": {
+      "type": "object",
+      "properties": {
+        "cleared": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "UnbanSSHSourceResponse reports whether any live counter was actually cleared."
     },
     "UnreachableBackend": {
       "type": "object",

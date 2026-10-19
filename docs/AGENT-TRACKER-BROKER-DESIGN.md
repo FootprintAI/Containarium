@@ -1,9 +1,14 @@
 # Agent Tracker Broker — Design Note
 
-> Status: **Exploration / not yet approved.** This proposes a daemon-side
+> Status: **Implemented** (`internal/tracker`, `internal/runlease`, the
+> `tracker_*` tools in `internal/mcp/tracker_tools.go`); the accepted
+> implementation architecture is
+> [`architecture/agent-tracker-broker.md`](architecture/agent-tracker-broker.md).
+> This note is kept for the *why* and the threat model; where it says
+> something is not yet built, read the code. It described a daemon-side
 > *tracker broker* that lets an agent running in a box read and update issues
 > and open change requests on GitHub or GitLab **without the tracker
-> credential ever entering the box**. Nothing here is built yet. It applies
+> credential ever entering the box**. It applies
 > the custody model of the model gateway
 > (`docs/AGENT-MODEL-GATEWAY-DESIGN.md`) to a second kind of upstream, and
 > builds on the agent-skills mechanism (`docs/AGENT-SKILLS-CREWS-DESIGN.md`)
@@ -287,6 +292,18 @@ box:
 The agent never chooses the ref, so it cannot push to a default or protected
 branch, and it cannot force-push over someone else's work: the branch
 namespace belongs to its run.
+
+**Known limitation: private repositories (#2053).** A tracker-dispatched run
+fetches the connection's repository with **no credential** (none may enter the
+box), so the fetch succeeds only for a public repository. For a private one
+the fetch fails, the run still starts (best-effort workspace) with no
+workspace and no recorded `git_commit`, and can read the issue and post a
+comment, but `SubmitTrackerChange` answers `FAILED_PRECONDITION` for it: step 2
+above needs the fetched base commit. Output too long for a comment therefore
+cannot go out as a change request on a private repository. Lifting this means
+the daemon fetching with the connection's credential on the host side (open
+question 4, "Brokering the fetch too"); until then, treat a private repository
+as comment-only.
 
 A credential-injecting git smart-HTTP proxy (the box runs plain `git push`
 against the daemon) is the alternative. It is more transparent to the agent

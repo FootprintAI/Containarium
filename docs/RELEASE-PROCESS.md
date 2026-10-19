@@ -79,7 +79,17 @@ anyway; it's the only thing a non-release build has to go on.
    treat a pushed tag as done. Check the Release page has all expected
    artifacts and `SHA256SUMS.txt`, that `containarium version` on a
    freshly downloaded binary reports the new tag, and that the image
-   and PyPI publishes succeeded.
+   and PyPI publishes succeeded. For the Helm chart, check that
+   `containarium-k8s-<version>.tgz` and its `.sha256` are on the Release
+   page (`sha256sum -c` passes), that
+   `helm pull oci://ghcr.io/<org>/charts/containarium-k8s --version <version>`
+   succeeds, and that the pulled chart is stamped `version: <version>` and
+   `appVersion: v<version>`. Check that the `sign-release` job ran and
+   that every file on the Release has a `<file>.sigstore.json`
+   (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
+   documented `cosign verify-blob` command. This job and the SBOM
+   attachment run only on a real tag, so the first release after they
+   landed is their first run: expect to look.
 6. **Wait for the managed-clusters KVM e2e lane to go green on the
    tag** (`.github/workflows/cluster-e2e.yml`, also runs nightly). It
    is release-blocking (#1418): a red or missing run means the release
@@ -97,6 +107,35 @@ anyway; it's the only thing a non-release build has to go on.
    `agent-runtime-bundle.tar.gz` before it can run — so if that publish fails,
    expect this job to go red for that reason and fix the publish, not the lane.
 
+### Release checks that run for you
+
+`release.yml` runs these in the build job, before the GitHub Release is created,
+so a failure stops the publish:
+
+- **Tunnel interop smoke test** (`scripts/ci/tunnel-smoke.sh`, #2469). The built
+  `containariumd` runs as the sentinel and as the tunnel client: the pin is read
+  with `sentinel tunnel-identity`, the client must register over TLS, and a
+  request must round-trip through the tunnel. A second step repeats it with the
+  *previous release's* `containariumd` as the client, the combination a staged
+  rollout actually runs. You can run it by hand against any build:
+  `scripts/ci/tunnel-smoke.sh ./containariumd [./older-containariumd]` (needs
+  passwordless sudo; the sentinel adds a loopback alias).
+
+### Release PR checklist
+
+Before merging the release PR, check each:
+
+- **Upgrade notes.** Any change in this release that makes a client flag or
+  environment variable mandatory, or removes a fallback, has an explicit
+  "Upgrading" heading in the changelog that names the flag and what an operator
+  must do first. v0.101.0 and v0.101.1 made `--sentinel-pin` mandatory on tunnel
+  clients without saying so, and a tunnel host upgraded on release day could not
+  reconnect.
+- **Paired changes.** If a change to a client needs a counterpart on the server
+  (or the reverse), both halves are in this release. If the second half is not
+  merged yet, the first half does not ship: revert it from the release branch or
+  hold the release.
+
 ## What a tag push actually publishes
 
 A `v*` tag fires **four** workflows in parallel. Three of them publish
@@ -105,7 +144,7 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 16 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
+| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256` (the `helm-chart` job runs after `SHA256SUMS.txt` is written, so the chart is not listed there), four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries and the SBOMs, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
 | `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
 | `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
@@ -150,7 +189,9 @@ build compatibility; it does not run the binaries on Windows or macOS.
 `release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept
 a `workflow_dispatch` trigger that runs the **identical** build against
 any ref and publishes nothing: no Release, no artifact upload, no image
-push. Use it before tagging, especially when the diff touches the build
+push, no chart push. For `release.yml` this includes the Helm chart: the
+rehearsal packages it and renders it to check the pinned daemon image, and
+skips the GHCR login, OCI push and Release upload. Use it before tagging, especially when the diff touches the build
 itself (new `cmd/` files, web-ui changes, Dockerfiles, `Makefile`).
 
 ```bash

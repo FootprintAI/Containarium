@@ -85,6 +85,7 @@ func tenantGuardStatusToProto(st tenantguard.Status) *pb.GuardStatus {
 		StaleSince:     rfc3339OrEmpty(st.StaleSince),
 		Subjects:       safecast.I32(st.Tenants),
 		Unresolved:     append([]string(nil), st.Unresolved...),
+		Unmanaged:      append([]string(nil), st.Unmanaged...),
 	}
 	for _, e := range st.Entries {
 		out.Entries = append(out.Entries, &pb.GuardEntry{

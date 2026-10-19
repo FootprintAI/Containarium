@@ -59,6 +59,7 @@ type guardStatusJSON struct {
 	StaleSince     string           `json:"staleSince"`
 	Entries        []guardEntryJSON `json:"entries"`
 	Unresolved     []string         `json:"unresolved"`
+	Unmanaged      []string         `json:"unmanaged"`
 	Subjects       int              `json:"subjects"`
 }
 
@@ -79,9 +80,9 @@ func runNetworkGuardStatus(cmd *cobra.Command, _ []string) error {
 		return printJSON(out)
 	}
 	w := cmd.OutOrStdout()
-	printGuard(w, "core guard (tenants → core infra, #2084)", out.Core)
+	printGuard(w, "core guard (tenants → core infra, #2084)", unresolvedCoreReason, out.Core)
 	fmt.Fprintln(w)
-	printGuard(w, "tenant guard (tenant → tenant, #2347)", out.Tenant)
+	printGuard(w, "tenant guard (tenant → tenant, #2347)", unresolvedTenantReason, out.Tenant)
 	if !guardHealthy(out.Core) || !guardHealthy(out.Tenant) {
 		return fmt.Errorf("at least one guard is not enforcing cleanly — see above")
 	}
@@ -91,7 +92,9 @@ func runNetworkGuardStatus(cmd *cobra.Command, _ []string) error {
 // guardHealthy is the one-line verdict: a guard is healthy only when it is
 // enforcing, supported here, its last pass had no error, every subject is
 // attached, and nothing was left unresolved — an unguarded tenant is a
-// failed guard even when the pass itself succeeded.
+// failed guard even when the pass itself succeeded. Unmanaged instances (no
+// containarium labels at all) are listed but never degrade the verdict
+// (#2396).
 func guardHealthy(g *guardStatusJSON) bool {
 	// An empty lastPass means no pass has completed yet: nothing has been
 	// verified, so nothing is healthy.
@@ -106,7 +109,15 @@ func guardHealthy(g *guardStatusJSON) bool {
 	return true
 }
 
-func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guardStatusJSON) {
+// Why an entry is listed as unresolved, so an operator can act on it (#2619).
+// Every unresolved entry of a guard has the same cause, so the reason is
+// stated per guard rather than carried per entry on the wire.
+const (
+	unresolvedCoreReason   = "carries a core role this build's guard table does not know"
+	unresolvedTenantReason = "has Containarium keys but no tenant could be resolved: no user.containarium.tenant label, no cloud_org_id label, name does not end in -container, and it is not a core role"
+)
+
+func printGuard(w interface{ Write([]byte) (int, error) }, title, unresolvedReason string, g *guardStatusJSON) {
 	fmt.Fprintf(w, "%s\n", title)
 	if g == nil {
 		fmt.Fprintln(w, "  not available on this backend (no incus client)")
@@ -143,6 +154,9 @@ func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guar
 		_ = tw.Flush()
 	}
 	for _, u := range g.Unresolved {
-		fmt.Fprintf(w, "  unresolved: %s (left unguarded, reported)\n", u)
+		fmt.Fprintf(w, "  unresolved: %s (left unguarded; %s)\n", u, unresolvedReason)
+	}
+	for _, u := range g.Unmanaged {
+		fmt.Fprintf(w, "  unmanaged:  %s (no containarium labels; left unguarded, informational)\n", u)
 	}
 }

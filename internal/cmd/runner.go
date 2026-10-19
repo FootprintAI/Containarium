@@ -400,6 +400,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				client.GitSourceOpts{},  // no git-source for runner boxes
 				0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 				0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+				false,                   // disable-auto-sleep: unchanged runner behavior
 				0,                       // delete-after-stopped: not applicable to runner boxes
 				"",                      // storage-class: runner boxes use cluster default
 				client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
@@ -444,6 +445,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			client.GitSourceOpts{},  // no git-source for runner boxes
 			0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 			0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+			false,                   // disable-auto-sleep: unchanged runner behavior
 			0,                       // delete-after-stopped: not applicable to runner boxes
 			"",                      // storage-class: runner boxes use cluster default
 			client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)

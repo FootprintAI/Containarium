@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Shield, Bug, Scan, Play, RefreshCw, Download, ChevronDown, ChevronUp, Loader2, Timer, CheckCircle2, AlertCircle, ScanLine } from 'lucide-react';
+import { Shield, Bug, Scan, RefreshCw, Download, ChevronDown, ChevronUp, Loader2, Timer, CheckCircle2, AlertCircle, ScanLine } from 'lucide-react';
 import { Server } from '@/src/types/server';
 import { ClamavContainerSummary, ClamavReport, ScanStatusResponse } from '@/src/types/security';
 import { useSecurity } from '@/src/lib/hooks/useSecurity';
@@ -129,7 +129,6 @@ function ContainerRow({ container, server, onScan, scanStatus }: { container: Cl
 
 function ClamavView({ server }: SecurityViewProps) {
   const { summary, isLoading, error, refresh } = useSecurity(server);
-  const [scanningAll, setScanningAll] = useState(false);
   const [scanningContainer, setScanningContainer] = useState<string | null>(null);
   const [snackMessage, setSnackMessage] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatusResponse | null>(null);
@@ -150,7 +149,7 @@ function ClamavView({ server }: SecurityViewProps) {
       try {
         const status = await client.getScanStatus();
         setScanStatus(status);
-        if (status.pendingCount === 0 && status.runningCount === 0) { stopPolling(); setScanningAll(false); setScanningContainer(null); refresh(); }
+        if (status.pendingCount === 0 && status.runningCount === 0) { stopPolling(); setScanningContainer(null); refresh(); }
       } catch { /* ignore */ }
     };
     poll();
@@ -158,15 +157,6 @@ function ClamavView({ server }: SecurityViewProps) {
   }, [server, stopPolling, refresh]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
-
-  const handleScanAll = async () => {
-    setScanningAll(true);
-    try {
-      const client = getClient(server);
-      const result = await client.triggerClamavScan();
-      setSnackMessage(result.message || `${result.scannedCount} scan jobs queued`); startPolling();
-    } catch (err) { setSnackMessage(err instanceof Error ? err.message : 'Scan failed'); setScanningAll(false); }
-  };
 
   const handleScanContainer = async (containerName: string) => {
     setScanningContainer(containerName);
@@ -177,7 +167,7 @@ function ClamavView({ server }: SecurityViewProps) {
     } catch (err) { setSnackMessage(err instanceof Error ? err.message : 'Scan failed'); setScanningContainer(null); }
   };
 
-  const isScanning = scanningAll || !!scanningContainer;
+  const isScanning = !!scanningContainer;
 
   const sortedContainers = useMemo(() => {
     if (!summary?.containers) return [];
@@ -200,10 +190,6 @@ function ClamavView({ server }: SecurityViewProps) {
       {/* Header */}
       <div className="flex items-center gap-3">
         <h2 className="mr-auto text-sm font-semibold text-[var(--text)]">ClamAV Malware Scanning</h2>
-        <button onClick={handleScanAll} disabled={isScanning}
-          className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50">
-          {scanningAll ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Scan All
-        </button>
         <button onClick={refresh} className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)]">
           <RefreshCw size={12} />
         </button>

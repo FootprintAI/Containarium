@@ -144,6 +144,17 @@ type Collector struct {
 	cancel        context.CancelFunc
 	peerFetcher   PeerMetricsFetcher
 	egressFetcher EgressFanoutFetcher
+	cpuHook       func(at time.Time, readings []ContainerCPUReading)
+}
+
+// ContainerCPUReading is one local running container's cumulative CPU
+// counter as read on a collection tick, plus what a consumer needs to join
+// it to flows and to its CPU limit (#2635).
+type ContainerCPUReading struct {
+	Name            string
+	IPAddress       string
+	CPULimit        string // ContainerInfo.CPU: "4", "250m", "" when unlimited
+	CPUUsageSeconds int64
 }
 
 // NewCollector creates a new OTel metrics collector
@@ -445,6 +456,8 @@ func (c *Collector) collect() {
 	}
 
 	var running, stopped int64
+	tickAt := time.Now()
+	var cpuReadings []ContainerCPUReading
 	for _, ct := range containers {
 		if ct.State == "Running" {
 			// Only count user containers for aggregate stats
@@ -478,6 +491,7 @@ func (c *Collector) collect() {
 			attrs := otelmetric.WithAttributes(attrSet...)
 
 			c.containerCPUUsage.Record(ctx, metrics.CPUUsageSeconds, attrs)
+			cpuReadings = append(cpuReadings, ContainerCPUReading{Name: ct.Name, IPAddress: ct.IPAddress, CPULimit: ct.CPU, CPUUsageSeconds: metrics.CPUUsageSeconds})
 			c.containerMemUsage.Record(ctx, metrics.MemoryUsageBytes, attrs)
 			c.containerDiskUsage.Record(ctx, metrics.DiskUsageBytes, attrs)
 			c.containerNetRx.Record(ctx, metrics.NetworkRxBytes, attrs)
@@ -493,6 +507,9 @@ func (c *Collector) collect() {
 
 	c.containersRunning.Record(ctx, running, localAttrs)
 	c.containersStopped.Record(ctx, stopped, localAttrs)
+	if c.cpuHook != nil {
+		c.cpuHook(tickAt, cpuReadings)
+	}
 
 	// Egress fan-out (crawler detection): record per-container distinct
 	// destination + egress connection counts from the conntrack collector.
@@ -547,6 +564,13 @@ func (c *Collector) RecordRequestRates(samples []reqrate.Sample) {
 // SetPeerFetcher sets the peer metrics fetcher for collecting metrics from peer backends.
 func (c *Collector) SetPeerFetcher(fetcher PeerMetricsFetcher) {
 	c.peerFetcher = fetcher
+}
+
+// SetCPUHook wires a consumer of each tick's local per-container CPU
+// counters — the threat-detection CPUSampler (#2635) — so it reuses this
+// read instead of polling Incus again. Must be called before Start.
+func (c *Collector) SetCPUHook(fn func(at time.Time, readings []ContainerCPUReading)) {
+	c.cpuHook = fn
 }
 
 // SetEgressFetcher sets the egress fan-out fetcher (crawler-detection signal).

@@ -21,9 +21,16 @@ ExecStart=/usr/local/bin/sshpiperd \
   /usr/local/bin/containarium sentinel anon-door-plugin \
   --daemon-url ${anon_daemon_url} \
   -- \
-  failtoban \
-  --max-failures 100 \
-  --ban-duration 5m
+  /usr/local/bin/containariumd sentinel ssh-ban-plugin \
+  --listener anonymous \
+  --max-failures ${ssh_ban_max_failures} \
+%{ for prefix in ssh_ban_ignore_cidrs ~}
+  --ignore-ip ${prefix} \
+%{ endfor ~}
+%{ if ssh_ban_audit_records ~}
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
+  --ban-duration ${ssh_ban_duration_seconds}s
 Restart=always
 RestartSec=5
 

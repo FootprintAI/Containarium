@@ -57,9 +57,12 @@ type Sink interface {
 }
 
 // ResourceProvider is an optional capability a Sink may implement to
-// supply the provider's monitored-resource identity (e.g. a GCP
-// gce_instance) that every exported series should be tagged with. The
-// collector consumes the resulting vendor-neutral *resource.Resource, so
+// supply the provider's identity attributes (e.g. the GCP detector's
+// project, zone and instance id) as an OTel resource that every exported
+// series is exported under. How the provider then records them as a
+// monitored resource is the provider's own mapping (GCP OTLP:
+// prometheus_target). The collector consumes the resulting
+// vendor-neutral *resource.Resource, so
 // provider-specific detection stays contained in the Sink. A Sink that
 // does not implement this leaves the collector on the SDK default
 // resource.

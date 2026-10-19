@@ -153,6 +153,8 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// HMAC secret should unlock.
 	mux.Handle("/sentinel/fail2ban/bans", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanBansHandler()))
 	mux.Handle("/sentinel/fail2ban/unban", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanUnbanHandler()))
+	// This controls the enforcing SSH plugin; system fail2ban above is separate.
+	mux.Handle("/sentinel/ssh-bans/", auth.SentinelHMACMiddleware(manager.adminSecret, manager.sshBanHandler()))
 
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// so the control plane can reach tunnel backends through the sentinel without

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/runlog"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -258,35 +259,51 @@ func (c *Client) ListRecipes() (*ListRecipesResponse, error) {
 
 // DeployRecipeRequest is the body for a recipe deploy.
 type DeployRecipeRequest struct {
-	RecipeID   string            `json:"recipe_id"`
-	Name       string            `json:"name"`
-	GPU        string            `json:"gpu,omitempty"`
-	BackendID  string            `json:"backend_id,omitempty"`
-	Pool       string            `json:"pool,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	RecipeID       string                 `json:"recipe_id"`
+	Name           string                 `json:"name"`
+	GPU            string                 `json:"gpu,omitempty"`
+	BackendID      string                 `json:"backend_id,omitempty"`
+	Pool           string                 `json:"pool,omitempty"`
+	Parameters     map[string]string      `json:"parameters,omitempty"`
+	GuardrailInput *pb.GuardrailGateInput `json:"guardrail_input,omitempty"`
+}
+
+// DeployRecipeContainer is the deployed container's MCP summary.
+type DeployRecipeContainer struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
 }
 
 // DeployRecipeResponse is the result of a recipe deploy.
 type DeployRecipeResponse struct {
-	URL       string `json:"url"`
-	Message   string `json:"message"`
-	Container *struct {
-		Name  string `json:"name"`
-		State string `json:"state"`
-	} `json:"container"`
+	URL       string                 `json:"url"`
+	Message   string                 `json:"message"`
+	Container *DeployRecipeContainer `json:"container"`
 }
 
-// DeployRecipe provisions a new dedicated container from a recipe.
+// DeployRecipe wraps the CLI's typed HTTP client, retaining MCP's TLS
+// restrictions, configured transport and per-request token-file rotation.
 func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/recipes/"+req.RecipeID+"/deploy", req)
+	if c.tlsConfigErr != nil {
+		return nil, fmt.Errorf("MCP client refuses to send request: %w", c.tlsConfigErr)
+	}
+	token, err := c.readToken()
+	if err != nil {
+		return nil, fmt.Errorf("authenticate: %w", err)
+	}
+	typed, err := client.NewHTTPClient(c.baseURL, token, client.WithHTTPClient(c.httpClient))
 	if err != nil {
 		return nil, err
 	}
-	var resp DeployRecipeResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, req.GPU, req.BackendID, req.Pool, req.Parameters, req.GuardrailInput)
+	if err != nil {
+		return nil, err
 	}
-	return &resp, nil
+	out := &DeployRecipeResponse{URL: resp.GetUrl(), Message: resp.GetMessage()}
+	if container := resp.GetContainer(); container != nil {
+		out.Container = &DeployRecipeContainer{Name: container.GetName(), State: container.GetState().String()}
+	}
+	return out, nil
 }
 
 // --- agent skills (AgentSkillService) ---
@@ -1462,6 +1479,7 @@ type GuardStatusResponse struct {
 	StaleSince     string               `json:"staleSince"`
 	Entries        []GuardEntryResponse `json:"entries"`
 	Unresolved     []string             `json:"unresolved"`
+	Unmanaged      []string             `json:"unmanaged"`
 	Subjects       int                  `json:"subjects"`
 }
 
@@ -1976,6 +1994,28 @@ func (c *Client) InstallZap() (*InstallZapResponse, error) {
 	return &resp, nil
 }
 
+// InstallClamav asks the daemon to install ClamAV and its signatures inside
+// one box (#2659). It is the single Go call behind both the
+// `containarium security clamav install` CLI command and the
+// `install_clamav` MCP tool. The install can take minutes (package download
+// and the first signature fetch), so this uses a longer timeout than the
+// default 120s client.
+func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, error) {
+	long := *c
+	hc := *c.httpClient
+	hc.Timeout = 20 * time.Minute
+	long.httpClient = &hc
+	body, err := long.doRequest("POST", "/v1/security/clamav-install", map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	var resp InstallClamavResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse install response: %w", err)
+	}
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {
@@ -1985,6 +2025,11 @@ type CreateContainerRequest struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
+
+	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
+	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
+	// standalone daemon ignores it.
+	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
 
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.

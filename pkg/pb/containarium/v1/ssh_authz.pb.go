@@ -142,7 +142,8 @@ const (
 	SSHDenyReason_SSH_DENY_REASON_KEY_EXPIRED      SSHDenyReason = 4
 	SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING SSHDenyReason = 5
 	SSHDenyReason_SSH_DENY_REASON_APPROVAL_DENIED  SSHDenyReason = 6
-	// The daemon could not reach the cloud.
+	// The decision source could not be reached: the cloud, or the local
+	// ssh_keys registry in self-host mode. The daemon fails closed.
 	SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE SSHDenyReason = 7
 )
 

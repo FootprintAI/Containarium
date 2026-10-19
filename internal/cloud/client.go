@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // hostBearerMetadataKey is the gRPC metadata header the cloud-daemon's
@@ -133,6 +135,18 @@ type Deps struct {
 	// The daemon provides this when cloud.yaml has a JWTSecretFile set (i.e.
 	// the host enrolled as a BYOC backend with a driver token).
 	Driver DriverMinter
+	// Sessions, when non-nil, handles ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS
+	// assignments (#2522); nil leaves them unhandled.
+	Sessions SessionTerminator
+}
+
+// SessionTerminator ends every live SSH session a user holds on this host
+// without deleting anything. The daemon implements it with the same server
+// function `containarium sessions terminate` reaches; the interface keeps
+// internal/cloud free of an internal/server import.
+type SessionTerminator interface {
+	// orgID, when non-empty, limits the walk to boxes owned by that org (#2546).
+	TerminateUserSessions(ctx context.Context, userID, orgID string) error
 }
 
 // unaryActuation is the subset of the actuation API the client drives over a
@@ -143,6 +157,13 @@ type unaryActuation interface {
 	Heartbeat(context.Context, *cloudv1.HeartbeatRequest, ...grpc.CallOption) (*cloudv1.HeartbeatResponse, error)
 	ReportHostStatus(context.Context, *cloudv1.ReportHostStatusRequest, ...grpc.CallOption) (*cloudv1.ReportHostStatusResponse, error)
 	GetSSHTrustBundle(context.Context, *cloudv1.GetSSHTrustBundleRequest, ...grpc.CallOption) (*cloudv1.GetSSHTrustBundleResponse, error)
+}
+
+// sshAuthorizer is the managed-mode SSH authorization call. It is kept
+// separate from unaryActuation because the REST transport does not expose the
+// host-bearer gRPC channel used by AuthorizeSSH.
+type sshAuthorizer interface {
+	AuthorizeSSH(context.Context, *pb.AuthorizeSSHRequest, ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error)
 }
 
 // Client is the host-side cloud-actuation client. Slice 3 implements the
@@ -159,6 +180,15 @@ type Client struct {
 	status StatusProbe  // optional; nil = no capability reporting
 	driver DriverMinter // optional; nil = no driver-token refresh (#557)
 
+	sessions SessionTerminator // optional; nil = terminate assignments ignored
+	// terminated holds the assignment_ids of TERMINATE_USER_SESSIONS
+	// assignments already carried out, so the snapshot resent on every batch
+	// does not end the user's sessions again. In memory: after a daemon
+	// restart a still-live assignment runs once more, which only ends
+	// sessions the cloud still wants ended.
+	terminatedMu sync.Mutex
+	terminated   map[string]bool
+
 	conn *grpc.ClientConn
 	// ac handles the unary actuation RPCs (heartbeat + status); it is either the
 	// gRPC client or the REST transport (#722). watchAC is the gRPC client used
@@ -166,6 +196,7 @@ type Client struct {
 	// BYOC host pulls no assignments and the watch loop is not started.
 	ac      unaryActuation
 	watchAC cloudv1.ActuationServiceClient
+	sshAC   sshAuthorizer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -192,7 +223,7 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 	return &Client{
 		cfg: cfg, interval: defaultHeartbeatInterval,
 		sink: deps.Policies, containers: deps.Containers,
-		status: deps.Status, driver: deps.Driver,
+		status: deps.Status, driver: deps.Driver, sessions: deps.Sessions,
 	}, nil
 }
 
@@ -213,7 +244,7 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 		c.conn = conn
 		gc := cloudv1.NewActuationServiceClient(conn)
-		c.ac, c.watchAC = gc, gc
+		c.ac, c.watchAC, c.sshAC = gc, gc, gc
 	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
@@ -239,6 +270,18 @@ func (c *Client) Start(ctx context.Context) error {
 	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v, status=%v, driver-refresh=%v)",
 		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch, c.status != nil, c.driver != nil)
 	return nil
+}
+
+// AuthorizeSSH forwards a sentinel authorization request over the enrolled
+// host-bearer channel. The cloud call is deliberately bounded here so every
+// managed-mode caller gets the same fail-closed deadline.
+func (c *Client) AuthorizeSSH(ctx context.Context, req *pb.AuthorizeSSHRequest, opts ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error) {
+	if c.sshAC == nil {
+		return nil, fmt.Errorf("cloud: SSH authorization unavailable (client not started or REST transport)")
+	}
+	ctx, cancel := context.WithTimeout(c.authContext(ctx), 2*time.Second)
+	defer cancel()
+	return c.sshAC.AuthorizeSSH(ctx, req, opts...)
 }
 
 // Stop ends the loops and closes the connection. Safe to call once after Start.
@@ -626,24 +669,42 @@ func (c *Client) watchOnce() error {
 
 // reconcile applies one batch: (1) converge per-org network policies into the
 // sink (the #315 cloud-extension loop), then (2) reconcile each assignment's
-// container toward its desired_state.
+// container toward its desired_state (or carry out its other kind).
 func (c *Client) reconcile(batch *cloudv1.AssignmentBatch) {
 	if c.sink != nil {
 		if err := c.sink.SyncNetworkPolicies(c.ctx, batch.GetNetworkPolicies()); err != nil {
 			log.Printf("[cloud] sync network policies: %v", err)
 		}
 	}
-	if c.containers != nil {
-		for _, a := range batch.GetAssignments() {
-			c.reconcileAssignment(a)
+	live := make(map[string]bool, len(batch.GetAssignments()))
+	for _, a := range batch.GetAssignments() {
+		live[a.GetAssignmentId()] = true
+		c.reconcileAssignment(a)
+	}
+	// The batch is the full live set: forget terminations the cloud has
+	// released, so the record stays bounded.
+	c.terminatedMu.Lock()
+	for id := range c.terminated {
+		if !live[id] {
+			delete(c.terminated, id)
 		}
 	}
+	c.terminatedMu.Unlock()
 }
 
-// reconcileAssignment drives one container toward its desired_state and reports
-// the observed state back. The reconcile is idempotent (the actuator no-ops a
-// converged container), so re-sent snapshots are safe.
+// reconcileAssignment dispatches on the assignment's kind. A container
+// assignment (kind UNSPECIFIED or CONTAINER) drives one container toward its
+// desired_state and reports the observed state back. The reconcile is
+// idempotent (the actuator no-ops a converged container), so re-sent
+// snapshots are safe.
 func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
+	if a.GetKind() == cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS {
+		c.reconcileTermination(a)
+		return
+	}
+	if c.containers == nil {
+		return
+	}
 	name := localContainerName(a.GetContainerId())
 	switch a.GetDesiredState() {
 	case "running":
@@ -675,6 +736,59 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 	default:
 		// Unknown / empty desired_state — leave it alone (informational only).
 	}
+}
+
+// reconcileTermination ends every live SSH session of a.user_id on this host
+// (the deactivation fan-out of docs/architecture/ssh-live-authorization.md).
+// It runs once per assignment_id: a replay of a carried-out assignment is a
+// no-op reported as success. A failure is not recorded, so the next
+// delivery retries. An assignment without an id cannot be deduplicated and
+// runs on every delivery; ending sessions again is harmless.
+//
+// A user_id the host cannot map to a local login (ErrUserNotMapped, #2602)
+// is logged at warn with the assignment id and counted as its own outcome,
+// never as a walk that found no sessions. It is recorded as handled: a
+// retry cannot map it later, since a deactivated user cannot log in again.
+func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome {
+	if c.sessions == nil {
+		return terminationIgnored
+	}
+	id, user, org := a.GetAssignmentId(), a.GetUserId(), a.GetOrgId()
+	if user == "" {
+		log.Printf("[cloud] terminate-sessions assignment %q has no user_id; ignored", id)
+		return terminationIgnored
+	}
+	if id != "" && c.terminationDone(id) {
+		return terminationReplayed // already carried out
+	}
+	outcome := terminationEnded
+	if err := c.sessions.TerminateUserSessions(c.ctx, user, org); errors.Is(err, ErrUserNotMapped) {
+		log.Printf("[cloud] WARN terminate-sessions assignment %s: %v; no sessions ended", id, err)
+		outcome = terminationUnmapped
+	} else if err != nil {
+		log.Printf("[cloud] terminate sessions for %s (assignment %s): %v", user, id, err)
+		recordTerminationOutcome(c.ctx, terminationFailed)
+		return terminationFailed
+	}
+	if id != "" {
+		c.terminatedMu.Lock()
+		if c.terminated == nil {
+			c.terminated = map[string]bool{}
+		}
+		c.terminated[id] = true
+		c.terminatedMu.Unlock()
+	}
+	recordTerminationOutcome(c.ctx, outcome)
+	if outcome == terminationEnded {
+		log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+	}
+	return outcome
+}
+
+func (c *Client) terminationDone(id string) bool {
+	c.terminatedMu.Lock()
+	defer c.terminatedMu.Unlock()
+	return c.terminated[id]
 }
 
 // report sends observed container state back to the cloud (best-effort). Part
