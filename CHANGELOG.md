@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The finding webhook now reports what the process responder did** (#2718, part of #2711). The webhook was queued when a finding was recorded, before the responder acted, and recording the response never notified, so the only delivery for a mining finding said `response: NONE` and an operator learned of the throttle, its release, expiry or failure only by polling. A response transition (`APPLIED`, `FAILED`, `RELEASED`, `EXPIRED`) is now delivered at once, inside the re-notify interval, the way a severity escalation is; a repeat with an unchanged response is still suppressed. An operator release, which also resolves the finding, is one delivery (the release), not two; a TTL expiry or orphan-sweep release leaves the finding open, so its later resolve is still delivered.
+
+||||||| 6e46245ae
+### Fixed
+
 - **The Helm chart pins the sshpiper gateway image to the chart's appVersion, and the required gateway value is documented** (#2703, #2725).
 - **Each release publishes a `.sha256` for the Helm chart** (#2697, #2699). The `helm-chart` job attaches the chart after `SHA256SUMS.txt` is already written, so the chart had no checksum anywhere; it now uploads `containarium-k8s-<version>.tgz.sha256` beside the chart, matching the SDLC skills and air-gapped bundles. `docs/RELEASE-PROCESS.md` now describes the real asset set and the chart checks in verification.
 
