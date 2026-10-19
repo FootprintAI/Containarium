@@ -1,0 +1,434 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/footprintai/containarium/internal/netbpf"
+	"github.com/footprintai/containarium/internal/threatdetect"
+	"github.com/footprintai/containarium/pkg/core/incus"
+)
+
+// fakeTree builds a fake /proc + /sys/fs/cgroup under a temp dir: for each
+// pid → cgroup path, a /proc/<pid>/cgroup file naming it and the cgroup
+// directory itself (whose inode is the cgroup id). Returns the two roots and
+// the inode per cgroup path.
+func fakeTree(t *testing.T, pids map[int64]string) (procRoot, cgroupRoot string, inode map[string]uint64) {
+	t.Helper()
+	base := t.TempDir()
+	procRoot = filepath.Join(base, "proc")
+	cgroupRoot = filepath.Join(base, "cgroup")
+	inode = map[string]uint64{}
+	for pid, cg := range pids {
+		dir := filepath.Join(procRoot, fmt.Sprint(pid))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Real files carry a v1 line or two on hybrid hosts; the resolver
+		// must pick the unified "0::" line.
+		content := "1:name=systemd:/ignored\n0::/" + cg + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "cgroup"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cgDir := filepath.Join(cgroupRoot, cg)
+		if err := os.MkdirAll(cgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(cgDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inode[cg] = st.Sys().(*syscall.Stat_t).Ino
+	}
+	return procRoot, cgroupRoot, inode
+}
+
+func TestCgroupIDForPID(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{
+		4242: "lxc.payload.box-a/init.scope",
+		4300: "lxc.payload.box-b",
+	})
+	// A pid whose /proc entry has no unified line.
+	if err := os.MkdirAll(filepath.Join(procRoot, "5000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(procRoot, "5000", "cgroup"), []byte("1:cpu:/foo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A pid whose cgroup path names a directory that no longer exists.
+	if err := os.MkdirAll(filepath.Join(procRoot, "5001"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(procRoot, "5001", "cgroup"), []byte("0::/gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A pid whose cgroup path tries to escape the cgroup root.
+	if err := os.MkdirAll(filepath.Join(procRoot, "5002"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(procRoot, "5002", "cgroup"), []byte("0::/../proc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		pid     int64
+		want    uint64
+		wantErr string
+	}{
+		{name: "nested path resolves to the leaf's inode", pid: 4242, want: ino["lxc.payload.box-a/init.scope"]},
+		{name: "top-level path", pid: 4300, want: ino["lxc.payload.box-b"]},
+		{name: "non-positive pid", pid: 0, wantErr: "not running"},
+		{name: "missing /proc entry", pid: 9999, wantErr: "no such file"},
+		{name: "no unified line", pid: 5000, wantErr: "no cgroup v2 path"},
+		{name: "cgroup directory gone", pid: 5001, wantErr: "no such file"},
+		{name: "path escaping the root is refused", pid: 5002, wantErr: "escapes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := cgroupIDForPID(procRoot, cgroupRoot, tc.pid)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("cgroupIDForPID: %v", err)
+			}
+			if got != tc.want || got == 0 {
+				t.Fatalf("id = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// fakeCgroupMap records WatchCgroup/UnwatchCgroup calls like the kernel map.
+type fakeCgroupMap struct {
+	mu      sync.Mutex
+	entries map[uint64]uint32
+	watched []uint64
+	removed []uint64
+	err     error
+}
+
+func newFakeCgroupMap() *fakeCgroupMap { return &fakeCgroupMap{entries: map[uint64]uint32{}} }
+
+func (m *fakeCgroupMap) WatchCgroup(id uint64, idx uint32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	m.entries[id] = idx
+	m.watched = append(m.watched, id)
+	return nil
+}
+
+func (m *fakeCgroupMap) UnwatchCgroup(id uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, id)
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+func (m *fakeCgroupMap) ids() []uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]uint64, 0, len(m.entries))
+	for id := range m.entries {
+		out = append(out, id)
+	}
+	return out
+}
+
+func running(name string, pid int64, opts ...func(*incus.ContainerInfo)) incus.ContainerInfo {
+	c := incus.ContainerInfo{Name: name, State: "Running", Pid: pid, Tenant: "t-" + name}
+	for _, o := range opts {
+		o(&c)
+	}
+	return c
+}
+
+func newTestWatcher(t *testing.T, procRoot, cgroupRoot string, m *fakeCgroupMap) *ExecWatcher {
+	t.Helper()
+	w := NewExecWatcher(nil)
+	w.procRoot, w.cgroupRoot = procRoot, cgroupRoot
+	w.maps = m
+	w.setStatus(execTelemetryOK)
+	return w
+}
+
+// TestWatchedCgroupsReconcile: started containers are added (by their cgroup
+// inode), running ones kept, stopped ones removed, a restart (new init pid →
+// new cgroup inode) swaps the entry, and the control plane, core-role
+// containers and anything without a pid are never registered.
+func TestWatchedCgroupsReconcile(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{
+		100: "lxc.payload.box-a",
+		200: "lxc.payload.box-b",
+		201: "lxc.payload.box-b.restarted", // box-b after a restart: new init pid, new cgroup dir
+		300: "lxc.payload.core-postgres",
+		400: "lxc.payload.cloud-cp",
+	})
+	m := newFakeCgroupMap()
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+
+	w.Reconcile([]incus.ContainerInfo{
+		running("box-a", 100),
+		running("box-b", 200),
+		running("core-postgres", 300, func(c *incus.ContainerInfo) { c.Role = incus.RolePostgres }),
+		running("cloud-cp", 400, func(c *incus.ContainerInfo) { c.Role = incus.RoleControlPlane }),
+		running("box-stopped", 0, func(c *incus.ContainerInfo) { c.State = "Stopped" }),
+		running("box-nopid", 0),
+	})
+	want := map[uint64]string{ino["lxc.payload.box-a"]: "box-a", ino["lxc.payload.box-b"]: "box-b"}
+	got := m.ids()
+	if len(got) != 2 {
+		t.Fatalf("watched after first reconcile = %v, want exactly box-a and box-b", got)
+	}
+	for _, id := range got {
+		name, ok := w.lookup(id)
+		if !ok || want[id] != name.Container {
+			t.Errorf("id %d → %+v, want %q", id, name, want[id])
+		}
+		if name.TenantID != "t-"+want[id] {
+			t.Errorf("id %d tenant = %q, want %q", id, name.TenantID, "t-"+want[id])
+		}
+	}
+
+	// Steady state: same containers → no new writes, nothing removed.
+	before := len(m.watched)
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100), running("box-b", 200)})
+	if len(m.watched) != before || len(m.removed) != 0 {
+		t.Fatalf("steady reconcile wrote %d / removed %d entries, want 0 / 0", len(m.watched)-before, len(m.removed))
+	}
+
+	// box-b restarts (new pid 201 → new cgroup inode): old id removed, new added; box-a stops: removed.
+	w.Reconcile([]incus.ContainerInfo{running("box-b", 201), running("box-a", 0, func(c *incus.ContainerInfo) { c.State = "Stopped" })})
+	got = m.ids()
+	if len(got) != 1 || got[0] != ino["lxc.payload.box-b.restarted"] {
+		t.Fatalf("watched after restart/stop = %v, want only box-b's new id %d", got, ino["lxc.payload.box-b.restarted"])
+	}
+	if _, ok := w.lookup(ino["lxc.payload.box-a"]); ok {
+		t.Error("box-a still attributable after it stopped")
+	}
+	if _, ok := w.lookup(ino["lxc.payload.box-b"]); ok {
+		t.Error("box-b's old cgroup id still attributable after its restart")
+	}
+	if len(m.removed) != 2 {
+		t.Errorf("removed = %v, want box-a's id and box-b's old id", m.removed)
+	}
+
+	// A container gone from the list entirely is removed too.
+	w.Reconcile(nil)
+	if ids := m.ids(); len(ids) != 0 {
+		t.Fatalf("watched after an empty reconcile = %v, want none", ids)
+	}
+}
+
+// Reconcile before Start (no kernel map yet) must not panic and must not
+// remember anything.
+func TestWatchedCgroupsReconcile_BeforeStartIsNoop(t *testing.T) {
+	procRoot, cgroupRoot, _ := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	w := NewExecWatcher(nil)
+	w.procRoot, w.cgroupRoot = procRoot, cgroupRoot
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+	if n := w.watchedCount(); n != 0 {
+		t.Fatalf("watched = %d before Start, want 0", n)
+	}
+}
+
+func kernelEvent(cg uint64, pid uint32, comm string, argv ...string) netbpf.ExecEvent {
+	return netbpf.ExecEvent{HostPID: pid, PPID: 1, UID: 1000, CgroupID: cg, Comm: comm, Filename: "/usr/bin/" + comm, Argv: argv}
+}
+
+// TestExecWatcher_AttributesAndHandsToEngine: a decoded event for a watched
+// cgroup reaches the engine hook as a threatdetect.ExecEvent with the
+// container and tenant attached and argv joined; an event for an unknown
+// cgroup is dropped and counted, never attributed to the wrong box.
+func TestExecWatcher_AttributesAndHandsToEngine(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	m := newFakeCgroupMap()
+	var got []threatdetect.ExecEvent
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	w.now = func() time.Time { return time.Unix(1700000000, 0) }
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	w.OnExecEvent(context.Background(), kernelEvent(ino["lxc.payload.box-a"], 4242, "xmrig", "./xmrig", "-o", "pool:3333"))
+	w.OnExecEvent(context.Background(), kernelEvent(777777, 1, "sh", "sh")) // never registered
+
+	if len(got) != 1 {
+		t.Fatalf("engine got %d events, want 1: %+v", len(got), got)
+	}
+	ev := got[0]
+	if ev.Container != "box-a" || ev.TenantID != "t-box-a" || ev.PID != 4242 || ev.PPID != 1 || ev.UID != 1000 ||
+		ev.Comm != "xmrig" || ev.Filename != "/usr/bin/xmrig" || ev.Argv != "./xmrig -o pool:3333" || !ev.At.Equal(time.Unix(1700000000, 0)) {
+		t.Fatalf("engine event = %+v", ev)
+	}
+	if w.Unattributed() != 1 {
+		t.Fatalf("unattributed = %d, want 1", w.Unattributed())
+	}
+}
+
+// TestExecWatcher_FanOutDropsSlowSubscriberWithoutBlocking: two subscribers,
+// one never reads. The fast one receives every event, the slow one is
+// dropped (its channel closed) once its buffer is full, and OnExecEvent
+// never blocks on it — the whole run completes inside a deadline far below
+// what a blocked send would take.
+func TestExecWatcher_FanOutDropsSlowSubscriberWithoutBlocking(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+	cg := ino["lxc.payload.box-a"]
+
+	_, fast, cancelFast := w.Subscribe("", 0, 64)
+	defer cancelFast()
+	_, slow, cancelSlow := w.Subscribe("", 0, 2)
+	defer cancelSlow()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10; i++ {
+			w.OnExecEvent(context.Background(), kernelEvent(cg, uint32(100+i), "sh", "sh")) // #nosec G115 -- small test loop
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnExecEvent blocked on a slow subscriber")
+	}
+
+	if n := len(fast); n != 10 {
+		t.Fatalf("fast subscriber buffered %d events, want 10", n)
+	}
+	// The slow subscriber got the first 2, then was dropped: its channel is
+	// closed after those.
+	var slowGot int
+	for ev := range slow {
+		slowGot++
+		if ev.Container != "box-a" {
+			t.Errorf("slow event container = %q", ev.Container)
+		}
+	}
+	if slowGot != 2 {
+		t.Fatalf("slow subscriber received %d before being dropped, want 2", slowGot)
+	}
+	if w.SubscribersDropped() != 1 {
+		t.Fatalf("dropped subscribers = %d, want 1", w.SubscribersDropped())
+	}
+	// The fast one is still live.
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 999, "sh", "sh"))
+	select {
+	case ev := <-fast:
+		_ = ev
+	case <-time.After(time.Second):
+		t.Fatal("fast subscriber stopped receiving after the slow one was dropped")
+	}
+}
+
+// TestExecWatcher_SubscribeFiltersAndReplays: a container filter delivers
+// only that box's events; `since` replays the in-memory ring (newest-last)
+// for the window, atomically with the subscription so nothing is duplicated
+// or missed between replay and live.
+func TestExecWatcher_SubscribeFiltersAndReplays(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a", 200: "lxc.payload.box-b"})
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	now := time.Unix(1700000000, 0)
+	w.now = func() time.Time { return now }
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100), running("box-b", 200)})
+	a, b := ino["lxc.payload.box-a"], ino["lxc.payload.box-b"]
+
+	w.OnExecEvent(context.Background(), kernelEvent(a, 1, "old", "old")) // 10 min ago
+	now = now.Add(10 * time.Minute)
+	w.OnExecEvent(context.Background(), kernelEvent(a, 2, "sh", "sh"))
+	w.OnExecEvent(context.Background(), kernelEvent(b, 3, "sh", "sh"))
+	now = now.Add(time.Second)
+
+	replay, ch, cancel := w.Subscribe("box-a", 5*time.Minute, 8)
+	defer cancel()
+	if len(replay) != 1 || replay[0].Event.HostPID != 2 || replay[0].Container != "box-a" {
+		t.Fatalf("replay = %+v, want only box-a's event from the last 5 minutes", replay)
+	}
+	w.OnExecEvent(context.Background(), kernelEvent(b, 4, "sh", "sh"))
+	w.OnExecEvent(context.Background(), kernelEvent(a, 5, "sh", "sh"))
+	select {
+	case ev := <-ch:
+		if ev.Event.HostPID != 5 {
+			t.Fatalf("live event pid = %d, want 5 (box-b's 4 filtered out)", ev.Event.HostPID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no live event delivered")
+	}
+	if len(ch) != 0 {
+		t.Fatalf("filtered subscriber has %d extra events buffered", len(ch))
+	}
+
+	all, _, cancelAll := w.Subscribe("", time.Hour, 8)
+	defer cancelAll()
+	if len(all) != 5 {
+		t.Fatalf("unfiltered hour replay = %d events, want 5", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].At.Before(all[i-1].At) {
+			t.Fatalf("replay not oldest-first: %+v", all)
+		}
+	}
+	none, _, cancelNone := w.Subscribe("", 0, 8)
+	defer cancelNone()
+	if len(none) != 0 {
+		t.Fatalf("since=0 replayed %d events, want none", len(none))
+	}
+}
+
+// The replay ring is bounded: after more events than it holds, only the most
+// recent execReplayRing remain.
+func TestExecWatcher_ReplayRingIsBounded(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+	cg := ino["lxc.payload.box-a"]
+	for i := 0; i < execReplayRing+10; i++ {
+		w.OnExecEvent(context.Background(), kernelEvent(cg, uint32(i), "sh", "sh")) // #nosec G115 -- bounded test loop
+	}
+	replay, _, cancel := w.Subscribe("", time.Hour, 1)
+	defer cancel()
+	if len(replay) != execReplayRing {
+		t.Fatalf("replay = %d, want the ring size %d", len(replay), execReplayRing)
+	}
+	if replay[0].Event.HostPID != 10 || replay[len(replay)-1].Event.HostPID != uint32(execReplayRing+9) {
+		t.Fatalf("replay window = pids %d..%d, want 10..%d", replay[0].Event.HostPID, replay[len(replay)-1].Event.HostPID, execReplayRing+9)
+	}
+}
+
+// Status strings: not started, running, failed, stopped.
+func TestExecWatcher_Status(t *testing.T) {
+	w := NewExecWatcher(nil)
+	if got := w.Status(); got != execTelemetryNotStartedStatus {
+		t.Fatalf("initial status = %q", got)
+	}
+	w.setStatus(execTelemetryUnavailable(fmt.Errorf("netbpf: execwatch: load collection: BTF not found")))
+	if got := w.Status(); got != "unavailable (netbpf: execwatch: load collection: BTF not found)" {
+		t.Fatalf("failed status = %q", got)
+	}
+	if !strings.HasPrefix(w.Status(), "unavailable") {
+		t.Fatal("unavailable status must start with the word the health loop keys on")
+	}
+	w.setStatus(execTelemetryOK)
+	if got := w.Status(); got != "ok" {
+		t.Fatalf("running status = %q", got)
+	}
+	if w.Lost() != 0 {
+		t.Fatalf("Lost() = %d with no kernel object, want 0", w.Lost())
+	}
+}
