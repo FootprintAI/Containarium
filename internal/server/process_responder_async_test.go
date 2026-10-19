@@ -153,7 +153,7 @@ func TestQueuedResponse_DoesNotUndoOperatorRelease(t *testing.T) {
 		t.Fatalf("first job did not apply: %v", err)
 	}
 	stale := queueOne(t, fx, sink) // the rule re-fires while throttled
-	if _, err := fx.r.Release(ctx, "box-a"); err != nil {
+	if _, _, err := fx.r.Release(ctx, "box-a"); err != nil {
 		t.Fatal(err)
 	}
 	before := setCPUCalls(fx)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,7 @@ func TestQueuedResponse_SharedFindingReleaseIsPerContainer(t *testing.T) {
 			run: func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob {
 				fx.r.runJob(context.Background(), queueFor(t, fx, sink, "box-a"))
 				jobB := queueFor(t, fx, sink, "box-b")
-				if _, err := fx.r.Release(context.Background(), "box-a"); err != nil {
+				if _, _, err := fx.r.Release(context.Background(), "box-a"); err != nil {
 					t.Fatal(err)
 				}
 				return []responseJob{jobB}
@@ -96,7 +97,7 @@ func TestQueuedResponse_SharedFindingReleaseIsPerContainer(t *testing.T) {
 				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-b"))
 				jobB := queueFor(t, fx, sink, "box-b") // B's rule re-fires while throttled
 				jobA := queueFor(t, fx, sink, "box-a") // and A's, so the finding stays open
-				if _, err := fx.r.Release(ctx, "box-b"); err != nil {
+				if _, _, err := fx.r.Release(ctx, "box-b"); err != nil {
 					t.Fatal(err)
 				}
 				return []responseJob{jobB, jobA}
@@ -175,14 +176,14 @@ func TestRelease_SharedFindingResolvedWithLastBox(t *testing.T) {
 	fx, sink := queuedThrottle(t)
 	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
 	jobB := queueFor(t, fx, sink, "box-b")
-	if _, err := fx.r.Release(ctx, "box-a"); err != nil {
+	if _, _, err := fx.r.Release(ctx, "box-a"); err != nil {
 		t.Fatal(err)
 	}
 	if d := auditDetails(fx.audit, "release"); len(d) != 1 || !strings.Contains(d[0], "finding_kept_open=true") {
 		t.Fatalf("release audit = %v, want finding_kept_open=true", d)
 	}
 	fx.r.runJob(ctx, jobB)
-	f, err := fx.r.Release(ctx, "box-b")
+	f, _, err := fx.r.Release(ctx, "box-b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,11 +339,385 @@ func TestProcessKilledRecorded_SurvivesRelease(t *testing.T) {
 		t.Fatalf("after the kill: %+v, want process_killed=true", f)
 	}
 
-	released, err := fx.r.Release(ctx, "box-a")
+	released, _, err := fx.r.Release(ctx, "box-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if released == nil || released.Response == nil || !released.Response.ProcessKilled {
 		t.Fatalf("after release: %+v, want process_killed still true", released)
+	}
+}
+
+// TestRelease_SharedFindingHeldByAppliedAction (#2772 review 1): box-a and
+// box-b are both throttled by one finding and both jobs already ran, so
+// nothing is queued. Release(box-a) must still leave the finding open, since
+// box-b's action is open on it (read from the store, not from the queue);
+// Release(box-b) then resolves it as the last box.
+func TestRelease_SharedFindingHeldByAppliedAction(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
+	jobB := queueFor(t, fx, sink, "box-b")
+	fx.r.runJob(ctx, jobB)
+	if fx.r.pendingElsewhere(jobB.f.ID, "") {
+		t.Fatal("a job is still pending: this test must rely on the store, not the queue")
+	}
+
+	f, kept, err := fx.r.Release(ctx, "box-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept || f == nil || f.State != threatdetect.FindingStateOpen {
+		t.Fatalf("Release(box-a) = kept_open=%t, finding %+v; want kept open while box-b's throttle stands", kept, f)
+	}
+	if row, err := openAction(fx, "box-b"); err != nil || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE {
+		t.Fatalf("box-b's action after box-a's release = %+v, %v; want THROTTLE still open", row, err)
+	}
+	if d := auditDetails(fx.audit, "release"); len(d) != 1 || !strings.Contains(d[0], "finding_kept_open=true") {
+		t.Fatalf("release audit = %v, want finding_kept_open=true", d)
+	}
+
+	f, kept, err = fx.r.Release(ctx, "box-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept || f == nil || f.State != threatdetect.FindingStateResolved {
+		t.Fatalf("Release(box-b) = kept_open=%t, finding %+v; want resolved: it was the last box", kept, f)
+	}
+}
+
+// TestQueuedResponse_ReleaseOfAnotherFindingDoesNotSkip (#2772 review 2):
+// box-a is throttled for a mining-behavior finding; a signature finding with
+// kill_process then fires on box-a and queues; the operator releases the
+// mining-behavior throttle after that. The release belongs to the other
+// finding, so the signature job must still run: the miner is killed and the
+// signature finding gets its own action.
+func TestQueuedResponse_ReleaseOfAnotherFindingDoesNotSkip(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	first := fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH) // sync: throttled now
+	if row, err := openAction(fx, "box-a"); err != nil || row.FindingID != first.ID {
+		t.Fatalf("open action after the mining-behavior finding = %+v, %v", row, err)
+	}
+	fx.setKill(t, "", true)
+	killer := &fakeKiller{}
+	fx.r.SetProcessKiller(killer)
+	job := queueSignature(t, fx, sink, 4242)
+	if job.f.ID == first.ID {
+		t.Fatal("the signature finding must be a finding of its own")
+	}
+	fx.clock = fx.clock.Add(time.Minute)
+	if _, _, err := fx.r.Release(ctx, "box-a"); err != nil { // releases the OTHER finding's throttle, after the job was queued
+		t.Fatal(err)
+	}
+
+	fx.r.runJob(ctx, job)
+
+	if len(killer.calls) != 1 || len(auditDetails(fx.audit, "kill")) != 1 {
+		t.Fatalf("kills = %v, kill audits = %v; want one of each: the release was of another finding's action", killer.calls, auditDetails(fx.audit, "kill"))
+	}
+	if d := auditDetails(fx.audit, "response-skipped"); len(d) != 0 {
+		t.Fatalf("response-skipped audit = %v, want none", d)
+	}
+	row, err := openAction(fx, "box-a")
+	if err != nil || row.FindingID != job.f.ID || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE || row.KilledPID != 4242 {
+		t.Fatalf("open action after the job = %+v, %v; want the signature finding's own THROTTLE with killed_pid 4242", row, err)
+	}
+	f, _ := fx.findings.Get(ctx, job.f.ID)
+	if f.State != threatdetect.FindingStateOpen || f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_APPLIED || !f.Response.ProcessKilled {
+		t.Fatalf("signature finding = state %s response %+v, want open, APPLIED, process_killed", f.State, f.Response)
+	}
+	if g, _ := fx.findings.Get(ctx, first.ID); g.State != threatdetect.FindingStateResolved {
+		t.Fatalf("mining-behavior finding = %s, want resolved by its release", g.State)
+	}
+}
+
+// releasedWhileQueued throttles box-a, queues box-b's response for the
+// shared finding and releases box-a: the finding is kept open for box-b's
+// job, which is returned.
+func releasedWhileQueued(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+	t.Helper()
+	ctx := context.Background()
+	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
+	jobB := queueFor(t, fx, sink, "box-b")
+	_, kept, err := fx.r.Release(ctx, "box-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept {
+		t.Fatal("Release(box-a) resolved the finding although box-b's response is queued")
+	}
+	return jobB
+}
+
+// TestQueuedResponse_LastJobWithoutActionResolvesReleasedFinding (#2772
+// review 3): Release(box-a) kept the shared finding open for box-b's queued
+// job; that job then ends without an action on box-b. Nothing is left to
+// release, so the worker must resolve the finding itself, whichever way the
+// job ended, rather than leave it open with no response to release.
+func TestQueuedResponse_LastJobWithoutActionResolvesReleasedFinding(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange sets the scene and returns box-b's job, with whatever makes
+		// it end without an action in place.
+		arrange func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob
+		// skipped: box-b's job is itself skipped (the response-skipped audit
+		// row contains this) rather than run.
+		skipped string
+	}{
+		{
+			name: "ALERT override on box-b",
+			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+				job := releasedWhileQueued(t, fx, sink)
+				if err := fx.policies.SetOverride(context.Background(), "box-b", &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_ALERT}); err != nil {
+					t.Fatal(err)
+				}
+				return job
+			},
+		},
+		{
+			name: "policy read error",
+			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+				kv := &flakyPolicyKV{m: map[string]string{}}
+				fx.policies = threatdetect.NewProcessPolicyStore(kv)
+				fx.r.policies = fx.policies
+				fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+				job := releasedWhileQueued(t, fx, sink)
+				kv.mu.Lock()
+				kv.fail = true
+				kv.mu.Unlock()
+				return job
+			},
+		},
+		{
+			name: "degraded backend",
+			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+				job := releasedWhileQueued(t, fx, sink)
+				fx.r.degraded = true
+				return job
+			},
+		},
+		{
+			name: "failed apply on box-b",
+			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+				job := releasedWhileQueued(t, fx, sink)
+				fx.act.fail = errors.New("incus: boom")
+				return job
+			},
+		},
+		{
+			name:    "box-b's job skipped: box-b released after it was queued",
+			skipped: "released by operator",
+			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
+				ctx := context.Background()
+				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
+				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-b"))
+				jobB := queueFor(t, fx, sink, "box-b") // re-fires while throttled
+				fx.clock = fx.clock.Add(time.Minute)
+				if _, kept, err := fx.r.Release(ctx, "box-b"); err != nil || !kept {
+					t.Fatalf("Release(box-b) = kept_open=%t, %v; want kept open: box-a's throttle stands", kept, err)
+				}
+				if _, kept, err := fx.r.Release(ctx, "box-a"); err != nil || !kept {
+					t.Fatalf("Release(box-a) = kept_open=%t, %v; want kept open: box-b's response is queued", kept, err)
+				}
+				return jobB
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fx, sink := queuedThrottle(t)
+			job := tc.arrange(t, fx, sink)
+
+			fx.r.runJob(ctx, job)
+
+			for _, box := range []string{"box-a", "box-b"} {
+				if row, err := openAction(fx, box); !errors.Is(err, threatdetect.ErrNoOpenAction) {
+					t.Errorf("%s: open action = %+v, %v; want none", box, row, err)
+				}
+			}
+			f, err := fx.findings.Get(ctx, job.f.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.State != threatdetect.FindingStateResolved {
+				t.Fatalf("finding = state %s response %+v; want resolved: nothing is left to release", f.State, f.Response)
+			}
+			if d := auditDetails(fx.audit, "resolve"); len(d) != 1 || !strings.Contains(d[0], fmt.Sprintf("finding=%d", job.f.ID)) {
+				t.Fatalf("resolve audit = %v, want one for finding %d", d, job.f.ID)
+			}
+			d := auditDetails(fx.audit, "response-skipped")
+			switch {
+			case tc.skipped == "" && len(d) != 0:
+				t.Fatalf("response-skipped audit = %v, want none", d)
+			case tc.skipped != "" && (len(d) != 1 || !strings.Contains(d[0], tc.skipped)):
+				t.Fatalf("response-skipped audit = %v, want one containing %q", d, tc.skipped)
+			}
+			if fx.r.pendingElsewhere(job.f.ID, "") {
+				t.Fatal("a job is still counted as pending after it ran")
+			}
+		})
+	}
+}
+
+// TestQueuedResponse_AlertOnlyFindingStaysOpen is the control for the test
+// above: a finding no operator released is not resolved when its job ends
+// without an action. An alert-only finding stays open for the operator, as
+// it always has.
+func TestQueuedResponse_AlertOnlyFindingStaysOpen(t *testing.T) {
+	ctx := context.Background()
+	fx, sink := queuedThrottle(t)
+	if err := fx.policies.SetOverride(ctx, "box-a", &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_ALERT}); err != nil {
+		t.Fatal(err)
+	}
+	job := queueFor(t, fx, sink, "box-a")
+	fx.r.runJob(ctx, job)
+	f, _ := fx.findings.Get(ctx, job.f.ID)
+	if f.State != threatdetect.FindingStateOpen || f.Response == nil || f.Response.Action != pb.ProcessAction_PROCESS_ACTION_ALERT {
+		t.Fatalf("finding = state %s response %+v; want open with an ALERT response", f.State, f.Response)
+	}
+	if d := auditDetails(fx.audit, "resolve"); len(d) != 0 {
+		t.Fatalf("resolve audit = %v, want none: no operator released this finding", d)
+	}
+}
+
+// flakyActions is an ActionStore whose ListByFinding (the worker's scoped
+// release lookup for a queued job) fails the first `failures` times, as a
+// Postgres hiccup would make it.
+type flakyActions struct {
+	threatdetect.ActionStore
+	mu       sync.Mutex
+	failures int
+}
+
+func (s *flakyActions) ListByFinding(ctx context.Context, id int64) ([]*threatdetect.SecurityAction, error) {
+	s.mu.Lock()
+	fail := s.failures > 0
+	if fail {
+		s.failures--
+	}
+	s.mu.Unlock()
+	if fail {
+		return nil, errors.New("pg: connection refused")
+	}
+	return s.ActionStore.ListByFinding(ctx, id)
+}
+
+// flakyFindings is a findingLifecycle whose Get fails the first `failures`
+// times.
+type flakyFindings struct {
+	findingLifecycle
+	mu       sync.Mutex
+	failures int
+}
+
+func (s *flakyFindings) Get(ctx context.Context, id int64) (*threatdetect.Finding, error) {
+	s.mu.Lock()
+	fail := s.failures > 0
+	if fail {
+		s.failures--
+	}
+	s.mu.Unlock()
+	if fail {
+		return nil, errors.New("pg: connection refused")
+	}
+	return s.findingLifecycle.Get(ctx, id)
+}
+
+// TestQueuedResponse_StoreReadErrorDoesNotSkip (#2772 review 5): a store
+// read that fails while the worker checks a queued job is neither a release
+// nor a resolve. The job must go on: the locked read tries once more, and if
+// the store is still down the job acts on its queued copy. A Postgres hiccup
+// never costs the kill, which nothing would re-fire (the process does not
+// exec again).
+func TestQueuedResponse_StoreReadErrorDoesNotSkip(t *testing.T) {
+	const forever = 1 << 20
+	cases := []struct {
+		name     string
+		wire     func(fx *responderFixture, failures int)
+		failures int
+	}{
+		{"action lookup fails once", wireFlakyActions, 1},
+		{"action lookup fails every time", wireFlakyActions, forever},
+		{"finding read fails once", wireFlakyFindings, 1},
+		{"finding read fails every time", wireFlakyFindings, forever},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fx, sink := queuedThrottle(t)
+			fx.setKill(t, "", true)
+			killer := &fakeKiller{}
+			fx.r.SetProcessKiller(killer)
+			job := queueSignature(t, fx, sink, 4242)
+			tc.wire(fx, tc.failures) // after the queueing write, which is not under test
+
+			fx.r.runJob(ctx, job)
+
+			if len(killer.calls) != 1 || len(auditDetails(fx.audit, "kill")) != 1 {
+				t.Fatalf("kills = %v, kill audits = %v; want one of each: a read error is not a release", killer.calls, auditDetails(fx.audit, "kill"))
+			}
+			if d := auditDetails(fx.audit, "response-skipped"); len(d) != 0 {
+				t.Fatalf("response-skipped audit = %v, want none", d)
+			}
+			row, err := openAction(fx, "box-a")
+			if err != nil || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE || row.KilledPID != 4242 {
+				t.Fatalf("open action = %+v, %v; want THROTTLE with killed_pid 4242", row, err)
+			}
+		})
+	}
+}
+
+func wireFlakyActions(fx *responderFixture, failures int) {
+	fx.r.actions = &flakyActions{ActionStore: fx.actions, failures: failures}
+}
+
+func wireFlakyFindings(fx *responderFixture, failures int) {
+	fx.r.findings = &flakyFindings{findingLifecycle: fx.findings, failures: failures}
+}
+
+// TestProcessKilled_ReleaseRecordIsPerBox (#2772 review 6): box-b's kill
+// must not make box-a's release record say box-a's process was killed. The
+// record box-a's release writes carries only box-a's own killed_pid (none);
+// the finding keeps box-b's kill on record because the store keeps
+// process_killed once set.
+func TestProcessKilled_ReleaseRecordIsPerBox(t *testing.T) {
+	ctx := context.Background()
+	fx := newResponderFixture(t, false)
+	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+	fx.r.SetProcessKiller(&fakeKiller{})
+	fx.fireSignature(t, "box-a", 100) // kill off: throttled, nothing killed
+	fx.setKill(t, "", true)
+	f := fx.fireSignature(t, "box-b", 200) // the same finding: throttled, pid 200 killed
+	if f == nil || f.Response == nil || !f.Response.ProcessKilled {
+		t.Fatalf("after box-b's kill: %+v, want process_killed=true", f)
+	}
+	if rowA, err := openAction(fx, "box-a"); err != nil || rowA.KilledPID != 0 {
+		t.Fatalf("box-a's row = %+v, %v; want killed_pid 0", rowA, err)
+	}
+	if rowB, err := openAction(fx, "box-b"); err != nil || rowB.KilledPID != 200 || rowB.FindingID != f.ID {
+		t.Fatalf("box-b's row = %+v, %v; want killed_pid 200 on finding %d", rowB, err, f.ID)
+	}
+
+	released, kept, err := fx.r.Release(ctx, "box-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept {
+		t.Fatal("box-b's throttle still stands: the finding must be kept open")
+	}
+	if w := fx.findings.lastWrite(); w.State != pb.ResponseState_RESPONSE_STATE_RELEASED || w.ProcessKilled {
+		t.Fatalf("box-a's release record = %+v, want RELEASED with process_killed=false: box-a killed nothing", w)
+	}
+	if released == nil || released.Response == nil || !released.Response.ProcessKilled {
+		t.Fatalf("finding after box-a's release = %+v, want process_killed kept: box-b's kill is on record", released)
+	}
+
+	if _, _, err := fx.r.Release(ctx, "box-b"); err != nil {
+		t.Fatal(err)
+	}
+	if w := fx.findings.lastWrite(); w.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !w.ProcessKilled {
+		t.Fatalf("box-b's release record = %+v, want RELEASED with process_killed=true: its own row has killed_pid 200", w)
 	}
 }
