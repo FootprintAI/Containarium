@@ -8,6 +8,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/ssh_authz.proto";
+import "containarium/v1/ssh_ban.proto";
 
 // AuditService — the proto-defined surface of the tamper-evident audit
 // store (internal/audit). Today it carries one write RPC (#2415): the
@@ -54,6 +55,17 @@ enum SSHSessionPhase {
   // CLOSE follows. To be stored as action ssh_session_denied (#2519); until
   // then ingest rejects it as an invalid phase.
   SSH_SESSION_PHASE_DENIED = 3;
+  // Failed authentications from one source IP within one ban window (#2419),
+  // written by the sentinel's ssh-ban-plugin when the window ends. No session
+  // existed, so there is no routed backend, login or credential: the record
+  // ships to the sentinel's default backend. failure_count carries the total.
+  // With an empty client_ip it is the overflow record instead: see
+  // suppressed_count.
+  SSH_SESSION_PHASE_AUTH_FAILED = 4;
+  // A source IP crossed the failure budget and is banned (#2419); one record
+  // per ban. failure_count is the failures that tripped it, banned_until when
+  // the ban lapses.
+  SSH_SESSION_PHASE_BANNED = 5;
 }
 
 // SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.
@@ -119,6 +131,16 @@ message SSHSessionRecord {
   // True when the decision was enforced; false in audit-only mode, where a
   // DENY decision is recorded but the session still opens.
   bool enforced = 14;
+  // AUTH_FAILED / BANNED only (#2419): failed authentications counted.
+  uint64 failure_count = 15;
+  // BANNED only: when the ban lapses.
+  google.protobuf.Timestamp banned_until = 16;
+  // AUTH_FAILED / BANNED only: which sentinel SSH listener saw the failures.
+  SSHBanListener ban_listener = 17;
+  // AUTH_FAILED with an empty client_ip only: failures from other sources that
+  // were not written one by one because the plugin's record rate cap was
+  // reached (a scan), aggregated here so the volume is still visible.
+  uint64 suppressed_count = 18;
 }
 
 message IngestSSHSessionRecordsRequest {

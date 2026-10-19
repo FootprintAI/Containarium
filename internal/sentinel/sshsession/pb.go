@@ -17,6 +17,9 @@ var phaseToPB = map[SessionPhase]pb.SSHSessionPhase{
 	SessionPhaseOpen:   pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
 	SessionPhaseClose:  pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
 	SessionPhaseDenied: pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED,
+
+	SessionPhaseAuthFailed: pb.SSHSessionPhase_SSH_SESSION_PHASE_AUTH_FAILED,
+	SessionPhaseBanned:     pb.SSHSessionPhase_SSH_SESSION_PHASE_BANNED,
 }
 
 var authMethodToPB = map[AuthMethod]pb.SSHAuthMethod{
@@ -66,6 +69,13 @@ func ToProto(r Record) *pb.SSHSessionRecord {
 		AuthzDecision: r.AuthzDecision,
 		DenyReason:    r.DenyReason,
 		Enforced:      r.Enforced,
+
+		FailureCount:    r.FailureCount,
+		BanListener:     r.BanListener,
+		SuppressedCount: r.SuppressedCount,
+	}
+	if r.BannedUntil != nil {
+		out.BannedUntil = timestamppb.New(*r.BannedUntil)
 	}
 	if r.Credential != (Credential{}) {
 		out.Credential = &pb.SSHSessionCredential{
@@ -115,6 +125,14 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 		AuthzDecision: p.GetAuthzDecision(),
 		DenyReason:    p.GetDenyReason(),
 		Enforced:      p.GetEnforced(),
+
+		FailureCount:    p.GetFailureCount(),
+		BanListener:     p.GetBanListener(),
+		SuppressedCount: p.GetSuppressedCount(),
+	}
+	if t := p.GetBannedUntil(); t != nil {
+		u := t.AsTime()
+		r.BannedUntil = &u
 	}
 	if am := p.GetAuthMethod(); am != pb.SSHAuthMethod_SSH_AUTH_METHOD_UNSPECIFIED {
 		v, ok := authMethodFromPB[am]
@@ -142,5 +160,50 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 		}
 		r.CloseReason = v
 	}
+	if err := validateSourceRecord(r); err != nil {
+		return Record{}, err
+	}
 	return r, nil
+}
+
+// validateSourceRecord checks the fields specific to the source-IP phases
+// (#2419) and rejects them on any other phase, so a malformed or hand-edited
+// record is refused whole rather than stored with meaningless fields.
+func validateSourceRecord(r Record) error {
+	sourcePhase := r.Phase == SessionPhaseAuthFailed || r.Phase == SessionPhaseBanned
+	hasSourceFields := r.FailureCount != 0 || r.SuppressedCount != 0 || r.BannedUntil != nil || r.BanListener != pb.SSHBanListener_SSH_BAN_LISTENER_UNSPECIFIED
+	if !sourcePhase {
+		if hasSourceFields {
+			return fmt.Errorf("session %q: failure/ban fields set on a %s record", r.SessionID, r.Phase)
+		}
+		return nil
+	}
+	if _, ok := pb.SSHBanListener_name[int32(r.BanListener)]; !ok || r.BanListener == pb.SSHBanListener_SSH_BAN_LISTENER_UNSPECIFIED {
+		return fmt.Errorf("session %q: %s record needs a valid ban_listener, got %v", r.SessionID, r.Phase, r.BanListener)
+	}
+	switch r.Phase {
+	case SessionPhaseBanned:
+		if r.ClientIP == "" || r.FailureCount == 0 || r.BannedUntil == nil {
+			return fmt.Errorf("session %q: banned record needs client_ip, failure_count and banned_until", r.SessionID)
+		}
+		if r.SuppressedCount != 0 {
+			return fmt.Errorf("session %q: suppressed_count set on a banned record", r.SessionID)
+		}
+	case SessionPhaseAuthFailed:
+		if r.BannedUntil != nil {
+			return fmt.Errorf("session %q: banned_until set on an auth_failed record", r.SessionID)
+		}
+		if r.ClientIP == "" {
+			// The overflow record: only the suppressed count means anything.
+			if r.SuppressedCount == 0 || r.FailureCount != 0 {
+				return fmt.Errorf("session %q: auth_failed record without client_ip must carry only suppressed_count", r.SessionID)
+			}
+		} else if r.FailureCount == 0 || r.SuppressedCount != 0 {
+			return fmt.Errorf("session %q: auth_failed record needs failure_count and no suppressed_count", r.SessionID)
+		}
+	}
+	if r.Login != "" || r.Target != "" || r.Credential != (Credential{}) || r.AuthMethod != "" {
+		return fmt.Errorf("session %q: %s record must not carry login, target or credential (no session existed)", r.SessionID, r.Phase)
+	}
+	return nil
 }

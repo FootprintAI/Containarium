@@ -298,7 +298,11 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 		return nil, status.Error(codes.InvalidArgument,
 			"container_name is required: scans are started per box by its owner (scan-all was removed, #2631)")
 	}
-	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+	// Owner-only (#2655): the scan runs inside the customer's box, so the
+	// owner must be the one who asks. An administrator does not bypass this;
+	// only the owner, or a service credential acting for an owner it already
+	// authorized (security:trigger-for-owner).
+	if err := auth.RequireContainerOwner(ctx, req.ContainerName); err != nil {
 		return nil, err
 	}
 	if s.scanner == nil {

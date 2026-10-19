@@ -3,7 +3,7 @@
 > **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
 
 **The open-source, self-hostable agent runtime for AI agents.**
-Each agent gets a persistent, SSH-reachable box with per-tenant network isolation — no kube-apiserver token, no host access, no cross-tenant leakage.
+Each agent gets a persistent, SSH-reachable box in an unprivileged container, with an opt-in per-tenant eBPF egress policy, audit-logged denials, and a model gateway that keeps provider API keys out of the box. What is on by default, and what each claim rests on, is in [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).
 
 Bring your own agent — Cursor, Claude Code, OpenCode, your own MCP client.
 We run the box.
@@ -665,7 +665,7 @@ audit but not in-box SSH sessions — see #1189).
 - **AppArmor profiles** per container.
 - **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
 
-**Zero-trust controls** (see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)):
+**Zero-trust controls** (see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md); several are opt-in, see [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md) for what is on by default):
 
 - **JWT with `iss` / `aud` / `jti` / `tt` / `scopes`**: 32-byte minimum
   secret enforced at startup; refresh tokens are single-use; jti-based
@@ -677,7 +677,11 @@ audit but not in-box SSH sessions — see #1189).
 - **tmpfs `--delivery=file`** for secrets that shouldn't be visible in
   `/proc/<pid>/environ`.
 - **Audit log with SHA-256 hash chain** + `containariumd audit verify`
-  (on the host) to detect tampering.
+  (on the host): tamper-evident against an application- or database-level
+  attacker. An attacker who can write the database can rewrite the chain
+  consistently; the chain root can be anchored to a file outside the database
+  (`internal/audit/anchor.go`), which a database credential does not reach, but
+  a host-root attacker could still edit both.
 - **Image-registry allowlist + pre-pull simplestreams digest
   verification + post-pull `volatile.base_image` defense-in-depth**
   for supply-chain hardening.

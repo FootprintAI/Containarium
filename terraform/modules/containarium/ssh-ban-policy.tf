@@ -4,6 +4,7 @@ locals {
     ssh_ban_max_failures     = var.ssh_ban_max_failures
     ssh_ban_duration_seconds = var.ssh_ban_duration_seconds
     ssh_ban_ignore_cidrs     = var.ssh_ban_ignore_cidrs
+    ssh_ban_audit_records    = var.ssh_ban_audit_records
   }
   sshpiper_service_unit = templatefile("${path.module}/scripts/sshpiper.service.tmpl", merge(local.ssh_ban_policy, {
     ssh_authz_enforce = var.ssh_authz_enforce
