@@ -71,3 +71,34 @@ func TestAuthorizeContainerAccess_NoSubjectReturnsUnauthenticated(t *testing.T) 
 		t.Fatalf("missing subject: got %v want Unauthenticated", err)
 	}
 }
+
+func TestRequireContainerOwner(t *testing.T) {
+	adminScoped := func(scopes ...string) context.Context {
+		return ContextWithTestSubjectScopes(context.Background(), "driver", []string{RoleAdmin}, scopes)
+	}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		box  string
+		want codes.Code
+	}{
+		{"owner", ContextWithTestSubject(context.Background(), "alice", "user"), "alice-container", codes.OK},
+		{"owner who is also admin", ContextWithTestSubject(context.Background(), "alice", RoleAdmin), "alice-container", codes.OK},
+		{"other tenant", ContextWithTestSubject(context.Background(), "bob", "user"), "alice-container", codes.PermissionDenied},
+		{"admin without ownership", ContextWithTestSubject(context.Background(), "ops", RoleAdmin), "alice-container", codes.PermissionDenied},
+		{"admin with unrelated scopes", adminScoped(ScopeSecurityWrite), "alice-container", codes.PermissionDenied},
+		{"admin with wildcard scope", adminScoped(ScopeWildcard), "alice-container", codes.PermissionDenied},
+		{"admin acting for owner", adminScoped(ScopeSecurityWrite, ScopeSecurityTriggerForOwner), "alice-container", codes.OK},
+		{"non-admin with the acting scope", ContextWithTestSubjectScopes(context.Background(), "bob", []string{"user"}, []string{ScopeSecurityTriggerForOwner}), "alice-container", codes.PermissionDenied},
+		{"system container, admin", ContextWithTestSubject(context.Background(), "ops", RoleAdmin), "caddy", codes.PermissionDenied},
+		{"system container, acting scope", adminScoped(ScopeSecurityTriggerForOwner), "caddy", codes.PermissionDenied},
+		{"no subject", context.Background(), "alice-container", codes.Unauthenticated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := status.Code(RequireContainerOwner(tc.ctx, tc.box)); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}

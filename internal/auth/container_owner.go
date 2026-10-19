@@ -83,3 +83,54 @@ func AuthorizeContainerAccess(ctx context.Context, containerName string) error {
 	}
 	return nil
 }
+
+// RequireContainerOwner is the stricter sibling of AuthorizeContainerAccess for
+// actions that must be started by a box's owner and by nobody else (#2655): the
+// in-box malware scan runs inside the customer's box, so the owner has to be
+// the one who asks.
+//
+// It differs from AuthorizeContainerAccess in exactly one way: the admin role
+// does NOT bypass it. The caller passes when
+//
+//   - its subject is the box's derived owner, or
+//   - it is a service credential carrying the literal
+//     ScopeSecurityTriggerForOwner scope, i.e. a caller that has already
+//     authorized the end user as the owner and acts on their behalf (the
+//     managed control plane's driver token). The wildcard scope and a token
+//     with no scopes claim do not count.
+//
+// System containers (no tenant owner) are always denied. Use
+// AuthorizeContainerAccess for everything else; do not widen this helper's use
+// without the same product decision.
+func RequireContainerOwner(ctx context.Context, containerName string) error {
+	subject, roles, ok := SubjectFromGRPCContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	owner, ok := OwnerFromContainerName(containerName)
+	if !ok {
+		return status.Errorf(codes.PermissionDenied,
+			"not authorized: container %q is not owned by a tenant", containerName)
+	}
+	if owner == subject {
+		return nil
+	}
+	if HasRole(roles, RoleAdmin) {
+		if scopes, present := ScopesFromGRPCContext(ctx); present && hasLiteralScope(scopes, ScopeSecurityTriggerForOwner) {
+			return nil
+		}
+	}
+	return status.Errorf(codes.PermissionDenied,
+		"not authorized: only the owner of container %q can start this (administrators cannot)", containerName)
+}
+
+// hasLiteralScope reports whether want appears verbatim in granted. Unlike
+// HasScope/HasExplicitScope the wildcard does not match.
+func hasLiteralScope(granted []string, want string) bool {
+	for _, s := range granted {
+		if strings.TrimSpace(s) == want {
+			return true
+		}
+	}
+	return false
+}
