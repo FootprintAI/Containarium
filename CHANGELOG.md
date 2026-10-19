@@ -11,10 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`containarium security sentry status` no longer reports OK while the process responder is ALERT-only** (#2719). When findings were persisted but the `security_actions` store failed to initialise, or the responder could not be constructed, THROTTLE/FREEZE policies were silently inert. The status is now `DEGRADED (<cause>): responses disabled` (e.g. `DEGRADED (security_actions store unavailable): responses disabled`), and the sentry-health loop raises a MEDIUM sentry-unavailable finding for it, as it does for a missing CPU sampler.
 
+<<<<<<< HEAD
 ### Documentation
 
 - **`docs/security/PROCESS-GUARDRAIL.md`: operator guide to the process guardrail** (#2639, part of #2711). One page on how to turn the guardrail on safely: the three rules (`mining-behavior`, `miner-signature`, `sentry-unavailable`), the policy ladder `ALERT`, `THROTTLE`, `FREEZE` and the optional `kill_process`, release and TTL semantics, exec telemetry (kernel floor, status lines, the measured overhead), the rollout order (sentry armed, about four weeks of `alert`, `throttle`, `freeze`), webhook response delivery, the evasion limits, and what a tenant with root can and cannot do. Commands and `sentry status` samples were checked against the built binary.
 
+||||||| merged common ancestors
+=======
+### Documentation
+
+- **`docs/security/PROCESS-GUARDRAIL.md`: operator guide to the process guardrail** (#2639, first half). What v0.108.0 watches (CPU and flows) and its rules (`mining-behavior` with its thresholds, window floor and cap and the CPU bar `min(min_cores, min_fraction_of_limit × limits.cpu)`; `sentry-unavailable` including the CPU-sampler fault), the `ALERT | THROTTLE | FREEZE` ladder (what each does to the box, `10%` as 0.1 core via `10ms/100ms`, one action per box, the 24 h TTL backstop, the orphan sweep, the 10-minute failure backoff, release, per-container overrides, `ALERT` only on a degraded store), the CLI, the rollout order, the evasion limits and what a tenant with root can and cannot do, and by-hand verification steps with the numbers measured on #2636. The exec-telemetry, `miner-signature` and `kill_process` sections are marked pending until #2637 and #2638 ship.
+
+>>>>>>> origin/docs/2639-process-guardrail-operator-doc
 ## [0.109.0] - 2026-10-19
 
 ### Added
