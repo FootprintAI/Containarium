@@ -60,3 +60,58 @@ func TestStaleCaddyNATRules_LeavesPassthroughAlone(t *testing.T) {
 		t.Errorf("expected passthrough rules to be left alone, got %v", got)
 	}
 }
+
+// The 80/443 DNAT is scoped to traffic addressed to the host itself and has
+// no source exclusion, so a box on the bridge that opens the host's own
+// address is DNAT'd to Caddy like any outside client (hairpin, #2732), while
+// traffic merely passing through the host to some other address is not.
+func TestCaddyPreRoutingRule_ScopedToLocalNoSourceExclusion(t *testing.T) {
+	got := caddyPreRoutingRule(443, "10.0.3.50")
+	want := []string{"PREROUTING", "-p", "tcp", "-m", "addrtype", "--dst-type", "LOCAL",
+		"--dport", "443", "-j", "DNAT", "--to-destination", "10.0.3.50:443"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("caddyPreRoutingRule mismatch.\n got: %v\nwant: %v", got, want)
+	}
+	for _, a := range got {
+		if a == "!" || a == "-s" {
+			t.Errorf("rule still carries a source match, so bridge clients cannot hairpin: %v", got)
+		}
+	}
+}
+
+// On upgrade the pre-#2732 shape (`! -s <bridge>`) must be cleared even when
+// it still points at the current Caddy IP, or a host keeps both shapes.
+// Rules are in the order `iptables -t nat -S` actually prints them.
+func TestCaddyNATRulesToClear_LegacyShape(t *testing.T) {
+	save := `-A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
+-A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.111:443
+-A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
+-A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
+-A PREROUTING ! -s 10.0.3.0/24 -p tcp -m tcp --dport 50051 -j DNAT --to-destination 10.0.3.150:50051
+-A OUTPUT -d 127.0.0.0/8 -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
+-A POSTROUTING -d 10.0.3.50/32 -j MASQUERADE`
+
+	got := caddyNATRulesToClear(save, "10.0.3.50")
+
+	// The legacy :443 rule is also stale by IP; it must be deleted once, not
+	// twice (the second -D would fail and log a spurious warning).
+	want := [][]string{
+		{"-t", "nat", "-D", "PREROUTING", "!", "-s", "10.0.3.0/24", "-p", "tcp", "-m", "tcp", "--dport", "443", "-j", "DNAT", "--to-destination", "10.0.3.111:443"},
+		{"-t", "nat", "-D", "PREROUTING", "!", "-s", "10.0.3.0/24", "-p", "tcp", "-m", "tcp", "--dport", "80", "-j", "DNAT", "--to-destination", "10.0.3.50:80"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("caddyNATRulesToClear mismatch.\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// A host already on the new shape has nothing to clear.
+func TestCaddyNATRulesToClear_NewShapeNoOp(t *testing.T) {
+	save := `-A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
+-A PREROUTING -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 443 -j DNAT --to-destination 10.0.3.50:443
+-A OUTPUT -d 127.0.0.0/8 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.50:80
+-A POSTROUTING -d 10.0.3.50/32 -j MASQUERADE`
+
+	if got := caddyNATRulesToClear(save, "10.0.3.50"); len(got) != 0 {
+		t.Errorf("expected nothing to clear on the new shape, got %v", got)
+	}
+}
