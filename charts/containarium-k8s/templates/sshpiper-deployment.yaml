@@ -32,7 +32,7 @@ spec:
       serviceAccountName: {{ include "containarium-k8s.sshpiperServiceAccountName" . }}
       containers:
         - name: sshpiper
-          image: {{ .Values.gateway.sshpiper.image }}
+          image: {{ include "containarium-k8s.sshpiperImage" . }}
           imagePullPolicy: IfNotPresent
           env:
             # Route by the Pipe CRDs the daemon programs in this namespace.
