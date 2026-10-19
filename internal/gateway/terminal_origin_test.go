@@ -21,6 +21,14 @@ func newOriginRequest(origin string, mutate func(*http.Request)) *http.Request {
 	return r
 }
 
+// markValidated does what the gateway's terminal wrapper does after
+// ValidateToken succeeds: record the validated bearer's source on the
+// request context. It validates nothing itself.
+func markValidated(r *http.Request) *http.Request {
+	_, src := auth.ExtractBearerForUpgrade(r)
+	return r.WithContext(withValidatedBearer(r.Context(), src))
+}
+
 func withSubprotocolBearer(r *http.Request) {
 	r.Header.Set("Sec-WebSocket-Protocol", auth.WSSubprotocolBearer+", header.payload.sig")
 }
@@ -38,15 +46,17 @@ func TestCheckTerminalOrigin(t *testing.T) {
 		wantOK     bool
 		wantReason string
 	}{
-		{"empty origin + subprotocol bearer upgrades", newOriginRequest("", withSubprotocolBearer), true, ""},
-		{"empty origin + Authorization bearer upgrades", newOriginRequest("", withAuthorizationBearer), true, ""},
-		{"empty origin + no bearer refused", newOriginRequest("", nil), false, originRequired},
-		{"empty origin + only ?token= refused", newOriginRequest("", func(r *http.Request) {
+		{"empty origin + validated subprotocol bearer upgrades", markValidated(newOriginRequest("", withSubprotocolBearer)), true, ""},
+		{"empty origin + validated Authorization bearer upgrades", markValidated(newOriginRequest("", withAuthorizationBearer)), true, ""},
+		{"empty origin + subprotocol bearer never validated refused", newOriginRequest("", withSubprotocolBearer), false, originRequired},
+		{"empty origin + Authorization bearer never validated refused", newOriginRequest("", withAuthorizationBearer), false, originRequired},
+		{"empty origin + no bearer refused", markValidated(newOriginRequest("", nil)), false, originRequired},
+		{"empty origin + only validated ?token= refused", markValidated(newOriginRequest("", func(r *http.Request) {
 			r.URL.RawQuery = "token=header.payload.sig"
-		}), false, originRequired},
-		{"unlisted origin + bearer refused", newOriginRequest("https://evil.example", withSubprotocolBearer), false, originNotAllowed},
+		})), false, originRequired},
+		{"unlisted origin + validated bearer refused", markValidated(newOriginRequest("https://evil.example", withSubprotocolBearer)), false, originNotAllowed},
 		{"unlisted origin, no bearer refused", newOriginRequest("https://evil.example", nil), false, originNotAllowed},
-		{"allowed origin + bearer upgrades", newOriginRequest("http://localhost:3000", withSubprotocolBearer), true, ""},
+		{"allowed origin + validated bearer upgrades", markValidated(newOriginRequest("http://localhost:3000", withSubprotocolBearer)), true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,7 +73,7 @@ func TestCheckTerminalOrigin(t *testing.T) {
 func TestTerminalUpgrader_RefusalBodyNamesReason(t *testing.T) {
 	up := newTerminalUpgrader()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if conn, err := up.Upgrade(w, r, nil); err == nil {
+		if conn, err := up.Upgrade(w, markValidated(r), nil); err == nil {
 			_ = conn.Close()
 		}
 	}))

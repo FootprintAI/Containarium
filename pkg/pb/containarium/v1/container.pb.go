@@ -1356,9 +1356,17 @@ type CreateContainerRequest struct {
 	// today's behavior: Windows → VM, everything else → container.
 	// CONTAINER with a Windows os_type is rejected with InvalidArgument.
 	// Only the LXC backend honors VM; the Kubernetes backend rejects it.
-	Isolation     IsolationType `protobuf:"varint,27,opt,name=isolation,proto3,enum=containarium.v1.IsolationType" json:"isolation,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Isolation IsolationType `protobuf:"varint,27,opt,name=isolation,proto3,enum=containarium.v1.IsolationType" json:"isolation,omitempty"`
+	// Opt out of auto-sleep at create (#2759). Meaningful only on a hosted
+	// control plane that turns auto-sleep on by default for some orgs (for
+	// example a seat-billed org defaulting to 30 minutes): true asks for a box
+	// with NO idle-stop timer. A standalone daemon never enables auto-sleep
+	// unless idle_stop_minutes > 0, so it ignores this field. Setting it
+	// together with idle_stop_minutes > 0 is contradictory and rejected with
+	// InvalidArgument.
+	DisableAutoSleep bool `protobuf:"varint,28,opt,name=disable_auto_sleep,json=disableAutoSleep,proto3" json:"disable_auto_sleep,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CreateContainerRequest) Reset() {
@@ -1578,6 +1586,13 @@ func (x *CreateContainerRequest) GetIsolation() IsolationType {
 		return x.Isolation
 	}
 	return IsolationType_ISOLATION_TYPE_UNSPECIFIED
+}
+
+func (x *CreateContainerRequest) GetDisableAutoSleep() bool {
+	if x != nil {
+		return x.DisableAutoSleep
+	}
+	return false
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -6495,7 +6510,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0ecpu_nr_periods\x18\t \x01(\x03R\fcpuNrPeriods\x12(\n" +
 	"\x10cpu_nr_throttled\x18\n" +
 	" \x01(\x03R\x0ecpuNrThrottled\x12,\n" +
-	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\x97\t\n" +
+	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xc5\t\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -6529,7 +6544,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\tencrypted\x18\x18 \x01(\bR\tencrypted\x12\x1b\n" +
 	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x12\x16\n" +
 	"\x06region\x18\x1a \x01(\tR\x06region\x12<\n" +
-	"\tisolation\x18\x1b \x01(\x0e2\x1e.containarium.v1.IsolationTypeR\tisolation\x1a9\n" +
+	"\tisolation\x18\x1b \x01(\x0e2\x1e.containarium.v1.IsolationTypeR\tisolation\x12,\n" +
+	"\x12disable_auto_sleep\x18\x1c \x01(\bR\x10disableAutoSleep\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
