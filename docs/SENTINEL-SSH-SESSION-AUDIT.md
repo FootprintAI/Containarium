@@ -16,6 +16,7 @@ sshpiperd ──► ssh-session-plugin ──► /var/log/containarium/ssh-sessi
 ```
 
 - The plugin appends one JSON line when a session opens and one when it closes (client IP and port, login, routed target, credential identity, close reason). It records connection metadata only, never session content.
+- With `ssh-authz-plugin --ssh-authz-enforce`, the authorization plugin routes the connection itself, so `ssh-session-plugin` never sees the credential. The authorization plugin then writes the `open` and `close` lines, with the same fields, to the same file, and `ssh-session-plugin` writes nothing for a connection whose credential it did not see. Each session is still recorded once. See [SENTINEL-SSH-AUTHZ.md](SENTINEL-SSH-AUTHZ.md).
 - The shipper runs inside the sentinel process. It sends each record to the audit store of the **backend that the login was routed to**, because each backend owns its own audit database. It remembers its position in a checkpoint file and moves it forward only after the backend confirms a batch, so a crash or restart loses and duplicates nothing. The backend also deduplicates per session and phase.
 - Rows are written as `ssh_session_open` and `ssh_session_close`, with `resource_type=ssh_session` and the session id as the resource id. They join the same hash chain and external anchoring (#1706) as every other audit row.
 

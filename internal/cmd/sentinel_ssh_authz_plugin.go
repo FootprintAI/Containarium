@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ var (
 	sentinelSSHAuthzTimeout      time.Duration
 	sentinelSSHAuthzEnforce      bool
 	sentinelSSHAuthzRecordsFile  string
+	sentinelSSHAuthzConfigFile   string
 )
 
 var sentinelSSHAuthzPluginCmd = &cobra.Command{
@@ -39,8 +41,12 @@ daemon, and outage grace never renews the last successful authorization.
 By default every result defers (audit-only). With --ssh-authz-enforce a DENY,
 including UPSTREAM_UNAVAILABLE once the outage grace has passed, refuses that
 key: yaml's static authorized_keys is never consulted for it, and a "denied"
-record with enforced=true is appended to --records-file. The plugin reopens
---records-file on SIGHUP, like ssh-session-plugin.`,
+record with enforced=true is appended to --records-file. Every other offer is
+routed from --sshpiper-config as the yaml plugin would route it, and never
+deferred, so a later offer on the same connection is still checked here. The
+plugin then writes the session's open and close records itself, and
+ssh-session-plugin, which never sees the credential, writes none. The plugin
+reopens --records-file on SIGHUP, like ssh-session-plugin.`,
 	RunE: runSentinelSSHAuthzPlugin,
 }
 
@@ -51,7 +57,8 @@ func init() {
 	sentinelSSHAuthzPluginCmd.Flags().DurationVar(&sentinelSSHAuthzGrace, "ssh-authz-grace", sshauthz.DefaultGrace, "Maximum age of a successful authorization reused during an outage; also caps an ALLOW's cache TTL")
 	sentinelSSHAuthzPluginCmd.Flags().DurationVar(&sentinelSSHAuthzTimeout, "ssh-authz-timeout", sshauthz.DefaultTimeout, "Deadline for resolving and authorizing one offered key")
 	sentinelSSHAuthzPluginCmd.Flags().BoolVar(&sentinelSSHAuthzEnforce, "ssh-authz-enforce", false, "Refuse a key the daemon denies (fails closed after --ssh-authz-grace); false only audits")
-	sentinelSSHAuthzPluginCmd.Flags().StringVar(&sentinelSSHAuthzRecordsFile, "records-file", sshsession.DefaultRecordsFile, "Session record JSONL that enforced denials are appended to (empty disables; unused without --ssh-authz-enforce)")
+	sentinelSSHAuthzPluginCmd.Flags().StringVar(&sentinelSSHAuthzRecordsFile, "records-file", sshsession.DefaultRecordsFile, "Session record JSONL that enforced denials and enforce-mode session records are appended to (empty disables; unused without --ssh-authz-enforce)")
+	sentinelSSHAuthzPluginCmd.Flags().StringVar(&sentinelSSHAuthzConfigFile, "sshpiper-config", "/etc/sshpiper/config.yaml", "sshpiper config.yaml that enforce mode routes from, as the yaml plugin would (unused without --ssh-authz-enforce)")
 }
 
 func runSentinelSSHAuthzPlugin(cmd *cobra.Command, args []string) error {
@@ -59,6 +66,10 @@ func runSentinelSSHAuthzPlugin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("ssh authz: socket and positive timeout required; grace must be non-negative")
 	}
 	cfg := sshauthz.Config{Enforce: sentinelSSHAuthzEnforce, Cache: sshauthz.NewCache(sentinelSSHAuthzGrace, 0, nil), Timeout: sentinelSSHAuthzTimeout, Logf: log.Printf}
+	if sentinelSSHAuthzEnforce {
+		cfg.Router = sshauthz.NewRouter(sentinelSSHAuthzConfigFile)
+		cfg.Target = sshsession.NewTargetResolver(sentinelSSHAuthzConfigFile)
+	}
 	var recorder *sshsession.JSONLRecorder
 	if sentinelSSHAuthzEnforce && sentinelSSHAuthzRecordsFile != "" {
 		var err error
@@ -80,6 +91,11 @@ func runSentinelSSHAuthzPlugin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create ssh authz plugin: %w", err)
 	}
 	piper.SetConfigLoggerCallback(libplugin.ConfigLoggerSlog)
+	// As in ssh-session-plugin: close out open sessions once, however the
+	// process ends. A no-op in audit-only mode, which writes no session records.
+	var shutdownOnce sync.Once
+	flush := func() { shutdownOnce.Do(plugin.Shutdown) }
+	defer flush()
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigc)
@@ -99,6 +115,7 @@ func runSentinelSSHAuthzPlugin(cmd *cobra.Command, args []string) error {
 	case err := <-done:
 		return err
 	case <-sigc:
+		flush()
 		return nil
 	}
 }

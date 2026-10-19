@@ -8,20 +8,36 @@ ssh-authz-plugin → ssh-session-plugin → yaml → failtoban
 
 `ssh-authz-plugin` checks raw public keys against the backend routed by
 `KeyStore.BackendForLogin`. Certificates, malformed credentials and unknown
-logins defer to the existing routing plugin. What happens to a decision
+logins are not checked against the daemon. What happens to a decision
 depends on the mode. There is no interactive approval flow yet, so
 `DENY APPROVAL_PENDING` is handled like any other denial.
 
 ## Modes
 
-| Mode | Flag | `ALLOW` | `DENY` (any reason) |
+| Mode | Flag | `ALLOW`, and offers not checked | `DENY` (any reason) |
 | --- | --- | --- | --- |
 | Audit-only (default) | none | defers to yaml | logged and recorded on the `open` row, then defers to yaml; the static `authorized_keys` still decides |
-| Enforce | `--ssh-authz-enforce` | defers to yaml | the key is refused (`Permission denied (publickey)` for OpenSSH); yaml is never consulted for that key, and a `denied` record is written |
+| Enforce | `--ssh-authz-enforce` | routed by this plugin from `--sshpiper-config`, exactly as yaml would route it; never deferred | the key is refused (`Permission denied (publickey)` for OpenSSH); yaml is never consulted for that key, and a `denied` record is written |
 
 In enforce mode the denial is returned as an error from the plugin's
 `PublicKeyCallback`. sshpiperd keeps the connection on this plugin, so the
-next key the client offers is checked too. Each refusal appends a `denied`
+next key the client offers is checked too. Every other offer is routed by
+the plugin itself: it runs the yaml plugin's own checker (`libplugin/skel`:
+certificate validity and CA match, `authorized_keys` match) over the
+`config.yaml` keysync writes, and returns the upstream. An offer that does
+not verify is refused, as yaml would refuse it. The plugin refuses every
+login if that file holds a field it does not model. The plugin never defers,
+so sshpiperd's chain never moves past it (see "Several credentials on one
+connection" below).
+
+Because the plugin returns the upstream, sshpiperd copies none of its
+metadata onto the connection. In enforce mode the plugin therefore writes
+the session's `open` and `close` records itself, including the
+`proxy_shutdown` close when the proxy stops. They carry the same fields
+`ssh-session-plugin` writes in audit-only mode: credential identity, routed
+target, `user_id`, `authz_decision`, `deny_reason` and `enforced`.
+`ssh-session-plugin` never sees these connections' credentials and writes
+nothing for them, so each session is recorded once. Each refusal appends a `denied`
 JSONL record (`enforced=true`, `user_id` when the daemon knows it,
 `deny_reason`, key fingerprint) to `--records-file`. The shipper delivers
 it as an `ssh_session_denied` audit row. The backend keeps one row per
@@ -32,10 +48,11 @@ Records of allowed sessions carry `enforced=true` as well.
 
 **Revocation latency.** A cached `ALLOW` is reused without asking the
 daemon until its `cache_ttl` expires (30 seconds from the self-host
-decider). A key revoked within that window still logs in until the entry
-expires. A login that loses its last key drops out of the sentinel's routing
-table on the next key sync. The plugin then treats it as an unknown login
-and defers: yaml refuses the key, and no `denied` record is written.
+decider), and never longer than `--ssh-authz-grace`. A key revoked within
+that window still logs in until the entry expires. A login that loses its
+last key drops out of the sentinel's routing table on the next key sync. The
+plugin then treats it as an unknown login and routes it as yaml would: the
+login has no pipe, so the key is refused, and no `denied` record is written.
 
 **Fail closed.** Enforcement covers `UPSTREAM_UNAVAILABLE`. If the routed
 backend's daemon is unreachable or returns 5xx, a key with a cached `ALLOW`
@@ -57,23 +74,19 @@ logins are not checked by this plugin and are unaffected.
 A box reachable directly on a LAN or overlay network bypasses it; the LXC
 jump host has its own check via `AuthorizedKeysCommand` (#2527).
 
-**Known gap: several credentials on one connection.** sshpiperd v1.6.1
-moves its plugin chain only forward within a connection. Once this plugin
-defers one offer, every later offer on that connection goes straight to
-yaml. A client that first offers a credential this plugin defers can then
-log in with a denied key that is still in the static `authorized_keys`.
-That first credential can be any certificate, even one from an untrusted CA:
-`TestIntegrationEnforceMultiOfferGap` reproduces this against a real
-sshpiperd. By the same chain rule, a key the daemon allows should open the
-gap too; no test covers that case. Until it is closed, a key is fully revoked
-only once it is also removed from the static file. The daemon's
-`RemoveSSHKey` RPC does both: it revokes the key in the registry, removes it
-from `authorized_keys`, and notifies the sentinel to resync. Denials with no
-static-file change behind them, such as an inactive user or lost access,
-rely on enforcement alone. Enforcement prevents a denied key that is
-offered alone from logging in, which is how a standard client uses a single
-configured identity. It does not stop a client that has been crafted to get
-around it.
+**Several credentials on one connection.** sshpiperd v1.6.1 moves its
+plugin chain only forward within a connection: once a plugin defers one
+offer, every later offer on that connection goes to the next plugin. Before
+#2629 was fixed, the enforcing plugin deferred certificates and allowed
+keys, so a client could offer one of those first and then log in with a
+denied key that was still in the static `authorized_keys`. In enforce mode
+the plugin now routes every offer itself and never defers, so each offer on
+a connection is checked here. A denied key is refused whatever was offered
+before it. Two tests check this against a real sshpiperd:
+`TestIntegrationEnforceMultiOfferGap` (a certificate from an untrusted CA,
+then the denied key) and `TestIntegrationEnforceAllowThenDeny` (an allowed
+key, of which the client holds only the public half, then the denied key).
+Audit-only mode still defers, so there the static file decides as before.
 
 The manager and sshpiperd plugins are separate processes. The manager serves
 the current keystore through `/run/containarium/ssh-authz.sock` (mode `0600`,
@@ -91,7 +104,8 @@ The plugin accepts the same socket path and:
 | `--ssh-authz-grace` | `5m` | Maximum age of a positive reused during an outage, and the cap on its fresh `cache_ttl`; `0` disables reuse |
 | `--ssh-authz-timeout` | `3s` | Total deadline for login resolution and authorization |
 | `--ssh-authz-enforce` | `false` | Refuse denied keys (see Modes) |
-| `--records-file` | `/var/log/containarium/ssh-sessions.jsonl` | Where enforced denials are appended; same file as `ssh-session-plugin`. Opened only with `--ssh-authz-enforce`; empty disables denied records |
+| `--records-file` | `/var/log/containarium/ssh-sessions.jsonl` | Where enforced denials and enforce-mode `open`/`close` records are appended; same file as `ssh-session-plugin`. Opened only with `--ssh-authz-enforce`; empty disables these records |
+| `--sshpiper-config` | `/etc/sshpiper/config.yaml` | The routing config enforce mode routes from; the same file yaml reads. Unused without `--ssh-authz-enforce` |
 
 Both plugins append whole JSON lines to the records file with `O_APPEND`.
 The plugins reopen it on SIGHUP. The module's logrotate stanza signals
@@ -99,8 +113,10 @@ The plugins reopen it on SIGHUP. The module's logrotate stanza signals
 `--ssh-authz-enforce`, the one that holds the file. An audit-only or
 pre-enforce plugin is never signalled, so a binary older than the startup
 script is not stopped by rotation. With the Terraform module, set `ssh_authz_enforce = true`. It
-adds `--ssh-authz-enforce` and `--records-file` to the tenant listener's
-unit. The anonymous-box listener is not affected.
+adds `--sshpiper-config`, `--ssh-authz-enforce` and `--records-file` to the
+tenant listener's unit. A binary without `--sshpiper-config` (before #2741)
+rejects that unit, so upgrade the sentinel binary before enabling or
+re-rendering enforcement. The anonymous-box listener is not affected.
 
 The plugin's private socket request carries its remaining deadline, so the
 manager's backend call is also bounded and respects a timeout override.
@@ -124,11 +140,11 @@ and `ssh_session_close` rows. Skipped checks have no authorization decision;
 bridge failures have `DENY UPSTREAM_UNAVAILABLE`. A grace acceptance is
 recorded as `ALLOW` with the last successful response's `user_id`.
 
-sshpiperd v1.6.1 advances its plugin chain only forward within a connection.
-As with the existing session observer, a later key offer can bypass observers
-after the first offer has advanced to yaml. Use one offered identity when
-verifying the audit attribution. Fixing multiple-offer observation requires
-an upstream chain change; in enforce mode this is the known gap above.
+In audit-only mode sshpiperd v1.6.1 advances its plugin chain past the
+observers after the first offer, so a later key offer bypasses them. Use one
+offered identity when verifying the audit attribution there. In enforce mode
+every offer reaches this plugin, and its session records name the
+credential that authenticated.
 
 The protobuf messages, service declaration and audit fields needed by this
 plugin are included here using #2516's proposed contract. The daemon's
@@ -152,8 +168,11 @@ that their session JSONL has the expected attribution. In enforce mode it
 checks that the denied key is refused (including the stock OpenSSH
 `Permission denied (publickey)` message) and recorded as `denied` with
 `enforced=true`, that the allowed key still logs in, that an outage inside
-grace logs in and one after grace is refused, and it pins the
-multiple-credential gap:
+grace logs in and one after grace is refused, that a denied key is refused
+after a certificate or an allowed key on the same connection, and that each
+session gets exactly one `open` and one `close` record with the full field
+set. `TestIntegrationEnforceAllowThenDeny` drives the stock OpenSSH client
+and skips without it:
 
 ```sh
 go build -o /tmp/containariumd ./cmd/containariumd

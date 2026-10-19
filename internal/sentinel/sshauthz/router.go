@@ -18,7 +18,6 @@ import (
 // libplugin/skel (certificate validity, CA match, authorized_keys match and
 // upstream construction), over the config.yaml keysync generates, so enforce
 // mode can route a connection itself instead of deferring to yaml (#2629).
-// Not wired in yet: the plugin's behaviour does not depend on it.
 type Router struct {
 	path string
 	skel *skel.SkelPlugin
