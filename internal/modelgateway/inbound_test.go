@@ -96,11 +96,29 @@ func (p *fakeProvider) set(policy *pb.ServerGuardrailPolicy, err error) {
 	p.policy, p.err = policy, err
 }
 
-// captureAudit records InboundBlock entries; fail makes every write error.
+// captureAudit records InboundBlock and InboundDetection entries; fail makes
+// every write error.
 type captureAudit struct {
-	mu      sync.Mutex
-	entries []InboundBlock
-	fail    bool
+	mu         sync.Mutex
+	entries    []InboundBlock
+	detections []InboundDetection
+	fail       bool
+}
+
+func (c *captureAudit) RecordInboundDetection(_ context.Context, d InboundDetection) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.detections = append(c.detections, d)
+	if c.fail {
+		return errors.New("audit store down")
+	}
+	return nil
+}
+
+func (c *captureAudit) allDetections() []InboundDetection {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]InboundDetection(nil), c.detections...)
 }
 
 func (c *captureAudit) RecordInboundBlock(_ context.Context, b InboundBlock) error {
@@ -812,6 +830,8 @@ func (g *gateSink) RecordInboundBlock(ctx context.Context, b InboundBlock) error
 	g.mu.Unlock()
 	return nil
 }
+
+func (g *gateSink) RecordInboundDetection(context.Context, InboundDetection) error { return nil }
 
 func (g *gateSink) count() int {
 	g.mu.Lock()
