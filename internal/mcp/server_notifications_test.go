@@ -93,7 +93,7 @@ func TestStart_HandshakeProducesNoReplyToTheInitializedNotification(t *testing.T
 	os.Stdin, os.Stdout = inR, outW
 	t.Cleanup(func() { os.Stdin, os.Stdout = oldIn, oldOut })
 
-	// The tools/list reply (94 tool schemas) is larger than a pipe buffer, so the
+	// The tools/list reply (97 tool schemas) is larger than a pipe buffer, so the
 	// reader must already be draining while Start runs.
 	type result struct {
 		replies []map[string]any

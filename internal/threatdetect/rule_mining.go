@@ -23,13 +23,69 @@ type miningCPUPoint struct {
 	cores float64
 }
 
+// Coverage and bound for a container's CPU history (review of #2647). None
+// depends on the spacing between samples: inferring the collector's tick
+// from observed gaps let a single short gap blind the rule.
+const (
+	// miningMinCoverage: the oldest sample inside the window must be at
+	// least this fraction of the window old.
+	miningMinCoverage = 0.8
+	// miningMinSamples: at least this many samples must be in the window.
+	miningMinSamples = 3
+	// miningMaxPoints is the hard cap on samples kept per container.
+	miningMaxPoints = 256
+
+	// miningAssumedMinTick is the shortest collector sample interval the
+	// window bound assumes (the default tick).
+	miningAssumedMinTick = 30 * time.Second
+
+	// MaxMiningWindow is the longest window the rule accepts. At most
+	// miningMaxPoints samples are kept, so at the assumed minimum tick the
+	// history spans miningMaxPoints x 30s = 128 min. Coverage needs the
+	// oldest in-window sample to be >= miningMinCoverage x window old, so
+	// a window above 256 x 30s / 0.8 = 160 min can never be satisfied and
+	// the rule would silently never fire. 128 min (the full history span,
+	// rounded down to the minute) is the accepted cap: inside that hard
+	// limit with headroom for a tick a little above 30s.
+	MaxMiningWindow = time.Duration(miningMaxPoints) * miningAssumedMinTick / time.Minute * time.Minute
+
+	// MinMiningWindow is the shortest window the rule accepts. The sweep keeps
+	// samples newer than now-window, so at the assumed tick the oldest
+	// retained sample is at most window-tick old; coverage demands
+	// miningMinCoverage x window. Those meet only when
+	// (1-miningMinCoverage) x window >= tick, i.e. window >= 150s at 30s; a
+	// shorter window is accepted by the CLI and then silently never fires
+	// (#2674). Six ticks (3 min) is that limit with headroom for sweep jitter.
+	MinMiningWindow = 6 * miningAssumedMinTick
+)
+
 // miningContainer is one container's CPU history.
 type miningContainer struct {
-	ip      netip.Addr
-	limit   float64 // latest sample's limits.cpu, in cores
-	firstAt time.Time
-	lastAt  time.Time
-	points  []miningCPUPoint // oldest first
+	ip     netip.Addr
+	limit  float64 // latest sample's limits.cpu, in cores
+	lastAt time.Time
+	points []miningCPUPoint // oldest first
+}
+
+// trim bounds the history whether or not Sweep runs: points older than
+// 2 x window behind the newest go, and at most miningMaxPoints are kept
+// (oldest dropped), which also bounds a stuck clock that repeats one
+// timestamp.
+func (c *miningContainer) trim(window time.Duration) {
+	if len(c.points) == 0 {
+		return
+	}
+	cutoff := c.points[len(c.points)-1].at.Add(-2 * window)
+	drop := 0
+	for drop < len(c.points) && !c.points[drop].at.After(cutoff) {
+		drop++
+	}
+	if len(c.points)-drop > miningMaxPoints {
+		drop = len(c.points) - miningMaxPoints
+	}
+	if drop > 0 {
+		c.points = append(c.points[:0], c.points[drop:]...)
+	}
 }
 
 type miningFlowKey struct {
@@ -81,20 +137,23 @@ func miningThresholds(ctx RuleContext) MiningThresholds {
 	return ctx.MiningThresholds()
 }
 
-// OnCPU appends each sample to its container's history. Never fires.
-func (r *MiningBehaviorRule) OnCPU(_ RuleContext, samples []CPUSample) []RawFinding {
+// OnCPU appends each sample to its container's bounded history. Never
+// fires.
+func (r *MiningBehaviorRule) OnCPU(ctx RuleContext, samples []CPUSample) []RawFinding {
+	window := miningThresholds(ctx).Window
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, s := range samples {
 		c := r.containers[s.Container]
 		if c == nil {
-			c = &miningContainer{firstAt: s.At}
+			c = &miningContainer{}
 			r.containers[s.Container] = c
 		}
 		c.ip = s.IP
 		c.limit = s.LimitCores
 		c.lastAt = s.At
 		c.points = append(c.points, miningCPUPoint{at: s.At, cores: s.Cores})
+		c.trim(window)
 	}
 	return nil
 }
@@ -169,8 +228,10 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 			}
 		}
 		c.points = kept
-		// The mean must cover the whole window, not a burst at its end.
-		if len(kept) == 0 || c.firstAt.After(cutoff) {
+		// The mean must cover the window, not a burst at its end or a lone
+		// sample after a gap: enough samples, the oldest at least
+		// miningMinCoverage x window old.
+		if len(kept) < miningMinSamples || float64(now.Sub(kept[0].at)) < miningMinCoverage*float64(th.Window) {
 			continue
 		}
 		var sum, peak float64
@@ -240,4 +301,14 @@ func (r *MiningBehaviorRule) trackedContainers() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.containers)
+}
+
+// pointCount is for tests: how many CPU points a container holds.
+func (r *MiningBehaviorRule) pointCount(container string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c := r.containers[container]; c != nil {
+		return len(c.points)
+	}
+	return 0
 }

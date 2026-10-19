@@ -171,6 +171,16 @@ type Backend interface {
 	// Config & devices
 	SetConfig(containerName, key, value string) error
 	SetCPULimit(containerName, cpu string) error
+	// SetCPUConfig writes limits.cpu and limits.cpu.allowance exactly as
+	// given (empty unsets the key) — the raw setter the process responder
+	// (#2636) uses to apply a throttle allowance while keeping the core
+	// count, and to restore exactly what it recorded. SetCPULimit is the
+	// translating resize path; this does no translation.
+	SetCPUConfig(containerName, count, allowance string) error
+	// FreezeContainer pauses a running instance (cgroup freezer): memory
+	// and disk kept, no process scheduled until UnfreezeContainer.
+	FreezeContainer(name string) error
+	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
 	UpdateContainerConfig(name, key, value string) error
@@ -542,6 +552,11 @@ type ContainerInfo struct {
 	Managed   bool
 	CreatedAt time.Time
 	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
+	// Pid is the container's init process id in the HOST pid namespace, from
+	// the same InstanceState read that supplies IPAddress; 0 when the
+	// container is not running or the state read failed. The exec-telemetry
+	// watcher (#2637) resolves /proc/<Pid>/cgroup from it.
+	Pid int64
 
 	// MonitoringEnabled is true when the container has OTel
 	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
@@ -1037,6 +1052,29 @@ func (c *Client) StopContainer(name string, force bool) error {
 	return nil
 }
 
+// FreezeContainer pauses a running instance through the cgroup freezer.
+// Memory and disk are kept; the instance reports status "Frozen" until
+// UnfreezeContainer. This is the process responder's FREEZE action (#2636).
+func (c *Client) FreezeContainer(name string) error {
+	return c.updateState(name, "freeze")
+}
+
+// UnfreezeContainer resumes a frozen instance.
+func (c *Client) UnfreezeContainer(name string) error {
+	return c.updateState(name, "unfreeze")
+}
+
+func (c *Client) updateState(name, action string) error {
+	op, err := c.server.UpdateInstanceState(name, api.InstanceStatePut{Action: action, Timeout: 30}, "")
+	if err != nil {
+		return fmt.Errorf("failed to %s container: %w", action, err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to %s container (operation failed): %w", action, err)
+	}
+	return nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(name string) error {
 	op, err := c.server.DeleteInstance(name)
@@ -1213,8 +1251,11 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 
 		// Get IP address - need to get state separately
 		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
-		if err == nil && state.Network != nil {
-			info.IPAddress = primaryNetworkInterface(state.Network)
+		if err == nil {
+			info.Pid = state.Pid
+			if state.Network != nil {
+				info.IPAddress = primaryNetworkInterface(state.Network)
+			}
 		}
 
 		return info, true
@@ -2004,6 +2045,30 @@ func (c *Client) SetCPULimit(containerName, cpu string) error {
 		inst.Config["limits.cpu.allowance"] = cl.Allowance
 	}
 
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
+	return nil
+}
+
+// SetCPUConfig writes limits.cpu and limits.cpu.allowance verbatim; an
+// empty value unsets that key. See Backend.SetCPUConfig.
+func (c *Client) SetCPUConfig(containerName, count, allowance string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+	for key, value := range map[string]string{"limits.cpu": count, "limits.cpu.allowance": allowance} {
+		if value == "" {
+			delete(inst.Config, key)
+		} else {
+			inst.Config[key] = value
+		}
+	}
 	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)

@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -13,6 +13,8 @@ import (
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -280,10 +282,11 @@ func (s *SecurityServer) fetchPeerSummaries(authToken string) (summaries []*pb.C
 	return
 }
 
-// TriggerClamavScan enqueues scan jobs asynchronously and returns immediately.
-// Phase 1.4 — when ContainerName is set, tenant authz via the
-// owner derivation; when blank, the request enqueues scans for
-// every container on every peer, so require admin.
+// TriggerClamavScan enqueues a scan job for ONE container asynchronously and
+// returns immediately. container_name is required (#2631): the platform no
+// longer starts scans of every box, because a malware scan is something a box's
+// owner asks for, not something done to tenants. A blank name is rejected —
+// PermissionDenied for a non-admin (as before), InvalidArgument for an admin.
 func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerClamavScanRequest) (*pb.TriggerClamavScanResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
 		return nil, err
@@ -292,10 +295,15 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 			return nil, err
 		}
-	} else {
-		if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
-			return nil, err
-		}
+		return nil, status.Error(codes.InvalidArgument,
+			"container_name is required: scans are started per box by its owner (scan-all was removed, #2631)")
+	}
+	// Owner-only (#2655): the scan runs inside the customer's box, so the
+	// owner must be the one who asks. An administrator does not bypass this;
+	// only the owner, or a service credential acting for an owner it already
+	// authorized (security:trigger-for-owner).
+	if err := auth.RequireContainerOwner(ctx, req.ContainerName); err != nil {
+		return nil, err
 	}
 	if s.scanner == nil {
 		return nil, fmt.Errorf("security scanner is not available")
@@ -303,100 +311,98 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 
 	authToken := extractAuthToken(ctx)
 
-	if req.ContainerName != "" {
-		// Check if this container is on a peer
-		if s.peerPool != nil {
-			username := strings.TrimSuffix(req.ContainerName, "-container")
-			peer, unreachablePeers := s.peerPool.FindContainerPeer(username, authToken)
-			if peer != nil {
-				// Forward scan to the peer that owns this container
-				_, err := peer.ForwardTriggerScan(authToken, req.ContainerName)
-				if err != nil {
-					return nil, fmt.Errorf("failed to trigger scan on peer %s: %w", peer.ID, err)
-				}
-				return &pb.TriggerClamavScanResponse{
-					Message:      fmt.Sprintf("Scan queued for container %s on peer %s", req.ContainerName, peer.ID),
-					ScannedCount: 1,
-				}, nil
-			}
-			if len(unreachablePeers) > 0 {
-				// #1905: falling through to the local scanner below would
-				// enqueue a scan against a container that isn't on this
-				// host, silently producing a no-op or a confusing local
-				// "not found" instead of surfacing the real cause.
-				return nil, fmt.Errorf("cannot trigger scan for %s: %d backend(s) unreachable (%s)",
-					req.ContainerName, len(unreachablePeers), unreachablePeers[0].Reason)
-			}
-		}
-
-		// Local container scan
-		username := req.ContainerName
-		if strings.HasSuffix(req.ContainerName, "-container") {
-			username = strings.TrimSuffix(req.ContainerName, "-container")
-		}
-		if _, err := s.scanner.EnqueueOne(ctx, req.ContainerName, username); err != nil {
-			return nil, fmt.Errorf("failed to enqueue scan for %s: %w", req.ContainerName, err)
-		}
-		return &pb.TriggerClamavScanResponse{
-			Message:      fmt.Sprintf("Scan queued for container %s", req.ContainerName),
-			ScannedCount: 1,
-		}, nil
-	}
-
-	// Enqueue scans for all running local user containers
-	count, err := s.scanner.EnqueueAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("enqueue all failed: %w", err)
-	}
-
-	// Also trigger scans on all peers
-	peerCount := int32(0)
+	// Check if this container is on a peer
 	if s.peerPool != nil {
-		peerCount = s.triggerPeerScans(authToken)
+		username := strings.TrimSuffix(req.ContainerName, "-container")
+		peer, unreachablePeers := s.peerPool.FindContainerPeer(username, authToken)
+		if peer != nil {
+			// Forward scan to the peer that owns this container
+			_, err := peer.ForwardTriggerScan(authToken, req.ContainerName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to trigger scan on peer %s: %w", peer.ID, err)
+			}
+			return &pb.TriggerClamavScanResponse{
+				Message:      fmt.Sprintf("Scan queued for container %s on peer %s", req.ContainerName, peer.ID),
+				ScannedCount: 1,
+			}, nil
+		}
+		if len(unreachablePeers) > 0 {
+			// #1905: falling through to the local scanner below would
+			// enqueue a scan against a container that isn't on this
+			// host, silently producing a no-op or a confusing local
+			// "not found" instead of surfacing the real cause.
+			return nil, fmt.Errorf("cannot trigger scan for %s: %d backend(s) unreachable (%s)",
+				req.ContainerName, len(unreachablePeers), unreachablePeers[0].Reason)
+		}
 	}
 
-	totalCount := int32(count) + peerCount // #nosec G115 -- value bounded by container count
+	// Local container scan
+	username := req.ContainerName
+	if strings.HasSuffix(req.ContainerName, "-container") {
+		username = strings.TrimSuffix(req.ContainerName, "-container")
+	}
+	if _, err := s.scanner.EnqueueOne(ctx, req.ContainerName, username); err != nil {
+		if errors.Is(err, security.ErrScanActive) {
+			return nil, status.Errorf(codes.AlreadyExists, "a scan for %s is already pending or running", req.ContainerName)
+		}
+		return nil, fmt.Errorf("failed to enqueue scan for %s: %w", req.ContainerName, err)
+	}
 	return &pb.TriggerClamavScanResponse{
-		Message:      fmt.Sprintf("%d scan jobs queued (%d local, %d on peers)", totalCount, count, peerCount),
-		ScannedCount: totalCount,
+		Message:      fmt.Sprintf("Scan queued for container %s", req.ContainerName),
+		ScannedCount: 1,
 	}, nil
 }
 
-// triggerPeerScans triggers scan-all on each healthy peer in parallel.
-func (s *SecurityServer) triggerPeerScans(authToken string) int32 {
-	peers := s.peerPool.Peers()
-	if len(peers) == 0 {
-		return 0
+// InstallClamav installs ClamAV and its signatures inside one box (#2659). The
+// platform runs the package install in the box and reports a typed outcome; it
+// does not read the box's files. Authorized exactly like TriggerClamavScan
+// (#2692, following #2655): the install runs commands inside the customer's
+// box, so only its owner may ask. An administrator does not bypass this; a
+// service credential carrying security:trigger-for-owner (the control plane
+// acting for an owner it already authorized) does. A box on a peer backend is
+// installed by the daemon that owns it.
+func (s *SecurityServer) InstallClamav(ctx context.Context, req *pb.InstallClamavRequest) (*pb.InstallClamavResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
 	}
-
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	total := int32(0)
-
-	for _, peer := range peers {
-		if !peer.Healthy {
-			continue
+	if req.GetContainerName() == "" {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return nil, err
 		}
-		wg.Add(1)
-		go func(pc *PeerClient) {
-			defer wg.Done()
-			body, err := pc.ForwardTriggerScan(authToken, "")
-			if err != nil {
-				log.Printf("[security] failed to trigger scan on peer %s: %v", pc.ID, err)
-				return
-			}
-			var resp struct {
-				ScannedCount int32 `json:"scannedCount"`
-			}
-			if err := json.Unmarshal(body, &resp); err == nil {
-				mu.Lock()
-				total += resp.ScannedCount
-				mu.Unlock()
-			}
-		}(peer)
+		return nil, status.Error(codes.InvalidArgument, "container_name is required")
 	}
-	wg.Wait()
-	return total
+	if err := auth.RequireContainerOwner(ctx, req.GetContainerName()); err != nil {
+		return nil, err
+	}
+	// A box on a peer backend is installed by the daemon that owns it, exactly
+	// like TriggerClamavScan (#2683). An owning peer that cannot be reached must
+	// not fall through to the local lookup, which would report the box missing.
+	if s.peerPool != nil {
+		username := strings.TrimSuffix(req.GetContainerName(), "-container")
+		peer, unreachable := s.peerPool.FindContainerPeer(username, extractAuthToken(ctx))
+		if peer != nil {
+			fctx, cancel := context.WithTimeout(ctx, installForwardTimeout)
+			defer cancel()
+			resp, err := peer.ForwardInstallClamav(fctx, extractAuthToken(ctx), req.GetContainerName())
+			switch {
+			case errors.Is(err, errPeerRouteMissing):
+				return nil, status.Error(codes.Unimplemented, "this container's backend is too old to install ClamAV; ask your operator to upgrade it")
+			case err != nil:
+				return nil, status.Errorf(codes.Unavailable, "could not install ClamAV on %s via backend %s: %v", req.GetContainerName(), peer.ID, err)
+			}
+			return resp, nil
+		}
+		if len(unreachable) > 0 {
+			return nil, status.Errorf(codes.Unavailable,
+				"cannot install ClamAV for %s: %d backend(s) unreachable (%s)",
+				req.GetContainerName(), len(unreachable), unreachable[0].Reason)
+		}
+	}
+	if s.incusClient == nil {
+		return nil, status.Error(codes.Unavailable, "container runtime is not available")
+	}
+	outcome, msg := security.InstallClamav(s.incusClient, req.GetContainerName())
+	return &pb.InstallClamavResponse{Outcome: outcome, Message: msg}, nil
 }
 
 // GetScanStatus returns the current state of the scan job queue.

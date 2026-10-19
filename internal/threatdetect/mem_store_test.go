@@ -236,3 +236,38 @@ func TestMemFindingStore_UpsertEscalatesSeverityNeverLowers(t *testing.T) {
 		}
 	}
 }
+
+// #2643, through the store and the real WebhookNotifier gate: a persistent
+// condition upserted many times is delivered once, and its resolution once.
+func TestMemFindingStore_PersistentFindingNotifiesOnceThenOnResolve(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil) // no worker: queue length = deliveries
+	s.SetNotifier(n)
+
+	ctx := context.Background()
+	var id int64
+	for i := 0; i < 10; i++ {
+		f, uerr := s.Upsert(ctx, sampleMemFinding())
+		if uerr != nil {
+			t.Fatalf("Upsert #%d: %v", i+1, uerr)
+		}
+		id = f.ID
+	}
+	if got := len(n.queue); got != 1 {
+		t.Fatalf("deliveries after 10 upserts = %d, want 1", got)
+	}
+	if _, err := s.Resolve(ctx, id); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := len(n.queue); got != 2 {
+		t.Fatalf("deliveries after resolve = %d, want 2 (open, then resolved)", got)
+	}
+	<-n.queue
+	if resolved := <-n.queue; resolved.State != FindingStateResolved {
+		t.Errorf("second delivery state = %q, want resolved", resolved.State)
+	}
+}

@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -29,7 +30,8 @@ var securitySentryStatusCmd = &cobra.Command{
 	Long: `Show whether the background threat-detection engine (#1640) is running,
 and if not, why: DISABLED (CONTAINARIUM_THREAT_SENTRY unset), UNAVAILABLE
 (no eBPF object loaded, or no audit store), DEGRADED (running without
-Postgres persistence for findings), or OK.`,
+Postgres persistence for findings, or the process responder cannot apply
+THROTTLE/FREEZE (responses disabled); see Reason), or OK.`,
 	Args: cobra.NoArgs,
 	RunE: runSecuritySentryStatus,
 }
@@ -37,9 +39,14 @@ Postgres persistence for findings), or OK.`,
 // sentryStatusEnvelope mirrors GetSentryStatusResponse's grpc-gateway JSON
 // shape (protojson default: camelCase, enums as their string names).
 type sentryStatusEnvelope struct {
-	State  string             `json:"state"`
-	Reason string             `json:"reason"`
-	Rules  []sentryRuleStatus `json:"rules"`
+	State         string `json:"state"`
+	Reason        string `json:"reason"`
+	CPUSampler    string `json:"cpuSampler"`
+	ExecTelemetry string `json:"execTelemetry"`
+	// ExecEventsLost is an int64 on the wire, which protojson renders as a
+	// JSON string; json.Number accepts either spelling.
+	ExecEventsLost json.Number        `json:"execEventsLost"`
+	Rules          []sentryRuleStatus `json:"rules"`
 }
 
 type sentryRuleStatus struct {
@@ -73,6 +80,15 @@ func printSentryStatus(w interface{ Write([]byte) (int, error) }, out sentryStat
 	fmt.Fprintf(w, "Sentry: %s\n", state)
 	if out.Reason != "" {
 		fmt.Fprintf(w, "Reason: %s\n", out.Reason)
+	}
+	if out.CPUSampler != "" {
+		fmt.Fprintf(w, "cpu-sampler: %s\n", out.CPUSampler)
+	}
+	if out.ExecTelemetry != "" {
+		fmt.Fprintf(w, "exec-telemetry: %s\n", out.ExecTelemetry)
+		if lost := out.ExecEventsLost.String(); lost != "" && lost != "0" {
+			fmt.Fprintf(w, "exec-events-lost: %s\n", lost)
+		}
 	}
 	if len(out.Rules) == 0 {
 		return

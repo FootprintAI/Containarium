@@ -1994,6 +1994,28 @@ func (c *Client) InstallZap() (*InstallZapResponse, error) {
 	return &resp, nil
 }
 
+// InstallClamav asks the daemon to install ClamAV and its signatures inside
+// one box (#2659). It is the single Go call behind both the
+// `containarium security clamav install` CLI command and the
+// `install_clamav` MCP tool. The install can take minutes (package download
+// and the first signature fetch), so this uses a longer timeout than the
+// default 120s client.
+func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, error) {
+	long := *c
+	hc := *c.httpClient
+	hc.Timeout = 20 * time.Minute
+	long.httpClient = &hc
+	body, err := long.doRequest("POST", "/v1/security/clamav-install", map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	var resp InstallClamavResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse install response: %w", err)
+	}
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {
@@ -2003,6 +2025,11 @@ type CreateContainerRequest struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
+
+	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
+	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
+	// standalone daemon ignores it.
+	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
 
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.

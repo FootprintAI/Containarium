@@ -134,8 +134,24 @@ func (g *Guard) emit(kind string, ip netip.Addr, e entry) {
 	}
 }
 
+// EventWindowFailures is emitted when a source's window ends with failures
+// that never reached the ban budget (#2419): the audit trail's summary of
+// probing that did not trip a ban. A ban has its own "ban" event when it is
+// reached, so a banned window does not also emit this.
+const EventWindowFailures = "window_failures"
+
+// Sweep runs the expiry pass on a timer. Windows otherwise only end when the
+// next connection arrives, so on a quiet sentinel the last window's failures
+// would sit unreported indefinitely.
+func (g *Guard) Sweep() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+}
+
 // prune amortizes expiry sweeps by waiting for the earliest remaining deadline.
-// Only actual ban expiries generate an operational transition.
+// Ban expiries and windows that ended with unbanned failures generate an
+// operational transition.
 func (g *Guard) prune(now time.Time) {
 	if !g.nextExpiry.IsZero() && now.Before(g.nextExpiry) {
 		return
@@ -143,8 +159,11 @@ func (g *Guard) prune(now time.Time) {
 	g.nextExpiry = time.Time{}
 	for ip, e := range g.entries {
 		if !now.Before(e.expires) {
-			if e.failures >= uint64(g.cfg.MaxFailures) {
+			switch {
+			case e.failures >= uint64(g.cfg.MaxFailures):
 				g.emit("expire", ip, e)
+			case e.failures > 0:
+				g.emit(EventWindowFailures, ip, e)
 			}
 			delete(g.entries, ip)
 			continue

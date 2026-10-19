@@ -4,6 +4,8 @@
 package threatdetect
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -99,6 +101,36 @@ type CPUEvidence struct {
 	Samples       int32   `json:"samples"`
 }
 
+// ExecEvidence is one process exec attached to a finding (#2637, used by the
+// miner-signature rule #2638): the host-side exec telemetry record,
+// attributed to the container. PID/PPID are host-namespace ids.
+type ExecEvidence struct {
+	PID           uint32 `json:"pid"`
+	PPID          uint32 `json:"ppid"`
+	UID           uint32 `json:"uid"`
+	Comm          string `json:"comm"`
+	Filename      string `json:"filename"`
+	Argv          string `json:"argv"`
+	ArgvTruncated bool   `json:"argv_truncated,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	Matched       string `json:"matched,omitempty"`
+}
+
+// ToProto renders the evidence as the wire message.
+func (e ExecEvidence) ToProto() *pb.ExecEvidence {
+	return &pb.ExecEvidence{
+		Pid:           e.PID,
+		Ppid:          e.PPID,
+		Uid:           e.UID,
+		Comm:          e.Comm,
+		Filename:      e.Filename,
+		Argv:          e.Argv,
+		ArgvTruncated: e.ArgvTruncated,
+		Sha256:        e.SHA256,
+		Matched:       e.Matched,
+	}
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. It is the named struct written into the
 // security_findings.evidence JSONB column — a storage encoding, never an
@@ -109,12 +141,13 @@ type Evidence struct {
 	Configs   []ConfigEvidence   `json:"configs,omitempty"`
 	Listeners []ListenerEvidence `json:"listeners,omitempty"`
 	CPU       []CPUEvidence      `json:"cpu,omitempty"`
+	Execs     []ExecEvidence     `json:"execs,omitempty"`
 }
 
 // Capped returns a copy of e with each evidence kind truncated to the most
 // recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU, Execs: e.Execs}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
@@ -129,6 +162,9 @@ func (e Evidence) Capped() Evidence {
 	}
 	if len(out.CPU) > EvidenceCap {
 		out.CPU = out.CPU[len(out.CPU)-EvidenceCap:]
+	}
+	if len(out.Execs) > EvidenceCap {
+		out.Execs = out.Execs[len(out.Execs)-EvidenceCap:]
 	}
 	return out
 }
@@ -153,6 +189,7 @@ func (e Evidence) merged(more Evidence) Evidence {
 		Configs:   mergeConfigEvidence(e.Configs, more.Configs),
 		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
 		CPU:       append(append([]CPUEvidence(nil), e.CPU...), more.CPU...),
+		Execs:     append(append([]ExecEvidence(nil), e.Execs...), more.Execs...),
 	}
 }
 
@@ -170,6 +207,88 @@ func mergeConfigEvidence(old, more []ConfigEvidence) []ConfigEvidence {
 		}
 	}
 	return out
+}
+
+// FindingResponse records what the process responder (#2636) did about a
+// finding: the action, its state, and when it was applied, expires and was
+// released. Stored as the security_findings.response JSONB column, with
+// enum names rather than numbers so the column reads in psql and survives
+// the enums growing.
+type FindingResponse struct {
+	Action        pb.ProcessAction
+	State         pb.ResponseState
+	ProcessKilled bool
+	AppliedAt     time.Time
+	ExpiresAt     time.Time
+	ReleasedAt    time.Time
+	ReleasedBy    string
+	Error         string
+}
+
+// findingResponseJSON is the storage encoding of FindingResponse.
+type findingResponseJSON struct {
+	Action        string    `json:"action"`
+	State         string    `json:"state"`
+	ProcessKilled bool      `json:"process_killed,omitempty"`
+	AppliedAt     time.Time `json:"applied_at,omitzero"`
+	ExpiresAt     time.Time `json:"expires_at,omitzero"`
+	ReleasedAt    time.Time `json:"released_at,omitzero"`
+	ReleasedBy    string    `json:"released_by,omitempty"`
+	Error         string    `json:"error,omitempty"`
+}
+
+// MarshalJSON encodes enums by name.
+func (r FindingResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(findingResponseJSON{
+		Action: r.Action.String(), State: r.State.String(), ProcessKilled: r.ProcessKilled,
+		AppliedAt: r.AppliedAt, ExpiresAt: r.ExpiresAt, ReleasedAt: r.ReleasedAt,
+		ReleasedBy: r.ReleasedBy, Error: r.Error,
+	})
+}
+
+// UnmarshalJSON decodes enums by name; an unknown name decodes to the
+// UNSPECIFIED value rather than failing the whole finding read.
+func (r *FindingResponse) UnmarshalJSON(b []byte) error {
+	var j findingResponseJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	*r = FindingResponse{
+		Action:        pb.ProcessAction(pb.ProcessAction_value[j.Action]),
+		State:         pb.ResponseState(pb.ResponseState_value[j.State]),
+		ProcessKilled: j.ProcessKilled,
+		AppliedAt:     j.AppliedAt, ExpiresAt: j.ExpiresAt, ReleasedAt: j.ReleasedAt,
+		ReleasedBy: j.ReleasedBy, Error: j.Error,
+	}
+	return nil
+}
+
+// ToProto converts the response to its wire form; nil for a nil receiver.
+func (r *FindingResponse) ToProto() *pb.FindingResponse {
+	if r == nil {
+		return nil
+	}
+	return &pb.FindingResponse{
+		Action:        r.Action,
+		State:         r.State,
+		ProcessKilled: r.ProcessKilled,
+		AppliedAt:     timestampProto(r.AppliedAt),
+		ExpiresAt:     timestampProto(r.ExpiresAt),
+		ReleasedAt:    timestampProto(r.ReleasedAt),
+		ReleasedBy:    r.ReleasedBy,
+		Error:         r.Error,
+	}
+}
+
+// ResponseWriter is what the process responder needs from a finding store
+// beyond FindingSink/FindingReader: recording what it did. Both stores
+// satisfy it.
+type ResponseWriter interface {
+	// SetResponse replaces the finding's response, emits the updated
+	// finding on the event bus, hands it to the notifier (a response
+	// transition is a webhook delivery, #2718), and returns it.
+	// ErrFindingNotFound if id does not exist.
+	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 }
 
 // FindingState is the lifecycle state of a Finding.
@@ -192,7 +311,11 @@ type ListFilter struct {
 	TenantID string
 	Since    time.Time
 	State    FindingState // "" = any state
-	Limit    int          // <= 0 or > 200 => default/cap 50/200
+	// Rule narrows to one rule; unset (THREAT_RULE_ID_UNSPECIFIED) = any rule.
+	Rule pb.ThreatRuleId
+	// BackendID narrows to findings written by one backend; "" = any backend.
+	BackendID string
+	Limit     int // <= 0 or > 200 => default/cap 50/200
 }
 
 // Finding is a single security finding: an open or resolved instance of a
@@ -212,6 +335,9 @@ type Finding struct {
 	Evidence  Evidence
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// Response is what the process responder did about this finding, nil
+	// when nothing acted on it (#2636).
+	Response *FindingResponse
 }
 
 // ToProto converts a Finding to its wire representation.
@@ -282,6 +408,11 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	execs := make([]*pb.ExecEvidence, 0, len(f.Evidence.Execs))
+	for _, x := range f.Evidence.Execs {
+		execs = append(execs, x.ToProto())
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -298,8 +429,10 @@ func (f *Finding) ToProto() *pb.Finding {
 			Configs:   configs,
 			Listeners: listeners,
 			Cpu:       cpu,
+			Execs:     execs,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
+		Response:  f.Response.ToProto(),
 	}
 }
