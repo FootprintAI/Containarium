@@ -71,7 +71,7 @@ daemon itself and appear in the same findings list:
 
 | Finding | Severity | Raised when |
 |---------|----------|-------------|
-| `SENTRY_UNAVAILABLE` | MEDIUM | The sentry is armed (`CONTAINARIUM_THREAT_SENTRY` set) but not running cleanly: status is `UNAVAILABLE` or `DEGRADED`, or any rule is unhealthy. It is backend-level (no tenant or container), its subject is the status reason, and it resolves itself once status returns to `OK`. It is raised by a separate health loop, not a rule, because a rule cannot run when the engine is missing or broken. |
+| `SENTRY_UNAVAILABLE` | MEDIUM | The sentry is armed (`CONTAINARIUM_THREAT_SENTRY` set) but not running cleanly: status is `UNAVAILABLE` or `DEGRADED`, or any rule is unhealthy; it is also raised when status is `OK` but the `cpu-sampler:` line starts with `unavailable`, in which case its subject is `cpu-sampler unavailable`. The health loop only runs when a finding store exists, so it does not fire when the audit store (Postgres) is down. It is backend-level (no tenant or container), its subject is the status reason, and it resolves itself once status returns to `OK`. It is raised by a separate health loop, not a rule, because a rule cannot run when the engine is missing or broken. |
 | `PROCESS_ACTION_EXPIRED` | MEDIUM | A throttle or freeze reached its TTL with no operator decision and was released automatically. Subject is the container name. |
 
 A rule firing repeatedly for the same `(rule, tenant, subject)` dedupes
@@ -101,12 +101,14 @@ By default a finding only alerts. The process responder changes that for
 HIGH `mining-behavior` findings only; no other rule's findings are acted
 on. The action is chosen by the effective policy, resolved as a
 per-container override, then the backend default, then the built-in
-`ALERT` with a `10%` allowance and a 24 h TTL.
+`ALERT` with a `10%` allowance and a 24 h TTL. The merge is per field, so
+an override that sets only `action` still inherits the backend default's
+allowance and TTL.
 
 | Action | Effect on the container |
 |--------|-------------------------|
 | `alert` | Record the finding and notify. Nothing is done to the box. This is the default. |
-| `throttle` | Record the box's current `limits.cpu` and `limits.cpu.allowance`, then set `limits.cpu.allowance` to the policy's throttle allowance. |
+| `throttle` | Record the box's current `limits.cpu` and `limits.cpu.allowance`, then set `limits.cpu.allowance` to the policy's throttle allowance, applied as a hard CPU quota: `N%` becomes `Nms/100ms`, and `Nms/Mms` is used as given. A box already limited below that quota keeps its tighter limit. |
 | `freeze` | Pause the instance through Incus (cgroup freezer). Memory and disk are kept; no process runs until released. |
 
 Every action is reversible and none destroys data. An applied action is
@@ -132,6 +134,9 @@ are backend-wide and cannot be combined with `--container`. `set` and
 `release` are admin-only. Run `containarium security process-policy set
 --help` for the full flag list. REST: `GET`/`PUT /v1/security/process-policy`
 and `POST /v1/security/process-policy/release`.
+
+MCP equivalents: `security_process_policy_get`,
+`security_process_policy_set` and `security_process_policy_release`.
 
 For the guardrail design and operating detail, see
 [`docs/security/PROCESS-GUARDRAIL.md`](security/PROCESS-GUARDRAIL.md)
@@ -236,6 +241,9 @@ Every CLI/MCP surface above is a thin wrapper over these RPCs
 | `GET` | `/v1/security/bad-destinations` |
 | `POST` | `/v1/security/bad-destinations` |
 | `DELETE` | `/v1/security/bad-destinations/{cidr}` |
+| `GET` | `/v1/security/process-policy` |
+| `PUT` | `/v1/security/process-policy` |
+| `POST` | `/v1/security/process-policy/release` |
 
 ## Known gaps
 
