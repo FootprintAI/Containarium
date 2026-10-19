@@ -134,17 +134,30 @@ func (s *ThreatDetectionServer) SetResponderDegraded(reason string) {
 // actionsPersisted the security_actions store on Postgres, disabledReason
 // non-empty when the responder could not be constructed at all. Every
 // condition that leaves the responder ALERT-only (or absent) has a reason.
+//
+// The !findingsPersisted cause never reaches an operator: the engine is then
+// degraded too, and sentryStatus's engine-degraded branch takes precedence
+// with degradedNoPersistenceReason. It is kept so this function stays a
+// complete account of why the responder cannot act.
 func processResponderDegradedReason(findingsPersisted, actionsPersisted bool, disabledReason string) string {
 	switch {
 	case disabledReason != "":
-		return "process responder disabled: " + disabledReason
+		return responderCauseDisabledPrefix + disabledReason
 	case !findingsPersisted:
-		return "finding store has no persistence"
+		return responderCauseNoFindingPersistence
 	case !actionsPersisted:
-		return "security_actions store unavailable"
+		return responderCauseActionStoreUnavailable
 	}
 	return ""
 }
+
+// Causes processResponderDegradedReason reports; each is stable because it
+// becomes part of the sentry-health finding subject.
+const (
+	responderCauseDisabledPrefix         = "process responder disabled: "
+	responderCauseNoFindingPersistence   = "finding store has no persistence"
+	responderCauseActionStoreUnavailable = "security_actions store unavailable"
+)
 
 // degradedNoPersistenceReason is the GetSentryStatus reason when findings
 // (and therefore process-policy responses) have no Postgres persistence.

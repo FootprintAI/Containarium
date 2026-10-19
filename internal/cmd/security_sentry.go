@@ -29,7 +29,8 @@ var securitySentryStatusCmd = &cobra.Command{
 	Long: `Show whether the background threat-detection engine (#1640) is running,
 and if not, why: DISABLED (CONTAINARIUM_THREAT_SENTRY unset), UNAVAILABLE
 (no eBPF object loaded, or no audit store), DEGRADED (running without
-Postgres persistence for findings), or OK.`,
+Postgres persistence for findings, or the process responder cannot apply
+THROTTLE/FREEZE (responses disabled); see Reason), or OK.`,
 	Args: cobra.NoArgs,
 	RunE: runSecuritySentryStatus,
 }
