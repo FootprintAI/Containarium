@@ -54,7 +54,8 @@ const (
 	InboundBlockType = "guardrail_inbound_block"
 )
 
-// InboundAuditSink receives one entry per blocked response. Kept an
+// InboundAuditSink receives one entry per blocked response, and one per
+// baseline detection (RecordInboundDetection, #2736). Kept an
 // interface so the gateway has no dependency on internal/audit; the daemon
 // adapts it onto audit.Store.Log. A failing sink never un-blocks a response,
 // and it is never called on the request path: entries go through a bounded
@@ -62,6 +63,18 @@ const (
 // cannot delay a block or a refusal.
 type InboundAuditSink interface {
 	RecordInboundBlock(ctx context.Context, b InboundBlock) error
+	RecordInboundDetection(ctx context.Context, d InboundDetection) error
+}
+
+// InboundDetection is the audit record of one baseline rule that matched in
+// one response while no admin policy exists (#2736): attribution, the rule
+// id, kind and action, and the match count. Never the matched text.
+type InboundDetection struct {
+	Tenant, SkillID, Provider, Model string
+	RuleID                           guardrail.BaselineRuleID
+	Kind                             pb.GuardrailKind
+	Action                           guardrail.BaselineAction
+	Matches                          int
 }
 
 // InboundBlock is the audit record of one block: attribution, the typed
@@ -121,11 +134,20 @@ type InboundStatus struct {
 	PolicyReads   uint64            `json:"policy_reads"`
 	Blocked       map[string]uint64 `json:"blocked"`         // by reason
 	BlockedByKind map[string]uint64 `json:"blocked_by_kind"` // by finding kind
+	// BaselineDetections counts baseline rule matches by rule id while no
+	// admin policy exists (#2736); BaselineUnscanned counts responses the
+	// baseline could not scan (over the buffer limit, or encoded). Log-only:
+	// neither ever blocks.
+	BaselineDetections map[string]uint64 `json:"baseline_detections"`
+	BaselineUnscanned  uint64            `json:"baseline_unscanned"`
 }
 
 // inboundMode is what one request runs under, resolved from the policy.
 type inboundMode struct {
-	scan     bool
+	scan bool
+	// baseline is set when the store answered "not configured": the
+	// response is teed to the client and scanned at its end (#2736).
+	baseline bool
 	kinds    []pb.GuardrailKind // inbound kinds with a BLOCK rule
 	policy   *pb.GuardrailPolicy
 	revision int64
@@ -134,6 +156,9 @@ type inboundMode struct {
 func modeOf(p *pb.ServerGuardrailPolicy) inboundMode {
 	m := inboundMode{policy: p.GetPolicy(), revision: p.GetRevision(), kinds: guardrail.InboundBlockKinds(p)}
 	m.scan = len(m.kinds) > 0
+	// Callers only reach here with a nil policy after a read answered
+	// ErrNotConfigured; a wired-but-unread or absent provider never does.
+	m.baseline = p == nil
 	return m
 }
 
@@ -160,6 +185,11 @@ type inbound struct {
 	holdSeconds *histogram
 	holdBytes   *histogram
 
+	// baselineAction is what a baseline detection does. Always Log in this
+	// slice; it is the typed seam for the switch in #2738.
+	baselineAction    guardrail.BaselineAction
+	baselineUnscanned atomic.Uint64
+
 	// Policy read cache (#2454). fetchMu serialises refreshes so concurrent
 	// calls share one read; mu guards the fields below it.
 	ttl         time.Duration
@@ -174,6 +204,7 @@ type inbound struct {
 	policy        *pb.ServerGuardrailPolicy // last known; nil = not configured
 	blocked       map[guardrail.InboundReason]uint64
 	blockedByKind map[pb.GuardrailKind]uint64
+	baselineHits  map[guardrail.BaselineRuleID]uint64
 }
 
 func newInbound(cfg Config) *inbound {
@@ -182,7 +213,8 @@ func newInbound(cfg Config) *inbound {
 		limit: cfg.InboundHoldLimit, timeout: cfg.InboundScanTimeout, logger: cfg.Logger,
 		blocked: map[guardrail.InboundReason]uint64{}, blockedByKind: map[pb.GuardrailKind]uint64{},
 		holdSeconds: newHistogram(holdSecondsBounds), holdBytes: newHistogram(holdBytesBounds),
-		ttl: cfg.InboundPolicyTTL,
+		ttl: cfg.InboundPolicyTTL, baselineAction: guardrail.BaselineActionLog,
+		baselineHits: map[guardrail.BaselineRuleID]uint64{},
 	}
 	if in.ttl == 0 {
 		in.ttl = DefaultInboundPolicyTTL
@@ -292,7 +324,7 @@ func (in *inbound) invalidate() {
 }
 
 func (in *inbound) status() InboundStatus {
-	st := InboundStatus{PolicySource: in.provider != nil, Blocked: map[string]uint64{}, BlockedByKind: map[string]uint64{}}
+	st := InboundStatus{PolicySource: in.provider != nil, Blocked: map[string]uint64{}, BlockedByKind: map[string]uint64{}, BaselineDetections: map[string]uint64{}}
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	st.Ready = in.provider == nil || in.loaded
@@ -311,6 +343,10 @@ func (in *inbound) status() InboundStatus {
 	for k, n := range in.blockedByKind {
 		st.BlockedByKind[kindName(k)] = n
 	}
+	for id, n := range in.baselineHits {
+		st.BaselineDetections[string(id)] = n
+	}
+	st.BaselineUnscanned = in.baselineUnscanned.Load()
 	return st
 }
 
@@ -332,30 +368,32 @@ func (in *inbound) block(sub inboundSubject, dec guardrail.InboundDecision, revi
 		in.blockedByKind[k]++
 	}
 	in.mu.Unlock()
-	in.enqueueAudit(InboundBlock{
+	in.enqueueAudit(auditJob{b: &InboundBlock{
 		Tenant: sub.tenant, SkillID: sub.skill, Provider: sub.provider, Model: sub.model,
 		Reason: dec.Reason, Kinds: dec.Kinds, Findings: dec.Findings, EngineID: dec.EngineID, PolicyRevision: revision,
-	})
+	}})
 	return &inboundBlockError{dec: dec}
 }
 
-// auditJob is one queued audit entry, or (done != nil) a flush marker.
+// auditJob is one queued audit entry (a block or a baseline detection), or
+// (done != nil) a flush marker.
 type auditJob struct {
-	b    InboundBlock
+	b    *InboundBlock
+	d    *InboundDetection
 	done chan struct{}
 }
 
-// enqueueAudit hands a block's audit entry to the worker without ever
+// enqueueAudit hands an audit entry to the worker without ever
 // waiting: the request path must not depend on the audit store, whose outage
 // is also the likeliest reason for the policy-unavailable refusals this runs
 // for. A full queue drops the entry and counts it.
-func (in *inbound) enqueueAudit(b InboundBlock) {
+func (in *inbound) enqueueAudit(job auditJob) {
 	if in.audit == nil {
 		return
 	}
 	in.startAuditWorker()
 	select {
-	case in.auditQ <- auditJob{b: b}:
+	case in.auditQ <- job:
 	default:
 		in.mu.Lock()
 		in.auditDropped++
@@ -363,7 +401,7 @@ func (in *inbound) enqueueAudit(b InboundBlock) {
 		in.mu.Unlock()
 		// First drop and every thousandth: an outage must not also flood the log.
 		if n%1000 == 1 {
-			in.logger.Printf("model-gateway: inbound block audit queue full; entry dropped (%d dropped so far); the response stays blocked", n)
+			in.logger.Printf("model-gateway: inbound audit queue full; entry dropped (%d dropped so far); a blocked response stays blocked", n)
 		}
 	}
 }
@@ -381,13 +419,18 @@ func (in *inbound) auditWorker() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), in.auditTimeout)
-		err := in.audit.RecordInboundBlock(ctx, job.b)
+		var err error
+		if job.d != nil {
+			err = in.audit.RecordInboundDetection(ctx, *job.d)
+		} else {
+			err = in.audit.RecordInboundBlock(ctx, *job.b)
+		}
 		cancel()
 		if err != nil {
 			in.mu.Lock()
 			in.auditFailed++
 			in.mu.Unlock()
-			in.logger.Printf("model-gateway: inbound block audit write failed (response stays blocked): %v", err)
+			in.logger.Printf("model-gateway: inbound audit write failed (a blocked response stays blocked): %v", err)
 		}
 	}
 }
