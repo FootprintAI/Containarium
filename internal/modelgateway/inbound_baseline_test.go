@@ -34,8 +34,20 @@ func newBaselineHarness(t *testing.T, prov string, up upstreamFn) *inboundHarnes
 	return h
 }
 
+// detectionsAll waits for every request the harness served to finish on the
+// gateway side, then flushes the audit queue. The baseline scan runs when the
+// proxy closes the body, which can be after a client holding a full
+// Content-Length body has already returned; the END lifecycle line is logged
+// only once ServeHTTP is done.
 func (h *inboundHarness) detectionsAll() []InboundDetection {
 	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(h.logs.String(), " END ") < int(h.hits.Load()) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("gateway did not finish %d request(s)", h.hits.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := h.gw.FlushInboundAudit(ctx); err != nil {
