@@ -4,8 +4,11 @@ The threat-detection sentry is a background engine inside the daemon that
 watches the eBPF flow/deny signals already collected by the network-policy
 enforcer and raises typed **security findings** — mining-abuse egress,
 cross-tenant fence breaches, and fence-probing deny bursts — without a
-scan schedule or a separate process. It is detection-only: it observes and
-alerts, it does not act.
+scan schedule or a separate process. Every rule raises a finding and
+alerts. Only a HIGH mining-behavior finding can also act on its container:
+the process responder applies the operator-set process policy, which is
+`ALERT` (record and notify, touch nothing) unless an operator sets
+`THROTTLE` or `FREEZE`. See [Process policy](#process-policy-what-a-mining-finding-does).
 
 For the architecture and design rationale, see
 [`docs/architecture/continuous-threat-detection.md`](architecture/continuous-threat-detection.md).
@@ -21,6 +24,7 @@ eBPF flow poll (15s) / deny events ──▶ NetworkPolicyEnforcer
                                       • bad-destination rule   (HIGH)
                                       • cross-tenant-flow rule (CRITICAL)
                                       • deny-burst rule        (MEDIUM)
+                                      • mining-behavior rule   (HIGH)
                                           │
                                           ▼
                                     FindingStore (Postgres)
@@ -59,9 +63,17 @@ Prerequisites:
 |------|----------|------------|
 | Known-bad destination | HIGH | A flow's destination matches the embedded (versioned, mining-pools-first) or operator-added bad-destination list. |
 | Cross-tenant flow | CRITICAL | A flow's source and destination resolve to containers in *different* tenants on the same backend — the continuous form of the one-shot isolation check. Never fires on an IP it can't attribute to a tenant. |
-| Mining behavior | HIGH | A container's mean CPU over `window` (default 5 min) is at least `min(min_cores, min_fraction_of_limit × limits.cpu)` (defaults 1.5 cores and 0.75; a box with no CPU limit uses `min_cores` alone) **and** it holds a flow, at least `flow_min_age` (default 3 min) old and seen within the window, to a stratum port (default 3333, 4444, 5555, 7777, 14444, 14433) or to a listed bad destination on any port. Subject is the destination `ip:port`, so a second pool opens a second finding. Evidence: a CPU summary (mean, peak, window, samples) and the flow, with its first/last seen (anchored on the flow poll that reported it, since kernel flow stamps are monotonic) and what matched it (`port:<n>` or `bad-destination:<cidr>`). CPU comes from the metrics collector's tick, so the rule needs VictoriaMetrics configured; without it the rule stays inert. Thresholds are persisted in the daemon config store under `threatdetect.mining_behavior.thresholds` (protojson of `MiningBehaviorThresholds`; a zero field keeps its default); the `process-policy set` CLI that writes them lands with #2636. |
+| Mining behavior | HIGH | A container's mean CPU over `window` (default 5 min) is at least `min(min_cores, min_fraction_of_limit × limits.cpu)` (defaults 1.5 cores and 0.75; a box with no CPU limit uses `min_cores` alone) **and** it holds a flow, at least `flow_min_age` (default 3 min) old and seen within the window, to a stratum port (default 3333, 4444, 5555, 7777, 14444, 14433) or to a listed bad destination on any port. Subject is the destination `ip:port`, so a second pool opens a second finding. Evidence: a CPU summary (mean, peak, window, samples) and the flow, with its first/last seen (anchored on the flow poll that reported it, since kernel flow stamps are monotonic) and what matched it (`port:<n>` or `bad-destination:<cidr>`). CPU samples come from the metrics collector's tick when one runs, otherwise from a standalone sampler in the daemon that reads each container's CPU counter every 30 s, so the rule does not need VictoriaMetrics. `containarium security sentry status` shows which source is active on its `cpu-sampler:` line. Thresholds are persisted in the daemon config store under `threatdetect.mining_behavior.thresholds` (protojson of `MiningBehaviorThresholds`; a zero field keeps its default) and are written with `containarium security process-policy set --rule mining-behavior` (see [Process policy](#process-policy-what-a-mining-finding-does)). |
 | Miner signature | HIGH | A process exec in a box matches the miner-signature list (#2638): a known miner's binary name (basename or comm, exact or glob, case-insensitive), a command-line marker (`--donate-level`, `stratum+tcp://`, `-o <host>:<stratum port>`, …), or an operator-added SHA-256 of the executable. Fires on the exec itself, within one detection cycle. Subject is `<kind>:<pattern>` of the entry that hit; evidence is the exec (pid, ppid, uid, comm, path, argv, and the hash when computed). See [Miner signatures and kill-process](#miner-signatures-and-kill-process). Needs exec telemetry. |
 | Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. **Counts enforced drops only** by default: a would-deny from a tenant whose policy is only observed (`log_only`) is not counted, so enabling the sentry on an observation-only host does not raise "fence probing" findings for ordinary egress. Set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count those too. |
+
+Two further finding types are not detection rules. They are raised by the
+daemon itself and appear in the same findings list:
+
+| Finding | Severity | Raised when |
+|---------|----------|-------------|
+| `SENTRY_UNAVAILABLE` | MEDIUM | The sentry is armed (`CONTAINARIUM_THREAT_SENTRY` set) but not running cleanly: status is `UNAVAILABLE` or `DEGRADED`, or any rule is unhealthy; it is also raised when status is `OK` but the `cpu-sampler:` line starts with `unavailable`, in which case its subject is `cpu-sampler unavailable`. The health loop only runs when a finding store exists, so it does not fire when the audit store (Postgres) is down. It is backend-level (no tenant or container), its subject is the status reason, and it resolves itself once status returns to `OK`. It is raised by a separate health loop, not a rule, because a rule cannot run when the engine is missing or broken. |
+| `PROCESS_ACTION_EXPIRED` | MEDIUM | A throttle or freeze reached its TTL with no operator decision and was released automatically. Subject is the container name. |
 
 A rule firing repeatedly for the same `(rule, tenant, subject)` dedupes
 into one open finding with an updated count, rather than creating a new
@@ -83,6 +95,53 @@ nothing is dropped. Before enforcing, and before trusting deny-burst:
    traffic you actually want blocked.
 3. Only then enable enforcement. From that point the deny-burst rule counts
    the drops, and a burst is a real signal.
+
+## Process policy: what a mining finding does
+
+By default a finding only alerts. The process responder changes that for
+HIGH `mining-behavior` findings only; no other rule's findings are acted
+on. The action is chosen by the effective policy, resolved as a
+per-container override, then the backend default, then the built-in
+`ALERT` with a `10%` allowance and a 24 h TTL. The merge is per field, so
+an override that sets only `action` still inherits the backend default's
+allowance and TTL.
+
+| Action | Effect on the container |
+|--------|-------------------------|
+| `alert` | Record the finding and notify. Nothing is done to the box. This is the default. |
+| `throttle` | Record the box's current `limits.cpu` and `limits.cpu.allowance`, then set `limits.cpu.allowance` to the policy's throttle allowance, applied as a hard CPU quota: `N%` becomes `Nms/100ms`, and `Nms/Mms` is used as given. A box already limited below that quota keeps its tighter limit. |
+| `freeze` | Pause the instance through Incus (cgroup freezer). Memory and disk are kept; no process runs until released. |
+
+Every action is reversible and none destroys data. An applied action is
+released by an operator, or by the TTL backstop, which also raises a
+`PROCESS_ACTION_EXPIRED` finding so an unattended throttle never silently
+becomes permanent. The finding's `response` records what was done and when.
+On a backend whose finding store has no Postgres (`DEGRADED`), the
+responder applies `ALERT` whatever the policy says, and status reports
+"responses disabled".
+
+```bash
+containarium security process-policy get [--container <name>]
+containarium security process-policy set --action throttle --throttle-allowance 10% --ttl 24h
+containarium security process-policy set --action freeze --container <name>
+containarium security process-policy set --container <name> --clear-override
+containarium security process-policy set --rule mining-behavior --min-cores 2 --stratum-ports 3333,4444
+containarium security process-policy release <container>
+```
+
+`--action` is `alert`, `throttle` or `freeze`; `--throttle-allowance` is
+`N%` or `Nms/Mms`; omitted fields inherit. The mining-behavior thresholds
+are backend-wide and cannot be combined with `--container`. `set` and
+`release` are admin-only. Run `containarium security process-policy set
+--help` for the full flag list. REST: `GET`/`PUT /v1/security/process-policy`
+and `POST /v1/security/process-policy/release`.
+
+MCP equivalents: `security_process_policy_get`,
+`security_process_policy_set` and `security_process_policy_release`.
+
+For the guardrail design and operating detail, see
+[`docs/security/PROCESS-GUARDRAIL.md`](security/PROCESS-GUARDRAIL.md)
+(added by PR #2716; the link resolves once that PR merges).
 
 ## Reading sentry status
 
@@ -329,6 +388,9 @@ Every CLI/MCP surface above is a thin wrapper over these RPCs
 | `GET` | `/v1/security/bad-destinations` |
 | `POST` | `/v1/security/bad-destinations` |
 | `DELETE` | `/v1/security/bad-destinations/{cidr}` |
+| `GET` | `/v1/security/process-policy` |
+| `PUT` | `/v1/security/process-policy` |
+| `POST` | `/v1/security/process-policy/release` |
 | `GET` | `/v1/security/miner-signatures` |
 | `POST` | `/v1/security/miner-signatures` |
 | `DELETE` | `/v1/security/miner-signatures?kind=&pattern=` |
