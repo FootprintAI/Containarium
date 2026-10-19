@@ -174,17 +174,28 @@ func (h *SentryHealth) adoptLocked(ctx context.Context, backendID string) {
 // fault (the loop never runs unarmed anyway).
 func sentryUnhealthySubject(resp *pb.GetSentryStatusResponse) (subject, note string, unhealthy bool) {
 	cpuDown := cpuSamplerUnavailable(resp)
+	execDown := execTelemetryDown(resp)
 	switch resp.GetState() {
 	case pb.SentryState_SENTRY_STATE_DISABLED:
 		return "", "", false
 	case pb.SentryState_SENTRY_STATE_OK:
 		if !anyRuleUnhealthy(resp) {
-			if !cpuDown {
+			if !cpuDown && !execDown {
 				return "", "", false
 			}
-			// Only the CPU sampler is down: the status reason is empty, so the
-			// finding is about the sampler alone (#2660).
-			return cpuSamplerSubject, "cpu-sampler: " + resp.GetCpuSampler(), true
+			// Only a signal source is down: the status reason is empty, so the
+			// finding is about that source alone (#2660 for the sampler,
+			// #2637 for exec telemetry) — or both, joined.
+			var subjects, notes []string
+			if cpuDown {
+				subjects = append(subjects, cpuSamplerSubject)
+				notes = append(notes, "cpu-sampler: "+resp.GetCpuSampler())
+			}
+			if execDown {
+				subjects = append(subjects, execTelemetrySubject)
+				notes = append(notes, "exec-telemetry: "+resp.GetExecTelemetry())
+			}
+			return strings.Join(subjects, "; "), strings.Join(notes, "; "), true
 		}
 		note = reasonOr(resp, "a rule is unhealthy")
 	default: // UNAVAILABLE, DEGRADED, UNSPECIFIED
@@ -204,7 +215,24 @@ func sentryUnhealthySubject(resp *pb.GetSentryStatusResponse) (subject, note str
 		subject += "; " + cpuSamplerSubject
 		note += "; cpu-sampler: " + resp.GetCpuSampler()
 	}
+	if execDown {
+		subject += "; " + execTelemetrySubject
+		note += "; exec-telemetry: " + resp.GetExecTelemetry()
+	}
 	return subject, note, true
+}
+
+// execTelemetrySubject is the stable subject of an exec-telemetry fault
+// (#2637); the watcher's own reason ("unavailable (netbpf: execwatch: load
+// collection: …)") varies and lives in the finding's evidence note.
+const execTelemetrySubject = "exec-telemetry unavailable"
+
+// execTelemetryDown reports whether the status says the exec telemetry
+// cannot run (GetSentryStatusResponse.exec_telemetry begins "unavailable").
+// An armed backend blind to execs is not silent, same rule as the sampler.
+// An empty field (a status from before the field existed) is not a fault.
+func execTelemetryDown(resp *pb.GetSentryStatusResponse) bool {
+	return strings.HasPrefix(resp.GetExecTelemetry(), "unavailable")
 }
 
 // cpuSamplerSubject is the stable subject of a CPU-sampler fault; the

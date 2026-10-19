@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -239,5 +240,29 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 	}
 	if !tagged["core-postgres-container"] {
 		t.Error("non-control-plane core services must stay tagged (still isolated from tenants)")
+	}
+}
+
+// TestReconcile_ExecWatcherRunsDuringPolicyStoreOutage: the exec watcher
+// needs only the container list, so a policy-store (Postgres) outage must
+// not stop a newly started box from being added to watched_cgroups.
+func TestReconcile_ExecWatcherRunsDuringPolicyStoreOutage(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	m := newFakeCgroupMap()
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	insp := &fakeInspector{containers: []incus.ContainerInfo{running("box-a", 100)}, rawCalls: map[string]int{}}
+	store := &listFailingStore{NetworkPolicyStore: NewMemNetworkPolicyStore(), fail: true}
+	e := NewNetworkPolicyEnforcer("", store, NewMemTenantRegistry(), insp, nil, nil, false)
+	e.ctx = context.Background()
+	e.SetExecWatcher(w)
+	// A zero Loader only gets reconcile past its "not started" guard; the
+	// store outage returns before anything touches it.
+	e.loader = &netbpf.Loader{}
+
+	if err := e.reconcile(context.Background()); err == nil {
+		t.Fatal("reconcile succeeded with the policy store down, want its error")
+	}
+	if ids := m.ids(); len(ids) != 1 || ids[0] != ino["lxc.payload.box-a"] {
+		t.Fatalf("watched_cgroups = %v during a policy-store outage, want box-a's id %d", ids, ino["lxc.payload.box-a"])
 	}
 }
