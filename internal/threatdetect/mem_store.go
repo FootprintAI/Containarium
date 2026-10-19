@@ -114,6 +114,11 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 			// every later index for no benefit.
 		}
 	}
+	// The caller, the event and the webhook worker all read the finding
+	// after the lock is released, while a concurrent Upsert of the same key
+	// may be updating the stored entry. Hand them a copy (#2748).
+	snap := *out
+	out = &snap
 	s.mu.Unlock()
 
 	detail := fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s count=%d", out.Rule, out.Severity, out.TenantID, out.Subject, out.Count)
