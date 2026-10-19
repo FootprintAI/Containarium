@@ -107,6 +107,20 @@ type ProcessResponder struct {
 	// row for; touched only by the worker goroutine.
 	droppedAudited uint64
 
+	// pendingMu guards pending: the queued or in-flight jobs per finding and
+	// container. A miner-signature finding is keyed per tenant and pattern, so
+	// two boxes of one tenant can share it (#2766); Release on one box leaves
+	// the shared finding open while another box still has a response waiting
+	// on it. A separate lock from mu because enqueue runs on the writer's
+	// goroutine and must never wait behind a Release's Incus call.
+	pendingMu sync.Mutex
+	pending   map[int64]map[string]int
+
+	// afterQueuedRead, when set, runs in runJob between the unlocked
+	// staleness read and the locked re-check. Test seam only: it lets a test
+	// land a release or resolve in exactly that window.
+	afterQueuedRead func()
+
 	mu        sync.Mutex
 	backendID string
 }
@@ -116,7 +130,8 @@ func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions thre
 	return &ProcessResponder{
 		policies: policies, actions: actions, findings: findings, act: act, audit: auditLog,
 		degraded: degraded, now: time.Now,
-		queue: make(chan responseJob, processResponseQueue),
+		queue:   make(chan responseJob, processResponseQueue),
+		pending: map[int64]map[string]int{},
 	}
 }
 
@@ -146,16 +161,53 @@ func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect
 		t := *target
 		job.target = &t
 	}
+	r.trackPending(f.ID, f.Container, 1)
 	select {
 	case r.queue <- job:
 		return true
 	default:
+		r.trackPending(f.ID, f.Container, -1)
 		if n := r.dropped.Add(1); n == 1 || n%100 == 0 {
 			log.Printf("[process-responder] work queue full (cap %d): dropped response for finding %d on %s (%d dropped so far)",
 				processResponseQueue, f.ID, f.Container, n)
 		}
 		return false
 	}
+}
+
+// trackPending adds delta to the queued-or-in-flight job count for finding id
+// on container.
+func (r *ProcessResponder) trackPending(id int64, container string, delta int) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	byBox := r.pending[id]
+	if byBox == nil {
+		if delta <= 0 {
+			return
+		}
+		byBox = map[string]int{}
+		r.pending[id] = byBox
+	}
+	byBox[container] += delta
+	if byBox[container] <= 0 {
+		delete(byBox, container)
+	}
+	if len(byBox) == 0 {
+		delete(r.pending, id)
+	}
+}
+
+// pendingElsewhere reports whether finding id has a queued or in-flight job
+// for a container other than container.
+func (r *ProcessResponder) pendingElsewhere(id int64, container string) bool {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	for box, n := range r.pending[id] {
+		if box != container && n > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // DroppedResponses counts findings the responder never acted on because its
@@ -178,19 +230,25 @@ func (r *ProcessResponder) runQueue(ctx context.Context) {
 
 // runJob acts on one queued job, but only if it is still current. The queued
 // copy of the finding was taken when the rule fired; by the time the worker
-// gets to it an operator may have released the action (which resolves the
-// finding), the sentry may have resolved it, or the TTL backstop may have
-// released it. Acting on the stale copy would re-throttle a box the operator
+// gets to it an operator may have released the box's action, the sentry or
+// an operator may have resolved the finding, or the TTL backstop may have
+// released the action. Acting on the stale copy would re-throttle a box the operator
 // just released, write APPLIED onto a resolved finding, or kill a process
 // whose finding an operator just closed. So the finding is re-read here,
 // again under r.mu right before the kill, and once more under r.mu right
 // before the policy action; a stale job is skipped and audited as
-// "response-skipped".
+// "response-skipped". A release counts only on the job's own container: a
+// miner-signature finding can be shared by several boxes of one tenant, and
+// releasing one of them says nothing about the others (#2766).
 func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
+	defer r.trackPending(job.f.ID, job.f.Container, -1)
 	fresh, reason := r.currentFinding(ctx, job)
 	if reason != "" {
 		r.auditSkip(ctx, job, reason)
 		return
+	}
+	if r.afterQueuedRead != nil {
+		r.afterQueuedRead()
 	}
 	r.onFindingChecked(ctx, fresh, job.target, func() string {
 		_, reason := r.currentFinding(ctx, job)
@@ -202,10 +260,14 @@ func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
 }
 
 // currentFinding re-reads a queued job's finding. reason is non-empty when
-// the job is stale: the finding is gone, no longer open, or its action was
-// released at or after the job was queued. The returned finding keeps the
-// job's container (the store's row may carry the first container that
-// opened it; the action belongs to the box whose exec fired).
+// the job is stale: the finding is gone or no longer open, or the job's own
+// container had an action released at or after the job was queued. The
+// release is read from that container's action row, not from the finding's
+// response: the finding may be shared with other boxes of the tenant, and
+// its response describes whichever box acted last (#2766). A failed apply
+// (released by "error") is not a decision and does not count. The returned
+// finding keeps the job's container (the store's row may carry the first
+// container that opened it; the action belongs to the box whose exec fired).
 func (r *ProcessResponder) currentFinding(ctx context.Context, job responseJob) (*threatdetect.Finding, string) {
 	fresh, err := r.findings.Get(ctx, job.f.ID)
 	if err != nil {
@@ -214,8 +276,14 @@ func (r *ProcessResponder) currentFinding(ctx context.Context, job responseJob) 
 	if fresh.State != threatdetect.FindingStateOpen {
 		return nil, "finding no longer open"
 	}
-	if resp := fresh.Response; resp != nil && !resp.ReleasedAt.IsZero() && !resp.ReleasedAt.Before(job.at) {
-		return nil, "action released by " + resp.ReleasedBy + " after the response was queued"
+	last, err := r.actions.Latest(ctx, job.f.Container)
+	switch {
+	case errors.Is(err, threatdetect.ErrNoOpenAction):
+		// The box never had an action: nothing was released.
+	case err != nil:
+		return nil, "action unreadable: " + err.Error()
+	case !last.ReleasedAt.IsZero() && last.ReleasedBy != threatdetect.ReleasedByError && !last.ReleasedAt.Before(job.at):
+		return nil, "action on " + job.f.Container + " released by " + last.ReleasedBy + " after the response was queued"
 	}
 	out := *fresh
 	out.Container = job.f.Container
@@ -337,10 +405,11 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 	}
 	policy, err := r.policies.Effective(ctx, f.Container)
 	if err != nil {
-		// Unknown policy: do nothing rather than guess. The finding itself
-		// is already recorded and delivered.
+		// Unknown policy: no policy action rather than guess. The finding
+		// itself is already recorded and delivered; a kill that already ran
+		// is still recorded.
 		log.Printf("[process-responder] finding %d on %s: read policy: %v", f.ID, f.Container, err)
-		return nil
+		return r.recordKill(ctx, f, killedPID)
 	}
 	action := policy.GetAction()
 	if r.degraded {
@@ -463,6 +532,18 @@ func (r *ProcessResponder) recordKill(ctx context.Context, f *threatdetect.Findi
 	return r.setResponse(ctx, f.ID, resp)
 }
 
+// killRecorded reports whether a kill is on record for row's finding: the
+// row's own killed_pid, or a process_killed recordKill already set on the
+// finding. Release, expiry and the orphan sweep rewrite the response, and
+// must not drop a kill recorded by another path.
+func (r *ProcessResponder) killRecorded(ctx context.Context, row *threatdetect.SecurityAction) bool {
+	if row.KilledPID != 0 {
+		return true
+	}
+	f, err := r.findings.Get(ctx, row.FindingID)
+	return err == nil && f.Response != nil && f.Response.ProcessKilled
+}
+
 // recordFailure writes the failed row (released on insert so it never
 // holds the open slot — the next re-fire is the retry) and marks the
 // finding FAILED with the error. row may be nil when the failure was the
@@ -542,7 +623,10 @@ func (r *ProcessResponder) undo(row *threatdetect.SecurityAction) error {
 
 // Release undoes the open action on container at an operator's request:
 // restores the recorded limit or unfreezes, marks the row released by
-// operator, records RELEASED on the finding and resolves it. Returns the
+// operator, records RELEASED on the finding and resolves it. A finding
+// another box still has a queued response for (a shared miner-signature
+// finding, #2766) is left open, so releasing this box does not cancel that
+// box's response; it is resolved when the last box is released. Returns the
 // finding (nil if its row is gone) and ErrNoOpenAction when nothing is
 // open. A failed Incus call leaves the action open so the operator can
 // retry.
@@ -563,10 +647,18 @@ func (r *ProcessResponder) Release(ctx context.Context, container string) (*thre
 	f := r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOperator,
-		ProcessKilled: row.KilledPID != 0,
+		ProcessKilled: r.killRecorded(ctx, row),
 	})
-	resolved, rerr := r.findings.Resolve(ctx, row.FindingID)
+	var rerr error
+	var resolved *threatdetect.Finding
+	keepOpen := r.pendingElsewhere(row.FindingID, container)
+	if keepOpen {
+		log.Printf("[process-responder] finding %d left open after release on %s: another box has a response queued", row.FindingID, container)
+	} else {
+		resolved, rerr = r.findings.Resolve(ctx, row.FindingID)
+	}
 	switch {
+	case keepOpen:
 	case rerr == nil:
 		f = resolved
 	case errors.Is(rerr, threatdetect.ErrFindingNotOpen), errors.Is(rerr, threatdetect.ErrFindingNotFound):
@@ -575,8 +667,8 @@ func (r *ProcessResponder) Release(ctx context.Context, container string) (*thre
 	default:
 		log.Printf("[process-responder] resolve finding %d after release: %v", row.FindingID, rerr)
 	}
-	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s restored_cpu=%q restored_allowance=%q",
-		row.FindingID, container, row.Action, threatdetect.ReleasedByOperator, row.PrevCPUCount, row.PrevCPUAllowance))
+	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s restored_cpu=%q restored_allowance=%q finding_kept_open=%t",
+		row.FindingID, container, row.Action, threatdetect.ReleasedByOperator, row.PrevCPUCount, row.PrevCPUAllowance, keepOpen))
 	log.Printf("[process-responder] %s released on %s by operator (finding %d)", row.Action, container, row.FindingID)
 	return f, nil
 }
@@ -620,7 +712,7 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByTTL,
-		ProcessKilled: row.KilledPID != 0,
+		ProcessKilled: r.killRecorded(ctx, row),
 	})
 	ttl := row.ExpiresAt.Sub(row.AppliedAt).Round(time.Second)
 	note := fmt.Sprintf("%s on %s released by the TTL backstop after %s with no operator decision (finding %d); original limit restored",
@@ -687,7 +779,7 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOrphanSweep,
-		ProcessKilled: row.KilledPID != 0,
+		ProcessKilled: r.killRecorded(ctx, row),
 	})
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (pending apply never confirmed)",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByOrphanSweep))
@@ -768,6 +860,16 @@ func (s *ActingSink) Upsert(ctx context.Context, f *threatdetect.Finding) (*thre
 	target := lastExec(f)
 	if target == nil {
 		target = lastExec(out)
+	}
+	// Likewise the box is the one this write came from. A finding shared by
+	// several boxes of a tenant (#2766) may come back from the store carrying
+	// the container that first opened it (the in-memory store does; the
+	// Postgres store returns the writer's); the response belongs to this
+	// write's box.
+	if f.Container != "" && out.Container != f.Container {
+		cp := *out
+		cp.Container = f.Container
+		out = &cp
 	}
 	if s.async {
 		// Only findings the responder can act on take a queue slot, so

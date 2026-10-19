@@ -242,8 +242,7 @@ The baseline ships `name` and `argv` entries only (xmrig, minerd,
 cpuminer*, nanominer, t-rex, lolminer, nbminer, gminer; `--donate-level`,
 `stratum+tcp://`, `stratum+ssl://`, `--coin `, `--coin=*`, and for each
 default stratum port `-o <host>:<port>`, `-o<host>:<port>`, `--url <host>:<port>`
-and `--url=<host>:<port>`
-default stratum port). It carries **no hashes**: a hash list goes stale with
+and `--url=<host>:<port>`). It carries **no hashes**: a hash list goes stale with
 every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
 argv entry matched, off the exec path (64 MiB cap, 200 ms budget, best
@@ -284,10 +283,17 @@ shows `process killed`, and an action row opened by the same finding records
 `killed_pid`. The kill and the throttle/freeze run on the responder's own
 worker, never on the exec event path; if its queue (256) is full the
 response is dropped, logged and audited as `response-dropped`. Before
-acting, the worker re-reads the finding: one resolved, or whose action was
-released (by an operator or the TTL backstop) after the response was
-queued, is left alone and audited as `response-skipped`, so a queued
-response never undoes a release. On a degraded backend (no Postgres) responses are off, the
+acting, the worker re-reads the finding and the box's own action: a
+response whose finding was resolved, or whose box had its action released
+(by an operator or the TTL backstop) after the response was queued, is left
+alone and audited as `response-skipped`, so a queued response never undoes
+a release. A signature finding is per tenant and pattern, so two boxes of
+one tenant running the same miner share one finding; a release counts only
+for the box it was made on. Releasing box A does not cancel box B's queued
+response, and while B's response is still queued the release leaves the
+shared finding open (the `release` audit row says `finding_kept_open=true`);
+releasing the last box resolves it. Resolving the finding by hand skips
+every box's queued response. On a degraded backend (no Postgres) responses are off, the
 kill included.
 
 **Limits.** A rebuilt, renamed miner with a clean command line matches no
@@ -303,6 +309,18 @@ does not hit the `-o <host>:<port>` markers, and `-o` is case-sensitive, so
 `cc -O ...` is not a match. Pool addresses in other spellings (a config file,
 `--url` with a scheme other than stratum, a non-default port) are a known
 gap here; the mining-behavior rule covers them by CPU and flow.
+
+Two known false positives remain in the baseline's port markers, because
+they match a host-and-port shape without knowing what the option means:
+
+- `curl -ofile:3333 …` (curl's `-o` writes to the file `file:3333`)
+  matches `-o<host>:<port>`.
+- A scheme-less `--url=localhost:4444` on any tool matches
+  `--url=<host>:<port>`, although nothing about it is a pool.
+
+Both raise the HIGH finding and, with `kill_process`, kill the process. If
+a box legitimately runs such a command, leave `kill_process` off for it
+(`process-policy set --container <box> --kill-process=false`).
 
 The kill and policy action run on the responder's queue, so a little time
 can pass between the exec and the kill. The cgroup re-check stops a pid

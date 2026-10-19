@@ -196,22 +196,25 @@ func TestQueuedResponse_SkipsFindingResolvedWhileQueued(t *testing.T) {
 	}
 }
 
-// TestQueuedResponse_SkipsActionReleasedAfterQueueing: the TTL backstop (or
-// an operator) released the action after the job was queued, but the
-// finding is still open: the stale job must not re-apply.
+// TestQueuedResponse_SkipsActionReleasedAfterQueueing: the TTL backstop
+// released the box's action after the job was queued, but the finding is
+// still open: the stale job must not re-apply. The release is read from the
+// box's own action row (#2766).
 func TestQueuedResponse_SkipsActionReleasedAfterQueueing(t *testing.T) {
 	ctx := context.Background()
 	fx, sink := queuedThrottle(t)
-	job := queueOne(t, fx, sink)
-	if _, err := fx.findings.SetResponse(ctx, job.f.ID, threatdetect.FindingResponse{
-		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
-		ReleasedAt: fx.clock, ReleasedBy: threatdetect.ReleasedByTTL,
-	}); err != nil {
-		t.Fatal(err)
+	fx.r.runJob(ctx, queueOne(t, fx, sink)) // box-a throttled
+	job := queueOne(t, fx, sink)            // the rule re-fires while throttled
+	if n := fx.r.SweepExpired(ctx, fx.clock.Add(2*time.Hour)); n != 1 {
+		t.Fatalf("SweepExpired released %d, want 1", n)
 	}
+	before := setCPUCalls(fx)
 	fx.r.runJob(ctx, job)
-	if setCPUCalls(fx) != 0 {
+	if n := setCPUCalls(fx); n != before {
 		t.Fatal("re-applied an action released after the job was queued")
+	}
+	if f, _ := fx.findings.Get(ctx, job.f.ID); f.State != threatdetect.FindingStateOpen {
+		t.Fatalf("finding state = %s, want open (a TTL release does not resolve)", f.State)
 	}
 	if d := auditDetails(fx.audit, "response-skipped"); len(d) != 1 || !strings.Contains(d[0], "released by ttl") {
 		t.Fatalf("response-skipped audit = %v", d)
