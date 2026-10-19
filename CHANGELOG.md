@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`containarium security sentry status` no longer reports OK while the process responder is ALERT-only** (#2719). When findings were persisted but the `security_actions` store failed to initialise, or the responder could not be constructed, THROTTLE/FREEZE policies were silently inert. The status is now `DEGRADED (<cause>): responses disabled` (e.g. `DEGRADED (security_actions store unavailable): responses disabled`), and the sentry-health loop raises a MEDIUM sentry-unavailable finding for it, as it does for a missing CPU sampler.
 
+### Documentation
+
+- **`docs/security/PROCESS-GUARDRAIL.md`: operator guide to the process guardrail** (#2639, part of #2711). One page on how to turn the guardrail on safely: the three rules (`mining-behavior`, `miner-signature`, `sentry-unavailable`), the policy ladder `ALERT`, `THROTTLE`, `FREEZE` and the optional `kill_process`, release and TTL semantics, exec telemetry (kernel floor, status lines, the measured overhead), the rollout order (sentry armed, about four weeks of `alert`, `throttle`, `freeze`), webhook response delivery, the evasion limits, and what a tenant with root can and cannot do. Commands and `sentry status` samples were checked against the built binary.
+
 ## [0.109.0] - 2026-10-19
 
 ### Added
@@ -38,10 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The finding webhook now reports what the process responder did** (#2718, part of #2711). The webhook was queued when a finding was recorded, before the responder acted, and recording the response never notified, so the only delivery for a mining finding said `response: NONE` and an operator learned of the throttle, its release, expiry or failure only by polling. A response transition (`APPLIED`, `FAILED`, `RELEASED`, `EXPIRED`) is now delivered at once, inside the re-notify interval, the way a severity escalation is; a repeat with an unchanged response is still suppressed. An operator release, which also resolves the finding, is one delivery (the release), not two; a TTL expiry or orphan-sweep release leaves the finding open, so its later resolve is still delivered.
 - **The Helm chart pins the sshpiper gateway image to the chart's appVersion, and the required gateway value is documented** (#2703, #2725).
 - **Each release publishes a `.sha256` for the Helm chart** (#2697, #2699). The `helm-chart` job attaches the chart after `SHA256SUMS.txt` is already written, so the chart had no checksum anywhere; it now uploads `containarium-k8s-<version>.tgz.sha256` beside the chart, matching the SDLC skills and air-gapped bundles. `docs/RELEASE-PROCESS.md` now describes the real asset set and the chart checks in verification.
-
-### Documentation
-
-- **`docs/security/PROCESS-GUARDRAIL.md`: operator guide to the process guardrail** (#2639, first half). What v0.108.0 watches (CPU and flows) and its rules (`mining-behavior` with its thresholds, window floor and cap and the CPU bar `min(min_cores, min_fraction_of_limit × limits.cpu)`; `sentry-unavailable` including the CPU-sampler fault), the `ALERT | THROTTLE | FREEZE` ladder (what each does to the box, `10%` as 0.1 core via `10ms/100ms`, one action per box, the 24 h TTL backstop, the orphan sweep, the 10-minute failure backoff, release, per-container overrides, `ALERT` only on a degraded store), the CLI, the rollout order, the evasion limits and what a tenant with root can and cannot do, and by-hand verification steps with the numbers measured on #2636. The exec-telemetry, `miner-signature` and `kill_process` sections are marked pending until #2637 and #2638 ship.
 
 ## [0.108.0] - 2026-10-19
 

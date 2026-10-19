@@ -6,10 +6,12 @@ it raises a HIGH finding and applies a reversible action to the box
 (`ALERT`, `THROTTLE` or `FREEZE`). It also tells you when the sentry that
 should be watching is not.
 
-This page covers what shipped in **v0.108.0**. Two sections are still
-being built and are marked **Pending** below: exec telemetry (#2637) and
-the `miner-signature` rule with the `kill_process` option (#2638). Do not
-rely on anything in a Pending section until it is filled in.
+This page covers the guardrail as shipped in **v0.109.0**: the CPU and
+flow rule (since v0.108.0), exec telemetry, the miner-signature rule with
+the optional kill, and webhook delivery of what the responder did. One
+behavior is on `main` but not in a release yet and is marked
+**(unreleased)**: the sentry reporting `DEGRADED` when the responder can
+only alert (#2719).
 
 Read first:
 
@@ -24,9 +26,9 @@ Everything here runs on the host. Detection uses host-side signals (eBPF
 flow records on the host, per-container CPU counters read through Incus),
 and actions go through Incus. Nothing is installed in the box.
 
-## What it watches today
+## The three rules and what they watch
 
-Two signals feed the guardrail in v0.108.0:
+Three signals feed the guardrail:
 
 - **CPU.** Per-container cores, from the cumulative CPU counter Incus
   reports. Where a metrics collector runs (a metrics export target is
@@ -40,7 +42,8 @@ Two signals feed the guardrail in v0.108.0:
   polls (every 15 s). The sentry works in observation mode; enforcement
   does not need to be on.
 
-Process execs are not watched yet; that is exec telemetry, below.
+- **Process execs.** A second eBPF object on the host sees every exec in a
+  box's cgroup. See [Exec telemetry](#exec-telemetry).
 
 ### Rule: `mining-behavior` (HIGH)
 
@@ -133,23 +136,82 @@ directly on such a backend.
 
 ### Rule: `miner-signature` (HIGH)
 
-> **Pending #2638.** Not shipped in v0.108.0. This section will cover the
-> embedded baseline list, the `name`, `argv` and `sha256` matcher kinds,
-> operator entries (`miner-signatures add|remove`), the finding's subject
-> and evidence, and the measured time from exec to finding.
+Fires on the exec itself, when a process started in a box matches the
+signature list. Needs [exec telemetry](#exec-telemetry). Three matcher
+kinds:
+
+| Kind | Matches | Example |
+|---|---|---|
+| `name` | basename of the exec'd file and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
+| `argv` | the joined command line: a literal substring, or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` are case-sensitive) | `--donate-level`, `-o *:3333` |
+| `sha256` | hex SHA-256 of the executable | operator entries only |
+
+The embedded baseline ships `name` and `argv` entries only (well-known
+miner binaries; `--donate-level`, `stratum+tcp://`, `stratum+ssl://`,
+`--coin`, and `-o`/`--url` forms for each default stratum port). It has
+**no SHA-256 entries**: a hash list goes stale with every upstream release.
+Add hashes for builds you have seen; the daemon hashes an executable only
+when such entries exist and no name or argv entry matched, off the exec
+path (64 MiB cap, 200 ms budget, best effort).
+
+```bash
+containarium security miner-signatures list [--json]
+containarium security miner-signatures add --kind name --label SRBMiner 'srbminer*'
+containarium security miner-signatures add --kind argv -- '--algo randomx'
+containarium security miner-signatures add --kind sha256 <64 hex chars>
+containarium security miner-signatures remove --kind name 'srbminer*'
+```
+
+Additions and removals take effect immediately, persist in the daemon
+config store, and need `security:write` and admin. Baseline entries cannot
+be removed.
+
+The finding's subject is `<kind>:<pattern>` of the entry that hit; the
+evidence is the exec (pid, ppid, uid, comm, path, argv, and the hash when
+computed). The finding is subject to the same process policy as
+`mining-behavior`. A literal argv marker matches any command line that
+mentions it: `grep -r -- --donate-level .` raises the finding too. Keep
+that in mind before enabling `kill_process` on boxes where people inspect
+miner configs.
 
 ### Exec telemetry
 
-> **Pending #2637.** Not shipped in v0.108.0. This section will cover the
-> exec-watch eBPF object, its kernel requirements (the flow rules keep
-> their existing kernel floor), the measured overhead on the CI loading
-> lane, the `exec_telemetry` and `exec_events_lost` fields of
-> `sentry status`, and what happens when the object cannot load.
+The daemon loads `execwatch.bpf.o` on the `sched_process_exec` tracepoint
+and filters in the kernel by box cgroup, so host and core-infrastructure
+execs are never emitted. Each event carries host pid, ppid, uid, the
+executable path and the argument vector **capped at 512 bytes**, never the
+environment. Tenants have root in their box, so nothing inside it reports.
+
+- **Kernel floor:** 5.8 (ring buffer) and kernel BTF
+  (`/sys/kernel/btf/vmlinux`). Ubuntu 22.04 and 24.04 have both. The object
+  comes from the same `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` value as the
+  flow object.
+- **Not audited.** Events are not written to the audit log; the daemon keeps
+  a short in-memory buffer (4,096 events). Only matched findings persist.
+- **Failure mode.** If the object cannot load or attach, `sentry status`
+  prints `exec-telemetry: unavailable (<reason>)`, `exec-events` fails with
+  the same reason, and a MEDIUM `SENTRY_UNAVAILABLE` finding with subject
+  `exec-telemetry unavailable` opens within a minute. The flow rules keep
+  running; `miner-signature` is blind until it recovers.
+- **Lost events.** If the kernel ring fills, the drops are counted and
+  shown as `exec-events-lost: N` (a counter, not a fault).
+- **Overhead.** The bar is under 1 % of host CPU at 1,000 execs/s. The
+  eBPF loading lane measured 983 execs/s for 60 s with 0 events lost:
+  2.95 % of one core in total, which is 0.37 % of an 8-core runner. A burst
+  of 10,000 undrained execs kept some, counted the rest as lost, and did
+  not crash. Reducing the per-core consumer cost is tracked in #2747.
+
+```bash
+containarium security exec-events                          # last 5 minutes, all boxes
+containarium security exec-events --container box-a --follow
+containarium security exec-events --since 1h --json
+```
 
 ## The policy ladder
 
 The process policy says what a HIGH finding from a mining rule does to
-its box. In v0.108.0 that is `mining-behavior` only.
+its box. That is the two mining rules, `mining-behavior` and `miner-signature`; no
+other rule's findings are acted on.
 
 | Action | What it does to the box | Release |
 |---|---|---|
@@ -214,24 +276,52 @@ fields you pass. Remove an override with `--clear-override`.
 **Degraded store means `ALERT` only.** When the finding store has no
 Postgres (the sentry is `DEGRADED`), the responder applies `ALERT`
 whatever the policy says, and `sentry status` reports
-`DEGRADED (no persistence): responses disabled`. A throttle whose
+`DEGRADED (no persistence): responses disabled`. **(Unreleased, #2719.)**
+The same state, with the cause named, is reported when findings persist
+but the responder is ALERT-only anyway (for example the action store is
+unavailable): `DEGRADED (security_actions store unavailable): responses
+disabled`, and a MEDIUM `SENTRY_UNAVAILABLE` finding opens for it. Before
+that fix such a backend read `OK` while a `THROTTLE` policy did nothing. A throttle whose
 recorded previous limit could vanish on restart, leaving a box throttled
 with nothing saying so, is worse than an alert. The policy itself can
 still be read and set.
 
-**`kill_process`.**
+**`kill_process`.** An optional extra for `miner-signature` findings only
+(the behavior rule names no process, so it never kills). Default **off at
+every level**, and the hosted service will not turn it on: a false
+positive kills a tenant's process with no undo, while throttle and freeze
+reverse.
 
-> **Pending #2638.** Not shipped in v0.108.0; the field is not in the
-> policy yet. Decided default: **off everywhere**. A false positive would
-> kill a tenant's process with no undo, while throttle and freeze are
-> reversible. This section will cover how it is enabled and the PID-reuse
-> check before the signal.
+```bash
+containarium security process-policy set --kill-process=true                     # backend default
+containarium security process-policy set --container box-a --kill-process=false  # one box opts out
+```
+
+With it on, a match still applies the box's action (`ALERT`, `THROTTLE`
+or `FREEZE`) and also SIGKILLs the matched process from the host.
+
+- The daemon pins the process with a pidfd (no pidfd, no kill), then
+  re-reads `/proc/<pid>/cgroup` and confirms it is still in that box's
+  cgroup, so a reused pid on the host or in another box is never signalled.
+  A reused pid inside the same box within the queue delay is not excluded
+  (start-time check tracked in #2765).
+- A box's init is never killed.
+- Every attempt is audited under `security.action`: `kill` (names the pid)
+  or `kill-skipped` (with the reason, such as `pid reused` or `process
+  already exited`). The finding's response shows `process killed`.
+- The kill runs on the responder's own queue, never on the exec path. A
+  full queue (256) drops the response, logged and audited as
+  `response-dropped`.
+- **A queued response never undoes a release.** Before acting, the worker
+  re-reads the finding; one resolved, or whose action an operator or the
+  TTL released after queueing, is left alone and audited as
+  `response-skipped`.
 
 ## CLI reference
 
 All verbs talk to the daemon's REST API (`--server` or
-`CONTAINARIUM_SERVER`). `get` needs `security:read`; `set` and `release`
-need `security:write` and the daemon requires admin. MCP equivalents:
+`CONTAINARIUM_SERVER`). `get`, `list` and `exec-events` need `security:read`; `set`, `release`,
+`miner-signatures add|remove` need `security:write` and admin. MCP equivalents:
 `security_process_policy_get`, `security_process_policy_set`,
 `security_process_policy_release` (thresholds are CLI-only) and
 `security_sentry_status`.
@@ -248,6 +338,7 @@ Effective:
   action:             ALERT
   throttle allowance: 10%
   ttl:                24h0m0s
+  kill process:       inherit
 Mining-behavior thresholds:
   min cores:              1.5
   min fraction of limit:  0.75
@@ -265,6 +356,7 @@ appears when the sentry engine is running.
 |---|---|
 | `--action alert\|throttle\|freeze` | What a HIGH mining finding does |
 | `--throttle-allowance N%\|Xms/Yms` | Quota `THROTTLE` applies (default `10%`) |
+| `--kill-process[=false]` | Also SIGKILL the process of a `miner-signature` match (default off; `=false` turns it off or opts a box out) |
 | `--ttl <duration>` | TTL backstop (default `24h`, minimum `1m`) |
 | `--container <box>` | Write that box's override instead of the backend default |
 | `--clear-override` | Remove the box's override (needs `--container`, no policy flags) |
@@ -289,32 +381,46 @@ Released FREEZE on box-1: container unfrozen. Finding #43 resolved.
 
 ### `containarium security sentry status [--json]`
 
-Two lines matter for the guardrail besides the state: the `Reason` line
-and the `cpu-sampler` line.
+Besides the state, the `Reason`, `cpu-sampler`, `exec-telemetry` and
+`exec-events-lost` lines matter.
 
 ```text
 Sentry: OK
 cpu-sampler: standalone (30s)
+exec-telemetry: ok
 
 RULE                             HEALTHY  LAST ERROR
 CROSS_TENANT_FLOW                true     -
 DENY_BURST                       true     -
 BAD_DESTINATION                  true     -
 MINING_BEHAVIOR                  true     -
+MINER_SIGNATURE                  true     -
 ```
 
 `cpu-sampler` is `metrics-collector`, `standalone (30s)` or
-`unavailable (<reason>)`. On a backend whose finding store has no
-Postgres:
+`unavailable (<reason>)`; `exec-telemetry` is `ok` or `unavailable
+(<reason>)`. `exec-events-lost: N` is printed only when N is not 0. Other
+shapes:
 
 ```text
 Sentry: DEGRADED
 Reason: DEGRADED (no persistence): responses disabled
 cpu-sampler: metrics-collector
+exec-telemetry: ok
+```
+
+```text
+Sentry: OK
+cpu-sampler: metrics-collector
+exec-telemetry: unavailable (<reason>)
+exec-events-lost: 120
 ```
 
 An unhealthy rule adds `rule <RULE> unhealthy: <error>` to the `Reason`
-line. `DISABLED` and `UNAVAILABLE` print their reason and no rules.
+line. `DISABLED` and `UNAVAILABLE` print their reason and no rules. The
+`DEGRADED (<cause>): responses disabled` form for an ALERT-only responder
+with persisted findings is unreleased (#2719). The sample layout comes from the shipped formatter; the rule rows are
+whatever the running engine registers.
 
 ### `containarium security findings list`
 
@@ -326,15 +432,29 @@ filter; mining findings show as rule `MINING_BEHAVIOR` with the pool's
 the responder did. `findings resolve <id>` resolves a finding by hand; it
 does not release an action (use `process-policy release`).
 
-### `containarium security miner-signatures` and `containarium security exec-events`
+### `miner-signatures` and `exec-events`
 
-> **Pending #2638 and #2637.** Not shipped in v0.108.0.
+Described with the rules above. The REST routes are `/v1/security/miner-signatures` and
+`/v1/security/exec-events`.
+
+### Webhook delivery of responses
+
+The finding webhook fires again when the responder's result changes.
+`response.state` is a number in the payload: `NONE`=1, `APPLIED`=2,
+`FAILED`=3, `RELEASED`=4, `EXPIRED`=5. So a mining
+finding is delivered at once as new (`NONE`, the responder has not acted
+yet), again when the action is `APPLIED` or `FAILED`, and again on
+release or expiry, each inside the re-notify interval. An operator release
+that also resolves the finding is one delivery: the resolve that follows
+within 30 s is coalesced. A TTL expiry or orphan-sweep release leaves the
+finding open, so its later resolve is delivered. The gate is in memory, so
+a restart re-delivers an open finding once.
 
 ## Rollout order
 
 Move one step at a time, per backend, and check `sentry status` at each.
 
-1. **Deploy a daemon at v0.108.0 or later.** Nothing changes: the
+1. **Deploy a daemon at v0.109.0 or later.** Nothing changes: the
    built-in policy is `ALERT` and, unarmed, the sentry runs nothing.
    `sentry status`: `Sentry: DISABLED`, reason
    `CONTAINARIUM_THREAT_SENTRY is not set`. You may set the policy
@@ -345,6 +465,7 @@ Move one step at a time, per backend, and check `sentry status` at each.
    needed), make sure Postgres is reachable, restart. `sentry status`
    must say `Sentry: OK`, no `Reason` line, `cpu-sampler:` either
    `metrics-collector` or `standalone (30s)`, and `MINING_BEHAVIOR true`.
+   `exec-telemetry: ok` and `MINER_SIGNATURE true` are required too.
    Anything else is a `SENTRY_UNAVAILABLE` finding within a minute; fix
    it before going on. `DEGRADED` here means no action will ever be taken
    whatever you set later.
@@ -359,6 +480,9 @@ Move one step at a time, per backend, and check `sentry status` at each.
      box.
    - **Time to detect** on real findings against your containment
      target. The window and flow age dominate it.
+   - **Signature hits** on legitimate boxes (a security course, a box
+     that greps miner configs). Add nothing to the list for those; leave
+     `kill_process` off.
    - `SENTRY_UNAVAILABLE` findings: a sentry that drops out is a
      backend with no guardrail.
 4. **`THROTTLE`.** `process-policy set --action throttle`. Keep the TTL at
@@ -366,6 +490,7 @@ Move one step at a time, per backend, and check `sentry status` at each.
    real hit, response `THROTTLE / APPLIED` on the finding and an audit
    entry; `sentry status` unchanged (`OK`, no reason). A
    `PROCESS_ACTION_EXPIRED` finding means nobody decided within the TTL.
+   Leave `kill_process` off. It is a separate, later decision (above).
 5. **`FREEZE`.** Only once throttles have been right for a while.
    A frozen box stops serving entirely, so start with overrides on the
    boxes you are surest about, or with tenant classes whose terms allow
@@ -373,51 +498,51 @@ Move one step at a time, per backend, and check `sentry status` at each.
 
 ## Evasion limits
 
-What the v0.108.0 guardrail will not catch, stated plainly:
+What the guardrail will not catch, stated plainly:
 
-- **A miner that throttles itself below the bar.** A miner held at 1.4
-  cores on an unlimited box, or below 75 % of a small box's limit, never
-  fires `mining-behavior`. Spreading the work across several boxes, each
-  below its own bar, does the same: each box is evaluated on its own.
-- **Pools on ports outside the stratum set**, `:443` above all, to an
-  address not on the bad-destination list. Without a qualifying flow the
-  rule does not fire however busy the box is. Adding 443 to
+- **A self-throttled miner below `min_cores`.** A miner held at 1.4 cores
+  on an unlimited box, or below 75 % of a small box's limit, never fires
+  `mining-behavior`. Spreading the work over several boxes, each under its
+  own bar, does the same: each box is evaluated alone.
+- **A renamed or rebuilt binary with a clean command line.** It matches no
+  `name` or `argv` entry, and a fresh build matches no hash. Only
+  `mining-behavior` (sustained CPU plus a pool flow) catches it. The
+  signature rule sees the exec, not later renames inside the process.
+- **Pools on `:443`** (or any port outside the stratum set) at an address
+  not on the bad-destination list: no qualifying flow, so
+  `mining-behavior` does not fire however busy the box is. Adding 443 to
   `--stratum-ports` would make every busy box with a web connection a
-  finding. Recognising pools on `:443` needs TLS metadata the egress
-  program does not read; it is not in this release.
-- **A renamed or rebuilt binary.** Not relevant to `mining-behavior`,
-  which never looks at processes. It is the limit of `miner-signature`
-  (#2638), which does not ship in v0.108.0; until then nothing looks at
-  binary names at all.
+  finding. TLS metadata is not read.
+- **Scheme-less and non-default-port spellings.** The baseline argv
+  markers cover `stratum+tcp://`, `stratum+ssl://` and `-o`/`--url` forms
+  only for the default stratum ports. A pool address in a config file,
+  `--url` with another scheme, or a non-default port matches nothing in the
+  signature rule; add an `argv` entry for spellings you see, and rely on
+  the behavior rule meanwhile.
 - **A connection that is idle most of the time.** Flow age is first to
-  last packet, so a connection that is opened and then left quiet does
-  not age. Real pool connections are chatty, so this mostly bites tests.
-- **Webhook re-delivery.** An open finding reaches the webhook when it is
-  new, when its severity rises, when the re-notify interval has passed
-  (default 1 h, `CONTAINARIUM_THREAT_WEBHOOK_RENOTIFY_MINUTES`), and once
-  when it resolves. Count bumps in between are not delivered. The gate is
-  in memory, so after a daemon restart an open finding is delivered once
-  more. The first delivery is queued when the finding is written, before
-  the responder acts, so do not rely on it to say whether a throttle was
-  applied: read the finding (`--json`) or the audit log for that.
+  last packet, so a quiet connection does not age. Real pool connections
+  are chatty.
+- **Short-lived processes.** The hash is computed best effort; a process
+  that exits before it can be read is not hashed.
+- **Webhook ordering.** The first delivery is queued when the finding is
+  written, before the responder acts; the transition arrives as a second
+  delivery. Do not read the first as "no action was taken".
 
 ### What a tenant with root in the box can and cannot do
 
-A tenant has root inside their box. The guardrail is built so that this
-does not matter for the signals it reads:
-
 - **Cannot** hide CPU use: the counter is the host's view of the box's
   cgroup, read through Incus.
-- **Cannot** hide or forge flows: the flow records come from the eBPF
-  program on the host side of the box's network, not from inside it.
-- **Cannot** stop the sentry or the responder: they run in the host
-  daemon, not in the box.
-- **Cannot** lift a throttle or freeze from inside: both are applied to
-  the box's cgroup by Incus on the host.
-- **Can** stay under the bar, pick a port outside the stratum set, or
-  rename and rebuild the miner, as listed above.
-- **Can** kill, restart or rename its own processes freely; nothing in
-  this release depends on what runs inside.
+- **Cannot** hide or forge flows or execs: both come from eBPF programs on
+  the host, not from inside the box.
+- **Cannot** stop the sentry or the responder, or lift a throttle or
+  freeze from inside: they run in the host daemon and act on the box's
+  cgroup through Incus.
+- **Cannot** prevent a kill by renaming after the fact: the signal goes to
+  the pinned process from the host. A box's init is the one process the
+  kill never touches.
+- **Can** stay under the bar, use a port or spelling outside the lists,
+  rename or rebuild the miner, or run it so that it exits before it is
+  hashed. These are the evasion limits above.
 
 ## Verification
 
@@ -426,7 +551,7 @@ does not matter for the signals it reads:
 Use a throwaway guest or test host, not a backend that serves tenants:
 this burns CPU in a box and will throttle and freeze it.
 
-Setup: a daemon at v0.108.0 or later with the sentry armed and Postgres
+Setup: a daemon at v0.109.0 or later with the sentry armed and Postgres
 up (`sentry status` reads `OK`), and a running box with a known limit,
 for example `limits.cpu=2`. Note its original limits:
 
