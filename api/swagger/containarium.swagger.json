@@ -12166,6 +12166,10 @@
         "isolation": {
           "$ref": "#/definitions/IsolationType",
           "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
+        },
+        "disableAutoSleep": {
+          "type": "boolean",
+          "description": "Opt out of auto-sleep at create (#2759). Meaningful only on a hosted\ncontrol plane that turns auto-sleep on by default for some orgs (for\nexample a seat-billed org defaulting to 30 minutes): true asks for a box\nwith NO idle-stop timer. A standalone daemon never enables auto-sleep\nunless idle_stop_minutes \u003e 0, so it ignores this field. Setting it\ntogether with idle_stop_minutes \u003e 0 is contradictory and rejected with\nInvalidArgument."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

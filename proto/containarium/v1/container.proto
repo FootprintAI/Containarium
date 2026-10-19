@@ -555,6 +555,15 @@ message CreateContainerRequest {
   // CONTAINER with a Windows os_type is rejected with InvalidArgument.
   // Only the LXC backend honors VM; the Kubernetes backend rejects it.
   IsolationType isolation = 27;
+
+  // Opt out of auto-sleep at create (#2759). Meaningful only on a hosted
+  // control plane that turns auto-sleep on by default for some orgs (for
+  // example a seat-billed org defaulting to 30 minutes): true asks for a box
+  // with NO idle-stop timer. A standalone daemon never enables auto-sleep
+  // unless idle_stop_minutes > 0, so it ignores this field. Setting it
+  // together with idle_stop_minutes > 0 is contradictory and rejected with
+  // InvalidArgument.
+  bool disable_auto_sleep = 28;
 }
 
 // CreateContainerResponse is the response from creating a container
