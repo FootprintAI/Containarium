@@ -10,6 +10,22 @@ the thin layer on top that the cloud doesn't give you — credential-scoped
 SSH/MCP access, the gateway key choreography, per-tenant isolation, and box
 lifecycle (start / stop / suspend / TTL).
 
+## Prepare the gateway upstream key
+
+Gateway routing is enabled by default and requires a dedicated upstream key.
+Create the key pair and store its private key in the gateway namespace before
+running any chart install command:
+
+```bash
+kubectl create namespace agent-gateway
+ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
+kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
+  --from-file=ssh-privatekey=./sshpiper_upstream
+```
+
+`ssh-keygen` also creates `./sshpiper_upstream.pub`; the install examples use
+that matching public key. Keep the private key file secure.
+
 ## Install a released chart
 
 Each release publishes the Helm chart as an OCI artifact next to the binaries.
@@ -28,8 +44,8 @@ helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
 `gateway.upstreamKeySecret` is required because gateway routing is on by
 default and the daemon refuses to start without an upstream credential, so a
 bare `helm template` / `helm install` with no values fails fast by design.
-Create the Secret first (see the comments in `values.yaml`), or set
-`gateway.enabled=false` and `gateway.namespace=""` to disable gateway routing:
+To disable gateway routing, set both
+`gateway.enabled=false` and `gateway.namespace=""`:
 `--set gateway.enabled=false --set gateway.namespace=""`.
 
 The cloud presets (`values-gke.yaml`, `values-eks.yaml`) live in the repository
@@ -131,23 +147,15 @@ GKE-only:
 
 ## 1. Create the gateway host-key Secret
 
-The gateway presents a stable SSH host key so clients can pin it. Generate one
-and store it in the gateway namespace:
+The gateway namespace was created in the upstream-key setup above. The gateway
+presents a stable SSH host key so clients can pin it; generate one and store it
+in that namespace:
 
 ```bash
-kubectl create namespace agent-gateway
 ssh-keygen -t ed25519 -f gateway_host_key -N ""
 kubectl -n agent-gateway create secret generic sshpiper-server-key \
   --from-file=server_key=gateway_host_key
-
-ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
-kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
-  --from-file=ssh-privatekey=./sshpiper_upstream
 ```
-
-The upstream key is a dedicated key for sshpiper to authenticate to boxes.
-Keep `sshpiper_upstream` private; pass its matching public key to each chart
-install command below.
 
 ## 2. Install the chart with the cloud preset
 
