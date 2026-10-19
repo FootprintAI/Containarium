@@ -181,9 +181,11 @@ func (r *ProcessResponder) runQueue(ctx context.Context) {
 // gets to it an operator may have released the action (which resolves the
 // finding), the sentry may have resolved it, or the TTL backstop may have
 // released it. Acting on the stale copy would re-throttle a box the operator
-// just released and write APPLIED onto a resolved finding. So the finding is
-// re-read before the kill, and again under r.mu right before the policy
-// action; a stale job is skipped and audited as "response-skipped".
+// just released, write APPLIED onto a resolved finding, or kill a process
+// whose finding an operator just closed. So the finding is re-read here,
+// again under r.mu right before the kill, and once more under r.mu right
+// before the policy action; a stale job is skipped and audited as
+// "response-skipped".
 func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
 	fresh, reason := r.currentFinding(ctx, job)
 	if reason != "" {
@@ -279,8 +281,8 @@ func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Findin
 }
 
 // onFindingChecked is onFinding with an optional recheck run under r.mu
-// before anything that touches the action store or the box; a non-empty
-// result aborts (the queued-job path, see runJob).
+// before anything that touches the box — the kill as much as the policy
+// action; a non-empty result aborts (the queued-job path, see runJob).
 func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence, recheck func() string) *threatdetect.Finding {
 	if !respondable(f) {
 		return nil
@@ -288,13 +290,31 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 	// kill_process (#2638) is additive and per process: it runs for every
 	// matched exec, before and independent of the one-action-per-container
 	// policy action below, which still applies. It needs no responder state,
-	// so it runs before the lock: its Incus read never holds up a release.
+	// so it runs outside the lock: its Incus read never holds up a release.
+	// But a queued job is rechecked under r.mu first (#2638 review): a
+	// Release or resolve that landed while the job waited takes r.mu, so once
+	// the recheck passes under it no release is in flight, and a finding an
+	// operator already closed is never the reason a process dies.
+	if recheck != nil && r.stale(recheck) {
+		return nil
+	}
 	killedPID := r.maybeKill(ctx, f, target)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if recheck != nil && recheck() != "" {
-		return nil
+		if killedPID == 0 {
+			return nil
+		}
+		// Released or resolved during the kill itself (after the recheck
+		// above let go of r.mu). The policy action is off, but the process is
+		// dead and the trail must say so: set process_killed on whatever
+		// response the release wrote, not on the pre-kill copy.
+		if cur, err := r.findings.Get(ctx, f.ID); err == nil {
+			cur.Container = f.Container
+			f = cur
+		}
+		return r.recordKill(ctx, f, killedPID)
 	}
 	killed := killedPID != 0 || (f.Response != nil && f.Response.ProcessKilled)
 
@@ -379,6 +399,15 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		detail, action, row.PrevCPUCount, row.PrevCPUAllowance, policy.GetThrottleAllowance(), row.ExpiresAt.UTC().Format(time.RFC3339)))
 	log.Printf("[process-responder] %s applied to %s (finding %d, expires %s)", action, f.Container, f.ID, row.ExpiresAt.UTC().Format(time.RFC3339))
 	return out
+}
+
+// stale runs recheck under r.mu and reports whether the job it guards is no
+// longer current. Takes and releases the lock itself so the caller's next
+// step (the kill's Incus read) runs without it.
+func (r *ProcessResponder) stale(recheck func() string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return recheck() != ""
 }
 
 // maybeKill is the kill_process step (#2638): for a miner-signature finding
