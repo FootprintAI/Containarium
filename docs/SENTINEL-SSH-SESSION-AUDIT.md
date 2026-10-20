@@ -32,7 +32,7 @@ the existing open/close records:
 | `user_id` | Resolved user identity when known; distinct from the SSH target login |
 | `authz_decision` | Typed `SSHAuthzDecision` value from the authorization check |
 | `deny_reason` | Typed `SSHDenyReason` value, such as unknown key or inactive user |
-| `enforced` | Whether the authorization decision was enforced for this record |
+| `enforced` | Whether `ssh-authz-plugin` ran in enforce mode for this record. An `open`/`close` row can carry `enforced=true` with an `UNSPECIFIED` decision: the plugin admitted the session without asking the daemon (a certificate) |
 
 The JSONL sink and audit detail encode the protobuf enums as numeric JSON
 values; generated protobuf JSON transports may use the symbolic enum names.
