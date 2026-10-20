@@ -250,6 +250,9 @@ func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
 	}{
 		{"with stack", "nodejs", true},
 		{"no stack", "", false},
+		// installPackages silently skips an unknown ID, so recording it would
+		// make the box report a stack that was never installed.
+		{"unknown stack", "no-such-stack", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := &stagesBackend{}
@@ -259,9 +262,13 @@ func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
 			if _, err := m.Create(opts); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
+			want := ""
+			if tc.wantKey {
+				want = tc.stack
+			}
 			got, ok := backend.createdConfig.ExtraConfig[incus.StackKey]
-			if ok != tc.wantKey || got != tc.stack {
-				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, tc.stack, tc.wantKey)
+			if ok != tc.wantKey || got != want {
+				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, want, tc.wantKey)
 			}
 		})
 	}
