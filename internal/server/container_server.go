@@ -4244,10 +4244,15 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: st.IPAddress,
 		},
-		Labels:               st.Labels,
-		CreatedAt:            st.CreatedAt.Unix(),
-		PodmanEnabled:        true, // TODO: Get from container config
-		Stack:                "",   // TODO: Get from container labels
+		Labels:    st.Labels,
+		CreatedAt: st.CreatedAt.Unix(),
+		// Podman is installed in every box image regardless of the create-time
+		// flag (the Incus backend does not read plain EnablePodman), so true
+		// is correct for every box.
+		PodmanEnabled: true,
+		// Empty when no stack is recorded: K8s does not persist it, and LXC
+		// boxes created before user.containarium.stack existed have none.
+		Stack:                st.Stack,
 		GpuDevice:            st.GPU,
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
