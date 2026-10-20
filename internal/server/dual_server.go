@@ -1840,6 +1840,9 @@ skipAppHosting:
 		}
 	}
 
+	// Storage pool capacity log + gauges, on every daemon (#2823).
+	startStoragePoolMonitor(context.Background(), metricsCollector, config.LocalBackendID)
+
 	// Set monitoring URLs on container server so GetMonitoringInfo works.
 	// Grafana is served via reverse proxy at /grafana/ on the same host,
 	// so the public URL is relative to the server's own origin.
