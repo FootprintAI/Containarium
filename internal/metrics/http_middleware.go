@@ -8,27 +8,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/footprintai/containarium/internal/httpx"
 )
-
-// responseWriter wraps http.ResponseWriter to capture the status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap exposes the underlying writer so http.NewResponseController can
-// reach its Flusher/Hijacker. Without it, server-streaming responses (which
-// flush after every chunk) fail with http.ErrNotSupported (#2773).
-func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
 
 // HTTPMetricsMiddleware wraps an HTTP handler to record request metrics
 func HTTPMetricsMiddleware(next http.Handler, provider *sdkmetric.MeterProvider) http.Handler {
@@ -55,7 +37,10 @@ func HTTPMetricsMiddleware(next http.Handler, provider *sdkmetric.MeterProvider)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rw := newResponseWriter(w)
+		// httpx.StatusWriter captures the status and, through Unwrap,
+		// keeps the real writer's Flusher reachable for server-streaming
+		// responses (#2773).
+		rw := httpx.NewStatusWriter(w)
 
 		next.ServeHTTP(rw, r)
 
@@ -64,7 +49,7 @@ func HTTPMetricsMiddleware(next http.Handler, provider *sdkmetric.MeterProvider)
 		attrs := otelmetric.WithAttributes(
 			attribute.String("method", r.Method),
 			attribute.String("route", r.URL.Path),
-			attribute.String("status_code", fmt.Sprintf("%d", rw.statusCode)),
+			attribute.String("status_code", fmt.Sprintf("%d", rw.StatusCode)),
 		)
 
 		requestsTotal.Add(r.Context(), 1, attrs)

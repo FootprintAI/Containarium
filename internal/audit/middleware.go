@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/httpx"
 )
 
 // skipPaths are request paths that should not be audit-logged (noisy/non-sensitive)
@@ -44,26 +45,6 @@ var skipGETPaths = []string{
 	"/v1/audit/logs",
 	"/v1/audit/health",
 }
-
-// responseWriter wraps http.ResponseWriter to capture the status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap exposes the underlying writer so http.NewResponseController can
-// reach its Flusher/Hijacker. Without it, server-streaming responses (which
-// flush after every chunk) fail with http.ErrNotSupported (#2773).
-func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
 
 // HTTPAuditMiddleware wraps an HTTP handler to record audit log entries for
 // API requests. store takes the auditLogger interface (narrowed to
@@ -115,7 +96,10 @@ func HTTPAuditMiddleware(next http.Handler, store auditLogger) http.Handler {
 		w.Header().Set(RequestIDHeader, reqID)
 		r = r.WithContext(ContextWithRequestID(r.Context(), reqID))
 
-		rw := newResponseWriter(w)
+		// httpx.StatusWriter captures the status and, through Unwrap,
+		// keeps the real writer's Flusher reachable for server-streaming
+		// responses (#2773).
+		rw := httpx.NewStatusWriter(w)
 
 		next.ServeHTTP(rw, r)
 
@@ -146,7 +130,7 @@ func HTTPAuditMiddleware(next http.Handler, store auditLogger) http.Handler {
 			ResourceID:   fmt.Sprintf("%s %s", r.Method, r.URL.Path),
 			Detail:       detail,
 			SourceIP:     sourceIP,
-			StatusCode:   rw.statusCode,
+			StatusCode:   rw.StatusCode,
 		}
 
 		// Non-blocking send
