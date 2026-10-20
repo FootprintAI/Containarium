@@ -256,10 +256,49 @@ message SetGuardrailPolicyResponse {
   string policy_hash = 2;
 }
 
+// GuardrailEffectivePolicy is what actually scans model responses on this
+// daemon, derived from the stored server policy (#2737, slice B of #2575).
+enum GuardrailEffectivePolicy {
+  GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED = 0;
+  // A policy is configured but has no inbound BLOCK rule (it is empty or
+  // has outbound rules only): model responses are not scanned.
+  GUARDRAIL_EFFECTIVE_POLICY_NONE = 1;
+  // No policy was ever set: responses are scanned against the built-in
+  // baseline rules (private keys, cloud keys), log-only (#2736).
+  GUARDRAIL_EFFECTIVE_POLICY_BASELINE = 2;
+  // The admin policy has at least one inbound BLOCK rule: it decides what
+  // is scanned and blocked, and the baseline is off.
+  GUARDRAIL_EFFECTIVE_POLICY_ADMIN = 3;
+}
+
+message GetGuardrailStatusRequest {}
+
+message GetGuardrailStatusResponse {
+  GuardrailEffectivePolicy response_policy = 1;
+  // Revision of the stored policy; 0 when none is configured.
+  int64 policy_revision = 2;
+  // The inbound kinds the admin policy blocks, in rule order. Set only
+  // when response_policy is ADMIN.
+  repeated GuardrailKind inbound_block_kinds = 3;
+  // Stable ids of the baseline rules in force, e.g.
+  // "baseline.pem_private_key". Set only when response_policy is BASELINE.
+  repeated string baseline_rule_ids = 4;
+}
+
 // GuardrailPolicyService is the daemon's store for the server-side policy.
-// Get: any authenticated caller (a data owner needs the policy to run
-// `guardrail apply` against it). Set: admin role only, audited.
+// Get and GetStatus: any authenticated caller (a data owner needs the policy
+// to run `guardrail apply` against it). Set: admin role only, audited.
 service GuardrailPolicyService {
+  rpc GetGuardrailStatus(GetGuardrailStatusRequest) returns (GetGuardrailStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/guardrail/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the effective response guardrail policy";
+      description: "Report what scans model responses: NONE (a policy is configured with no inbound BLOCK rule), BASELINE (no policy was ever set; built-in rules, log-only) or ADMIN (the policy has an inbound BLOCK rule). A store read error is an error, never NONE or BASELINE. Any authenticated caller.";
+      tags: "Guardrail";
+    };
+  }
   rpc GetGuardrailPolicy(GetGuardrailPolicyRequest) returns (GetGuardrailPolicyResponse) {
     option (google.api.http) = {
       get: "/v1/guardrail/policy"

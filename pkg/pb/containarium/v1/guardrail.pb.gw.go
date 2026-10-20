@@ -62,6 +62,27 @@ func local_request_GuardrailEngineService_Scan_0(ctx context.Context, marshaler 
 	return msg, metadata, err
 }
 
+func request_GuardrailPolicyService_GetGuardrailStatus_0(ctx context.Context, marshaler runtime.Marshaler, client GuardrailPolicyServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetGuardrailStatusRequest
+		metadata runtime.ServerMetadata
+	)
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetGuardrailStatus(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_GuardrailPolicyService_GetGuardrailStatus_0(ctx context.Context, marshaler runtime.Marshaler, server GuardrailPolicyServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetGuardrailStatusRequest
+		metadata runtime.ServerMetadata
+	)
+	msg, err := server.GetGuardrailStatus(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_GuardrailPolicyService_GetGuardrailPolicy_0(ctx context.Context, marshaler runtime.Marshaler, client GuardrailPolicyServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq GetGuardrailPolicyRequest
@@ -146,6 +167,26 @@ func RegisterGuardrailEngineServiceHandlerServer(ctx context.Context, mux *runti
 // Note that using this registration option will cause many gRPC library features to stop working. Consider using RegisterGuardrailPolicyServiceHandlerFromEndpoint instead.
 // GRPC interceptors will not work for this type of registration. To use interceptors, you must use the "runtime.WithMiddlewares" option in the "runtime.NewServeMux" call.
 func RegisterGuardrailPolicyServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux, server GuardrailPolicyServiceServer) error {
+	mux.Handle(http.MethodGet, pattern_GuardrailPolicyService_GetGuardrailStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.GuardrailPolicyService/GetGuardrailStatus", runtime.WithHTTPPathPattern("/v1/guardrail/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_GuardrailPolicyService_GetGuardrailStatus_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_GuardrailPolicyService_GetGuardrailStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_GuardrailPolicyService_GetGuardrailPolicy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -290,6 +331,23 @@ func RegisterGuardrailPolicyServiceHandler(ctx context.Context, mux *runtime.Ser
 // doesn't go through the normal gRPC flow (creating a gRPC client etc.) then it will be up to the passed in
 // "GuardrailPolicyServiceClient" to call the correct interceptors. This client ignores the HTTP middlewares.
 func RegisterGuardrailPolicyServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux, client GuardrailPolicyServiceClient) error {
+	mux.Handle(http.MethodGet, pattern_GuardrailPolicyService_GetGuardrailStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.GuardrailPolicyService/GetGuardrailStatus", runtime.WithHTTPPathPattern("/v1/guardrail/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_GuardrailPolicyService_GetGuardrailStatus_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_GuardrailPolicyService_GetGuardrailStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_GuardrailPolicyService_GetGuardrailPolicy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -328,11 +386,13 @@ func RegisterGuardrailPolicyServiceHandlerClient(ctx context.Context, mux *runti
 }
 
 var (
+	pattern_GuardrailPolicyService_GetGuardrailStatus_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "guardrail", "status"}, ""))
 	pattern_GuardrailPolicyService_GetGuardrailPolicy_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "guardrail", "policy"}, ""))
 	pattern_GuardrailPolicyService_SetGuardrailPolicy_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "guardrail", "policy"}, ""))
 )
 
 var (
+	forward_GuardrailPolicyService_GetGuardrailStatus_0 = runtime.ForwardResponseMessage
 	forward_GuardrailPolicyService_GetGuardrailPolicy_0 = runtime.ForwardResponseMessage
 	forward_GuardrailPolicyService_SetGuardrailPolicy_0 = runtime.ForwardResponseMessage
 )

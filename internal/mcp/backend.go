@@ -111,6 +111,11 @@ type API interface {
 	SetProcessPolicy(req *pb.SetProcessPolicyRequest) (*pb.SetProcessPolicyResponse, error)
 	ReleaseProcessAction(container string) (*pb.ReleaseProcessActionResponse, error)
 
+	// Miner-signature list (#2638, #2763).
+	ListMinerSignatures() (*pb.ListMinerSignaturesResponse, error)
+	AddMinerSignature(req *pb.AddMinerSignatureRequest) (*pb.AddMinerSignatureResponse, error)
+	RemoveMinerSignature(kind pb.MinerSignatureKind, pattern string) (*pb.RemoveMinerSignatureResponse, error)
+
 	// Bridge DNS record status (#2188).
 	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
 
