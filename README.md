@@ -19,6 +19,7 @@ curl https://blog.example.com → hello world
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/FootprintAI/Containarium/badge)](https://scorecard.dev/viewer/?uri=github.com/FootprintAI/Containarium)
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/score.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)

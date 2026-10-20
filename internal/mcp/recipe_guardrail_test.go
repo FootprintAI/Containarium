@@ -126,7 +126,7 @@ func TestDeployRecipeTool_TransportAndTokenRotation(t *testing.T) {
 func TestDeployRecipeTool_GuardrailSchemaAndScope(t *testing.T) {
 	srv := &Server{}
 	srv.registerTools()
-	require.Len(t, srv.tools, 98)
+	require.Len(t, srv.tools, 101)
 	for _, tool := range srv.tools {
 		if tool.Name != "deploy_recipe" {
 			continue
