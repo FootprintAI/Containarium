@@ -281,6 +281,29 @@ func TestProcessPolicyRelease_KeptOpenWording(t *testing.T) {
 	}
 }
 
+// #2820: the release line describes the released box's own record, not the
+// finding's response, which on a shared finding kept open is another box's
+// action (a FREEZE here).
+func TestProcessPolicyRelease_SharedFindingUsesTheBoxRecord(t *testing.T) {
+	reply, _ := protojson.Marshal(&pb.ReleaseProcessActionResponse{FindingKeptOpen: true,
+		Finding: &pb.Finding{Id: 6, Container: "box-a",
+			Response: &pb.FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_FREEZE, State: pb.ResponseState_RESPONSE_STATE_APPLIED, Container: "box-b"}},
+		Released: &pb.FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedBy: "operator", Container: "box-a"},
+	})
+	(&policyServer{reply: string(reply)}).start(t)
+	cmd := newProcessPolicyReleaseCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"box-a"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Released THROTTLE on box-a: CPU limit restored. Finding #6 kept open: another box still has a response.\n"
+	if buf.String() != want {
+		t.Errorf("output = %q, want %q", buf.String(), want)
+	}
+}
+
 func TestProcessPolicyRelease_FreezeWording(t *testing.T) {
 	reply, _ := protojson.Marshal(&pb.ReleaseProcessActionResponse{Finding: &pb.Finding{
 		Id: 7, Response: &pb.FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_FREEZE},

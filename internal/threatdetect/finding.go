@@ -230,6 +230,10 @@ type FindingResponse struct {
 	ReleasedAt     time.Time
 	ReleasedBy     string
 	Error          string
+	// Container is the box this response is about (#2820): a shared
+	// miner-signature finding gets one record per box, each delivered on its
+	// own. See ResponseWriter for which box the stored finding shows.
+	Container string
 }
 
 // findingResponseJSON is the storage encoding of FindingResponse.
@@ -245,6 +249,7 @@ type findingResponseJSON struct {
 	ReleasedAt    time.Time `json:"released_at,omitzero"`
 	ReleasedBy    string    `json:"released_by,omitempty"`
 	Error         string    `json:"error,omitempty"`
+	Container     string    `json:"container,omitempty"`
 }
 
 // KeepKillOf makes the kill on record sticky (#2766, #2775): when prev has a
@@ -274,7 +279,7 @@ func (r FindingResponse) MarshalJSON() ([]byte, error) {
 		Action: r.Action.String(), State: r.State.String(), ProcessKilled: r.ProcessKilled,
 		KilledPID: r.KilledPID, Kills: r.Kills, KillSkip: skipName(r.KillSkipReason),
 		AppliedAt: r.AppliedAt, ExpiresAt: r.ExpiresAt, ReleasedAt: r.ReleasedAt,
-		ReleasedBy: r.ReleasedBy, Error: r.Error,
+		ReleasedBy: r.ReleasedBy, Error: r.Error, Container: r.Container,
 	})
 }
 
@@ -291,7 +296,7 @@ func (r *FindingResponse) UnmarshalJSON(b []byte) error {
 		ProcessKilled: j.ProcessKilled, KilledPID: j.KilledPID, Kills: j.Kills,
 		KillSkipReason: pb.KillSkipReason(pb.KillSkipReason_value[j.KillSkip]),
 		AppliedAt:      j.AppliedAt, ExpiresAt: j.ExpiresAt, ReleasedAt: j.ReleasedAt,
-		ReleasedBy: j.ReleasedBy, Error: j.Error,
+		ReleasedBy: j.ReleasedBy, Error: j.Error, Container: j.Container,
 	}
 	return nil
 }
@@ -313,6 +318,7 @@ func (r *FindingResponse) ToProto() *pb.FindingResponse {
 		ReleasedAt:     timestampProto(r.ReleasedAt),
 		ReleasedBy:     r.ReleasedBy,
 		Error:          r.Error,
+		Container:      r.Container,
 	}
 }
 
@@ -327,6 +333,38 @@ type ResponseWriter interface {
 	// stored flag is OR-ed with r's in the same write, so a kill once on
 	// record for the finding survives every later response (#2766).
 	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
+	// SetResponseHeld records box's response while another box of a shared
+	// finding still holds an applied action (#2820): standing (that box's
+	// APPLIED record) is what the finding stores and shows, so it never
+	// reads RELEASED, EXPIRED or FAILED while a box is still throttled or
+	// frozen, and box is what the webhook delivers, naming box.Container.
+	// The kill on record stays sticky on both, as in SetResponse.
+	SetResponseHeld(ctx context.Context, id int64, box, standing FindingResponse) (*Finding, error)
+	// ResolveWithResponse records r and resolves the finding in one write:
+	// the release of the last box holding it (#2820). It is one webhook
+	// delivery, the resolve, carrying r (so the consumer learns both that
+	// the box was released and that the finding resolved). When the finding
+	// is no longer open, r is still recorded and delivered as SetResponse
+	// would, and the error wraps ErrFindingNotOpen; ErrFindingNotFound when
+	// id does not exist. Any other error means nothing was written.
+	ResolveWithResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
+}
+
+// ResponseDelivery is the finding a response write hands the webhook:
+// stored as the store now has it, carrying box (the record of the box the
+// write is about) as its response, with the kill on record kept as the store
+// keeps it, and naming box.Container as the finding's container (#2820: the
+// stored row keeps the box that first opened a shared finding, which says
+// nothing about which box this delivery is for). A copy: later writes to
+// the stored finding do not change it.
+func ResponseDelivery(stored *Finding, box FindingResponse) *Finding {
+	out := *stored
+	box.KeepKillOf(stored.Response)
+	out.Response = &box
+	if box.Container != "" {
+		out.Container = box.Container
+	}
+	return &out
 }
 
 // FindingState is the lifecycle state of a Finding.

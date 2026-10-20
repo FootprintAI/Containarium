@@ -294,6 +294,14 @@ message FindingResponse {
   // kill at once and later ones at most once a minute, carrying this count
   // and the latest killed_pid.
   uint32 kills = 11;
+  // The box this response is about. A miner-signature finding is keyed per
+  // tenant and pattern, so several boxes of one tenant can share it (#2766);
+  // each box's apply and release is a separate webhook delivery that names
+  // its box here (#2820). On the stored finding it names the box whose
+  // record the finding shows: while any box still holds an applied action
+  // that is a box still holding one, never a released box. Empty on
+  // responses recorded before this field existed.
+  string container = 12;
 }
 
 // KillSkipReason is why a kill_process attempt did not kill the process
@@ -374,14 +382,19 @@ message ReleaseProcessActionRequest {
 }
 
 message ReleaseProcessActionResponse {
-  // The finding the action belonged to, with its response in state
-  // RELEASED. Resolved unless finding_kept_open is set.
+  // The finding the action belonged to. Resolved, with its response in
+  // state RELEASED, unless finding_kept_open is set. While another box
+  // still holds an applied action on a shared finding, its response is
+  // that box's APPLIED record (#2820); this box's release is `released`.
   Finding finding = 1;
   // The finding was left open because another box still holds it: a
   // miner-signature finding is shared by every box of the tenant running
   // the same miner, and another box still has an action open on it or a
   // response queued. It is resolved when the last box is released.
   bool finding_kept_open = 2;
+  // This box's release record (state RELEASED, container = the released
+  // box), as the finding webhook delivered it (#2820).
+  FindingResponse released = 3;
 }
 
 // SentryState is the overall on/off state of the background threat-detection
