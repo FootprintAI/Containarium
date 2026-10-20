@@ -46,7 +46,7 @@ func (s *crewRunCaptureServer) RunCrew(_ context.Context, req *pb.RunCrewRequest
 	return &pb.RunCrewResponse{Run: &pb.CrewRun{Id: "run-1", CrewId: req.GetCrewId()}}, nil
 }
 
-func startCrewRunDaemon(t *testing.T, transport string, capture *crewRunCaptureServer) {
+func startCrewRunDaemon(t *testing.T, transport string, capture pb.CrewServiceServer) {
 	t.Helper()
 	prevServer, prevHTTP, prevToken, prevInsecure := serverAddr, httpMode, authToken, insecure
 	t.Cleanup(func() { serverAddr, httpMode, authToken, insecure = prevServer, prevHTTP, prevToken, prevInsecure })

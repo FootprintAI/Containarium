@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
+	"github.com/footprintai/containarium/pkg/core/taskgraph"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -122,6 +123,20 @@ func (s *CrewServer) GetCrew(ctx context.Context, req *pb.GetCrewRequest) (*pb.G
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	return &pb.GetCrewResponse{Crew: crew}, nil
+}
+
+// ValidateTaskGraph checks a task graph against this daemon's crew and skill
+// catalogs (#2803) — the same taskgraph.Validate `containarium crew plan
+// validate` runs locally against the embedded catalogs.
+func (s *CrewServer) ValidateTaskGraph(ctx context.Context, req *pb.ValidateTaskGraphRequest) (*pb.ValidateTaskGraphResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeCrewsRead); err != nil {
+		return nil, err
+	}
+	res, err := taskgraph.Validate(req.GetGraph(), s.skills, s.catalog)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &pb.ValidateTaskGraphResponse{Order: res.Order, Depth: uint32(res.Depth)}, nil // #nosec G115 -- Depth <= taskgraph.MaxDepth
 }
 
 // RunCrew validates a crew's topology, provisions each member's box under one
