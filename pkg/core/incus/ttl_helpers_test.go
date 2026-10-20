@@ -66,3 +66,11 @@ func TestParseTTLExpiresAt(t *testing.T) {
 		})
 	}
 }
+
+// TestStackKeyStable locks the config key the create path writes and the
+// read path consumes (#2163); renaming it orphans every existing box's stack.
+func TestStackKeyStable(t *testing.T) {
+	if StackKey != "user.containarium.stack" {
+		t.Errorf("StackKey = %q, must remain stable across releases", StackKey)
+	}
+}

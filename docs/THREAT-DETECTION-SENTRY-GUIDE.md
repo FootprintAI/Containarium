@@ -320,12 +320,22 @@ release leaves the shared finding open (the `release` audit row says
 `finding_kept_open=true`, the release response carries
 `finding_kept_open`, and `containarium security process-policy release`
 prints `Finding #N kept open: another box still has a response`);
-releasing the last box resolves it. If B's queued response then ends
+releasing the last box resolves it. An action already applied on B holds
+the finding open as much as a queued response does: releasing A never
+resolves the finding while B is still throttled or frozen. If B's queued
+response then ends
 without an action (an ALERT policy or override, a policy read error, a
 failed apply, a degraded backend, or a skip), the worker resolves the
 finding itself (audited `resolve`), so a kept-open finding never outlives
-the last response. The shared finding's single response describes the box
-acted on last, and its `process killed` flag is per finding: once any box's
+the last response. The shared finding's response names the box it is about
+(`findings list` prints `response THROTTLE APPLIED on box-b`; `--json` has
+`response.container`). While any box still holds an applied action the
+response is that box's `APPLIED` record, so releasing A, or A's TTL
+expiring or apply failing, does not make the finding read `RELEASED`,
+`EXPIRED` or `FAILED` while B is throttled; A's own release record is in
+the `released` field of the release response (and is what the CLI's
+`Released ... on box-a` line describes) and on the webhook. The
+`process killed` flag is per finding: once any box's
 process was killed it stays set, whichever box is released or expires
 after. Resolving the finding by hand skips every box's queued response. On
 a degraded backend (no Postgres) responses are off, the kill included.
@@ -411,8 +421,22 @@ never blocks detection; delivery is downstream of persistence, not the
 hot path.
 
 A finding is delivered when it is new, when its severity escalates, when
-the process responder's response changes, and once more when it
-resolves. A killed process is one of those changes: with
+the process responder's response on a box changes, and once more when it
+resolves.
+
+`response.container` names the box a response is about, and a response
+post's top-level `container` names the same box. A miner-signature finding
+is per tenant and pattern, so several boxes of one tenant running the same
+miner share one finding (one `id`). Each box's apply, release, expiry and
+failure is its own post, naming that box: for two boxes A and B under
+`THROTTLE`, released A then B, the posts are the new finding, A `APPLIED`,
+B `APPLIED`, A `RELEASED` (finding `state: 1`, open, because B is still
+throttled), and B `RELEASED` with finding `state: 2`, resolved. Releasing
+the last box (or the only one) is one post that carries both the release
+and the resolve; there is no separate resolve post after it. A consumer
+that tracks which boxes are throttled keys on (`id`,
+`response.container`). Posts from a daemon before this field existed carry
+no `response.container`. A killed process is one of those changes: with
 `process-policy set --kill-process=true`, an `ALERT` policy delivers the
 new finding and then a second post whose `response` names the kill:
 `process_killed: true`, `killed_pid` (the **host** pid that was SIGKILLed,
@@ -428,9 +452,11 @@ the same finding at most once a minute, each carrying the latest
 minute is delivered by the finding's next write after it, so the last
 kill of a burst can reach the webhook late. `containarium security
 findings list` always shows the current state: its response line reads
-`response ALERT NONE, process killed (pid 25872, kills 3)` or
-`response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`, and `--json`
-carries `killedPid`, `kills` and `killSkipReason`.
+`response ALERT NONE on box-a, process killed (pid 25872, kills 3)` or
+`response THROTTLE APPLIED on box-a, kill skipped: CONTAINER_INIT`, and
+`--json` carries `killedPid`, `kills` and `killSkipReason`. The kill count
+is per finding, across the boxes that share it, so a miner respawning on
+several boxes is still at most about one post a minute.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
