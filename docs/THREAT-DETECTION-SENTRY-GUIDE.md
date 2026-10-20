@@ -279,8 +279,9 @@ so a pid reused by another process, on the host or in another box, is never
 signalled; the container's init is never killed. Every attempt is audited
 under `security.action`: `kill` names the pid, `kill-skipped` gives the
 reason (`pid reused`, `process already exited`, …). The finding's response
-shows `process killed`, and an action row opened by the same finding records
-`killed_pid`. The kill and the throttle/freeze run on the responder's own
+shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
+<reason>` when the last attempt did not happen, and an action row opened by
+the same finding records `killed_pid`. The kill and the throttle/freeze run on the responder's own
 worker, never on the exec event path; if its queue (256) is full the
 response is dropped, logged and audited as `response-dropped`. Before
 acting, the worker re-reads the finding and the box's own action for that
@@ -404,8 +405,11 @@ rate-limited: the first kill is delivered at once, and further kills on
 the same finding at most once a minute, each carrying the latest
 `killed_pid` and the running `kills` count. A kill that lands inside that
 minute is delivered by the finding's next write after it, so the last
-kill of a burst can reach the webhook late; `findings list` always shows
-the current state.
+kill of a burst can reach the webhook late. `containarium security
+findings list` always shows the current state: its response line reads
+`response ALERT NONE, process killed (pid 25872, kills 3)` or
+`response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`, and `--json`
+carries `killedPid`, `kills` and `killSkipReason`.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
