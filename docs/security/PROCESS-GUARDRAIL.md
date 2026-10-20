@@ -294,7 +294,9 @@ undoes the open action (restores the recorded limits, or unfreezes),
 marks it released by the operator and resolves the finding. When several
 boxes of one tenant share the finding (same rule and subject), release is
 per box: while another box still has a response the finding stays open
-(**next release**, #2766). If the Incus
+(**next release**, #2766), and while another box still holds an applied
+action the finding's response stays that box's `APPLIED` record, never
+`RELEASED` (**next release**, #2820). If the Incus
 call fails the action stays open so you can retry. With nothing open it
 fails with 404.
 
@@ -348,6 +350,10 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
   response THROTTLE APPLIED, process killed (pid 211547, kills 1)
   response ALERT NONE, kill skipped: PROCESS_GONE
   ```
+
+  From the next release (#2820) the line names the box the response is
+  about, for example `response THROTTLE APPLIED on box-b, process killed
+  (pid 211547, kills 1)`.
 
   A miner that respawns is killed again each time; `kills` counts them.
   The skip reasons are `PID_REUSED`, `PROCESS_GONE`, `CONTAINER_INIT`,
@@ -427,6 +433,9 @@ Released THROTTLE on box-2: CPU limit restored. Finding #44 kept open: another b
 The last form is for a finding shared by several boxes of one tenant
 (**next release**, #2766). It resolves when the last box is released. In
 the audit log the release carries `finding_kept_open=true` or `false`.
+The line describes the released box's own action, from the release
+response's `released` record (**next release**, #2820), not the finding's
+response, which may be another box's.
 
 ### `containarium security sentry status [--json]`
 
@@ -518,10 +527,17 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   responder has not acted yet. It is not `NONE`.
 - A **second post** follows when the action is `APPLIED` or `FAILED`, then
   one on release or expiry, each inside the re-notify interval.
-- An operator release that also resolves the finding is one post: the
-  resolve within 30 s is coalesced. Its `state` field is still the finding's
-  (open) state, with `response.state: 4`. A TTL expiry or orphan-sweep
-  release leaves the finding open, so its later resolve is posted.
+- An operator release that also resolves the finding is one post. From
+  the next release (#2820) that post has `state: 2` (resolved) with
+  `response.state: 4`; before it, it had `state: 1` and the resolve was
+  dropped. A TTL expiry or orphan-sweep release leaves the finding open, so
+  its later resolve is posted.
+- **Shared findings** (next release, #2820): `response.container` and the
+  post's `container` name the box. Each box's apply, release, expiry and
+  failure is its own post. For boxes A and B under `THROTTLE`, released A
+  then B: new finding, A `APPLIED`, B `APPLIED`, A `RELEASED` (`state: 1`,
+  B is still throttled), B `RELEASED` with `state: 2`. Key per-box state on
+  (`id`, `response.container`).
 - **Kills** (next release, #2775): a kill adds `response.process_killed:
   true`, `killed_pid` and `kills` and is posted at once, then at most once a
   minute for a respawning miner. After a storm stops, the last `kills` in
@@ -537,10 +553,11 @@ Abridged kill post:
 
 The gate is in memory, so a restart re-posts an open finding once.
 
-**Known limitation (#2820, remove when it lands).** For a finding shared by
-several boxes of one tenant, the webhook currently names only the first box:
-the second box's throttle, its release and the resolve are not posted. Use
-`findings list --json` or the audit log for those boxes.
+**Known limitation up to v0.109.x (fixed next release, #2820).** For a
+finding shared by several boxes of one tenant, those daemons' webhook names
+only the first box: the second box's throttle, its release and the resolve
+are not posted, and `findings list` can show `RELEASED` while another box is
+still throttled. Use the audit log for those boxes.
 
 ## Rollout order
 
