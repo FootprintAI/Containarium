@@ -227,7 +227,12 @@ execs/s, **0 events lost**, kernel ~1.5 µs per exec plus the consumer, about
 **0.1 % of the host** in total. The same run with the old per-event wakeup
 cost ~0.7 % of the host; on an 8-vCPU KVM guest that shape had cost ~7 %,
 which is why the acceptance number is re-measured on the sprint's
-verification guest.
+verification guest. Pair the object with the daemon: an `execwatch.bpf.o`
+built before #2774 still loads on this daemon (its events are drained by the
+timer, it just keeps the per-record wakeup cost), but an object built from
+#2774 on needs a daemon from #2774 on — an older daemon blocks in an
+`epoll_wait` the kernel never wakes, the ring fills, and `exec-telemetry`
+still reports `ok` while `exec-events-lost` climbs.
 
 **Ring capacity and floods.** One 4 MiB ring serves every watched box on
 the host and holds ~5,090 events. The daemon drains it every 50 ms, and
