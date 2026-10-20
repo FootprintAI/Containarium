@@ -318,6 +318,7 @@ jobs:
           # parameter expansion AFTER the file is written instead, which
           # never re-parses the value as syntax.
           RELEASE_REF: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
           cat > release_notes.md << 'EOF'
           ## Containarium __RELEASE_REF__
@@ -379,7 +380,7 @@ jobs:
 
           ### Signatures
 
-          Every file on this page has a keyless cosign signature next to it, `<file>.sigstore.json`, made by this release workflow through GitHub OIDC. Verify with `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity https://github.com/footprintai/containarium/.github/workflows/release.yml@refs/tags/__RELEASE_REF__ --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`. See `docs/security/VERIFYING-RELEASES.md`.
+          Every file on this page has a keyless cosign signature next to it, `<file>.sigstore.json`, made by this release workflow through GitHub OIDC. Verify with `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity https://github.com/__RELEASE_REPOSITORY__/.github/workflows/release.yml@refs/tags/__RELEASE_REF__ --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`. See `docs/security/VERIFYING-RELEASES.md`.
 
           ### Kubernetes (Helm)
 
@@ -434,6 +435,7 @@ jobs:
           # substitutes the value as a literal string, full stop.
           notes="$(cat release_notes.md)"
           notes="${notes//__RELEASE_REF__/$RELEASE_REF}"
+          notes="${notes//__RELEASE_REPOSITORY__/$RELEASE_REPOSITORY}"
           notes="${notes//__CHART_VERSION__/${RELEASE_REF#v}}"
           printf '%s\n' "$notes" > release_notes.md
 
@@ -800,6 +802,18 @@ jobs:
           # Release; if the upload fails it is missing (fails closed).
           gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
 
+  # Pull the chart back from GHCR and prove a clean install and upgrade on
+  # kind. The reusable workflow waits for the independently published daemon
+  # image first. Rehearsals remain publish-free and do not exercise a fake tag.
+  helm-install-upgrade:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: helm-chart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helm-install-upgrade.yml
+    with:
+      target-version: ${{ github.ref_name }}
+
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).
   model-gateway-image:
@@ -939,3 +953,25 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$TAG" release-files/*.sigstore.json --clobber
+
+      - name: Verify the uploaded signature bundles and release inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Payloads above were downloaded from this Release. Replace the
+          # local signing output with the bundles a consumer actually gets.
+          rm -f release-files/*.sigstore.json
+          gh release download "$TAG" --dir release-files --pattern '*.sigstore.json'
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release-metadata.json"
+          python3 scripts/release/verify_assets.py release-files \
+            --metadata "$RUNNER_TEMP/release-metadata.json" \
+            --repository "$GITHUB_REPOSITORY" --tag "$TAG" \
+            | tee "$RUNNER_TEMP/release-verification.json"
+
+      - name: Save release verification evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-verification
+          path: ${{ runner.temp }}/release-verification.json

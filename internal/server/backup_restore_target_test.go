@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,6 +32,16 @@ func (o *restoreTargetOps) ReadFile(string, string) ([]byte, error) { return nil
 func (o *restoreTargetOps) WriteFile(c, _ string, _ []byte, _ string) error {
 	o.touched[c]++
 	return nil
+}
+
+func (o *restoreTargetOps) ReadFileStream(string, string) (io.ReadCloser, error) {
+	return nil, os.ErrNotExist
+}
+func (o *restoreTargetOps) WriteFileStream(c, path string, content io.Reader, mode string) error {
+	if _, err := io.Copy(io.Discard, content); err != nil {
+		return err
+	}
+	return o.WriteFile(c, path, nil, mode)
 }
 
 // newRestoreTargetServer seeds one plaintext pg_dump record for alice and

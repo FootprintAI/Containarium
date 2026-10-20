@@ -1,0 +1,74 @@
+name: Helm install and upgrade
+
+on:
+  pull_request:
+    paths:
+      - 'charts/**'
+      - 'scripts/ci/helm-install-upgrade.sh'
+      - '.github/workflows/helm-install-upgrade.yml'
+      - '.github/workflows/release.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - 'scripts/ci/helm-install-upgrade.sh'
+      - '.github/workflows/helm-install-upgrade.yml'
+      - '.github/workflows/release.yml'
+  workflow_call:
+    inputs:
+      target-version:
+        type: string
+        required: true
+      test-candidate:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  install-upgrade:
+    name: published chart on Kubernetes 1.31.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.2
+      - name: Install kind
+        run: |
+          curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Wait for the exact release images
+        env:
+          TARGET_VERSION: ${{ inputs.target-version || '0.109.0' }}
+        run: |
+          deadline=$((SECONDS + 900))
+          for image in "ghcr.io/footprintai/containarium:v${TARGET_VERSION#v}" \
+                       "ghcr.io/footprintai/containarium-sshpiper:v${TARGET_VERSION#v}"; do
+            until timeout 30s docker manifest inspect "$image" > /dev/null 2>&1; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::release image did not appear within 15 minutes: $image"
+                exit 1
+              fi
+              sleep 15
+            done
+          done
+      - name: Install and upgrade from the public OCI registry
+        env:
+          # Fixed published fixtures keep PRs reproducible. Tag releases pass
+          # their own version and exercise the chart just pushed by helm-chart.
+          TARGET_VERSION: ${{ inputs.target-version || '0.109.0' }}
+          TEST_CANDIDATE: ${{ inputs.target-version == '' || inputs.test-candidate }}
+          HELM_TEST_TIMEOUT: ${{ inputs.target-version == '' && '5m' || '20m' }}
+        run: |
+          version="${TARGET_VERSION#v}"
+          candidate=()
+          if [ "$TEST_CANDIDATE" = true ]; then
+            helm package charts/containarium-k8s --version "${version}-ci" \
+              --app-version "v${version}" --destination "$RUNNER_TEMP"
+            candidate=("$RUNNER_TEMP/containarium-k8s-${version}-ci.tgz")
+          fi
+          bash scripts/ci/helm-install-upgrade.sh 0.108.0 "$version" "${candidate[@]}"

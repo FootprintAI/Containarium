@@ -1838,6 +1838,7 @@ func (s *Server) registerTools() {
 	// thin wrappers over the routes `containarium security process-policy`
 	// also calls.
 	s.tools = append(s.tools, processPolicyTools()...)
+	s.tools = append(s.tools, minerSignatureTools()...)
 
 	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
 	// — thin wrappers over the TrackerService gateway that
@@ -1991,6 +1992,11 @@ func toolScopeAssignments() map[string]string {
 		"security_process_policy_get":     auth.ScopeSecurityRead,
 		"security_process_policy_set":     auth.ScopeSecurityWrite,
 		"security_process_policy_release": auth.ScopeSecurityWrite,
+		// miner-signature list (#2763): list is a read; add/remove change what
+		// the miner rule matches.
+		"list_miner_signatures":  auth.ScopeSecurityRead,
+		"add_miner_signature":    auth.ScopeSecurityWrite,
+		"remove_miner_signature": auth.ScopeSecurityWrite,
 		// security tools
 		"security_scan":          auth.ScopeSecurityWrite,
 		"security_remediate":     auth.ScopeSecurityWrite,
