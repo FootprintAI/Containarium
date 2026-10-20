@@ -425,11 +425,16 @@ func ConsumeExecEventsEvery(ctx context.Context, rd ringRecordReader, interval t
 		if rd.AvailableBytes() > 0 {
 			rd.SetDeadline(time.Now())
 			for {
+				// Check ctx before ReadInto, never after: a record ReadInto
+				// has returned is already consumed from the kernel ring
+				// (consumer_pos advanced), so returning here would drop it
+				// without it ever being counted lost. A cancelled ctx stops
+				// the drain at the next record, which stays in the ring.
+				if ctx.Err() != nil {
+					return
+				}
 				err := rd.ReadInto(&rec)
 				if err == nil {
-					if ctx.Err() != nil {
-						return
-					}
 					ev, perr := ParseExecEvent(rec.RawSample)
 					if perr != nil {
 						report(perr)

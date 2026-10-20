@@ -133,9 +133,12 @@ func startConsumer(t *testing.T, w *ExecWatch) *collectingSink {
 		ConsumeExecEvents(ctx, rd, sink, func(err error) { t.Logf("consumer: %v", err) })
 	}()
 	t.Cleanup(func() {
+		// ConsumeExecEvents returns within one tick of cancel. Close only
+		// after it has: its AvailableBytes is unlocked and Close unmaps the
+		// ring (#2812 review).
 		cancel()
-		_ = rd.Close()
 		<-done
+		_ = rd.Close()
 	})
 	return sink
 }

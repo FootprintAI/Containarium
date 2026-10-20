@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -178,8 +179,21 @@ func TestExecEvent_ArgvNeverCarriesEnvironment(t *testing.T) {
 type fakeRingReader struct {
 	rounds    [][]ringbuf.Record
 	round, i  int
-	reads     int
+	reads     int             // ReadInto calls
+	taken     int             // ReadInto calls that returned a record (consumed from the ring)
 	deadlines []time.Duration // deadline - now at each SetDeadline
+}
+
+// remaining is how many records are still in the ring (never consumed).
+func (f *fakeRingReader) remaining() int {
+	n := 0
+	for r := f.round; r < len(f.rounds); r++ {
+		n += len(f.rounds[r])
+	}
+	if f.round < len(f.rounds) {
+		n -= f.i
+	}
+	return n
 }
 
 func (f *fakeRingReader) SetDeadline(t time.Time) {
@@ -211,6 +225,7 @@ func (f *fakeRingReader) ReadInto(rec *ringbuf.Record) error {
 	}
 	src := f.rounds[f.round][f.i]
 	f.i++
+	f.taken++
 	rec.RawSample = append(rec.RawSample[:0], src.RawSample...)
 	return nil
 }
@@ -273,7 +288,7 @@ func TestConsumeExecEvents_DrainsInBatchesPerInterval(t *testing.T) {
 	sink := &captureExecSink{}
 	ConsumeExecEventsEvery(context.Background(), rd, 10*time.Millisecond, sink, nil)
 
-	if want := []int{3, 0, 2}; !equalInts(sink.drains, want) {
+	if want := []int{3, 0, 2}; !slices.Equal(sink.drains, want) {
 		t.Fatalf("drain sizes = %v, want %v", sink.drains, want)
 	}
 	wantComm := []string{"a", "bb", "ccc", "dddd", "e"}
@@ -309,8 +324,12 @@ func TestConsumeExecEvents_DefaultInterval(t *testing.T) {
 		if len(sink.drainAt) != 2 {
 			t.Fatalf("interval %s: %d drains, want 2", interval, len(sink.drainAt))
 		}
-		if first, gap := sink.drainAt[0].Sub(start), sink.drainAt[1].Sub(sink.drainAt[0]); first < ExecDrainInterval*8/10 || gap < ExecDrainInterval*8/10 {
-			t.Fatalf("interval %s: first drain after %s, then %s; want about ExecDrainInterval (%s)", interval, first, gap, ExecDrainInterval)
+		// Both offsets are measured from start, not from each other: the
+		// ticker fires on an absolute schedule, so a late first drain (a
+		// loaded runner) shortens the gap to the second without the interval
+		// being wrong.
+		if first, second := sink.drainAt[0].Sub(start), sink.drainAt[1].Sub(start); first < ExecDrainInterval*8/10 || second < 2*ExecDrainInterval*8/10 {
+			t.Fatalf("interval %s: drains at %s and %s after start; want about ExecDrainInterval (%s) and twice that", interval, first, second, ExecDrainInterval)
 		}
 	}
 	// The latency bound the miner-signature rule's < 10 s budget relies on.
@@ -378,6 +397,32 @@ func TestConsumeExecEvents_CtxCancelMidBatch(t *testing.T) {
 	ConsumeExecEventsEvery(ctx, rd, 5*time.Millisecond, sink, nil)
 	if sink.got != 1 {
 		t.Fatalf("delivered %d events, want 1 (cancelled after the first)", sink.got)
+	}
+}
+
+// A record ReadInto has returned is already consumed from the kernel ring
+// (consumer_pos advanced): it must reach the sink even if ctx is cancelled
+// by then, or it is neither delivered nor counted in exec_events_lost
+// (#2812 review). With N records queued and a cancel landing after the k-th
+// delivery, every record taken from the ring was delivered and the rest are
+// still in it: taken == delivered and delivered + remaining == emitted.
+func TestConsumeExecEvents_CtxCancelNeverDropsAConsumedRecord(t *testing.T) {
+	const emitted = 8
+	for cancelAfter := 1; cancelAfter <= emitted; cancelAfter++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		rd := &fakeRingReader{rounds: [][]ringbuf.Record{recs(emitted)}}
+		sink := &cancelAfterSink{n: cancelAfter, cancel: cancel}
+		ConsumeExecEventsEvery(ctx, rd, 5*time.Millisecond, sink, nil)
+		cancel()
+		if sink.got != rd.taken {
+			t.Errorf("cancel after %d: %d records taken from the ring, %d delivered: a consumed record was dropped", cancelAfter, rd.taken, sink.got)
+		}
+		if sink.got+rd.remaining() != emitted {
+			t.Errorf("cancel after %d: delivered %d + remaining %d != emitted %d", cancelAfter, sink.got, rd.remaining(), emitted)
+		}
+		if sink.got != cancelAfter {
+			t.Errorf("cancel after %d: delivered %d, want the drain to stop at the next record", cancelAfter, sink.got)
+		}
 	}
 }
 
@@ -481,18 +526,6 @@ func TestConsumeExecEvents_LatencyBoundedByInterval(t *testing.T) {
 			t.Fatalf("event %d never delivered", i)
 		}
 	}
-}
-
-func equalInts(a, b []int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // ResolveExecWatch mirrors Resolve: the embedded keyword with no embedded
