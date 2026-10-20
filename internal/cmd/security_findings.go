@@ -86,16 +86,24 @@ type findingResponseEnv struct {
 	KilledPID      uint32 `json:"killedPid,omitempty"`
 	Kills          uint32 `json:"kills,omitempty"`
 	KillSkipReason string `json:"killSkipReason,omitempty"`
+	// Container is the box the response is about (#2820): on a finding
+	// shared by several boxes of a tenant, the box whose action the finding
+	// shows (one still holding an action, while any does).
+	Container string `json:"container,omitempty"`
 }
 
 // killSkipReasonNone is the enum name grpc-gateway renders for no skip.
 const killSkipReasonNone = "KILL_SKIP_REASON_UNSPECIFIED"
 
 // describe is the one-line text rendering of a response, e.g.
-// `response ALERT NONE, process killed (pid 25872, kills 3)` or
-// `response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`.
+// `response ALERT NONE on box-a, process killed (pid 25872, kills 3)` or
+// `response THROTTLE APPLIED on box-b, kill skipped: CONTAINER_INIT` (no
+// `on <box>` for a response recorded before it named one).
 func (r findingResponseEnv) describe() string {
 	detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
+	if r.Container != "" {
+		detail += " on " + r.Container
+	}
 	if r.ProcessKilled {
 		detail += ", process killed"
 		if r.KilledPID != 0 {
