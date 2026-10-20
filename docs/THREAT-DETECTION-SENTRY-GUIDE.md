@@ -217,14 +217,35 @@ reason, the `SENTRY_UNAVAILABLE` finding fires on an armed backend, and
 **the flow rules keep running** — the two objects are independent.
 
 Overhead, measured by `TestExecWatch_OverheadMeasurement` in the eBPF
-loading lane (paced 1,000 execs/s for 60 s, attached vs. not attached). On a
-lab host (kernel 6.8, 24 threads): ~971 execs/s sustained, **0 events
-lost**, kernel-side ≈ 25 µs per exec (≈ 2.4 % of one core, within the
-run-to-run noise of a ~300 µs fork+exec) plus ≈ 1.3 % of one core for the
-daemon's ring consumer — about 0.46 % of an 8-core host at that rate. A
-burst that outruns the consumer is counted in `exec-events-lost`
-(10,000 undrained execs → 1,272 kept, 8,729 counted lost, no crash). The
-acceptance number is re-measured on the sprint's verification guest.
+loading lane: a separate process fork+execs `/bin/true` at a steady 1,000/s
+for 60 s inside a watched cgroup; the program's cost is its own run time
+(`BPF_STATS_RUN_TIME`) and the consumer's is the consuming process's CPU. The
+kernel submits records without a wakeup and the daemon drains the ring every
+50 ms in one batch (#2774), so an exec event reaches the rules at most
+~50 ms later than it happened. On the 4-CPU lane runner (2026-10-20): 1,000
+execs/s, **0 events lost**, kernel ~1.5 µs per exec plus the consumer, about
+**0.1 % of the host** in total. The same run with the old per-event wakeup
+cost ~0.7 % of the host; on an 8-vCPU KVM guest that shape had cost ~7 %,
+which is why the acceptance number is re-measured on the sprint's
+verification guest. Pair the object with the daemon: an `execwatch.bpf.o`
+built before #2774 still loads on this daemon (its events are drained by the
+timer, it just keeps the per-record wakeup cost), but an object built from
+#2774 on needs a daemon from #2774 on — an older daemon blocks in an
+`epoll_wait` the kernel never wakes, the ring fills, and `exec-telemetry`
+still reports `ok` while `exec-events-lost` climbs.
+
+**Ring capacity and floods.** One 4 MiB ring serves every watched box on
+the host and holds ~5,090 events. The daemon drains it every 50 ms, and
+immediately again while a drain returns 256 or more events, so a sustained
+host-wide rate above ~5,000 execs/s is drained continuously. A host-wide
+burst of more than ~5,090 execs inside one 50 ms interval (~100,000 execs/s)
+overflows the ring: the excess events are **dropped and counted** in
+`exec-events-lost`, the execs themselves are never blocked. A tenant can
+cause this deliberately, flooding execs to hide one exec among the dropped
+ones, so **alert on `exec-events-lost` increasing**: a non-zero delta means
+the exec rules did not see every exec in that window. In the lane, 10,000
+undrained execs keep exactly the ring's capacity and count the rest lost,
+with no crash.
 
 ## Miner signatures and kill-process
 

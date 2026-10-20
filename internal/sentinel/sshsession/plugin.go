@@ -58,10 +58,17 @@ type clock func() time.Time
 // CertificateFile with one identity) only ever offers one, so this does
 // not affect the common path; it is called out here as a deliberate,
 // documented scope boundary rather than a silent gap.
+//
+// In enforce mode ssh-authz-plugin returns the upstream itself, so the chain
+// never reaches this plugin's publicKeyCallback; that plugin writes the
+// session records instead. With SkipUnobserved set, this plugin writes nothing
+// for a connection whose credential it never saw, so no session is recorded
+// twice (#2741).
 type Plugin struct {
-	Recorder Recorder
-	Target   *TargetResolver
-	Now      clock // nil uses time.Now().UTC()
+	Recorder       Recorder
+	Target         *TargetResolver
+	Now            clock // nil uses time.Now().UTC()
+	SkipUnobserved bool
 
 	mu       sync.Mutex
 	open     map[string]Record // sessionID -> last emitted open record, for Shutdown
@@ -88,6 +95,17 @@ func (p *Plugin) Config() libplugin.SshPiperPluginConfig {
 // publicKeyCallback observes the offered credential and always defers —
 // see Plugin's doc comment.
 func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*libplugin.Upstream, error) {
+	return &libplugin.Upstream{
+		Auth: &libplugin.Upstream_NextPlugin{
+			NextPlugin: &libplugin.UpstreamNextPluginAuth{Meta: CredentialMeta(key)},
+		},
+	}, nil
+}
+
+// CredentialMeta is the per-connection metadata publicKeyCallback stashes for
+// an offered credential. ssh-authz-plugin, which in enforce mode writes the
+// session records itself, attributes them with the same metadata.
+func CredentialMeta(key []byte) map[string]string {
 	meta := map[string]string{}
 
 	authMethod, cred, err := ExtractCredential(key)
@@ -113,15 +131,19 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*li
 			meta[metaKeyFingerprint] = cred.KeyFingerprint
 		}
 	}
+	return meta
+}
 
-	return &libplugin.Upstream{
-		Auth: &libplugin.Upstream_NextPlugin{
-			NextPlugin: &libplugin.UpstreamNextPluginAuth{Meta: meta},
-		},
-	}, nil
+// observed reports whether publicKeyCallback saw this connection's credential;
+// it always stashes an auth method, even for one it cannot parse.
+func (p *Plugin) observed(conn libplugin.ConnMetadata) bool {
+	return !p.SkipUnobserved || conn.GetMeta(metaAuthMethod) != ""
 }
 
 func (p *Plugin) pipeStartCallback(conn libplugin.ConnMetadata) {
+	if !p.observed(conn) {
+		return
+	}
 	rec := p.buildRecord(conn, SessionPhaseOpen)
 
 	p.mu.Lock()
@@ -154,6 +176,9 @@ func (p *Plugin) pipeStartCallback(conn libplugin.ConnMetadata) {
 }
 
 func (p *Plugin) pipeErrorCallback(conn libplugin.ConnMetadata, pipeErr error) {
+	if !p.observed(conn) {
+		return
+	}
 	rec := p.buildRecord(conn, SessionPhaseClose)
 	rec.CloseReason = classifyCloseReason(pipeErr, conn.RemoteAddr())
 
@@ -238,7 +263,11 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 		}
 	}
 
-	if p.Target != nil {
+	// The target routed at decision time wins over a fresh config.yaml read:
+	// keysync may have re-rendered the file since the session opened.
+	if target := conn.GetMeta(MetaTarget); target != "" {
+		rec.Target = target
+	} else if p.Target != nil {
 		rec.Target = p.Target.Resolve(login)
 	}
 

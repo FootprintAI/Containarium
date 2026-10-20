@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -478,9 +479,13 @@ func TestExecWatcher_Status(t *testing.T) {
 	}
 }
 
-// fakeExecRing is an execRingReader: it returns err from Read, or — with no
-// err — blocks until Close and then reports ringbuf.ErrClosed, like the real
-// reader on shutdown.
+// fakeExecRing is an execRingReader. With err set it reports data and
+// returns err from ReadInto (a failing ring). With no err it is an empty
+// ring; the consumer leaves on ctx cancellation either way. Like the real
+// ringbuf.Reader, whose AvailableBytes dereferences the mapping Close unmaps,
+// it PANICS when ReadInto or AvailableBytes is called after Close: the
+// consumer must close the reader only after its drain loop has returned
+// (#2812 review), and a fake that tolerated the old order would hide that.
 type fakeExecRing struct {
 	err    error
 	once   sync.Once
@@ -491,12 +496,30 @@ func newFakeExecRing(err error) *fakeExecRing {
 	return &fakeExecRing{err: err, closed: make(chan struct{})}
 }
 
-func (r *fakeExecRing) Read() (ringbuf.Record, error) {
-	if r.err != nil {
-		return ringbuf.Record{}, r.err
+func (r *fakeExecRing) useAfterClose(method string) {
+	select {
+	case <-r.closed:
+		panic("fakeExecRing." + method + " called after Close: the consumer must close the reader only after its loop has returned")
+	default:
 	}
-	<-r.closed
-	return ringbuf.Record{}, ringbuf.ErrClosed
+}
+
+func (r *fakeExecRing) ReadInto(*ringbuf.Record) error {
+	r.useAfterClose("ReadInto")
+	if r.err != nil {
+		return r.err
+	}
+	return os.ErrDeadlineExceeded
+}
+
+func (r *fakeExecRing) SetDeadline(time.Time) {}
+
+func (r *fakeExecRing) AvailableBytes() int {
+	r.useAfterClose("AvailableBytes")
+	if r.err != nil {
+		return 1
+	}
+	return 0
 }
 
 func (r *fakeExecRing) Close() error {
@@ -576,6 +599,92 @@ func TestExecWatcher_ConsumerExitOnShutdownKeepsStatus(t *testing.T) {
 	}
 	if !rd.isClosed() {
 		t.Fatal("reader not closed on shutdown")
+	}
+}
+
+// closeRacingRing is shaped like cilium/ebpf v0.22's ringbuf.Reader where it
+// matters (#2812 review): AvailableBytes takes no lock and reads the ring
+// mapping, which Close unmaps and nils under the reader's lock. On its
+// second call AvailableBytes cancels the consumer's ctx and lingers, the
+// way a cancel landing mid-call would; if anyone Closes the reader while
+// that call is still reading the ring, that is the shutdown crash, and it
+// is recorded (and, under -race, reported as a race on ring).
+type closeRacingRing struct {
+	mu        sync.Mutex
+	ring      *int // nil once closed, like Reader.ring
+	calls     atomic.Int32
+	cancel    func()
+	violation atomic.Bool
+	closed    chan struct{}
+}
+
+func newCloseRacingRing(cancel func()) *closeRacingRing {
+	v := 0
+	return &closeRacingRing{ring: &v, cancel: cancel, closed: make(chan struct{})}
+}
+
+func (r *closeRacingRing) AvailableBytes() int {
+	ring := r.ring // unlocked, as in cilium/ebpf
+	if ring == nil {
+		r.violation.Store(true) // the real reader would nil-deref here
+		return 0
+	}
+	if r.calls.Add(1) == 2 {
+		r.cancel()
+		select { // give a concurrent closer every chance to run
+		case <-r.closed:
+			r.violation.Store(true) // closed while this call was reading the ring
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return *ring
+}
+
+func (r *closeRacingRing) ReadInto(*ringbuf.Record) error { return os.ErrDeadlineExceeded }
+func (r *closeRacingRing) SetDeadline(time.Time)          {}
+
+func (r *closeRacingRing) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ring != nil {
+		r.ring = nil
+		close(r.closed)
+	}
+	return nil
+}
+
+// The reader is closed only after the drain loop has returned, never while
+// it may still call the reader's unlocked AvailableBytes; and a cancel still
+// ends the consumer promptly and closes the reader.
+func TestExecWatcher_ConsumeClosesReaderOnlyAfterLoop(t *testing.T) {
+	w := NewExecWatcher(nil)
+	w.setStatus(execTelemetryOK)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rd := newCloseRacingRing(cancel)
+	w.wg.Add(1)
+	start := time.Now()
+	go w.consume(ctx, rd)
+	waited := make(chan struct{})
+	go func() { w.wg.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consumer did not return after its ctx was cancelled")
+	}
+	if rd.violation.Load() {
+		t.Fatal("reader closed while the drain loop was still using it (AvailableBytes raced Close)")
+	}
+	select {
+	case <-rd.closed:
+	default:
+		t.Fatal("reader not closed after the consumer returned")
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("consumer took %s to stop after cancel, want about one drain interval", el)
+	}
+	if got := w.Status(); got != execTelemetryOK {
+		t.Fatalf("status after a shutdown exit = %q, want it untouched", got)
 	}
 }
 
