@@ -10,6 +10,8 @@ export interface EngineConfig {
   // Model id. Engine-specific: Claude → claude-opus-4-8; Codex → an OpenAI
   // model. Empty means "use the engine's own default".
   model: string;
+  // Trusted launch provenance for failures before SDK init; never a key.
+  authenticationSource?: "oauth" | "key";
   // The skill's persona, from system_prompt.txt.
   systemPrompt: string;
   // The in-box agent-box MCP server (the engine's tool surface): the command
@@ -31,6 +33,10 @@ export interface EngineConfig {
 }
 
 export interface EngineResult {
+  // Explicit success evidence for credential recovery; a partial/error result
+  // returned by an SDK is not a successful authenticated run (#2790).
+  authenticationSucceeded?: boolean;
+  authenticationSource?: "oauth" | "key" | "unknown";
   // The agent's final output text/JSON.
   outputJson: string;
   // Engine-shaped usage/cost, if available.
@@ -43,5 +49,9 @@ export interface Engine {
   // tool result to journal as it happens (#2095). The caller brackets the run
   // with status lines (runJournaled); an error that ends the run is thrown,
   // not journaled here.
-  run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult>;
+  run(
+    task: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult>;
 }
