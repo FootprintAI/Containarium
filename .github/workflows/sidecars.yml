@@ -34,6 +34,13 @@ permissions:
 jobs:
   otel-sidecar:
     runs-on: ubuntu-latest
+    # Job-level: replaces the workflow-level grant for this job. id-token is
+    # for the keyless cosign signature only.
+    permissions:
+      contents: read
+      packages: write   # for GHCR push and the signature push
+      security-events: write   # for the Trivy SARIF upload
+      id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -80,6 +87,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push otel-sidecar
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ./sidecars/otel-sidecar
@@ -99,6 +107,19 @@ jobs:
           # manifest lists"). Pulling the pushed tag back down avoids it.
           provenance: true
           sbom: true
+
+      # Keyless signature of the pushed digest (never a tag), verified in
+      # the same step against this workflow at this tag; the job fails if
+      # verification does. Tag pushes only, like release.yml's sign-release:
+      # a signature is a permanent public Rekor entry, and a rehearsal
+      # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
+      - name: Sign and verify the image (cosign keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/sign-image
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          digest: ${{ steps.build.outputs.digest }}
+          workflow-file: sidecars.yml
 
       # Scans the actual image just published — pulled back from GHCR
       # rather than `load: true`d out of the build step above (see its
@@ -128,6 +149,13 @@ jobs:
 
   sshpiper:
     runs-on: ubuntu-latest
+    # Job-level: replaces the workflow-level grant for this job. id-token is
+    # for the keyless cosign signature only.
+    permissions:
+      contents: read
+      packages: write   # for GHCR push and the signature push
+      security-events: write   # for the Trivy SARIF upload
+      id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -153,6 +181,7 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-sshpiper"
           {
+            echo "image=${base}"
             # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
             # the moving tags keep pointing at the newest full release.
             case "$version" in
@@ -164,6 +193,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-sshpiper
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ./images/sshpiper
@@ -176,6 +206,19 @@ jobs:
           # below pulls the pushed tag instead of using `load: true` here.
           provenance: true
           sbom: true
+
+      # Keyless signature of the pushed digest (never a tag), verified in
+      # the same step against this workflow at this tag; the job fails if
+      # verification does. Tag pushes only, like release.yml's sign-release:
+      # a signature is a permanent public Rekor entry, and a rehearsal
+      # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
+      - name: Sign and verify the image (cosign keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/sign-image
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          digest: ${{ steps.build.outputs.digest }}
+          workflow-file: sidecars.yml
 
       # Note: sshpiper-image.yml already scans a build of this same
       # Dockerfile on every PR/push to main — this scans the actual image
@@ -205,6 +248,13 @@ jobs:
 
   agent-box:
     runs-on: ubuntu-latest
+    # Job-level: replaces the workflow-level grant for this job. id-token is
+    # for the keyless cosign signature only.
+    permissions:
+      contents: read
+      packages: write   # for GHCR push and the signature push
+      security-events: write   # for the Trivy SARIF upload
+      id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -230,6 +280,7 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-agent-box"
           {
+            echo "image=${base}"
             # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
             # the moving tags keep pointing at the newest full release.
             case "$version" in
@@ -241,6 +292,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-agent-box
+        id: build
         uses: docker/build-push-action@v7
         with:
           # Repo root context: the Dockerfile builds ./cmd/agent-box.
@@ -254,6 +306,19 @@ jobs:
           # below pulls the pushed tag instead of using `load: true` here.
           provenance: true
           sbom: true
+
+      # Keyless signature of the pushed digest (never a tag), verified in
+      # the same step against this workflow at this tag; the job fails if
+      # verification does. Tag pushes only, like release.yml's sign-release:
+      # a signature is a permanent public Rekor entry, and a rehearsal
+      # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
+      - name: Sign and verify the image (cosign keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/sign-image
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          digest: ${{ steps.build.outputs.digest }}
+          workflow-file: sidecars.yml
 
       # Note: agent-box-image.yml already scans a build of this same
       # Dockerfile on every PR/push to main — this scans the actual image

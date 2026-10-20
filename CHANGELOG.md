@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release container images are signed with keyless cosign, by digest, and verified in the job that pushes them.** `ghcr.io/footprintai/containarium`, `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` and `containarium-model-gateway` are signed right after the push (GitHub OIDC to Fulcio, cosign v3.1.3, the same installer as the release-file signatures), and the step runs `cosign verify` pinned to the pushing workflow at the release tag (`https://github.com/FootprintAI/Containarium/.github/workflows/<workflow>.yml@refs/tags/<tag>`, issuer `https://token.actions.githubusercontent.com`), failing the job on a mismatch. Tag pushes only; a rehearsal signs nothing. The signed digests and verify output are kept as `image-signature-<image>` workflow artifacts. The signature covers the image index; see `docs/security/VERIFYING-RELEASES.md` for the verify command.
+
 ## [0.110.0] - 2026-10-20
 
 ### Upgrading
