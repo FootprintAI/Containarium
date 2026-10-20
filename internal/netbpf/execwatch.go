@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -55,6 +56,11 @@ const (
 	// decodes on this daemon.
 	execEventMin  = execOffArgvTruncated + 1
 	execEventSize = 816
+
+	// execRingBytes is EXEC_RING_BYTES in execwatch.bpf.c: 4 MiB, ~5,090
+	// records of 816 bytes plus the 8-byte ring header (#2774 review). The
+	// lane checks the compiled map against it.
+	execRingBytes = 4 << 20
 )
 
 // ExecEvent is the decoded form of one `struct exec_event` the execwatch
@@ -321,43 +327,135 @@ type ExecEventSink interface {
 	OnExecEvent(ctx context.Context, ev ExecEvent)
 }
 
-// ringRecordReader is the subset of *ringbuf.Reader ConsumeExecEvents needs,
-// so the loop is unit-testable with a fake.
-type ringRecordReader interface {
-	Read() (ringbuf.Record, error)
+// ExecDrainInterval is how often the exec ring consumer drains the ring
+// (#2774). The kernel side submits every record with BPF_RB_NO_WAKEUP, so
+// nothing wakes the consumer per event; it wakes on a Go ticker instead and
+// drains everything queued in one batch. The interval is the added
+// detection latency bound for an exec event: 50 ms against the
+// miner-signature rule's < 10 s budget. At 1,000 execs/s that turns ~1,000
+// consumer wakeups a second into ~20, each draining ~50 records (~40 KiB of
+// the 4 MiB ring).
+//
+// The wait is a Go timer, not a blocking epoll_wait with a timeout, on
+// purpose: a goroutine that comes back from a long blocking syscall wakes
+// the runtime's sysmon thread, which then polls at 20 µs for ~1 ms — ~60
+// context switches per drain, measured in the eBPF lane as ~1,200/s and
+// most of the consumer's CPU. A timer wakeup costs a couple; the drain
+// itself is a zero-timeout epoll_wait, and it is skipped when the ring is
+// empty.
+const ExecDrainInterval = 50 * time.Millisecond
+
+// execBurstRecords: a drain that delivered at least this many records (~5 %
+// of the 4 MiB ring) is followed at once by another, without waiting for
+// the next tick, until the backlog is small again. A sustained rate above
+// ~5,000 execs/s is thus drained continuously, and only a host-wide burst of
+// more than ~5,090 execs inside one interval (~100,000 execs/s) can overflow
+// the ring — counted in exec_events_lost, never blocking an exec.
+const execBurstRecords = 256
+
+// ExecDrainObserver is an optional extension of ExecEventSink: when the sink
+// implements it, OnExecDrain is called once per drain with the number of
+// records the drain delivered (0 for a tick that found the ring empty). The
+// lane's overhead test uses it to prove the batching; the daemon does not
+// need it.
+type ExecDrainObserver interface {
+	OnExecDrain(records int)
 }
 
-// ConsumeExecEvents reads samples from the exec ring until the reader is
-// closed, decoding each and handing it to the sink — the ringbuf twin of
-// ConsumeDenyEvents, with the same contract: Read blocks, so cancelling ctx
-// alone does not return; the caller must also Close the reader when ctx
-// ends (the daemon and the lane test both do). A malformed sample is reported via
-// onError (nil to ignore) and skipped; a reader error other than ErrClosed is
-// reported and ends the loop (the caller owns restart policy). Ring
-// overflow is not visible here: the kernel counts it (ExecWatch.Stats), it
-// never blocks or crashes the exec'ing process.
+// ringRecordReader is the subset of *ringbuf.Reader ConsumeExecEvents needs,
+// so the loop is unit-testable with a fake. ReadInto reuses one Record (and
+// its sample buffer) for every event; ParseExecEvent copies what it keeps.
+type ringRecordReader interface {
+	ReadInto(rec *ringbuf.Record) error
+	SetDeadline(t time.Time)
+	AvailableBytes() int
+}
+
+// ConsumeExecEvents reads samples from the exec ring until ctx ends or the
+// reader is closed, decoding each and handing it to the sink — the ringbuf
+// twin of ConsumeDenyEvents. It returns within one drain interval of ctx
+// ending; Close the reader AFTER it returns, never concurrently: the loop
+// calls the reader's AvailableBytes, which in cilium/ebpf takes no lock and
+// reads the ring mapping Close unmaps (the daemon and the lane test both
+// close after the loop). A malformed sample is
+// reported via onError (nil to ignore) and skipped; a reader error other
+// than ErrClosed is reported and ends the loop (the caller owns restart
+// policy). Ring overflow is not visible here: the kernel counts it
+// (ExecWatch.Stats), it never blocks or crashes the exec'ing process.
+//
+// The ring is drained in batches every ExecDrainInterval rather than on a
+// wakeup per event (see ExecDrainInterval; ConsumeExecEventsEvery takes the
+// interval explicitly).
 func ConsumeExecEvents(ctx context.Context, rd ringRecordReader, sink ExecEventSink, onError func(error)) {
+	ConsumeExecEventsEvery(ctx, rd, ExecDrainInterval, sink, onError)
+}
+
+// ConsumeExecEventsEvery is ConsumeExecEvents with an explicit drain
+// interval (<= 0 means ExecDrainInterval). Each tick, when the ring holds
+// data, the reader's deadline is set to now — so ReadInto never sleeps in
+// epoll — and every queued record is read until the reader reports
+// os.ErrDeadlineExceeded (ring empty), which ends the drain, not the loop.
+func ConsumeExecEventsEvery(ctx context.Context, rd ringRecordReader, interval time.Duration, sink ExecEventSink, onError func(error)) {
+	if interval <= 0 {
+		interval = ExecDrainInterval
+	}
 	report := func(err error) {
 		if onError != nil {
 			onError(err)
 		}
 	}
+	observer, _ := sink.(ExecDrainObserver)
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	var rec ringbuf.Record
+	burst := false
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		rec, err := rd.Read()
-		if err != nil {
-			if !errors.Is(err, ringbuf.ErrClosed) {
-				report(fmt.Errorf("netbpf: execwatch: ring read: %w", err))
+		if burst {
+			if ctx.Err() != nil {
+				return
 			}
-			return
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
 		}
-		ev, err := ParseExecEvent(rec.RawSample)
-		if err != nil {
-			report(err)
-			continue
+		n := 0
+		if rd.AvailableBytes() > 0 {
+			rd.SetDeadline(time.Now())
+			for {
+				// Check ctx before ReadInto, never after: a record ReadInto
+				// has returned is already consumed from the kernel ring
+				// (consumer_pos advanced), so returning here would drop it
+				// without it ever being counted lost. A cancelled ctx stops
+				// the drain at the next record, which stays in the ring.
+				if ctx.Err() != nil {
+					return
+				}
+				err := rd.ReadInto(&rec)
+				if err == nil {
+					ev, perr := ParseExecEvent(rec.RawSample)
+					if perr != nil {
+						report(perr)
+						continue
+					}
+					n++
+					sink.OnExecEvent(ctx, ev)
+					continue
+				}
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					break // ring drained
+				}
+				if !errors.Is(err, ringbuf.ErrClosed) {
+					report(fmt.Errorf("netbpf: execwatch: ring read: %w", err))
+				}
+				return
+			}
 		}
-		sink.OnExecEvent(ctx, ev)
+		if observer != nil {
+			observer.OnExecDrain(n)
+		}
+		burst = n >= execBurstRecords
 	}
 }
