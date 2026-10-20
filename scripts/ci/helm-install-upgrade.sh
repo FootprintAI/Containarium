@@ -19,6 +19,8 @@ namespace=helm-release
 gateway=helm-release-gateway
 timeout="${HELM_TEST_TIMEOUT:-20m}"
 
+# EXIT handler: preserve the test status, emit diagnostics on failure, then
+# remove this invocation's disposable kind cluster and temporary kubeconfig.
 cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then
@@ -39,6 +41,8 @@ kind create cluster --name "$cluster" --image kindest/node:v1.31.0 --wait 180s
 
 ssh-keygen -q -t ed25519 -N '' -f "$work/server"
 ssh-keygen -q -t ed25519 -N '' -f "$work/upstream"
+# Create the gateway namespace with Helm ownership and install its host and
+# upstream key Secrets. Call before each clean install; failures stop the test.
 prepare_gateway() {
   # Secrets must predate installation. The chart manages this Namespace, so
   # give the precreated namespace the same ownership as the Helm release.
@@ -61,6 +65,9 @@ values=(
   --wait --timeout "$timeout"
 )
 
+# Require ready daemon and gateway pods with the expected images and pulled
+# image IDs. $1 is the daemon version without v; optional $2 overrides only
+# the gateway tag for the historical baseline that predates release pinning.
 assert_running_release() {
   expected="$1"
   gateway_tag="${2:-v$expected}"
