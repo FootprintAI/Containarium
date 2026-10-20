@@ -340,6 +340,53 @@ is `UNSPECIFIED` and the line says the status is unknown; the run is never
 blocked by that read. `guardrail.InboundBlockKinds` is the one definition of
 "an inbound BLOCK rule is in force", shared with the gateway.
 
+### Scanned by default: the baseline, and how to read the effective policy (#2575)
+
+**What is scanned by default.** A daemon on which no admin has ever set a
+guardrail policy scans model responses against a small built-in baseline
+(#2736, `internal/guardrail/baseline.go`). It is separate from the engine's
+rules, so a pluggable engine cannot change what a default install checks:
+
+| Rule id | Matches |
+| --- | --- |
+| `baseline.pem_private_key` | a PEM private-key header (`-----BEGIN ... PRIVATE KEY-----`) |
+| `baseline.aws_access_key_id` | an AWS access key id (`AKIA` / `ASIA` + 16) |
+| `baseline.google_api_key` | a Google API key (`AIza` + 35) |
+| `baseline.azure_storage_account_key` | `AccountKey=<88 chars>` in an Azure storage connection string |
+
+**In which mode.** The baseline is **log-only**. The response goes to the
+client byte for byte as it arrives, streamed or not, and nothing is held
+back. A copy of up to the hold limit is scanned once the last byte has been
+written. Each rule that matched writes one `model_gateway.inbound_detection`
+audit entry with the rule id, kind, action `log` and match count, plus an
+`INBOUND-BASELINE` log line. The matched text is never recorded. A response
+over the limit, or one with a content encoding, is counted as
+`baseline_unscanned` on `/__gateway/status` and is never blocked. A per-daemon
+switch to block mode is #2738 and is not shipped yet.
+
+**What turns it off.** Any configured admin policy turns the baseline off,
+including an empty policy or one with outbound rules only. From then on the
+admin policy alone decides whether responses are scanned, which happens only
+when it has an inbound BLOCK rule. No command unsets a policy, so once a
+daemon has had a policy it does not go back to the baseline.
+
+**Reading the effective policy.** Run `containarium guardrail status`. It
+calls `GuardrailPolicyService.GetGuardrailStatus` (`GET /v1/guardrail/status`),
+which any authenticated caller may use. The daemon derives the value from the
+same policy store the model gateway reads:
+
+| `guardrail status` | `GuardrailEffectivePolicy` | Store state | What happens to responses |
+| --- | --- | --- | --- |
+| `baseline` | `BASELINE` | no policy was ever set | scanned with the baseline rules, log-only; `baseline_rule_ids` lists them |
+| `admin` | `ADMIN` | a policy with at least one inbound BLOCK rule | scanned for, and blocked on, the kinds in `inbound_block_kinds` |
+| `none` | `NONE` | a policy with no inbound BLOCK rule | not scanned |
+
+If the store cannot be read, the call fails with an error and never reports
+`none` or `baseline`. `--json` prints the response as protojson. The command
+reports the policy. It does not report whether this daemon serves a model
+gateway at all: a daemon without one, or the standalone gateway binary, scans
+nothing whatever the status says.
+
 ## Part 2 — server-side policy and the deploy gate (#2368)
 
 ### Policy service
@@ -404,6 +451,7 @@ below states.
 ```
 containarium guardrail policy get [--json]
 containarium guardrail policy set --file policy.json
+containarium guardrail status [--json]     # effective response policy (#2737)
 ```
 
 The CLI is the canonical interface and the MCP tools are thin wrappers over
