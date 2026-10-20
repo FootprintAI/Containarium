@@ -40,7 +40,7 @@ variable "ssh_ban_audit_records" {
 }
 
 variable "ssh_authz_enforce" {
-  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. Needs a sentinel binary with ssh-authz-plugin --sshpiper-config (#2741); an older binary rejects the unit. See docs/SENTINEL-SSH-AUTHZ.md."
   type        = bool
   default     = false
 }

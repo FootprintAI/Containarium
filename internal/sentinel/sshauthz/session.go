@@ -82,9 +82,13 @@ func (p *Plugin) pipeStart(conn libplugin.ConnMetadata) {
 		p.open[conn.UniqueID()] = pc.meta
 	}
 	p.mu.Unlock()
-	if ok {
-		p.session.Config().PipeStartCallback(stashedConn{conn, pc.meta})
+	if !ok {
+		// ssh-session-plugin skips this connection too, so the session has no
+		// open or close record. Make the gap visible; name no credential.
+		p.cfg.Logf("[ssh-authz] session=%q login=%q: no pending decision (evicted from the bounded stash); no session records written", conn.UniqueID(), conn.User())
+		return
 	}
+	p.session.Config().PipeStartCallback(stashedConn{conn, pc.meta})
 }
 
 func (p *Plugin) pipeError(conn libplugin.ConnMetadata, err error) {

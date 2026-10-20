@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,33 @@ func TestAuditOnlyDenyDefersWithoutRecord(t *testing.T) {
 	}
 	if up.GetNextPlugin().Meta[sshsession.MetaEnforced] != "" || len(sink.recs) != 0 {
 		t.Fatalf("audit-only marked enforcement: meta=%v records=%+v", up.GetNextPlugin().Meta, sink.recs)
+	}
+}
+
+// A pipe that starts for a connection whose decision was evicted from the
+// bounded stash gets no session records from either plugin, so the gap is
+// logged with the connection id and never with credential material.
+func TestEnforceLogsPipeWithoutPendingDecision(t *testing.T) {
+	clock := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	var logs []string
+	sink := &recordSink{}
+	p, err := New(Config{Enforce: true, Recorder: sink, Router: NewRouter("unused"), Now: func() time.Time { return clock },
+		Logf:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+		Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.remember("evicted-conn", map[string]string{sshsession.MetaUserID: "secret-user"})
+	clock = clock.Add(time.Second)
+	for i := range maxPending {
+		p.remember(fmt.Sprint(i), nil)
+	}
+	p.PluginConfig().PipeStartCallback(&libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "evicted-conn"})
+	if len(sink.recs) != 0 {
+		t.Fatalf("records = %+v", sink.recs)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], `session="evicted-conn"`) || !strings.Contains(logs[0], "no pending decision") || strings.Contains(logs[0], "secret-user") {
+		t.Fatalf("logs = %q", logs)
 	}
 }
 
