@@ -18,7 +18,7 @@ import (
 func credentialStateStore(t *testing.T) *PGCredentialStateStore {
 	t.Helper()
 	pool := alertPool(t)
-	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS code_credential_watch_state`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS code_credential_watch_state; DROP TABLE IF EXISTS code_credential_watch_episodes`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	s, err := NewPGCredentialStateStore(context.Background(), pool)
@@ -74,5 +74,23 @@ func TestCredentialWatcher_PostgresRestartDoesNotRefire(t *testing.T) {
 
 	if got := notifier.count(); got != 1 {
 		t.Fatalf("alerts fired across a restart = %d, want exactly 1", got)
+	}
+}
+
+// Persist policy transitions through PostgreSQL, including watcher reconstruction.
+func TestCredentialWatcherPolicyPostgres(t *testing.T) {
+	testCredentialPolicyTransitions(t, credentialStateStore(t))
+}
+
+func TestCredentialEpisodesPostgres(t *testing.T) {
+	first := credentialStateStore(t)
+	testEpisodeDelivery(t, first)
+	second, err := NewPGCredentialStateStore(context.Background(), first.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := second.RecordEpisode(context.Background(), "s1", "00000000-0000-0000-0000-000000000001", time.Now())
+	if err != nil || fresh {
+		t.Fatalf("restarted store did not deduplicate: %v %v", fresh, err)
 	}
 }

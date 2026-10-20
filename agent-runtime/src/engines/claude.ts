@@ -1,10 +1,20 @@
+import {
+  CredentialAuthenticationError,
+  type AuthenticationSource,
+} from "../credential-state.js";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
-import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js";
+import {
+  claudeAllowedTools,
+  claudeMcpServers,
+  mcpServerSpecs,
+} from "../mcp.js";
 
 // ClaudeQuery is the shape of the Agent SDK's query(), injectable for tests.
-export type ClaudeQuery = (params: Parameters<typeof query>[0]) => AsyncIterable<SDKMessage>;
+export type ClaudeQuery = (
+  params: Parameters<typeof query>[0],
+) => AsyncIterable<SDKMessage>;
 
 type ClaudeResult = Extract<SDKMessage, { type: "result" }>;
 
@@ -39,7 +49,13 @@ export class ClaudeEngine implements Engine {
   // queryFn is the Agent SDK's query(); a seam for tests.
   constructor(private readonly queryFn: ClaudeQuery = query) {}
 
-  async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
+  async run(
+    task: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult> {
+    let source: AuthenticationSource = cfg.authenticationSource ?? "unknown";
+    let externalProvider = false;
     let text = "";
     let usage: unknown;
     let result: ClaudeResult | undefined;
@@ -54,45 +70,133 @@ export class ClaudeEngine implements Engine {
       permissionMode: "dontAsk",
       allowedTools: claudeAllowedTools(specs),
       mcpServers: claudeMcpServers(specs),
-      ...(cfg.outputSchema ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } } : {}),
+      ...(cfg.outputSchema
+        ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } }
+        : {}),
     } as Parameters<typeof query>[0]["options"];
 
-    for await (const m of this.queryFn({ prompt: task, options })) {
-      if (m.type === "assistant") {
-        for (const block of m.message.content ?? []) {
-          if (block.type === "text" && block.text) {
-            text += block.text;
-            journal.append({ kind: "assistant", text: block.text });
-          } else if (block.type === "tool_use") {
-            toolNames.set(block.id, block.name);
-            journal.append({ kind: "tool_use", tool: block.name, input: JSON.stringify(block.input ?? {}) });
+    let dispose: (() => void) | undefined;
+    try {
+      const stream = this.queryFn({ prompt: task, options });
+      if ("close" in stream && typeof stream.close === "function") {
+        const close = stream.close;
+        dispose = () => {
+          close.call(stream);
+        };
+      }
+      // SDK account info is nonsecret provenance and is available before model
+      // inference. Do not inspect email/account identifiers or credential values.
+      if ("accountInfo" in stream && typeof stream.accountInfo === "function") {
+        try {
+          const info = (await stream.accountInfo()) as {
+            apiKeySource?: string;
+            apiProvider?: string;
+          };
+          externalProvider = Boolean(
+            info.apiProvider && info.apiProvider !== "firstParty",
+          );
+          source = externalProvider
+            ? "key"
+            : info.apiKeySource === "oauth"
+              ? "oauth"
+              : ["user", "project", "org", "temporary"].includes(
+                    info.apiKeySource ?? "",
+                  )
+                ? "key"
+                : source;
+        } catch (e) {
+          if (
+            typeof e === "object" &&
+            e !== null &&
+            "status" in e &&
+            e.status === 401
+          )
+            throw new CredentialAuthenticationError(source);
+          // Optional metadata lookup failures must not break a valid run.
+          // The authoritative init message may still identify its source.
+        }
+      }
+      for await (const m of stream) {
+        if (m.type === "system" && m.subtype === "init") {
+          source = externalProvider
+            ? "key"
+            : m.apiKeySource === "oauth"
+              ? "oauth"
+              : ["user", "project", "org", "temporary"].includes(m.apiKeySource)
+                ? "key"
+                : "unknown";
+        }
+        if (m.type === "assistant") {
+          if (m.error === "authentication_failed")
+            throw new CredentialAuthenticationError(source);
+          for (const block of m.message.content ?? []) {
+            if (block.type === "text" && block.text) {
+              text += block.text;
+              journal.append({ kind: "assistant", text: block.text });
+            } else if (block.type === "tool_use") {
+              toolNames.set(block.id, block.name);
+              journal.append({
+                kind: "tool_use",
+                tool: block.name,
+                input: JSON.stringify(block.input ?? {}),
+              });
+            }
           }
+        } else if (m.type === "user") {
+          const content = m.message.content;
+          if (typeof content === "string") continue;
+          for (const block of content ?? []) {
+            if (block.type !== "tool_result") continue;
+            journal.append({
+              kind: "tool_result",
+              tool: toolNames.get(block.tool_use_id) ?? "unknown",
+              text: toolResultText(block.content),
+            });
+          }
+        } else if (m.type === "result") {
+          if ("api_error_status" in m && m.api_error_status === 401)
+            throw new CredentialAuthenticationError(source);
+          usage = m.usage;
+          result = m;
+          if (m.subtype !== "success") {
+            journal.append({ kind: "error", text: resultErrorText(m) });
+          }
+          break;
         }
-      } else if (m.type === "user") {
-        const content = m.message.content;
-        if (typeof content === "string") continue;
-        for (const block of content ?? []) {
-          if (block.type !== "tool_result") continue;
-          journal.append({
-            kind: "tool_result",
-            tool: toolNames.get(block.tool_use_id) ?? "unknown",
-            text: toolResultText(block.content),
-          });
-        }
-      } else if (m.type === "result") {
-        usage = m.usage;
-        result = m;
-        if (m.subtype !== "success") {
-          journal.append({ kind: "error", text: resultErrorText(m) });
-        }
-        break;
+      }
+    } catch (e) {
+      if (e instanceof CredentialAuthenticationError) throw e;
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        "status" in e &&
+        e.status === 401
+      )
+        throw new CredentialAuthenticationError(source);
+      throw e;
+    } finally {
+      try {
+        dispose?.();
+      } catch {
+        process.stderr.write("agent-runtime: SDK cleanup unavailable\n");
       }
     }
-
+    const authenticated =
+      result?.subtype === "success" && result.is_error === false;
     if (cfg.outputSchema) {
-      return { outputJson: JSON.stringify(structuredOutput(result)), usage };
+      return {
+        outputJson: JSON.stringify(structuredOutput(result)),
+        usage,
+        authenticationSucceeded: authenticated,
+        authenticationSource: source,
+      };
     }
-    return { outputJson: text.trim(), usage };
+    return {
+      outputJson: text.trim(),
+      usage,
+      authenticationSucceeded: authenticated,
+      authenticationSource: source,
+    };
   }
 }
 
@@ -100,9 +204,12 @@ export class ClaudeEngine implements Engine {
 // throws naming why there is none.
 function structuredOutput(result: ClaudeResult | undefined): unknown {
   const want = "no structured output matching agent_card.output_schema_json";
-  if (result === undefined) throw new Error(`claude: run ended without a result message — ${want}`);
-  if (result.subtype !== "success") throw new Error(`claude: ${resultErrorText(result)} — ${want}`);
-  if (result.structured_output === undefined) throw new Error(`claude: run ended with ${want}`);
+  if (result === undefined)
+    throw new Error(`claude: run ended without a result message — ${want}`);
+  if (result.subtype !== "success")
+    throw new Error(`claude: ${resultErrorText(result)} — ${want}`);
+  if (result.structured_output === undefined)
+    throw new Error(`claude: run ended with ${want}`);
   return result.structured_output;
 }
 
@@ -115,8 +222,14 @@ function resultErrorText(result: ClaudeResult): string {
 
 // toolResultText flattens a tool_result's content to text: text blocks
 // verbatim, anything else (an image, a document) as a [type] placeholder.
-function toolResultText(content: string | ReadonlyArray<{ type: string; text?: string }> | undefined): string {
+function toolResultText(
+  content: string | ReadonlyArray<{ type: string; text?: string }> | undefined,
+): string {
   if (content === undefined) return "";
   if (typeof content === "string") return content;
-  return content.map((b) => (b.type === "text" && typeof b.text === "string" ? b.text : `[${b.type}]`)).join("\n");
+  return content
+    .map((b) =>
+      b.type === "text" && typeof b.text === "string" ? b.text : `[${b.type}]`,
+    )
+    .join("\n");
 }

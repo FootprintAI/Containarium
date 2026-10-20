@@ -96,9 +96,13 @@ The daemon also sends one alert of its own straight to the same webhook,
 without going through vmalert/Alertmanager, so it works on hosts with no
 VictoriaMetrics container.
 
-- **When:** a skill box's coding-engine sign-in flips to expired. Every
-  15 minutes the daemon probes each running skill box (the same probe as
-  `containarium agent credential-status`). The alert fires once per flip
+- **When:** a skill box's coding-engine sign-in becomes unhealthy. For Claude,
+  alert only when its access token has expired for **more than 24 hours**,
+  or an actual runtime run failed with a typed authentication error. A
+  single recently expired token is refreshable and does not alert, even
+  across multiple sweeps. Every 15 minutes the daemon probes each running
+  skill box. The manual `containarium agent credential-status` command
+  continues to report raw access-token expiry. The alert fires once per flip
   into `CODE_CREDENTIAL_SOURCE_EXPIRED`, never again while the box stays
   expired, and again only after a fresh sign-in has expired in turn. The
   first time the daemon sees a box that is already expired counts as a flip.
@@ -127,10 +131,63 @@ VictoriaMetrics container.
   `previous_source` is `CODE_CREDENTIAL_SOURCE_UNSPECIFIED` when the box
   was already expired the first time it was seen.
 
-"Expired" means the `expiresAt` timestamp in the engine's sign-in file is
-in the past. See
-[SECURITY-ENCRYPTION-AT-REST.md](SECURITY-ENCRYPTION-AT-REST.md#coding-agent-sign-in-credentials-inside-a-box)
-for exactly what the probe reads.
+The runtime records **OAuth-sourced** authentication failures as metadata-only
+failure episodes in `~/.local/state/containarium/claude-auth-state.json` (0600,
+private parent directory). It never reads credential values. SDK account/init
+metadata identifies OAuth, API-key, and third-party/gateway sources; cached
+credential-file existence is not evidence of the source a run used. A failure
+before any trustworthy source metadata is available remains an unknown-source
+run error and does not change interactive sign-in state.
+
+`is_error=true` never proves recovery, regardless of the SDK result subtype.
+Only a newer successful OAuth run recovers OAuth health. Key-backed runs and
+unrelated failures cannot recover it. `flock` serializes metadata updates across
+runtime processes; run generations prevent older completions from overwriting
+newer authentication outcomes. Recovery does **not** delete pending evidence.
+
+The daemon consumes episode IDs through the private
+`agent-runtime-credential-state snapshot/ack` protocol, persists them in
+`code_credential_watch_episodes`, then acknowledges the guest. Failed database
+writes or guest acknowledgement retain evidence for retry. Repeated failures
+within one unhealthy episode deduplicate; failure/recovery/failure between
+sweeps still yields separate transition alerts. Episode IDs survive restarts.
+Delivery keeps the existing persist-before-notify posture: a claimed episode is
+not re-invoked after restart, while the notifier's existing HTTP retries remain.
+A crash between the database claim and webhook invocation can lose delivery;
+a lost HTTP response can also cause a retry at the receiver. There is no
+exactly-once external webhook guarantee.
+
+### Upgrading existing skill boxes
+
+Existing boxes are reused without rerunning recipe `post_start`. Updating the
+daemon alone does not install the new runtime/helper in those boxes.
+
+1. Update the daemon first. Existing credential-state rows are preserved; the
+   episode table is additive. Older runtimes retain the timestamp-based 24h
+   policy without authentication-failure evidence.
+2. Pause new runs/delegations for each reused box and stop its existing
+   serve/poll runtime processes through the normal service lifecycle. Keep
+   `~/.local/state/containarium` and the existing sign-in files intact.
+3. Inside that box, rerun the matching release's `install-agent-runtime.sh`
+   using the same `PREFIX`, with `RELEASE=<reviewed-release-tag>` and a fresh
+   versioned `APP_DIR` (for example `/opt/agent-runtime-<release>`). This installs
+   both launchers and checks for Linux `flock`; no credentials are supplied to
+   the installer. Resume using the same box user/HOME the daemon probes.
+4. Run `agent-runtime-credential-state begin` to verify locking and durable
+   writes, then `agent-runtime-credential-state snapshot` to verify protocol
+   version 1. Output contains only generation/episode metadata. Resume runs.
+5. Verify one synthetic transition through the configured test webhook on a
+   throwaway guest before rolling out broadly. A helper that exists but fails
+   is logged; timestamp-based alerts continue independently and no episodes
+   are acknowledged until the durable store succeeds.
+
+The release bundle verifier requires both credential-state modules. Unknown
+protocol versions are rejected. Do not delete pending state as an upgrade or
+rollback shortcut. Older daemons ignore the new helper/state; their older
+alert policy is not upgraded by deploying the runtime alone.
+
+See [SECURITY-ENCRYPTION-AT-REST.md](SECURITY-ENCRYPTION-AT-REST.md#coding-agent-sign-in-credentials-inside-a-box)
+for exactly what expiry metadata the probe reads.
 
 ## External URL (Alert Source Links)
 
