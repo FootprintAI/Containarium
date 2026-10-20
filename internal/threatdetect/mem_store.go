@@ -114,6 +114,11 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 			// every later index for no benefit.
 		}
 	}
+	// The caller, the event and the webhook worker all read the finding
+	// after the lock is released, while a concurrent Upsert of the same key
+	// may be updating the stored entry. Hand them a copy (#2748).
+	snap := *out
+	out = &snap
 	s.mu.Unlock()
 
 	detail := fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s count=%d", out.Rule, out.Severity, out.TenantID, out.Subject, out.Count)
@@ -183,7 +188,9 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 	return matches, nil
 }
 
-// SetResponse mirrors FindingStore.SetResponse without Postgres.
+// SetResponse mirrors FindingStore.SetResponse without Postgres, including
+// the sticky process_killed: the OR with the stored flag happens under the
+// ring lock, in the same read-modify-write.
 func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
 	s.mu.Lock()
 	var f *Finding
@@ -198,6 +205,7 @@ func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingRe
 		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
 	}
 	cp := r
+	cp.KeepKillOf(f.Response)
 	f.Response = &cp
 	// The webhook worker reads its finding after this returns; hand it a
 	// snapshot so a later write to the ring entry (the resolve an operator

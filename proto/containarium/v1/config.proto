@@ -278,6 +278,18 @@ message SystemInfo {
   // distinguishable from "profiled CPU-only". Carried here for the same
   // peer fan-out as headroom (#2135).
   CapabilityProfile capability_profile = 29;
+
+  // capabilities lists the optional API features this daemon supports, as
+  // the stable names in internal/server's DaemonCap* constants. A client
+  // checks for a name BEFORE sending a request field an older daemon would
+  // reject (the REST mux rejects unknown JSON fields). Absent from an older
+  // daemon: an empty list means "none of the optional features", so a
+  // client must treat a missing name as unsupported. Names are only ever
+  // added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
+  // "box_run_structured_output" (StartBoxRunRequest.structured_output).
+  // An open string set rather than an enum so a newer daemon's extra names
+  // never fail to decode in an older client.
+  repeated string capabilities = 30;
 }
 
 // CPUAdmissionMode is the CPU overcommit admission gate's posture

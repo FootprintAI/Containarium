@@ -50,6 +50,9 @@ type SecurityAction struct {
 	// limits.cpu.allowance before a THROTTLE, restored verbatim on release.
 	PrevCPUCount     string
 	PrevCPUAllowance string
+	// KilledPID is the host pid the responder SIGKILLed for the same finding
+	// (kill_process on a miner-signature finding, #2638); 0 when none.
+	KilledPID uint32
 	// Error is the Incus failure text when the apply did not take effect.
 	Error string
 	// Pending is true between the row's insert and the actuator call being
@@ -90,6 +93,12 @@ type ActionStore interface {
 	// ListOrphaned returns the open actions still PENDING that were applied
 	// (inserted) at or before cutoff.
 	ListOrphaned(ctx context.Context, cutoff time.Time) ([]*SecurityAction, error)
+	// ListByFinding returns every action recorded for finding id, open or
+	// not, on any container, newest first; empty when none. A finding shared
+	// by several boxes of one tenant (#2766) has one row per box that acted
+	// on it, so this is how the responder tells whether another box still
+	// holds the finding open, and which of a box's rows belong to it.
+	ListByFinding(ctx context.Context, findingID int64) ([]*SecurityAction, error)
 }
 
 // memActionRingCap bounds the degraded-mode store like memFindingRingCap.
@@ -209,6 +218,19 @@ func (s *MemActionStore) ListOrphaned(_ context.Context, cutoff time.Time) ([]*S
 	for _, r := range s.rows {
 		if r.Open() && r.Pending && !r.AppliedAt.After(cutoff) {
 			cp := *r
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemActionStore) ListByFinding(_ context.Context, findingID int64) ([]*SecurityAction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*SecurityAction
+	for i := len(s.rows) - 1; i >= 0; i-- {
+		if s.rows[i].FindingID == findingID {
+			cp := *s.rows[i]
 			out = append(out, &cp)
 		}
 	}

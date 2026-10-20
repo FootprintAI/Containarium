@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,13 +33,6 @@ func NewEventHandler(bus *events.Bus) *EventHandler {
 
 // HandleSSE handles SSE connections for event streaming
 func (h *EventHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
-	// Check if SSE is supported
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "SSE not supported", http.StatusInternalServerError)
-		return
-	}
-
 	// Validate origin for security
 	origin := r.Header.Get("Origin")
 	if origin != "" && !isAllowedOrigin(origin) {
@@ -61,6 +55,20 @@ func (h *EventHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 
+	// Flush through http.ResponseController rather than a w.(http.Flusher)
+	// assertion: the controller follows Unwrap through middleware wrappers
+	// (audit, metrics), so this handler streams whether it is mounted raw or
+	// under the audited chain (#2773). This first flush commits the SSE
+	// headers and is the capability probe: only "not supported" is a
+	// server-side defect worth a 500; any other error is the client gone.
+	rc := http.NewResponseController(w)
+	if err := rc.Flush(); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	// Subscribe to events
 	sub := h.bus.Subscribe(filter)
 	defer h.bus.Unsubscribe(sub.ID)
@@ -68,9 +76,12 @@ func (h *EventHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	log.Printf("SSE client connected: %s (filter: %+v)", sub.ID, filter)
 
 	// Send initial connection event
-	h.sendEvent(w, flusher, "connected", map[string]string{
+	if err := h.sendEvent(w, rc, "connected", map[string]string{
 		"subscriptionId": sub.ID,
-	})
+	}); err != nil {
+		log.Printf("SSE client %s: initial flush failed: %v", sub.ID, err)
+		return
+	}
 
 	// Create heartbeat ticker to keep connection alive through proxies
 	heartbeat := time.NewTicker(sseHeartbeatInterval)
@@ -88,12 +99,18 @@ func (h *EventHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-heartbeat.C:
 			// Send SSE comment as heartbeat (lines starting with : are comments)
 			fmt.Fprintf(w, ": heartbeat\n\n")
-			flusher.Flush()
+			if err := rc.Flush(); err != nil {
+				log.Printf("SSE client %s: heartbeat flush failed: %v", sub.ID, err)
+				return
+			}
 		case event, ok := <-sub.Events:
 			if !ok {
 				return
 			}
-			h.sendProtoEvent(w, flusher, event)
+			if err := h.sendProtoEvent(w, rc, event); err != nil {
+				log.Printf("SSE client %s: event flush failed: %v", sub.ID, err)
+				return
+			}
 		}
 	}
 }
@@ -134,21 +151,24 @@ func parseEventFilter(r *http.Request) *pb.SubscribeEventsRequest {
 	return filter
 }
 
-// sendEvent sends a generic SSE event
-func (h *EventHandler) sendEvent(w http.ResponseWriter, flusher http.Flusher, eventType string, data interface{}) {
+// sendEvent sends a generic SSE event. A marshal failure is logged and
+// skipped (the stream stays up); the returned error is the flush failing,
+// which means the client is gone and the stream should end.
+func (h *EventHandler) sendEvent(w http.ResponseWriter, rc *http.ResponseController, eventType string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("Failed to marshal event data: %v", err)
-		return
+		return nil
 	}
 
 	fmt.Fprintf(w, "event: %s\n", eventType)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	flusher.Flush()
+	return rc.Flush()
 }
 
-// sendProtoEvent sends a protobuf event as SSE
-func (h *EventHandler) sendProtoEvent(w http.ResponseWriter, flusher http.Flusher, event *pb.Event) {
+// sendProtoEvent sends a protobuf event as SSE. Same error contract as
+// sendEvent.
+func (h *EventHandler) sendProtoEvent(w http.ResponseWriter, rc *http.ResponseController, event *pb.Event) error {
 	// Convert proto event to JSON-friendly format
 	eventData := map[string]interface{}{
 		"id":           event.Id,
@@ -173,14 +193,14 @@ func (h *EventHandler) sendProtoEvent(w http.ResponseWriter, flusher http.Flushe
 	jsonData, err := json.Marshal(eventData)
 	if err != nil {
 		log.Printf("Failed to marshal proto event: %v", err)
-		return
+		return nil
 	}
 
 	// Use event type as SSE event name for filtering
 	eventName := strings.ToLower(strings.TrimPrefix(event.Type.String(), "EVENT_TYPE_"))
 	fmt.Fprintf(w, "event: %s\n", eventName)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	flusher.Flush()
+	return rc.Flush()
 }
 
 // isAllowedOrigin checks if the origin is allowed

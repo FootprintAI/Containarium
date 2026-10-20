@@ -186,14 +186,14 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 	if req.GetContainer() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "container is required")
 	}
-	f, err := s.responder.Release(ctx, req.GetContainer())
+	f, keptOpen, err := s.responder.Release(ctx, req.GetContainer())
 	if err != nil {
 		if errors.Is(err, threatdetect.ErrNoOpenAction) {
 			return nil, status.Errorf(codes.NotFound, "%v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "release process action: %v", err)
 	}
-	resp := &pb.ReleaseProcessActionResponse{}
+	resp := &pb.ReleaseProcessActionResponse{FindingKeptOpen: keptOpen}
 	if f != nil {
 		resp.Finding = f.ToProto()
 	}
@@ -201,8 +201,8 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 }
 
 // mergeProcessPolicy overlays the fields set on update onto stored (nil is
-// an empty policy): action, throttle_allowance and ttl each replace the
-// stored value only when update carries one.
+// an empty policy): action, throttle_allowance, ttl and kill_process each
+// replace the stored value only when update carries one.
 func mergeProcessPolicy(stored, update *pb.ProcessPolicy) *pb.ProcessPolicy {
 	out := &pb.ProcessPolicy{}
 	if stored != nil {
@@ -216,6 +216,11 @@ func mergeProcessPolicy(stored, update *pb.ProcessPolicy) *pb.ProcessPolicy {
 	}
 	if update.GetTtl() != nil && update.GetTtl().AsDuration() > 0 {
 		out.Ttl = update.GetTtl()
+	}
+	// kill_process has presence: only an explicit true or false replaces
+	// the stored value, so a lone --action never flips it (#2638).
+	if update.KillProcess != nil {
+		out.KillProcess = proto.Bool(update.GetKillProcess())
 	}
 	return out
 }

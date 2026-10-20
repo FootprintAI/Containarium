@@ -81,6 +81,10 @@ type fakeFindings struct {
 	mu     sync.Mutex
 	nextID int64
 	rows   map[int64]*threatdetect.Finding
+	// writes is every response handed to SetResponse, as written (before
+	// the sticky process_killed merge), so a test can tell what a path
+	// recorded from what the store kept.
+	writes []threatdetect.FindingResponse
 }
 
 func newFakeFindings() *fakeFindings { return &fakeFindings{rows: map[int64]*threatdetect.Finding{}} }
@@ -91,7 +95,8 @@ func (s *fakeFindings) Upsert(_ context.Context, f *threatdetect.Finding) (*thre
 	for _, r := range s.rows {
 		if r.State == threatdetect.FindingStateOpen && r.Rule == f.Rule && r.TenantID == f.TenantID && r.Subject == f.Subject {
 			r.Count++
-			return r, nil
+			cp := *r // a real store returns a fresh row, never its own
+			return &cp, nil
 		}
 	}
 	s.nextID++
@@ -99,14 +104,16 @@ func (s *fakeFindings) Upsert(_ context.Context, f *threatdetect.Finding) (*thre
 	f.State = threatdetect.FindingStateOpen
 	f.Count = 1
 	s.rows[f.ID] = f
-	return f, nil
+	cp := *f
+	return &cp, nil
 }
 
 func (s *fakeFindings) Get(_ context.Context, id int64) (*threatdetect.Finding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f, ok := s.rows[id]; ok {
-		return f, nil
+		cp := *f
+		return &cp, nil
 	}
 	return nil, threatdetect.ErrFindingNotFound
 }
@@ -132,9 +139,20 @@ func (s *fakeFindings) SetResponse(_ context.Context, id int64, r threatdetect.F
 	if !ok {
 		return nil, threatdetect.ErrFindingNotFound
 	}
-	cp := r
-	f.Response = &cp
-	return f, nil
+	s.writes = append(s.writes, r)
+	resp := r
+	// process_killed is sticky, as in both real stores (#2766).
+	resp.KeepKillOf(f.Response)
+	f.Response = &resp
+	cp := *f
+	return &cp, nil
+}
+
+// lastWrite is the response most recently handed to SetResponse.
+func (s *fakeFindings) lastWrite() threatdetect.FindingResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writes[len(s.writes)-1]
 }
 
 func (s *fakeFindings) byRule(rule pb.ThreatRuleId) []*threatdetect.Finding {
@@ -225,7 +243,7 @@ func (fx *responderFixture) fire(t *testing.T, container string, rule pb.ThreatR
 
 const (
 	ruleMiningBehavior = pb.ThreatRuleId(6) // THREAT_RULE_ID_MINING_BEHAVIOR (#2635)
-	ruleMinerSignature = pb.ThreatRuleId(7) // THREAT_RULE_ID_MINER_SIGNATURE (#2638)
+	ruleMinerSignature = pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE
 )
 
 // The responder's action table: what each policy does to the box, what it
@@ -384,7 +402,7 @@ func TestProcessResponder_Release(t *testing.T) {
 			f := fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
 
 			fx.clock = fx.clock.Add(10 * time.Minute)
-			released, err := fx.r.Release(context.Background(), "box-a")
+			released, _, err := fx.r.Release(context.Background(), "box-a")
 			if err != nil {
 				t.Fatalf("Release: %v", err)
 			}
@@ -405,7 +423,7 @@ func TestProcessResponder_Release(t *testing.T) {
 			if _, err := fx.actions.Open(context.Background(), "box-a"); !errors.Is(err, threatdetect.ErrNoOpenAction) {
 				t.Errorf("action still open after release: %v", err)
 			}
-			if _, err := fx.r.Release(context.Background(), "box-a"); !errors.Is(err, threatdetect.ErrNoOpenAction) {
+			if _, _, err := fx.r.Release(context.Background(), "box-a"); !errors.Is(err, threatdetect.ErrNoOpenAction) {
 				t.Errorf("second Release = %v, want ErrNoOpenAction", err)
 			}
 			if got := fx.audit.actions(); strings.Join(got, ",") != "apply,release" {
@@ -520,14 +538,14 @@ func TestProcessResponder_ReleaseFailureKeepsActionOpen(t *testing.T) {
 	fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
 
 	fx.act.fail = errors.New("incus: not frozen")
-	if _, err := fx.r.Release(context.Background(), "box-a"); err == nil || !strings.Contains(err.Error(), "not frozen") {
+	if _, _, err := fx.r.Release(context.Background(), "box-a"); err == nil || !strings.Contains(err.Error(), "not frozen") {
 		t.Fatalf("Release with a failing actuator = %v, want the incus error", err)
 	}
 	if _, err := fx.actions.Open(context.Background(), "box-a"); err != nil {
 		t.Fatalf("action should still be open after a failed release: %v", err)
 	}
 	fx.act.fail = nil
-	if _, err := fx.r.Release(context.Background(), "box-a"); err != nil {
+	if _, _, err := fx.r.Release(context.Background(), "box-a"); err != nil {
 		t.Fatalf("Release retry: %v", err)
 	}
 }

@@ -44,9 +44,9 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 // Config holds the sentinel configuration.
 type Config struct {
 	// SSHUpstreamPolicy enables the shared private upstream controller when set.
-	SSHUpstreamPolicy  string
-	SSHUpstreamState   string
-	SSHUpstreamSocket  string
+	SSHUpstreamPolicy string
+	SSHUpstreamState  string
+	SSHUpstreamSocket string
 	// Private manager-to-sshpiperd bridge. Empty disables it for embedders.
 	SSHAuthzSocket     string
 	HealthPort         int

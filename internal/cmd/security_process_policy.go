@@ -122,6 +122,11 @@ func writePolicyBlock(w io.Writer, p *pb.ProcessPolicy) {
 	fmt.Fprintf(w, "  action:             %s\n", actionLabel(p.GetAction()))
 	fmt.Fprintf(w, "  throttle allowance: %s\n", p.GetThrottleAllowance())
 	fmt.Fprintf(w, "  ttl:                %s\n", p.GetTtl().AsDuration())
+	kill := "inherit"
+	if p != nil && p.KillProcess != nil {
+		kill = fmt.Sprint(p.GetKillProcess())
+	}
+	fmt.Fprintf(w, "  kill process:       %s\n", kill)
 }
 
 func writeMiningThresholds(w io.Writer, m *pb.MiningBehaviorThresholds) {
@@ -175,7 +180,7 @@ func newProcessPolicyGetCmd() *cobra.Command {
 		Short: "Show the stored process policy and the effective policy the responder applies",
 		Long: `Without --container, shows the backend default. With --container, shows that
 container's override (if any). The effective policy resolves
-override -> backend default -> built-in {ALERT, 10%, 24h}.`,
+override -> backend default -> built-in {ALERT, 10%, 24h, kill process off}.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if serverAddr == "" {
@@ -209,7 +214,7 @@ override -> backend default -> built-in {ALERT, 10%, 24h}.`,
 func newProcessPolicySetCmd() *cobra.Command {
 	var (
 		action, allowance, ttl, container, rule string
-		clearOverride                           bool
+		clearOverride, killProcess              bool
 		minCores, minFraction                   float64
 		window, flowMinAge, ports               string
 	)
@@ -221,9 +226,12 @@ func newProcessPolicySetCmd() *cobra.Command {
   containarium security process-policy set --action throttle --throttle-allowance 10% --ttl 24h
   containarium security process-policy set --action freeze --container box-1
   containarium security process-policy set --container box-1 --clear-override
+  containarium security process-policy set --kill-process=true
   containarium security process-policy set --rule mining-behavior --min-cores 2 --stratum-ports 3333,4444
 
---action is one of alert, throttle, freeze. Omitted fields inherit. The
+--action is one of alert, throttle, freeze. --kill-process=true also SIGKILLs
+the process of a miner-signature match from the host (default false; the
+action still applies). Omitted fields inherit. The
 mining-behavior thresholds are backend-wide and cannot be combined with
 --container.`,
 		Args: cobra.NoArgs,
@@ -237,7 +245,7 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 				if container == "" {
 					return fmt.Errorf("--clear-override requires --container (only overrides can be cleared)")
 				}
-				for _, n := range []string{"action", "throttle-allowance", "ttl", "rule"} {
+				for _, n := range []string{"action", "throttle-allowance", "ttl", "kill-process", "rule"} {
 					if flags.Changed(n) {
 						return fmt.Errorf("--clear-override cannot be combined with policy flags")
 					}
@@ -265,6 +273,9 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 						return err
 					}
 					pol.Ttl, set = d, true
+				}
+				if flags.Changed("kill-process") {
+					pol.KillProcess, set = proto.Bool(killProcess), true
 				}
 				miningFlags := false
 				for _, n := range []string{"min-cores", "min-fraction-of-limit", "window", "flow-min-age", "stratum-ports"} {
@@ -303,7 +314,7 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 					pol.MiningBehavior, set = m, true
 				}
 				if !set {
-					return fmt.Errorf("nothing to set: give --action, --throttle-allowance, --ttl, --clear-override or --rule mining-behavior with thresholds")
+					return fmt.Errorf("nothing to set: give --action, --throttle-allowance, --ttl, --kill-process, --clear-override or --rule mining-behavior with thresholds")
 				}
 				req.Policy = pol
 			}
@@ -327,6 +338,7 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 	f.StringVar(&action, "action", "", "What a HIGH mining finding does: "+processActionAllowed)
 	f.StringVar(&allowance, "throttle-allowance", "", `limits.cpu.allowance applied by throttle, e.g. "10%" or "10ms/100ms"`)
 	f.StringVar(&ttl, "ttl", "", "How long an unreleased action stays before the TTL backstop releases it (e.g. 24h)")
+	f.BoolVar(&killProcess, "kill-process", false, "Also SIGKILL the matched process on a miner-signature finding (--kill-process=false turns it off)")
 	f.StringVar(&container, "container", "", "Write this container's override instead of the backend default")
 	f.BoolVar(&clearOverride, "clear-override", false, "Remove the container's override (requires --container)")
 	f.StringVar(&rule, "rule", "", "Tune a rule's thresholds: mining-behavior")
@@ -344,6 +356,9 @@ func newProcessPolicyReleaseCmd() *cobra.Command {
 		Short: "Undo the open throttle/freeze on a container and resolve its finding (admin)",
 		Long: `Restores the container's recorded CPU limit (throttle) or unfreezes it
 (freeze), marks the action released by the operator and resolves the finding.
+A miner-signature finding shared with another box of the tenant that still
+has an action open or a response queued is kept open instead, and resolved
+when the last box is released; the output says which.
 Fails with 404 when no action is open on the container.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -364,10 +379,20 @@ Fails with 404 when no action is open on the container.`,
 			case pb.ProcessAction_PROCESS_ACTION_FREEZE:
 				what = "container unfrozen"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Released %s on %s: %s. Finding #%d resolved.\n", actionLabel(act), args[0], what, f.GetId())
+			fmt.Fprintf(cmd.OutOrStdout(), "Released %s on %s: %s. %s\n", actionLabel(act), args[0], what, releasedFindingNote(&out))
 			return nil
 		},
 	}
+}
+
+// releasedFindingNote says what the release did to the finding: resolved,
+// or kept open because another box of the tenant still holds the shared
+// finding (an action open or a response queued; #2766).
+func releasedFindingNote(out *pb.ReleaseProcessActionResponse) string {
+	if out.GetFindingKeptOpen() {
+		return fmt.Sprintf("Finding #%d kept open: another box still has a response.", out.GetFinding().GetId())
+	}
+	return fmt.Sprintf("Finding #%d resolved.", out.GetFinding().GetId())
 }
 
 func init() {

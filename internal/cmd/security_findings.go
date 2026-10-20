@@ -57,18 +57,55 @@ var securitySentryFindingsResolveCmd = &cobra.Command{
 // findingEnvelope mirrors *Finding's grpc-gateway JSON shape (protojson
 // default: camelCase, enums as their string names, int64 as a JSON string).
 type findingEnvelope struct {
-	ID        string             `json:"id"`
-	Rule      string             `json:"rule"`
-	Severity  string             `json:"severity"`
-	TenantID  string             `json:"tenantId"`
-	Container string             `json:"container"`
-	BackendID string             `json:"backendId"`
-	Subject   string             `json:"subject"`
-	State     string             `json:"state"`
-	Count     string             `json:"count"`
-	Evidence  findingEvidenceEnv `json:"evidence"`
-	FirstSeen string             `json:"firstSeen"`
-	LastSeen  string             `json:"lastSeen"`
+	ID        string              `json:"id"`
+	Rule      string              `json:"rule"`
+	Severity  string              `json:"severity"`
+	TenantID  string              `json:"tenantId"`
+	Container string              `json:"container"`
+	BackendID string              `json:"backendId"`
+	Subject   string              `json:"subject"`
+	State     string              `json:"state"`
+	Count     string              `json:"count"`
+	Evidence  findingEvidenceEnv  `json:"evidence"`
+	FirstSeen string              `json:"firstSeen"`
+	LastSeen  string              `json:"lastSeen"`
+	Response  *findingResponseEnv `json:"response,omitempty"`
+}
+
+// findingResponseEnv mirrors FindingResponse's grpc-gateway JSON shape
+// (#2636), as far as the list renders it. The kill facts (#2775) are the
+// host pid of the latest kill, how many processes were killed for the
+// finding, and the KillSkipReason enum name when the last attempted kill was
+// skipped (`KILL_SKIP_REASON_UNSPECIFIED`, or absent, when it was not). Like
+// the rest of the envelope they are hand-mirrored strings: protojson enums
+// arrive as their names, and this envelope is what `--json` prints.
+type findingResponseEnv struct {
+	Action         string `json:"action"`
+	State          string `json:"state"`
+	ProcessKilled  bool   `json:"processKilled"`
+	KilledPID      uint32 `json:"killedPid,omitempty"`
+	Kills          uint32 `json:"kills,omitempty"`
+	KillSkipReason string `json:"killSkipReason,omitempty"`
+}
+
+// killSkipReasonNone is the enum name grpc-gateway renders for no skip.
+const killSkipReasonNone = "KILL_SKIP_REASON_UNSPECIFIED"
+
+// describe is the one-line text rendering of a response, e.g.
+// `response ALERT NONE, process killed (pid 25872, kills 3)` or
+// `response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`.
+func (r findingResponseEnv) describe() string {
+	detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
+	if r.ProcessKilled {
+		detail += ", process killed"
+		if r.KilledPID != 0 {
+			detail += fmt.Sprintf(" (pid %d, kills %d)", r.KilledPID, r.Kills)
+		}
+	}
+	if r.KillSkipReason != "" && r.KillSkipReason != killSkipReasonNone {
+		detail += ", kill skipped: " + strings.TrimPrefix(r.KillSkipReason, "KILL_SKIP_REASON_")
+	}
+	return detail
 }
 
 type findingEvidenceEnv struct {
@@ -76,6 +113,18 @@ type findingEvidenceEnv struct {
 	Denies    []map[string]interface{}     `json:"denies"`
 	Configs   []findingConfigEvidenceEnv   `json:"configs"`
 	Listeners []findingListenerEvidenceEnv `json:"listeners"`
+	Execs     []findingExecEvidenceEnv     `json:"execs"`
+}
+
+// findingExecEvidenceEnv mirrors ExecEvidence's grpc-gateway JSON shape
+// (#2637/#2638): the exec a miner-signature finding matched.
+type findingExecEvidenceEnv struct {
+	PID      uint32 `json:"pid"`
+	Comm     string `json:"comm"`
+	Filename string `json:"filename"`
+	Argv     string `json:"argv"`
+	SHA256   string `json:"sha256"`
+	Matched  string `json:"matched"`
 }
 
 // findingListenerEvidenceEnv mirrors ListenerEvidence's grpc-gateway JSON
@@ -166,6 +215,19 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 				detail += " — " + c.Note
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
+		}
+		for _, x := range f.Evidence.Execs {
+			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.PID, x.Filename, x.Comm, x.Argv)
+			if x.SHA256 != "" {
+				detail += " sha256 " + x.SHA256
+			}
+			if x.Matched != "" {
+				detail += " — matched " + x.Matched
+			}
+			fmt.Fprintf(w, "       %s\n", detail)
+		}
+		if r := f.Response; r != nil {
+			fmt.Fprintf(w, "       %s\n", r.describe())
 		}
 		for _, l := range f.Evidence.Listeners {
 			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.BindAddress, l.Port, l.PID, l.Binary)

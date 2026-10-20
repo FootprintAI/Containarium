@@ -2,8 +2,10 @@ package sshauthz
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,35 +22,51 @@ func (s *recordSink) Record(r sshsession.Record) error {
 	return nil
 }
 
+// readyResolver is a resolver that also reports routing readiness, as the
+// sentinel manager's bridge does.
+type readyResolver struct {
+	resolverFunc
+	ready bool
+}
+
+func (r readyResolver) RoutingReady(context.Context) bool { return r.ready }
+
 // In enforce mode every DENY returns an error, so sshpiperd keeps the chain on
-// this plugin and never consults ssh-session-plugin or yaml for that key.
-// Skipped credentials and allows still defer.
+// this plugin and never consults ssh-session-plugin or yaml for that key. An
+// unknown login is refused the same way: without a backend there is no daemon
+// decision, and the static config.yaml must never be the sole judge. Every
+// other offer is routed by this plugin, as yaml would route it, and is never
+// deferred: the chain cannot advance past it (#2629). The routed connection's
+// open and close records carry the decision this plugin made and enforced=true.
 func TestEnforceMatrix(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
-	signer := testKey(t)
-	cert := &ssh.Certificate{Key: signer.PublicKey(), CertType: ssh.UserCert, ValidPrincipals: []string{"alice"}, ValidBefore: ssh.CertTimeInfinity}
-	if err := cert.SignCert(rand.Reader, testKey(t)); err != nil {
-		t.Fatal(err)
-	}
+	f := newRouterFixture(t, "")
+	signer := f.alice
 	fp := ssh.FingerprintSHA256(signer.PublicKey())
 	type row struct {
 		name                   string
 		wire                   []byte
 		unknown, resolverError bool
+		notReady               bool          // the resolver reports the keystore unsynced
 		seededAge              time.Duration // >0 seeds a positive this old
 		res                    *pb.AuthorizeSSHResponse
 		err                    error
 		denied                 bool
+		refused                bool // refused by routing: no upstream, no record
 		decision               sshsession.AuthzDecision
 		reason                 pb.SSHDenyReason
 		user                   string
+		wantLog                string
 	}
 	rows := []row{
-		{name: "certificate defers", wire: cert.Marshal()},
-		{name: "malformed defers", wire: []byte("bad")},
-		{name: "unknown login defers", unknown: true},
-		{name: "allow defers", res: allowed("user-1"), decision: sshsession.AuthzAllow, user: "user-1"},
-		{name: "outage inside grace defers", seededAge: time.Minute, err: errors.New("offline"), decision: sshsession.AuthzAllow, user: "cached-user"},
+		{name: "trusted certificate is routed", wire: routerCert(t, testKey(t).PublicKey(), f.ca, "alice", ssh.CertTimeInfinity)},
+		{name: "untrusted certificate refused", wire: routerCert(t, testKey(t).PublicKey(), testKey(t), "alice", ssh.CertTimeInfinity), refused: true},
+		{name: "malformed refused", wire: []byte("bad"), refused: true},
+		{name: "unknown login refused", unknown: true, denied: true, reason: pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, wantLog: "unknown login refused in enforce mode: no synced backend lists the login"},
+		{name: "keystore not synced refused", unknown: true, notReady: true, denied: true, reason: pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, wantLog: "unknown login refused in enforce mode: routing not ready, keystore not yet synced"},
+		{name: "allow is routed", res: allowed("user-1"), decision: sshsession.AuthzAllow, user: "user-1"},
+		{name: "allowed key outside authorized_keys refused", wire: testKey(t).PublicKey().Marshal(), res: allowed("user-1"), refused: true},
+		{name: "outage inside grace is routed", seededAge: time.Minute, err: errors.New("offline"), decision: sshsession.AuthzAllow, user: "cached-user"},
 		{name: "broken bridge refused", resolverError: true, denied: true, reason: pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE},
 		{name: "outage outside grace refused", seededAge: DefaultGrace + time.Second, err: errors.New("offline"), denied: true, reason: pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE},
 		{name: "invalid response refused", res: &pb.AuthorizeSSHResponse{}, denied: true, reason: pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE},
@@ -66,13 +84,17 @@ func TestEnforceMatrix(t *testing.T) {
 				clock = clock.Add(tt.seededAge)
 			}
 			sink := &recordSink{}
+			var logs []string
+			resolver := resolverFunc(func(context.Context, string) (string, bool, error) {
+				if tt.resolverError {
+					return "", false, errors.New("broken")
+				}
+				return "backend-1", !tt.unknown, nil
+			})
 			p, err := New(Config{Enforce: true, Recorder: sink, Cache: c, Now: func() time.Time { return clock },
-				Resolver: resolverFunc(func(context.Context, string) (string, bool, error) {
-					if tt.resolverError {
-						return "", false, errors.New("broken")
-					}
-					return "backend-1", !tt.unknown, nil
-				}),
+				Logf:   func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+				Router: NewRouter(f.config), Target: sshsession.NewTargetResolver(f.config),
+				Resolver: readyResolver{resolverFunc: resolver, ready: !tt.notReady},
 				Authorizer: authorizerFunc(func(context.Context, string, *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 					return tt.res, tt.err
 				})})
@@ -83,21 +105,43 @@ func TestEnforceMatrix(t *testing.T) {
 			if wire == nil {
 				wire = signer.PublicKey().Marshal()
 			}
-			up, err := p.PluginConfig().PublicKeyCallback(&libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}, wire)
-			if !tt.denied {
-				if err != nil || up.GetNextPlugin() == nil {
-					t.Fatalf("must defer: %v %v", up, err)
-				}
-				meta := up.GetNextPlugin().Meta
-				wantEnforced := ""
-				if tt.decision != "" {
-					wantEnforced = "true"
-				}
-				if meta[sshsession.MetaAuthzDecision] != string(tt.decision) || meta[sshsession.MetaUserID] != tt.user || meta[sshsession.MetaEnforced] != wantEnforced {
-					t.Fatalf("metadata = %v", meta)
+			conn := &libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}
+			cfg := p.PluginConfig()
+			up, err := cfg.PublicKeyCallback(conn, wire)
+			if tt.wantLog != "" && !strings.Contains(strings.Join(logs, "\n"), tt.wantLog) {
+				t.Fatalf("logs = %q, want %q", logs, tt.wantLog)
+			}
+			if tt.refused {
+				if err == nil || up != nil {
+					t.Fatalf("must be refused: %v %v", up, err)
 				}
 				if len(sink.recs) != 0 {
-					t.Fatalf("deferred offer wrote a denied record: %+v", sink.recs)
+					t.Fatalf("refused offer wrote records: %+v", sink.recs)
+				}
+				return
+			}
+			if !tt.denied {
+				if err != nil || up.GetNextPlugin() != nil || up.GetOrGenerateUri() != "tcp://192.0.2.10:2222" || up.GetPrivateKey() == nil {
+					t.Fatalf("must route, never defer: %v %v", up, err)
+				}
+				if len(sink.recs) != 0 {
+					t.Fatalf("routed offer wrote a record before the pipe started: %+v", sink.recs)
+				}
+				cfg.PipeStartCallback(conn)
+				cfg.PipeErrorCallback(conn, nil)
+				method, cred, _ := sshsession.ExtractCredential(wire)
+				want := sshsession.Record{
+					SessionID: "conn-1", Phase: sshsession.SessionPhaseOpen, OccurredAt: clock,
+					ClientIP: "203.0.113.1", ClientPort: 1234, Login: "alice", Target: "192.0.2.10:2222",
+					AuthMethod: method, Credential: cred,
+					UserID: tt.user, AuthzDecision: sshsession.DecisionToProto(tt.decision), Enforced: true,
+				}
+				if len(sink.recs) != 2 || sink.recs[0] != want {
+					t.Fatalf("records = %+v\nwant open %+v", sink.recs, want)
+				}
+				want.Phase, want.CloseReason = sshsession.SessionPhaseClose, sshsession.CloseReasonNormal
+				if sink.recs[1] != want {
+					t.Fatalf("close record:\n got %+v\nwant %+v", sink.recs[1], want)
 				}
 				return
 			}
@@ -138,5 +182,227 @@ func TestAuditOnlyDenyDefersWithoutRecord(t *testing.T) {
 	}
 	if up.GetNextPlugin().Meta[sshsession.MetaEnforced] != "" || len(sink.recs) != 0 {
 		t.Fatalf("audit-only marked enforcement: meta=%v records=%+v", up.GetNextPlugin().Meta, sink.recs)
+	}
+}
+
+// Audit-only mode keeps deferring an unknown login, whether or not the
+// resolver reports its keystore synced: the static file decides, as before.
+func TestAuditOnlyUnknownLoginDefers(t *testing.T) {
+	for _, ready := range []bool{true, false} {
+		sink := &recordSink{}
+		p, err := New(Config{Recorder: sink,
+			Resolver:   readyResolver{resolverFunc: resolverFunc(func(context.Context, string) (string, bool, error) { return "", false, nil }), ready: ready},
+			Authorizer: authorizerFunc(nil)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		up, err := p.PluginConfig().PublicKeyCallback(&libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234"}, testKey(t).PublicKey().Marshal())
+		if err != nil || up.GetNextPlugin() == nil || up.GetNextPlugin().Meta[sshsession.MetaAuthzDecision] != "" || len(sink.recs) != 0 {
+			t.Fatalf("ready=%v: audit-only must defer an unknown login undecided: %v %v %+v", ready, up, err, sink.recs)
+		}
+	}
+}
+
+// A pipe that starts for a connection whose decision was evicted from the
+// bounded stash was still admitted in enforce mode. ssh-session-plugin skips
+// it too, so this plugin records the session without credential or decision
+// rather than not at all, and logs the gap with the connection id and never
+// with credential material.
+func TestEnforceRecordsPipeWithoutPendingDecision(t *testing.T) {
+	clock := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	var logs []string
+	sink := &recordSink{}
+	p, err := New(Config{Enforce: true, Recorder: sink, Router: NewRouter("unused"), Now: func() time.Time { return clock },
+		Logf:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+		Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.remember("evicted-conn", map[string]string{sshsession.MetaUserID: "secret-user"})
+	clock = clock.Add(time.Second)
+	for i := range maxPending {
+		p.remember(fmt.Sprint(i), nil)
+	}
+	cfg := p.PluginConfig()
+	conn := &libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "evicted-conn"}
+	cfg.PipeStartCallback(conn)
+	cfg.PipeErrorCallback(conn, nil)
+	want := sshsession.Record{
+		SessionID: "evicted-conn", Phase: sshsession.SessionPhaseOpen, OccurredAt: clock,
+		ClientIP: "203.0.113.1", ClientPort: 1234, Login: "alice", Enforced: true,
+	}
+	if len(sink.recs) != 2 || sink.recs[0] != want {
+		t.Fatalf("records = %+v\nwant open %+v", sink.recs, want)
+	}
+	want.Phase, want.CloseReason = sshsession.SessionPhaseClose, sshsession.CloseReasonNormal
+	if sink.recs[1] != want {
+		t.Fatalf("close record:\n got %+v\nwant %+v", sink.recs[1], want)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], `session="evicted-conn"`) || !strings.Contains(logs[0], "no pending decision") || strings.Contains(logs[0], "secret-user") {
+		t.Fatalf("logs = %q", logs)
+	}
+}
+
+// The open and close records name the target the Router computed when the
+// offer was routed, not whatever config.yaml says when the pipe starts or
+// ends: keysync re-renders the file, and a close record that names another
+// backend (or none) would leave the open row unmatched on the first one.
+func TestEnforceRecordsCarryRoutedTargetAcrossRerender(t *testing.T) {
+	f := newRouterFixture(t, "")
+	sink := &recordSink{}
+	target := sshsession.NewTargetResolver(f.config)
+	p, err := New(Config{Enforce: true, Recorder: sink, Router: NewRouter(f.config), Target: target,
+		Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend-1", true, nil }),
+		Authorizer: authorizerFunc(func(context.Context, string, *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+			return allowed("user-1"), nil
+		})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := p.PluginConfig()
+	conn := &libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}
+	if _, err := cfg.PublicKeyCallback(conn, f.alice.PublicKey().Marshal()); err != nil {
+		t.Fatal(err)
+	}
+	// Move alice to another host before the pipe starts, and drop her before
+	// it ends. A fresh read of the file shows each change.
+	rerender := func(host string) {
+		t.Helper()
+		raw, err := os.ReadFile(f.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.config, []byte(strings.Replace(string(raw), "192.0.2.10:2222", host, 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(f.config, time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rerender("192.0.2.99:2222")
+	if got := sshsession.NewTargetResolver(f.config).Resolve("alice"); got != "192.0.2.99:2222" {
+		t.Fatalf("re-rendered config resolves alice to %q", got)
+	}
+	cfg.PipeStartCallback(conn)
+	rerender("")
+	cfg.PipeErrorCallback(conn, nil)
+	if len(sink.recs) != 2 {
+		t.Fatalf("records = %+v", sink.recs)
+	}
+	for _, rec := range sink.recs {
+		if rec.Target != "192.0.2.10:2222" {
+			t.Fatalf("%s record target = %q, want the routed 192.0.2.10:2222", rec.Phase, rec.Target)
+		}
+	}
+}
+
+// Only publickey is offered, and every other method is refused by this plugin
+// in both modes, so sshpiperd's forward-only chain cursor cannot be moved past
+// it by a password, keyboard-interactive or none attempt (#2741).
+func TestPublicKeyIsTheOnlyMethod(t *testing.T) {
+	for _, enforce := range []bool{false, true} {
+		cfg := Config{Enforce: enforce, Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)}
+		if enforce {
+			cfg.Router = NewRouter("unused")
+		}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pc := p.PluginConfig()
+		conn := &libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}
+		methods, err := pc.NextAuthMethodsCallback(conn)
+		if err != nil || len(methods) != 1 || methods[0] != "publickey" {
+			t.Fatalf("enforce=%v: methods = %v %v", enforce, methods, err)
+		}
+		for name, attempt := range map[string]func() (*libplugin.Upstream, error){
+			"none":     func() (*libplugin.Upstream, error) { return pc.NoClientAuthCallback(conn) },
+			"password": func() (*libplugin.Upstream, error) { return pc.PasswordCallback(conn, []byte("hunter2")) },
+			"keyboard-interactive": func() (*libplugin.Upstream, error) {
+				return pc.KeyboardInteractiveCallback(conn, func(string, string, string, bool) (string, error) { return "", nil })
+			},
+		} {
+			up, err := attempt()
+			if up != nil || !errors.Is(err, errPublicKeyOnly) {
+				t.Fatalf("enforce=%v: %s must be refused, got %v %v", enforce, name, up, err)
+			}
+		}
+	}
+}
+
+// Audit-only mode leaves the session records to ssh-session-plugin.
+func TestAuditOnlyWritesNoSessionRecords(t *testing.T) {
+	p, err := New(Config{Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := p.PluginConfig(); cfg.PipeStartCallback != nil || cfg.PipeErrorCallback != nil {
+		t.Fatal("audit-only plugin must not observe pipes")
+	}
+}
+
+// Enforce mode cannot fail open on a missing router: there is nothing to defer to.
+func TestEnforceRequiresRouter(t *testing.T) {
+	if _, err := New(Config{Enforce: true, Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)}); err == nil {
+		t.Fatal("enforce mode without a router must be refused")
+	}
+}
+
+// The pipe's records name the credential routed last on the connection: the
+// SSH server re-runs the callback for the key that finally signs unless that
+// key was the last one checked. A proxy shutdown closes the open session once.
+func TestEnforceSessionRecordsLastRoutedCredentialAndShutdown(t *testing.T) {
+	f := newRouterFixture(t, "")
+	sink := &recordSink{}
+	p, err := New(Config{Enforce: true, Recorder: sink, Router: NewRouter(f.config),
+		Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend-1", true, nil }),
+		Authorizer: authorizerFunc(func(context.Context, string, *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+			return allowed("user-1"), nil
+		})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := p.PluginConfig()
+	conn := &libplugin.ConnMeta{UserName: "alice", FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}
+	for _, wire := range [][]byte{routerCert(t, testKey(t).PublicKey(), f.ca, "alice", ssh.CertTimeInfinity), f.alice.PublicKey().Marshal()} {
+		if _, err := cfg.PublicKeyCallback(conn, wire); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.PipeStartCallback(conn)
+	p.Shutdown()
+	p.Shutdown()
+	if len(sink.recs) != 2 {
+		t.Fatalf("records = %+v, want open and one shutdown close", sink.recs)
+	}
+	for _, rec := range sink.recs {
+		if rec.AuthMethod != sshsession.AuthMethodPublicKey || rec.KeyFingerprint != ssh.FingerprintSHA256(f.alice.PublicKey()) || rec.UserID != "user-1" || !rec.Enforced {
+			t.Fatalf("record: %+v", rec)
+		}
+	}
+	if sink.recs[1].Phase != sshsession.SessionPhaseClose || sink.recs[1].CloseReason != sshsession.CloseReasonProxyShutdown {
+		t.Fatalf("shutdown close: %+v", sink.recs[1])
+	}
+}
+
+// A connection routed on a query that never authenticates leaves its pending
+// decision behind; the per-connection stash stays bounded in size and age.
+func TestEnforcePendingIsBounded(t *testing.T) {
+	clock := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	p, err := New(Config{Enforce: true, Router: NewRouter("unused"), Now: func() time.Time { return clock },
+		Resolver: resolverFunc(nil), Authorizer: authorizerFunc(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxPending + 5 {
+		p.remember(fmt.Sprint(i), nil)
+	}
+	if len(p.pending) != maxPending {
+		t.Fatalf("pending = %d, want %d", len(p.pending), maxPending)
+	}
+	clock = clock.Add(pendingTTL + time.Second)
+	p.remember("late", nil)
+	if len(p.pending) != 1 {
+		t.Fatalf("expired entries kept: %d", len(p.pending))
 	}
 }

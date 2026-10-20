@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf/ringbuf"
@@ -164,36 +168,104 @@ func TestExecEvent_ArgvNeverCarriesEnvironment(t *testing.T) {
 	}
 }
 
-// fakeRingReader yields a fixed sequence of ringbuf records then ErrClosed.
+// fakeRingReader models *ringbuf.Reader for the timed drain: each round is
+// what the ring holds at one tick. AvailableBytes reports the round's
+// remaining records (an empty round reports 0, which ends it); ReadInto
+// returns them one by one, then os.ErrDeadlineExceeded (ring empty, like the
+// real reader with a deadline of now) and moves to the next round. After
+// the last round it reports data and ErrClosed. Records are copied into the
+// caller's reused buffer, as ReadInto does, so a decoder that kept a
+// reference into it would see the next record's bytes.
 type fakeRingReader struct {
-	recs []ringbuf.Record
-	i    int
+	rounds    [][]ringbuf.Record
+	round, i  int
+	reads     int             // ReadInto calls
+	taken     int             // ReadInto calls that returned a record (consumed from the ring)
+	deadlines []time.Duration // deadline - now at each SetDeadline
 }
 
-func (f *fakeRingReader) Read() (ringbuf.Record, error) {
-	if f.i >= len(f.recs) {
-		return ringbuf.Record{}, ringbuf.ErrClosed
+// remaining is how many records are still in the ring (never consumed).
+func (f *fakeRingReader) remaining() int {
+	n := 0
+	for r := f.round; r < len(f.rounds); r++ {
+		n += len(f.rounds[r])
 	}
-	r := f.recs[f.i]
-	f.i++
-	return r, nil
+	if f.round < len(f.rounds) {
+		n -= f.i
+	}
+	return n
 }
 
-type captureExecSink struct{ events []ExecEvent }
+func (f *fakeRingReader) SetDeadline(t time.Time) {
+	f.deadlines = append(f.deadlines, time.Until(t))
+}
+
+func (f *fakeRingReader) AvailableBytes() int {
+	if f.round >= len(f.rounds) {
+		return 1 // closed: let ReadInto report it
+	}
+	left := len(f.rounds[f.round]) - f.i
+	if left == 0 {
+		f.round++ // an idle tick
+		f.i = 0
+		return 0
+	}
+	return left * execEventSize
+}
+
+func (f *fakeRingReader) ReadInto(rec *ringbuf.Record) error {
+	f.reads++
+	if f.round >= len(f.rounds) {
+		return ringbuf.ErrClosed
+	}
+	if f.i >= len(f.rounds[f.round]) {
+		f.round++
+		f.i = 0
+		return os.ErrDeadlineExceeded
+	}
+	src := f.rounds[f.round][f.i]
+	f.i++
+	f.taken++
+	rec.RawSample = append(rec.RawSample[:0], src.RawSample...)
+	return nil
+}
+
+type captureExecSink struct {
+	events  []ExecEvent
+	drains  []int
+	drainAt []time.Time
+}
 
 func (c *captureExecSink) OnExecEvent(_ context.Context, ev ExecEvent) {
 	c.events = append(c.events, ev)
 }
 
+func (c *captureExecSink) OnExecDrain(n int) {
+	c.drains = append(c.drains, n)
+	c.drainAt = append(c.drainAt, time.Now())
+}
+
+func rec(pid uint32, comm string) ringbuf.Record {
+	return ringbuf.Record{RawSample: rawExecEvent(pid, 1, 0, 5, comm, "/"+comm, []byte(comm+"\x00"), false)}
+}
+
+func recs(n int) []ringbuf.Record {
+	out := make([]ringbuf.Record, n)
+	for i := range out {
+		out[i] = rec(uint32(i+1), "r") // #nosec G115 -- small test count
+	}
+	return out
+}
+
 func TestConsumeExecEvents(t *testing.T) {
-	rd := &fakeRingReader{recs: []ringbuf.Record{
-		{RawSample: rawExecEvent(1, 1, 0, 5, "a", "/a", []byte("a\x00"), false)},
+	rd := &fakeRingReader{rounds: [][]ringbuf.Record{{
+		rec(1, "a"),
 		{RawSample: []byte{0xff, 0xfe}}, // malformed: reported, not delivered
-		{RawSample: rawExecEvent(2, 1, 0, 6, "b", "/b", []byte("b\x00"), false)},
-	}}
+		rec(2, "b"),
+	}}}
 	sink := &captureExecSink{}
 	var errs []error
-	ConsumeExecEvents(context.Background(), rd, sink, func(err error) { errs = append(errs, err) })
+	ConsumeExecEventsEvery(context.Background(), rd, 5*time.Millisecond, sink, func(err error) { errs = append(errs, err) })
 	if len(sink.events) != 2 || sink.events[0].HostPID != 1 || sink.events[1].HostPID != 2 {
 		t.Fatalf("delivered %+v, want pids 1 and 2", sink.events)
 	}
@@ -202,14 +274,167 @@ func TestConsumeExecEvents(t *testing.T) {
 	}
 }
 
+// #2774: the consumer drains in batches, one per tick: every record of the
+// round delivered in order, the drain size reported once per tick (0 for an
+// idle one), the reader's deadline set to now so it never sleeps in epoll,
+// no read at all on an idle tick, and the reused buffer never aliased into a
+// delivered event.
+func TestConsumeExecEvents_DrainsInBatchesPerInterval(t *testing.T) {
+	rd := &fakeRingReader{rounds: [][]ringbuf.Record{
+		{rec(1, "a"), rec(2, "bb"), rec(3, "ccc")},
+		{}, // idle tick
+		{rec(4, "dddd"), rec(5, "e")},
+	}}
+	sink := &captureExecSink{}
+	ConsumeExecEventsEvery(context.Background(), rd, 10*time.Millisecond, sink, nil)
+
+	if want := []int{3, 0, 2}; !slices.Equal(sink.drains, want) {
+		t.Fatalf("drain sizes = %v, want %v", sink.drains, want)
+	}
+	wantComm := []string{"a", "bb", "ccc", "dddd", "e"}
+	if len(sink.events) != len(wantComm) {
+		t.Fatalf("delivered %d events, want %d", len(sink.events), len(wantComm))
+	}
+	for i, ev := range sink.events {
+		if ev.HostPID != uint32(i+1) || ev.Comm != wantComm[i] || ev.Filename != "/"+wantComm[i] || ev.ArgvString() != wantComm[i] { // #nosec G115 -- small index
+			t.Errorf("event %d = pid %d comm %q filename %q argv %q, want pid %d comm %q", i, ev.HostPID, ev.Comm, ev.Filename, ev.ArgvString(), i+1, wantComm[i])
+		}
+	}
+	// Reads: 3 records + end-of-ring, nothing on the idle tick, 2 + end, and
+	// the final read that saw ErrClosed.
+	if rd.reads != 8 {
+		t.Errorf("ReadInto called %d times, want 8 (none on the idle tick)", rd.reads)
+	}
+	if len(rd.deadlines) != 3 {
+		t.Fatalf("SetDeadline called %d times, want 3 (one per non-empty tick)", len(rd.deadlines))
+	}
+	for i, d := range rd.deadlines {
+		if d > 0 {
+			t.Errorf("deadline %d is %s in the future: the drain must not block in epoll", i, d)
+		}
+	}
+}
+
+func TestConsumeExecEvents_DefaultInterval(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		rd := &fakeRingReader{rounds: [][]ringbuf.Record{{rec(1, "a")}, {rec(2, "b")}}}
+		sink := &captureExecSink{}
+		start := time.Now()
+		ConsumeExecEventsEvery(context.Background(), rd, interval, sink, nil)
+		if len(sink.drainAt) != 2 {
+			t.Fatalf("interval %s: %d drains, want 2", interval, len(sink.drainAt))
+		}
+		// Both offsets are measured from start, not from each other: the
+		// ticker fires on an absolute schedule, so a late first drain (a
+		// loaded runner) shortens the gap to the second without the interval
+		// being wrong.
+		if first, second := sink.drainAt[0].Sub(start), sink.drainAt[1].Sub(start); first < ExecDrainInterval*8/10 || second < 2*ExecDrainInterval*8/10 {
+			t.Fatalf("interval %s: drains at %s and %s after start; want about ExecDrainInterval (%s) and twice that", interval, first, second, ExecDrainInterval)
+		}
+	}
+	// The latency bound the miner-signature rule's < 10 s budget relies on.
+	if ExecDrainInterval <= 0 || ExecDrainInterval > time.Second {
+		t.Fatalf("ExecDrainInterval = %s, want a positive sub-second bound", ExecDrainInterval)
+	}
+}
+
+// A drain that hit the burst size is followed at once by another, not by
+// the next tick; a smaller one waits for the tick.
+func TestConsumeExecEvents_BurstRedrainsWithoutWaiting(t *testing.T) {
+	const interval = 300 * time.Millisecond
+	for _, tc := range []struct {
+		first     int
+		wantQuick bool
+	}{{execBurstRecords, true}, {execBurstRecords - 1, false}} {
+		rd := &fakeRingReader{rounds: [][]ringbuf.Record{recs(tc.first), {rec(9, "z")}}}
+		sink := &captureExecSink{}
+		ConsumeExecEventsEvery(context.Background(), rd, interval, sink, nil)
+		if len(sink.drainAt) < 2 {
+			t.Fatalf("first=%d: %d drains, want 2", tc.first, len(sink.drainAt))
+		}
+		gap := sink.drainAt[1].Sub(sink.drainAt[0])
+		if quick := gap < interval/2; quick != tc.wantQuick {
+			t.Errorf("first drain of %d records: next drain after %s, want quick=%v (burst size %d, interval %s)", tc.first, gap, tc.wantQuick, execBurstRecords, interval)
+		}
+	}
+}
+
 func TestConsumeExecEvents_CtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	rd := &fakeRingReader{recs: []ringbuf.Record{{RawSample: rawExecEvent(1, 1, 0, 5, "a", "/a", nil, false)}}}
+	rd := &fakeRingReader{rounds: [][]ringbuf.Record{{rec(1, "a")}}}
 	sink := &captureExecSink{}
 	ConsumeExecEvents(ctx, rd, sink, nil)
 	if len(sink.events) != 0 {
 		t.Fatalf("delivered %d events after ctx cancel, want 0", len(sink.events))
+	}
+}
+
+// Cancelling while the ring is idle returns promptly, without a Close.
+func TestConsumeExecEvents_CtxCancelWhileIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	idle := &queueRingReader{closed: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ConsumeExecEventsEvery(ctx, idle, 10*time.Millisecond, &captureExecSink{}, nil)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumer did not return after ctx cancel on an idle ring")
+	}
+}
+
+// Cancelling mid-batch stops at the next record rather than draining the
+// rest of the round into a sink that is shutting down.
+func TestConsumeExecEvents_CtxCancelMidBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rd := &fakeRingReader{rounds: [][]ringbuf.Record{{rec(1, "a"), rec(2, "b"), rec(3, "c")}}}
+	sink := &cancelAfterSink{n: 1, cancel: cancel}
+	ConsumeExecEventsEvery(ctx, rd, 5*time.Millisecond, sink, nil)
+	if sink.got != 1 {
+		t.Fatalf("delivered %d events, want 1 (cancelled after the first)", sink.got)
+	}
+}
+
+// A record ReadInto has returned is already consumed from the kernel ring
+// (consumer_pos advanced): it must reach the sink even if ctx is cancelled
+// by then, or it is neither delivered nor counted in exec_events_lost
+// (#2812 review). With N records queued and a cancel landing after the k-th
+// delivery, every record taken from the ring was delivered and the rest are
+// still in it: taken == delivered and delivered + remaining == emitted.
+func TestConsumeExecEvents_CtxCancelNeverDropsAConsumedRecord(t *testing.T) {
+	const emitted = 8
+	for cancelAfter := 1; cancelAfter <= emitted; cancelAfter++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		rd := &fakeRingReader{rounds: [][]ringbuf.Record{recs(emitted)}}
+		sink := &cancelAfterSink{n: cancelAfter, cancel: cancel}
+		ConsumeExecEventsEvery(ctx, rd, 5*time.Millisecond, sink, nil)
+		cancel()
+		if sink.got != rd.taken {
+			t.Errorf("cancel after %d: %d records taken from the ring, %d delivered: a consumed record was dropped", cancelAfter, rd.taken, sink.got)
+		}
+		if sink.got+rd.remaining() != emitted {
+			t.Errorf("cancel after %d: delivered %d + remaining %d != emitted %d", cancelAfter, sink.got, rd.remaining(), emitted)
+		}
+		if sink.got != cancelAfter {
+			t.Errorf("cancel after %d: delivered %d, want the drain to stop at the next record", cancelAfter, sink.got)
+		}
+	}
+}
+
+type cancelAfterSink struct {
+	n, got int
+	cancel func()
+}
+
+func (s *cancelAfterSink) OnExecEvent(context.Context, ExecEvent) {
+	s.got++
+	if s.got >= s.n {
+		s.cancel()
 	}
 }
 
@@ -218,7 +443,7 @@ func TestConsumeExecEvents_CtxCancel(t *testing.T) {
 func TestConsumeExecEvents_ReaderErrorStops(t *testing.T) {
 	rd := &errRingReader{err: errors.New("boom")}
 	var got error
-	ConsumeExecEvents(context.Background(), rd, &captureExecSink{}, func(err error) { got = err })
+	ConsumeExecEventsEvery(context.Background(), rd, 5*time.Millisecond, &captureExecSink{}, func(err error) { got = err })
 	if got == nil || !strings.Contains(got.Error(), "boom") {
 		t.Fatalf("reader error not reported: %v", got)
 	}
@@ -226,7 +451,82 @@ func TestConsumeExecEvents_ReaderErrorStops(t *testing.T) {
 
 type errRingReader struct{ err error }
 
-func (e *errRingReader) Read() (ringbuf.Record, error) { return ringbuf.Record{}, e.err }
+func (e *errRingReader) ReadInto(*ringbuf.Record) error { return e.err }
+func (e *errRingReader) SetDeadline(time.Time)          {}
+func (e *errRingReader) AvailableBytes() int            { return 1 }
+
+// queueRingReader is a concurrent fake: records pushed from another
+// goroutine sit in the ring (no wakeup, as with BPF_RB_NO_WAKEUP) until the
+// consumer's next tick drains them.
+type queueRingReader struct {
+	mu     sync.Mutex
+	queue  [][]byte
+	closed chan struct{}
+}
+
+func (r *queueRingReader) SetDeadline(time.Time) {}
+
+func (r *queueRingReader) push(b []byte) {
+	r.mu.Lock()
+	r.queue = append(r.queue, b)
+	r.mu.Unlock()
+}
+
+func (r *queueRingReader) AvailableBytes() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.queue) * execEventSize
+}
+
+func (r *queueRingReader) ReadInto(rec *ringbuf.Record) error {
+	select {
+	case <-r.closed:
+		return ringbuf.ErrClosed
+	default:
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.queue) == 0 {
+		return os.ErrDeadlineExceeded
+	}
+	rec.RawSample = append(rec.RawSample[:0], r.queue[0]...)
+	r.queue = r.queue[1:]
+	return nil
+}
+
+type chanSink struct{ ch chan ExecEvent }
+
+func (s chanSink) OnExecEvent(_ context.Context, ev ExecEvent) { s.ch <- ev }
+
+func TestConsumeExecEvents_LatencyBoundedByInterval(t *testing.T) {
+	const interval = 20 * time.Millisecond
+	rd := &queueRingReader{closed: make(chan struct{})}
+	sink := chanSink{ch: make(chan ExecEvent, 16)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ConsumeExecEventsEvery(context.Background(), rd, interval, sink, nil)
+	}()
+	defer func() { close(rd.closed); rd.push(nil); <-done }()
+
+	for i := uint32(1); i <= 3; i++ {
+		start := time.Now()
+		rd.push(rec(i, "x").RawSample)
+		select {
+		case ev := <-sink.ch:
+			if ev.HostPID != i {
+				t.Fatalf("got pid %d, want %d", ev.HostPID, i)
+			}
+			// One interval plus scheduling slack; the bound that matters is
+			// the < 10 s detection budget, so the slack is generous.
+			if lat := time.Since(start); lat > interval+500*time.Millisecond {
+				t.Fatalf("event %d delivered after %s, want about one %s interval", i, lat, interval)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("event %d never delivered", i)
+		}
+	}
+}
 
 // ResolveExecWatch mirrors Resolve: the embedded keyword with no embedded
 // object fails clearly; a path is loaded as a file (the exec object is the
@@ -273,5 +573,32 @@ func TestResolveExecWatch_PathValueIsLoadedAsFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/no/such/dir/execwatch.bpf.o") {
 		t.Errorf("error should name the sibling exec object path: %v", err)
+	}
+}
+
+// The C source is what `make build-bpf` compiles; pin the two #2774 kernel
+// constants there so a change shows up in the plain unit suite, not only in
+// the eBPF lane: the ring size the Go side assumes, and a shipped default of
+// no per-record wakeup (BPF_RB_NO_WAKEUP on every submit).
+func TestExecWatchSource_RingSizeAndNoWakeupDefault(t *testing.T) {
+	src, err := os.ReadFile("../../experimental/ebpf-phaseA/execwatch.bpf.c")
+	if err != nil {
+		t.Fatalf("read execwatch.bpf.c: %v", err)
+	}
+	for _, want := range []string{
+		"#define EXEC_RING_BYTES    (4 << 20)",
+		"volatile const __u8 exec_wakeup_per_record = 0;",
+		"__u64 wake = exec_wakeup_per_record ? 0 : BPF_RB_NO_WAKEUP;",
+		"bpf_ringbuf_submit(ev, wake);",
+	} {
+		if !bytes.Contains(src, []byte(want)) {
+			t.Errorf("execwatch.bpf.c no longer contains %q", want)
+		}
+	}
+	if execRingBytes != 4<<20 {
+		t.Errorf("execRingBytes = %d, want 4 MiB to match EXEC_RING_BYTES", execRingBytes)
+	}
+	if c := execRingBytes / (execEventSize + 8); c < 5000 {
+		t.Errorf("ring capacity %d records, want >= 5000", c)
 	}
 }

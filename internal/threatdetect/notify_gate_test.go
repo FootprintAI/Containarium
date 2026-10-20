@@ -275,3 +275,246 @@ func TestFinding_WebhookPayloadEncodesResponseStateAsNumber(t *testing.T) {
 		t.Errorf("payload %s: want severity=%d response.state=%d", body, pb.ThreatSeverity_THREAT_SEVERITY_HIGH, pb.ResponseState_RESPONSE_STATE_APPLIED)
 	}
 }
+
+// #2775: a kill is delivered. Under ALERT it leaves response.state at NONE, so
+// the gate keys on the kill outcome (killed pid, skip reason kind) as well.
+func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
+	const (
+		reused = pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED
+		gone   = pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE
+	)
+	alert := func(k FindingResponse) *FindingResponse {
+		k.Action, k.State = pb.ProcessAction_PROCESS_ACTION_ALERT, pb.ResponseState_RESPONSE_STATE_NONE
+		return &k
+	}
+	throttle := func(state pb.ResponseState, by string, k FindingResponse) *FindingResponse {
+		k.Action, k.State, k.ReleasedBy = pb.ProcessAction_PROCESS_ACTION_THROTTLE, state, by
+		return &k
+	}
+	killed := func(pid, n uint32) FindingResponse {
+		return FindingResponse{ProcessKilled: true, KilledPID: pid, Kills: n}
+	}
+	withSkip := func(k FindingResponse, skip pb.KillSkipReason) FindingResponse {
+		k.KillSkipReason = skip
+		return k
+	}
+	type step struct {
+		name     string
+		response *FindingResponse
+		resolved bool
+		after    time.Duration // clock advance after the step
+		want     bool
+		wantPID  uint32
+		wantN    uint32
+		wantSkip pb.KillSkipReason
+	}
+	const quick = 5 * time.Second
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"alert + kill: new finding, then killed", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "alert recorded, nothing killed", response: alert(FindingResponse{}), after: quick},
+			{name: "kill recorded", response: alert(killed(4242, 1)), want: true, wantPID: 4242, wantN: 1, after: quick},
+			{name: "repeat upsert", response: alert(killed(4242, 1))},
+		}},
+		{"throttle + kill: the APPLIED delivery carries the kill", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "applied with kill", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77, 1)), want: true, wantPID: 77, wantN: 1, after: quick},
+			{name: "repeat upsert", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77, 1))},
+		}},
+		{"kill then operator release and resolve inside the window", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "kill recorded", response: alert(killed(4242, 1)), want: true, wantPID: 4242, wantN: 1, after: quick},
+			{name: "operator releases", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242, 1)), want: true, wantPID: 4242, wantN: 1, after: quick},
+			{name: "release resolves, coalesced", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242, 1)), resolved: true},
+		}},
+		{"skips are keyed on the reason kind, not text or pid", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "first skip is immediate", response: alert(FindingResponse{KillSkipReason: reused}), want: true, wantSkip: reused, after: quick},
+			{name: "same kind again", response: alert(FindingResponse{KillSkipReason: reused}), after: quick},
+			{name: "other kind inside the interval is held", response: alert(FindingResponse{KillSkipReason: gone}), after: KillRenotifyInterval},
+			{name: "other kind after the interval", response: alert(FindingResponse{KillSkipReason: gone}), want: true, wantSkip: gone},
+		}},
+		{"a burst of kills: first at once, the rest once per interval with the latest pid and count", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "first kill", response: alert(killed(100, 1)), want: true, wantPID: 100, wantN: 1, after: quick},
+			{name: "kill 2", response: alert(killed(101, 2)), after: quick},
+			{name: "kill 3", response: alert(killed(102, 3)), after: quick},
+			{name: "kill 4", response: alert(killed(103, 4)), after: KillRenotifyInterval},
+			{name: "kill 5 after the interval carries the latest", response: alert(killed(104, 5)), want: true, wantPID: 104, wantN: 5, after: quick},
+			{name: "kill 6", response: alert(killed(105, 6)), after: quick},
+		}},
+		{"shared finding: later kill held, the release post carries the latest and is not repeated", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "kill on box A", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(11, 1)), want: true, wantPID: 11, wantN: 1, after: quick},
+			{name: "kill on box B is held", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(22, 2)), after: quick},
+			{name: "release of A carries the current kill", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(22, 2)), want: true, wantPID: 22, wantN: 2, after: quick},
+			{name: "repeat of the release write", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(22, 2))},
+		}},
+		{"first kill after a skip is immediate", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "skip", response: alert(FindingResponse{KillSkipReason: reused}), want: true, wantSkip: reused, after: quick},
+			{name: "kill", response: alert(killed(9, 1)), want: true, wantPID: 9, wantN: 1},
+		}},
+		{"the first skip is immediate once, not after every delivered kill (review)", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "kill at t", response: alert(killed(1, 1)), want: true, wantPID: 1, wantN: 1, after: quick},
+			{name: "skip at t+5s: the first skip", response: alert(withSkip(killed(1, 1), gone)), want: true, wantPID: 1, wantN: 1, wantSkip: gone, after: quick},
+			{name: "kill at t+10s is held", response: alert(killed(2, 2)), after: 55 * time.Second},
+			{name: "kill at t+65s, a minute after the last kill post", response: alert(killed(3, 3)), want: true, wantPID: 3, wantN: 3, after: quick},
+			{name: "skip at t+70s is held: a skip was already delivered", response: alert(withSkip(killed(3, 3), gone))},
+		}},
+		{"no kill: alert-only adds no delivery", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "alert recorded", response: alert(FindingResponse{}), after: quick},
+			{name: "repeat upsert", response: alert(FindingResponse{})},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clock := gatedNotifier(24 * time.Hour)
+			for _, s := range tc.steps {
+				f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+				f.Response = s.response
+				if s.resolved {
+					f.State = FindingStateResolved
+				}
+				n.Notify(f)
+				*clock = clock.Add(s.after)
+				want := 0
+				if s.want {
+					want = 1
+				}
+				if got := len(n.queue); got != want {
+					t.Fatalf("after %q: deliveries = %d, want %d", s.name, got, want)
+				}
+				if s.want {
+					r := (<-n.queue).ToProto().GetResponse()
+					if r.GetKilledPid() != s.wantPID || r.GetKills() != s.wantN || r.GetKillSkipReason() != s.wantSkip {
+						t.Errorf("after %q: delivered killed_pid=%d kills=%d skip=%s, want %d %d %s", s.name, r.GetKilledPid(), r.GetKills(), r.GetKillSkipReason(), s.wantPID, s.wantN, s.wantSkip)
+					}
+				}
+			}
+		})
+	}
+}
+
+// #2775: a respawning miner (one kill a second for an hour) is bounded by the
+// kill interval, not one post per kill.
+func TestWebhookNotifier_RespawnStormIsBounded(t *testing.T) {
+	n, clock := gatedNotifier(24 * time.Hour)
+	n.Notify(openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH))
+	for i := uint32(1); i <= 3600; i++ {
+		f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+		f.Response = &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
+			ProcessKilled: true, KilledPID: 1000 + i, Kills: i}
+		*clock = clock.Add(time.Second)
+		n.Notify(f)
+	}
+	posts := len(n.queue) // the queue holds every accepted delivery (256 slots; a storm would overflow it)
+	if posts > 1+3600/int(KillRenotifyInterval/time.Second)+1 {
+		t.Fatalf("1 hour of kills at 1/s delivered %d posts, want about one per minute plus the first", posts)
+	}
+}
+
+// #2775 review: a miner that alternately dies and escapes the signal (a kill,
+// then a PROCESS_GONE skip, every five seconds) is one post per interval in
+// steady state, not two: the "first skip" fast path fires once per finding.
+func TestWebhookNotifier_AlternatingKillAndSkipIsOnePostPerInterval(t *testing.T) {
+	n, clock := gatedNotifier(24 * time.Hour)
+	n.Notify(openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH))
+	const runFor = 10 * time.Minute
+	const step = 5 * time.Second
+	kills := uint32(0)
+	for elapsed := time.Duration(0); elapsed < runFor; elapsed += step {
+		f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+		r := &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE, ProcessKilled: kills > 0, KilledPID: 1000 + kills, Kills: kills}
+		if (elapsed/step)%2 == 0 {
+			kills++
+			r.ProcessKilled, r.KilledPID, r.Kills = true, 1000+kills, kills
+		} else {
+			r.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE
+		}
+		f.Response = r
+		*clock = clock.Add(step)
+		n.Notify(f)
+	}
+	posts := len(n.queue) - 1 // minus the new-finding delivery
+	// The first kill and the first skip are immediate; after that at most one
+	// changed outcome per KillRenotifyInterval.
+	if limit := 2 + int(runFor/KillRenotifyInterval); posts > limit {
+		t.Fatalf("%s of alternating kills and skips delivered %d posts, want at most %d (one per %s plus the first kill and the first skip)", runFor, posts, limit, KillRenotifyInterval)
+	}
+	if posts < 2+int(runFor/KillRenotifyInterval)-2 {
+		t.Fatalf("%s of alternating kills and skips delivered %d posts: the re-notify interval should still let the latest outcome through about once a minute", runFor, posts)
+	}
+}
+
+// #2775: the webhook body names the pid, the count and the skip reason as
+// numbers/strings the consumer can read.
+func TestFinding_WebhookPayloadNamesKilledPIDAndSkipReason(t *testing.T) {
+	f := openFinding(1, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+	f.Response = &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
+		ProcessKilled: true, KilledPID: 4242, Kills: 3, KillSkipReason: pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED}
+	body, err := json.Marshal(f.ToProto())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Response struct {
+			State          int32  `json:"state"`
+			ProcessKilled  bool   `json:"process_killed"`
+			KilledPID      uint32 `json:"killed_pid"`
+			Kills          uint32 `json:"kills"`
+			KillSkipReason int32  `json:"kill_skip_reason"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("payload %s: %v", body, err)
+	}
+	r := got.Response
+	if r.KilledPID != 4242 || !r.ProcessKilled || r.Kills != 3 || r.KillSkipReason != int32(pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED) || r.State != 1 {
+		t.Errorf("payload %s", body)
+	}
+}
+
+// #2775: the response survives the JSONB column with its kill fields.
+func TestFindingResponse_KillFieldsRoundTripStorage(t *testing.T) {
+	in := FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
+		ProcessKilled: true, KilledPID: 4242, Kills: 3, KillSkipReason: pb.KillSkipReason_KILL_SKIP_REASON_OTHER}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out FindingResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out != in {
+		t.Errorf("round trip: got %+v want %+v", out, in)
+	}
+}
+
+// #2766 x #2775: a write from a box that killed nothing keeps the finding's
+// kill whole (flag, latest pid, count), never killed with pid 0; a write that
+// carries its own kill is left alone.
+func TestFindingResponse_KeepKillOf(t *testing.T) {
+	prev := &FindingResponse{ProcessKilled: true, KilledPID: 22, Kills: 2}
+	r := FindingResponse{State: pb.ResponseState_RESPONSE_STATE_RELEASED}
+	r.KeepKillOf(prev)
+	if !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 {
+		t.Errorf("kept = %+v, want killed pid 22 kills 2", r)
+	}
+	own := FindingResponse{ProcessKilled: true, KilledPID: 30, Kills: 3}
+	own.KeepKillOf(prev)
+	if own.KilledPID != 30 || own.Kills != 3 {
+		t.Errorf("own kill overwritten: %+v", own)
+	}
+	none := FindingResponse{}
+	none.KeepKillOf(&FindingResponse{})
+	none.KeepKillOf(nil)
+	if none.ProcessKilled {
+		t.Errorf("no kill on record invented one: %+v", none)
+	}
+}

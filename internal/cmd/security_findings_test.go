@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,6 +61,77 @@ func TestRunSecurityFindingsList_HitsExpectedPathAndRendersOutput(t *testing.T) 
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// #2775 review: the kill facts the webhook carries are visible from the CLI
+// too, in the text line and in --json (the guide points operators here for
+// a kill the rate-limited webhook has not delivered yet).
+func TestRunSecurityFindingsList_RendersKillFacts(t *testing.T) {
+	const canned = `{
+		"findings": [
+			{"id": "7", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			 "tenantId": "alice", "container": "box-a", "state": "FINDING_STATE_OPEN", "count": "3",
+			 "lastSeen": "2026-10-20T10:00:00Z", "subject": "name:xmrig",
+			 "response": {"action": "PROCESS_ACTION_ALERT", "state": "RESPONSE_STATE_NONE",
+			              "processKilled": true, "killedPid": 25872, "kills": 3}},
+			{"id": "8", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			 "tenantId": "alice", "container": "box-b", "state": "FINDING_STATE_OPEN", "count": "1",
+			 "lastSeen": "2026-10-20T10:01:00Z", "subject": "name:xmrig",
+			 "response": {"action": "PROCESS_ACTION_THROTTLE", "state": "RESPONSE_STATE_APPLIED",
+			              "killSkipReason": "KILL_SKIP_REASON_CONTAINER_INIT"}},
+			{"id": "9", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			 "tenantId": "alice", "container": "box-c", "state": "FINDING_STATE_OPEN", "count": "1",
+			 "lastSeen": "2026-10-20T10:02:00Z", "subject": "name:xmrig",
+			 "response": {"action": "PROCESS_ACTION_ALERT", "state": "RESPONSE_STATE_NONE"}}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(canned))
+	}))
+	defer srv.Close()
+
+	oldServer := serverAddr
+	serverAddr = srv.URL
+	defer func() { serverAddr = oldServer }()
+
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatalf("runSecurityFindingsList: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"response ALERT NONE, process killed (pid 25872, kills 3)",
+		"response THROTTLE APPLIED, kill skipped: CONTAINER_INIT",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "response ALERT NONE\n") != 1 {
+		t.Errorf("a response with no kill facts should print bare:\n%s", out)
+	}
+
+	// --json prints the envelope: the kill facts must survive the round trip
+	// under the gateway's key names, and absent facts must stay absent.
+	var env listFindingsEnvelope
+	if err := json.Unmarshal([]byte(canned), &env); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"killedPid":25872`, `"kills":3`, `"killSkipReason":"KILL_SKIP_REASON_CONTAINER_INIT"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("--json envelope missing %s: %s", want, raw)
+		}
+	}
+	if strings.Count(string(raw), `"killedPid"`) != 1 || strings.Count(string(raw), `"killSkipReason"`) != 1 {
+		t.Errorf("--json envelope should omit absent kill facts: %s", raw)
 	}
 }
 
@@ -139,5 +211,36 @@ func TestRunSecurityFindingsResolve_RejectsNonNumericID(t *testing.T) {
 
 	if err := runSecurityFindingsResolve(testCmd(), []string{"not-a-number"}); err == nil {
 		t.Fatal("expected an error for a non-numeric id")
+	}
+}
+
+// TestRunSecurityFindingsList_RendersExecEvidence (#2638): a miner-signature
+// finding shows the matched exec and whether the process was killed.
+func TestRunSecurityFindingsList_RendersExecEvidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"findings": [{
+			"id": "7", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			"tenantId": "t1", "container": "box-1", "subject": "name:xmrig", "state": "FINDING_STATE_OPEN", "count": "1",
+			"evidence": {"execs": [{"pid": 4242, "comm": "xmrig", "filename": "/tmp/.x/xmrig", "argv": "./xmrig --donate-level 1", "matched": "name:xmrig"}]},
+			"response": {"action": "PROCESS_ACTION_ALERT", "state": "RESPONSE_STATE_NONE", "processKilled": true}
+		}]}`))
+	}))
+	defer srv.Close()
+	oldServer := serverAddr
+	serverAddr = srv.URL
+	defer func() { serverAddr = oldServer }()
+
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"MINER_SIGNATURE", "name:xmrig", "exec pid 4242 /tmp/.x/xmrig", `"./xmrig --donate-level 1"`, "matched name:xmrig", "process killed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }

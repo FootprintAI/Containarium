@@ -14,12 +14,18 @@ import (
 	"github.com/footprintai/containarium/internal/sentinel/sshauthz"
 )
 
-type authzKeyStoreResolver struct{ ks *KeyStore }
+// authzKeyStoreResolver serves the authz plugin the same routing answer and
+// readiness signal the session shipper uses (keyStoreResolver), so an
+// enforcing plugin can tell an unlisted login from a keystore that has not
+// synced yet.
+type authzKeyStoreResolver struct{ r keyStoreResolver }
 
 func (r authzKeyStoreResolver) ResolveBackend(_ context.Context, login string) (string, bool, error) {
-	id, ok := r.ks.BackendForLogin(login)
+	id, ok := r.r.BackendForLogin(login)
 	return id, ok, nil
 }
+
+func (r authzKeyStoreResolver) RoutingReady(context.Context) bool { return r.r.RoutingReady() }
 
 // startSSHAuthzBridge exposes the live keystore only through a private Unix
 // socket. sshpiperd runs the authz plugin in another process, without the
@@ -56,7 +62,8 @@ func (m *Manager) startSSHAuthzBridge(path string) (func(), error) {
 		return nil, err
 	}
 	authorizer := &sshauthz.HTTPAuthorizer{BackendURL: m.ShipperBackendURL, Sign: SignRequest}
-	srv := &http.Server{Handler: sshauthz.BridgeHandler(authzKeyStoreResolver{m.keyStore}, authorizer), ReadHeaderTimeout: time.Second, ReadTimeout: 5 * time.Second}
+	resolver := authzKeyStoreResolver{keyStoreResolver{ks: m.keyStore, pool: m.backends}}
+	srv := &http.Server{Handler: sshauthz.BridgeHandler(resolver, authorizer), ReadHeaderTimeout: time.Second, ReadTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	return func() { _ = srv.Close(); _ = ln.Close() }, nil
 }

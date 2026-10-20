@@ -78,6 +78,9 @@ func (r keyStoreResolver) BackendForLogin(login string) (string, bool) {
 }
 
 func (r keyStoreResolver) RoutingReady() bool {
+	if r.pool == nil {
+		return true // no backends to wait for
+	}
 	r.ks.mu.RLock()
 	defer r.ks.mu.RUnlock()
 	for _, b := range r.pool.Healthy() {

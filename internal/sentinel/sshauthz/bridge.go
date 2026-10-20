@@ -22,6 +22,10 @@ type route struct {
 	Known   bool   `json:"known"`
 }
 
+type readiness struct {
+	Ready bool `json:"ready"`
+}
+
 // BridgeClient joins the separate sshpiperd plugin process to the manager's
 // live keystore. Only the manager needs access to sentinel signing secrets.
 type BridgeClient struct{ client *http.Client }
@@ -57,6 +61,29 @@ func (b *BridgeClient) ResolveBackend(ctx context.Context, login string) (string
 	return out.Backend, out.Known, nil
 }
 
+// RoutingReady asks the manager whether its keystore has synced every healthy
+// backend. Any failure reads as not ready: the enforcing plugin refuses the
+// unknown login either way, and "not synced" is the safer thing to log.
+func (b *BridgeClient) RoutingReady(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sentinel/ready", nil)
+	if err != nil {
+		return false
+	}
+	res, err := b.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return false
+	}
+	var out readiness
+	if err := json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&out); err != nil {
+		return false
+	}
+	return out.Ready
+}
+
 func (b *BridgeClient) Authorize(ctx context.Context, backend string, in *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -87,6 +114,15 @@ func BridgeHandler(resolver BackendResolver, authorizer Authorizer) http.Handler
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(route{Backend: backend, Known: known})
+	})
+	// A resolver without a readiness signal is always authoritative.
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		ready := true
+		if rr, ok := resolver.(RoutingReadiness); ok {
+			ready = rr.RoutingReady(r.Context())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(readiness{Ready: ready})
 	})
 	mux.HandleFunc("POST /backend/{backend}"+AuthorizePath, func(w http.ResponseWriter, r *http.Request) {
 		timeout := DefaultTimeout

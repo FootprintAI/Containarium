@@ -83,4 +83,15 @@ run "ssh_authz_enforce" {
     condition     = strcontains(local.sshpiper_service_unit, "--ssh-authz-enforce \\\n  --records-file /var/log/containarium/ssh-sessions.jsonl \\\n  -- \\\n  /usr/local/bin/containarium sentinel ssh-session-plugin")
     error_message = "Enforcement must be passed to ssh-authz-plugin, with its denied-record sink, before the session plugin."
   }
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "ssh-authz-plugin \\\n  --ssh-authz-grace 5m \\\n  --ssh-authz-timeout 3s \\\n  --ssh-authz-enforce")
+    error_message = "Enforcement must follow the audit flags on ssh-authz-plugin."
+  }
+  # --sshpiper-config equals the flag's default. Passing it would only make
+  # the rendered unit fatal on a sentinel binary that predates the flag, and
+  # with Restart=always that takes port 22 down for every tenant.
+  assert {
+    condition     = !strcontains(local.sshpiper_service_unit, "ssh-authz-plugin \\\n  --ssh-authz-grace 5m \\\n  --ssh-authz-timeout 3s \\\n  --sshpiper-config")
+    error_message = "ssh-authz-plugin must not be passed --sshpiper-config; the default is the same path."
+  }
 }

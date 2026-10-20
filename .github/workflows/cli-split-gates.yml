@@ -184,11 +184,11 @@ jobs:
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/sshkey/... ./internal/guardrail/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
         # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
         # ExitTwoNamingContainariumd from #1775/#1777.
-        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...
+        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/sshkey/... ./internal/guardrail/...

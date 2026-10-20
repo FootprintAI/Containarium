@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tg123/sshpiper/libplugin"
 )
 
 // This fixture mirrors the exact shape internal/sentinel/keysync.go's
@@ -50,6 +52,27 @@ func TestTargetResolver_Resolve(t *testing.T) {
 	}
 	if got := r.Resolve("nosuchuser"); got != "" {
 		t.Errorf("Resolve(nosuchuser) = %q, want empty", got)
+	}
+}
+
+// A target stashed by the enforcing ssh-authz-plugin at routing time wins
+// over a fresh config.yaml read, on the open and the close record alike;
+// without it the login is resolved from the file as before.
+func TestBuildRecord_PrefersStashedTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(testConfigYAML), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	p := &Plugin{Target: NewTargetResolver(path)}
+	resolved := &libplugin.ConnMeta{UserName: "boxuser", FromAddr: "203.0.113.7:1", UniqId: "s1", Metadata: map[string]string{}}
+	stashed := &libplugin.ConnMeta{UserName: "boxuser", FromAddr: "203.0.113.7:2", UniqId: "s2", Metadata: map[string]string{MetaTarget: "198.51.100.4:2222"}}
+	for _, phase := range []SessionPhase{SessionPhaseOpen, SessionPhaseClose} {
+		if got := p.buildRecord(resolved, phase).Target; got != "192.0.2.5:20022" {
+			t.Errorf("%s without stashed target = %q, want the resolved 192.0.2.5:20022", phase, got)
+		}
+		if got := p.buildRecord(stashed, phase).Target; got != "198.51.100.4:2222" {
+			t.Errorf("%s with stashed target = %q, want 198.51.100.4:2222", phase, got)
+		}
 	}
 }
 

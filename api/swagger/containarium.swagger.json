@@ -7112,6 +7112,106 @@
         ]
       }
     },
+    "/v1/security/miner-signatures": {
+      "get": {
+        "summary": "List miner signatures",
+        "description": "Returns the merged baseline (embedded, versioned) and operator-added miner-signature list: binary names, command-line markers and executable SHA-256 hashes.",
+        "operationId": "ThreatDetectionService_ListMinerSignatures",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListMinerSignaturesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      },
+      "delete": {
+        "summary": "Remove an operator-added miner signature",
+        "description": "Removes a previously operator-added miner-signature entry (?kind=\u0026pattern=). Baseline entries cannot be removed. Admin only.",
+        "operationId": "ThreatDetectionService_RemoveMinerSignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RemoveMinerSignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "description": " - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\"),\nand a glob option token (\"-o\") matches case-sensitively.\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "MINER_SIGNATURE_KIND_UNSPECIFIED",
+              "MINER_SIGNATURE_KIND_NAME",
+              "MINER_SIGNATURE_KIND_ARGV",
+              "MINER_SIGNATURE_KIND_SHA256"
+            ],
+            "default": "MINER_SIGNATURE_KIND_UNSPECIFIED"
+          },
+          {
+            "name": "pattern",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      },
+      "post": {
+        "summary": "Add a miner signature",
+        "description": "Adds an operator-supplied name, argv or sha256 entry to the miner-signature list. Admin only.",
+        "operationId": "ThreatDetectionService_AddMinerSignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AddMinerSignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AddMinerSignatureRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/process-policy": {
       "get": {
         "summary": "Get the process policy",
@@ -7146,7 +7246,7 @@
       },
       "put": {
         "summary": "Set the process policy",
-        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.",
+        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL, and whether a miner-signature match also SIGKILLs the process (kill_process, default false). With container set it writes a per-container override; clear_override removes one.",
         "operationId": "ThreatDetectionService_SetProcessPolicy",
         "responses": {
           "200": {
@@ -9640,6 +9740,23 @@
         }
       },
       "title": "AddCollaboratorResponse is the response from adding a collaborator"
+    },
+    "AddMinerSignatureRequest": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/MinerSignature",
+          "description": "kind and pattern are required; builtin is ignored."
+        }
+      }
+    },
+    "AddMinerSignatureResponse": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/MinerSignature"
+        }
+      }
     },
     "AddPassthroughRouteRequest": {
       "type": "object",
@@ -13578,7 +13695,7 @@
         },
         "processKilled": {
           "type": "boolean",
-          "description": "Reserved for the signature rule's additive kill (#2638)."
+          "description": "True when the responder SIGKILLed the matched process (miner-signature\nfinding with ProcessPolicy.kill_process, #2638)."
         },
         "appliedAt": {
           "type": "string",
@@ -13600,6 +13717,20 @@
         "error": {
           "type": "string",
           "description": "Incus error text when state is FAILED."
+        },
+        "killedPid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Host pid (not a pid inside the box) of the process the responder last\nSIGKILLed; set with process_killed. A kill is delivered by the finding\nwebhook (#2775), so a consumer learns which process died."
+        },
+        "killSkipReason": {
+          "$ref": "#/definitions/KillSkipReason",
+          "description": "Why the last kill_process attempt did not kill; UNSPECIFIED when nothing\nwas skipped. The detail (pid, cgroup, error text) stays in the audit row."
+        },
+        "kills": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How many processes the responder has killed for this finding. A miner\nthat respawns is killed again each time; the webhook delivers the first\nkill at once and later ones at most once a minute, carrying this count\nand the latest killed_pid."
         }
       },
       "description": "FindingResponse records what the process responder did about a finding\nand when, so the finding itself tells the operator whether a box is\ncurrently throttled or frozen because of it."
@@ -15309,6 +15440,19 @@
       "default": "ISOLATION_TYPE_UNSPECIFIED",
       "description": "IsolationType selects the Incus instance type a box runs as — the\nkernel boundary between the box and the host. Independent of OSType:\na Linux box can be a VM, and until this enum existed only Windows could\n(#2196, the anonymous-box tier in docs/architecture/ssh-new-anonymous-box.md).\n\n - ISOLATION_TYPE_UNSPECIFIED: Backend default: Windows runs as a VM, every other OS as a container.\n - ISOLATION_TYPE_CONTAINER: LXC container — shares the host kernel.\n - ISOLATION_TYPE_VM: QEMU/KVM virtual machine — its own kernel. Requires a KVM-capable\nbackend. Windows cannot be anything else."
     },
+    "KillSkipReason": {
+      "type": "string",
+      "enum": [
+        "KILL_SKIP_REASON_UNSPECIFIED",
+        "KILL_SKIP_REASON_PID_REUSED",
+        "KILL_SKIP_REASON_PROCESS_GONE",
+        "KILL_SKIP_REASON_CONTAINER_INIT",
+        "KILL_SKIP_REASON_POLICY_UNREADABLE",
+        "KILL_SKIP_REASON_OTHER"
+      ],
+      "default": "KILL_SKIP_REASON_UNSPECIFIED",
+      "description": "KillSkipReason is why a kill_process attempt did not kill the process\n(#2775). It is what the finding webhook carries; the audit row keeps the\nfull detail.\n\n - KILL_SKIP_REASON_PID_REUSED: The pid now belongs to a different cgroup than the container's.\n - KILL_SKIP_REASON_PROCESS_GONE: The process exited before the signal.\n - KILL_SKIP_REASON_CONTAINER_INIT: The pid is the container's init; killing it would stop the box.\n - KILL_SKIP_REASON_POLICY_UNREADABLE: The effective process policy could not be read.\n - KILL_SKIP_REASON_OTHER: Any other refusal (host or Incus error)."
+    },
     "LeaseAgentTaskRequest": {
       "type": "object",
       "properties": {
@@ -15646,6 +15790,22 @@
         "keyOwner": {
           "type": "string",
           "description": "key_owner is the owner whose key was spent listing them."
+        }
+      }
+    },
+    "ListMinerSignaturesResponse": {
+      "type": "object",
+      "properties": {
+        "signatures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/MinerSignature"
+          }
+        },
+        "baselineVersion": {
+          "type": "string",
+          "description": "Version of the embedded baseline this daemon build ships."
         }
       }
     },
@@ -16040,6 +16200,36 @@
           }
         }
       }
+    },
+    "MinerSignature": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/MinerSignatureKind"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "builtin": {
+          "type": "boolean",
+          "description": "True for a baseline entry shipped with the daemon; those cannot be\nremoved."
+        }
+      },
+      "description": "MinerSignature is one entry of the miner-signature list: the embedded,\nversioned baseline or an operator addition."
+    },
+    "MinerSignatureKind": {
+      "type": "string",
+      "enum": [
+        "MINER_SIGNATURE_KIND_UNSPECIFIED",
+        "MINER_SIGNATURE_KIND_NAME",
+        "MINER_SIGNATURE_KIND_ARGV",
+        "MINER_SIGNATURE_KIND_SHA256"
+      ],
+      "default": "MINER_SIGNATURE_KIND_UNSPECIFIED",
+      "description": "MinerSignatureKind is what a MinerSignature matches against (#2638).\n\n - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\"),\nand a glob option token (\"-o\") matches case-sensitively.\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added."
     },
     "MiningBehaviorThresholds": {
       "type": "object",
@@ -16967,14 +17157,18 @@
         },
         "ttl": {
           "type": "string",
-          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h.\n\nField 4 is kill_process (signature rule, #2638); it is assigned there.\n Do not reuse the number."
+          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h."
+        },
+        "killProcess": {
+          "type": "boolean",
+          "description": "SIGKILL the matched process from the host when a miner-signature finding\nfires (#2638), in addition to `action`. Applies to MINER_SIGNATURE\nfindings only; the mining-behavior rule never kills. The pid is\nre-checked against the container's cgroup first, so a reused pid is\nnever signalled. Default false at every level; unset inherits."
         },
         "miningBehavior": {
           "$ref": "#/definitions/MiningBehaviorThresholds",
           "description": "Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured\nonly on the backend default (container empty), rejected on a container\noverride. Unset on Set leaves the stored thresholds untouched."
         }
       },
-      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h}. Empty fields inherit from the next level down."
+      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h, kill_process false}. Empty fields inherit from the\nnext level down."
     },
     "ProfileBackendRequest": {
       "type": "object",
@@ -17405,7 +17599,11 @@
       "properties": {
         "finding": {
           "$ref": "#/definitions/Finding",
-          "description": "The finding the action belonged to, now resolved with its response in\nstate RELEASED."
+          "description": "The finding the action belonged to, with its response in state\nRELEASED. Resolved unless finding_kept_open is set."
+        },
+        "findingKeptOpen": {
+          "type": "boolean",
+          "description": "The finding was left open because another box still holds it: a\nminer-signature finding is shared by every box of the tenant running\nthe same miner, and another box still has an action open on it or a\nresponse queued. It is resolved when the last box is released."
         }
       }
     },
@@ -17450,6 +17648,9 @@
         }
       },
       "title": "RemoveCollaboratorResponse is the response from removing a collaborator"
+    },
+    "RemoveMinerSignatureResponse": {
+      "type": "object"
     },
     "RemoveSSHKeyResponse": {
       "type": "object",
@@ -19188,11 +19389,19 @@
         },
         "sessionId": {
           "type": "string",
-          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
+          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
         },
         "continueSession": {
           "type": "boolean",
           "description": "Resume the engine's own \"most recent session in this box's working\ndirectory\" instead of starting a fresh one (`code run --continue`'s\nmeaning, unchanged). Mutually exclusive with session_id."
+        },
+        "runName": {
+          "type": "string",
+          "description": "Names this run exactly \u003crun_name\u003e instead of the default (the session id\nwhen resuming, else \"code\"). Must match [A-Za-z0-9._-]{1,128} and not be\n\".\" or \"..\"; anything else is INVALID_ARGUMENT, as is a name ending in\n\".stderr\" or in \".\u003cdigits\u003e\" (those alias a run's stderr log and the\nrotation suffix of a finished run). The same collision rules\napply to the name as to any other: a finished run under it is rotated\naside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an\nexplicit name never collides with the default \"code\" run, so a caller\nthat picks a unique name per run keeps every log. ListBoxRuns,\nTailBoxRunLog and the CLI address the run by this name. Empty keeps the\nprevious naming. Capability \"box_run_name\" in SystemInfo.capabilities."
+        },
+        "structuredOutput": {
+          "type": "boolean",
+          "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in /tmp/agent-box/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -19592,6 +19801,13 @@
         "capabilityProfile": {
           "$ref": "#/definitions/CapabilityProfile",
           "description": "capability_profile is this backend's last-recorded hardware capability\nprofile (#681), or null until ProfileBackend has run — null stays\ndistinguishable from \"profiled CPU-only\". Carried here for the same\npeer fan-out as headroom (#2135)."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -19709,10 +19925,11 @@
         "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
         "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
         "THREAT_RULE_ID_MINING_BEHAVIOR",
+        "THREAT_RULE_ID_MINER_SIGNATURE",
         "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are\nassigned by their own stories.\n\nA process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_MINER_SIGNATURE: A process exec in a box matched a known-miner signature (#2638): the\nbinary name, a command-line marker, or the executable's SHA-256 (see\nMinerSignature). HIGH. Subject is \"\u003ckind\u003e:\u003cpattern\u003e\" of the entry that\nhit; evidence is the ExecEvidence of the exec, with `matched` set. With\nProcessPolicy.kill_process the responder also SIGKILLs the process.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: A process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
     },
     "ThreatSeverity": {
       "type": "string",
