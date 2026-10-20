@@ -1304,6 +1304,39 @@ The retry only ever installs the Postgres store. If you want a host with no
 durable policy storage, run it without Postgres configured: then the
 in-memory store is the store, and a policy set is lost on restart.
 
+## Daemon starting while core Postgres is down
+
+Every database-backed store shares one **startup Postgres check** (#2824).
+That covers secrets, tracker, app hosting, routes, passthrough,
+collaborators, the security/pentest/ZAP scan stores, audit, alerts, the
+credential-expiry watch and the threat-detection finding store. The check
+pings Postgres until `CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT` (a Go duration,
+default `20s`) runs out. If Postgres has not answered by then, the daemon
+skips every one of those stores at once, opens its listeners and serves
+**DEGRADED**. Before this change each store retried on its own, one after
+another, and the API stayed dark for minutes.
+
+While DEGRADED:
+
+- The log has one line,
+  `DEGRADED: startup Postgres check failed within 20s (...); skipping database-backed stores`.
+- `containarium doctor` prints
+  `! core Postgres (database-backed stores) — unavailable (DEGRADED): ...`.
+- `GET /v1/health?service=containarium.core_postgres` answers 503
+  `NOT_SERVING` (200 `SERVING` when the startup check passed). A
+  cloud-enrolled daemon also reports this as an advisory readiness check.
+- Behaviour is the same degraded behaviour as before, only reached sooner.
+  The skipped stores' APIs are not registered. With no audit store, no
+  audit path accepts writes it cannot persist and the threat-detection
+  sentry is not built. The secrets store stays off, and its
+  REQUIRE_ENVELOPE/KMS checks run unchanged on the next normal start. The
+  guardrail and egress policy stores keep their own background retry
+  (previous section).
+
+**Recovery.** Start Postgres (or fix connectivity), then restart the daemon
+(`systemctl restart containarium`). The restart wires every store through the
+normal startup path.
+
 ## Auditing recent administrative actions
 
 Every authenticated request lands in the `audit_logs` table (Phase

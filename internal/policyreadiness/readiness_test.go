@@ -14,11 +14,12 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-func TestServices_OnePerPolicyService(t *testing.T) {
+func TestServices_OnePerPolicyServicePlusCorePostgres(t *testing.T) {
 	got := Services()
 	want := []string{
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
+		CorePostgresService,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
