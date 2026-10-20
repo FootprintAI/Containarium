@@ -295,6 +295,7 @@ type DualServer struct {
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
+	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
@@ -3024,6 +3025,7 @@ skipAppHosting:
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
 		credentialWatcher:      credentialWatcher,
+		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -3385,7 +3387,12 @@ func (ds *DualServer) startCapabilityProfile(ctx context.Context) <-chan struct{
 	return done
 }
 
-func (ds *DualServer) Start(ctx context.Context) error {
+func (ds *DualServer) Start(ctx context.Context) (err error) {
+	// #2824: with CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 and a failed
+	// startup Postgres check, Postgres coming back cancels ctx (graceful
+	// shutdown below) and Start returns ErrRestartForPostgresRecovery.
+	ctx, finish := ds.watchPostgresRecovery(ctx)
+	defer func() { err = finish(err) }()
 	// Anonymous-box funnel (#2201): emit expired / killed events within a
 	// minute of a box disappearing.
 	if ds.anonManager != nil {
