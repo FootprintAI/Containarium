@@ -447,20 +447,44 @@ sudo containarium token generate \
 - `backups:write` is required because `VerifyBackup` restores the dump into
   a scratch database. `backups:read` covers `ListBackups`.
 - The token is bound to the tenant by its username. It can list and verify
-  **that tenant's** backups, and the restore target (`--target`) must be
-  that tenant's own container too: a token for one tenant cannot verify
+  **that tenant's** backups. Set `--target` to that same tenant username:
+  the daemon creates a fresh, isolated Postgres 16 container labelled with
+  the tenant, verifies there, then stops and deletes it. It never restores
+  into the source container. A token for one tenant cannot verify
   another tenant's backup, cannot restore into another tenant's container,
-  and `ListBackups` naming another tenant returns only the caller's own
-  records. `ListContainers` and `GetSecret` are denied outright (their scopes
+  and `ListBackups` naming another tenant returns `PermissionDenied`.
+  An omitted username lists the caller's own records.
+  `ListContainers` and `GetSecret` are denied outright (their scopes
   are not granted).
-- One token per backup set. The lifetime is 720h, the daemon's cap; rotate
-  it on the same timer that refreshes any other long-lived token, well before
-  it lapses (see the remote-runner note above), and revoke it with
-  `containarium token revoke` like any other.
+- One token per backup set. The example uses the proposed 720h lifetime;
+  TTL and rotation policy remain to be confirmed on #2406. The proposed
+  rotation uses the driver-token refresh timer, before expiry. Revoke it
+  with `containarium token revoke` like any other.
+
+```bash
+CONTAINARIUM_TOKEN="$VERIFIER_TOKEN" containarium backup list <tenant> --server <host>
+CONTAINARIUM_TOKEN="$VERIFIER_TOKEN" containarium backup verify <backup-id> \
+  --target <tenant> --server <host>
+```
+
+The managed target uses Ubuntu 24.04 (`images:ubuntu/24.04`), installs
+Postgres 16, and uses generated loopback-only connection credentials;
+request connection parameters (`--db-*`) are ignored in this mode. The
+daemon needs working Incus, image access, and access to Ubuntu package
+repositories. Operators may set `CONTAINARIUM_BACKUP_VERIFY_IMAGE` to a
+local Ubuntu 24.04 image alias. Each target has limits of 2 CPUs, 1 GB RAM,
+and 20 GB disk on the daemon's configured pool. Normal and failed runs
+delete the target; a 24-hour TTL lets the daemon's TTL sweeper reap a
+target left by a daemon crash or a failed cleanup. Cleanup failures are
+logged. Dumps requiring a newer PostgreSQL version or extra extensions
+need a separately prepared target selected by an administrator.
 
 This shape is pinned by `TestBackupScopedToken_AllowsOwnBackupsOnly`
 (`internal/server/backup_scoped_token_test.go`), which fails if any of those
-denials is lifted.
+denials is lifted. `scripts/backup-scoped-token-e2e.sh` exercises the
+documented token-generation command, listing, a successful restore test,
+denials, source preservation, and target cleanup against a real daemon
+and Incus in the `Incus create path` CI lane.
 
 ### Watching and alerting
 
@@ -618,8 +642,8 @@ What it does, and the properties that matter for the control:
 
 - **The source container is never touched.** The dump is loaded into a
   scratch database inside the `--target` container. If `--target`
-  resolves to the container the backup came from, verification refuses to
-  run rather than restoring over live data.
+  names the backup's own tenant, the daemon provisions a separate isolated
+  container. The core always rejects the source container as a target.
 - **The scratch database is disposable.** It is created for the test and
   dropped on the way out — on the failing path too, so a failed
   verification does not leave debris in the target.

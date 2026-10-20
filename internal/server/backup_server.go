@@ -221,14 +221,18 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 }
 
 // ListBackups returns stored records. Admins see all tenants; a non-admin
-// is scoped to their own backups regardless of the requested filter.
+// defaults to their own backups and cannot request another tenant's records.
 func (s *BackupServer) ListBackups(ctx context.Context, req *pb.ListBackupsRequest) (*pb.ListBackupsResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsRead); err != nil {
 		return nil, err
 	}
 	username := req.Username
 	if subject, roles, ok := auth.SubjectFromGRPCContext(ctx); ok && !auth.HasRole(roles, auth.RoleAdmin) {
-		// Non-admins only ever see their own backups.
+		if username != "" {
+			if err := auth.AuthorizeTenant(ctx, username); err != nil {
+				return nil, err
+			}
+		}
 		username = subject
 	}
 	if username != "" {
@@ -363,9 +367,29 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		return nil, err
 	}
 
-	target, err := s.containers.manager.Get(req.TargetUsername)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "target container for user %s not found: %v", req.TargetUsername, err)
+	var targetName string
+	conn := connFromProto(req.Connection)
+	if req.TargetUsername == rec.Username {
+		// A tenant's own username selects a daemon-owned throwaway target,
+		// never its live container. Authorization above still binds BOTH
+		// the backup and target to the caller's tenant.
+		name, password, cleanup, err := s.containers.manager.CreateBackupVerifier(rec.Username)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "create isolated backup verifier: %v", err)
+		}
+		targetName = name
+		conn = backup.PgConn{Host: "127.0.0.1", Port: 5432, User: "postgres", Password: password}
+		defer func() {
+			if err := cleanup(); err != nil {
+				log.Printf("[backup] verifier cleanup failed target=%s: %v", name, err)
+			}
+		}()
+	} else {
+		target, err := s.containers.manager.Get(req.TargetUsername)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "target container for user %s not found: %v", req.TargetUsername, err)
+		}
+		targetName = target.Name
 	}
 
 	// Resolve the source container so the core can refuse to restore
@@ -381,9 +405,9 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	v, err := s.mgr.Verify(backup.VerifyOptions{
 		ID:              req.Id,
-		TargetContainer: target.Name,
+		TargetContainer: targetName,
 		SourceContainer: sourceName,
-		Conn:            connFromProto(req.Connection),
+		Conn:            conn,
 		VerifiedBy:      subject,
 		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored (#1831, #2295)
 	})
