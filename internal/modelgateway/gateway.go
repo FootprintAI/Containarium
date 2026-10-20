@@ -606,8 +606,13 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // statusWriter wraps http.ResponseWriter to capture the response status code for
-// the END lifecycle log while preserving http.Flusher, so streamed (SSE)
-// responses still flush each chunk promptly.
+// the END lifecycle log. It deliberately does NOT implement http.Flusher:
+// httputil.ReverseProxy flushes through http.NewResponseController, which
+// checks for a Flusher before it follows Unwrap, so a Flush method here would
+// shadow Unwrap and silently no-op whenever this writer sits above another
+// wrapper (the #2773 class of bug — SSE token streams buffer until the
+// upstream closes). Unwrap alone lets the controller reach the real Flusher
+// however many wrappers sit in between.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -627,14 +632,9 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Unwrap lets http.NewResponseController reach the underlying writer.
+// Unwrap lets http.NewResponseController reach the underlying writer's
+// Flusher, Hijacker and deadline setters.
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
-
-func (s *statusWriter) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
 
 func contains(s []string, v string) bool {
 	for _, x := range s {
