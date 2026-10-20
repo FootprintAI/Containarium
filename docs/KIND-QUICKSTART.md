@@ -62,6 +62,7 @@ helm install containarium ./charts/containarium-k8s \
   --set daemon.jwtSecret="$(openssl rand -hex 32)" \
   --set storageClass=standard \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub \
   --wait
 
@@ -177,8 +178,9 @@ this into an actual SSH-reachable gateway.
 
 > The Helm quickstart above doesn't need this step: the chart's
 > `charts/containarium-k8s/crds/` directory (including `pipe.yaml`) is
-> auto-installed by `helm install`, and `templates/namespace.yaml` creates
-> `agent-gateway` too.
+> auto-installed by `helm install`, and `templates/namespace.yaml` can create
+> `agent-gateway` too (the install above passes `gateway.createNamespace=false`
+> because step 3 already created it).
 >
 > Alternative: if you don't need gateway routing for this quickstart at all,
 > set `CONTAINARIUM_K8S_GATEWAY_NAMESPACE=""` on the daemon (step 5) instead
