@@ -490,11 +490,14 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 			// process is dead and the trail must say so: set process_killed
 			// on whatever response the release wrote, not on the pre-kill
 			// copy.
-			return r.recordKill(ctx, cur, r.killFacts(ctx, cur, ko))
+			return r.recordKill(ctx, cur, killFacts(cur.Response, ko))
 		}
 		f = cur
 	}
-	kill := r.killFacts(ctx, f, ko)
+	// The kill facts fold this attempt into the response the recheck just
+	// read under r.mu (or, without a recheck, the one the upsert returned), so
+	// kills on the same finding that were queued separately add up.
+	kill := killFacts(f.Response, ko)
 
 	if _, err := r.actions.Open(ctx, f.Container); err == nil {
 		// One action per container; the open one stands.
@@ -538,10 +541,9 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		if r.degraded {
 			detail += " degraded=true"
 		}
-		out := r.setResponse(ctx, f.ID, threatdetect.FindingResponse{
+		out := r.setResponse(ctx, f.ID, kill.on(threatdetect.FindingResponse{
 			Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE, AppliedAt: now,
-			ProcessKilled: kill.killed, KilledPID: kill.pid, Kills: kill.count, KillSkipReason: kill.skip,
-		})
+		}))
 		r.auditLog(ctx, "alert", f.Container, detail)
 		return out
 	}
@@ -571,10 +573,9 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		log.Printf("[process-responder] confirm %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
 	}
 	row.Pending = false
-	out := r.setResponse(ctx, f.ID, threatdetect.FindingResponse{
+	out := r.setResponse(ctx, f.ID, kill.on(threatdetect.FindingResponse{
 		Action: action, State: pb.ResponseState_RESPONSE_STATE_APPLIED, AppliedAt: now, ExpiresAt: row.ExpiresAt,
-		ProcessKilled: kill.killed, KilledPID: kill.pid, Kills: kill.count, KillSkipReason: kill.skip,
-	})
+	}))
 	r.auditLog(ctx, "apply", fmt.Sprintf("%d", row.ID), fmt.Sprintf("%s action=%s prev_cpu=%q prev_allowance=%q allowance=%q expires_at=%s",
 		detail, action, row.PrevCPUCount, row.PrevCPUAllowance, policy.GetThrottleAllowance(), row.ExpiresAt.UTC().Format(time.RFC3339)))
 	log.Printf("[process-responder] %s applied to %s (finding %d, expires %s)", action, f.Container, f.ID, row.ExpiresAt.UTC().Format(time.RFC3339))
@@ -613,22 +614,29 @@ func (n killNote) into(r *threatdetect.FindingResponse) {
 	r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason = n.killed, n.pid, n.count, n.skip
 }
 
-// killFacts folds this attempt's outcome into the finding's current kill
-// facts: a kill adds to the count and clears an earlier skip; a skip is
-// recorded; no attempt leaves them as they were. The current response is read
-// from the store when there is news, so kills on the same finding that were
-// queued separately add up.
-func (r *ProcessResponder) killFacts(ctx context.Context, f *threatdetect.Finding, ko killOutcome) killNote {
-	cur := f.Response
-	if ko.pid != 0 || ko.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
-		if g, err := r.findings.Get(ctx, f.ID); err == nil && g.Response != nil {
-			cur = g.Response
-		}
+// on returns resp with the kill facts set: the one way every response write
+// carries them.
+func (n killNote) on(resp threatdetect.FindingResponse) threatdetect.FindingResponse {
+	n.into(&resp)
+	return resp
+}
+
+// killNoteOf is the kill facts a stored response carries; none for no
+// response.
+func killNoteOf(resp *threatdetect.FindingResponse) killNote {
+	if resp == nil {
+		return killNote{}
 	}
-	var n killNote
-	if cur != nil {
-		n = killNote{killed: cur.ProcessKilled, pid: cur.KilledPID, count: cur.Kills, skip: cur.KillSkipReason}
-	}
+	return killNote{killed: resp.ProcessKilled, pid: resp.KilledPID, count: resp.Kills, skip: resp.KillSkipReason}
+}
+
+// killFacts folds this attempt's outcome into the kill facts cur carries: a
+// kill adds to the count and clears an earlier skip; a skip is recorded; no
+// attempt leaves them as they were. cur is the finding's current response as
+// the caller already read it (under r.mu on the queued path), so kills on the
+// same finding that were queued separately add up without a second read.
+func killFacts(cur *threatdetect.FindingResponse, ko killOutcome) killNote {
+	n := killNoteOf(cur)
 	switch {
 	case ko.pid != 0:
 		n.killed, n.pid, n.count, n.skip = true, ko.pid, n.count+1, pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED
@@ -639,17 +647,23 @@ func (r *ProcessResponder) killFacts(ctx context.Context, f *threatdetect.Findin
 }
 
 // releaseKill is the kill facts a release, expiry or orphan-sweep write
-// carries (#2772: the record is per box). A box that killed nothing writes
-// none; the store keeps the finding's kill on record. A box that did kill
-// writes the finding's current latest pid and count, not the first kill's pid
-// its action row holds, and never a kill with pid 0.
+// carries (#2772: the record is per box). A box that killed nothing writes no
+// kill of its own; the store keeps the finding's kill on record. A box that
+// did kill writes the finding's current latest pid and count, not the first
+// kill's pid its action row holds, and never a kill with pid 0. A skip reason
+// on record is the finding's current state, not a kill, so it is carried
+// either way (#2775 review): a THROTTLE whose kill was refused keeps its
+// reason on the RELEASED and EXPIRED writes.
 func (r *ProcessResponder) releaseKill(ctx context.Context, row *threatdetect.SecurityAction) killNote {
-	if row.KilledPID == 0 {
-		return killNote{}
+	var cur killNote
+	if g, err := r.findings.Get(ctx, row.FindingID); err == nil {
+		cur = killNoteOf(g.Response)
 	}
-	if g, err := r.findings.Get(ctx, row.FindingID); err == nil && g.Response != nil && g.Response.ProcessKilled && g.Response.KilledPID != 0 {
-		c := g.Response
-		return killNote{killed: true, pid: c.KilledPID, count: c.Kills, skip: c.KillSkipReason}
+	if row.KilledPID == 0 {
+		return killNote{skip: cur.skip}
+	}
+	if cur.killed && cur.pid != 0 {
+		return cur
 	}
 	return killNote{killed: true, pid: row.KilledPID, count: 1}
 }
@@ -706,10 +720,12 @@ func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Findin
 // recordKill records a kill, or a skipped kill, on a finding the policy
 // action leaves alone (another action already open, or a failed apply backing
 // off): the stored response is kept and only the kill facts change. nil when
-// there is nothing new to record.
+// there is nothing new to record — no kill was attempted, or the attempt left
+// the facts as the response already has them (a repeat of the same skip) —
+// so a re-fire with nothing new neither writes the store nor reaches the
+// webhook (#2775 review). A kill always counts: it raises the kill count.
 func (r *ProcessResponder) recordKill(ctx context.Context, f *threatdetect.Finding, kill killNote) *threatdetect.Finding {
-	if kill.pid == 0 && (kill.skip == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED ||
-		f.Response != nil && f.Response.KillSkipReason == kill.skip) {
+	if kill == killNoteOf(f.Response) {
 		return nil
 	}
 	resp := threatdetect.FindingResponse{
@@ -718,8 +734,7 @@ func (r *ProcessResponder) recordKill(ctx context.Context, f *threatdetect.Findi
 	if f.Response != nil {
 		resp = *f.Response
 	}
-	kill.into(&resp)
-	return r.setResponse(ctx, f.ID, resp)
+	return r.setResponse(ctx, f.ID, kill.on(resp))
 }
 
 // recordFailure writes the failed row (released on insert so it never
@@ -750,10 +765,9 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 		}
 	}
 	log.Printf("[process-responder] %s on %s (finding %d) FAILED: %v", action, f.Container, f.ID, cause)
-	out := r.setResponse(ctx, f.ID, threatdetect.FindingResponse{
+	out := r.setResponse(ctx, f.ID, kill.on(threatdetect.FindingResponse{
 		Action: action, State: pb.ResponseState_RESPONSE_STATE_FAILED, AppliedAt: r.now(), Error: cause.Error(),
-		ProcessKilled: kill.killed, KilledPID: kill.pid, Kills: kill.count, KillSkipReason: kill.skip,
-	})
+	}))
 	r.auditLog(ctx, "fail", f.Container, fmt.Sprintf("%s action=%s error=%q", detail, action, cause.Error()))
 	return out
 }
@@ -811,9 +825,11 @@ func (r *ProcessResponder) undo(row *threatdetect.SecurityAction) error {
 // gone) and ErrNoOpenAction when nothing is open. A failed Incus call
 // leaves the action open so the operator can retry.
 //
-// The release record carries this box's own kill (the row's killed_pid);
-// a kill recorded by another path or another box of the finding stays on
-// the finding because the store keeps process_killed once set.
+// The release record carries the finding's current kill facts (the latest
+// pid, the count, a recorded skip reason), falling back to this box's own
+// kill (the row's killed_pid) when the finding cannot be read; a kill
+// recorded by another path or another box of the finding stays on the
+// finding because the store keeps process_killed once set.
 func (r *ProcessResponder) Release(ctx context.Context, container string) (f *threatdetect.Finding, keptOpen bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -828,12 +844,10 @@ func (r *ProcessResponder) Release(ctx context.Context, container string) (f *th
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOperator, now); err != nil {
 		return nil, false, err
 	}
-	rk := r.releaseKill(ctx, row)
-	f = r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
+	f = r.setResponse(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOperator,
-		ProcessKilled: rk.killed, KilledPID: rk.pid, Kills: rk.count, KillSkipReason: rk.skip,
-	})
+	}))
 	var rerr error
 	var resolved *threatdetect.Finding
 	keptOpen, holder := r.heldElsewhere(ctx, row.FindingID, container)
@@ -918,12 +932,10 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByTTL, now); err != nil {
 		return false, err
 	}
-	rk := r.releaseKill(ctx, row)
-	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
+	r.setResponse(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByTTL,
-		ProcessKilled: rk.killed, KilledPID: rk.pid, Kills: rk.count, KillSkipReason: rk.skip,
-	})
+	}))
 	ttl := row.ExpiresAt.Sub(row.AppliedAt).Round(time.Second)
 	note := fmt.Sprintf("%s on %s released by the TTL backstop after %s with no operator decision (finding %d); original limit restored",
 		row.Action, row.Container, ttl, row.FindingID)
@@ -986,12 +998,10 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOrphanSweep, now); err != nil {
 		return err
 	}
-	rk := r.releaseKill(ctx, row)
-	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
+	r.setResponse(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOrphanSweep,
-		ProcessKilled: rk.killed, KilledPID: rk.pid, Kills: rk.count, KillSkipReason: rk.skip,
-	})
+	}))
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (pending apply never confirmed)",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByOrphanSweep))
 	log.Printf("[process-responder] orphaned %s on %s undone (finding %d)", row.Action, row.Container, row.FindingID)
