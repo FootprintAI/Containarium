@@ -35,7 +35,7 @@
     },
     {
       "name": "GuardrailPolicyService",
-      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
+      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet and GetStatus: any authenticated caller (a data owner needs the policy\nto run `guardrail apply` against it). Set: admin role only, audited."
     },
     {
       "name": "RecipeService",
@@ -4522,6 +4522,30 @@
         ]
       }
     },
+    "/v1/guardrail/status": {
+      "get": {
+        "summary": "Get the effective response guardrail policy",
+        "description": "Report what scans model responses: NONE (a policy is configured with no inbound BLOCK rule), BASELINE (no policy was ever set; built-in rules, log-only) or ADMIN (the policy has an inbound BLOCK rule). A store read error is an error, never NONE or BASELINE. Any authenticated caller.",
+        "operationId": "GuardrailPolicyService_GetGuardrailStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetGuardrailStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
     "/v1/integrity/self-measurement": {
       "get": {
         "summary": "Get a backend's signed integrity self-measurement",
@@ -7669,6 +7693,40 @@
         },
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/task-graphs:validate": {
+      "post": {
+        "summary": "Validate a task graph",
+        "description": "Checks a task graph is acyclic, that every node's crew or skill exists in this daemon's catalogs, and that its node count and depth are within the cap. Returns a dependency-respecting node order and the graph's depth.",
+        "operationId": "CrewService_ValidateTaskGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ValidateTaskGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ValidateTaskGraphRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
         ]
       }
     },
@@ -14267,6 +14325,33 @@
         }
       }
     },
+    "GetGuardrailStatusResponse": {
+      "type": "object",
+      "properties": {
+        "responsePolicy": {
+          "$ref": "#/definitions/GuardrailEffectivePolicy"
+        },
+        "policyRevision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision of the stored policy; 0 when none is configured."
+        },
+        "inboundBlockKinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "The inbound kinds the admin policy blocks, in rule order. Set only\nwhen response_policy is ADMIN."
+        },
+        "baselineRuleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable ids of the baseline rules in force, e.g.\n\"baseline.pem_private_key\". Set only when response_policy is BASELINE."
+        }
+      }
+    },
     "GetKMSStatusResponse": {
       "type": "object",
       "properties": {
@@ -15029,6 +15114,17 @@
         }
       },
       "description": "GuardrailAttestation is the signed record a subject (a dataset directory,\na file) carries after a guardrail run. A consumer verifies the signature\nwith the signer's PUBLIC key, recomputes subject_sha256 over the bytes it\nactually received, and requires verdict == PASS before using the data.\n\nWhat it proves: that these bytes are the ones the named engine scanned\nunder the named policy, and what the gate concluded. What it does not\nprove: that the engine was any good. The key is held by whoever ran the\nguardrail — the data owner — never by the consumer, otherwise the\nconsumer could attest its own input."
+    },
+    "GuardrailEffectivePolicy": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED",
+        "GUARDRAIL_EFFECTIVE_POLICY_NONE",
+        "GUARDRAIL_EFFECTIVE_POLICY_BASELINE",
+        "GUARDRAIL_EFFECTIVE_POLICY_ADMIN"
+      ],
+      "default": "GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED",
+      "description": "GuardrailEffectivePolicy is what actually scans model responses on this\ndaemon, derived from the stored server policy (#2737, slice B of #2575).\n\n - GUARDRAIL_EFFECTIVE_POLICY_NONE: A policy is configured but has no inbound BLOCK rule (it is empty or\nhas outbound rules only): model responses are not scanned.\n - GUARDRAIL_EFFECTIVE_POLICY_BASELINE: No policy was ever set: responses are scanned against the built-in\nbaseline rules (private keys, cloud keys), log-only (#2736).\n - GUARDRAIL_EFFECTIVE_POLICY_ADMIN: The admin policy has at least one inbound BLOCK rule: it decides what\nis scanned and blocked, and the baseline is off."
     },
     "GuardrailGate": {
       "type": "object",
@@ -19867,6 +19963,87 @@
       },
       "description": "TailRunLogResponse is one window of a run's journal."
     },
+    "TaskEdge": {
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "description": "The node that waits."
+        },
+        "dependsOn": {
+          "type": "string",
+          "description": "The node it waits for."
+        }
+      },
+      "description": "TaskEdge says node_id cannot start until depends_on has finished."
+    },
+    "TaskGraph": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string",
+          "description": "The high-level goal the graph decomposes."
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TaskNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TaskEdge"
+          }
+        },
+        "limits": {
+          "$ref": "#/definitions/TaskGraphLimits"
+        }
+      },
+      "description": "TaskGraph is a goal decomposed into subtasks with dependencies."
+    },
+    "TaskGraphLimits": {
+      "type": "object",
+      "properties": {
+        "maxNodes": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Maximum number of nodes."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Maximum depth: the number of nodes on the longest depends-on chain (a\ngraph with no edges has depth 1)."
+        }
+      },
+      "description": "TaskGraphLimits bounds a graph's size. A zero field means the platform\ndefault. A graph may tighten a limit below the platform cap but never raise\nit above — a value over the cap is rejected, not clamped."
+    },
+    "TaskNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique within the graph; edges reference nodes by this id."
+        },
+        "goal": {
+          "type": "string",
+          "description": "What this subtask must achieve, in the planner's words."
+        },
+        "crewId": {
+          "type": "string"
+        },
+        "skillId": {
+          "type": "string"
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        }
+      },
+      "description": "TaskNode is one subtask of a TaskGraph."
+    },
     "TerminateUserSessionsBody": {
       "type": "object",
       "description": "TerminateUserSessionsRequest names the user whose sessions to end."
@@ -20812,6 +20989,31 @@
         }
       },
       "description": "ValidateGPUResponse reports whether the GPU is usable from inside an LXC on\nthe backend: the daemon launches a throwaway nvidia.runtime LXC, runs\nnvidia-smi inside, tears it down, and returns the parsed model + driver."
+    },
+    "ValidateTaskGraphRequest": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "$ref": "#/definitions/TaskGraph"
+        }
+      }
+    },
+    "ValidateTaskGraphResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Node ids in a dependency-respecting order: every node appears after\neverything it depends on."
+        },
+        "depth": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The graph's depth (see TaskGraphLimits.max_depth)."
+        }
+      }
     },
     "VerificationCheck": {
       "type": "object",

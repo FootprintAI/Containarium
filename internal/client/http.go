@@ -2029,6 +2029,31 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return out.Run, nil
 }
 
+// ValidateTaskGraph checks a task graph against the daemon's catalogs via
+// HTTP (#2803).
+func (c *HTTPClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body, err := protojson.Marshal(&pb.ValidateTaskGraphRequest{Graph: g})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:validate", body)
+	if err != nil {
+		return nil, fmt.Errorf("validate task graph: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "validate task graph")
+	}
+	out := &pb.ValidateTaskGraphResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // TailRunLog reads one window of a run's journal via HTTP (#2096).
 func (c *HTTPClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2301,7 +2326,17 @@ func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 // GetGuardrailPolicy reads the server-side guardrail policy via HTTP (#2368).
 func (c *HTTPClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
 	out := &pb.GetGuardrailPolicyResponse{}
-	if err := c.guardrailPolicyCall(http.MethodGet, nil, out, "get guardrail policy"); err != nil {
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/guardrail/policy", nil, out, "get guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetGuardrailStatus reads the effective response guardrail policy via HTTP
+// (#2737).
+func (c *HTTPClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error) {
+	out := &pb.GetGuardrailStatusResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/guardrail/status", nil, out, "get guardrail status"); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2315,16 +2350,16 @@ func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SetGuardrailPolicyResponse{}
-	if err := c.guardrailPolicyCall(http.MethodPut, body, out, "set guardrail policy"); err != nil {
+	if err := c.guardrailPolicyCall(http.MethodPut, "/v1/guardrail/policy", body, out, "set guardrail policy"); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *HTTPClient) guardrailPolicyCall(method string, body []byte, out proto.Message, op string) error {
+func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out proto.Message, op string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := c.doRequest(ctx, method, "/v1/guardrail/policy", body)
+	resp, err := c.doRequest(ctx, method, path, body)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}

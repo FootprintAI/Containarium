@@ -366,7 +366,9 @@ All verbs talk to the daemon's REST API (`--server` or
 `CONTAINARIUM_SERVER`). `get`, `list` and `exec-events` need `security:read`; `set`, `release`,
 `miner-signatures add|remove` need `security:write` and admin. MCP equivalents:
 `security_process_policy_get`, `security_process_policy_set`,
-`security_process_policy_release` (thresholds are CLI-only) and
+`security_process_policy_release` (thresholds are CLI-only), `list_miner_signatures`,
+`add_miner_signature`, `remove_miner_signature` (`kill_process` is a field of
+`security_process_policy_set`) and
 `security_sentry_status`.
 
 ### `containarium security process-policy get [--container <box>] [--json]`

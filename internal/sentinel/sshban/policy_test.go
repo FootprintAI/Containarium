@@ -305,3 +305,37 @@ func TestWindowFailuresAreReportedOnceAndBannedWindowsAreNot(t *testing.T) {
 		t.Fatalf("a second Sweep re-reported the window: %d window_failures events", n)
 	}
 }
+
+func TestTrySweepSkipsBusyGuardAndReportsOnNextPass(t *testing.T) {
+	var summaries []Event
+	g, now := fixture(t, func(c *Config) {
+		c.Emit = func(e Event) {
+			if e.Kind == EventWindowFailures {
+				summaries = append(summaries, e)
+			}
+		}
+	})
+	if err := g.Check("203.0.113.1:22"); err != nil {
+		t.Fatal(err)
+	}
+	g.Fail("203.0.113.1:22", "auth_failure")
+	*now = now.Add(10 * time.Minute)
+	g.mu.Lock()
+	done := make(chan struct{})
+	go func() { g.TrySweep(); close(done) }()
+	select {
+	case <-done: // a busy periodic pass must not wait for the policy mutex
+	case <-time.After(2 * time.Second):
+		g.mu.Unlock()
+		<-done
+		t.Fatal("busy periodic sweep blocked on the policy mutex")
+	}
+	g.mu.Unlock()
+	if len(summaries) != 0 {
+		t.Fatalf("busy sweep reported a window: %+v", summaries)
+	}
+	g.TrySweep()
+	if len(summaries) != 1 || summaries[0].IP != "203.0.113.1" || summaries[0].Failures != 1 {
+		t.Fatalf("next sweep summaries = %+v, want one failure", summaries)
+	}
+}

@@ -28,6 +28,13 @@ agentBox:
 gateway:
   # -- Kubernetes namespace where the sshpiper Deployment lives and Pipes are created
   namespace: agent-gateway
+  # -- Render the gateway Namespace from this chart (the default, as in every
+  # earlier release). Set false only when you pre-create the namespace
+  # yourself, e.g. because the sshpiper Secrets must exist before the pod
+  # starts; Helm will not adopt a namespace it did not create. Flipping an
+  # EXISTING release from true to false deletes the namespace (and its Secrets
+  # and Deployment) on upgrade, so do not do that on a live install.
+  createNamespace: true
   # -- Deploy sshpiper as part of this chart. Set false to bring your own.
   enabled: true
   service:

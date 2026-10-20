@@ -8,7 +8,7 @@
 //   - The dump is produced by running pg_dump *inside* the tenant's
 //     container (reaching the container's own Postgres over loopback),
 //     writing a compressed custom-format archive to the container's /tmp.
-//   - The archive is pulled to the daemon host (ReadFile), checksummed,
+//   - The archive is pulled to the daemon host (ReadFileStream), checksummed,
 //     and either kept in the host backup directory (LOCAL) or shipped to
 //     an object store and removed from local staging (GCS).
 //   - Metadata is persisted as a small JSON sidecar per backup in the
@@ -22,11 +22,10 @@ package backup
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -80,10 +79,10 @@ type ContainerOps interface {
 	// ExecWithOutput runs a command inside the container and returns
 	// stdout/stderr (pg_dump/pg_restore report errors on stderr).
 	ExecWithOutput(containerName string, command []string) (string, string, error)
-	// ReadFile pulls a file from inside the container into host memory.
-	ReadFile(containerName, path string) ([]byte, error)
-	// WriteFile pushes content to a path inside the container.
-	WriteFile(containerName, path string, content []byte, mode string) error
+	// ReadFileStream returns a stream owned and closed by the caller.
+	ReadFileStream(containerName, path string) (io.ReadCloser, error)
+	// WriteFileStream consumes content through EOF, reporting read errors.
+	WriteFileStream(containerName, path string, content io.Reader, mode string) error
 }
 
 // Uploader ships a staged local file to and from an off-host object
@@ -91,7 +90,7 @@ type ContainerOps interface {
 // supply a fake.
 type Uploader interface {
 	Upload(localPath, destURI string) error
-	Download(destURI, localPath string) error
+	DownloadStream(destURI string, dst io.Writer) error
 	Delete(destURI string) error
 }
 
@@ -187,10 +186,11 @@ func (c PgConn) withDefaults() PgConn {
 
 // Manager orchestrates backups. One per daemon.
 type Manager struct {
-	ops      ContainerOps
-	uploader Uploader // may be nil → GCS destinations are rejected
-	dir      string   // host backup directory (dumps for LOCAL + sidecar index for all)
-	clock    func() time.Time
+	ops          ContainerOps
+	uploader     Uploader // may be nil → GCS destinations are rejected
+	dir          string   // host backup directory (dumps for LOCAL + sidecar index for all)
+	maxDumpBytes int64
+	clock        func() time.Time
 	// wrapper, when set, wraps a per-backup age identity with a KMS
 	// (#2402): backups default to KeyModeManaged (or KeyModeBoth when a
 	// legacy recipient is also given). Nil keeps today's behaviour byte
@@ -213,7 +213,7 @@ func WithWrapper(w secrets.KMSClient) Option {
 // uploader may be nil when no object store is configured; GCS backups
 // then return a clear error.
 func NewManager(ops ContainerOps, uploader Uploader, dir string, opts ...Option) *Manager {
-	m := &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now}
+	m := &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now, maxDumpBytes: DefaultMaxDumpBytes}
 	for _, o := range opts {
 		o(m)
 	}
@@ -410,17 +410,12 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 
 	// 2. Pull the archive to the host, then clean up the in-container copy
 	//    (after the manifest step below, which for a pg_custom hook reads it).
-	data, err := m.ops.ReadFile(opts.ContainerName, inContainerPath)
+	defer func() { _ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath}) }()
+	data, err := m.ops.ReadFileStream(opts.ContainerName, inContainerPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read dump from container: %w", err)
 	}
-	if len(data) == 0 {
-		_ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath})
-		if hookMode {
-			return nil, fmt.Errorf("backup hook %s produced no output", opts.Hook)
-		}
-		return nil, fmt.Errorf("pg_dump produced an empty archive (check database name and credentials)")
-	}
+	defer func() { _ = data.Close() }()
 
 	// Record the source's user-relation count as a manifest for later
 	// restore tests to compare against. Best-effort: a source that
@@ -449,20 +444,9 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	} else {
 		relationCount = &n
 	}
-	_ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath})
 
-	// 2b. Encrypt in-process BEFORE anything is staged or shipped (#1831).
-	//     From here on `data` is the ciphertext: it is what gets checksummed,
-	//     sized, staged and stored, so plaintext never touches the daemon's
-	//     disk or the object store, and fetchDump's integrity gate applies
-	//     to the stored bytes unchanged.
-	//
-	//     Managed modes (#2402) first mint and wrap a per-backup identity.
-	//     The wrap happens before the encryption pass and before anything
-	//     is written, so a KMS failure fails the backup with no file, no
-	//     sidecar and no upload — never a fallback to plaintext or to the
-	//     legacy recipient alone.
-	encrypted := false
+	// Wrap the managed identity before staging any bytes. Encryption and
+	// hashing below stream directly to the staging file.
 	recordedRecipient := strings.TrimSpace(opts.AgeRecipient)
 	var recipients []string
 	var wrappedKey []byte
@@ -484,27 +468,22 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	if mode == KeyModeBoth || mode == KeyModeAgeRecipient {
 		recipients = append(recipients, opts.AgeRecipient)
 	}
-	if len(recipients) > 0 {
-		ct, err := encryptWithRecipients(data, recipients...)
-		if err != nil {
-			return nil, fmt.Errorf("encrypt dump: %w", err)
-		}
-		data = ct
-		encrypted = true
-	}
+	encrypted := len(recipients) > 0
 	ext := ".dump"
 	if encrypted {
 		ext = ".dump.age"
 	}
-
-	sum := sha256.Sum256(data)
+	localDump, size, checksum, err := m.stageDump(data, id, ext, recipients)
+	if err != nil {
+		return nil, err
+	}
 	record := &Record{
 		ID:            id,
 		Username:      opts.Username,
 		Database:      dbLabel,
 		CreatedAt:     m.now().UTC(),
-		SizeBytes:     int64(len(data)),
-		SHA256:        hex.EncodeToString(sum[:]),
+		SizeBytes:     size,
+		SHA256:        checksum,
 		Destination:   opts.Destination,
 		Engine:        engine,
 		RelationCount: relationCount,
@@ -521,14 +500,6 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	if hookMode {
 		record.Hook = strings.TrimSpace(opts.Hook)
 		record.HookFormat = hookFormat
-	}
-
-	if err := os.MkdirAll(m.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create backup directory: %w", err)
-	}
-	localDump := filepath.Join(m.dir, id+ext)
-	if err := os.WriteFile(localDump, data, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to stage dump: %w", err)
 	}
 
 	// 3. For off-host destinations, ship the staged dump and drop the
@@ -778,15 +749,9 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	if r.Encrypted {
-		if strings.TrimSpace(opts.AgeIdentity) == "" {
-			return fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to restore (the platform holds no decryption key)", r.ID, r.AgeRecipient)
-		}
-		pt, err := decryptWithIdentity(data, opts.AgeIdentity)
-		if err != nil {
-			return fmt.Errorf("decrypt backup %s: %w", r.ID, err)
-		}
-		data = pt
+	defer func() { _ = data.Close() }()
+	if r.Encrypted && strings.TrimSpace(opts.AgeIdentity) == "" {
+		return fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to restore (the platform holds no decryption key)", r.ID, r.AgeRecipient)
 	}
 
 	conn := opts.Conn.withDefaults()
@@ -795,9 +760,10 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 	}
 
 	inContainerPath := "/tmp/containarium-restore-" + r.ID + ".dump"
-	if err := m.ops.WriteFile(target, inContainerPath, data, "0600"); err != nil {
+	if _, err := m.writeDump(target, inContainerPath, data, r.Encrypted, opts.AgeIdentity); err != nil {
 		return fmt.Errorf("failed to push dump into container: %w", err)
 	}
+
 	defer func() { _ = m.ops.Exec(target, []string{"rm", "-f", inContainerPath}) }()
 
 	cleanFlag := ""
@@ -813,41 +779,6 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, strings.TrimSpace(stderr))
 	}
 	return nil
-}
-
-// fetchDump pulls a record's dump bytes to the host (downloading from the
-// object store for off-host destinations) and verifies them against the
-// recorded SHA-256. Shared by Restore and Verify so the integrity gate
-// cannot drift between the two paths.
-func (m *Manager) fetchDump(r *Record) ([]byte, error) {
-	var data []byte
-	var err error
-	switch r.Destination {
-	case DestGCS:
-		if m.uploader == nil {
-			return nil, fmt.Errorf("cannot read GCS backup: no object-store uploader configured")
-		}
-		tmp := filepath.Join(m.dir, "."+r.ID+".restore.tmp")
-		if err := m.uploader.Download(r.Location, tmp); err != nil {
-			return nil, fmt.Errorf("failed to download %s: %w", r.Location, err)
-		}
-		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
-		_ = os.Remove(tmp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read downloaded dump: %w", err)
-		}
-	default:
-		data, err = os.ReadFile(r.Location)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read dump %s: %w", r.Location, err)
-		}
-	}
-
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != r.SHA256 {
-		return nil, fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
-	}
-	return data, nil
 }
 
 func (m *Manager) sidecarPath(id string) string { return filepath.Join(m.dir, id+".meta.json") }
