@@ -127,10 +127,10 @@ func (s *Store) Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*
 // readBaseline reads the baseline row through q (the pool, or a transaction
 // with FOR UPDATE). A stored mode other than LOG or BLOCK is a damaged row
 // and an error, never a silent default.
-func readBaseline(ctx context.Context, q pgx.Row) (*pb.GuardrailBaselineSetting, error) {
+func readBaseline(q pgx.Row) (*pb.GuardrailBaselineSetting, error) {
 	var (
 		revision  int64
-		mode      int16
+		mode      int32
 		updatedAt *time.Time
 		updatedBy string
 	)
@@ -150,7 +150,7 @@ func readBaseline(ctx context.Context, q pgx.Row) (*pb.GuardrailBaselineSetting,
 const selectBaseline = `SELECT revision, mode, updated_at, updated_by FROM guardrail_baseline WHERE id = 1`
 
 func (s *Store) GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetting, error) {
-	return readBaseline(ctx, s.pool.QueryRow(ctx, selectBaseline))
+	return readBaseline(s.pool.QueryRow(ctx, selectBaseline))
 }
 
 func (s *Store) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string) (*guardrailpolicy.BaselineSetResult, error) {
@@ -162,14 +162,14 @@ func (s *Store) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMo
 		return nil, fmt.Errorf("begin guardrail baseline set: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	prev, err := readBaseline(ctx, tx.QueryRow(ctx, selectBaseline+` FOR UPDATE`))
+	prev, err := readBaseline(tx.QueryRow(ctx, selectBaseline+` FOR UPDATE`))
 	if err != nil {
 		return nil, err
 	}
 	cur := guardrailpolicy.NextBaseline(prev, mode, updatedBy, time.Now())
 	if _, err := tx.Exec(ctx,
 		`UPDATE guardrail_baseline SET revision = $1, mode = $2, updated_at = $3, updated_by = $4 WHERE id = 1`,
-		cur.GetRevision(), int16(mode), cur.GetUpdatedAt().AsTime(), updatedBy); err != nil {
+		cur.GetRevision(), int32(mode), cur.GetUpdatedAt().AsTime(), updatedBy); err != nil {
 		return nil, fmt.Errorf("store guardrail baseline mode: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
