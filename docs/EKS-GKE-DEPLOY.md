@@ -53,7 +53,9 @@ GKE-only:
 
 Gateway routing is enabled by default and requires a dedicated upstream key.
 Create the key pair and store its private key in the gateway namespace before
-running any chart install command:
+running any chart install command. The chart does not create this namespace
+(`gateway.createNamespace` defaults to `false`), so a hand-made one never
+collides with the install:
 
 ```bash
 kubectl create namespace agent-gateway
