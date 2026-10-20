@@ -96,9 +96,13 @@ The daemon also sends one alert of its own straight to the same webhook,
 without going through vmalert/Alertmanager, so it works on hosts with no
 VictoriaMetrics container.
 
-- **When:** a skill box's coding-engine sign-in flips to expired. Every
-  15 minutes the daemon probes each running skill box (the same probe as
-  `containarium agent credential-status`). The alert fires once per flip
+- **When:** a skill box's coding-engine sign-in becomes unhealthy. For Claude,
+  alert only when its access token has expired for **more than 24 hours**,
+  or an actual runtime run failed with a typed authentication error. A
+  single recently expired token is refreshable and does not alert, even
+  across multiple sweeps. Every 15 minutes the daemon probes each running
+  skill box. The manual `containarium agent credential-status` command
+  continues to report raw access-token expiry. The alert fires once per flip
   into `CODE_CREDENTIAL_SOURCE_EXPIRED`, never again while the box stays
   expired, and again only after a fresh sign-in has expired in turn. The
   first time the daemon sees a box that is already expired counts as a flip.
@@ -127,8 +131,17 @@ VictoriaMetrics container.
   `previous_source` is `CODE_CREDENTIAL_SOURCE_UNSPECIFIED` when the box
   was already expired the first time it was seen.
 
-"Expired" means the `expiresAt` timestamp in the engine's sign-in file is
-in the past. See
+The runtime records authentication failure as an empty owner-only marker at
+`~/.local/state/containarium/claude-auth-failed`; a successful authenticated
+Claude run removes it. Unrelated run failures do not reset this state. The
+marker survives runtime and daemon restarts, while PostgreSQL preserves alert
+deduplication. Secret/API-key sources and other engines keep their existing
+behavior. The runtime checks only sign-in file existence; the probe extracts
+only the numeric expiry timestamp. No credential value is read or logged.
+
+Deploy the updated agent-runtime bundle to skill boxes as well as updating
+the daemon: older runtimes cannot record authentication-failure evidence.
+The timestamp-based 24-hour policy still works with older runtimes. See
 [SECURITY-ENCRYPTION-AT-REST.md](SECURITY-ENCRYPTION-AT-REST.md#coding-agent-sign-in-credentials-inside-a-box)
 for exactly what the probe reads.
 

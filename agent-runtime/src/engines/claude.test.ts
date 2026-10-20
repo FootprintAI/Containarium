@@ -41,6 +41,7 @@ describe("ClaudeEngine journal", () => {
     ]);
     expect(res.outputJson).toBe('Looking.{"files":1}');
     expect(res.usage).toEqual({ output_tokens: 3 });
+    expect(res.authenticationSucceeded).toBe(true);
   });
 
   it("journals a string tool_result and an unknown tool id", async () => {
@@ -57,7 +58,8 @@ describe("ClaudeEngine journal", () => {
     const engine = new ClaudeEngine(
       fakeQuery([{ type: "result", subtype: "error_max_turns", is_error: true, errors: ["hit the turn cap"] }]),
     );
-    await engine.run("task", cfg, j);
+    const res = await engine.run("task", cfg, j);
+    expect(res.authenticationSucceeded).toBe(false);
     expect(j.entries).toEqual([{ kind: "error", text: "error_max_turns: hit the turn cap" }]);
   });
 });
@@ -135,4 +137,13 @@ describe("ClaudeEngine output schema", () => {
     const engine = new ClaudeEngine(fakeQuery([assistant({ type: "text", text: "..." })]));
     await expect(engine.run("task", schemaCfg, new CaptureJournal())).rejects.toThrow(/no structured output/);
   });
+});
+
+it("rejects the SDK authentication_failed category without journaling its body", async () => {
+  const journal = new CaptureJournal();
+  const engine = new ClaudeEngine(fakeQuery([
+    { type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: "FAKE_PROVIDER_BODY_NEVER_ECHO" }] } },
+  ]));
+  await expect(engine.run("task", cfg, journal)).rejects.toThrow("coding-engine authentication failed");
+  expect(journal.entries).toEqual([]);
 });

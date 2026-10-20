@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/alert"
@@ -61,10 +62,8 @@ func TestCredentialWatchTargets_OnlyRunningProbeableSkillBoxes(t *testing.T) {
 	}
 }
 
-// TestProbeCredential_RunsTheSameProbeAsTheRPC: the watcher's probe and
-// GetSkillBoxCredentialStatus share one code path, so the alert can never
-// disagree with what an operator sees when they check by hand.
-func TestProbeCredential_RunsTheSameProbeAsTheRPC(t *testing.T) {
+// The alert policy differs from raw status, but uses the shared executor.
+func TestProbeCredential_UsesAlertPolicy(t *testing.T) {
 	s, skill, backend := newSkillBoxHarnessInspectable(t, newFakeRevocationStore())
 	backend.execStdout = "expired\n"
 
@@ -79,6 +78,16 @@ func TestProbeCredential_RunsTheSameProbeAsTheRPC(t *testing.T) {
 	}
 	if len(backend.execCalls) != 1 || backend.execCalls[0].ContainerName != "agent-"+skill.Id+"-container" {
 		t.Errorf("exec calls = %+v, want exactly one probe in the skill's box", backend.execCalls)
+	}
+
+	if got := backend.execCalls[0].Command[2]; !strings.Contains(got, "86400") || !strings.Contains(got, "claude-auth-failed") {
+		t.Fatal("watcher did not execute the alert policy")
+	}
+	if _, err := s.GetSkillBoxCredentialStatus(ctxAs("admin", true), &pb.GetSkillBoxCredentialStatusRequest{SkillId: skill.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(backend.execCalls[1].Command[2], "86400") || strings.Contains(backend.execCalls[1].Command[2], "claude-auth-failed") {
+		t.Fatal("manual status changed to alert policy")
 	}
 
 	backend.execStdout = "something-else\n"

@@ -1,3 +1,4 @@
+import { CredentialAuthenticationError } from "../credential-state.js";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
@@ -59,6 +60,7 @@ export class ClaudeEngine implements Engine {
 
     for await (const m of this.queryFn({ prompt: task, options })) {
       if (m.type === "assistant") {
+        if (m.error === "authentication_failed") throw new CredentialAuthenticationError();
         for (const block of m.message.content ?? []) {
           if (block.type === "text" && block.text) {
             text += block.text;
@@ -90,9 +92,9 @@ export class ClaudeEngine implements Engine {
     }
 
     if (cfg.outputSchema) {
-      return { outputJson: JSON.stringify(structuredOutput(result)), usage };
+      return { outputJson: JSON.stringify(structuredOutput(result)), usage, authenticationSucceeded: true };
     }
-    return { outputJson: text.trim(), usage };
+    return { outputJson: text.trim(), usage, authenticationSucceeded: result?.subtype === "success" };
   }
 }
 

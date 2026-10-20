@@ -76,3 +76,8 @@ func TestCredentialWatcher_PostgresRestartDoesNotRefire(t *testing.T) {
 		t.Fatalf("alerts fired across a restart = %d, want exactly 1", got)
 	}
 }
+
+// Persist policy transitions through PostgreSQL, including watcher reconstruction.
+func TestCredentialWatcherPolicyPostgres(t *testing.T) {
+	testCredentialPolicyTransitions(t, credentialStateStore(t))
+}

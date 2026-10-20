@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/alert"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // AgentSkillServer is the credential-expiry watcher's CredentialProber
 // (#2371): it lists the skill boxes worth probing and probes one through the
-// same probeBoxCredential GetSkillBoxCredentialStatus uses.
+// watcher policy probe; the manual RPC continues to show raw token expiry.
 
 // CredentialWatchTargets lists every running skill box whose skill is in the
 // catalog and whose engine has a credential-status probe. A stopped box is
@@ -42,12 +43,13 @@ func (s *AgentSkillServer) CredentialWatchTargets(context.Context) ([]alert.Cred
 }
 
 // ProbeCredential runs the target engine's credential-status probe in the
-// target box. Names only — see probeBoxCredential.
+// target box with the #2790 alert policy. Names only — see probeBoxCredential.
 func (s *AgentSkillServer) ProbeCredential(_ context.Context, t alert.CredentialWatchTarget) (pb.CodeCredentialSource, error) {
-	engineName, resolved, ok := codeEngineFor(t.Engine)
+	engineName, _, ok := codeEngineFor(t.Engine)
 	if !ok {
 		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED,
 			fmt.Errorf("no credential-status probe for engine %s", t.Engine)
 	}
-	return s.probeBoxCredential(t.Box, engineName, resolved)
+	script, _ := engine.CredentialAlertStatusScript(engineName)
+	return s.probeBoxCredentialScript(t.Box, script)
 }

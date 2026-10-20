@@ -31,6 +31,9 @@ export interface EngineConfig {
 }
 
 export interface EngineResult {
+  // Explicit success evidence for credential recovery; a partial/error result
+  // returned by an SDK is not a successful authenticated run (#2790).
+  authenticationSucceeded?: boolean;
   // The agent's final output text/JSON.
   outputJson: string;
   // Engine-shaped usage/cost, if available.
