@@ -801,8 +801,8 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
 
   # Pull the chart back from GHCR and prove a clean install and upgrade on
-  # kind. --wait also allows the independently published daemon image time
-  # to appear. Rehearsals remain publish-free and do not exercise a fake tag.
+  # kind. The reusable workflow waits for the independently published daemon
+  # image first. Rehearsals remain publish-free and do not exercise a fake tag.
   helm-install-upgrade:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: helm-chart
