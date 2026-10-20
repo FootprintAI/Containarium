@@ -800,6 +800,18 @@ jobs:
           # Release; if the upload fails it is missing (fails closed).
           gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
 
+  # Pull the chart back from GHCR and prove a clean install and upgrade on
+  # kind. --wait also allows the independently published daemon image time
+  # to appear. Rehearsals remain publish-free and do not exercise a fake tag.
+  helm-install-upgrade:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: helm-chart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helm-install-upgrade.yml
+    with:
+      target-version: ${{ github.ref_name }}
+
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).
   model-gateway-image:
