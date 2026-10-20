@@ -63,29 +63,37 @@ values=(
 
 assert_running_release() {
   expected="$1"
+  gateway_tag="${2:-v$expected}"
   kubectl -n "$namespace" rollout status deployment/helm-release-daemon --timeout="$timeout"
+  kubectl -n "$gateway" rollout status deployment/helm-release-sshpiper --timeout="$timeout"
   kubectl -n "$namespace" get pods -l "app.kubernetes.io/instance=$release" -o json > "$work/pods.json"
-  python3 - "$work/pods.json" "$expected" <<'PY'
+  kubectl -n "$gateway" get pods -l "app.kubernetes.io/instance=$release,app.kubernetes.io/name=sshpiper" -o json > "$work/gateway-pods.json"
+  python3 - "$work/pods.json" "$work/gateway-pods.json" "$expected" "$gateway_tag" <<'PY'
 import json
 import sys
 
-pods = json.load(open(sys.argv[1]))["items"]
-expected = "ghcr.io/footprintai/containarium:v" + sys.argv[2]
-assert pods, "no daemon pods were installed"
-running = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
-assert running, "no current daemon pods"
-for pod in running:
-    container = next(c for c in pod["spec"]["containers"] if c["name"] == "daemon")
-    assert container["image"] == expected, (container["image"], expected)
-    status = next(c for c in pod["status"]["containerStatuses"] if c["name"] == "daemon")
-    assert status["ready"] and status.get("imageID"), status
-print("ready, pulled image:", expected)
+images = (
+    (sys.argv[1], "daemon", "ghcr.io/footprintai/containarium:v" + sys.argv[3]),
+    (sys.argv[2], "sshpiper", "ghcr.io/footprintai/containarium-sshpiper:" + sys.argv[4]),
+)
+for path, name, expected in images:
+    pods = json.load(open(path))["items"]
+    running = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
+    assert running, f"no current {name} pods"
+    for pod in running:
+        container = next(c for c in pod["spec"]["containers"] if c["name"] == name)
+        assert container["image"] == expected, (container["image"], expected)
+        status = next(c for c in pod["status"]["containerStatuses"] if c["name"] == name)
+        assert status["ready"] and status.get("imageID"), status
+    print("ready, pulled image:", expected)
 PY
 }
 
 # No image overrides: the image must come from the published chart appVersion.
 helm install "$release" "$chart" --version "$base" "${values[@]}"
-assert_running_release "$base"
+# This fixed baseline predates gateway pinning (#2703); all target/candidate
+# assertions below require the gateway's exact release tag as well.
+assert_running_release "$base" latest-stable
 helm upgrade "$release" "$chart" --version "$version" "${values[@]}"
 assert_running_release "$version"
 

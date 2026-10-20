@@ -41,18 +41,20 @@ jobs:
           curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
-      - name: Wait for the exact release daemon image
+      - name: Wait for the exact release images
         env:
           TARGET_VERSION: ${{ inputs.target-version || '0.109.0' }}
         run: |
-          image="ghcr.io/footprintai/containarium:v${TARGET_VERSION#v}"
           deadline=$((SECONDS + 900))
-          until timeout 30s docker manifest inspect "$image" > /dev/null 2>&1; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::release image did not appear within 15 minutes: $image"
-              exit 1
-            fi
-            sleep 15
+          for image in "ghcr.io/footprintai/containarium:v${TARGET_VERSION#v}" \
+                       "ghcr.io/footprintai/containarium-sshpiper:v${TARGET_VERSION#v}"; do
+            until timeout 30s docker manifest inspect "$image" > /dev/null 2>&1; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::release image did not appear within 15 minutes: $image"
+                exit 1
+              fi
+              sleep 15
+            done
           done
       - name: Install and upgrade from the public OCI registry
         env:
