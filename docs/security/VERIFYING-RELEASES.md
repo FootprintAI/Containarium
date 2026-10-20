@@ -1,11 +1,14 @@
 # Verifying a release
 
-Every file on a Containarium GitHub Release has a signature next to it:
+A signed Containarium GitHub Release has a signature beside each file:
 `<file>.sigstore.json`. The release workflow makes it with
 [cosign](https://github.com/sigstore/cosign) keyless signing, so there is no
 project key to obtain, trust, or rotate. What a signature proves is that the
 file was produced by this repository's `release.yml` workflow, running on that
 release's tag, and was not changed after.
+
+Older releases may have checksums and SBOMs without signature bundles. A
+release without `.sigstore.json` assets cannot pass this signature procedure.
 
 This covers the binaries, the SPDX SBOMs, the agent-runtime and SDLC skills
 bundles, the air-gapped install bundle, the Helm chart, `SHA256SUMS.txt`, and
@@ -14,14 +17,14 @@ attestations and are not covered here.
 
 ## Verify one file
 
-Install cosign (v2.x or later), download the file and its `.sigstore.json`,
+Install cosign (the release workflow uses v3.1.3), download the file and its `.sigstore.json`,
 then:
 
 ```bash
 TAG=v0.0.0   # the release you downloaded
 cosign verify-blob \
   --bundle containariumd-linux-amd64.sigstore.json \
-  --certificate-identity "https://github.com/footprintai/containarium/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-identity "https://github.com/FootprintAI/Containarium/.github/workflows/release.yml@refs/tags/${TAG}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   containariumd-linux-amd64
 ```
@@ -33,7 +36,9 @@ is a failure: do not run the file.
 The identity is the exact workflow and tag. A copy of the workflow in a fork,
 a different workflow in this repository, or a different tag does not match.
 To accept any release of this repository rather than one tag, use
-`--certificate-identity-regexp '^https://github.com/footprintai/containarium/\.github/workflows/release\.yml@refs/tags/v[0-9]'`.
+`--certificate-identity-regexp '^https://github\.com/FootprintAI/Containarium/\.github/workflows/release\.yml@refs/tags/v[0-9]'`.
+The certificate identity is case-sensitive; preserve `FootprintAI/Containarium`
+exactly. GitHub web URL redirects do not make a differently cased identity valid.
 
 ## Verify checksums too
 
@@ -42,14 +47,45 @@ can verify it once and then check every binary and SBOM it lists:
 
 ```bash
 cosign verify-blob --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity "https://github.com/footprintai/containarium/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-identity "https://github.com/FootprintAI/Containarium/.github/workflows/release.yml@refs/tags/${TAG}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
 ```
 
-The air-gapped bundle and the Helm chart are not listed in `SHA256SUMS.txt`;
-each has its own `.sha256`, and each file and its `.sha256` is signed.
+The Helm chart is listed in `SHA256SUMS.txt` and has its own `.sha256`.
+The air-gapped bundle has its own `.sha256`. Each artifact and its checksum
+sidecar is signed.
+
+## Verify the entire release / sprint RC
+
+From a checkout containing `scripts/release/verify_assets.py`, with `gh`,
+Python 3 and cosign v3.1.3 available:
+
+```bash
+set -euo pipefail
+TAG=v0.110.0-rc.1  # replace with the agreed sprint RC; this does not publish it
+gh release download "$TAG" --repo FootprintAI/Containarium --dir release-files --pattern '*'
+gh api "repos/FootprintAI/Containarium/releases/tags/$TAG" > release-metadata.json
+python3 scripts/release/verify_assets.py release-files \
+  --metadata release-metadata.json --repository FootprintAI/Containarium --tag "$TAG" \
+  | tee release-verification.json
+```
+
+Use a new download directory for each tag. The verifier requires the published
+asset inventory to match the download, verifies every artifact's signature
+against the exact workflow/tag identity, requires the offline bundle and four
+nonempty Linux SPDX SBOMs, checks checksums and coverage, and checks the chart's
+version/appVersion and the chart version in release notes. A missing signature,
+omitted required artifact, invalid signature or mismatch fails the command.
+Its JSON report is evidence of what was checked; retain it with the RC tag's
+resolved commit and the Helm install/upgrade run on the sprint umbrella.
+
+`release.yml` runs this check after uploading signatures, downloading those
+bundles again rather than trusting the local signing output. The read-only
+`Release asset verification` workflow can also be dispatched for an existing
+tag. Neither command signs or publishes anything. These checks do not replace
+the kind install/upgrade test or the licence gate.
 
 ## Air-gapped hosts
 
