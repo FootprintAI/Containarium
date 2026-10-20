@@ -1,8 +1,10 @@
 package backup
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -18,6 +20,37 @@ type GcloudUploader struct {
 	// run executes `gcloud <args...>` and returns combined output. A field
 	// so tests can substitute a fake without invoking the real binary.
 	run func(args ...string) (string, error)
+}
+
+// DownloadStream copies object bytes to a caller-controlled, bounded writer.
+// gcloud's stdout is never captured in memory or written outside that bound.
+func (g *GcloudUploader) DownloadStream(destURI string, dst io.Writer) error {
+	if err := validateGSURI(destURI); err != nil {
+		return err
+	}
+	// #nosec G204 -- fixed storage verb, validated URI, executable resolved by LookPath
+	cmd := exec.Command(g.bin, "storage", "cat", destURI)
+	cmd.Stdout = dst
+	diagnostic := &downloadDiagnostic{}
+	cmd.Stderr = diagnostic
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gcloud storage cat: %w: %s", err, strings.TrimSpace(diagnostic.String()))
+	}
+	return nil
+}
+
+// Keep diagnostics bounded too, while continuing to drain stderr.
+type downloadDiagnostic struct{ bytes.Buffer }
+
+func (d *downloadDiagnostic) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := 4096 - d.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = d.Buffer.Write(p)
+	}
+	return n, nil
 }
 
 // NewGcloudUploader locates `gcloud` on PATH. Returns an error if it is

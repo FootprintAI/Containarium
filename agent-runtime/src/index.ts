@@ -1,3 +1,4 @@
+import { trackClaudeCredentialState } from "./credential-state.js";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +69,7 @@ const mode = (process.env.CONTAINARIUM_AGENT_MODE ?? "run").toLowerCase();
 
 async function main(): Promise<void> {
   const seed = loadSeed(seedDir);
-  const engine = pickEngine(engineName);
+  const engine = trackClaudeCredentialState(pickEngine(engineName), homedir());
   const cfg: EngineConfig = {
     model,
     systemPrompt: seed.systemPrompt,
