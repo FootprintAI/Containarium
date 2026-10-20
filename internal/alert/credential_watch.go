@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -105,6 +106,7 @@ func (a CredentialExpiredAlert) MarshalJSON() ([]byte, error) {
 
 // CredentialWatcher runs the sweep. Construct with NewCredentialWatcher.
 type CredentialWatcher struct {
+	sweepMu  sync.Mutex
 	prober   CredentialProber
 	state    CredentialStateStore
 	notifier CredentialAlertNotifier
@@ -160,10 +162,12 @@ func (w *CredentialWatcher) Stop() {
 // Sweep probes every target once and returns how many alerts it sent.
 //
 // Per target: a probe error, or a state-store read error, skips the target
-// without touching its state. The new source is recorded BEFORE any alert
-// is sent; if recording fails no alert goes out this sweep, so a failing
-// store can delay an alert by one sweep but never repeat it.
+// without touching its state. A new source or episode ID is durably recorded
+// BEFORE notification. Pending episodes are acknowledged only after the source
+// state is also persisted; retries use the durable episode ID for deduplication.
 func (w *CredentialWatcher) Sweep(ctx context.Context) int {
+	w.sweepMu.Lock()
+	defer w.sweepMu.Unlock()
 	targets, err := w.prober.CredentialWatchTargets(ctx)
 	if err != nil {
 		log.Printf("[credential-watch] list skill boxes: %v", err)
@@ -179,19 +183,68 @@ func (w *CredentialWatcher) Sweep(ctx context.Context) int {
 			log.Printf("[credential-watch] probe %s: %v", t.Box, perr)
 			continue
 		}
+
+		var episodes CredentialEpisodes
+		ep, episodeCapable := w.prober.(CredentialEpisodeProber)
+		es, storeCapable := w.state.(CredentialEpisodeStore)
+		if episodeCapable {
+			var err error
+			episodes, err = ep.CredentialEpisodes(ctx, t)
+			if err != nil {
+				log.Printf("[credential-watch] runtime state unavailable for %s", t.Box)
+				episodes = CredentialEpisodes{} // Timestamp policy remains available independently.
+			}
+			if episodes.Active {
+				cur = pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED
+			}
+			// Never acknowledge evidence without a durable store supporting IDs.
+			if len(episodes.Pending) > 0 && !storeCapable {
+				continue
+			}
+		}
 		prev, seen, serr := w.state.LastSeen(ctx, t.SkillID)
 		if serr != nil {
 			log.Printf("[credential-watch] read last-seen state for skill %s: %v", t.SkillID, serr)
 			continue
 		}
-		if seen && prev == cur {
+		if seen && prev == cur && len(episodes.Pending) == 0 {
 			continue
 		}
 		now := w.now()
+		if len(episodes.Pending) > 0 {
+			var acknowledged []string
+			for _, episode := range episodes.Pending {
+				fresh, err := es.RecordEpisode(ctx, t.SkillID, episode.ID, now)
+				if err != nil {
+					break
+				}
+				// A timestamp alert already represents the current unhealthy episode;
+				// only a proven intervening OAuth recovery can create a new transition.
+				if fresh && (!seen || prev != pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED || episode.AfterRecovery) {
+					previous := prev
+					if episode.AfterRecovery {
+						previous = pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_INTERACTIVE
+					}
+					w.notifier.NotifyCredentialExpired(ctx, CredentialExpiredAlert{SkillID: t.SkillID, Box: t.Box, Engine: t.Engine, CredentialSource: pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED, PreviousSource: previous, ObservedAt: now})
+					fired++
+				}
+				acknowledged = append(acknowledged, episode.ID)
+			}
+			if len(acknowledged) > 0 {
+				if err := w.state.Record(ctx, t.SkillID, cur, now); err != nil {
+					continue
+				}
+				if err := ep.AcknowledgeCredentialEpisodes(ctx, t, acknowledged); err != nil {
+					log.Printf("[credential-watch] runtime acknowledgement pending for %s", t.Box)
+				}
+			}
+			continue
+		}
 		if rerr := w.state.Record(ctx, t.SkillID, cur, now); rerr != nil {
 			log.Printf("[credential-watch] record state for skill %s: %v", t.SkillID, rerr)
 			continue
 		}
+
 		if cur != pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED {
 			continue
 		}
