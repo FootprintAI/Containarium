@@ -13819,6 +13819,10 @@
           "type": "integer",
           "format": "int64",
           "description": "How many processes the responder has killed for this finding. A miner\nthat respawns is killed again each time; the webhook delivers the first\nkill at once and later ones at most once a minute, carrying this count\nand the latest killed_pid."
+        },
+        "container": {
+          "type": "string",
+          "description": "The box this response is about. A miner-signature finding is keyed per\ntenant and pattern, so several boxes of one tenant can share it (#2766);\neach box's apply and release is a separate webhook delivery that names\nits box here (#2820). On the stored finding it names the box whose\nrecord the finding shows: while any box still holds an applied action\nthat is a box still holding one, never a released box. Empty on\nresponses recorded before this field existed."
         }
       },
       "description": "FindingResponse records what the process responder did about a finding\nand when, so the finding itself tells the operator whether a box is\ncurrently throttled or frozen because of it."
@@ -17761,11 +17765,15 @@
       "properties": {
         "finding": {
           "$ref": "#/definitions/Finding",
-          "description": "The finding the action belonged to, with its response in state\nRELEASED. Resolved unless finding_kept_open is set."
+          "description": "The finding the action belonged to. Resolved, with its response in\nstate RELEASED, unless finding_kept_open is set. While another box\nstill holds an applied action on a shared finding, its response is\nthat box's APPLIED record (#2820); this box's release is `released`."
         },
         "findingKeptOpen": {
           "type": "boolean",
           "description": "The finding was left open because another box still holds it: a\nminer-signature finding is shared by every box of the tenant running\nthe same miner, and another box still has an action open on it or a\nresponse queued. It is resolved when the last box is released."
+        },
+        "released": {
+          "$ref": "#/definitions/FindingResponse",
+          "description": "This box's release record (state RELEASED, container = the released\nbox), as the finding webhook delivered it (#2820)."
         }
       }
     },
