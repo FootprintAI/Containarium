@@ -18,6 +18,7 @@ on:
     # run none of this and show no checks at all, which reads exactly like
     # checks that have not started (#1215).
     paths:
+      - 'internal/testsupport/postgres/**'
       - 'internal/server/**'
       - 'internal/cluster/**'
       - 'internal/audit/**'
@@ -43,6 +44,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'internal/testsupport/postgres/**'
       - 'internal/server/**'
       - 'internal/cluster/**'
       - 'internal/audit/**'
@@ -102,7 +104,7 @@ jobs:
 
       - name: Run the store integration suite
         env:
-          CONTAINARIUM_TEST_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
+          CONTAINARIUM_TEST_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable&application_name=containarium-test
         run: |
           # pipefail, or `go test | tee` reports tee's exit status and a red
           # suite passes the step. This lane ran without it, and PIPESTATUS
@@ -115,35 +117,24 @@ jobs:
             ./internal/server/ ./internal/cluster/ ./internal/auth/ \
             ./internal/alert/ ./internal/collaborator/ ./internal/sshauthz/ ./internal/guardrailpolicy/... 2>&1 | tee integration.log
 
-          # internal/audit and internal/threatdetect both write to the same
-          # audit_logs table, and each package's own tests reset it (DROP
-          # TABLE / DROP + recreate the schema) on the assumption that it
-          # owns the table exclusively. `go test pkgA pkgB` runs package
-          # binaries in parallel by default, which raced the two suites
-          # against each other — one package's reset landed mid-run of the
-          # other's chain-verification test (found adding #1639; see that
-          # PR for the reproduction). -p 1 forces this pair to run
-          # sequentially so neither's reset can land under the other.
-          go test -tags=integration -p 1 -count=1 -timeout 5m -v \
-            ./internal/audit/ ./internal/threatdetect/ 2>&1 | tee -a integration.log
+          # Each package process uses its own schema, including independent
+          # concurrent runs of the same package (#2749).
+          go test -tags=integration -count=1 -timeout 5m -v \
+            ./internal/testsupport/postgres/ ./internal/audit/ ./internal/threatdetect/ 2>&1 | tee -a integration.log
 
           # The sentinel SSH session shipper's end-to-end test (#2415) drives the
           # real shipper -> REST gateway -> gRPC AuditService -> hash chain ->
-          # `containarium audit verify` path. It resets audit_logs like the
-          # packages above, so it runs after them, serially, and -run keeps this
+          # `containarium audit verify` path. -run keeps this
           # invocation to the tests that need the database (the rest of
           # internal/cmd is covered by the ordinary unit lane).
-          go test -tags=integration -p 1 -count=1 -timeout 5m -v ./internal/cmd/ \
+          go test -tags=integration -count=1 -timeout 5m -v ./internal/cmd/ \
             -run 'TestE2E_(SSHSessionShip|Tampering|GRPCAndREST|IngestRequires|OrphanClose)' 2>&1 | tee -a integration.log
 
           # internal/secrets and internal/app carry their Postgres tests
           # without a build tag, gated on the DSN. Run them here too — they
           # skipped unconditionally until now, deferring to "integration tests
           # run separately", which meant nowhere.
-          # autosleep initializes the traffic schema while traffic's migration
-          # test drops its unique index. Serialize packages so initialization
-          # cannot race the migration fixtures (#2693).
-          go test -p 1 -count=1 -timeout 5m -v \
+          go test -count=1 -timeout 5m -v \
             ./internal/secrets/ ./internal/app/ ./pkg/core/network/ \
             ./internal/autosleep/ ./internal/pentest/ ./internal/security/ ./internal/traffic/ ./internal/zap/ \
             ./internal/tracker/ 2>&1 | tee -a integration.log
@@ -152,9 +143,23 @@ jobs:
           # this lane exists because that ambiguity hid the gap for so long.
           # The suite fails rather than skips when the DSN is missing, so a
           # SKIP means something else went quiet — treat it as a failure.
-          if grep -q -- "--- SKIP" integration.log; then
+          #
+          # Intentional opt-in tests are the only exemption: they skip by design
+          # unless an env var is set (they need a fixture this lane does not
+          # provide). List one by its EXACT test name, space-separated, with the
+          # reason. Matching is on the whole name, so a subtest
+          # (TestName/sub) or a similarly named test is NOT exempt, and every
+          # other `--- SKIP` still fails the job.
+          #   TestCredentialDockerEndToEnd - needs an isolated Docker fixture
+          #     (CONTAINARIUM_CREDENTIAL_DOCKER_E2E=1), see #2847.
+          OPT_IN_SKIPS="TestCredentialDockerEndToEnd"
+          unexpected_skips=$(awk -v allow="$OPT_IN_SKIPS" '
+            BEGIN { n = split(allow, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+            $1 == "---" && $2 == "SKIP:" && !($3 in ok) { print }
+          ' integration.log)
+          if [ -n "$unexpected_skips" ]; then
             echo "::error::A store integration test skipped while the database was up."
-            grep -- "--- SKIP" integration.log
+            echo "$unexpected_skips"
             exit 1
           fi
 

@@ -1235,6 +1235,18 @@ func (c *GRPCClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error
 	return resp, nil
 }
 
+// GetGuardrailStatus reads the effective response guardrail policy via gRPC
+// (#2737).
+func (c *GRPCClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.GetGuardrailStatus(ctx, &pb.GetGuardrailStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail status: %w", err)
+	}
+	return resp, nil
+}
+
 // SetGuardrailPolicy replaces the server-side guardrail policy via gRPC
 // (admin only).
 func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {

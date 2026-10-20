@@ -1128,6 +1128,22 @@ func (m *Manager) WriteFile(containerName, path string, content []byte, mode str
 	return fmt.Errorf("WriteFile not supported on this incus backend (mock?)")
 }
 
+// ReadFileStream retrieves a file without buffering it in host memory.
+func (m *Manager) ReadFileStream(containerName, path string) (io.ReadCloser, error) {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.ReadFileStream(containerName, path)
+	}
+	return nil, fmt.Errorf("ReadFileStream not supported on this incus backend")
+}
+
+// WriteFileStream consumes a file stream, including any final read error.
+func (m *Manager) WriteFileStream(containerName, path string, content io.Reader, mode string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.WriteFileStream(containerName, path, content, mode)
+	}
+	return fmt.Errorf("WriteFileStream not supported on this incus backend")
+}
+
 // PushFile is WriteFile streamed from content instead of held in memory
 // (the guardrail deploy gate delivers whole datasets this way).
 func (m *Manager) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {

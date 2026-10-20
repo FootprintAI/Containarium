@@ -2661,9 +2661,22 @@ func (c *Client) WriteFile(containerName, path string, content []byte, mode stri
 // PushFile streams content to a file inside a container, so a caller with a
 // large file never has to hold it in memory.
 func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
+	return c.WriteFileStream(containerName, path, content, mode)
+}
+
+// WriteFileStream pushes content without accumulating it in memory.
+func (c *Client) WriteFileStream(containerName, path string, content io.Reader, mode string) error {
+	// Incus only seeks when replaying a request after a redirect. A decrypt
+	// stream cannot be replayed; fail that replay instead of buffering it or
+	// sending an incomplete file. Existing seekable PushFile callers retain
+	// their normal redirect support.
+	seeker, ok := content.(io.ReadSeeker)
+	if !ok {
+		seeker = forwardOnlyFile{Reader: content}
+	}
 	// Use incus file push functionality via the API
 	args := incus.InstanceFileArgs{
-		Content:   content,
+		Content:   seeker,
 		WriteMode: "overwrite",
 	}
 
@@ -2683,6 +2696,12 @@ func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mod
 	}
 
 	return nil
+}
+
+type forwardOnlyFile struct{ io.Reader }
+
+func (forwardOnlyFile) Seek(int64, int) (int64, error) {
+	return 0, fmt.Errorf("cannot replay a streaming container file upload")
 }
 
 // ListDir returns the entry names of a directory inside the container. See
@@ -2716,6 +2735,17 @@ const maxSymlinkHops = 10
 // at server/node-token is exactly such a symlink, which is how
 // workers were pushed a "token" with no CA hash (#1446).
 func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
+	r, err := c.ReadFileStream(containerName, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// ReadFileStream follows bounded symlink targets and transfers ownership
+// of the regular file response to the caller, who must close it.
+func (c *Client) ReadFileStream(containerName, filePath string) (io.ReadCloser, error) {
 	current := filePath
 	for hop := 0; ; hop++ {
 		reader, resp, err := c.server.GetInstanceFile(containerName, current)
@@ -2723,16 +2753,25 @@ func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
 			return nil, fmt.Errorf("failed to read file %s: %w", current, err)
 		}
 		if resp != nil && resp.Type == "directory" {
-			// Incus returns a nil reader for directories.
+			// Incus normally returns a nil reader for directories.
+			if reader != nil {
+				_ = reader.Close()
+			}
 			return nil, fmt.Errorf("failed to read file %s: it is a directory", current)
 		}
-		content, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file content of %s: %w", current, err)
+		if reader == nil {
+			return nil, fmt.Errorf("failed to read file %s: missing response body", current)
 		}
 		if resp == nil || resp.Type != "symlink" {
-			return content, nil
+			return reader, nil
+		}
+		content, err := io.ReadAll(io.LimitReader(reader, 4097))
+		_ = reader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read symlink %s: %w", current, err)
+		}
+		if len(content) > 4096 {
+			return nil, fmt.Errorf("failed to read symlink %s: target exceeds 4096 bytes", current)
 		}
 		if hop >= maxSymlinkHops {
 			return nil, fmt.Errorf("failed to read file %s: too many symlink hops (loop?)", filePath)
