@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -50,12 +51,17 @@ func newSSHBanPluginCommand() *cobra.Command {
 		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 		var audit *sshban.AuditRecorder
 		var sink *sshsession.JSONLRecorder
+		auditStarted := false
 		if recordsFile != "" {
 			var err error
 			if sink, err = sshsession.NewJSONLFileRecorder(recordsFile); err != nil {
 				return err
 			}
-			defer func() { _ = sink.Close() }()
+			defer func() {
+				if !auditStarted { // after startup the recorder goroutine owns the sink
+					_ = sink.Close()
+				}
+			}()
 			audit = sshban.NewAuditRecorder(sshban.AuditConfig{
 				Listener: kind, Out: sink, MaxPerMinute: maxRecords,
 				Logf: func(f string, a ...any) { logger.Error(fmt.Sprintf(f, a...)) },
@@ -84,7 +90,11 @@ func newSSHBanPluginCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer stop()
+		defer func() {
+			if !auditStarted { // shutdownAudit starts stop without an unbounded wait
+				stop()
+			}
+		}()
 		logger.Info("ssh_ban_policy", "event", "policy_loaded", "window", duration, "ignore_cidrs", ignore, "max_entries", capacity)
 		plugin, err := libplugin.NewFromStdio(g.PluginConfig())
 		if err != nil {
@@ -92,6 +102,8 @@ func newSSHBanPluginCommand() *cobra.Command {
 		}
 		plugin.SetConfigLoggerCallback(libplugin.ConfigLoggerSlog)
 		signals := make(chan os.Signal, 1)
+		var stopReopen context.CancelFunc
+		var reopenDone chan struct{}
 		// SIGHUP never clears unrelated IPs; bans are cleared only through the
 		// targeted control operation or process restart. With a records file it
 		// reopens that file for log rotation, and otherwise it is ignored.
@@ -99,7 +111,13 @@ func newSSHBanPluginCommand() *cobra.Command {
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
 			defer signal.Stop(hup)
-			go sshsession.ReopenOn(cmd.Context(), hup, sink, func(f string, a ...any) { logger.Error(fmt.Sprintf(f, a...)) })
+			reopenCtx, cancelReopen := context.WithCancel(context.Background())
+			stopReopen = cancelReopen
+			reopenDone = make(chan struct{})
+			go func() {
+				defer close(reopenDone)
+				sshsession.ReopenOn(reopenCtx, hup, sink, func(f string, a ...any) { logger.Error(fmt.Sprintf(f, a...)) })
+			}()
 		} else {
 			signal.Ignore(syscall.SIGHUP)
 		}
@@ -108,12 +126,19 @@ func newSSHBanPluginCommand() *cobra.Command {
 		if audit != nil {
 			tick := time.NewTicker(time.Minute)
 			defer tick.Stop()
-			// Cancelled and awaited on return so the final drain and the
-			// overflow record are written before the sink closes.
-			runCtx, stopAudit := context.WithCancel(cmd.Context())
-			auditDone := make(chan struct{})
-			go func() { audit.Run(runCtx, tick.C, g.Sweep); close(auditDone) }()
-			defer func() { stopAudit(); <-auditDone }()
+			// The recorder owns the sink after startup. A timed-out shutdown may
+			// return while it is blocked, but cannot close a sink still in use.
+			runCtx, stopAudit := context.WithCancel(context.Background())
+			auditStarted = true
+			auditDone := startSSHBanAudit(runCtx, audit, tick.C, g, stopReopen, reopenDone, sink)
+			defer func() {
+				quiesceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				stopReopen()
+				if err := shutdownSSHBanAudit(quiesceCtx, stop, g, audit, stopAudit, auditDone); err != nil {
+					logger.Error("ssh-ban shutdown deadline exceeded; queued or final audit records may be lost", "error", err)
+				}
+			}()
 		}
 		done := make(chan error, 1)
 		go func() { done <- plugin.Serve() }()
@@ -127,4 +152,51 @@ func newSSHBanPluginCommand() *cobra.Command {
 		}
 	}
 	return c
+}
+
+// startSSHBanAudit keeps the sink open until the recorder and SIGHUP reopener
+// have both stopped. The caller can leave on deadline without closing it early.
+func startSSHBanAudit(ctx context.Context, audit *sshban.AuditRecorder, ticks <-chan time.Time, g *sshban.Guard, stopReopen context.CancelFunc, reopenDone <-chan struct{}, sink io.Closer) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			stopReopen()
+			<-reopenDone
+			_ = sink.Close()
+		}()
+		audit.Run(ctx, ticks, g.TrySweep, g.FlushFailureWindows)
+	}()
+	return done
+}
+
+// shutdownSSHBanAudit bounds the whole shutdown, including control Stop and
+// recorder I/O. On deadline, Abort prevents a future final pass and the caller
+// returns; the recorder retains sink ownership until any blocked call returns.
+// Queued events and completed or open windows may then be lost. A permanently
+// blocked callback, Stop, or write cannot be canceled by Go; the plugin process
+// must exit to reclaim those goroutines and its still-open sink.
+func shutdownSSHBanAudit(ctx context.Context, stopControl func(), g *sshban.Guard, audit *sshban.AuditRecorder, stopAudit context.CancelFunc, auditDone <-chan struct{}) error {
+	controlDone := make(chan struct{})
+	go func() { stopControl(); close(controlDone) }()
+	if err := g.QuiesceCallbacks(ctx); err != nil {
+		audit.Abort()
+		stopAudit()
+		return err
+	}
+	select {
+	case <-controlDone:
+	case <-ctx.Done():
+		audit.Abort()
+		stopAudit()
+		return ctx.Err()
+	}
+	stopAudit()
+	select {
+	case <-auditDone:
+		return nil
+	case <-ctx.Done():
+		audit.Abort()
+		return ctx.Err()
+	}
 }
