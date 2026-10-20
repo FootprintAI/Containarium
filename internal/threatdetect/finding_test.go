@@ -220,3 +220,29 @@ func TestFlowEvidence_SeenAndMatched_ToProto(t *testing.T) {
 		t.Fatalf("flow 1 should leave the new fields unset: %v", got[1])
 	}
 }
+
+// TestFindingClone verifies that later Count and Response changes leave the snapshot unchanged.
+func TestFindingClone(t *testing.T) {
+	original := &Finding{
+		Count: 1,
+		Response: &FindingResponse{
+			ProcessKilled: true,
+		},
+	}
+
+	snapshot := original.clone()
+
+	original.Count = 2
+	original.Response.ProcessKilled = false
+
+	if snapshot.Count != 1 {
+		t.Fatalf("snapshot count = %d, want 1", snapshot.Count)
+	}
+	if !snapshot.Response.ProcessKilled {
+		t.Fatal("changing the original response changed the snapshot")
+	}
+
+	if got := (&Finding{}).clone(); got.Response != nil {
+		t.Fatal("cloning a finding without a response should preserve nil")
+	}
+}
