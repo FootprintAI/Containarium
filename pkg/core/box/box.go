@@ -187,6 +187,11 @@ type BoxStatus struct {
 	DeleteAfterStoppedSeconds int64
 	DeletePolicy              string // "protected" or "" (unprotected)
 
+	// Stack is the software stack the box was created with. LXC only
+	// (user.containarium.stack); empty on K8s, which does not persist it, and
+	// on LXC boxes created before the key existed.
+	Stack string
+
 	// Image is a human-readable label for the image the box was launched
 	// from (LXC: Incus's image.description / volatile.base_image config
 	// keys). Empty when the backend has no such data.
