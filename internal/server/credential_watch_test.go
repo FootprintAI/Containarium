@@ -80,13 +80,13 @@ func TestProbeCredential_UsesAlertPolicy(t *testing.T) {
 		t.Errorf("exec calls = %+v, want exactly one probe in the skill's box", backend.execCalls)
 	}
 
-	if got := backend.execCalls[0].Command[2]; !strings.Contains(got, "86400") || !strings.Contains(got, "claude-auth-failed") {
+	if got := backend.execCalls[0].Command[2]; !strings.Contains(got, "86400") {
 		t.Fatal("watcher did not execute the alert policy")
 	}
 	if _, err := s.GetSkillBoxCredentialStatus(ctxAs("admin", true), &pb.GetSkillBoxCredentialStatusRequest{SkillId: skill.Id}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(backend.execCalls[1].Command[2], "86400") || strings.Contains(backend.execCalls[1].Command[2], "claude-auth-failed") {
+	if strings.Contains(backend.execCalls[1].Command[2], "86400") {
 		t.Fatal("manual status changed to alert policy")
 	}
 
@@ -117,4 +117,27 @@ func newCredentialWatchHarness(t *testing.T, skillIDs ...string) (*AgentSkillSer
 	}
 	cs := &ContainerServer{manager: container.NewWithBackend(backend)}
 	return &AgentSkillServer{catalog: catalog, recipes: NewRecipeServer(cs, nil)}, out, backend
+}
+
+func TestCredentialEpisodeProtocol(t *testing.T) {
+	s, skill, backend := newSkillBoxHarnessInspectable(t, newFakeRevocationStore())
+	target := alert.CredentialWatchTarget{SkillID: skill.Id, Box: "agent-" + skill.Id + "-container", Engine: pb.AgentEngine_AGENT_ENGINE_CLAUDE}
+	for _, out := range []string{`{"version":1,"active":false,"pending":[]}`, `{"version":1,"active":true,"pending":[{"id":"00000000-0000-0000-0000-000000000001","afterRecovery":false}]}`} {
+		backend.execStdout = out
+		if _, err := s.CredentialEpisodes(context.Background(), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, out := range []string{`expired`, `{"version":2}`, `{"version":1,"pending":[{"id":"$(unsafe)"}]}`} {
+		backend.execStdout = out
+		if _, err := s.CredentialEpisodes(context.Background(), target); err == nil {
+			t.Fatal("accepted malformed runtime metadata")
+		}
+	}
+	if err := s.AcknowledgeCredentialEpisodes(context.Background(), target, []string{";unsafe"}); err == nil {
+		t.Fatal("accepted unsafe acknowledgement")
+	}
+	if err := s.AcknowledgeCredentialEpisodes(context.Background(), target, []string{"00000000-0000-0000-0000-000000000001"}); err != nil {
+		t.Fatal(err)
+	}
 }

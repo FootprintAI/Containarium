@@ -24,8 +24,8 @@ func TestCredentialAlertStatusScript(t *testing.T) {
 		{name: "over 24 hours", expires: now - 86401, want: CredentialStatusExpired},
 		{name: "future expiry", expires: now + 60, want: CredentialStatusInteractive},
 		{name: "unknown expiry", missingExpiry: true, want: CredentialStatusInteractive},
-		{name: "authentication failure despite future expiry", expires: now + 60, failed: true, want: CredentialStatusExpired},
-		{name: "authentication failure during recent expiry", expires: now - 60, failed: true, want: CredentialStatusExpired},
+		{name: "authentication failure despite future expiry", expires: now + 60, failed: true, want: CredentialStatusInteractive},
+		{name: "authentication failure during recent expiry", expires: now - 60, failed: true, want: CredentialStatusInteractive},
 		{name: "API key ignores stale failure", noSignIn: true, failed: true, want: CredentialStatusAPIKey},
 	} {
 		for _, millis := range []bool{false, true} {

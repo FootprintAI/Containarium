@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/alert"
@@ -52,4 +54,44 @@ func (s *AgentSkillServer) ProbeCredential(_ context.Context, t alert.Credential
 	}
 	script, _ := engine.CredentialAlertStatusScript(engineName)
 	return s.probeBoxCredentialScript(t.Box, script)
+}
+
+var credentialEpisodeID = regexp.MustCompile(`^[a-f0-9-]{36}$`)
+
+// Runtime state is a private protocol, independent of the public status RPC.
+func (s *AgentSkillServer) CredentialEpisodes(_ context.Context, t alert.CredentialWatchTarget) (alert.CredentialEpisodes, error) {
+	var result alert.CredentialEpisodes
+	if t.Engine != pb.AgentEngine_AGENT_ENGINE_CLAUDE {
+		return result, nil
+	}
+	out, _, code, err := s.recipes.containers.manager.ExecWithExitCode(t.Box, []string{"sh", "-c", `if command -v agent-runtime-credential-state >/dev/null 2>&1; then exec agent-runtime-credential-state snapshot; else echo '{"version":1,"active":false,"pending":[]}'; fi`})
+	if err != nil || code != 0 {
+		return result, fmt.Errorf("credential runtime state unavailable")
+	}
+	if len(out) > 1<<20 || json.Unmarshal([]byte(out), &result) != nil || result.Version != 1 || len(result.Pending) > 256 {
+		return result, fmt.Errorf("invalid credential runtime observation")
+	}
+	for _, e := range result.Pending {
+		if !credentialEpisodeID.MatchString(e.ID) {
+			return result, fmt.Errorf("invalid credential episode ID")
+		}
+	}
+	return result, nil
+}
+func (s *AgentSkillServer) AcknowledgeCredentialEpisodes(_ context.Context, t alert.CredentialWatchTarget, ids []string) error {
+	if len(ids) > 256 {
+		return fmt.Errorf("too many credential episodes")
+	}
+	args := []string{"agent-runtime-credential-state", "ack"}
+	for _, id := range ids {
+		if !credentialEpisodeID.MatchString(id) {
+			return fmt.Errorf("invalid credential episode ID")
+		}
+		args = append(args, id)
+	}
+	_, _, code, err := s.recipes.containers.manager.ExecWithExitCode(t.Box, args)
+	if err != nil || code != 0 {
+		return fmt.Errorf("credential runtime acknowledgement unavailable")
+	}
+	return nil
 }

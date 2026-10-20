@@ -97,12 +97,25 @@ func testCredentialPolicyTransitions(t *testing.T, store CredentialStateStore) {
 	if err := os.WriteFile(filepath.Join(credDir, "settings.json"), []byte(`{"ANTHROPIC_API_KEY":"FAKE_SECRET_NEVER_OUTPUT"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(marker, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// API-key runs produce no OAuth episodes (source provenance tested in runtime).
 	sweep(2) // A stale interactive failure does not change API-key behavior.
 }
 
 func TestCredentialWatcherPolicyFakeFiles(t *testing.T) {
 	testCredentialPolicyTransitions(t, newMemStateStore())
+}
+
+func (p fileCredentialProber) CredentialEpisodes(context.Context, CredentialWatchTarget) (CredentialEpisodes, error) {
+	_, err := os.Stat(filepath.Join(p.home, ".local", "state", "containarium", "claude-auth-failed"))
+	if os.IsNotExist(err) {
+		return CredentialEpisodes{Version: 1}, nil
+	}
+	if err != nil {
+		return CredentialEpisodes{}, err
+	}
+	// Metadata fixture stands in for the separately tested, locked runtime CLI.
+	return CredentialEpisodes{Version: 1, Active: true, Pending: []CredentialEpisode{{ID: "00000000-0000-0000-0000-000000000001"}}}, nil
+}
+func (p fileCredentialProber) AcknowledgeCredentialEpisodes(context.Context, CredentialWatchTarget, []string) error {
+	return nil
 }

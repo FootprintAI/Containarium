@@ -13,10 +13,5 @@ func CredentialAlertStatusScript(n Name) (string, bool) {
 	script = strings.Replace(script,
 		`if [ "$exp" -le "$(date +%s)" ]; then`,
 		`if [ "$exp" -lt "$(($(date +%s) - 86400))" ]; then`, 1)
-	script = strings.Replace(script, `if [ -f "$cred" ]; then`, `if [ -f "$cred" ]; then
-  if [ -f "$HOME/.local/state/containarium/claude-auth-failed" ]; then
-    echo expired
-    exit 0
-  fi`, 1)
 	return script, true
 }
