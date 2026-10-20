@@ -6,12 +6,14 @@ it raises a HIGH finding and applies a reversible action to the box
 (`ALERT`, `THROTTLE` or `FREEZE`). It also tells you when the sentry that
 should be watching is not.
 
-This page covers the guardrail as shipped in **v0.109.0**: the CPU and
-flow rule (since v0.108.0), exec telemetry, the miner-signature rule with
-the optional kill, and webhook delivery of what the responder did. One
-behavior is on `main` but not in a release yet and is marked
-**(unreleased)**: the sentry reporting `DEGRADED` when the responder can
-only alert (#2719).
+This page describes the guardrail as it behaves on `main`. v0.109.0 is
+the latest release; it has the CPU and flow rule, exec telemetry, the
+miner-signature rule with the optional kill, and webhook delivery of what
+the responder did. Fixes merged after that tag ship in the next release and
+are marked **(next release)**: batched exec-ring wakeups (#2774), exec-events
+streaming over REST (#2773), kill delivery through the webhook (#2775),
+per-box release of a shared finding (#2766), and the sentry reporting
+`DEGRADED` when the responder can only alert (#2719).
 
 Read first:
 
@@ -192,20 +194,47 @@ environment. Tenants have root in their box, so nothing inside it reports.
   prints `exec-telemetry: unavailable (<reason>)`, `exec-events` fails with
   the same reason, and a MEDIUM `SENTRY_UNAVAILABLE` finding with subject
   `exec-telemetry unavailable` opens within a minute. The flow rules keep
-  running; `miner-signature` is blind until it recovers.
-- **Lost events.** If the kernel ring fills, the drops are counted and
-  shown as `exec-events-lost: N` (a counter, not a fault).
-- **Overhead.** The bar is under 1 % of host CPU at 1,000 execs/s. The
-  eBPF loading lane measured 983 execs/s for 60 s with 0 events lost:
-  2.95 % of one core in total, which is 0.37 % of an 8-core runner. A burst
-  of 10,000 undrained execs kept some, counted the rest as lost, and did
-  not crash. Reducing the per-core consumer cost is tracked in #2747.
+  running. **Limitation:** the `MINER_SIGNATURE` row of the rule table keeps
+  reading `true` while exec telemetry is down, although the rule sees no
+  execs. Read the `exec-telemetry:` line, not the rule row, to know whether
+  it can fire.
+- **Lost events and floods.** One 4 MiB ring serves every watched box on
+  the host. The daemon drains it every 50 ms (**next release**; an exec
+  event therefore reaches the rules up to about 50 ms after it happened). If
+  more execs arrive inside one drain window than the ring holds, the excess
+  is dropped and counted, never hidden, and shown as `exec-events-lost: N`.
+  A tenant can cause this deliberately by flooding execs, so **alert on
+  `exec-events-lost` increasing**: a non-zero change means the exec rules did
+  not see every exec in that window. The execs themselves are never blocked.
+- **Overhead.** The bar is under 1 % of host CPU at 1,000 execs/s. With the
+  batched wakeups (**next release**) the verification pass on an 8-vCPU
+  guest measured **0.063 % of host CPU above idle** at 1,000 execs/s for
+  60 s, 0 events lost, the kernel program costing about 1.2 us per exec. The
+  CI lane measured 0.078 %. Before the batching fix the same guest measured
+  about 7 %; v0.109.0 as tagged has that cost.
 
 ```bash
 containarium security exec-events                          # last 5 minutes, all boxes
 containarium security exec-events --container box-a --follow
 containarium security exec-events --since 1h --json
 ```
+
+One line per exec, in text:
+
+```text
+2026-10-20T03:10:34Z  box-a  pid=23582 ppid=23579 uid=1000000  /usr/bin/sh  sh -c true example-marker
+```
+
+and with `--json`, one object per line:
+
+```json
+{"container":"box-a","tenantId":"acme","at":"2026-10-20T03:10:34.954851557Z","exec":{"pid":23582,"ppid":23579,"uid":1000000,"comm":"sh","filename":"/usr/bin/sh","argv":"sh -c true example-marker","argvTruncated":false,"sha256":"","matched":""}}
+```
+
+`uid` is the host-side uid (an unprivileged box maps its root to a high
+uid). `sha256` and `matched` are always empty here: the stream shows what
+ran, not what a rule decided; matches are findings. Streaming over REST
+works from the next release (#2773).
 
 ## The policy ladder
 
@@ -262,7 +291,10 @@ the rule is the retry.
 
 **Release.** `containarium security process-policy release <box>`
 undoes the open action (restores the recorded limits, or unfreezes),
-marks it released by the operator and resolves the finding. If the Incus
+marks it released by the operator and resolves the finding. When several
+boxes of one tenant share the finding (same rule and subject), release is
+per box: while another box still has a response the finding stays open
+(**next release**, #2766). If the Incus
 call fails the action stays open so you can retry. With nothing open it
 fails with 404.
 
@@ -307,8 +339,19 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
   (start-time check tracked in #2765).
 - A box's init is never killed.
 - Every attempt is audited under `security.action`: `kill` (names the pid)
-  or `kill-skipped` (with the reason, such as `pid reused` or `process
-  already exited`). The finding's response shows `process killed`.
+  or `kill-skipped` (with the pid and the reason, for example
+  `kill_skipped="pid 211757: process already exited"`).
+- `findings list` shows the result under the finding:
+
+  ```text
+  response ALERT NONE, process killed (pid 210932, kills 1)
+  response THROTTLE APPLIED, process killed (pid 211547, kills 1)
+  response ALERT NONE, kill skipped: PROCESS_GONE
+  ```
+
+  A miner that respawns is killed again each time; `kills` counts them.
+  The skip reasons are `PID_REUSED`, `PROCESS_GONE`, `CONTAINER_INIT`,
+  `POLICY_UNREADABLE` and `OTHER`.
 - The kill runs on the responder's own queue, never on the exec path. A
   full queue (256) drops the response, logged and audited as
   `response-dropped`.
@@ -338,7 +381,7 @@ Effective:
   action:             ALERT
   throttle allowance: 10%
   ttl:                24h0m0s
-  kill process:       inherit
+  kill process:       false
 Mining-behavior thresholds:
   min cores:              1.5
   min fraction of limit:  0.75
@@ -369,6 +412,7 @@ containarium security process-policy set --container box-1 --clear-override
 containarium security process-policy set --rule mining-behavior --min-cores 2 --stratum-ports 3333,4444
 ```
 
+A container override prints `kill process: inherit` until it is set.
 Prints `Process policy updated.` (or `Cleared override on <box>.`) and
 the effective action, allowance and TTL.
 
@@ -377,7 +421,12 @@ the effective action, allowance and TTL.
 ```text
 Released THROTTLE on box-1: CPU limit restored. Finding #42 resolved.
 Released FREEZE on box-1: container unfrozen. Finding #43 resolved.
+Released THROTTLE on box-2: CPU limit restored. Finding #44 kept open: another box still has a response.
 ```
+
+The last form is for a finding shared by several boxes of one tenant
+(**next release**, #2766). It resolves when the last box is released. In
+the audit log the release carries `finding_kept_open=true` or `false`.
 
 ### `containarium security sentry status [--json]`
 
@@ -426,11 +475,31 @@ whatever the running engine registers.
 
 Flags: `--state open|resolved`, `--severity low|medium|high|critical`,
 `--tenant`, `--since <RFC3339>`, `--limit`, `--json`. There is no rule
-filter; mining findings show as rule `MINING_BEHAVIOR` with the pool's
-`ip:port` as subject. The table does not print CPU evidence or the
-`response` field: use `--json` to see the CPU summary, the flow and what
-the responder did. `findings resolve <id>` resolves a finding by hand; it
-does not release an action (use `process-policy release`).
+filter. Mining findings show as rule `MINING_BEHAVIOR` (subject: the pool's
+`ip:port`) or `MINER_SIGNATURE` (subject: `<kind>:<pattern>`). Under each
+finding the table prints its evidence and, once the responder has acted,
+the `response` line shown above. `--json` has the full CPU summary, flow and
+response. `findings resolve <id>` resolves a finding by hand; it does not
+release an action (use `process-policy release`).
+
+### `containarium security miner-signatures list`
+
+```text
+Baseline version: 1
+KIND    SOURCE    PATTERN                    LABEL
+name    baseline  "xmrig"                    XMRig (Monero CPU/GPU miner)
+name    baseline  "minerd"                   pooler cpuminer (minerd)
+name    baseline  "cpuminer*"                cpuminer family
+...
+argv    baseline  "--donate-level"           XMRig donate-level flag
+argv    baseline  "stratum+tcp://"           stratum pool URL
+argv    baseline  "-o *:3333"                pool on stratum port 3333
+...
+```
+
+The baseline is 8 `name` entries and the `argv` entries above, plus the
+`-o`, `--url` forms for each default stratum port. There are no `sha256`
+entries; yours show with source `operator`.
 
 ### `miner-signatures` and `exec-events`
 
@@ -440,15 +509,38 @@ Described with the rules above. The REST routes are `/v1/security/miner-signatur
 ### Webhook delivery of responses
 
 The finding webhook fires again when the responder's result changes.
-`response.state` is a number in the payload: `NONE`=1, `APPLIED`=2,
-`FAILED`=3, `RELEASED`=4, `EXPIRED`=5. So a mining
-finding is delivered at once as new (`NONE`, the responder has not acted
-yet), again when the action is `APPLIED` or `FAILED`, and again on
-release or expiry, each inside the re-notify interval. An operator release
-that also resolves the finding is one delivery: the resolve that follows
-within 30 s is coalesced. A TTL expiry or orphan-sweep release leaves the
-finding open, so its later resolve is delivered. The gate is in memory, so
-a restart re-delivers an open finding once.
+Enums are numbers in the payload. `rule`: `mining-behavior`=6,
+`miner-signature`=7. `severity`: HIGH=3. `response.action`: ALERT=1.
+`response.state`: `NONE`=1, `APPLIED`=2, `FAILED`=3, `RELEASED`=4,
+`EXPIRED`=5.
+
+- The **first post** for a new finding has **no `response` key**: the
+  responder has not acted yet. It is not `NONE`.
+- A **second post** follows when the action is `APPLIED` or `FAILED`, then
+  one on release or expiry, each inside the re-notify interval.
+- An operator release that also resolves the finding is one post: the
+  resolve within 30 s is coalesced. Its `state` field is still the finding's
+  (open) state, with `response.state: 4`. A TTL expiry or orphan-sweep
+  release leaves the finding open, so its later resolve is posted.
+- **Kills** (next release, #2775): a kill adds `response.process_killed:
+  true`, `killed_pid` and `kills` and is posted at once, then at most once a
+  minute for a respawning miner. After a storm stops, the last `kills` in
+  the webhook can be short of the true count; `findings list` is exact. A
+  skipped kill carries a numeric `kill_skip_reason` (`PID_REUSED`=1,
+  `PROCESS_GONE`=2, `CONTAINER_INIT`=3, `POLICY_UNREADABLE`=4, `OTHER`=5).
+
+Abridged kill post:
+
+```json
+{"id": 3, "rule": 7, "severity": 3, "container": "box-a", "subject": "name:xmrig", "state": 1, "count": 1, "response": {"action": 1, "state": 1, "process_killed": true, "killed_pid": 210932, "kills": 1}}
+```
+
+The gate is in memory, so a restart re-posts an open finding once.
+
+**Known limitation (#2820, remove when it lands).** For a finding shared by
+several boxes of one tenant, the webhook currently names only the first box:
+the second box's throttle, its release and the resolve are not posted. Use
+`findings list --json` or the audit log for those boxes.
 
 ## Rollout order
 
@@ -465,7 +557,9 @@ Move one step at a time, per backend, and check `sentry status` at each.
    needed), make sure Postgres is reachable, restart. `sentry status`
    must say `Sentry: OK`, no `Reason` line, `cpu-sampler:` either
    `metrics-collector` or `standalone (30s)`, and `MINING_BEHAVIOR true`.
-   `exec-telemetry: ok` and `MINER_SIGNATURE true` are required too.
+   `exec-telemetry: ok` is required too, and `MINER_SIGNATURE true` alone
+   proves nothing (the row stays `true` while exec telemetry is down). Alert
+   on `exec-events-lost` increasing.
    Anything else is a `SENTRY_UNAVAILABLE` finding within a minute; fix
    it before going on. `DEGRADED` here means no action will ever be taken
    whatever you set later.
@@ -525,8 +619,9 @@ What the guardrail will not catch, stated plainly:
 - **Short-lived processes.** The hash is computed best effort; a process
   that exits before it can be read is not hashed.
 - **Webhook ordering.** The first delivery is queued when the finding is
-  written, before the responder acts; the transition arrives as a second
-  delivery. Do not read the first as "no action was taken".
+  written, before the responder acts, so it has no `response` key; the
+  transition arrives as a later delivery. Do not read the first as "no
+  action was taken".
 
 ### What a tenant with root in the box can and cannot do
 
