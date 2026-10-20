@@ -186,6 +186,24 @@ func (s *GuardrailPolicyServer) GetGuardrailPolicy(ctx context.Context, _ *pb.Ge
 	return &pb.GetGuardrailPolicyResponse{Configured: true, Policy: p, PolicyHash: hash}, nil
 }
 
+// GetGuardrailStatus reports what scans model responses (#2737): BASELINE,
+// ADMIN or NONE, derived from the store the model gateway reads. Open to any
+// authenticated caller and rate-limited with Get; a read error is an error.
+func (s *GuardrailPolicyServer) GetGuardrailStatus(ctx context.Context, _ *pb.GetGuardrailStatusRequest) (*pb.GetGuardrailStatusResponse, error) {
+	if _, _, ok := auth.SubjectFromGRPCContext(ctx); !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	if err := checkGuardrailRate(ctx, s.getLimit); err != nil {
+		return nil, err
+	}
+	resp, err := guardrailpolicy.EffectiveStatus(s.store.Get(ctx))
+	if err != nil {
+		log.Printf("[guardrail-policy] status read: %v", err)
+		return nil, status.Error(codes.Internal, "read guardrail policy failed")
+	}
+	return resp, nil
+}
+
 func (s *GuardrailPolicyServer) SetGuardrailPolicy(ctx context.Context, req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
