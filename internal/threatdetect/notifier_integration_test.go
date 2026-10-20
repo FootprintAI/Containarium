@@ -36,9 +36,11 @@ func deliveryPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	// webhook_deliveries is internal/alert's own table; other packages'
-	// integration tests run concurrently against this same database in CI,
-	// so only reset the rows this test writes, not the table itself.
+	// Each package run owns its schema. Initialize the delivery table here
+	// rather than relying on internal/alert's tests to have created it.
+	if _, err := alert.NewDeliveryStore(context.Background(), pool); err != nil {
+		t.Fatalf("initialize webhook_deliveries: %v", err)
+	}
 	if _, err := pool.Exec(context.Background(), `DELETE FROM webhook_deliveries WHERE source = 'threatdetect'`); err != nil {
 		t.Fatalf("reset (webhook_deliveries): %v", err)
 	}
