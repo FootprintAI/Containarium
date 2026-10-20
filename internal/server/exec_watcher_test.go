@@ -481,8 +481,11 @@ func TestExecWatcher_Status(t *testing.T) {
 
 // fakeExecRing is an execRingReader. With err set it reports data and
 // returns err from ReadInto (a failing ring). With no err it is an empty
-// ring until Close, then reports ErrClosed — the shutdown path; the
-// consumer leaves on ctx cancellation either way.
+// ring; the consumer leaves on ctx cancellation either way. Like the real
+// ringbuf.Reader, whose AvailableBytes dereferences the mapping Close unmaps,
+// it PANICS when ReadInto or AvailableBytes is called after Close: the
+// consumer must close the reader only after its drain loop has returned
+// (#2812 review), and a fake that tolerated the old order would hide that.
 type fakeExecRing struct {
 	err    error
 	once   sync.Once
@@ -493,21 +496,26 @@ func newFakeExecRing(err error) *fakeExecRing {
 	return &fakeExecRing{err: err, closed: make(chan struct{})}
 }
 
+func (r *fakeExecRing) useAfterClose(method string) {
+	select {
+	case <-r.closed:
+		panic("fakeExecRing." + method + " called after Close: the consumer must close the reader only after its loop has returned")
+	default:
+	}
+}
+
 func (r *fakeExecRing) ReadInto(*ringbuf.Record) error {
+	r.useAfterClose("ReadInto")
 	if r.err != nil {
 		return r.err
 	}
-	select {
-	case <-r.closed:
-		return ringbuf.ErrClosed
-	default:
-		return os.ErrDeadlineExceeded
-	}
+	return os.ErrDeadlineExceeded
 }
 
 func (r *fakeExecRing) SetDeadline(time.Time) {}
 
 func (r *fakeExecRing) AvailableBytes() int {
+	r.useAfterClose("AvailableBytes")
 	if r.err != nil {
 		return 1
 	}
