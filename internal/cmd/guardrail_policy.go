@@ -38,6 +38,17 @@ var errNoGuardrailServer = errors.New("--server is required for guardrail policy
 // newGuardrailPolicyAPI builds the client from the global --server/--http
 // flags. A variable so tests can substitute a fake.
 var newGuardrailPolicyAPI = func() (guardrailPolicyAPI, func(), error) {
+	return dialGuardrailPolicyService()
+}
+
+// guardrailPolicyServiceClient is every GuardrailPolicyService call the CLI
+// makes; both typed clients satisfy it.
+type guardrailPolicyServiceClient interface {
+	guardrailPolicyAPI
+	guardrailStatusAPI
+}
+
+func dialGuardrailPolicyService() (guardrailPolicyServiceClient, func(), error) {
 	if serverAddr == "" {
 		return nil, nil, errNoGuardrailServer
 	}

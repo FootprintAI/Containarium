@@ -91,6 +91,7 @@ guardrail keygen
 guardrail policy get
 guardrail policy set
 guardrail scan
+guardrail status
 guardrail verify
 info
 install-stack
