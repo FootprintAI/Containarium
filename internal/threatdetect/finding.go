@@ -101,6 +101,15 @@ type CPUEvidence struct {
 	Samples       int32   `json:"samples"`
 }
 
+// ProcStartTicks is a process's start time as /proc/<pid>/stat field 22
+// reports it: clock ticks (USER_HZ) since boot. It is constant for the life
+// of a process (exec does not change it) and differs between two processes
+// that held the same pid one after the other, which is what makes it the
+// identity check against pid reuse (#2765). 0 means unknown. Only ever
+// compared with another value read the same way, never converted to a
+// wall-clock time.
+type ProcStartTicks uint64
+
 // ExecEvidence is one process exec attached to a finding (#2637, used by the
 // miner-signature rule #2638): the host-side exec telemetry record,
 // attributed to the container. PID/PPID are host-namespace ids.
@@ -114,6 +123,11 @@ type ExecEvidence struct {
 	ArgvTruncated bool   `json:"argv_truncated,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
 	Matched       string `json:"matched,omitempty"`
+
+	// StartTime is the process's start time read when the exec was decoded
+	// (#2765); the kill refuses a pid whose start time no longer matches.
+	// Not on the wire message: it is an internal identity check.
+	StartTime ProcStartTicks `json:"start_time,omitempty"`
 }
 
 // ToProto renders the evidence as the wire message.

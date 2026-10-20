@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`kill_process` no longer signals a pid reused by another process inside the same box** (#2765). The host-side miner kill pinned the pid with a pidfd and re-checked its cgroup, which stopped reuse on the host or in another box but not inside the same box between the exec and the pin. The exec watcher now reads the process's start time (`/proc/<pid>/stat` field 22, clock ticks since boot, parsed from the last `)` so a crafted comm cannot shift it) when it decodes the exec, and the kill compares it with the pinned process's start time right before the signal: a mismatch is skipped as `pid reused`, audited as `kill-skipped` with both start times. An exec whose process had already exited when it was decoded has no start time and is never signalled: new `KillSkipReason` `KILL_SKIP_REASON_START_TIME_UNKNOWN` (6). The `kill` audit row now also names the start time.
+
 ## [0.110.0] - 2026-10-20
 
 ### Upgrading
