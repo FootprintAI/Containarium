@@ -36,7 +36,7 @@ func policyPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS guardrail_policy`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS guardrail_policy, guardrail_baseline`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	return pool
@@ -86,6 +86,28 @@ func TestGuardrailPolicyPGStore_RevisionSurvivesRestart(t *testing.T) {
 	}
 	if res.Current.GetRevision() != 3 || res.Previous.GetRevision() != 2 {
 		t.Fatalf("after restart Set = rev %d (prev %d), want 3 (prev 2)", res.Current.GetRevision(), res.Previous.GetRevision())
+	}
+}
+
+// TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart (#2738): the stored
+// baseline mode and its revision survive a restarted daemon's bootstrap, and
+// a damaged mode column reads as an error, never as a default.
+func TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	pool := policyPool(t)
+	if _, err := pgStore(t, pool).SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, "admin-a"); err != nil {
+		t.Fatalf("SetBaselineMode: %v", err)
+	}
+	restarted := pgStore(t, pool)
+	got, err := restarted.GetBaselineMode(ctx)
+	if err != nil || got.GetMode() != pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK || got.GetRevision() != 1 || got.GetUpdatedBy() != "admin-a" {
+		t.Fatalf("after restart = (%v, %v), want BLOCK at revision 1 by admin-a", got, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE guardrail_baseline SET mode = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("damage row: %v", err)
+	}
+	if got, err := restarted.GetBaselineMode(ctx); err == nil {
+		t.Fatalf("damaged mode read = %v, want an error", got)
 	}
 }
 

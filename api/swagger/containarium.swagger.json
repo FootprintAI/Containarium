@@ -4466,6 +4466,40 @@
         ]
       }
     },
+    "/v1/guardrail/baseline": {
+      "put": {
+        "summary": "Set the baseline response scan mode",
+        "description": "Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision and writes an audit entry naming the caller. Admin role only.",
+        "operationId": "GuardrailPolicyService_SetGuardrailBaselineMode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailBaselineModeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailBaselineModeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
     "/v1/guardrail/policy": {
       "get": {
         "summary": "Get the server guardrail policy",
@@ -14349,6 +14383,10 @@
             "type": "string"
           },
           "description": "Stable ids of the baseline rules in force, e.g.\n\"baseline.pem_private_key\". Set only when response_policy is BASELINE."
+        },
+        "baseline": {
+          "$ref": "#/definitions/GuardrailBaselineSetting",
+          "description": "The stored baseline mode (#2738), always reported. It applies only while\nresponse_policy is BASELINE; under NONE or ADMIN it is kept but unused."
         }
       }
     },
@@ -15114,6 +15152,38 @@
         }
       },
       "description": "GuardrailAttestation is the signed record a subject (a dataset directory,\na file) carries after a guardrail run. A consumer verifies the signature\nwith the signer's PUBLIC key, recomputes subject_sha256 over the bytes it\nactually received, and requires verdict == PASS before using the data.\n\nWhat it proves: that these bytes are the ones the named engine scanned\nunder the named policy, and what the gate concluded. What it does not\nprove: that the engine was any good. The key is held by whoever ran the\nguardrail — the data owner — never by the consumer, otherwise the\nconsumer could attest its own input."
+    },
+    "GuardrailBaselineMode": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_BASELINE_MODE_UNSPECIFIED",
+        "GUARDRAIL_BASELINE_MODE_LOG",
+        "GUARDRAIL_BASELINE_MODE_BLOCK"
+      ],
+      "default": "GUARDRAIL_BASELINE_MODE_UNSPECIFIED",
+      "description": "GuardrailBaselineMode is what the baseline does with a detection (#2738,\nslice C of #2575). A per-daemon setting, separate from the server policy:\nstoring it never marks a policy as configured.\n\n - GUARDRAIL_BASELINE_MODE_LOG: Default. The response streams to the client unchanged and is scanned at\nits end; a detection is logged and audited, never blocked.\n - GUARDRAIL_BASELINE_MODE_BLOCK: The response is held, scanned with the baseline rules and blocked on a\nmatch, with the admin policy's hold-and-block semantics (a stream is held\nto its end; over the hold limit, or a compressed body, is blocked)."
+    },
+    "GuardrailBaselineSetting": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/GuardrailBaselineMode"
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Server-assigned: every successful set increments it by one. 0 means the\nmode was never set and is the default, LOG."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that made the last set."
+        }
+      },
+      "description": "GuardrailBaselineSetting is the stored baseline mode plus its bookkeeping."
     },
     "GuardrailEffectivePolicy": {
       "type": "string",
@@ -19004,6 +19074,24 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetGuardrailBaselineModeRequest": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/GuardrailBaselineMode",
+          "description": "Required: LOG or BLOCK."
+        }
+      }
+    },
+    "SetGuardrailBaselineModeResponse": {
+      "type": "object",
+      "properties": {
+        "baseline": {
+          "$ref": "#/definitions/GuardrailBaselineSetting",
+          "description": "The stored setting, with its new revision."
+        }
+      }
     },
     "SetGuardrailPolicyRequest": {
       "type": "object",

@@ -89,11 +89,15 @@ type Config struct {
 	// baseline detection (nil = log only). InboundHoldLimit (bytes; also
 	// the baseline's scan buffer) and InboundScanTimeout take the Default*
 	// constants when zero.
-	InboundPolicy      guardrailpolicy.PolicyProvider
-	InboundEngine      guardrail.Engine
-	InboundAudit       InboundAuditSink
-	InboundHoldLimit   int
-	InboundScanTimeout time.Duration
+	InboundPolicy guardrailpolicy.PolicyProvider
+	// InboundBaselineMode is the stored baseline mode (#2738), read with the
+	// policy while none is configured. nil = always LOG. In BLOCK the
+	// baseline takes the hold-and-block path instead of the tee.
+	InboundBaselineMode guardrailpolicy.BaselineModeProvider
+	InboundEngine       guardrail.Engine
+	InboundAudit        InboundAuditSink
+	InboundHoldLimit    int
+	InboundScanTimeout  time.Duration
 	// InboundPolicyTTL is how long a successful policy read is reused
 	// (default DefaultInboundPolicyTTL; negative = read every call). Call
 	// Gateway.InvalidateInboundPolicy when the policy changes so a new rule
@@ -383,9 +387,10 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
 		return
 	}
-	// No admin policy: the baseline scan, log-only and never held (#2736).
+	// No admin policy: the baseline scan. LOG mode is never held (#2736);
+	// BLOCK mode is scanned below through the hold path (#2738).
 	var bl *baselineRequest
-	if inMode.baseline {
+	if inMode.baseline && !inMode.baselineBlock {
 		bl = &baselineRequest{in: g.inbound, sub: inSub}
 	}
 	var ir *inboundRequest

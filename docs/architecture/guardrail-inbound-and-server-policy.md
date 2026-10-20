@@ -361,8 +361,41 @@ written. Each rule that matched writes one `model_gateway.inbound_detection`
 audit entry with the rule id, kind, action `log` and match count, plus an
 `INBOUND-BASELINE` log line. The matched text is never recorded. A response
 over the limit, or one with a content encoding, is counted as
-`baseline_unscanned` on `/__gateway/status` and is never blocked. A per-daemon
-switch to block mode is #2738 and is not shipped yet.
+`baseline_unscanned` on `/__gateway/status` and is never blocked. That is the
+default, **LOG** mode.
+
+**Block mode (#2738).** An admin can switch the baseline to **BLOCK** with
+`containarium guardrail baseline set --mode block`
+(`GuardrailPolicyService.SetGuardrailBaselineMode`, `PUT /v1/guardrail/baseline`,
+a `GuardrailBaselineMode` enum) and back with `--mode log`. The mode is one
+setting per daemon, stored next to the policy but not in it (Postgres table
+`guardrail_baseline`, or memory on a daemon without a database), so setting it
+never marks a policy as configured. Every switch increments the setting's
+revision and writes a `guardrail.baseline.set` audit entry naming the caller,
+with the previous and new mode and revision. Non-admins are refused. The
+switch invalidates the gateway's cached policy read, so it applies on the
+next call.
+
+In BLOCK mode the baseline uses the admin policy's hold-and-block path
+("Enforcement in the gateway" above) with the baseline rules in place of the
+engine:
+
+- A response, streamed or not, is held to its end, scanned, then replayed
+  unchanged or blocked with the typed 502. A held stream adds the hold latency
+  in the table below to every response on a default install, which is why LOG
+  is the default.
+- A match writes one `model_gateway.inbound_detection` entry per rule with
+  action `block`, plus one `model_gateway.inbound_block` entry (reason
+  `finding`, kind `SECRET`, engine id `baseline`).
+- The fail-closed rows of the scope table apply: a response over the hold
+  limit, compressed, or (for a 2xx) neither JSON nor an event stream is
+  blocked rather than counted as `baseline_unscanned`.
+- A failed read of the mode is handled like a failed policy read: the last
+  known mode decides, so an outage never turns BLOCK into LOG, and a gateway
+  that has never read it refuses model calls (`PolicyUnavailable`).
+
+`/__gateway/status` reports the last known mode as `baseline_mode`. Under a
+configured admin policy the stored mode is kept but unused.
 
 **What turns it off.** Any configured admin policy turns the baseline off,
 including an empty policy or one with outbound rules only. From then on the
@@ -377,12 +410,16 @@ same policy store the model gateway reads:
 
 | `guardrail status` | `GuardrailEffectivePolicy` | Store state | What happens to responses |
 | --- | --- | --- | --- |
-| `baseline` | `BASELINE` | no policy was ever set | scanned with the baseline rules, log-only; `baseline_rule_ids` lists them |
+| `baseline` | `BASELINE` | no policy was ever set | scanned with the baseline rules, log-only or blocking per the baseline mode; `baseline_rule_ids` lists them |
 | `admin` | `ADMIN` | a policy with at least one inbound BLOCK rule | scanned for, and blocked on, the kinds in `inbound_block_kinds` |
 | `none` | `NONE` | a policy with no inbound BLOCK rule | not scanned |
 
-If the store cannot be read, the call fails with an error and never reports
-`none` or `baseline`. `--json` prints the response as protojson. The command
+The response also carries `baseline` (#2738): the stored mode, its revision
+and who set it, printed as a `Baseline mode:` line (`log (default, never
+set)` until an admin sets it). It is reported under every value, and under
+`admin` or `none` it is marked as not in effect. If the policy or the mode
+cannot be read, the call fails with an error and never reports `none`,
+`baseline` or a default mode. `--json` prints the response as protojson. The command
 reports the policy. It does not report whether this daemon serves a model
 gateway at all: a daemon without one, or the standalone gateway binary, scans
 nothing whatever the status says.
@@ -452,6 +489,7 @@ below states.
 containarium guardrail policy get [--json]
 containarium guardrail policy set --file policy.json
 containarium guardrail status [--json]     # effective response policy (#2737)
+containarium guardrail baseline set --mode log|block   # admin, audited (#2738)
 ```
 
 The CLI is the canonical interface and the MCP tools are thin wrappers over
