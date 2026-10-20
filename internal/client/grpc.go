@@ -1014,6 +1014,17 @@ func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return resp.Run, nil
 }
 
+// PlanTaskGraph runs the planner without executing graph nodes.
+func (c *GRPCClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	resp, err := c.crewClient.PlanTaskGraph(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("plan task graph: %w", err)
+	}
+	return resp, nil
+}
+
 // ValidateTaskGraph checks a task graph against the daemon's catalogs via
 // gRPC (#2803).
 func (c *GRPCClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {

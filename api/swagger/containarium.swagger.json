@@ -7672,6 +7672,41 @@
         ]
       }
     },
+    "/v1/task-graphs:plan": {
+      "post": {
+        "summary": "Plan a task graph",
+        "description": "Run the planner skill against a goal and repository, validate the resulting TaskGraph, and return it without executing its nodes.",
+        "operationId": "CrewService_PlanTaskGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PlanTaskGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "PlanTaskGraph runs only the planner skill; graph nodes are never executed.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PlanTaskGraphRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/task-graphs:validate": {
       "post": {
         "summary": "Validate a task graph",
@@ -17107,6 +17142,47 @@
         }
       },
       "description": "PlanNetworkPolicyResponse is the aggregated would-block / blocked set."
+    },
+    "PlanTaskGraphRequest": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string",
+          "description": "Remote git source fetched into the planner's workspace."
+        },
+        "gitRef": {
+          "type": "string"
+        },
+        "gitCredential": {
+          "type": "string",
+          "description": "Ephemeral fetch credential, handled like RunAgentSkillRequest.git_credential."
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "description": "PlanTaskGraph runs only the planner skill; graph nodes are never executed."
+    },
+    "PlanTaskGraphResponse": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "$ref": "#/definitions/TaskGraph"
+        },
+        "runId": {
+          "type": "string",
+          "description": "Planner run; its terminal state/error is available through GetCrewRun."
+        },
+        "gitCommit": {
+          "type": "string"
+        }
+      }
     },
     "PoolTemplateStatus": {
       "type": "object",

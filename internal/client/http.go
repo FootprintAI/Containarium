@@ -2029,6 +2029,33 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return out.Run, nil
 }
 
+// PlanTaskGraph runs the planner without executing graph nodes.
+func (c *HTTPClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode planner request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:plan", body)
+	if err != nil {
+		return nil, fmt.Errorf("plan task graph: %w", err)
+	}
+	defer drainClose(resp)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read planner response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(data, resp.StatusCode, "plan task graph")
+	}
+	out := &pb.PlanTaskGraphResponse{}
+	if err := protojson.Unmarshal(data, out); err != nil {
+		return nil, fmt.Errorf("decode planner response: %w", err)
+	}
+	return out, nil
+}
+
 // ValidateTaskGraph checks a task graph against the daemon's catalogs via
 // HTTP (#2803).
 func (c *HTTPClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
