@@ -49,7 +49,7 @@ func processPolicyTools() []Tool {
 				"only), THROTTLE (cap CPU to `throttle_allowance`) or FREEZE (pause the container); " +
 				"THROTTLE and FREEZE are reversible with security_process_policy_release and are " +
 				"released automatically after `ttl`. Omitted fields inherit. Admin-only. Mirrors " +
-				"`containarium security process-policy set` (mining-behavior thresholds are CLI-only).",
+				"`containarium security process-policy set` (mining-behavior thresholds are CLI-only). `kill_process` also kills the matched miner process on a miner-signature finding; omit it to inherit.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -65,6 +65,10 @@ func processPolicyTools() []Tool {
 					"ttl": map[string]interface{}{
 						"type":        "string",
 						"description": "How long an unreleased action stays before the TTL backstop releases it, e.g. \"24h\".",
+					},
+					"kill_process": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Also kill the matched miner process on a HIGH miner-signature finding. Omit to inherit (an explicit false turns the kill off).",
 					},
 					"container": map[string]interface{}{
 						"type":        "string",
@@ -111,6 +115,8 @@ type processPolicySetInput struct {
 	TTL               string `json:"ttl"`
 	Container         string `json:"container"`
 	ClearOverride     bool   `json:"clear_override"`
+	// KillProcess is a pointer so "omitted" (inherit) differs from false.
+	KillProcess *bool `json:"kill_process"`
 }
 
 // parseProcessAction maps the tool's spelling (alert|throttle|freeze, any
@@ -138,7 +144,7 @@ func buildSetProcessPolicyRequest(in processPolicySetInput) (*pb.SetProcessPolic
 		if in.Container == "" {
 			return nil, fmt.Errorf("clear_override requires container (only overrides can be cleared)")
 		}
-		if in.Action != "" || in.ThrottleAllowance != "" || in.TTL != "" {
+		if in.Action != "" || in.ThrottleAllowance != "" || in.TTL != "" || in.KillProcess != nil {
 			return nil, fmt.Errorf("clear_override cannot be combined with policy fields")
 		}
 		req.ClearOverride = true
@@ -163,8 +169,11 @@ func buildSetProcessPolicyRequest(in processPolicySetInput) (*pb.SetProcessPolic
 		}
 		pol.Ttl, set = durationpb.New(d), true
 	}
+	if in.KillProcess != nil {
+		pol.KillProcess, set = in.KillProcess, true
+	}
 	if !set {
-		return nil, fmt.Errorf("nothing to set: give action, throttle_allowance, ttl or clear_override")
+		return nil, fmt.Errorf("nothing to set: give action, throttle_allowance, ttl, kill_process or clear_override")
 	}
 	req.Policy = pol
 	return req, nil

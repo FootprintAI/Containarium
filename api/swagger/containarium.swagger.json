@@ -35,7 +35,7 @@
     },
     {
       "name": "GuardrailPolicyService",
-      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
+      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet and GetStatus: any authenticated caller (a data owner needs the policy\nto run `guardrail apply` against it). Set: admin role only, audited."
     },
     {
       "name": "RecipeService",
@@ -4517,6 +4517,30 @@
             }
           }
         ],
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
+    "/v1/guardrail/status": {
+      "get": {
+        "summary": "Get the effective response guardrail policy",
+        "description": "Report what scans model responses: NONE (a policy is configured with no inbound BLOCK rule), BASELINE (no policy was ever set; built-in rules, log-only) or ADMIN (the policy has an inbound BLOCK rule). A store read error is an error, never NONE or BASELINE. Any authenticated caller.",
+        "operationId": "GuardrailPolicyService_GetGuardrailStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetGuardrailStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
         "tags": [
           "Guardrail"
         ]
@@ -14267,6 +14291,33 @@
         }
       }
     },
+    "GetGuardrailStatusResponse": {
+      "type": "object",
+      "properties": {
+        "responsePolicy": {
+          "$ref": "#/definitions/GuardrailEffectivePolicy"
+        },
+        "policyRevision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision of the stored policy; 0 when none is configured."
+        },
+        "inboundBlockKinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "The inbound kinds the admin policy blocks, in rule order. Set only\nwhen response_policy is ADMIN."
+        },
+        "baselineRuleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable ids of the baseline rules in force, e.g.\n\"baseline.pem_private_key\". Set only when response_policy is BASELINE."
+        }
+      }
+    },
     "GetKMSStatusResponse": {
       "type": "object",
       "properties": {
@@ -15029,6 +15080,17 @@
         }
       },
       "description": "GuardrailAttestation is the signed record a subject (a dataset directory,\na file) carries after a guardrail run. A consumer verifies the signature\nwith the signer's PUBLIC key, recomputes subject_sha256 over the bytes it\nactually received, and requires verdict == PASS before using the data.\n\nWhat it proves: that these bytes are the ones the named engine scanned\nunder the named policy, and what the gate concluded. What it does not\nprove: that the engine was any good. The key is held by whoever ran the\nguardrail — the data owner — never by the consumer, otherwise the\nconsumer could attest its own input."
+    },
+    "GuardrailEffectivePolicy": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED",
+        "GUARDRAIL_EFFECTIVE_POLICY_NONE",
+        "GUARDRAIL_EFFECTIVE_POLICY_BASELINE",
+        "GUARDRAIL_EFFECTIVE_POLICY_ADMIN"
+      ],
+      "default": "GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED",
+      "description": "GuardrailEffectivePolicy is what actually scans model responses on this\ndaemon, derived from the stored server policy (#2737, slice B of #2575).\n\n - GUARDRAIL_EFFECTIVE_POLICY_NONE: A policy is configured but has no inbound BLOCK rule (it is empty or\nhas outbound rules only): model responses are not scanned.\n - GUARDRAIL_EFFECTIVE_POLICY_BASELINE: No policy was ever set: responses are scanned against the built-in\nbaseline rules (private keys, cloud keys), log-only (#2736).\n - GUARDRAIL_EFFECTIVE_POLICY_ADMIN: The admin policy has at least one inbound BLOCK rule: it decides what\nis scanned and blocked, and the baseline is off."
     },
     "GuardrailGate": {
       "type": "object",

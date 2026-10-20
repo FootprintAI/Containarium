@@ -207,8 +207,8 @@ stored object is named `<id>.dump.age` and the record carries
   ```
 
 **Where the encryption happens, honestly:** in this release the dump is
-encrypted **in the daemon process, in memory**, after it is pulled from
-the container and before it is written anywhere. That guarantees ciphertext-
+encrypted **as a stream in the daemon process**, while it is pulled from
+the container and before it is written to host staging. That guarantees ciphertext-
 only at rest and off-host, and that the operator cannot read a stored
 backup. It does not guard against a compromised daemon at dump time — but
 that daemon already has root exec into every tenant, so no additional
@@ -218,6 +218,29 @@ binary in the tenant image) is a follow-up.
 The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
+
+### Streaming and archive size limits (#2303)
+
+Create streams the container dump through optional age encryption into a
+private staging file, hashing the stored bytes as they are written.
+Restore and Verify hash the entire stored archive before streaming it to
+the target; encrypted archives are decrypted directly into the target
+container's temporary file. The complete age stream must authenticate
+through EOF before any `pg_restore` runs. Failed or partial target files
+are removed, and encrypted plaintext is never staged on the daemon host.
+
+Both plaintext and stored ciphertext are limited to **16 GiB** by default.
+The age header and authentication overhead count toward the stored limit.
+An oversized source, downloaded object, or archive fails with
+`backup dump exceeds size limit`; no partial backup is indexed. The core
+manager's `WithMaxDumpBytes` option can set a different positive bound.
+GCS downloads stream through the same bound, including when recorded
+metadata understates an object's size. Temporary downloads are unique per
+operation and removed on failure or when their reader closes.
+
+The Incus client streams file uploads without buffering. A forward-only
+stream cannot be replayed after an HTTP redirect; such a replay fails
+explicitly. Retry the operation against the container's serving endpoint.
 
 ### C. Managed keys: a KMS-wrapped per-backup identity (#2402)
 
