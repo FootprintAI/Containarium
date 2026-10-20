@@ -7,17 +7,21 @@ ssh-authz-plugin → ssh-session-plugin → yaml → failtoban
 ```
 
 `ssh-authz-plugin` checks raw public keys against the backend routed by
-`KeyStore.BackendForLogin`. Certificates, malformed credentials and unknown
-logins are not checked against the daemon. What happens to a decision
-depends on the mode. There is no interactive approval flow yet, so
-`DENY APPROVAL_PENDING` is handled like any other denial.
+`KeyStore.BackendForLogin`. Certificates and malformed credentials are not
+checked against the daemon; neither is an unknown login (one no synced
+backend lists), which audit-only mode defers and enforce mode refuses. The
+plugin offers publickey only and refuses password, keyboard-interactive and
+none itself, in both modes, so no other method can move sshpiperd's chain
+cursor past it. What happens to a decision depends on the mode. There is no
+interactive approval flow yet, so `DENY APPROVAL_PENDING` is handled like any
+other denial.
 
 ## Modes
 
 | Mode | Flag | `ALLOW`, and offers not checked | `DENY` (any reason) |
 | --- | --- | --- | --- |
 | Audit-only (default) | none | defers to yaml | logged and recorded on the `open` row, then defers to yaml; the static `authorized_keys` still decides |
-| Enforce | `--ssh-authz-enforce` | routed by this plugin from `--sshpiper-config`, exactly as yaml would route it; never deferred | the key is refused (`Permission denied (publickey)` for OpenSSH); yaml is never consulted for that key, and a `denied` record is written |
+| Enforce | `--ssh-authz-enforce` | an `ALLOW`, a certificate or a malformed offer is routed by this plugin from `--sshpiper-config`, exactly as yaml would route it, and never deferred; an unknown login is refused as `DENY UPSTREAM_UNAVAILABLE` (see Fail closed) | the key is refused (`Permission denied (publickey)` for OpenSSH); yaml is never consulted for that key, and a `denied` record is written |
 
 In enforce mode the denial is returned as an error from the plugin's
 `PublicKeyCallback`. sshpiperd keeps the connection on this plugin, so the
@@ -37,22 +41,32 @@ the session's `open` and `close` records itself, including the
 `ssh-session-plugin` writes in audit-only mode: credential identity, routed
 target, `user_id`, `authz_decision`, `deny_reason` and `enforced`.
 `ssh-session-plugin` never sees these connections' credentials and writes
-nothing for them, so each session is recorded once. Each refusal appends a `denied`
+nothing for them, so each session is recorded once. The `target` on both
+records is the upstream the plugin routed to when it accepted the offer, not
+a fresh read of `config.yaml`, so a file keysync re-renders during the
+session cannot put the `open` row on one backend and the `close` row on
+another. Each refusal appends a `denied`
 JSONL record (`enforced=true`, `user_id` when the daemon knows it,
 `deny_reason`, key fingerprint) to `--records-file`. The shipper delivers
 it as an `ssh_session_denied` audit row. The backend keeps one row per
 session and phase, so a connection that is refused several times (a client
 retrying the key, or offering several denied keys) yields one
 `ssh_session_denied` row: the first.
-Records of allowed sessions carry `enforced=true` as well.
+Every record the plugin writes in enforce mode carries `enforced=true`,
+including the `open` and `close` records of a session it routed without a
+daemon decision (a certificate); `authz_decision` says whether the daemon was
+asked. The plugin keeps each routed connection's decision until its pipe
+starts (at most 10,000 connections, 10 minutes). If that stash evicted a
+session's decision first, the session is still recorded, without credential
+or decision, and the sentinel log names the connection.
 
 **Revocation latency.** A cached `ALLOW` is reused without asking the
 daemon until its `cache_ttl` expires (30 seconds from the self-host
 decider), and never longer than `--ssh-authz-grace`. A key revoked within
 that window still logs in until the entry expires. A login that loses its
 last key drops out of the sentinel's routing table on the next key sync. The
-plugin then treats it as an unknown login and routes it as yaml would: the
-login has no pipe, so the key is refused, and no `denied` record is written.
+plugin then treats it as an unknown login and refuses it, with a `denied`
+record carrying `UPSTREAM_UNAVAILABLE` (see Fail closed).
 
 **Fail closed.** Enforcement covers `UPSTREAM_UNAVAILABLE`. If the routed
 backend's daemon is unreachable or returns 5xx, a key with a cached `ALLOW`
@@ -70,6 +84,18 @@ outage that outlasts both therefore locks every raw-key login routed to that
 backend. Certificate
 logins are not checked by this plugin and are unaffected.
 
+An unknown login, one no synced backend lists, is treated like a bridge
+failure: refused with `DENY UPSTREAM_UNAVAILABLE`, no grace, and a `denied`
+record. Without a backend there is no daemon decision, and the static
+`config.yaml` on disk must never be the sole judge; that file persists across
+a sentinel manager restart while the in-memory keystore starts empty, so for
+the window until every backend has synced, every login is unknown. The plugin
+asks the manager whether routing is ready (the signal the session shipper
+uses: every healthy backend has synced at least once) and logs the refusal as
+`routing not ready, keystore not yet synced` or `no synced backend lists the
+login`, so the sentinel log tells a restart apart from a revoked login. The
+record is the same in both cases.
+
 **Scope.** Enforcement holds only for SSH that goes through the sentinel.
 A box reachable directly on a LAN or overlay network bypasses it; the LXC
 jump host has its own check via `AuthorizedKeysCommand` (#2527).
@@ -82,10 +108,15 @@ keys, so a client could offer one of those first and then log in with a
 denied key that was still in the static `authorized_keys`. In enforce mode
 the plugin now routes every offer itself and never defers, so each offer on
 a connection is checked here. A denied key is refused whatever was offered
-before it. Two tests check this against a real sshpiperd:
+before it. sshpiperd also dispatches password, keyboard-interactive and none
+attempts to the plugin the cursor is on; this plugin offers publickey only
+and refuses those itself, so a client that tries another method first cannot
+move the cursor either. Three tests check this against a real sshpiperd:
 `TestIntegrationEnforceMultiOfferGap` (a certificate from an untrusted CA,
-then the denied key) and `TestIntegrationEnforceAllowThenDeny` (an allowed
-key, of which the client holds only the public half, then the denied key).
+then the denied key), `TestIntegrationEnforceAllowThenDeny` (an allowed
+key, of which the client holds only the public half, then the denied key)
+and `TestIntegrationEnforcePasswordFirst` (`PreferredAuthentications=
+password,publickey`, then the denied key).
 Audit-only mode still defers, so there the static file decides as before.
 
 The manager and sshpiperd plugins are separate processes. The manager serves
@@ -113,10 +144,14 @@ The plugins reopen it on SIGHUP. The module's logrotate stanza signals
 `--ssh-authz-enforce`, the one that holds the file. An audit-only or
 pre-enforce plugin is never signalled, so a binary older than the startup
 script is not stopped by rotation. With the Terraform module, set `ssh_authz_enforce = true`. It
-adds `--sshpiper-config`, `--ssh-authz-enforce` and `--records-file` to the
-tenant listener's unit. A binary without `--sshpiper-config` (before #2741)
-rejects that unit, so upgrade the sentinel binary before enabling or
-re-rendering enforcement. The anonymous-box listener is not affected.
+adds `--ssh-authz-enforce` and `--records-file` to the tenant listener's
+unit and leaves `--sshpiper-config` at its default, the same
+`/etc/sshpiper/config.yaml` yaml reads, so the rendered unit never names a
+flag an older sentinel binary would reject (with `Restart=always`, that would
+take port 22 down for every tenant). Still upgrade the sentinel binary to
+#2741 or later before enabling enforcement: an older one enforces without
+routing itself and keeps the gap described below. The anonymous-box listener
+is not affected.
 
 The plugin's private socket request carries its remaining deadline, so the
 manager's backend call is also bounded and respects a timeout override.
@@ -169,10 +204,11 @@ checks that the denied key is refused (including the stock OpenSSH
 `Permission denied (publickey)` message) and recorded as `denied` with
 `enforced=true`, that the allowed key still logs in, that an outage inside
 grace logs in and one after grace is refused, that a denied key is refused
-after a certificate or an allowed key on the same connection, and that each
-session gets exactly one `open` and one `close` record with the full field
-set. `TestIntegrationEnforceAllowThenDeny` drives the stock OpenSSH client
-and skips without it:
+after a certificate, an allowed key or a password attempt on the same
+connection, and that each session gets exactly one `open` and one `close`
+record with the full field set. `TestIntegrationEnforceAllowThenDeny` and
+`TestIntegrationEnforcePasswordFirst` drive the stock OpenSSH client and skip
+without it:
 
 ```sh
 go build -o /tmp/containariumd ./cmd/containariumd
@@ -212,6 +248,11 @@ In enforce mode, on one backend behind the sentinel:
 6. Stop the backend daemon for longer than the grace window: a new login
    is refused and the sentinel log shows `reason=UPSTREAM_UNAVAILABLE
    enforced=true`. Restart the daemon: login resumes.
+7. Restart the sentinel manager and connect before its first key sync
+   completes: the login is refused, the `ssh_session_denied` row carries
+   `UPSTREAM_UNAVAILABLE`, and the sentinel log shows `unknown login refused
+   in enforce mode: routing not ready, keystore not yet synced`. Once the
+   sync completes, login resumes.
 
 The live checks above require the daemon dependency and a configured
 `audit:ingest` shipper token; passing the stub integration test does not prove

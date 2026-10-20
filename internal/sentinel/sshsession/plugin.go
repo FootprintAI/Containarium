@@ -263,7 +263,11 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 		}
 	}
 
-	if p.Target != nil {
+	// The target routed at decision time wins over a fresh config.yaml read:
+	// keysync may have re-rendered the file since the session opened.
+	if target := conn.GetMeta(MetaTarget); target != "" {
+		rec.Target = target
+	} else if p.Target != nil {
 		rec.Target = p.Target.Resolve(login)
 	}
 

@@ -30,6 +30,20 @@ type BackendResolver interface {
 	ResolveBackend(context.Context, string) (backend string, known bool, err error)
 }
 
+// RoutingReadiness is optionally implemented by a BackendResolver whose
+// "unknown login" answer is authoritative only once the keystore has synced
+// every healthy backend (the same signal the session shipper uses). Enforce
+// mode refuses an unknown login either way; the signal tells the log apart:
+// a login no backend lists, or a keystore not yet synced after a restart.
+type RoutingReadiness interface {
+	RoutingReady(context.Context) bool
+}
+
+// errPublicKeyOnly refuses every non-publickey method. sshpiperd's chain
+// cursor must stay on this plugin, so no other method can carry a
+// connection past it to yaml's static authorized_keys.
+var errPublicKeyOnly = errors.New("ssh authz: publickey is the only accepted method")
+
 type Config struct {
 	Authorizer Authorizer
 	Resolver   BackendResolver
@@ -39,8 +53,9 @@ type Config struct {
 	Logf       func(string, ...any)
 	// Enforce turns a DENY into an error from PublicKeyCallback: sshpiperd
 	// keeps the chain on this plugin, so neither ssh-session-plugin nor yaml
-	// is consulted for that key. Every other offer is routed by Router and
-	// never deferred (see pass). False is audit-only: every decision defers.
+	// is consulted for that key. An unknown login is refused the same way.
+	// Every other offer is routed by Router and never deferred (see pass).
+	// False is audit-only: every decision defers.
 	Enforce bool
 	// Router is required in enforce mode.
 	Router *Router
@@ -83,12 +98,32 @@ func New(cfg Config) (*Plugin, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	session := &sshsession.Plugin{Recorder: cfg.Recorder, Target: cfg.Target, Now: cfg.Now, SkipUnobserved: true}
+	// This private record builder only ever sees connections pipeStart hands
+	// it, so it skips nothing: a session whose decision was evicted from the
+	// stash is still recorded (without credential or decision).
+	session := &sshsession.Plugin{Recorder: cfg.Recorder, Target: cfg.Target, Now: cfg.Now}
 	return &Plugin{cfg: cfg, session: session, pending: map[string]pendingConn{}, open: map[string]map[string]string{}}, nil
 }
 
+// PluginConfig returns the callbacks sshpiperd drives. Only publickey is
+// offered and every other method is refused here, as anondoor does: sshpiperd
+// dispatches each method to the plugin its chain cursor is on, so a password,
+// keyboard-interactive or none attempt is answered by this plugin and never
+// advances the chain.
 func (p *Plugin) PluginConfig() libplugin.SshPiperPluginConfig {
-	cfg := libplugin.SshPiperPluginConfig{PublicKeyCallback: p.publicKeyCallback}
+	cfg := libplugin.SshPiperPluginConfig{
+		NextAuthMethodsCallback: func(libplugin.ConnMetadata) ([]string, error) { return []string{"publickey"}, nil },
+		NoClientAuthCallback: func(libplugin.ConnMetadata) (*libplugin.Upstream, error) {
+			return nil, errPublicKeyOnly
+		},
+		PasswordCallback: func(libplugin.ConnMetadata, []byte) (*libplugin.Upstream, error) {
+			return nil, errPublicKeyOnly
+		},
+		KeyboardInteractiveCallback: func(libplugin.ConnMetadata, libplugin.KeyboardInteractiveChallenge) (*libplugin.Upstream, error) {
+			return nil, errPublicKeyOnly
+		},
+		PublicKeyCallback: p.publicKeyCallback,
+	}
 	if p.cfg.Enforce {
 		cfg.PipeStartCallback, cfg.PipeErrorCallback = p.pipeStart, p.pipeError
 	}
@@ -118,7 +153,21 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, wire []byte) (*l
 		return p.stash(meta, conn, wire, "", fp, unavailable())
 	}
 	if !known {
-		return p.pass(conn, wire, meta)
+		if !p.cfg.Enforce {
+			return p.pass(conn, wire, meta)
+		}
+		// Fail closed, as a bridge error does: without a backend there is no
+		// daemon decision, and routing the login from the static config.yaml
+		// alone would make that file the sole judge, which is what enforce
+		// mode exists to remove (#2741). The cache is keyed by backend, so no
+		// grace applies. Name the cause in the log: after a manager restart
+		// every login is unknown until the keystore has synced.
+		cause := "no synced backend lists the login"
+		if r, ok := p.cfg.Resolver.(RoutingReadiness); ok && !r.RoutingReady(ctx) {
+			cause = "routing not ready, keystore not yet synced"
+		}
+		p.cfg.Logf("[ssh-authz] login=%q: unknown login refused in enforce mode: %s", conn.User(), cause)
+		return p.stash(meta, conn, wire, "", fp, unavailable())
 	}
 	ck := CacheKey{Backend: backend, Login: conn.User(), Fingerprint: fp}
 	if user, ok := p.cfg.Cache.Get(ck, false); ok {
@@ -200,9 +249,6 @@ func (p *Plugin) stash(meta map[string]string, conn libplugin.ConnMetadata, wire
 	meta[sshsession.MetaUserID] = res.GetUserId()
 	meta[sshsession.MetaAuthzDecision] = string(sshsession.DecisionFromProto(res.GetDecision()))
 	meta[sshsession.MetaDenyReason] = string(sshsession.ReasonFromProto(res.GetDenyReason()))
-	if p.cfg.Enforce {
-		meta[sshsession.MetaEnforced] = "true"
-	}
 	p.cfg.Logf("[ssh-authz] login=%q backend=%q decision=%s reason=%s user_id=%q enforced=%v", conn.User(), backend, meta[sshsession.MetaAuthzDecision], meta[sshsession.MetaDenyReason], res.GetUserId(), p.cfg.Enforce)
 	if !p.cfg.Enforce || res.GetDecision() == pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW {
 		return p.pass(conn, wire, meta)

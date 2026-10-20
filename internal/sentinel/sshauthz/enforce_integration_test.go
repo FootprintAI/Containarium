@@ -129,6 +129,31 @@ func TestIntegrationEnforceAllowThenDeny(t *testing.T) {
 	}
 }
 
+// A client that prefers password must not carry the connection past this
+// plugin: sshpiperd dispatches each method to the plugin its chain cursor is
+// on, and this plugin offers publickey only and refuses the rest, so the
+// denied key offered afterwards is still judged here (#2741).
+func TestIntegrationEnforcePasswordFirst(t *testing.T) {
+	path, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Skip("needs the OpenSSH client")
+	}
+	c := startIntegrationChain(t, "--ssh-authz-enforce")
+	host, port, _ := strings.Cut(c.address, ":")
+	out, err := exec.Command(path, "-v", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-o", "PreferredAuthentications=password,publickey",
+		"-i", filepath.Join(c.dir, "deny_key"), "-p", port, "alice@"+host, "true").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "Permission denied (publickey)") {
+		t.Fatalf("openssh: want Permission denied (publickey), got %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "Authentications that can continue: publickey") || strings.Contains(string(out), "Next authentication method: password") {
+		t.Fatalf("the server must offer publickey only: %s", out)
+	}
+	if rec := c.phase(t, sshsession.SessionPhaseDenied, 0); rec.KeyFingerprint != ssh.FingerprintSHA256(c.denyKey.PublicKey()) || !rec.Enforced || rec.DenyReason != pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY {
+		t.Fatalf("denied record: %+v", rec)
+	}
+}
+
 // sshpiperd copies no plugin metadata when a plugin returns the upstream, so
 // in enforce mode the authz plugin writes the open and close records with the
 // full field set, and ssh-session-plugin, which never sees the credential,

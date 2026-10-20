@@ -2,6 +2,7 @@ package sshauthz
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
@@ -25,10 +26,10 @@ type pendingConn struct {
 // and returns the upstream itself: sshpiperd's chain only moves forward within
 // a connection, so a deferral would let yaml alone judge every later offer on
 // that connection (#2629). sshpiperd copies no metadata when a plugin returns
-// an upstream, so the decision and credential are kept here, by connection,
-// for this plugin's own session records. The SSH server re-runs this callback
-// for the key that finally signs unless it was the last key checked, so the
-// last routed offer is the one that authenticated.
+// an upstream, so the decision, credential and routed target are kept here,
+// by connection, for this plugin's own session records. The SSH server
+// re-runs this callback for the key that finally signs unless it was the last
+// key checked, so the last routed offer is the one that authenticated.
 func (p *Plugin) pass(conn libplugin.ConnMetadata, wire []byte, meta map[string]string) (*libplugin.Upstream, error) {
 	if !p.cfg.Enforce {
 		return deferWith(meta)
@@ -41,8 +42,25 @@ func (p *Plugin) pass(conn libplugin.ConnMetadata, wire []byte, meta map[string]
 	for k, v := range sshsession.CredentialMeta(wire) {
 		meta[k] = v
 	}
+	// Every session admitted in enforce mode is recorded enforced, including
+	// one routed without a daemon decision (a certificate): the decision
+	// field, not this marker, says whether the daemon was asked.
+	meta[sshsession.MetaEnforced] = "true"
+	meta[sshsession.MetaTarget] = upstreamTarget(up)
 	p.remember(conn.UniqueID(), meta)
 	return up, nil
+}
+
+// upstreamTarget is the host:port the Router computed, in the form the
+// session records carry (keysync writes `to.host` as host:port). It is kept
+// with the decision so the open and close records name the target the
+// session was actually routed to, whatever config.yaml says later.
+func upstreamTarget(up *libplugin.Upstream) string {
+	u, err := url.Parse(up.GetOrGenerateUri())
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func (p *Plugin) remember(id string, meta map[string]string) {
@@ -79,14 +97,18 @@ func (p *Plugin) pipeStart(conn libplugin.ConnMetadata) {
 	pc, ok := p.pending[conn.UniqueID()]
 	if ok {
 		delete(p.pending, conn.UniqueID())
-		p.open[conn.UniqueID()] = pc.meta
+	} else {
+		// The decision was evicted from the bounded stash (a flood of routed
+		// queries between this connection's query and its pipe). The session
+		// was admitted in enforce mode all the same, and ssh-session-plugin
+		// skips it too, so record it here without credential or decision
+		// rather than not at all. Name no credential in the log.
+		pc = pendingConn{meta: map[string]string{sshsession.MetaEnforced: "true"}}
 	}
+	p.open[conn.UniqueID()] = pc.meta
 	p.mu.Unlock()
 	if !ok {
-		// ssh-session-plugin skips this connection too, so the session has no
-		// open or close record. Make the gap visible; name no credential.
-		p.cfg.Logf("[ssh-authz] session=%q login=%q: no pending decision (evicted from the bounded stash); no session records written", conn.UniqueID(), conn.User())
-		return
+		p.cfg.Logf("[ssh-authz] session=%q login=%q: no pending decision (evicted from the bounded stash); session recorded without credential or decision", conn.UniqueID(), conn.User())
 	}
 	p.session.Config().PipeStartCallback(stashedConn{conn, pc.meta})
 }
