@@ -623,30 +623,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register model-gateway service gateway: %w", err)
 	}
 
-	// Create HTTP handler with authentication middleware, then audit middleware.
-	// Audit wraps the inner handler so auth runs first (sets username in context),
-	// then audit captures the response on the way out.
-	//
-	// rest is the REST mux every chain below serves; GuardSSHAuthzPath keeps
-	// the sentinel-only authorize route (#2516) out of the JWT chain however
-	// its path is spelled.
-	rest := GuardSSHAuthzPath(mux)
-	handler := rest
+	// The production REST chain (cors → auth → audit → GuardSSHAuthzPath →
+	// mux) is built by wrapHTTPHandler so the #2773 streaming test exercises
+	// exactly this chain. rest is the bare guarded mux the sentinel-signed
+	// routes below wrap with their own identity check.
+	var store auditLogger
 	if gs.auditStore != nil {
-		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
+		// Assign only when non-nil: a nil *audit.Store stored in the
+		// interface would read as non-nil inside wrapHTTPHandler.
+		store = gs.auditStore
 	}
-	handler = gs.authMiddleware.HTTPMiddleware(handler)
-
-	// Add CORS support with configurable origins (secure by default)
-	// Set CONTAINARIUM_ALLOWED_ORIGINS env var to configure allowed origins
-	corsHandler := cors.New(cors.Options{
-		AllowedOrigins:   getAllowedOrigins(),
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
-		ExposedHeaders:   []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}).Handler(handler)
+	corsHandler, rest := wrapHTTPHandler(mux, gs.authMiddleware.HTTPMiddleware, store)
 
 	// Create HTTP mux for routing
 	httpMux := http.NewServeMux()
@@ -1146,6 +1133,47 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 // getAllowedOrigins returns the list of allowed CORS origins.
 // Configurable via CONTAINARIUM_ALLOWED_ORIGINS environment variable (comma-separated).
 // Defaults to localhost origins only for security.
+// auditLogger is what the REST chain needs from the audit store —
+// Log(ctx, *AuditEntry) error, the same narrowing audit.HTTPAuditMiddleware
+// accepts — so the chain test can pass a fake where Start passes *audit.Store.
+type auditLogger interface {
+	Log(ctx context.Context, entry *audit.AuditEntry) error
+}
+
+// wrapHTTPHandler builds the production REST chain around the grpc-gateway
+// mux:
+//
+//	cors → auth → audit (when store != nil) → GuardSSHAuthzPath → mux
+//
+// Audit sits inside auth so the username is already on the context when the
+// audit row is written, and captures the response on the way out.
+// GuardSSHAuthzPath keeps the sentinel-only authorize route (#2516) out of
+// the JWT chain however its path is spelled. CORS origins come from
+// CONTAINARIUM_ALLOWED_ORIGINS (localhost only by default).
+//
+// Start and the #2773 streaming test both call this, so a wrapper added to
+// any layer that hides the writer's Flusher fails the test rather than
+// resurfacing as "unexpected type of web server" in production. It returns
+// the full chain and the bare guarded mux (rest), which the sentinel-signed
+// routes wrap with their own identity check instead of JWT auth.
+func wrapHTTPHandler(mux http.Handler, authMW func(http.Handler) http.Handler, store auditLogger) (handler, rest http.Handler) {
+	rest = GuardSSHAuthzPath(mux)
+	handler = rest
+	if store != nil {
+		handler = audit.HTTPAuditMiddleware(handler, store)
+	}
+	handler = authMW(handler)
+	handler = cors.New(cors.Options{
+		AllowedOrigins:   getAllowedOrigins(),
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		ExposedHeaders:   []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}).Handler(handler)
+	return handler, rest
+}
+
 func getAllowedOrigins() []string {
 	envOrigins := os.Getenv("CONTAINARIUM_ALLOWED_ORIGINS")
 	if envOrigins != "" {
