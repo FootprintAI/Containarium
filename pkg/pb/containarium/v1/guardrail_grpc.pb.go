@@ -136,6 +136,7 @@ var GuardrailEngineService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	GuardrailPolicyService_GetGuardrailStatus_FullMethodName = "/containarium.v1.GuardrailPolicyService/GetGuardrailStatus"
 	GuardrailPolicyService_GetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/GetGuardrailPolicy"
 	GuardrailPolicyService_SetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/SetGuardrailPolicy"
 )
@@ -145,9 +146,10 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // GuardrailPolicyService is the daemon's store for the server-side policy.
-// Get: any authenticated caller (a data owner needs the policy to run
-// `guardrail apply` against it). Set: admin role only, audited.
+// Get and GetStatus: any authenticated caller (a data owner needs the policy
+// to run `guardrail apply` against it). Set: admin role only, audited.
 type GuardrailPolicyServiceClient interface {
+	GetGuardrailStatus(ctx context.Context, in *GetGuardrailStatusRequest, opts ...grpc.CallOption) (*GetGuardrailStatusResponse, error)
 	GetGuardrailPolicy(ctx context.Context, in *GetGuardrailPolicyRequest, opts ...grpc.CallOption) (*GetGuardrailPolicyResponse, error)
 	SetGuardrailPolicy(ctx context.Context, in *SetGuardrailPolicyRequest, opts ...grpc.CallOption) (*SetGuardrailPolicyResponse, error)
 }
@@ -158,6 +160,16 @@ type guardrailPolicyServiceClient struct {
 
 func NewGuardrailPolicyServiceClient(cc grpc.ClientConnInterface) GuardrailPolicyServiceClient {
 	return &guardrailPolicyServiceClient{cc}
+}
+
+func (c *guardrailPolicyServiceClient) GetGuardrailStatus(ctx context.Context, in *GetGuardrailStatusRequest, opts ...grpc.CallOption) (*GetGuardrailStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetGuardrailStatusResponse)
+	err := c.cc.Invoke(ctx, GuardrailPolicyService_GetGuardrailStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *guardrailPolicyServiceClient) GetGuardrailPolicy(ctx context.Context, in *GetGuardrailPolicyRequest, opts ...grpc.CallOption) (*GetGuardrailPolicyResponse, error) {
@@ -185,9 +197,10 @@ func (c *guardrailPolicyServiceClient) SetGuardrailPolicy(ctx context.Context, i
 // for forward compatibility.
 //
 // GuardrailPolicyService is the daemon's store for the server-side policy.
-// Get: any authenticated caller (a data owner needs the policy to run
-// `guardrail apply` against it). Set: admin role only, audited.
+// Get and GetStatus: any authenticated caller (a data owner needs the policy
+// to run `guardrail apply` against it). Set: admin role only, audited.
 type GuardrailPolicyServiceServer interface {
+	GetGuardrailStatus(context.Context, *GetGuardrailStatusRequest) (*GetGuardrailStatusResponse, error)
 	GetGuardrailPolicy(context.Context, *GetGuardrailPolicyRequest) (*GetGuardrailPolicyResponse, error)
 	SetGuardrailPolicy(context.Context, *SetGuardrailPolicyRequest) (*SetGuardrailPolicyResponse, error)
 	mustEmbedUnimplementedGuardrailPolicyServiceServer()
@@ -200,6 +213,9 @@ type GuardrailPolicyServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedGuardrailPolicyServiceServer struct{}
 
+func (UnimplementedGuardrailPolicyServiceServer) GetGuardrailStatus(context.Context, *GetGuardrailStatusRequest) (*GetGuardrailStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGuardrailStatus not implemented")
+}
 func (UnimplementedGuardrailPolicyServiceServer) GetGuardrailPolicy(context.Context, *GetGuardrailPolicyRequest) (*GetGuardrailPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGuardrailPolicy not implemented")
 }
@@ -226,6 +242,24 @@ func RegisterGuardrailPolicyServiceServer(s grpc.ServiceRegistrar, srv Guardrail
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&GuardrailPolicyService_ServiceDesc, srv)
+}
+
+func _GuardrailPolicyService_GetGuardrailStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGuardrailStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailPolicyServiceServer).GetGuardrailStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailPolicyService_GetGuardrailStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailPolicyServiceServer).GetGuardrailStatus(ctx, req.(*GetGuardrailStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _GuardrailPolicyService_GetGuardrailPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -271,6 +305,10 @@ var GuardrailPolicyService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.GuardrailPolicyService",
 	HandlerType: (*GuardrailPolicyServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetGuardrailStatus",
+			Handler:    _GuardrailPolicyService_GetGuardrailStatus_Handler,
+		},
 		{
 			MethodName: "GetGuardrailPolicy",
 			Handler:    _GuardrailPolicyService_GetGuardrailPolicy_Handler,
