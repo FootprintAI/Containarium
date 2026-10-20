@@ -370,8 +370,12 @@ Fails with 404 when no action is open on the container.`,
 			if err := policyRoundTrip(http.MethodPost, u, &pb.ReleaseProcessActionRequest{Container: args[0]}, &out); err != nil {
 				return err
 			}
-			f := out.GetFinding()
-			act := f.GetResponse().GetAction()
+			// The box's own release record (#2820); a daemon before it
+			// sends none, and its finding's response is the release.
+			act := out.GetReleased().GetAction()
+			if out.GetReleased() == nil {
+				act = out.GetFinding().GetResponse().GetAction()
+			}
 			what := "action undone"
 			switch act {
 			case pb.ProcessAction_PROCESS_ACTION_THROTTLE:

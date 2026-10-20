@@ -54,6 +54,9 @@ func (b *stagesBackend) SetConfig(_, key, value string) error {
 	return nil
 }
 func (b *stagesBackend) Exec(string, []string) error { return nil }
+func (b *stagesBackend) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", 1, nil // no cloud-init: the stack-install path skips its wait
+}
 func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
 	return nil
 }
@@ -232,6 +235,35 @@ func TestCreate_LabelsRideInTheCreateRequest(t *testing.T) {
 	}
 	if _, ok := got[incus.LabelPrefix+ostype.OSTypeLabelKey]; !ok {
 		t.Errorf("ExtraConfig missing the OS-type label (key %q): %v", incus.LabelPrefix+ostype.OSTypeLabelKey, got)
+	}
+}
+
+// TestCreate_StackPersistedAsConfigKey: the requested stack is stamped into
+// the instance config at create so list/get can report it later (#2163).
+// A create with no stack writes no key.
+func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	for _, tc := range []struct {
+		name, stack string
+		wantKey     bool
+	}{
+		{"with stack", "nodejs", true},
+		{"no stack", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &stagesBackend{}
+			m := NewWithBackend(backend)
+			opts := stagesOpts()
+			opts.Stack = tc.stack
+			if _, err := m.Create(opts); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			got, ok := backend.createdConfig.ExtraConfig[incus.StackKey]
+			if ok != tc.wantKey || got != tc.stack {
+				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, tc.stack, tc.wantKey)
+			}
+		})
 	}
 }
 

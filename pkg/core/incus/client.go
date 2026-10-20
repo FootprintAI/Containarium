@@ -565,6 +565,10 @@ type ContainerInfo struct {
 	// flag — single source of truth.
 	MonitoringEnabled bool
 
+	// Stack mirrors user.containarium.stack: the stack requested at create.
+	// Empty when none was requested or the box predates the key.
+	Stack string
+
 	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
 	// on the Incus config — opt-in flag for the serverless feature.
 	AutoSleepEnabled bool
@@ -650,6 +654,11 @@ const StoppedAtKey = "user.containarium.stopped_at"
 // explicitly asked for stopped→delete gets reaped. Absent/0 = never delete on
 // stop (today's behavior).
 const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_seconds"
+
+// StackKey is the Incus config key recording the software stack a box was
+// created with (--stack), so list/get can report it after creation (#2163).
+// Absent = no stack requested, or a box created before this key existed.
+const StackKey = "user.containarium.stack"
 
 // DeletePolicyKey is the Incus config key carrying a box's delete policy
 // (#284). A box set to DeletePolicyProtected is skipped by every automated /
@@ -1201,6 +1210,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
+			Stack:                     inst.Config[StackKey],
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1283,6 +1293,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
+		Stack:                inst.Config[StackKey],
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 
