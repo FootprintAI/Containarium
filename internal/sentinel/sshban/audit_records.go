@@ -3,6 +3,7 @@ package sshban
 import (
 	"context"
 	"crypto/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,8 +38,10 @@ type AuditRecorder struct {
 	newID    func() string
 	logf     func(format string, args ...any)
 
-	queue   chan Event
-	dropped atomic.Uint64 // failures lost to a full queue since the last flush
+	queue     chan Event
+	dropped   atomic.Uint64 // failures lost to a full queue since the last flush
+	abort     chan struct{}
+	abortOnce sync.Once
 }
 
 // AuditConfig configures an AuditRecorder.
@@ -77,8 +80,14 @@ func NewAuditRecorder(c AuditConfig) *AuditRecorder {
 		listener: c.Listener, out: c.Out, max: c.MaxPerMinute,
 		now: c.Now, newID: c.NewID, logf: c.Logf,
 		queue: make(chan Event, c.QueueSize),
+		abort: make(chan struct{}),
 	}
 }
+
+// Abort asks the recorder to skip pending work and finalization at its next
+// checkpoint. It cannot interrupt a synchronous sweep or write already in
+// progress. Use on shutdown deadline; queued records may be lost.
+func (a *AuditRecorder) Abort() { a.abortOnce.Do(func() { close(a.abort) }) }
 
 // Emit is a Config.Emit for the guard. It never blocks.
 func (a *AuditRecorder) Emit(e Event) {
@@ -92,13 +101,23 @@ func (a *AuditRecorder) Emit(e Event) {
 	}
 }
 
-// Run writes queued events until ctx is done. On every tick it writes the
+// Run writes queued events until ctx is done or Abort is called. On every tick it writes the
 // overflow record (if any) and calls sweep, which should end the guard's
 // finished windows so their summaries are queued even when no connection
-// arrives. A final drain and flush run on exit.
-func (a *AuditRecorder) Run(ctx context.Context, ticks <-chan time.Time, sweep func()) {
+// arrives. On exit it sweeps and reports any remaining failure windows before
+// the final drain and flush. Abort skips that finalization when callbacks
+// cannot be quiesced safely.
+func (a *AuditRecorder) Run(ctx context.Context, ticks <-chan time.Time, sweep, flushWindows func()) {
 	written := 0
 	var suppressed uint64
+	aborted := func() bool {
+		select {
+		case <-a.abort:
+			return true
+		default:
+			return false
+		}
+	}
 	handle := func(e Event) {
 		switch e.Kind {
 		case "ban":
@@ -125,6 +144,9 @@ func (a *AuditRecorder) Run(ctx context.Context, ticks <-chan time.Time, sweep f
 	}
 	drain := func() {
 		for {
+			if aborted() {
+				return
+			}
 			select {
 			case e := <-a.queue:
 				handle(e)
@@ -134,9 +156,32 @@ func (a *AuditRecorder) Run(ctx context.Context, ticks <-chan time.Time, sweep f
 		}
 	}
 	for {
+		if aborted() {
+			return
+		}
 		select {
+		case <-a.abort:
+			return
 		case <-ctx.Done():
+			if aborted() {
+				return
+			}
+			if sweep != nil {
+				sweep()
+			}
+			if aborted() {
+				return
+			}
+			if flushWindows != nil {
+				flushWindows()
+			}
+			if aborted() {
+				return
+			}
 			drain()
+			if aborted() {
+				return
+			}
 			flush()
 			return
 		case e := <-a.queue:
@@ -145,7 +190,13 @@ func (a *AuditRecorder) Run(ctx context.Context, ticks <-chan time.Time, sweep f
 			if sweep != nil {
 				sweep()
 			}
+			if aborted() {
+				return
+			}
 			drain()
+			if aborted() {
+				return
+			}
 			flush()
 		}
 	}
