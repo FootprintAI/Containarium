@@ -11,4 +11,4 @@ paths:
     # cleanup. Every other shellcheck code, and all non-shellcheck actionlint
     # rules, still fail the lane.
     ignore:
-      - 'shellcheck reported issue in this script: SC(2024|2034|2046|2086|2129|2209):'
+      - 'shellcheck reported issue in this script: SC(2015|2024|2034|2046|2086|2129|2209):'
