@@ -18,7 +18,6 @@ ExecStart=/usr/local/bin/sshpiperd \
   --ssh-authz-grace 5m \
   --ssh-authz-timeout 3s \
 %{ if ssh_authz_enforce ~}
-  --sshpiper-config /etc/sshpiper/config.yaml \
   --ssh-authz-enforce \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
 %{ endif ~}
