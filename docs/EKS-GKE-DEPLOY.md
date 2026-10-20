@@ -53,7 +53,11 @@ GKE-only:
 
 Gateway routing is enabled by default and requires a dedicated upstream key.
 Create the key pair and store its private key in the gateway namespace before
-running any chart install command:
+running any chart install command. The chart renders this namespace by
+default, and Helm will not adopt a hand-made one, so every install command
+below passes `--set gateway.createNamespace=false`. Do not flip an existing
+release from `true` to `false`: Helm would delete the namespace, and its
+Secrets, on upgrade.
 
 ```bash
 kubectl create namespace agent-gateway
@@ -93,6 +97,7 @@ helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
   --version <release-without-v> \
   --set daemon.jwtSecret="$(openssl rand -hex 24)" \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
@@ -198,6 +203,7 @@ helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
   --set daemon.jwtSecret="$(openssl rand -hex 24)" \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 
 # EKS
@@ -205,6 +211,7 @@ helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-eks.yaml \
   --set daemon.jwtSecret="$(openssl rand -hex 24)" \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
@@ -270,6 +277,7 @@ helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-devbox.yaml \
   --set daemon.jwtSecret="$(openssl rand -hex 24)" \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
@@ -306,6 +314,7 @@ helm install containarium ./charts/containarium-k8s \
   --set operator.enabled=true \
   --set daemon.jwtSecret="$(openssl rand -hex 24)" \
   --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
