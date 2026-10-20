@@ -388,9 +388,10 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// No admin policy: the baseline scan. LOG mode is never held (#2736);
-	// BLOCK mode is scanned below through the hold path (#2738).
+	// BLOCK mode is scanned below through the hold path (#2738), and uses bl
+	// only for an upstream error the hold path passes through unscanned.
 	var bl *baselineRequest
-	if inMode.baseline && !inMode.baselineBlock {
+	if inMode.baseline {
 		bl = &baselineRequest{in: g.inbound, sub: inSub}
 	}
 	var ir *inboundRequest
@@ -485,7 +486,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		ModifyResponse: func(resp *http.Response) error {
 			// Baseline (#2736): tee the final body, whatever the steps below
 			// make of it, and scan it once the proxy has written it all.
-			if bl != nil {
+			if bl != nil && !inMode.baselineBlock {
 				defer bl.watch(resp)
 			}
 			// Scanned mode (#2367): hold the whole response here, scan it,
@@ -495,6 +496,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			if ir != nil {
 				if err := ir.enforce(resp); err != nil {
 					return err
+				}
+				if bl != nil && ir.passedThrough {
+					defer bl.watch(resp)
 				}
 			}
 			// Streaming (SSE): intercept to meter usage + redact prompt leakage.

@@ -47,12 +47,15 @@ responses only while no admin guardrail policy has been set.
   log    default: the response streams to the client unchanged and is
          scanned at its end; a match is audited and logged
   block  the response is held to its end, scanned, and blocked on a match
-         (HTTP 502, audited); a response over the hold limit or with a
-         content encoding is blocked too, as under an admin BLOCK rule
+         (HTTP 502, audited); a 2xx response over the hold limit, with a
+         content encoding, or neither JSON nor an event stream is blocked
+         too, for every tenant, as under an admin BLOCK rule
 
 The mode is stored apart from the policy, so setting it never turns the
 baseline off. Admin role required; every change increments the setting's
-revision and is audited. Check it with 'containarium guardrail status'.
+revision. On a daemon with an audit store the change writes an audit entry,
+and it is refused if that entry cannot be written; a daemon without a
+database keeps no audit entry. Check it with 'containarium guardrail status'.
 
 Examples:
   containarium guardrail baseline set --mode block --server <host>:50051
@@ -65,6 +68,7 @@ func init() {
 	guardrailBaselineCmd.AddCommand(guardrailBaselineSetCmd)
 	guardrailCmd.AddCommand(guardrailBaselineCmd)
 	guardrailBaselineSetCmd.Flags().StringVar(&guardrailBaselineMode, "mode", "", "log or block (required)")
+	_ = guardrailBaselineSetCmd.MarkFlagRequired("mode")
 }
 
 func runGuardrailBaselineSet(cmd *cobra.Command, _ []string) error {

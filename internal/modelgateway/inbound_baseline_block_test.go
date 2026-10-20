@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
@@ -171,6 +172,19 @@ func TestBaselineBlock_UnscannableIsBlocked(t *testing.T) {
 			t.Fatalf("BLOCK mode counted baseline_unscanned = %d; it blocks instead", st.BaselineUnscanned)
 		}
 	})
+	t.Run("unrecognised 2xx", func(t *testing.T) {
+		h, _ := newBaselineModeHarness(t, "anthropic", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("here: " + fakeKeyBody))
+		}, modeBlock, nil)
+		resp, got := h.call(`{"model":"m"}`)
+		if resp.StatusCode != http.StatusBadGateway || decodeBlockBody(t, got).Error.Reason != guardrail.InboundReasonCoverageGap.String() {
+			t.Fatalf("status = %d body %q, want a 502 coverage_gap block", resp.StatusCode, got)
+		}
+		if strings.Contains(string(got), "FAKE") {
+			t.Fatalf("blocked response carried model output: %q", got)
+		}
+	})
 	t.Run("content encoded", func(t *testing.T) {
 		h, _ := newBaselineModeHarness(t, "anthropic", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -182,6 +196,96 @@ func TestBaselineBlock_UnscannableIsBlocked(t *testing.T) {
 			t.Fatalf("status = %d body %q, want a 502 coverage_gap block", resp.StatusCode, got)
 		}
 	})
+}
+
+// An upstream error the hold path passes through unscanned (non-2xx, not
+// JSON or an event stream) is still teed and scanned in BLOCK mode, so BLOCK
+// never records less than LOG: one detection with action log, no block.
+func TestBaselineBlock_UpstreamErrorIsRecordedLikeLog(t *testing.T) {
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("debug dump: " + fakeKeyBody))
+	}
+	for _, mode := range []pb.GuardrailBaselineMode{modeLog, modeBlock} {
+		t.Run(mode.String(), func(t *testing.T) {
+			h, _ := newBaselineModeHarness(t, "anthropic", upstream, mode, nil)
+			resp, got := h.call(`{"model":"m"}`)
+			if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(got), "debug dump") {
+				t.Fatalf("status = %d body %q, want the upstream error passed through", resp.StatusCode, got)
+			}
+			dets := h.detectionsAll()
+			if len(dets) != 1 || dets[0].RuleID != guardrail.BaselineRulePEMPrivateKey || dets[0].Action != guardrail.BaselineActionLog {
+				t.Fatalf("detections = %+v, want one pem detection with action log", dets)
+			}
+			if n := len(h.auditAll()); n != 0 {
+				t.Fatalf("block entries = %d, want 0 (the response was delivered)", n)
+			}
+		})
+	}
+}
+
+// gatedBaselineMode answers its first read with the mode it held when the
+// read began, but only after the test releases it: a read in flight while
+// an admin switches the mode.
+type gatedBaselineMode struct {
+	fakeBaselineMode
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (g *gatedBaselineMode) GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetting, error) {
+	s, err := g.fakeBaselineMode.GetBaselineMode(ctx)
+	first := false
+	g.once.Do(func() { first = true })
+	if first {
+		close(g.entered)
+		<-g.release
+	}
+	return s, err
+}
+
+// With the policy cache ON, a read that began before a switch must not keep
+// the stale mode cached: after the switch and the server's invalidation,
+// the next call sees BLOCK.
+func TestBaselineBlock_SwitchAppliesOnNextCallWithCache(t *testing.T) {
+	g := &gatedBaselineMode{fakeBaselineMode: fakeBaselineMode{mode: modeLog}, entered: make(chan struct{}), release: make(chan struct{})}
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText(fakeKeyBody)), func(c *Config) {
+		c.InboundBaselineMode = g
+		c.InboundPolicyTTL = time.Minute
+	})
+	h.provider.set(nil, guardrailpolicy.ErrNotConfigured)
+
+	first := make(chan int, 1)
+	go func() {
+		resp, _ := h.call(`{"model":"m"}`)
+		first <- resp.StatusCode
+	}()
+	<-g.entered
+	g.set(modeBlock, nil) // the admin's switch commits while the read is in flight
+	h.gw.InvalidateInboundPolicy()
+	close(g.release)
+	if code := <-first; code != 200 {
+		t.Fatalf("in-flight call status = %d, want 200 (it read LOG)", code)
+	}
+	if resp, _ := h.call(`{"model":"m"}`); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("next call after the switch = %d, want 502: the stale LOG read was cached", resp.StatusCode)
+	}
+}
+
+// A stored BLOCK under a configured policy with no inbound BLOCK rule (NONE)
+// does nothing: no hold, no baseline scan.
+func TestBaselineBlock_NonePolicyIgnoresMode(t *testing.T) {
+	body := anthropicText(fakeKeyBody)
+	h, _ := newBaselineModeHarness(t, "anthropic", jsonUpstream(body), modeBlock, nil)
+	h.provider.set(blockPolicy(pb.GuardrailKind_GUARDRAIL_KIND_SECRET), nil)
+	resp, got := h.call(`{"model":"m"}`)
+	if resp.StatusCode != 200 || string(got) != body {
+		t.Fatalf("status = %d body %q, want an unscanned pass-through", resp.StatusCode, got)
+	}
+	if dets, blocks := h.detectionsAll(), h.auditAll(); len(dets) != 0 || len(blocks) != 0 || h.engine.Calls() != 0 {
+		t.Fatalf("NONE policy scanned: detections %+v blocks %+v engine calls %d", dets, blocks, h.engine.Calls())
+	}
 }
 
 // A mode read error never loosens an active block: last known BLOCK refuses,

@@ -371,10 +371,25 @@ a `GuardrailBaselineMode` enum) and back with `--mode log`. The mode is one
 setting per daemon, stored next to the policy but not in it (Postgres table
 `guardrail_baseline`, or memory on a daemon without a database), so setting it
 never marks a policy as configured. Every switch increments the setting's
-revision and writes a `guardrail.baseline.set` audit entry naming the caller,
-with the previous and new mode and revision. Non-admins are refused. The
-switch invalidates the gateway's cached policy read, so it applies on the
-next call.
+revision. Non-admins are refused.
+
+Auditing depends on whether the daemon has an audit store:
+- **With an audit store** (a daemon with Postgres), the switch writes a
+  `guardrail.baseline.set` audit entry naming the caller, with the previous
+  and new mode and revision. The entry is part of the change: it is written
+  while the store holds the new setting uncommitted, and if the write fails,
+  the change is rolled back and the call fails, so the mode never changes
+  without its entry. In the rare case that the commit fails after the entry
+  was written, the entry names a revision the store never reached, and
+  `guardrail status` shows the lower revision. This differs from
+  `guardrail.policy.set`, whose audit write is best-effort.
+- **With no audit store** (a daemon without Postgres), the switch succeeds
+  and **no audit entry is written**. Whether this case should be refused is
+  an open question.
+
+The switch invalidates the gateway's cached policy read. A read that was
+already in flight when the switch committed does not refresh the cache, so
+the switch applies on the next call after it returns.
 
 In BLOCK mode the baseline uses the admin policy's hold-and-block path
 ("Enforcement in the gateway" above) with the baseline rules in place of the
@@ -387,9 +402,14 @@ engine:
 - A match writes one `model_gateway.inbound_detection` entry per rule with
   action `block`, plus one `model_gateway.inbound_block` entry (reason
   `finding`, kind `SECRET`, engine id `baseline`).
-- The fail-closed rows of the scope table apply: a response over the hold
-  limit, compressed, or (for a 2xx) neither JSON nor an event stream is
-  blocked rather than counted as `baseline_unscanned`.
+- The fail-closed rows of the scope table apply: a 2xx response that is over
+  the hold limit, compressed, or neither JSON nor an event stream is blocked
+  rather than counted as `baseline_unscanned`. This applies to every tenant
+  on the daemon.
+- A non-2xx response that is neither JSON nor an event stream (an upstream
+  error) still passes through unchanged, as in the scope table. It is teed
+  and scanned as in LOG mode, so a match records a detection with action
+  `log`. BLOCK never records less than LOG.
 - A failed read of the mode is handled like a failed policy read: the last
   known mode decides, so an outage never turns BLOCK into LOG, and a gateway
   that has never read it refuses model calls (`PolicyUnavailable`).

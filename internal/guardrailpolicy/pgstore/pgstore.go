@@ -153,7 +153,10 @@ func (s *Store) GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetti
 	return readBaseline(s.pool.QueryRow(ctx, selectBaseline))
 }
 
-func (s *Store) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string) (*guardrailpolicy.BaselineSetResult, error) {
+// SetBaselineMode runs beforeCommit inside the transaction, after the
+// update and before the commit, with the row still locked: its error rolls
+// the change back.
+func (s *Store) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit guardrailpolicy.BaselineBeforeCommit) (*guardrailpolicy.BaselineSetResult, error) {
 	if !guardrailpolicy.ValidBaselineMode(mode) {
 		return nil, guardrailpolicy.ErrInvalidBaselineMode
 	}
@@ -172,8 +175,14 @@ func (s *Store) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMo
 		cur.GetRevision(), int32(mode), cur.GetUpdatedAt().AsTime(), updatedBy); err != nil {
 		return nil, fmt.Errorf("store guardrail baseline mode: %w", err)
 	}
+	res := &guardrailpolicy.BaselineSetResult{Previous: prev, Current: cur}
+	if beforeCommit != nil {
+		if err := beforeCommit(res); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit guardrail baseline mode: %w", err)
 	}
-	return &guardrailpolicy.BaselineSetResult{Previous: prev, Current: cur}, nil
+	return res, nil
 }

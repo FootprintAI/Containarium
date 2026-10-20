@@ -209,7 +209,11 @@ type inbound struct {
 	fetchedAt   time.Time
 	policyReads atomic.Uint64
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// gen counts invalidations. A read that started before one may still
+	// update the last known state, but it does not mark the cache fresh,
+	// so a switch committed during that read applies on the next call.
+	gen           uint64
 	auditDropped  uint64
 	auditFailed   uint64
 	loaded        bool                      // a read has succeeded (policy or ErrNotConfigured)
@@ -298,6 +302,9 @@ func (in *inbound) resolve(ctx context.Context) (mode inboundMode, ok bool) {
 		return m, true
 	}
 	in.policyReads.Add(1)
+	in.mu.Lock()
+	gen := in.gen
+	in.mu.Unlock()
 	p, err := in.provider.Get(ctx)
 	// The baseline mode matters only while no policy is configured. A failed
 	// mode read is handled like a failed policy read: the last known state
@@ -311,9 +318,11 @@ func (in *inbound) resolve(ctx context.Context) (mode inboundMode, ok bool) {
 	defer in.mu.Unlock()
 	switch {
 	case err == nil && !notConfigured:
-		in.loaded, in.policy, in.fetchedAt = true, p, time.Now()
+		in.loaded, in.policy = true, p
+		in.markFresh(gen)
 	case err == nil:
-		in.loaded, in.policy, in.baselineMode, in.fetchedAt = true, nil, bm, time.Now()
+		in.loaded, in.policy, in.baselineMode = true, nil, bm
+		in.markFresh(gen)
 	default:
 		// fetchedAt is untouched, so the next call reads again.
 		in.logger.Printf("model-gateway: inbound guardrail policy read failed (last known revision kept): %v", err)
@@ -358,7 +367,16 @@ func (in *inbound) cached() (inboundMode, bool) {
 func (in *inbound) invalidate() {
 	in.mu.Lock()
 	in.fetchedAt = time.Time{}
+	in.gen++
 	in.mu.Unlock()
+}
+
+// markFresh starts the cache TTL for a read that began at generation gen,
+// unless an invalidation happened since. Called with mu held.
+func (in *inbound) markFresh(gen uint64) {
+	if in.gen == gen {
+		in.fetchedAt = time.Now()
+	}
 }
 
 func (in *inbound) status() InboundStatus {
@@ -537,6 +555,10 @@ type inboundRequest struct {
 	// held (#2452). Nil skips metering. It is not called when the hold hit
 	// its limit: the body is truncated, so any usage in it would be invented.
 	onBlocked func(held []byte, streaming bool)
+	// passedThrough is set when enforce let the response through unscanned
+	// (an upstream error). Under the baseline's BLOCK mode the gateway then
+	// tees it like LOG mode, so BLOCK never records less than LOG (#2738).
+	passedThrough bool
 }
 
 // enforce is the ModifyResponse pre-stage in scanned mode. It holds the
@@ -560,6 +582,7 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 	// through with its status and headers. A 2xx of that shape stays blocked.
 	if !recognised && (resp.StatusCode < 200 || resp.StatusCode > 299) {
 		ir.in.upstreamErrors.Add(1)
+		ir.passedThrough = true
 		return nil
 	}
 	// An unscannable body cannot pass a gate that claims to scan. The

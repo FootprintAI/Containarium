@@ -36,6 +36,9 @@ func withFakeGuardrailBaselineAPI(t *testing.T, f *fakeGuardrailBaselineAPI) {
 func runGuardrailBaselineSetCLI(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	guardrailBaselineMode = ""
+	// cobra keeps a flag's Changed mark across Execute calls; clear it so
+	// MarkFlagRequired sees each run fresh.
+	guardrailBaselineSetCmd.Flags().Lookup("mode").Changed = false
 	return runGuardrail(t, append([]string{"baseline", "set"}, args...)...)
 }
 

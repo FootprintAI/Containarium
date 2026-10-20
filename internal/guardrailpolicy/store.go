@@ -46,8 +46,11 @@ type Store interface {
 	Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error)
 	// SetBaselineMode stores the baseline mode (LOG or BLOCK; anything else
 	// is ErrInvalidBaselineMode), revision = previous + 1. It never touches
-	// the policy, so it cannot turn the baseline off.
-	SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string) (*BaselineSetResult, error)
+	// the policy, so it cannot turn the baseline off. beforeCommit (nil =
+	// none) runs with the new setting while the change is still pending:
+	// an error from it discards the change and is returned, so a caller
+	// can make the change conditional on its audit entry being written.
+	SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit BaselineBeforeCommit) (*BaselineSetResult, error)
 }
 
 // BaselineModeProvider is the read side of the baseline mode (#2738), kept
@@ -63,6 +66,9 @@ type BaselineSetResult struct {
 	Previous *pb.GuardrailBaselineSetting
 	Current  *pb.GuardrailBaselineSetting
 }
+
+// BaselineBeforeCommit is SetBaselineMode's hook; see Store.
+type BaselineBeforeCommit func(*BaselineSetResult) error
 
 // ErrInvalidBaselineMode is SetBaselineMode's answer to a mode other than
 // LOG or BLOCK.
@@ -137,18 +143,24 @@ func (m *MemoryStore) GetBaselineMode(context.Context) (*pb.GuardrailBaselineSet
 	return proto.Clone(m.baseline).(*pb.GuardrailBaselineSetting), nil
 }
 
-func (m *MemoryStore) SetBaselineMode(_ context.Context, mode pb.GuardrailBaselineMode, updatedBy string) (*BaselineSetResult, error) {
+func (m *MemoryStore) SetBaselineMode(_ context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit BaselineBeforeCommit) (*BaselineSetResult, error) {
 	if !ValidBaselineMode(mode) {
 		return nil, ErrInvalidBaselineMode
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	prev := m.baseline
-	m.baseline = NextBaseline(prev, mode, updatedBy, time.Now())
-	return &BaselineSetResult{
-		Previous: proto.Clone(prev).(*pb.GuardrailBaselineSetting),
-		Current:  proto.Clone(m.baseline).(*pb.GuardrailBaselineSetting),
-	}, nil
+	cur := NextBaseline(m.baseline, mode, updatedBy, time.Now())
+	res := &BaselineSetResult{
+		Previous: proto.Clone(m.baseline).(*pb.GuardrailBaselineSetting),
+		Current:  proto.Clone(cur).(*pb.GuardrailBaselineSetting),
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(res); err != nil {
+			return nil, err
+		}
+	}
+	m.baseline = cur
+	return res, nil
 }
 
 func (m *MemoryStore) Get(context.Context) (*pb.ServerGuardrailPolicy, error) {

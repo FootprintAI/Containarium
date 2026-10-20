@@ -156,7 +156,7 @@ func runBaselineModeContract(t *testing.T, newStore func(t *testing.T) guardrail
 		s := newStore(t)
 		prev, _ := s.GetBaselineMode(ctx)
 		for i, mode := range []pb.GuardrailBaselineMode{blockMode, logMode, blockMode} {
-			res, err := s.SetBaselineMode(ctx, mode, "admin-a")
+			res, err := s.SetBaselineMode(ctx, mode, "admin-a", nil)
 			if err != nil {
 				t.Fatalf("SetBaselineMode #%d: %v", i+1, err)
 			}
@@ -177,7 +177,7 @@ func runBaselineModeContract(t *testing.T, newStore func(t *testing.T) guardrail
 
 	t.Run("baseline mode rejects UNSPECIFIED and leaves the setting", func(t *testing.T) {
 		s := newStore(t)
-		if _, err := s.SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_UNSPECIFIED, "admin-a"); err == nil {
+		if _, err := s.SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_UNSPECIFIED, "admin-a", nil); err == nil {
 			t.Fatal("SetBaselineMode(UNSPECIFIED) succeeded, want an error")
 		}
 		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetRevision() != 0 {
@@ -185,9 +185,32 @@ func runBaselineModeContract(t *testing.T, newStore func(t *testing.T) guardrail
 		}
 	})
 
+	t.Run("baseline mode beforeCommit sees the change and a failure discards it", func(t *testing.T) {
+		s := newStore(t)
+		var seen *guardrailpolicy.BaselineSetResult
+		_, err := s.SetBaselineMode(ctx, blockMode, "admin-a", func(r *guardrailpolicy.BaselineSetResult) error {
+			seen = r
+			return errors.New("audit store down")
+		})
+		if err == nil {
+			t.Fatal("SetBaselineMode with a failing beforeCommit succeeded, want its error")
+		}
+		if seen == nil || seen.Current.GetMode() != blockMode || seen.Current.GetRevision() != 1 || seen.Previous.GetRevision() != 0 {
+			t.Fatalf("beforeCommit saw %+v, want LOG rev 0 -> BLOCK rev 1", seen)
+		}
+		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetMode() != logMode || got.GetRevision() != 0 {
+			t.Fatalf("after a failed beforeCommit = (%v, %v), want the untouched default", got, err)
+		}
+		// The next set reuses revision 1: nothing of the discarded one remains.
+		res, err := s.SetBaselineMode(ctx, blockMode, "admin-a", func(*guardrailpolicy.BaselineSetResult) error { return nil })
+		if err != nil || res.Current.GetRevision() != 1 {
+			t.Fatalf("set after a discarded one = (%v, %v), want revision 1", res, err)
+		}
+	})
+
 	t.Run("baseline mode is independent of the policy", func(t *testing.T) {
 		s := newStore(t)
-		if _, err := s.SetBaselineMode(ctx, blockMode, "admin-a"); err != nil {
+		if _, err := s.SetBaselineMode(ctx, blockMode, "admin-a", nil); err != nil {
 			t.Fatalf("SetBaselineMode: %v", err)
 		}
 		if got, err := s.Get(ctx); !errors.Is(err, guardrailpolicy.ErrNotConfigured) {

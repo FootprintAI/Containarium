@@ -108,6 +108,45 @@ func TestSetBaselineMode_AuditEntryNamesCaller(t *testing.T) {
 	}
 }
 
+// TestSetBaselineMode_AuditFailureFailsTheSet (#2738, decision A on #2727):
+// a switch whose audit entry cannot be written is refused and leaves the
+// stored mode as it was, so the change and its audit never diverge.
+func TestSetBaselineMode_AuditFailureFailsTheSet(t *testing.T) {
+	s, audit := newGPServer()
+	changed := 0
+	s.SetOnChange(func() { changed++ })
+	audit.err = errors.New("audit store down")
+	if _, err := gpSetMode(gpAdminCtx(), s, gpModeBlock); status.Code(err) != codes.Internal {
+		t.Fatalf("set with a failing audit write = %v, want Internal", err)
+	}
+	st, err := s.GetGuardrailStatus(gpUserCtx(), &pb.GetGuardrailStatusRequest{})
+	if err != nil || st.GetBaseline().GetMode() != gpModeLog || st.GetBaseline().GetRevision() != 0 {
+		t.Fatalf("status after a failed audit = (%v, %v), want the untouched LOG at revision 0", st, err)
+	}
+	if changed != 0 {
+		t.Fatalf("onChange ran %d times for a refused switch, want 0", changed)
+	}
+
+	// The audit store recovers: the same switch now succeeds at revision 1.
+	audit.err = nil
+	res, err := gpSetMode(gpAdminCtx(), s, gpModeBlock)
+	if err != nil || res.GetBaseline().GetRevision() != 1 {
+		t.Fatalf("set after recovery = (%v, %v), want revision 1", res, err)
+	}
+}
+
+// TestSetBaselineMode_NoAuditStoreKeepsCurrentBehaviour pins today's
+// behaviour on a daemon with no audit store (no Postgres): the switch
+// succeeds without an entry. Whether that should change is an open question
+// on #2727; this test only records the current behaviour.
+func TestSetBaselineMode_NoAuditStoreKeepsCurrentBehaviour(t *testing.T) {
+	s := NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	res, err := gpSetMode(gpAdminCtx(), s, gpModeBlock)
+	if err != nil || res.GetBaseline().GetMode() != gpModeBlock {
+		t.Fatalf("set with no audit store = (%v, %v), want BLOCK stored", res, err)
+	}
+}
+
 // TestGetGuardrailStatus_ReportsBaselineMode (#2738): the status carries the
 // stored mode, LOG by default, also when an admin policy makes it unused;
 // an unreadable store is an error, never a default mode.

@@ -95,7 +95,7 @@ func TestGuardrailPolicyPGStore_RevisionSurvivesRestart(t *testing.T) {
 func TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	pool := policyPool(t)
-	if _, err := pgStore(t, pool).SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, "admin-a"); err != nil {
+	if _, err := pgStore(t, pool).SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, "admin-a", nil); err != nil {
 		t.Fatalf("SetBaselineMode: %v", err)
 	}
 	restarted := pgStore(t, pool)
@@ -108,6 +108,47 @@ func TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart(t *testing.T) {
 	}
 	if got, err := restarted.GetBaselineMode(ctx); err == nil {
 		t.Fatalf("damaged mode read = %v, want an error", got)
+	}
+}
+
+// TestGuardrailPolicyPGStore_ConcurrentBaselineModeSetsGetDistinctRevisions
+// (#2738): N racing mode switches get revisions 1..N with no duplicate, and
+// the stored row ends at N.
+func TestGuardrailPolicyPGStore_ConcurrentBaselineModeSetsGetDistinctRevisions(t *testing.T) {
+	ctx := context.Background()
+	s := pgStore(t, policyPool(t))
+	const n = 8
+	var wg sync.WaitGroup
+	revs := make([]int64, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			mode := pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG
+			if i%2 == 0 {
+				mode = pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK
+			}
+			res, err := s.SetBaselineMode(ctx, mode, "admin-a", nil)
+			errs[i] = err
+			if err == nil {
+				revs[i] = res.Current.GetRevision()
+			}
+		}(i)
+	}
+	wg.Wait()
+	seen := map[int64]bool{}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("SetBaselineMode %d: %v", i, errs[i])
+		}
+		if revs[i] < 1 || revs[i] > n || seen[revs[i]] {
+			t.Fatalf("revision %d out of range or assigned twice", revs[i])
+		}
+		seen[revs[i]] = true
+	}
+	if got, err := s.GetBaselineMode(ctx); err != nil || got.GetRevision() != n {
+		t.Fatalf("stored = (%v, %v), want revision %d", got, err, n)
 	}
 }
 
