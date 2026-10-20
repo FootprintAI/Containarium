@@ -287,7 +287,9 @@ type ResponseWriter interface {
 	// SetResponse replaces the finding's response, emits the updated
 	// finding on the event bus, hands it to the notifier (a response
 	// transition is a webhook delivery, #2718), and returns it.
-	// ErrFindingNotFound if id does not exist.
+	// ErrFindingNotFound if id does not exist. ProcessKilled is sticky: the
+	// stored flag is OR-ed with r's in the same write, so a kill once on
+	// record for the finding survives every later response (#2766).
 	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 }
 
