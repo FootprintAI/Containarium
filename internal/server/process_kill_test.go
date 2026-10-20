@@ -397,7 +397,9 @@ func TestProcessResponder_KillFactsAcrossRespawns(t *testing.T) {
 // #2775 x #2766: two boxes of a tenant share one finding; each has a kill
 // recorded. Releasing either box writes the finding's current kill facts (the
 // latest pid, the count), never a pid of 0 and never the released box's first
-// pid.
+// pid. The other box is still throttled, so the finding keeps showing its
+// APPLIED record with the same kill facts (#2820), and the release record
+// (what the webhook gets) names the released box.
 func TestProcessResponder_SharedFindingReleaseCarriesCurrentKill(t *testing.T) {
 	ctx := context.Background()
 	for _, released := range []string{"box-a", "box-b"} {
@@ -418,9 +420,17 @@ func TestProcessResponder_SharedFindingReleaseCarriesCurrentKill(t *testing.T) {
 			if err != nil || cur.Response == nil {
 				t.Fatalf("get: %v", err)
 			}
+			other := map[string]string{"box-a": "box-b", "box-b": "box-a"}[released]
 			r := cur.Response
-			if r.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 {
-				t.Fatalf("response after releasing %s = %+v, want RELEASED, killed, pid 22, kills 2", released, r)
+			if r.State != pb.ResponseState_RESPONSE_STATE_APPLIED || r.Container != other || !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 {
+				t.Fatalf("response after releasing %s = %+v, want %s's APPLIED, killed, pid 22, kills 2", released, r, other)
+			}
+			w := fx.findings.lastWrite()
+			if w.State != pb.ResponseState_RESPONSE_STATE_RELEASED || w.Container != released {
+				t.Fatalf("release record = %+v, want RELEASED on %s", w, released)
+			}
+			if w.KeepKillOf(cur.Response); !w.ProcessKilled || w.KilledPID != 22 || w.Kills != 2 {
+				t.Fatalf("release record as delivered = %+v, want killed, pid 22, kills 2", w)
 			}
 		})
 	}

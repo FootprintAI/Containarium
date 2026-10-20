@@ -154,8 +154,7 @@ func TestWebhookNotifier_ResponseTransitions(t *testing.T) {
 			{"responder applies", resp(applied, ""), false, true},
 			{"repeat upsert", resp(applied, ""), false, false},
 			{"repeat upsert again", resp(applied, ""), false, false},
-			{"operator releases", resp(released, ReleasedByOperator), false, true},
-			{"release resolves the finding", resp(released, ReleasedByOperator), true, false},
+			{"operator release resolves the finding in one write", resp(released, ReleasedByOperator), true, true},
 		}},
 		{"actuator error", []step{
 			{"upsert", nil, false, true},
@@ -188,7 +187,7 @@ func TestWebhookNotifier_ResponseTransitions(t *testing.T) {
 					f.State = FindingStateResolved
 				}
 				n.Notify(f)
-				*clock = clock.Add(5 * time.Second) // inside the interval and the release+resolve window
+				*clock = clock.Add(5 * time.Second) // inside the re-notify interval
 				if s.want {
 					delivered++
 				}
@@ -214,40 +213,37 @@ func TestWebhookNotifier_ResponseTransitions(t *testing.T) {
 	}
 }
 
-// #2745 review: the release-then-resolve coalescing is bounded. A resolve is
-// dropped only when it lands within releaseResolveWindow of the RELEASED
-// delivery, and only once; if the resolve that release made failed, a later
-// resolve is delivered.
-func TestWebhookNotifier_ReleaseResolveCoalescingIsBounded(t *testing.T) {
-	released := func(state FindingState) *Finding {
+// #2820: every resolve is delivered. The old release+resolve coalescing
+// dropped a resolve landing within 30 s of an operator RELEASED delivery,
+// which swallowed the resolve of a shared finding when box A's release (which
+// kept it open) was followed by box B's release (which resolved it). An
+// operator release that resolves is now one write, so nothing is dropped.
+func TestWebhookNotifier_EveryResolveIsDelivered(t *testing.T) {
+	released := func(state FindingState, box string) *Finding {
 		f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
 		f.State = state
 		f.Response = &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
-			State: pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedBy: ReleasedByOperator}
+			State: pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedBy: ReleasedByOperator, Container: box}
 		return f
 	}
 	for _, tc := range []struct {
-		name  string
-		gap   time.Duration // release delivery → resolve
-		want  int           // deliveries for the resolve(s)
-		twice bool          // a second resolve right after the first
+		name string
+		box  string // the box the resolve's response names
 	}{
-		{"resolve right after the release is coalesced", time.Second, 0, false},
-		{"failed resolve, resolve again 1 min later is delivered", time.Minute, 1, false},
-		{"just past the window is delivered", releaseResolveWindow, 1, false},
-		{"coalesced only once", time.Second, 1, true},
+		{"resolve a second after a release of the same box", "box-a"},
+		{"resolve a second after a release of another box", "box-b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n, clock := gatedNotifier(time.Hour)
-			n.Notify(released(FindingStateOpen))
+			n.Notify(released(FindingStateOpen, "box-a"))
 			<-n.queue
-			*clock = clock.Add(tc.gap)
-			n.Notify(released(FindingStateResolved))
-			if tc.twice {
-				n.Notify(released(FindingStateResolved))
+			*clock = clock.Add(time.Second)
+			n.Notify(released(FindingStateResolved, tc.box))
+			if got := len(n.queue); got != 1 {
+				t.Fatalf("resolve deliveries = %d, want 1", got)
 			}
-			if got := len(n.queue); got != tc.want {
-				t.Errorf("resolve deliveries = %d, want %d", got, tc.want)
+			if len(n.gate.last) != 0 {
+				t.Errorf("gate still tracks a resolved finding: %v", n.gate.last)
 			}
 		})
 	}
@@ -324,11 +320,10 @@ func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
 			{name: "applied with kill", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77, 1)), want: true, wantPID: 77, wantN: 1, after: quick},
 			{name: "repeat upsert", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77, 1))},
 		}},
-		{"kill then operator release and resolve inside the window", []step{
+		{"kill then an operator release that resolves: one post carrying the kill", []step{
 			{name: "upsert", want: true, after: quick},
 			{name: "kill recorded", response: alert(killed(4242, 1)), want: true, wantPID: 4242, wantN: 1, after: quick},
-			{name: "operator releases", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242, 1)), want: true, wantPID: 4242, wantN: 1, after: quick},
-			{name: "release resolves, coalesced", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242, 1)), resolved: true},
+			{name: "release resolves in one write", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242, 1)), resolved: true, want: true, wantPID: 4242, wantN: 1},
 		}},
 		{"skips are keyed on the reason kind, not text or pid", []step{
 			{name: "upsert", want: true, after: quick},
