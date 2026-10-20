@@ -80,8 +80,8 @@ report them as normal issues if you'd like to discuss them:
 
 ## Automated scanning
 
-The project's CI runs three security scanners on every push to
-`main` and every pull request:
+The project's CI runs these security scanners on every push to `main`,
+every pull request and weekly:
 
 - **gosec** — Go static analysis (SAST). Findings upload to GitHub
   code scanning as SARIF.
@@ -89,10 +89,44 @@ The project's CI runs three security scanners on every push to
   a known-fixed vuln is detected; tolerates upstream-unfixable
   advisories with a documented exception.
 - **Trivy** — dependency vulnerability scan (CRITICAL + HIGH).
-  Findings upload to GitHub code scanning.
+  Findings upload to GitHub code scanning. The container image
+  workflows also scan the images they build with Trivy.
 
 The workflow lives at
 [`.github/workflows/security.yml`](.github/workflows/security.yml).
+
+Two further lanes cover the supply chain:
+
+- **Dependency licences** — the
+  [`licenses`](.github/workflows/licenses.yml) workflow fails when a Go
+  module or npm package we ship carries a licence outside the allow-list,
+  or when `NOTICE` lacks a dependency's notice. Policy:
+  [`docs/security/DEPENDENCY-LICENSES.md`](docs/security/DEPENDENCY-LICENSES.md).
+- **Release signing and SBOMs** — each release's Linux binaries have an
+  SPDX SBOM, and every file on the GitHub Release has a keyless cosign
+  signature (`<file>.sigstore.json`) made by the release workflow. To
+  verify a download, see
+  [`docs/security/VERIFYING-RELEASES.md`](docs/security/VERIFYING-RELEASES.md).
+
+Dependabot opens weekly update PRs for Go modules and GitHub Actions
+([`.github/dependabot.yml`](.github/dependabot.yml)).
+
+**Planned, not in place yet:** an OpenSSF Scorecard lane
+([#2791](https://github.com/FootprintAI/Containarium/issues/2791)), code
+owners with required review on dependency, build and CI paths
+([#2792](https://github.com/FootprintAI/Containarium/issues/2792)),
+SHA-pinned GitHub Actions with a workflow-lint lane
+([#2793](https://github.com/FootprintAI/Containarium/issues/2793)), a
+dependency-change gate
+([#2794](https://github.com/FootprintAI/Containarium/issues/2794)), and
+lockfiles with pinned build-time downloads
+([#2795](https://github.com/FootprintAI/Containarium/issues/2795)). They
+are tracked in
+[#2649](https://github.com/FootprintAI/Containarium/issues/2649). This
+section will describe each one when it ships.
+
+Contributor rules for dependency, build and CI changes are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md#dependencies-build-and-ci-changes).
 
 ## Audit history
 
