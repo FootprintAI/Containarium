@@ -51,6 +51,7 @@ type memStateStore struct {
 	mu        sync.Mutex
 	last      map[string]pb.CodeCredentialSource
 	recordErr error
+	episodes  map[string]bool
 }
 
 func newMemStateStore() *memStateStore {
@@ -354,3 +355,18 @@ func TestCredentialWebhookNotifier_NoURLIsANoop(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func (s *memStateStore) RecordEpisode(_ context.Context, skillID, id string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recordErr != nil {
+		return false, s.recordErr
+	}
+	if s.episodes == nil {
+		s.episodes = map[string]bool{}
+	}
+	key := skillID + ":" + id
+	fresh := !s.episodes[key]
+	s.episodes[key] = true
+	return fresh, nil
+}

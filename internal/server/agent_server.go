@@ -556,10 +556,8 @@ func (s *AgentSkillServer) GetSkillBoxCredentialStatus(ctx context.Context, req 
 }
 
 // probeBoxCredential runs engineName's credential-status probe in
-// containerName and returns the wire source. It is the ONE probe path:
-// GetSkillBoxCredentialStatus and the credential-expiry watcher (#2371,
-// ProbeCredential) both call it, so an alert can never disagree with what an
-// operator sees checking by hand. Errors are gRPC statuses.
+// containerName and returns the raw wire source for the manual RPC. The
+// watcher uses a separate alert-policy script (#2790). Errors are gRPC statuses.
 func (s *AgentSkillServer) probeBoxCredential(containerName string, engineName engine.Name, resolvedEngine pb.AgentEngine) (pb.CodeCredentialSource, error) {
 	const unknown = pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
 	script, ok := engine.CredentialStatusScript(engineName)
@@ -567,6 +565,13 @@ func (s *AgentSkillServer) probeBoxCredential(containerName string, engineName e
 		return unknown, status.Errorf(codes.Unimplemented,
 			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(resolvedEngine))
 	}
+	return s.probeBoxCredentialScript(containerName, script)
+}
+
+// probeBoxCredentialScript executes either the raw-status or alert-policy probe.
+// Both return source names only; neither forwards credential-file contents.
+func (s *AgentSkillServer) probeBoxCredentialScript(containerName, script string) (pb.CodeCredentialSource, error) {
+	const unknown = pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
 	stdout, stderr, exitCode, execErr := s.recipes.containers.manager.ExecWithExitCode(containerName, []string{"bash", "-c", script})
 	if execErr != nil {
 		return unknown, status.Errorf(codes.Internal, "checking credential status on %s: %v", containerName, execErr)

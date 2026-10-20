@@ -43,6 +43,13 @@ for ts in "$SRC_ENGINES_DIR"/*.ts; do
   fi
 done
 
+# The private state helper is required by both runtime outcomes and the daemon
+# observer. Catch partial bundles even when the engine files themselves exist.
+if [ ! -f "$tmp/dist/credential-state-cli.js" ] || [ ! -f "$tmp/dist/credential-state.js" ]; then
+  echo "MISSING CREDENTIAL STATE: bundle needs both credential-state modules" >&2
+  fail=1
+fi
+
 # 2. Every runtime SDK is a (non-dev) dependency, so `npm ci --omit=dev` keeps it.
 for dep in "${REQUIRED_DEPS[@]}"; do
   if ! node -e 'const p=require(process.argv[1]); process.exit(((p.dependencies)||{})[process.argv[2]]?0:1)' \
