@@ -1003,6 +1003,17 @@ func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 	return resp.Run, nil
 }
 
+// RunCrewGraph dispatches a typed graph through the existing crew RPC.
+func (c *GRPCClient) RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	resp, err := c.crewClient.RunCrew(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("run crew graph: %w", err)
+	}
+	return resp.Run, nil
+}
+
 // GetCrewRun fetches a crew run's status via gRPC.
 func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

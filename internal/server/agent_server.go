@@ -12,12 +12,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/agentengine"
@@ -199,6 +201,7 @@ func resolveRunID(raw string) (string, error) {
 // agent-runtime image's responsibility and is intentionally out of scope for
 // Phase 0 (artifact_json is returned empty until that lands).
 type AgentSkillServer struct {
+	graphPeers sync.Map // child run id -> immutable graphPeerSet
 	pb.UnimplementedAgentSkillServiceServer
 	catalog   *skills.Manager
 	recipes   *RecipeServer        // box provisioning (reuses CreateContainer/exec/expose)
@@ -659,6 +662,7 @@ func (s *AgentSkillServer) beginSkillRun(ctx context.Context, req *pb.RunAgentSk
 // provisionOptions are the internal knobs a caller of beginSkillRunWith
 // can set that the public RunAgentSkill contract does not expose.
 type provisionOptions struct {
+	instanceID string // internal isolated graph box identity; empty keeps catalog identity
 	// gitSourceBestEffort keeps a run going without a workspace when
 	// its git_source cannot be fetched. A tracker-dispatched run (#2023)
 	// sets it: its git_source is the connection's repository fetched
@@ -709,7 +713,12 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	// by value), so this only affects this call — a caller's own
 	// gitSourceBestEffort (set above us) is preserved alongside it.
 	opts.engineOverride = req.GetEngine()
-	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
+	instance := skill
+	if opts.instanceID != "" {
+		instance = proto.Clone(skill).(*pb.AgentSkill)
+		instance.Id = opts.instanceID
+	}
+	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, instance, req.BackendId, req.Pool, req.InputJson, runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
 		return nil, err
@@ -1413,8 +1422,13 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 // daemon cannot derive one, which leaves the box refusing every task: a serve
 // mode nobody can reach is a better failure than one anybody can.
 func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string, engineRes agentengine.Resolved, model string) string {
+	return s.serveModeCommandFor(seedDir, skillID, skillID, engineRes, model)
+}
+
+// serveModeCommandFor separates journal/catalog identity from an isolated box.
+func (s *AgentSkillServer) serveModeCommandFor(seedDir, skillID, boxSkillID string, engineRes agentengine.Resolved, model string) string {
 	a2a := ""
-	if secret := s.agentA2ASecret(skillID); secret != "" {
+	if secret := s.agentA2ASecret(boxSkillID); secret != "" {
 		a2a = "CONTAINARIUM_A2A_TOKEN=" + shellSingleQuote(secret) + " "
 	}
 	return sourceGatewayEnvPrefix(seedDir) + runtimeEnvPrefix(engineRes, model) + a2a +
@@ -1787,7 +1801,11 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 		trace = genTraceID()
 	}
 
-	if !s.peerAllowed(caller, req.ToPeerId) {
+	target, scoped, routeErr := s.graphPeerTarget(runID, caller, req.ToPeerId)
+	if routeErr != nil {
+		return nil, routeErr
+	}
+	if !scoped && !s.peerAllowed(caller, req.ToPeerId) {
 		s.auditHop(ctx, trace, caller, req.ToPeerId, "denied", "not in allowed_peers")
 		return nil, status.Errorf(codes.PermissionDenied,
 			"skill %q is not permitted to call peer %q (not in its allowed_peers)", caller, req.ToPeerId)
@@ -1797,14 +1815,14 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	// which is what stops a box from posting to a peer itself and walking
 	// around the run_id check above. Resolved before the peer is contacted:
 	// without the credential there is no deliverable task.
-	secret := s.agentA2ASecret(req.ToPeerId)
+	secret := s.agentA2ASecret(target)
 	if secret == "" {
 		s.auditHop(ctx, trace, caller, req.ToPeerId, "failed", "no A2A credential for peer")
 		return nil, status.Errorf(codes.Internal,
 			"cannot authenticate to peer %q: the daemon holds no A2A credential for it", req.ToPeerId)
 	}
 
-	baseURL, _, err := s.resolvePeerA2A(req.ToPeerId)
+	baseURL, _, err := s.resolvePeerA2A(target)
 	if err != nil {
 		s.auditHop(ctx, trace, caller, req.ToPeerId, "unreachable", err.Error())
 		return nil, err

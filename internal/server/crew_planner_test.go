@@ -74,6 +74,7 @@ func TestPlanTaskGraph_OnlyRunsPlannerAndValidatesBeforeReturning(t *testing.T) 
 
 func TestPlanTaskGraph_RejectedOutputIsRecordedWithoutExecutingNodes(t *testing.T) {
 	cases := map[string]string{
+		"self assignee":    `{"goal":"review API","nodes":[{"id":"a","goal":"implement","skill_id":"task-planner"}]}`,
 		"malformed":        "not JSON",
 		"unknown field":    `{"goal":"review API","nodez":[]}`,
 		"unknown assignee": `{"goal":"review API","nodes":[{"id":"a","goal":"g","skill_id":"missing"}]}`,

@@ -163,6 +163,10 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
+	if req.GetGraph() != nil {
+		return s.runCrewGraph(ctx, req, crew, runID, s.executeGraphNode)
+	}
+
 	// Keystone: a crew's wiring may not ask for an A2A hop the trust fabric
 	// would drop. Reject before provisioning anything.
 	if err := validateCrewTopology(crew, s.skillByID); err != nil {

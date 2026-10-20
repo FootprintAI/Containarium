@@ -95,7 +95,7 @@ func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphReq
 			runErr = status.Errorf(codes.FailedPrecondition, "invalid planner output: %v", err)
 		} else if graph.Goal != req.Goal {
 			runErr = status.Error(codes.FailedPrecondition, "planner graph goal differs from requested goal")
-		} else if _, err := taskgraph.Validate(graph, s.skills, s.catalog); err != nil {
+		} else if _, err := s.validateExecutableGraph(graph); err != nil {
 			runErr = status.Errorf(codes.FailedPrecondition, "invalid planner graph: %v", err)
 		}
 	}
