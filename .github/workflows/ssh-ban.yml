@@ -76,6 +76,10 @@ jobs:
             export SSH_UPSTREAM_EVIDENCE_DIR="$1/evidence"
             "$1/firewall.test" -test.run "^TestIntegrationGuardedSSH(Live|Drop)Firewall$" -test.v -test.timeout 18m
           ' _ "$RUNNER_TEMP/ssh-upstream-proof" | tee "$RUNNER_TEMP/ssh-upstream-proof/verification.log"
+          for t in TestIntegrationGuardedSSHLiveFirewall TestIntegrationGuardedSSHDropFirewall; do
+            grep -Fq -- "--- PASS: $t " "$RUNNER_TEMP/ssh-upstream-proof/verification.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
       - name: Make allowlisted evidence readable to artifact uploader
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/ssh-upstream-proof"
@@ -158,6 +162,10 @@ jobs:
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/anondoor \
             -run '^TestIntegration_PublicKeyApprovalThrough(Transport|Guarded)Adapter$' | tee "$RUNNER_TEMP/ssh-ban/approval-adapter.log"
+          for t in TestIntegration_PublicKeyApprovalThroughTransportAdapter TestIntegration_PublicKeyApprovalThroughGuardedAdapter; do
+            grep -Fq -- "--- PASS: $t " "$RUNNER_TEMP/ssh-ban/approval-adapter.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.13.4'
