@@ -129,8 +129,8 @@ func TestKVMLaneBudgetsAreConfigurableAndFit(t *testing.T) {
 	}
 
 	defaults := map[string]string{
-		"CONTAINARIUM_E2E_GO_TIMEOUT":        "110m",
-		"CONTAINARIUM_E2E_READY_TIMEOUT":     "15m",
+		"CONTAINARIUM_E2E_GO_TIMEOUT":        "130m",
+		"CONTAINARIUM_E2E_READY_TIMEOUT":     "25m",
 		"CONTAINARIUM_E2E_SCALEUP_TIMEOUT":   "12m",
 		"CONTAINARIUM_E2E_VPA_TIMEOUT":       "15m",
 		"CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT": "30m",
@@ -143,11 +143,12 @@ func TestKVMLaneBudgetsAreConfigurableAndFit(t *testing.T) {
 		}
 	}
 
-	goTimeout, err := time.ParseDuration(defaults["CONTAINARIUM_E2E_GO_TIMEOUT"])
-	if err != nil {
-		t.Fatalf("parse Go timeout default: %v", err)
-	}
-	stepTotal := 2*time.Minute*15 + 2*time.Minute*12 + 15*time.Minute + 30*time.Minute + 10*time.Minute
+	goTimeout := mustDuration(t, defaults, "CONTAINARIUM_E2E_GO_TIMEOUT")
+	stepTotal := 2*mustDuration(t, defaults, "CONTAINARIUM_E2E_READY_TIMEOUT") +
+		2*mustDuration(t, defaults, "CONTAINARIUM_E2E_SCALEUP_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_VPA_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_DELETE_TIMEOUT")
 	if stepTotal > goTimeout {
 		t.Errorf("step budgets total %v but Go timeout is %v", stepTotal, goTimeout)
 	}
