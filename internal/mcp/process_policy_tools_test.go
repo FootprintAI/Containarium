@@ -126,16 +126,35 @@ func TestProcessPolicySetTool_Validation(t *testing.T) {
 }
 
 func TestProcessPolicyReleaseTool(t *testing.T) {
-	resp, _ := protojson.Marshal(&pb.ReleaseProcessActionResponse{})
+	resp, _ := protojson.Marshal(&pb.ReleaseProcessActionResponse{Finding: &pb.Finding{Id: 42}})
 	srv, got := policyServer(t, resp)
-	if _, err := handleSecurityProcessPolicyRelease(NewClient(srv.URL, "tok"), map[string]interface{}{"container": "box-1"}); err != nil {
+	out, err := handleSecurityProcessPolicyRelease(NewClient(srv.URL, "tok"), map[string]interface{}{"container": "box-1"})
+	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
 	if got.method != http.MethodPost || got.path != "/v1/security/process-policy/release" || !strings.Contains(got.body, `"container":"box-1"`) {
 		t.Fatalf("request = %+v, want POST .../release with container box-1", got)
 	}
+	if compact := strings.Join(strings.Fields(out), ""); !strings.HasPrefix(out, "Finding #42 resolved.\n{") || !strings.Contains(compact, `"id":"42"`) {
+		t.Fatalf("result = %q, want the resolved line followed by the response JSON", out)
+	}
 	if _, err := handleSecurityProcessPolicyRelease(NewClient(srv.URL, "tok"), map[string]interface{}{}); err == nil {
 		t.Error("release without a container should fail")
+	}
+}
+
+// A release that left a shared finding open (#2766) says so on the result's
+// first line, so an agent does not report the finding closed while another
+// box's throttle or kill is still pending.
+func TestProcessPolicyReleaseTool_KeptOpen(t *testing.T) {
+	resp, _ := protojson.Marshal(&pb.ReleaseProcessActionResponse{FindingKeptOpen: true, Finding: &pb.Finding{Id: 42}})
+	srv, _ := policyServer(t, resp)
+	out, err := handleSecurityProcessPolicyRelease(NewClient(srv.URL, "tok"), map[string]interface{}{"container": "box-1"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if compact := strings.Join(strings.Fields(out), ""); !strings.HasPrefix(out, "Finding #42 kept open: another box still has a response.\n{") || !strings.Contains(compact, `"findingKeptOpen":true`) {
+		t.Fatalf("result = %q, want the kept-open line followed by the response JSON", out)
 	}
 }
 

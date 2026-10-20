@@ -17568,7 +17568,11 @@
       "properties": {
         "finding": {
           "$ref": "#/definitions/Finding",
-          "description": "The finding the action belonged to, now resolved with its response in\nstate RELEASED."
+          "description": "The finding the action belonged to, with its response in state\nRELEASED. Resolved unless finding_kept_open is set."
+        },
+        "findingKeptOpen": {
+          "type": "boolean",
+          "description": "The finding was left open because another box still holds it: a\nminer-signature finding is shared by every box of the tenant running\nthe same miner, and another box still has an action open on it or a\nresponse queued. It is resolved when the last box is released."
         }
       }
     },
