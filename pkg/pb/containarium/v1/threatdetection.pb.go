@@ -1946,11 +1946,16 @@ func (x *ReleaseProcessActionRequest) GetContainer() string {
 
 type ReleaseProcessActionResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The finding the action belonged to, now resolved with its response in
-	// state RELEASED.
-	Finding       *Finding `protobuf:"bytes,1,opt,name=finding,proto3" json:"finding,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The finding the action belonged to, with its response in state
+	// RELEASED. Resolved unless finding_kept_open is set.
+	Finding *Finding `protobuf:"bytes,1,opt,name=finding,proto3" json:"finding,omitempty"`
+	// The finding was left open because another box still holds it: a
+	// miner-signature finding is shared by every box of the tenant running
+	// the same miner, and another box still has an action open on it or a
+	// response queued. It is resolved when the last box is released.
+	FindingKeptOpen bool `protobuf:"varint,2,opt,name=finding_kept_open,json=findingKeptOpen,proto3" json:"finding_kept_open,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReleaseProcessActionResponse) Reset() {
@@ -1988,6 +1993,13 @@ func (x *ReleaseProcessActionResponse) GetFinding() *Finding {
 		return x.Finding
 	}
 	return nil
+}
+
+func (x *ReleaseProcessActionResponse) GetFindingKeptOpen() bool {
+	if x != nil {
+		return x.FindingKeptOpen
+	}
+	return false
 }
 
 // RuleStatus is one registered rule's health, so a single panicking rule is
@@ -3386,9 +3398,10 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x18SetProcessPolicyResponse\x12<\n" +
 	"\teffective\x18\x01 \x01(\v2\x1e.containarium.v1.ProcessPolicyR\teffective\";\n" +
 	"\x1bReleaseProcessActionRequest\x12\x1c\n" +
-	"\tcontainer\x18\x01 \x01(\tR\tcontainer\"R\n" +
+	"\tcontainer\x18\x01 \x01(\tR\tcontainer\"~\n" +
 	"\x1cReleaseProcessActionResponse\x122\n" +
-	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding\"\xb8\x01\n" +
+	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding\x12*\n" +
+	"\x11finding_kept_open\x18\x02 \x01(\bR\x0ffindingKeptOpen\"\xb8\x01\n" +
 	"\n" +
 	"RuleStatus\x121\n" +
 	"\x04rule\x18\x01 \x01(\x0e2\x1d.containarium.v1.ThreatRuleIdR\x04rule\x12\x18\n" +

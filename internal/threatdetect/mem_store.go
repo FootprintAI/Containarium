@@ -188,7 +188,9 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 	return matches, nil
 }
 
-// SetResponse mirrors FindingStore.SetResponse without Postgres.
+// SetResponse mirrors FindingStore.SetResponse without Postgres, including
+// the sticky process_killed: the OR with the stored flag happens under the
+// ring lock, in the same read-modify-write.
 func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
 	s.mu.Lock()
 	var f *Finding
@@ -203,6 +205,7 @@ func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingRe
 		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
 	}
 	cp := r
+	cp.KeepKillOf(f.Response)
 	f.Response = &cp
 	// The webhook worker reads its finding after this returns; hand it a
 	// snapshot so a later write to the ring entry (the resolve an operator

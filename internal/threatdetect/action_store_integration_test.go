@@ -165,3 +165,74 @@ func TestActionStore_ContractHoldsForPGImpl(t *testing.T) {
 	}
 	runActionStoreContract(t, as, f.ID, "contract-")
 }
+
+// ListByFinding (#2766) against real Postgres: the finding_id index scan,
+// newest first, with the foreign key satisfied by two real findings.
+func TestActionStore_ListByFindingPGImpl(t *testing.T) {
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+	ctx := context.Background()
+	as, err := NewActionStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewActionStore: %v", err)
+	}
+	f, err := fs.Insert(ctx, sampleFinding())
+	if err != nil {
+		t.Fatalf("Insert finding: %v", err)
+	}
+	second := sampleFinding()
+	second.Subject = "203.0.113.10"
+	g, err := fs.Insert(ctx, second)
+	if err != nil {
+		t.Fatalf("Insert second finding: %v", err)
+	}
+	runListByFindingContract(t, as, f.ID, g.ID, "lbf-")
+}
+
+// SetResponse keeps process_killed once set (#2766): a release, expiry or a
+// later box's action on a shared finding rewrites the rest of the response
+// but cannot drop a recorded kill. The OR is in the UPDATE itself.
+func TestFindingStore_SetResponseKeepsProcessKilled(t *testing.T) {
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+	ctx := context.Background()
+	f, err := fs.Upsert(ctx, sampleFinding())
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	t0 := time.Now().UTC().Truncate(time.Microsecond)
+	// A response without a kill does not invent one.
+	got, err := fs.SetResponse(ctx, f.ID, FindingResponse{
+		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_APPLIED, AppliedAt: t0,
+	})
+	if err != nil {
+		t.Fatalf("SetResponse: %v", err)
+	}
+	if got.Response.ProcessKilled {
+		t.Fatalf("first response = %+v, want process_killed=false", got.Response)
+	}
+	if _, err := fs.SetResponse(ctx, f.ID, FindingResponse{
+		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_APPLIED, AppliedAt: t0, ProcessKilled: true,
+	}); err != nil {
+		t.Fatalf("SetResponse with kill: %v", err)
+	}
+	// The release writes process_killed=false (its own box killed nothing);
+	// the stored flag wins.
+	got, err = fs.SetResponse(ctx, f.ID, FindingResponse{
+		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
+		AppliedAt: t0, ReleasedAt: t0.Add(time.Minute), ReleasedBy: ReleasedByOperator,
+	})
+	if err != nil {
+		t.Fatalf("SetResponse release: %v", err)
+	}
+	if got.Response.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !got.Response.ProcessKilled || got.Response.ReleasedBy != ReleasedByOperator {
+		t.Fatalf("release response = %+v, want RELEASED by operator with process_killed kept", got.Response)
+	}
+	back, err := fs.Get(ctx, f.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !back.Response.ProcessKilled || back.Response.State != pb.ResponseState_RESPONSE_STATE_RELEASED {
+		t.Fatalf("stored response = %+v, want RELEASED with process_killed kept", back.Response)
+	}
+}

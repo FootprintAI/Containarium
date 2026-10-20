@@ -374,9 +374,14 @@ message ReleaseProcessActionRequest {
 }
 
 message ReleaseProcessActionResponse {
-  // The finding the action belonged to, now resolved with its response in
-  // state RELEASED.
+  // The finding the action belonged to, with its response in state
+  // RELEASED. Resolved unless finding_kept_open is set.
   Finding finding = 1;
+  // The finding was left open because another box still holds it: a
+  // miner-signature finding is shared by every box of the tenant running
+  // the same miner, and another box still has an action open on it or a
+  // response queued. It is resolved when the last box is released.
+  bool finding_kept_open = 2;
 }
 
 // SentryState is the overall on/off state of the background threat-detection

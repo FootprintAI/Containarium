@@ -342,6 +342,13 @@ func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
 			{name: "kill 5 after the interval carries the latest", response: alert(killed(104, 5)), want: true, wantPID: 104, wantN: 5, after: quick},
 			{name: "kill 6", response: alert(killed(105, 6)), after: quick},
 		}},
+		{"shared finding: later kill held, the release post carries the latest and is not repeated", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "kill on box A", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(11, 1)), want: true, wantPID: 11, wantN: 1, after: quick},
+			{name: "kill on box B is held", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(22, 2)), after: quick},
+			{name: "release of A carries the current kill", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(22, 2)), want: true, wantPID: 22, wantN: 2, after: quick},
+			{name: "repeat of the release write", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(22, 2))},
+		}},
 		{"first kill after a skip is immediate", []step{
 			{name: "upsert", want: true, after: quick},
 			{name: "skip", response: alert(FindingResponse{KillSkipReason: reused}), want: true, wantSkip: reused, after: quick},
@@ -441,5 +448,28 @@ func TestFindingResponse_KillFieldsRoundTripStorage(t *testing.T) {
 	}
 	if out != in {
 		t.Errorf("round trip: got %+v want %+v", out, in)
+	}
+}
+
+// #2766 x #2775: a write from a box that killed nothing keeps the finding's
+// kill whole (flag, latest pid, count), never killed with pid 0; a write that
+// carries its own kill is left alone.
+func TestFindingResponse_KeepKillOf(t *testing.T) {
+	prev := &FindingResponse{ProcessKilled: true, KilledPID: 22, Kills: 2}
+	r := FindingResponse{State: pb.ResponseState_RESPONSE_STATE_RELEASED}
+	r.KeepKillOf(prev)
+	if !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 {
+		t.Errorf("kept = %+v, want killed pid 22 kills 2", r)
+	}
+	own := FindingResponse{ProcessKilled: true, KilledPID: 30, Kills: 3}
+	own.KeepKillOf(prev)
+	if own.KilledPID != 30 || own.Kills != 3 {
+		t.Errorf("own kill overwritten: %+v", own)
+	}
+	none := FindingResponse{}
+	none.KeepKillOf(&FindingResponse{})
+	none.KeepKillOf(nil)
+	if none.ProcessKilled {
+		t.Errorf("no kill on record invented one: %+v", none)
 	}
 }

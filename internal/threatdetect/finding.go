@@ -247,6 +247,19 @@ type findingResponseJSON struct {
 	Error         string    `json:"error,omitempty"`
 }
 
+// KeepKillOf makes the kill on record sticky (#2766, #2775): when prev has a
+// kill and r (a write from a box that killed nothing, such as its release)
+// has none, r keeps prev's process_killed, latest pid, count and skip reason,
+// so the stored response never says killed with pid 0 and a shared finding
+// keeps another box's kill. A write that carries its own kill is left alone.
+// The SQL in FindingStore.SetResponse does the same in one UPDATE.
+func (r *FindingResponse) KeepKillOf(prev *FindingResponse) {
+	if prev == nil || !prev.ProcessKilled || r.ProcessKilled {
+		return
+	}
+	r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason = true, prev.KilledPID, prev.Kills, prev.KillSkipReason
+}
+
 // skipName is the stored name of a skip reason; none stores nothing.
 func skipName(r pb.KillSkipReason) string {
 	if r == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
@@ -310,7 +323,9 @@ type ResponseWriter interface {
 	// SetResponse replaces the finding's response, emits the updated
 	// finding on the event bus, hands it to the notifier (a response
 	// transition is a webhook delivery, #2718), and returns it.
-	// ErrFindingNotFound if id does not exist.
+	// ErrFindingNotFound if id does not exist. ProcessKilled is sticky: the
+	// stored flag is OR-ed with r's in the same write, so a kill once on
+	// record for the finding survives every later response (#2766).
 	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 }
 

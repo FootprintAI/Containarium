@@ -384,7 +384,7 @@ func TestProcessResponder_KillFactsAcrossRespawns(t *testing.T) {
 		if r := stored(t, fx, f.ID); r.KilledPID != 3 || r.Kills != 3 {
 			t.Fatalf("before release: pid=%d kills=%d, want 3 and 3", r.KilledPID, r.Kills)
 		}
-		if _, err := fx.r.Release(ctx, "box-a"); err != nil {
+		if _, _, err := fx.r.Release(ctx, "box-a"); err != nil {
 			t.Fatal(err)
 		}
 		r := stored(t, fx, f.ID)
@@ -392,4 +392,62 @@ func TestProcessResponder_KillFactsAcrossRespawns(t *testing.T) {
 			t.Fatalf("released response = %+v, want RELEASED with pid 3, kills 3", r)
 		}
 	})
+}
+
+// #2775 x #2766: two boxes of a tenant share one finding; each has a kill
+// recorded. Releasing either box writes the finding's current kill facts (the
+// latest pid, the count), never a pid of 0 and never the released box's first
+// pid.
+func TestProcessResponder_SharedFindingReleaseCarriesCurrentKill(t *testing.T) {
+	ctx := context.Background()
+	for _, released := range []string{"box-a", "box-b"} {
+		t.Run("release "+released, func(t *testing.T) {
+			fx := newResponderFixture(t, false)
+			fx.r.SetProcessKiller(&fakeKiller{})
+			fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+			fx.setKill(t, "", true)
+			f := fx.fireSignature(t, "box-a", 11)
+			g := fx.fireSignature(t, "box-b", 22)
+			if f.ID != g.ID {
+				t.Fatalf("finding ids %d and %d: the boxes must share one finding", f.ID, g.ID)
+			}
+			if _, _, err := fx.r.Release(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+			cur, err := fx.findings.Get(ctx, f.ID)
+			if err != nil || cur.Response == nil {
+				t.Fatalf("get: %v", err)
+			}
+			r := cur.Response
+			if r.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 {
+				t.Fatalf("response after releasing %s = %+v, want RELEASED, killed, pid 22, kills 2", released, r)
+			}
+		})
+	}
+}
+
+// #2772 x #2775: box-b killed nothing; releasing it must not blank or
+// duplicate box-a's kill on the shared finding.
+func TestProcessResponder_SharedFindingReleaseOfNonKillerKeepsKill(t *testing.T) {
+	ctx := context.Background()
+	fx := newResponderFixture(t, false)
+	fx.r.SetProcessKiller(&fakeKiller{})
+	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+	fx.setKill(t, "", true)
+	f := fx.fireSignature(t, "box-a", 11) // killed on box-a
+	fx.setKill(t, "", false)
+	fx.fireSignature(t, "box-b", 22) // throttled, nothing killed
+	if _, _, err := fx.r.Release(ctx, "box-b"); err != nil {
+		t.Fatal(err)
+	}
+	if w := fx.findings.lastWrite(); w.ProcessKilled || w.KilledPID != 0 {
+		t.Fatalf("box-b's release record = %+v, want no kill of its own", w)
+	}
+	cur, err := fx.findings.Get(ctx, f.ID)
+	if err != nil || cur.Response == nil {
+		t.Fatalf("get: %v", err)
+	}
+	if r := cur.Response; !r.ProcessKilled || r.KilledPID != 11 || r.Kills != 1 {
+		t.Fatalf("finding after box-b's release = %+v, want box-a's kill whole: pid 11, kills 1", r)
+	}
 }

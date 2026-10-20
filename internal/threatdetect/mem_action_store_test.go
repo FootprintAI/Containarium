@@ -242,6 +242,63 @@ func mustOrphans(t *testing.T, s ActionStore, cutoff time.Time) []*SecurityActio
 	return rows
 }
 
+// runListByFindingContract is the ListByFinding half of the contract
+// (#2766): every row of findingID, on any container, open or released,
+// newest first; rows of otherFindingID are not listed; an unknown finding
+// lists nothing. Both ids must exist where the store enforces the
+// finding_id foreign key (Postgres).
+func runListByFindingContract(t *testing.T, s ActionStore, findingID, otherFindingID int64, prefix string) {
+	t.Helper()
+	ctx := context.Background()
+	t0 := time.Now().UTC().Truncate(time.Microsecond)
+	mk := func(c string, fid int64) *SecurityAction {
+		a := sampleAction(prefix+c, t0)
+		a.FindingID = fid
+		return a
+	}
+	open := mk("lbf-open", findingID)
+	released := mk("lbf-released", findingID)
+	failed := mk("lbf-failed", findingID)
+	failed.Error, failed.ReleasedAt, failed.ReleasedBy = "incus: boom", t0, ReleasedByError
+	other := mk("lbf-other", otherFindingID)
+	for _, a := range []*SecurityAction{open, released, failed, other} {
+		if err := s.Insert(ctx, a); err != nil {
+			t.Fatalf("Insert %s: %v", a.Container, err)
+		}
+	}
+	if err := s.Release(ctx, released.ID, ReleasedByOperator, t0.Add(time.Minute)); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	rows, err := s.ListByFinding(ctx, findingID)
+	if err != nil {
+		t.Fatalf("ListByFinding: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("ListByFinding = %d rows, want 3 (open, released, failed)", len(rows))
+	}
+	for i, want := range []*SecurityAction{failed, released, open} { // newest first
+		if rows[i].ID != want.ID || rows[i].Container != want.Container {
+			t.Errorf("ListByFinding[%d] = %d/%s, want %d/%s", i, rows[i].ID, rows[i].Container, want.ID, want.Container)
+		}
+	}
+	if !rows[2].Open() || rows[1].Open() || rows[1].ReleasedBy != ReleasedByOperator || rows[0].Open() || rows[0].ReleasedBy != ReleasedByError {
+		t.Errorf("ListByFinding release state: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.ID == other.ID {
+			t.Errorf("ListByFinding lists row %d of finding %d", other.ID, otherFindingID)
+		}
+	}
+	if none, err := s.ListByFinding(ctx, otherFindingID+1000); err != nil || len(none) != 0 {
+		t.Fatalf("ListByFinding for an unknown finding = %v, %v; want none", none, err)
+	}
+}
+
 func TestActionStore_ContractHoldsForMemImpl(t *testing.T) {
 	runActionStoreContract(t, NewMemActionStore(), 7, "")
+}
+
+func TestMemActionStore_ListByFinding(t *testing.T) {
+	runListByFindingContract(t, NewMemActionStore(), 7, 8, "")
 }
