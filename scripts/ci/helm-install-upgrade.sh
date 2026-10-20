@@ -16,14 +16,17 @@ cluster="helm-release-$(basename "$work" | tr '[:upper:]' '[:lower:]' | tr -cd '
 export KUBECONFIG="$work/kubeconfig"
 release=helm-release
 namespace=helm-release
+gateway=helm-release-gateway
 timeout="${HELM_TEST_TIMEOUT:-20m}"
 
 cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then
     kubectl get pods -A -o wide || true
-    kubectl -n "$namespace" describe pods || true
-    kubectl -n "$namespace" logs -l "app.kubernetes.io/instance=$release" --all-containers --tail=100 || true
+    for ns in "$namespace" "$gateway"; do
+      kubectl -n "$ns" describe pods || true
+      kubectl -n "$ns" logs -l "app.kubernetes.io/instance=$release" --all-containers --tail=100 || true
+    done
   fi
   kind delete cluster --name "$cluster" || true
   rm -rf "$work"
@@ -34,11 +37,27 @@ trap cleanup EXIT
 # Never use the contributor's current context or a shared dev cluster.
 kind create cluster --name "$cluster" --image kindest/node:v1.31.0 --wait 180s
 
+ssh-keygen -q -t ed25519 -N '' -f "$work/server"
+ssh-keygen -q -t ed25519 -N '' -f "$work/upstream"
+prepare_gateway() {
+  # Secrets must predate installation. The chart manages this Namespace, so
+  # give the precreated namespace the same ownership as the Helm release.
+  kubectl create namespace "$gateway"
+  kubectl label namespace "$gateway" app.kubernetes.io/managed-by=Helm
+  kubectl annotate namespace "$gateway" \
+    "meta.helm.sh/release-name=$release" "meta.helm.sh/release-namespace=$namespace"
+  kubectl -n "$gateway" create secret generic sshpiper-server-key --from-file="server_key=$work/server"
+  kubectl -n "$gateway" create secret generic sshpiper-upstream-key --from-file="ssh-privatekey=$work/upstream"
+}
+prepare_gateway
+
 values=(
   --namespace "$namespace" --create-namespace
   --set fullnameOverride=helm-release
   --set-string "daemon.jwtSecret=$(openssl rand -hex 32)"
-  --set gateway.enabled=false --set-string gateway.namespace=
+  --set-string "gateway.namespace=$gateway"
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key
+  --set-file "gateway.upstreamPublicKey=$work/upstream.pub"
   --wait --timeout "$timeout"
 )
 
@@ -77,6 +96,7 @@ fi
 
 # A second clean install proves the target also works without an old release.
 helm uninstall "$release" --namespace "$namespace" --wait --timeout "$timeout"
+prepare_gateway
 helm install "$release" "$chart" --version "$version" "${values[@]}"
 assert_running_release "$version"
 helm history "$release" --namespace "$namespace"

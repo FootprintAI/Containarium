@@ -136,12 +136,13 @@ to the target release, and performs a clean install of that target from
 to become ready and checks that its pod actually pulled
 `ghcr.io/footprintai/containarium:v<version>` without an image override.
 On PRs it also upgrades to the current checkout's packaged chart using the
-published `0.109.0` daemon image. The SSH gateway is disabled for this chart
-lifecycle test; SSH, tenant isolation and box lifecycle belong to the backend
-e2e lane. The cluster and kubeconfig are created per run and always removed.
+published `0.109.0` daemon image. The test provisions the gateway's host and
+upstream keys and waits for both Deployments; SSH sessions, tenant isolation
+and box lifecycle belong to the backend e2e lane. The cluster and kubeconfig
+are created per run and always removed.
 
 To repeat the published-chart test locally (Docker, kind v0.24.0, kubectl,
-Helm 3.16.2, Python 3 and OpenSSL required):
+Helm 3.16.2, Python 3, OpenSSH and OpenSSL required):
 
 ```bash
 bash scripts/ci/helm-install-upgrade.sh 0.108.0 <target-release-without-v>

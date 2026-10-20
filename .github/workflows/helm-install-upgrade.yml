@@ -47,6 +47,7 @@ jobs:
           # their own version and exercise the chart just pushed by helm-chart.
           TARGET_VERSION: ${{ inputs.target-version || '0.109.0' }}
           TEST_CANDIDATE: ${{ inputs.target-version == '' || inputs.test-candidate }}
+          HELM_TEST_TIMEOUT: ${{ inputs.target-version == '' && '5m' || '20m' }}
         run: |
           version="${TARGET_VERSION#v}"
           candidate=()
