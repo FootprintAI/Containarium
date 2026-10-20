@@ -51,11 +51,11 @@ type Options struct {
 // anything: whether the repo dir exists, whether `timeout` is available,
 // the declaration file's content (stdout, bounded) and whether a Makefile
 // exists. The exit status is 10 + 1 (declaration present) + 2 (Makefile
-// present); 96 and 97 are the two refusals.
+// present); 95, 96 and 97 are the refusals.
 const probeScript = `cd -- "$1" || exit 97
 command -v timeout >/dev/null 2>&1 || exit 96
 rc=10
-if [ -f "$2" ]; then head -c "$3" -- "$2"; rc=$((rc + 1)); fi
+if [ -f "$2" ]; then head -c "$3" -- "$2" || exit 95; rc=$((rc + 1)); fi
 if [ -f Makefile ] || [ -f makefile ] || [ -f GNUmakefile ]; then rc=$((rc + 2)); fi
 exit "$rc"`
 
@@ -136,6 +136,10 @@ func resolveSteps(ex Execer, box, dir string, pack *pb.ProofPack) ([]Step, error
 	switch rc {
 	case 97:
 		return nil, fmt.Errorf("proofpack: repo dir %q does not exist in %s", dir, box)
+	case 95:
+		// A declaration that exists but cannot be read must not fall back
+		// to `make test`: the repository declared something else.
+		return nil, fmt.Errorf("proofpack: cannot read %s in %s: %s", DeclarationPath, box, strings.TrimSpace(stderr))
 	case 96:
 		return nil, fmt.Errorf("proofpack: %s has no `timeout` command (coreutils); steps cannot be bounded", box)
 	case 10, 11, 12, 13:

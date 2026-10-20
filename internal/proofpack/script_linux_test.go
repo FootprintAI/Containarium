@@ -148,3 +148,25 @@ func TestGenerate_RealShell_FallbackAndMissingDir(t *testing.T) {
 		t.Errorf("missing dir: err = %v", err)
 	}
 }
+
+// A declaration that exists but cannot be read is an error. It must not
+// fall back to `make test`: the repository declared something else.
+func TestGenerate_RealShell_UnreadableDeclarationIsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a mode-000 file")
+	}
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Makefile"), "test:\n\t@echo fallback-ran\n")
+	decl := filepath.Join(repo, DeclarationPath)
+	writeFile(t, decl, "test: exit 1\n")
+	if err := os.Chmod(decl, 0); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := Generate(context.Background(), localExecer{}, "local", Options{RepoDir: repo, StepTimeout: 30 * time.Second})
+	if err == nil {
+		t.Fatalf("unreadable declaration produced a pack (source %v, steps %d)", pack.GetCommandSource(), len(pack.GetSteps()))
+	}
+	if !strings.Contains(err.Error(), "cannot read") {
+		t.Errorf("err = %v", err)
+	}
+}

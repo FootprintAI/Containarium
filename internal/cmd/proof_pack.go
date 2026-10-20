@@ -102,7 +102,7 @@ func runProofPackGenerate(cmd *cobra.Command, args []string) error {
 		if _, err := cmd.OutOrStdout().Write(out); err != nil {
 			return err
 		}
-	} else if err := os.WriteFile(proofPackOut, out, 0o600); err != nil {
+	} else if err := writePrivateFile(proofPackOut, out); err != nil {
 		return err
 	}
 
@@ -116,4 +116,23 @@ func runProofPackGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("proof pack status is %s", pack.GetStatus())
 	}
 	return nil
+}
+
+// writePrivateFile writes b to path with mode 0600, including when path
+// already exists with a wider mode (os.WriteFile only applies the mode on
+// create). The pack's logs can hold whatever the tests printed.
+func writePrivateFile(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- operator-chosen output path
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

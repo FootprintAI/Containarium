@@ -112,3 +112,30 @@ func TestProofPackGenerate_PassedToStdout(t *testing.T) {
 		t.Errorf("started_at in the future")
 	}
 }
+
+// An existing --out file is made private too, not only a new one: the
+// pack's logs can hold whatever the tests printed.
+func TestProofPackGenerate_ExistingOutFileBecomesPrivate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "pack.json")
+	if err := os.WriteFile(out, []byte("old contents that are longer than nothing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runProofPack(t, proofPackBox(t, 0), "tenant-container", "--dir", "/srv/repo", "--step-timeout", "7s", "--out", out); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	var pack pb.ProofPack
+	b, _ := os.ReadFile(out)
+	if err := protojson.Unmarshal(b, &pack); err != nil {
+		t.Errorf("file is not exactly the new pack: %v", err)
+	}
+}

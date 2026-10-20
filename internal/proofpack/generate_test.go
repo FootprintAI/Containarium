@@ -270,6 +270,10 @@ func TestGenerate_Refusals(t *testing.T) {
 	if _, err := Generate(context.Background(), bad, "b", Options{}); err == nil || !strings.Contains(err.Error(), "unknown kind") {
 		t.Errorf("bad declaration: err = %v", err)
 	}
+	null := &fakeBox{declaration: strp("test:\n"), makefile: true, steps: map[string]fakeResult{"make test": {}}}
+	if _, err := Generate(context.Background(), null, "b", Options{}); err == nil || len(null.ran) != 0 {
+		t.Errorf("null test: key: err=%v ran=%v, want an error and no fallback", err, null.ran)
+	}
 	big := &fakeBox{declaration: strp(strings.Repeat("#", MaxDeclarationBytes+1))}
 	if _, err := Generate(context.Background(), big, "b", Options{}); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("oversized declaration: err = %v", err)

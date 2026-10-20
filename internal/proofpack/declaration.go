@@ -58,15 +58,11 @@ type Step struct {
 
 // declarationFile is the part of .github/containarium.yml this package
 // reads. Other top-level keys belong to other features and are ignored.
+// Test is a raw node so a present-but-null `test:` (Kind set, tag !!null)
+// is told apart from an absent key (Kind 0): yaml.v3 does not call a
+// custom unmarshaler for a null value.
 type declarationFile struct {
-	Test testSpec `yaml:"test"`
-}
-
-// testSpec is the `test:` value: either one command line, or a list of
-// {name, kind, run} steps.
-type testSpec struct {
-	set   bool
-	steps []Step
+	Test yaml.Node `yaml:"test"`
 }
 
 type stepYAML struct {
@@ -75,45 +71,45 @@ type stepYAML struct {
 	Run  string `yaml:"run"`
 }
 
-func (t *testSpec) UnmarshalYAML(n *yaml.Node) error {
+// parseTest reads the `test:` value: either one command line, or a list of
+// {name, kind, run} steps.
+func parseTest(n *yaml.Node) ([]Step, error) {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		if n.Tag == "!!null" {
-			return nil
+		if n.ShortTag() == "!!null" {
+			return nil, fmt.Errorf("line %d: test: is empty", n.Line)
 		}
 		var run string
 		if err := n.Decode(&run); err != nil {
-			return err
+			return nil, err
 		}
 		if run == "" {
-			return fmt.Errorf("line %d: test: is empty", n.Line)
+			return nil, fmt.Errorf("line %d: test: is empty", n.Line)
 		}
-		t.set = true
-		t.steps = []Step{{Name: stringFormStepName, Kind: pb.ProofPartKind_PROOF_PART_KIND_TEST, Run: run}}
-		return nil
+		return []Step{{Name: stringFormStepName, Kind: pb.ProofPartKind_PROOF_PART_KIND_TEST, Run: run}}, nil
 	case yaml.SequenceNode:
 		if len(n.Content) == 0 {
-			return fmt.Errorf("line %d: test: lists no steps", n.Line)
+			return nil, fmt.Errorf("line %d: test: lists no steps", n.Line)
 		}
 		if len(n.Content) > MaxSteps {
-			return fmt.Errorf("line %d: test: lists %d steps, more than %d", n.Line, len(n.Content), MaxSteps)
+			return nil, fmt.Errorf("line %d: test: lists %d steps, more than %d", n.Line, len(n.Content), MaxSteps)
 		}
+		steps := make([]Step, 0, len(n.Content))
 		seen := make(map[string]bool, len(n.Content))
 		for _, item := range n.Content {
 			step, err := decodeStep(item)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if seen[step.Name] {
-				return fmt.Errorf("line %d: step name %q is used twice", item.Line, step.Name)
+				return nil, fmt.Errorf("line %d: step name %q is used twice", item.Line, step.Name)
 			}
 			seen[step.Name] = true
-			t.steps = append(t.steps, step)
+			steps = append(steps, step)
 		}
-		t.set = true
-		return nil
+		return steps, nil
 	default:
-		return fmt.Errorf("line %d: test: must be a command or a list of steps", n.Line)
+		return nil, fmt.Errorf("line %d: test: must be a command or a list of steps", n.Line)
 	}
 }
 
@@ -150,17 +146,22 @@ func decodeStep(n *yaml.Node) (Step, error) {
 }
 
 // ParseDeclaration reads the `test:` key of a .github/containarium.yml.
-// ok is false when the file declares no test command set, in which case
-// the caller falls back to `make test`.
+// ok is false only when the file has no `test:` key, in which case the
+// caller falls back to `make test`; a `test:` key that is present but
+// empty or malformed is an error.
 func ParseDeclaration(content []byte) (steps []Step, ok bool, err error) {
 	var f declarationFile
 	if err := yaml.Unmarshal(content, &f); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", DeclarationPath, err)
 	}
-	if !f.Test.set {
+	if f.Test.Kind == 0 {
 		return nil, false, nil
 	}
-	return f.Test.steps, true, nil
+	steps, err = parseTest(&f.Test)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s: %w", DeclarationPath, err)
+	}
+	return steps, true, nil
 }
 
 // FallbackSteps is the command set used when the repository declares none

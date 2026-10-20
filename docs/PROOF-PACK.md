@@ -51,7 +51,7 @@ When there is no `test:` key, the pack falls back:
 | no `test:` key, but a `Makefile` at its root | `make test`, as step `make-test` | `FALLBACK_MAKE_TEST` |
 | neither | nothing; the status is `NO_COMMANDS` | `NONE` |
 
-A declaration that cannot be parsed is an error, and no pack is produced. It never falls back to `make test`.
+A declaration that cannot be read or parsed is an error, and no pack is produced. That includes a `test:` key with no value. It never falls back to `make test`; the fallback applies only when the key is absent.
 
 ## Generating a pack
 
@@ -71,7 +71,7 @@ Exit status:
 
 - `0` when the pack's status is `PASSED`.
 - `1` when the status is `FAILED` or `NO_COMMANDS`. The pack is written either way.
-- Non-zero with no pack when the commands could not be run at all. Causes include an unreachable box, a missing `--dir`, a box without coreutils `timeout`, or a declaration that does not parse.
+- Non-zero with no pack when the commands could not be run at all. Causes include an unreachable box, a missing `--dir`, a box without coreutils `timeout`, or a declaration that cannot be read or does not parse.
 
 ## How a step runs
 
