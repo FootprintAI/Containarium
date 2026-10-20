@@ -96,6 +96,13 @@ anyway; it's the only thing a non-release build has to go on.
    documented `cosign verify-blob` command. This job and the SBOM
    attachment run only on a real tag, so the first release after they
    landed is their first run: expect to look.
+   Also require the `helm-install-upgrade` job to pass: it downloads the
+   published OCI chart, installs baseline `0.108.0`, upgrades to this tag,
+   then clean-installs this tag in kind (Kubernetes 1.31.0), checking the
+   running daemon's exact image and readiness. The chart is already published
+   when this check runs; a failed job means the release needs attention,
+   even if its files are downloadable. See `docs/EKS-GKE-DEPLOY.md` for the
+   compatibility baseline and local command.
 6. **Wait for the managed-clusters KVM e2e lane to go green on the
    tag** (`.github/workflows/cluster-e2e.yml`, also runs nightly). It
    is release-blocking (#1418): a red or missing run means the release

@@ -204,3 +204,39 @@ func TestGuardrailPolicy_NonAdminSetRefusedOnBothTransports(t *testing.T) {
 		t.Fatalf("non-admin Get = (%v, %v), want readable and still not configured", got, err)
 	}
 }
+
+// TestGuardrailStatus_RESTAndGRPCAgree (#2737): GET /v1/guardrail/status and
+// the gRPC call report the same effective policy to a non-admin caller,
+// before and after a policy with an inbound BLOCK rule is set.
+func TestGuardrailStatus_RESTAndGRPCAgree(t *testing.T) {
+	srv := server.NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	clients := map[string]interface {
+		GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error)
+	}{
+		"grpc": startGRPCGuardrailPolicy(t, srv, false),
+		"rest": startGatewayGuardrailPolicy(t, srv, false),
+	}
+	check := func(want pb.GuardrailEffectivePolicy) {
+		t.Helper()
+		var first *pb.GetGuardrailStatusResponse
+		for name, c := range clients {
+			got, err := c.GetGuardrailStatus()
+			if err != nil || got.GetResponsePolicy() != want {
+				t.Fatalf("%s GetGuardrailStatus = (%v, %v), want %v", name, got, err, want)
+			}
+			if first != nil && !proto.Equal(first, got) {
+				t.Fatalf("transports disagree:\n %v\n %v", first, got)
+			}
+			first = got
+		}
+	}
+	check(pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE)
+
+	admin := startGRPCGuardrailPolicy(t, srv, true)
+	if _, err := admin.SetGuardrailPolicy(&pb.SetGuardrailPolicyRequest{Policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{
+		{Kind: pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, Action: pb.GuardrailAction_GUARDRAIL_ACTION_BLOCK},
+	}}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	check(pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_ADMIN)
+}

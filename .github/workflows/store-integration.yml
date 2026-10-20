@@ -143,9 +143,23 @@ jobs:
           # this lane exists because that ambiguity hid the gap for so long.
           # The suite fails rather than skips when the DSN is missing, so a
           # SKIP means something else went quiet — treat it as a failure.
-          if grep -q -- "--- SKIP" integration.log; then
+          #
+          # Intentional opt-in tests are the only exemption: they skip by design
+          # unless an env var is set (they need a fixture this lane does not
+          # provide). List one by its EXACT test name, space-separated, with the
+          # reason. Matching is on the whole name, so a subtest
+          # (TestName/sub) or a similarly named test is NOT exempt, and every
+          # other `--- SKIP` still fails the job.
+          #   TestCredentialDockerEndToEnd - needs an isolated Docker fixture
+          #     (CONTAINARIUM_CREDENTIAL_DOCKER_E2E=1), see #2847.
+          OPT_IN_SKIPS="TestCredentialDockerEndToEnd"
+          unexpected_skips=$(awk -v allow="$OPT_IN_SKIPS" '
+            BEGIN { n = split(allow, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+            $1 == "---" && $2 == "SKIP:" && !($3 in ok) { print }
+          ' integration.log)
+          if [ -n "$unexpected_skips" ]; then
             echo "::error::A store integration test skipped while the database was up."
-            grep -- "--- SKIP" integration.log
+            echo "$unexpected_skips"
             exit 1
           fi
 
