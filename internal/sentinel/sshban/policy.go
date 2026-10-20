@@ -57,6 +57,10 @@ type entry struct {
 type Guard struct {
 	pb.UnimplementedSentinelSSHBanServiceServer
 	mu                     sync.Mutex
+	callbackMu             sync.Mutex
+	callbacksClosed        bool
+	callbacksActive        int
+	callbacksDone          chan struct{}
 	cfg                    Config
 	policy                 *pb.SSHBanPolicy
 	prefixes               []netip.Prefix
@@ -134,10 +138,9 @@ func (g *Guard) emit(kind string, ip netip.Addr, e entry) {
 	}
 }
 
-// EventWindowFailures is emitted when a source's window ends with failures
-// that never reached the ban budget (#2419): the audit trail's summary of
-// probing that did not trip a ban. A ban has its own "ban" event when it is
-// reached, so a banned window does not also emit this.
+// EventWindowFailures summarizes failures below the ban budget when a window
+// ends, or its partial count on shutdown (#2419). A ban has its own "ban"
+// event when reached, so a banned window does not also emit this.
 const EventWindowFailures = "window_failures"
 
 // Sweep runs the expiry pass on a timer. Windows otherwise only end when the
@@ -147,6 +150,29 @@ func (g *Guard) Sweep() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.prune(g.cfg.Now())
+}
+
+// TrySweep skips a busy guard rather than holding up the audit recorder's
+// periodic loop. The next tick or the final shutdown flush will prune it.
+func (g *Guard) TrySweep() {
+	if !g.mu.TryLock() {
+		return
+	}
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+}
+
+// FlushFailureWindows reports partial failure counts when the plugin exits.
+// Bans were already reported when their threshold was reached.
+func (g *Guard) FlushFailureWindows() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+	for ip, e := range g.entries {
+		if e.failures > 0 && e.failures < uint64(g.cfg.MaxFailures) {
+			g.emit(EventWindowFailures, ip, e)
+		}
+	}
 }
 
 // prune amortizes expiry sweeps by waiting for the earliest remaining deadline.
