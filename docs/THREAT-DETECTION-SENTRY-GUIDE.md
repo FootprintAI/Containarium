@@ -223,13 +223,24 @@ for 60 s inside a watched cgroup; the program's cost is its own run time
 kernel submits records without a wakeup and the daemon drains the ring every
 50 ms in one batch (#2774), so an exec event reaches the rules at most
 ~50 ms later than it happened. On the 4-CPU lane runner (2026-10-20): 1,000
-execs/s, **0 events lost**, kernel 1.2 µs per exec (0.12 % of one core) plus
-0.25 % of one core for the consumer — 0.09 % of the host. The same run with
-the old per-event wakeup cost 0.69 % of the host; on an 8-vCPU KVM guest
-that shape had cost ~7 %, which is why the acceptance number is
-re-measured on the sprint's verification guest. A burst that outruns the
-consumer is counted in `exec-events-lost` (10,000 undrained execs → 1,272
-kept, 8,729 counted lost, no crash).
+execs/s, **0 events lost**, kernel ~1.5 µs per exec plus the consumer, about
+**0.1 % of the host** in total. The same run with the old per-event wakeup
+cost ~0.7 % of the host; on an 8-vCPU KVM guest that shape had cost ~7 %,
+which is why the acceptance number is re-measured on the sprint's
+verification guest.
+
+**Ring capacity and floods.** One 4 MiB ring serves every watched box on
+the host and holds ~5,090 events. The daemon drains it every 50 ms, and
+immediately again while a drain returns 256 or more events, so a sustained
+host-wide rate above ~5,000 execs/s is drained continuously. A host-wide
+burst of more than ~5,090 execs inside one 50 ms interval (~100,000 execs/s)
+overflows the ring: the excess events are **dropped and counted** in
+`exec-events-lost`, the execs themselves are never blocked. A tenant can
+cause this deliberately, flooding execs to hide one exec among the dropped
+ones, so **alert on `exec-events-lost` increasing**: a non-zero delta means
+the exec rules did not see every exec in that window. In the lane, 10,000
+undrained execs keep exactly the ring's capacity and count the rest lost,
+with no crash.
 
 ## Miner signatures and kill-process
 

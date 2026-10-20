@@ -56,6 +56,11 @@ const (
 	// decodes on this daemon.
 	execEventMin  = execOffArgvTruncated + 1
 	execEventSize = 816
+
+	// execRingBytes is EXEC_RING_BYTES in execwatch.bpf.c: 4 MiB, ~5,090
+	// records of 816 bytes plus the 8-byte ring header (#2774 review). The
+	// lane checks the compiled map against it.
+	execRingBytes = 4 << 20
 )
 
 // ExecEvent is the decoded form of one `struct exec_event` the execwatch
@@ -329,7 +334,7 @@ type ExecEventSink interface {
 // detection latency bound for an exec event: 50 ms against the
 // miner-signature rule's < 10 s budget. At 1,000 execs/s that turns ~1,000
 // consumer wakeups a second into ~20, each draining ~50 records (~40 KiB of
-// the 1 MiB ring).
+// the 4 MiB ring).
 //
 // The wait is a Go timer, not a blocking epoll_wait with a timeout, on
 // purpose: a goroutine that comes back from a long blocking syscall wakes
@@ -340,12 +345,12 @@ type ExecEventSink interface {
 // empty.
 const ExecDrainInterval = 50 * time.Millisecond
 
-// execBurstRecords: a drain that delivered at least this many records (a
-// fifth of the 1 MiB ring) is followed at once by another, without waiting
-// for the next tick, until the backlog is small again. A sustained rate
-// above ~5,000 execs/s is thus drained continuously, and only a burst of
-// more than ~1,280 execs inside one interval can overflow the ring (counted
-// in exec_events_lost, never blocking an exec).
+// execBurstRecords: a drain that delivered at least this many records (~5 %
+// of the 4 MiB ring) is followed at once by another, without waiting for
+// the next tick, until the backlog is small again. A sustained rate above
+// ~5,000 execs/s is thus drained continuously, and only a host-wide burst of
+// more than ~5,090 execs inside one interval (~100,000 execs/s) can overflow
+// the ring — counted in exec_events_lost, never blocking an exec.
 const execBurstRecords = 256
 
 // ExecDrainObserver is an optional extension of ExecEventSink: when the sink
@@ -368,8 +373,11 @@ type ringRecordReader interface {
 
 // ConsumeExecEvents reads samples from the exec ring until ctx ends or the
 // reader is closed, decoding each and handing it to the sink — the ringbuf
-// twin of ConsumeDenyEvents. The caller still Closes the reader when ctx
-// ends (the daemon and the lane test both do). A malformed sample is
+// twin of ConsumeDenyEvents. It returns within one drain interval of ctx
+// ending; Close the reader AFTER it returns, never concurrently: the loop
+// calls the reader's AvailableBytes, which in cilium/ebpf takes no lock and
+// reads the ring mapping Close unmaps (the daemon and the lane test both
+// close after the loop). A malformed sample is
 // reported via onError (nil to ignore) and skipped; a reader error other
 // than ErrClosed is reported and ends the loop (the caller owns restart
 // policy). Ring overflow is not visible here: the kernel counts it

@@ -177,6 +177,32 @@ func TestExecWatch_RealObjectLoadsAndAttaches(t *testing.T) {
 	}
 }
 
+// TestExecWatch_ShippedObjectSubmitsWithoutWakeup guards the kernel half of
+// #2774, which no timing in the lane would catch (a timer consumer passes
+// every overhead assertion even if the program woke it per record): the
+// object as built ships exec_wakeup_per_record = 0, so the program submits
+// with BPF_RB_NO_WAKEUP.
+func TestExecWatch_ShippedObjectSubmitsWithoutWakeup(t *testing.T) {
+	spec, err := ebpf.LoadCollectionSpec(ebpfLoadExecObjPath)
+	if err != nil {
+		t.Fatalf("LoadCollectionSpec: %v", err)
+	}
+	v, ok := spec.Variables["exec_wakeup_per_record"]
+	if !ok {
+		t.Fatal("object has no exec_wakeup_per_record variable")
+	}
+	var perRecord uint8
+	if err := v.Get(&perRecord); err != nil {
+		t.Fatalf("read exec_wakeup_per_record: %v", err)
+	}
+	if perRecord != 0 {
+		t.Fatalf("exec_wakeup_per_record defaults to %d in the shipped object, want 0 (BPF_RB_NO_WAKEUP)", perRecord)
+	}
+	if ms := spec.Maps[mapExecEvents]; ms == nil || ms.MaxEntries != execRingBytes {
+		t.Fatalf("exec_events map spec = %+v, want a %d-byte ring", ms, execRingBytes)
+	}
+}
+
 // TestExecWatch_WatchedCgroupYieldsExactlyOneEvent is the design's filtering
 // contract on a real kernel: a host exec emits nothing; `sh -c true` inside
 // a registered cgroup emits exactly one event carrying that cgroup id (the
@@ -280,7 +306,7 @@ func TestExecWatch_LongArgvIsCappedAndFlagged(t *testing.T) {
 }
 
 // TestExecWatch_BurstReportsLostNotPanic: 10k execs in a watched cgroup with
-// nobody draining the 1 MiB ring. The kernel must count the overflow in
+// nobody draining the ring (4 MiB, ~5,090 records). The kernel must count the overflow in
 // exec_stats[lost] (reported as exec_events_lost) and keep running; the
 // ring must still be readable afterwards.
 func TestExecWatch_BurstReportsLostNotPanic(t *testing.T) {
@@ -298,12 +324,22 @@ func TestExecWatch_BurstReportsLostNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats after burst: %v", err)
 	}
-	t.Logf("burst of %d execs in %s: emitted=%d lost=%d (ring %d bytes, %d-byte records)", n, elapsed.Round(time.Millisecond), emitted, lost, 1<<20, execEventSize)
+	ringBytes := w.EventsMap().MaxEntries()
+	// Each record takes the 8-byte ringbuf header plus the 816-byte sample
+	// (already 8-aligned), so an undrained ring holds exactly this many.
+	capacity := uint64(ringBytes) / (execEventSize + 8)
+	t.Logf("burst of %d execs in %s: emitted=%d lost=%d (ring %d bytes, %d-byte records, capacity %d)", n, elapsed.Round(time.Millisecond), emitted, lost, ringBytes, execEventSize, capacity)
+	if ringBytes != execRingBytes {
+		t.Errorf("exec_events ring is %d bytes, want %d (execRingBytes)", ringBytes, execRingBytes)
+	}
+	if emitted != capacity {
+		t.Errorf("emitted = %d into an undrained %d-byte ring, want its capacity %d", emitted, ringBytes, capacity)
+	}
 	if emitted+lost < n {
 		t.Fatalf("emitted+lost = %d, want >= %d (every watched exec is either emitted or counted lost)", emitted+lost, n)
 	}
 	if lost == 0 {
-		t.Fatalf("lost = 0 after %d undrained execs into a %d-byte ring — the overflow counter is not working", n, 1<<20)
+		t.Fatalf("lost = 0 after %d undrained execs into a %d-byte ring — the overflow counter is not working", n, ringBytes)
 	}
 	// The ring is still usable: a reader drains the records that did fit.
 	rd, err := w.NewExecReader()
@@ -570,7 +606,21 @@ func measurePhase(t *testing.T, name string, w *ExecWatch, perEvent bool, cg *te
 			}
 			ConsumeExecEvents(ctx, rd, sink, func(err error) { t.Logf("consumer: %v", err) })
 		}()
-		stop = func() { cancel(); _ = rd.Close(); <-done }
+		stop = func() {
+			cancel()
+			if perEvent {
+				// The old loop blocks in the reader; only Close (which the
+				// reader makes safe against its own locked ReadInto) ends it.
+				_ = rd.Close()
+				<-done
+				return
+			}
+			// ConsumeExecEvents returns within one tick of cancel. Close only
+			// after it has: its AvailableBytes is unlocked and Close unmaps
+			// the ring.
+			<-done
+			_ = rd.Close()
+		}
 		time.Sleep(200 * time.Millisecond) // consumer parked in its first wait
 	}
 	var st0 *ebpf.ProgramStats
@@ -592,11 +642,17 @@ func measurePhase(t *testing.T, name string, w *ExecWatch, perEvent bool, cg *te
 		}
 		ph.progRuntime = st1.Runtime - st0.Runtime
 		ph.progRuns = st1.RunCount - st0.RunCount
-		time.Sleep(2 * ExecDrainInterval) // last batch
-		stop()
+		// Wait for the last batch: every record the kernel emitted delivered,
+		// bounded generously so a stalled runner fails here, not flakily.
 		if ph.emitted, ph.lost, err = w.Stats(); err != nil {
 			t.Fatalf("Stats: %v", err)
 		}
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if ev, _, _ := sink.counts(); ev >= ph.emitted {
+				break
+			}
+		}
+		stop()
 		ph.events, ph.drains, ph.drained = sink.counts()
 		// Detach now, so the next window runs with exactly one program.
 		if err := w.Close(); err != nil {
@@ -702,7 +758,7 @@ func TestExecWatch_OverheadMeasurement(t *testing.T) {
 	// record wakes it.
 	if batched.drains > 0 {
 		if per := float64(batched.drained) / float64(batched.drains); per < 10 {
-			t.Errorf("batched: %.1f records per drain, want >= 10 at %.0f execs/s (is the kernel still waking per record?)", per, batched.rate())
+			t.Errorf("batched: %.1f records per drain, want >= 10 at %.0f execs/s (is the consumer still draining per tick?)", per, batched.rate())
 		}
 	} else {
 		t.Errorf("batched: no drains observed")

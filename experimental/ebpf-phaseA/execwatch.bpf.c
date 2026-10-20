@@ -47,7 +47,12 @@
 #define EXEC_FILENAME_LEN  256
 #define EXEC_ARGV_LEN      512
 #define EXEC_CGROUP_LEVELS 12
-#define EXEC_RING_BYTES    (1 << 20) /* 1 MiB */
+// 4 MiB (#2774 review): with the ring drained every 50 ms rather than per
+// record, the ring must absorb one interval of every watched box's execs.
+// 4 MiB holds ~5,090 records (816 bytes + the 8-byte ring header), i.e. a
+// host-wide ~100,000 execs/s for one interval before anything is lost. The
+// Go side pins this as execRingBytes.
+#define EXEC_RING_BYTES    (4 << 20) /* 4 MiB */
 
 // No per-record wakeup (#2774). A plain bpf_ringbuf_submit(ev, 0) wakes the
 // consumer whenever it has caught up, which for a consumer that keeps up is
@@ -104,7 +109,7 @@ struct {
 } watched_cgroups SEC(".maps");
 
 // exec_events: the ring buffer the daemon's consumer reads. One
-// struct exec_event per record. 1 MiB holds ~1,280 events; a burst beyond
+// struct exec_event per record. 4 MiB holds ~5,090 events; a burst beyond
 // what the consumer drains fails bpf_ringbuf_reserve and is COUNTED (below),
 // never blocks the exec. Records are submitted without a wakeup and drained
 // on a timer (see above).

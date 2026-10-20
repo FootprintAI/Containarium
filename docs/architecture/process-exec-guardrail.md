@@ -67,7 +67,7 @@ flowchart LR
    `watched_cgroups{cgroup_id → container_index}` populated from
    userspace; a miss at every level means a host or core-infra process and
    the program returns without emitting. A hit emits one record to a
-   `BPF_MAP_TYPE_RINGBUF` (`exec_events`, 1 MiB):
+   `BPF_MAP_TYPE_RINGBUF` (`exec_events`, 4 MiB since #2774; was 1 MiB):
    `{host_pid, ppid, uid, cgroup_id, comm[16], filename[256],
    argv[512], argv_truncated}`. `argv` is read from `mm->arg_start` with
    CO-RE (`vmlinux.h`, kernel BTF required); `filename` comes from the
@@ -403,7 +403,9 @@ bad-destination verbs; the cloud shim forwards them per org as it does
   ring wakeup per event (#2774). Since #2774 records are submitted with
   `BPF_RB_NO_WAKEUP` and drained every 50 ms; the lane generates load
   from a separate process, uses the program's `BPF_STATS_RUN_TIME`, and
-  asserts < 1 % of host CPU (0.09 % on the 4-CPU runner, 2026-10-20).
+  asserts < 1 % of host CPU (~0.1 % on the 4-CPU runner, 2026-10-20).
+  The ring grew to 4 MiB (~5,090 records) to absorb one 50 ms interval of
+  host-wide execs; overflow is counted in `exec_events_lost`.
 
 **CPUSampler**
 - Unit: `TestCPUSamplerDeltas` table: first sample dropped, steady 2.0

@@ -542,3 +542,30 @@ func TestResolveExecWatch_PathValueIsLoadedAsFile(t *testing.T) {
 		t.Errorf("error should name the sibling exec object path: %v", err)
 	}
 }
+
+// The C source is what `make build-bpf` compiles; pin the two #2774 kernel
+// constants there so a change shows up in the plain unit suite, not only in
+// the eBPF lane: the ring size the Go side assumes, and a shipped default of
+// no per-record wakeup (BPF_RB_NO_WAKEUP on every submit).
+func TestExecWatchSource_RingSizeAndNoWakeupDefault(t *testing.T) {
+	src, err := os.ReadFile("../../experimental/ebpf-phaseA/execwatch.bpf.c")
+	if err != nil {
+		t.Fatalf("read execwatch.bpf.c: %v", err)
+	}
+	for _, want := range []string{
+		"#define EXEC_RING_BYTES    (4 << 20)",
+		"volatile const __u8 exec_wakeup_per_record = 0;",
+		"__u64 wake = exec_wakeup_per_record ? 0 : BPF_RB_NO_WAKEUP;",
+		"bpf_ringbuf_submit(ev, wake);",
+	} {
+		if !bytes.Contains(src, []byte(want)) {
+			t.Errorf("execwatch.bpf.c no longer contains %q", want)
+		}
+	}
+	if execRingBytes != 4<<20 {
+		t.Errorf("execRingBytes = %d, want 4 MiB to match EXEC_RING_BYTES", execRingBytes)
+	}
+	if c := execRingBytes / (execEventSize + 8); c < 5000 {
+		t.Errorf("ring capacity %d records, want >= 5000", c)
+	}
+}
