@@ -1,0 +1,14 @@
+# actionlint configuration (run by .github/workflows/workflow-lint.yml).
+self-hosted-runner:
+  labels:
+    - incus
+    - kvm
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    # shellcheck codes that fire on the workflows as they stood when the lane
+    # was added (#2793). They are style/info/warning findings in existing
+    # scripts, not defects introduced by the lane; fixing them is a separate
+    # cleanup. Every other shellcheck code, and all non-shellcheck actionlint
+    # rules, still fail the lane.
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2024|2034|2046|2086|2129|2209):'

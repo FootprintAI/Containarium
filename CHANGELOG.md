@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Every GitHub Action is pinned to a full commit SHA, and a `workflow-lint` lane keeps it that way** (#2793). All 157 floating `uses:` references (tags and the `@master` / `@release/v1` branches) now carry the commit they resolved to, with the old ref as a trailing comment so Dependabot still bumps them. Branch pins (`trivy-action`, `gosec`, `gh-action-pypi-publish`) are frozen at the branch head on the pinning day. The new workflow runs a checksum-verified `actionlint` and `scripts/ci/check-action-pins.sh`, which has a self-test proving it rejects tag and branch pins. Open Dependabot action PRs need a rebase.
+
 ## [0.110.0] - 2026-10-20
 
 ### Upgrading
