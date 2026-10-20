@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -34,6 +35,27 @@ type BackupServer struct {
 	pb.UnimplementedBackupServiceServer
 	containers *ContainerServer
 	mgr        *backup.Manager
+	verifierMu sync.Mutex
+	verifiers  map[string]bool
+}
+
+// acquireVerifier reserves one managed verifier per tenant. The release must
+// run after container cleanup, including when provisioning or verification fails.
+func (s *BackupServer) acquireVerifier(tenant string) (release func(), ok bool) {
+	s.verifierMu.Lock()
+	defer s.verifierMu.Unlock()
+	if s.verifiers[tenant] {
+		return nil, false
+	}
+	if s.verifiers == nil {
+		s.verifiers = make(map[string]bool)
+	}
+	s.verifiers[tenant] = true
+	return func() {
+		s.verifierMu.Lock()
+		defer s.verifierMu.Unlock()
+		delete(s.verifiers, tenant)
+	}, true
 }
 
 // Manager exposes the backup core for wiring into other subsystems that
@@ -370,6 +392,11 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	var targetName string
 	conn := connFromProto(req.Connection)
 	if req.TargetUsername == rec.Username {
+		release, ok := s.acquireVerifier(rec.Username)
+		if !ok {
+			return nil, status.Error(codes.ResourceExhausted, "a managed backup verification is already running for this tenant")
+		}
+		defer release()
 		// A tenant's own username selects a daemon-owned throwaway target,
 		// never its live container. Authorization above still binds BOTH
 		// the backup and target to the caller's tenant.

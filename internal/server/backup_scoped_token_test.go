@@ -61,24 +61,33 @@ func verifierServer(t *testing.T) (*ContainerServer, *BackupServer) {
 
 type scopedVerifierOps struct{ t *testing.T }
 
+// checkTarget rejects verification I/O directed at a live tenant container.
 func (o *scopedVerifierOps) checkTarget(name string) {
 	o.t.Helper()
 	if !strings.HasPrefix(name, "backup-verify-") {
 		o.t.Fatalf("verification touched tenant container %s", name)
 	}
 }
+
+// Exec models successful cleanup commands on an isolated verifier.
 func (o *scopedVerifierOps) Exec(name string, _ []string) error {
 	o.checkTarget(name)
 	return nil
 }
+
+// ExecWithOutput models a successful restore with zero user relations.
 func (o *scopedVerifierOps) ExecWithOutput(name string, _ []string) (string, string, error) {
 	o.checkTarget(name)
 	return "0", "", nil
 }
+
+// WriteFile permits dump staging only inside an isolated verifier.
 func (o *scopedVerifierOps) WriteFile(name, _ string, _ []byte, _ string) error {
 	o.checkTarget(name)
 	return nil
 }
+
+// ReadFile refuses unexpected container reads; test dumps live on the host.
 func (o *scopedVerifierOps) ReadFile(string, string) ([]byte, error) { return nil, os.ErrNotExist }
 
 // verifierCtx is the documented per-set verifier token (#2401): a non-admin
@@ -170,6 +179,8 @@ func TestBackupScopedToken_AllowsOwnBackupsOnly(t *testing.T) {
 	}
 }
 
+// TestBackupScopedToken_FailedVerificationCleansTarget checks that a corrupt
+// backup reports failure without leaving a managed verifier behind.
 func TestBackupScopedToken_FailedVerificationCleansTarget(t *testing.T) {
 	cs, bs := verifierServer(t)
 	const id = "alice-app-20261003T010000Z"

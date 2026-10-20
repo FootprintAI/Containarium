@@ -408,6 +408,18 @@ jobs:
           ADMIN_TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
             --expiry 24h --secret "$JWT_SECRET" --raw)
           backup_dir=$(mktemp -d)
+          # pkill in the preceding step sends a signal; wait for shutdown
+          # before another daemon can bind the same ports.
+          for i in $(seq 1 30); do
+            if ! pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+            echo "::error::previous daemon did not exit within 30 seconds"
+            exit 1
+          fi
           sudo env CONTAINARIUM_BACKUP_DIR="$backup_dir" \
             CONTAINARIUM_BACKUP_VERIFY_IMAGE=lane-box \
             /tmp/containarium daemon --standalone --rest --jwt-secret "$JWT_SECRET" \

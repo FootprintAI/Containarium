@@ -10,6 +10,8 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 )
 
+// TestBackupVerifierLifecycle checks ownership, cleanup on provisioning failure,
+// and propagation of deletion errors to the caller.
 func TestBackupVerifierLifecycle(t *testing.T) {
 	for _, stage := range []string{"success", "create", "start", "network", "provision", "cleanup"} {
 		t.Run(stage, func(t *testing.T) {

@@ -666,10 +666,11 @@ Pick any container with a Postgres and spare capacity as the target; a
 disposable one you create for the purpose is the cleanest choice, since
 verification only needs the engine, never the target's own data.
 
-> **Scope note.** The platform does not yet *provision* the throwaway
-> target for you — you supply it. Platform-provisioned ephemeral
-> verification containers are tracked separately; see #1159 for the
-> rationale.
+> **Scope note.** Same-tenant targets are provisioned and deleted by the
+> daemon. Cross-tenant targets remain operator-supplied and admin-only.
+> Each tenant may run only one managed verification at a time; another
+> request receives `ResourceExhausted` until verification and cleanup finish.
+> See #1159 for the source-isolation rationale.
 
 Restore (`backup restore`) shares the same integrity gate: the SHA-256 is
 checked before the dump touches the database, and a mismatch aborts
