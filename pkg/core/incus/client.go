@@ -1210,7 +1210,6 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
-			Stack:                     inst.Config[StackKey],
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1293,7 +1292,6 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
-		Stack:                inst.Config[StackKey],
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 
