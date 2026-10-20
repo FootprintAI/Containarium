@@ -73,11 +73,39 @@ type findingEnvelope struct {
 }
 
 // findingResponseEnv mirrors FindingResponse's grpc-gateway JSON shape
-// (#2636), as far as the list renders it.
+// (#2636), as far as the list renders it. The kill facts (#2775) are the
+// host pid of the latest kill, how many processes were killed for the
+// finding, and the KillSkipReason enum name when the last attempted kill was
+// skipped (`KILL_SKIP_REASON_UNSPECIFIED`, or absent, when it was not). Like
+// the rest of the envelope they are hand-mirrored strings: protojson enums
+// arrive as their names, and this envelope is what `--json` prints.
 type findingResponseEnv struct {
-	Action        string `json:"action"`
-	State         string `json:"state"`
-	ProcessKilled bool   `json:"processKilled"`
+	Action         string `json:"action"`
+	State          string `json:"state"`
+	ProcessKilled  bool   `json:"processKilled"`
+	KilledPID      uint32 `json:"killedPid,omitempty"`
+	Kills          uint32 `json:"kills,omitempty"`
+	KillSkipReason string `json:"killSkipReason,omitempty"`
+}
+
+// killSkipReasonNone is the enum name grpc-gateway renders for no skip.
+const killSkipReasonNone = "KILL_SKIP_REASON_UNSPECIFIED"
+
+// describe is the one-line text rendering of a response, e.g.
+// `response ALERT NONE, process killed (pid 25872, kills 3)` or
+// `response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`.
+func (r findingResponseEnv) describe() string {
+	detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
+	if r.ProcessKilled {
+		detail += ", process killed"
+		if r.KilledPID != 0 {
+			detail += fmt.Sprintf(" (pid %d, kills %d)", r.KilledPID, r.Kills)
+		}
+	}
+	if r.KillSkipReason != "" && r.KillSkipReason != killSkipReasonNone {
+		detail += ", kill skipped: " + strings.TrimPrefix(r.KillSkipReason, "KILL_SKIP_REASON_")
+	}
+	return detail
 }
 
 type findingEvidenceEnv struct {
@@ -199,11 +227,7 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(w, "       %s\n", detail)
 		}
 		if r := f.Response; r != nil {
-			detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
-			if r.ProcessKilled {
-				detail += ", process killed"
-			}
-			fmt.Fprintf(w, "       %s\n", detail)
+			fmt.Fprintf(w, "       %s\n", r.describe())
 		}
 		for _, l := range f.Evidence.Listeners {
 			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.BindAddress, l.Port, l.PID, l.Binary)

@@ -16,6 +16,12 @@ import (
 // <box>` started without the user tracking an identifier.
 const DefaultRunName = "code"
 
+// RunLogDir is the box directory process_start keeps every run's files in
+// (<name>.log, .json, .exit, .session). It mirrors agentbox.DefaultLogDir,
+// which this package cannot import (agentbox is not built for Windows, and
+// the client is); a server test pins the two equal.
+const RunLogDir = "/tmp/agent-box"
+
 // ShellQuoteSingle single-quotes s for a POSIX shell, escaping any embedded
 // single quote by closing the quoted string, emitting a backslash-escaped
 // quote, then reopening. process_start runs its command under /bin/sh -c on

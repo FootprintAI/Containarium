@@ -163,9 +163,13 @@ func (w *ExecWatcher) Start(ctx context.Context, objValue string) error {
 }
 
 // execRingReader is the ring reader the consumer drains: *ringbuf.Reader in
-// the daemon, a fake in tests.
+// the daemon, a fake in tests. The consumer drains it in timed batches
+// (netbpf.ExecDrainInterval, #2774), hence ReadInto, SetDeadline and
+// AvailableBytes.
 type execRingReader interface {
-	Read() (ringbuf.Record, error)
+	ReadInto(rec *ringbuf.Record) error
+	SetDeadline(t time.Time)
+	AvailableBytes() int
 	Close() error
 }
 
@@ -177,15 +181,11 @@ type execRingReader interface {
 // and every open stream is ended rather than left waiting forever.
 func (w *ExecWatcher) consume(ctx context.Context, rd execRingReader) {
 	defer w.wg.Done()
-	done := make(chan struct{})
-	defer close(done)
-	go func() { // unblock Read on shutdown; release the reader on exit
-		select {
-		case <-ctx.Done():
-		case <-done:
-		}
-		_ = rd.Close()
-	}()
+	// Close only after the loop has returned. The loop never blocks longer
+	// than one drain tick (its reads have a deadline of now), so a cancelled
+	// ctx ends it promptly, and closing concurrently would race the reader's
+	// unlocked AvailableBytes (cilium/ebpf unmaps the ring in Close).
+	defer func() { _ = rd.Close() }()
 	var last error
 	netbpf.ConsumeExecEvents(ctx, rd, w, func(err error) {
 		log.Printf("[exec-telemetry] ring: %v", err)

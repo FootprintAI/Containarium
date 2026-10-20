@@ -132,15 +132,61 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A fresh run's session id is found by comparing the engine's session
+	// directory against a snapshot taken BEFORE the engine starts (see
+	// engine/session_discovery.go). A resumed run's id is the literal
+	// --session value and needs no discovery.
+	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
+
 	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 
-	startSessionDiscovery(ctx, sess, eng, started.LogPath, diag)
+	switch {
+	case discover:
+		startSessionDiscovery(ctx, sess, eng, name, diag)
+	case codeRunSession != "":
+		// Known from the flag: record it so `code runs` reports it at once.
+		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(name))
+		write := "printf '%s' " + coderun.ShellQuoteSingle(codeRunSession) + " > " + sidecar + ".tmp 2>/dev/null && mv -f " + sidecar + ".tmp " + sidecar
+		if _, err := sess.ShellExec(ctx, write); err != nil {
+			fmt.Fprintf(diag, "note: could not record this run's session id (non-fatal): %v\n", err)
+		}
+	}
 
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// sessionSidecarFor is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func sessionSidecarFor(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// snapshotSessionDirectory best-effort records the engine's existing session
+// entries before the run starts, so discovery can tell this run's own entry
+// from older conversations. It reports whether a snapshot was taken; without
+// one discovery is skipped (an absent session id, never a wrong one).
+func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) bool {
+	if eng == nil {
+		return false
+	}
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sessionSidecarFor(name))
+	if !ok {
+		return false
+	}
+	if _, err := sess.ShellExec(ctx, cmd); err != nil {
+		fmt.Fprintf(diag, "note: could not prepare looking for this run's session id (non-fatal): %v\n", err)
+		return false
+	}
+	return true
 }
 
 // startSessionDiscovery best-effort backgrounds the lookup of this run's own
@@ -152,7 +198,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 // never fatal to the run: it only means `code runs` won't show a session id
 // for it, which the AC already allows ("absent for engines that don't expose
 // one").
-func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, logPath string, diag io.Writer) {
+func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) {
 	if eng == nil {
 		return
 	}
@@ -167,8 +213,7 @@ func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engin
 	// find a match and session_id stays absent, same as any other engine
 	// that exposes none.
 	cwd := home
-	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sidecarPath)
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sessionSidecarFor(name))
 	if !ok {
 		return
 	}

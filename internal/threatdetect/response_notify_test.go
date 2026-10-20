@@ -139,3 +139,77 @@ func TestMemFindingStore_SetResponseNotifiesASnapshot(t *testing.T) {
 		t.Errorf("queued response changed with the store: %+v", *queued.Response)
 	}
 }
+
+// #2775: a kill delivered by SetResponse is a snapshot too; the pid and the
+// skip reason on the queued response do not follow later writes to the stored
+// finding.
+func TestMemFindingStore_SetResponseNotifiesAKillSnapshot(t *testing.T) {
+	ctx := context.Background()
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil)
+	s.SetNotifier(n)
+	f, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	<-n.queue
+	stored, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT,
+		State: pb.ResponseState_RESPONSE_STATE_NONE, ProcessKilled: true, KilledPID: 4242})
+	if err != nil {
+		t.Fatalf("SetResponse: %v", err)
+	}
+	if len(n.queue) != 1 {
+		t.Fatalf("kill under ALERT: deliveries = %d, want 1", len(n.queue))
+	}
+	stored.Response.KilledPID = 1
+	stored.Response.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_OTHER
+	queued := <-n.queue
+	if queued.Response.KilledPID != 4242 || queued.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED || !queued.Response.ProcessKilled {
+		t.Errorf("queued kill changed with the store: %+v", *queued.Response)
+	}
+}
+
+// #2766 x #2775: a release from a box that killed nothing keeps the finding's
+// whole kill on record (in the real SQL for the Postgres store, in memory for
+// the other).
+func runKeepKillTable(t *testing.T, s responseNotifyStore) {
+	t.Helper()
+	ctx := context.Background()
+	f, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alert := pb.ProcessAction_PROCESS_ACTION_ALERT
+	if _, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: alert, ProcessKilled: true, KilledPID: 22, Kills: 2,
+		KillSkipReason: pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
+		State: pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedBy: ReleasedByOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Response
+	if r.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !r.ProcessKilled || r.KilledPID != 22 || r.Kills != 2 ||
+		r.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED {
+		t.Fatalf("response after a no-kill release = %+v, want the finding's kill kept whole", r)
+	}
+}
+
+func TestMemFindingStore_ReleaseKeepsTheKill(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runKeepKillTable(t, s)
+}
+
+func TestFindingStore_ReleaseKeepsTheKill(t *testing.T) {
+	s, _, _ := newStores(t, threatdetectPool(t))
+	runKeepKillTable(t, s)
+}

@@ -67,7 +67,7 @@ flowchart LR
    `watched_cgroups{cgroup_id → container_index}` populated from
    userspace; a miss at every level means a host or core-infra process and
    the program returns without emitting. A hit emits one record to a
-   `BPF_MAP_TYPE_RINGBUF` (`exec_events`, 1 MiB):
+   `BPF_MAP_TYPE_RINGBUF` (`exec_events`, 4 MiB since #2774; was 1 MiB):
    `{host_pid, ppid, uid, cgroup_id, comm[16], filename[256],
    argv[512], argv_truncated}`. `argv` is read from `mm->arg_start` with
    CO-RE (`vmlinux.h`, kernel BTF required); `filename` comes from the
@@ -197,7 +197,11 @@ flowchart LR
    Every action writes an audit entry (`security.action`), emits
    `EVENT_TYPE_SECURITY_FINDING` with the updated finding, and updates the
    finding's `response` field. `ReleaseProcessAction` reverses it, marks
-   `released_by`, and resolves the finding with `remediated=true`. A TTL
+   `released_by`, and resolves the finding with `remediated=true` (a
+   miner-signature finding shared with another box that still has an
+   action open or a response queued stays open until the last box is
+   released, or until that last queued response ends without an action;
+   the response reports `finding_kept_open`, #2766). A TTL
    sweep (60 s) releases expired actions and upserts a MEDIUM
    `PROCESS_ACTION_EXPIRED` finding so an unattended throttle does not
    silently become permanent (the `auto_quarantine.go` backstop, same
@@ -398,6 +402,14 @@ bad-destination verbs; the cloud shim forwards them per org as it does
   and must be < 1 % of host CPU (measured on the 8-core lane runner
   2026-10-19: 2.95 % of one core = 0.37 % of the host at ~1,000 execs/s;
   the per-core bar was relaxed on #2711, consumer optimisation is #2747).
+  That lane under-reported: its load generator shared the consumer's
+  process. A KVM guest measured ~7 % of the host at ~800 execs/s, one
+  ring wakeup per event (#2774). Since #2774 records are submitted with
+  `BPF_RB_NO_WAKEUP` and drained every 50 ms; the lane generates load
+  from a separate process, uses the program's `BPF_STATS_RUN_TIME`, and
+  asserts < 1 % of host CPU (~0.1 % on the 4-CPU runner, 2026-10-20).
+  The ring grew to 4 MiB (~5,090 records) to absorb one 50 ms interval of
+  host-wide execs; overflow is counted in `exec_events_lost`.
 
 **CPUSampler**
 - Unit: `TestCPUSamplerDeltas` table: first sample dropped, steady 2.0

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -85,9 +86,22 @@ func TestHelmChartRefusesGatewayWithoutUpstreamKey(t *testing.T) {
 	})
 
 	t.Run("gateway disabled renders successfully without an upstream key", func(t *testing.T) {
-		args := append(append([]string{}, baseArgs...), "--set", "gateway.namespace=")
-		if out, err := exec.Command(helmPath, args...).CombinedOutput(); err != nil {
+		args := append(append([]string{}, baseArgs...), "--set", "gateway.enabled=false", "--set", "gateway.namespace=")
+		out, err := exec.Command(helmPath, args...).CombinedOutput()
+		if err != nil {
 			t.Fatalf("helm template failed with gateway routing disabled: %v\n%s", err, out)
+		}
+		for _, resource := range []string{
+			"kind: Namespace\nmetadata:\n  name: agent-gateway",
+			"kind: Deployment\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: Service\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ServiceAccount\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ClusterRole\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ClusterRoleBinding\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+		} {
+			if strings.Contains(string(out), resource) {
+				t.Errorf("gateway routing is disabled but rendered sshpiper resource:\n%s", resource)
+			}
 		}
 	})
 }
@@ -101,8 +115,18 @@ func TestHelmChartPinsSshpiperToAppVersion(t *testing.T) {
 	if err != nil {
 		t.Skip("helm not found on PATH, skipping chart-rendering test")
 	}
-	render := func(extra ...string) string {
-		args := append([]string{"template", "test-release", "../../../../charts/containarium-k8s",
+	const chartDir = "../../../../charts/containarium-k8s"
+	// Package the chart the way a release does (version + appVersion stamped)
+	// so the .Chart.AppVersion default is exercised; a bare chart directory
+	// has no release appVersion and only ever reaches the dev fallback.
+	pkgDir := t.TempDir()
+	if out, err := exec.Command(helmPath, "package", chartDir,
+		"--version", "9.8.7", "--app-version", "v9.8.7", "--destination", pkgDir).CombinedOutput(); err != nil {
+		t.Fatalf("helm package failed: %v\n%s", err, out)
+	}
+	packaged := filepath.Join(pkgDir, "containarium-k8s-9.8.7.tgz")
+	render := func(chart string, extra ...string) string {
+		args := append([]string{"template", "test-release", chart,
 			"--set", "gateway.upstreamKeySecret=sshpiper-upstream-key",
 			"--show-only", "templates/sshpiper-deployment.yaml"}, extra...)
 		out, err := exec.Command(helmPath, args...).CombinedOutput()
@@ -113,15 +137,17 @@ func TestHelmChartPinsSshpiperToAppVersion(t *testing.T) {
 	}
 	cases := []struct {
 		name  string
+		chart string
 		extra []string
 		want  string
 	}{
-		{"explicit tag", []string{"--set-string", "gateway.sshpiper.tag=v9.8.7"}, "image: ghcr.io/footprintai/containarium-sshpiper:v9.8.7\n"},
-		{"dev chart falls back to latest-stable", nil, "image: ghcr.io/footprintai/containarium-sshpiper:latest-stable\n"},
-		{"explicit image override", []string{"--set", "gateway.sshpiper.image=example.com/x/sshpiper:1"}, "image: example.com/x/sshpiper:1\n"},
+		{"explicit tag override", chartDir, []string{"--set-string", "gateway.sshpiper.tag=v9.8.7"}, "image: ghcr.io/footprintai/containarium-sshpiper:v9.8.7\n"},
+		{"dev chart falls back to latest-stable", chartDir, nil, "image: ghcr.io/footprintai/containarium-sshpiper:latest-stable\n"},
+		{"explicit image override", chartDir, []string{"--set", "gateway.sshpiper.image=example.com/x/sshpiper:1"}, "image: example.com/x/sshpiper:1\n"},
+		{"packaged chart defaults to appVersion", packaged, nil, "image: ghcr.io/footprintai/containarium-sshpiper:v9.8.7\n"},
 	}
 	for _, c := range cases {
-		if got := render(c.extra...); !strings.Contains(got, c.want) {
+		if got := render(c.chart, c.extra...); !strings.Contains(got, c.want) {
 			t.Errorf("%s: want %q in:\n%s", c.name, c.want, got)
 		}
 	}

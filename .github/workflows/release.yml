@@ -223,6 +223,11 @@ jobs:
         # scripts/install-agent-runtime.sh alongside agent-box-linux-amd64.
         run: make bundle-agent-runtime
 
+      - name: List agent-runtime bundle in SHA256SUMS.txt (#2702)
+        # Appends (>>) to the file build-release wrote, like build-caddy, so
+        # every asset on the Release page has a checksum.
+        run: (cd bin && shasum -a 256 agent-runtime-bundle.tar.gz >> SHA256SUMS.txt)
+
       - name: Build SDLC skills bundle
         # The pinned open-sdlc-skills role skills (#2065): fetched at the commit
         # in pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically, so a
@@ -230,6 +235,9 @@ jobs:
         # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
         # recipe and `containarium code install`).
         run: make bundle-sdlc-skills
+
+      - name: List SDLC skills bundle in SHA256SUMS.txt (#2702)
+        run: (cd bin && shasum -a 256 sdlc-skills.tar.gz >> SHA256SUMS.txt)
 
       - name: Install syft (SBOM generator)
         id: syft
@@ -440,6 +448,23 @@ jobs:
             printf '%s\n' '<!-- generated-release-notes:end -->'
           } > release_notes.combined.md
           mv release_notes.combined.md release_notes.md
+
+      - name: Verify SHA256SUMS.txt before publishing (#2702)
+        # Every checksum must match, and every non-sidecar file this job
+        # attaches must be listed. Not listed by design: *.sha256 sidecars,
+        # SHA256SUMS.txt itself. The chart is appended later by helm-chart.
+        run: |
+          cd bin
+          sha256sum -c SHA256SUMS.txt
+          missing=0
+          # The files: list of the next step; best-effort files that were not
+          # built (the -macos11 builds) are skipped.
+          while read -r f; do
+            [ -f "$f" ] || continue
+            grep -q "  $f\$" SHA256SUMS.txt || { echo "::error::$f is attached to the Release but not in SHA256SUMS.txt"; missing=1; }
+          done < <(awk '/name: Create GitHub Release/{a=1} a&&/files: \|/{b=1;next} b&&/draft:/{exit} b' ../.github/workflows/release.yml \
+                   | grep -o 'bin/[^ ]*' | sed 's|^bin/||' | grep -v '\.sha256$' | grep -v '^SHA256SUMS.txt$' | sort -u)
+          exit $missing
 
       - name: Create GitHub Release
         # Tag pushes only. A rehearsal builds every artifact above and stops
@@ -746,6 +771,34 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "dist-chart/containarium-k8s-${VERSION}.tgz" \
             "dist-chart/containarium-k8s-${VERSION}.tgz.sha256" --clobber
+
+      - name: List the chart in SHA256SUMS.txt (#2702)
+        # The sidecar above is kept; this also puts the chart in the one file
+        # that claims to cover the release. Fetch, append, re-upload; the
+        # build-and-release job is finished by now (needs:), so nothing else
+        # is writing that file.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir sums && cd sums
+          gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS.txt
+          before=$(wc -l < SHA256SUMS.txt)
+          # Idempotent on a re-run. grep exits 1 when nothing is left to
+          # keep; 2 is a real error and must stop the job.
+          grep -vF " containarium-k8s-${VERSION}.tgz" SHA256SUMS.txt > tmp || [ $? -eq 1 ]
+          mv tmp SHA256SUMS.txt
+          (cd ../dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz") >> SHA256SUMS.txt
+          after=$(wc -l < SHA256SUMS.txt)
+          # Never upload a truncated list over the real one.
+          if [ "$before" -lt 2 ] || [ "$after" -lt "$before" ]; then
+            echo "::error::SHA256SUMS.txt shrank ($before -> $after lines); not uploading" >&2
+            exit 1
+          fi
+          # --clobber briefly removes SHA256SUMS.txt from the published
+          # Release; if the upload fails it is missing (fails closed).
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
 
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).

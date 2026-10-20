@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/events"
@@ -205,6 +206,37 @@ func TestMemFindingStore_ConcurrentUpsertsConvergeToOneRow(t *testing.T) {
 	}
 }
 
+// #2748: the finding Upsert returns, and the one it hands the notifier, are
+// read after the store's lock is released. A later Upsert of the same key
+// must not change them.
+func TestMemFindingStore_UpsertReturnsSnapshot(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil) // no worker: queue length = deliveries
+	s.SetNotifier(n)
+
+	ctx := context.Background()
+	first, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert #1: %v", err)
+	}
+	if _, err := s.Upsert(ctx, sampleMemFinding()); err != nil {
+		t.Fatalf("Upsert #2: %v", err)
+	}
+	if first.Count != 1 {
+		t.Fatalf("finding returned by Upsert #1 has count %d after Upsert #2, want 1", first.Count)
+	}
+	if got := len(n.queue); got != 1 {
+		t.Fatalf("deliveries = %d, want 1", got)
+	}
+	if delivered := <-n.queue; delivered.Count != 1 {
+		t.Fatalf("queued delivery has count %d after Upsert #2, want 1", delivered.Count)
+	}
+}
+
 // A deduped repeat can raise an open finding's severity but never lower it:
 // the sshd posture reconciler records MEDIUM when it undid tampering and
 // HIGH if the box is later still permissive (#2424).
@@ -269,5 +301,49 @@ func TestMemFindingStore_PersistentFindingNotifiesOnceThenOnResolve(t *testing.T
 	<-n.queue
 	if resolved := <-n.queue; resolved.State != FindingStateResolved {
 		t.Errorf("second delivery state = %q, want resolved", resolved.State)
+	}
+}
+
+// SetResponse keeps process_killed once set (#2766), like the Postgres
+// store: a later response that carries process_killed=false (a release on
+// a box that killed nothing) cannot drop a recorded kill.
+func TestMemFindingStore_SetResponseKeepsProcessKilled(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	ctx := context.Background()
+	f, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	t0 := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	got, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE, AppliedAt: t0})
+	if err != nil {
+		t.Fatalf("SetResponse: %v", err)
+	}
+	if got.Response.ProcessKilled {
+		t.Fatalf("first response = %+v, want process_killed=false", got.Response)
+	}
+	if _, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE, AppliedAt: t0, ProcessKilled: true}); err != nil {
+		t.Fatalf("SetResponse with kill: %v", err)
+	}
+	got, err = s.SetResponse(ctx, f.ID, FindingResponse{
+		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
+		AppliedAt: t0, ReleasedAt: t0.Add(time.Minute), ReleasedBy: ReleasedByOperator,
+	})
+	if err != nil {
+		t.Fatalf("SetResponse release: %v", err)
+	}
+	if got.Response.State != pb.ResponseState_RESPONSE_STATE_RELEASED || !got.Response.ProcessKilled {
+		t.Fatalf("release response = %+v, want RELEASED with process_killed kept", got.Response)
+	}
+	back, err := s.Get(ctx, f.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !back.Response.ProcessKilled {
+		t.Fatalf("stored response = %+v, want process_killed kept", back.Response)
 	}
 }

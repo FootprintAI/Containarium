@@ -32,7 +32,8 @@
 // then runs:
 //   clang -O2 -g -target bpfel -I internal/netbpf -c execwatch.bpf.c -o execwatch.bpf.o
 //
-// Kernel floor: 5.8 (BPF_MAP_TYPE_RINGBUF), 5.6 (bpf_get_current_ancestor_cgroup_id),
+// Kernel floor: 5.8 (BPF_MAP_TYPE_RINGBUF, and with it the BPF_RB_NO_WAKEUP
+// submit flag), 5.6 (bpf_get_current_ancestor_cgroup_id),
 // and CONFIG_DEBUG_INFO_BTF for the CO-RE relocations (task_struct, mm_struct,
 // the tracepoint context). Ubuntu 22.04 and 24.04 LTS ship all three. The
 // network object keeps its own 5.4 floor: a host below 5.8 loses exec
@@ -46,7 +47,24 @@
 #define EXEC_FILENAME_LEN  256
 #define EXEC_ARGV_LEN      512
 #define EXEC_CGROUP_LEVELS 12
-#define EXEC_RING_BYTES    (1 << 20) /* 1 MiB */
+// 4 MiB (#2774 review): with the ring drained every 50 ms rather than per
+// record, the ring must absorb one interval of every watched box's execs.
+// 4 MiB holds ~5,090 records (816 bytes + the 8-byte ring header), i.e. a
+// host-wide ~100,000 execs/s for one interval before anything is lost. The
+// Go side pins this as execRingBytes.
+#define EXEC_RING_BYTES    (4 << 20) /* 4 MiB */
+
+// No per-record wakeup (#2774). A plain bpf_ringbuf_submit(ev, 0) wakes the
+// consumer whenever it has caught up, which for a consumer that keeps up is
+// EVERY record: irq_work plus, on a VM, an IPI per exec, and one epoll
+// wakeup + context switch per event in the daemon. Measured on an 8-vCPU
+// KVM guest that was ~7 % of host CPU at 800 execs/s, against a < 1 % bar.
+// Records are submitted with BPF_RB_NO_WAKEUP instead, and the daemon polls
+// the ring on a short timer (netbpf.ExecDrainInterval, tens of
+// milliseconds — far inside the < 10 s detection budget), draining
+// everything queued in one batch and re-draining at once while the backlog
+// is large. Nothing ever waits on the ring's wait queue, so a forced wakeup
+// would buy nothing.
 
 // Wire shape of one exec event. This is the kernel ↔ daemon contract; the Go
 // decoder (internal/netbpf/execwatch.go, ParseExecEvent) pins the size and
@@ -91,9 +109,10 @@ struct {
 } watched_cgroups SEC(".maps");
 
 // exec_events: the ring buffer the daemon's consumer reads. One
-// struct exec_event per record. 1 MiB holds ~1,280 events; a burst beyond
+// struct exec_event per record. 4 MiB holds ~5,090 events; a burst beyond
 // what the consumer drains fails bpf_ringbuf_reserve and is COUNTED (below),
-// never blocks the exec.
+// never blocks the exec. Records are submitted without a wakeup and drained
+// on a timer (see above).
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, EXEC_RING_BYTES);
@@ -110,6 +129,14 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 2);
 } exec_stats SEC(".maps");
+
+// exec_wakeup_per_record restores the pre-#2774 submit (default wakeup)
+// when set. A load-time constant (.rodata, frozen at load, so the verifier
+// sees a known value and drops the dead branch); the daemon never sets it.
+// The loading lane's overhead test loads a copy with it set to measure the
+// per-event-wakeup shape side by side with the batched one
+// (execwatch_load_test.go).
+volatile const __u8 exec_wakeup_per_record = 0;
 
 static __always_inline void exec_bump(__u32 idx) {
     __u64 *v = bpf_map_lookup_elem(&exec_stats, &idx);
@@ -190,7 +217,8 @@ int execwatch(struct trace_event_raw_sched_process_exec *ctx) {
             ev->argv_truncated = 1;
     }
 
-    bpf_ringbuf_submit(ev, 0);
+    __u64 wake = exec_wakeup_per_record ? 0 : BPF_RB_NO_WAKEUP;
+    bpf_ringbuf_submit(ev, wake);
     exec_bump(EXEC_STAT_EMITTED);
     return 0;
 }

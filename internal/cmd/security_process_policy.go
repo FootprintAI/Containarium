@@ -356,6 +356,9 @@ func newProcessPolicyReleaseCmd() *cobra.Command {
 		Short: "Undo the open throttle/freeze on a container and resolve its finding (admin)",
 		Long: `Restores the container's recorded CPU limit (throttle) or unfreezes it
 (freeze), marks the action released by the operator and resolves the finding.
+A miner-signature finding shared with another box of the tenant that still
+has an action open or a response queued is kept open instead, and resolved
+when the last box is released; the output says which.
 Fails with 404 when no action is open on the container.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -376,10 +379,20 @@ Fails with 404 when no action is open on the container.`,
 			case pb.ProcessAction_PROCESS_ACTION_FREEZE:
 				what = "container unfrozen"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Released %s on %s: %s. Finding #%d resolved.\n", actionLabel(act), args[0], what, f.GetId())
+			fmt.Fprintf(cmd.OutOrStdout(), "Released %s on %s: %s. %s\n", actionLabel(act), args[0], what, releasedFindingNote(&out))
 			return nil
 		},
 	}
+}
+
+// releasedFindingNote says what the release did to the finding: resolved,
+// or kept open because another box of the tenant still holds the shared
+// finding (an action open or a response queued; #2766).
+func releasedFindingNote(out *pb.ReleaseProcessActionResponse) string {
+	if out.GetFindingKeptOpen() {
+		return fmt.Sprintf("Finding #%d kept open: another box still has a response.", out.GetFinding().GetId())
+	}
+	return fmt.Sprintf("Finding #%d resolved.", out.GetFinding().GetId())
 }
 
 func init() {
