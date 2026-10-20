@@ -703,6 +703,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	policyStoreHealth := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
 
+	// One bounded Postgres check gates every database-backed store below
+	// (#2824): if it fails, they are skipped rather than each retried.
+	pgGate := newPostgresStartupGate(startupPostgresTimeoutFromEnv(), pingPostgres, policyStoreHealth)
+
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
 	// manager for minting the skill's scoped in-box token, and the network
@@ -1095,7 +1099,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// app-store path: shares Postgres but holds its own
 			// pgxpool. Failure here only disables the secrets
 			// API; the rest of the daemon keeps running.
-			if secretsPool, secretsErr := connectToPostgres(postgresConnString, 5, 3*time.Second); secretsErr != nil {
+			if secretsPool, secretsErr := pgGate.connect(postgresConnString, 5, 3*time.Second); secretsErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for secrets store: %v", secretsErr)
 			} else {
 				key, created, kerr := corecryptosecrets.LoadOrCreateMasterKey("/etc/containarium/secrets.key")
@@ -1181,7 +1185,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// directly above: shares Postgres but holds its own pgxpool.
 			// Failure here only disables the TrackerService API; the rest
 			// of the daemon keeps running.
-			if trackerPool, trackerErr := connectToPostgres(postgresConnString, 5, 3*time.Second); trackerErr != nil {
+			if trackerPool, trackerErr := pgGate.connect(postgresConnString, 5, 3*time.Second); trackerErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for tracker store: %v", trackerErr)
 			} else if trkStore, terr := trackerstore.NewStore(context.Background(), trackerPool); terr != nil {
 				log.Printf("Warning: Failed to init tracker store: %v. Tracker connections disabled.", terr)
@@ -1199,7 +1203,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			}
 
 			// Connect to app store
-			appStore, err := app.NewStore(context.Background(), postgresConnString)
+			appStore, err := gatedStore(pgGate, postgresConnString, app.NewStore)
 			if err != nil {
 				log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
 			} else {
@@ -1287,7 +1291,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 				// Update TrafficCollector with store for persistence
 				if trafficCollector != nil && postgresConnString != "" {
-					trafficStore, err := traffic.NewStore(context.Background(), postgresConnString)
+					trafficStore, err := gatedStore(pgGate, postgresConnString, traffic.NewStore)
 					if err != nil {
 						log.Printf("Warning: Failed to create traffic store: %v. Traffic persistence disabled.", err)
 					} else {
@@ -1386,8 +1390,8 @@ skipAppHosting:
 	var collabStore *collaborator.Store
 	if postgresConnString != "" {
 		for attempt := 1; attempt <= 5; attempt++ {
-			collabStore, err = collaborator.NewStore(context.Background(), postgresConnString)
-			if err == nil {
+			collabStore, err = gatedStore(pgGate, postgresConnString, collaborator.NewStore)
+			if err == nil || pgGate.check(postgresConnString) != nil { // #2824: no per-store retries after a failed startup check
 				break
 			}
 			if attempt < 5 {
@@ -1417,7 +1421,7 @@ skipAppHosting:
 	// When it's not, we still need them for the management route to work after VM recreation.
 	caddyAdminURL := config.CaddyAdminURL
 	if routeStore == nil && postgresConnString != "" && caddyAdminURL != "" && config.BaseDomain != "" {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for route store: %v", poolErr)
 		} else {
@@ -1581,7 +1585,7 @@ skipAppHosting:
 	var passthroughStore network.PassthroughStore
 	var passthroughSyncJob *network.PassthroughSyncJob
 	if postgresConnString != "" && networkServer != nil {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for passthrough store: %v", poolErr)
 		} else {
@@ -1632,7 +1636,7 @@ skipAppHosting:
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
 	if postgresConnString != "" {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
@@ -1857,7 +1861,7 @@ skipAppHosting:
 	var securityStore *security.Store
 	var securityServerInstance *SecurityServer
 	if postgresConnString != "" && !config.DisableSecurityScanner {
-		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		securityPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
 		} else {
@@ -1912,7 +1916,7 @@ skipAppHosting:
 
 	var pentestStore *pentest.Store
 	if postgresConnString != "" && !config.DisablePentestScanner {
-		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pentestPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
 		} else {
@@ -1949,7 +1953,7 @@ skipAppHosting:
 	var zapManager *zapscanner.Manager
 	var zapStore *zapscanner.Store
 	if postgresConnString != "" && !config.DisableZapScanner {
-		zapPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		zapPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
 		} else {
@@ -1977,7 +1981,7 @@ skipAppHosting:
 	var revocationStoreLocal *auth.PgRevocationStore
 	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
 	if postgresConnString != "" {
-		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		auditPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for audit store: %v", poolErr)
 		} else {
@@ -2092,7 +2096,7 @@ skipAppHosting:
 	if bpfObj := netCfg.PolicyBPFObject; bpfObj != "" && networkIncusClient != nil {
 		var tenantRegistry TenantRegistry
 		if postgresConnString != "" {
-			if regPool, perr := connectToPostgres(postgresConnString, 5, 3*time.Second); perr != nil {
+			if regPool, perr := pgGate.connect(postgresConnString, 5, 3*time.Second); perr != nil {
 				log.Printf("Warning: tenant registry Postgres connect failed (%v); using in-memory IDs", perr)
 				tenantRegistry = NewMemTenantRegistry()
 			} else if pgReg, rerr := NewPostgresTenantRegistry(context.Background(), regPool); rerr != nil {
@@ -2309,7 +2313,7 @@ skipAppHosting:
 		var findingsPool *pgxpool.Pool
 		degraded := true
 		if postgresConnString != "" {
-			if fsPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second); poolErr != nil {
+			if fsPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second); poolErr != nil {
 				log.Printf("Warning: threat-detection FindingStore Postgres connect failed (%v); sentry running DEGRADED (in-memory, no persistence)", poolErr)
 			} else if fs, fsErr := threatdetect.NewFindingStore(context.Background(), fsPool, events.NewEmitter(events.GetBus()), auditStore); fsErr != nil {
 				log.Printf("Warning: threat-detection FindingStore init failed (%v); sentry running DEGRADED (in-memory, no persistence)", fsErr)
@@ -2546,7 +2550,7 @@ skipAppHosting:
 	var alertStore *alert.Store
 	var alertManager *alert.Manager
 	if postgresConnString != "" && config.VictoriaMetricsURL != "" {
-		alertPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		alertPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for alert store: %v", poolErr)
 		} else {
@@ -2591,7 +2595,7 @@ skipAppHosting:
 	// the last-seen state lives there so a restart does not re-fire.
 	var credentialWatcher *alert.CredentialWatcher
 	if postgresConnString != "" && config.DaemonConfigStore != nil {
-		if cwPool, poolErr := connectToPostgres(postgresConnString, 2, 3*time.Second); poolErr != nil {
+		if cwPool, poolErr := pgGate.connect(postgresConnString, 2, 3*time.Second); poolErr != nil {
 			log.Printf("Warning: credential-expiry watch Postgres connect failed (%v); watch disabled", poolErr)
 		} else if stateStore, stErr := alert.NewPGCredentialStateStore(context.Background(), cwPool); stErr != nil {
 			log.Printf("Warning: credential-expiry watch state store init failed (%v); watch disabled", stErr)
@@ -4222,7 +4226,10 @@ func connectToPostgres(connString string, maxRetries int, retryInterval time.Dur
 			}
 			continue
 		}
-		if err := pool.Ping(context.Background()); err != nil {
+		pingCtx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout) // #2824: pgx's dial has no deadline of its own
+		err = pool.Ping(pingCtx)
+		cancel()
+		if err != nil {
 			pool.Close()
 			lastErr = err
 			if i < maxRetries-1 {
