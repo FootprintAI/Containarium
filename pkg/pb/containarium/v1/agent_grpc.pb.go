@@ -623,10 +623,11 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	CrewService_ListCrews_FullMethodName  = "/containarium.v1.CrewService/ListCrews"
-	CrewService_GetCrew_FullMethodName    = "/containarium.v1.CrewService/GetCrew"
-	CrewService_RunCrew_FullMethodName    = "/containarium.v1.CrewService/RunCrew"
-	CrewService_GetCrewRun_FullMethodName = "/containarium.v1.CrewService/GetCrewRun"
+	CrewService_ListCrews_FullMethodName         = "/containarium.v1.CrewService/ListCrews"
+	CrewService_GetCrew_FullMethodName           = "/containarium.v1.CrewService/GetCrew"
+	CrewService_RunCrew_FullMethodName           = "/containarium.v1.CrewService/RunCrew"
+	CrewService_GetCrewRun_FullMethodName        = "/containarium.v1.CrewService/GetCrewRun"
+	CrewService_ValidateTaskGraph_FullMethodName = "/containarium.v1.CrewService/ValidateTaskGraph"
 )
 
 // CrewServiceClient is the client API for CrewService service.
@@ -646,6 +647,10 @@ type CrewServiceClient interface {
 	RunCrew(ctx context.Context, in *RunCrewRequest, opts ...grpc.CallOption) (*RunCrewResponse, error)
 	// GetCrewRun returns the status and artifact of a crew run.
 	GetCrewRun(ctx context.Context, in *GetCrewRunRequest, opts ...grpc.CallOption) (*GetCrewRunResponse, error)
+	// ValidateTaskGraph checks a task graph against this daemon's crew and skill
+	// catalogs: acyclic, every assignee known, node count and depth within the
+	// cap. Returns InvalidArgument naming the first problem found.
+	ValidateTaskGraph(ctx context.Context, in *ValidateTaskGraphRequest, opts ...grpc.CallOption) (*ValidateTaskGraphResponse, error)
 }
 
 type crewServiceClient struct {
@@ -696,6 +701,16 @@ func (c *crewServiceClient) GetCrewRun(ctx context.Context, in *GetCrewRunReques
 	return out, nil
 }
 
+func (c *crewServiceClient) ValidateTaskGraph(ctx context.Context, in *ValidateTaskGraphRequest, opts ...grpc.CallOption) (*ValidateTaskGraphResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateTaskGraphResponse)
+	err := c.cc.Invoke(ctx, CrewService_ValidateTaskGraph_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CrewServiceServer is the server API for CrewService service.
 // All implementations must embed UnimplementedCrewServiceServer
 // for forward compatibility.
@@ -713,6 +728,10 @@ type CrewServiceServer interface {
 	RunCrew(context.Context, *RunCrewRequest) (*RunCrewResponse, error)
 	// GetCrewRun returns the status and artifact of a crew run.
 	GetCrewRun(context.Context, *GetCrewRunRequest) (*GetCrewRunResponse, error)
+	// ValidateTaskGraph checks a task graph against this daemon's crew and skill
+	// catalogs: acyclic, every assignee known, node count and depth within the
+	// cap. Returns InvalidArgument naming the first problem found.
+	ValidateTaskGraph(context.Context, *ValidateTaskGraphRequest) (*ValidateTaskGraphResponse, error)
 	mustEmbedUnimplementedCrewServiceServer()
 }
 
@@ -734,6 +753,9 @@ func (UnimplementedCrewServiceServer) RunCrew(context.Context, *RunCrewRequest) 
 }
 func (UnimplementedCrewServiceServer) GetCrewRun(context.Context, *GetCrewRunRequest) (*GetCrewRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCrewRun not implemented")
+}
+func (UnimplementedCrewServiceServer) ValidateTaskGraph(context.Context, *ValidateTaskGraphRequest) (*ValidateTaskGraphResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateTaskGraph not implemented")
 }
 func (UnimplementedCrewServiceServer) mustEmbedUnimplementedCrewServiceServer() {}
 func (UnimplementedCrewServiceServer) testEmbeddedByValue()                     {}
@@ -828,6 +850,24 @@ func _CrewService_GetCrewRun_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CrewService_ValidateTaskGraph_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateTaskGraphRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).ValidateTaskGraph(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_ValidateTaskGraph_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).ValidateTaskGraph(ctx, req.(*ValidateTaskGraphRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CrewService_ServiceDesc is the grpc.ServiceDesc for CrewService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -850,6 +890,10 @@ var CrewService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCrewRun",
 			Handler:    _CrewService_GetCrewRun_Handler,
+		},
+		{
+			MethodName: "ValidateTaskGraph",
+			Handler:    _CrewService_ValidateTaskGraph_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -7696,6 +7696,40 @@
         ]
       }
     },
+    "/v1/task-graphs:validate": {
+      "post": {
+        "summary": "Validate a task graph",
+        "description": "Checks a task graph is acyclic, that every node's crew or skill exists in this daemon's catalogs, and that its node count and depth are within the cap. Returns a dependency-respecting node order and the graph's depth.",
+        "operationId": "CrewService_ValidateTaskGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ValidateTaskGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ValidateTaskGraphRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/tenants/{tenant}/storage": {
       "delete": {
         "summary": "Destroy a departing tenant's encrypted storage",
@@ -19929,6 +19963,87 @@
       },
       "description": "TailRunLogResponse is one window of a run's journal."
     },
+    "TaskEdge": {
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "description": "The node that waits."
+        },
+        "dependsOn": {
+          "type": "string",
+          "description": "The node it waits for."
+        }
+      },
+      "description": "TaskEdge says node_id cannot start until depends_on has finished."
+    },
+    "TaskGraph": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string",
+          "description": "The high-level goal the graph decomposes."
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TaskNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TaskEdge"
+          }
+        },
+        "limits": {
+          "$ref": "#/definitions/TaskGraphLimits"
+        }
+      },
+      "description": "TaskGraph is a goal decomposed into subtasks with dependencies."
+    },
+    "TaskGraphLimits": {
+      "type": "object",
+      "properties": {
+        "maxNodes": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Maximum number of nodes."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Maximum depth: the number of nodes on the longest depends-on chain (a\ngraph with no edges has depth 1)."
+        }
+      },
+      "description": "TaskGraphLimits bounds a graph's size. A zero field means the platform\ndefault. A graph may tighten a limit below the platform cap but never raise\nit above — a value over the cap is rejected, not clamped."
+    },
+    "TaskNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique within the graph; edges reference nodes by this id."
+        },
+        "goal": {
+          "type": "string",
+          "description": "What this subtask must achieve, in the planner's words."
+        },
+        "crewId": {
+          "type": "string"
+        },
+        "skillId": {
+          "type": "string"
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        }
+      },
+      "description": "TaskNode is one subtask of a TaskGraph."
+    },
     "TerminateUserSessionsBody": {
       "type": "object",
       "description": "TerminateUserSessionsRequest names the user whose sessions to end."
@@ -20874,6 +20989,31 @@
         }
       },
       "description": "ValidateGPUResponse reports whether the GPU is usable from inside an LXC on\nthe backend: the daemon launches a throwaway nvidia.runtime LXC, runs\nnvidia-smi inside, tears it down, and returns the parsed model + driver."
+    },
+    "ValidateTaskGraphRequest": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "$ref": "#/definitions/TaskGraph"
+        }
+      }
+    },
+    "ValidateTaskGraphResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Node ids in a dependency-respecting order: every node appears after\neverything it depends on."
+        },
+        "depth": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The graph's depth (see TaskGraphLimits.max_depth)."
+        }
+      }
     },
     "VerificationCheck": {
       "type": "object",

@@ -2029,6 +2029,31 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return out.Run, nil
 }
 
+// ValidateTaskGraph checks a task graph against the daemon's catalogs via
+// HTTP (#2803).
+func (c *HTTPClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body, err := protojson.Marshal(&pb.ValidateTaskGraphRequest{Graph: g})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:validate", body)
+	if err != nil {
+		return nil, fmt.Errorf("validate task graph: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "validate task graph")
+	}
+	out := &pb.ValidateTaskGraphResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // TailRunLog reads one window of a run's journal via HTTP (#2096).
 func (c *HTTPClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

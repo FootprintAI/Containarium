@@ -907,6 +907,69 @@ message GetCrewRunResponse {
   CrewRun run = 1;
 }
 
+// =============================================================================
+// Task graphs — #2369 slice 1 (#2803). A TaskGraph is a high-level goal split
+// into independently-executable subtasks, each assigned to a crew or a skill,
+// wired by depends-on edges. A planner produces one; the crew orchestrator
+// fans its independent nodes out. Validation (pkg/core/taskgraph) rejects a
+// cycle, an assignee the catalogs do not know, and a graph over the cap.
+// =============================================================================
+
+// TaskNode is one subtask of a TaskGraph.
+message TaskNode {
+  // Unique within the graph; edges reference nodes by this id.
+  string id = 1;
+  // What this subtask must achieve, in the planner's words.
+  string goal = 2;
+  // Who runs the subtask: exactly one of a crew or a single skill, by catalog id.
+  oneof assignee {
+    string crew_id = 3;
+    string skill_id = 4;
+  }
+  // JSON input handed to the assignee — the same shape as
+  // RunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}.
+  string input_json = 5;
+}
+
+// TaskEdge says node_id cannot start until depends_on has finished.
+message TaskEdge {
+  // The node that waits.
+  string node_id = 1;
+  // The node it waits for.
+  string depends_on = 2;
+}
+
+// TaskGraphLimits bounds a graph's size. A zero field means the platform
+// default. A graph may tighten a limit below the platform cap but never raise
+// it above — a value over the cap is rejected, not clamped.
+message TaskGraphLimits {
+  // Maximum number of nodes.
+  uint32 max_nodes = 1;
+  // Maximum depth: the number of nodes on the longest depends-on chain (a
+  // graph with no edges has depth 1).
+  uint32 max_depth = 2;
+}
+
+// TaskGraph is a goal decomposed into subtasks with dependencies.
+message TaskGraph {
+  // The high-level goal the graph decomposes.
+  string goal = 1;
+  repeated TaskNode nodes = 2;
+  repeated TaskEdge edges = 3;
+  TaskGraphLimits limits = 4;
+}
+
+message ValidateTaskGraphRequest {
+  TaskGraph graph = 1;
+}
+message ValidateTaskGraphResponse {
+  // Node ids in a dependency-respecting order: every node appears after
+  // everything it depends on.
+  repeated string order = 1;
+  // The graph's depth (see TaskGraphLimits.max_depth).
+  uint32 depth = 2;
+}
+
 // CrewService runs collaborating sets of skills bound to a task purpose.
 service CrewService {
   // ListCrews returns all available crews.
@@ -957,6 +1020,21 @@ service CrewService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get crew run";
       description: "Returns the state, trace id, and (when complete) the artifact of a crew execution.";
+      tags: "Agents";
+    };
+  }
+
+  // ValidateTaskGraph checks a task graph against this daemon's crew and skill
+  // catalogs: acyclic, every assignee known, node count and depth within the
+  // cap. Returns InvalidArgument naming the first problem found.
+  rpc ValidateTaskGraph(ValidateTaskGraphRequest) returns (ValidateTaskGraphResponse) {
+    option (google.api.http) = {
+      post: "/v1/task-graphs:validate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Validate a task graph";
+      description: "Checks a task graph is acyclic, that every node's crew or skill exists in this daemon's catalogs, and that its node count and depth are within the cap. Returns a dependency-respecting node order and the graph's depth.";
       tags: "Agents";
     };
   }
