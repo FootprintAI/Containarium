@@ -31,6 +31,12 @@ func NewPGCredentialStateStore(ctx context.Context, pool *pgxpool.Pool) (*PGCred
 		)`); err != nil {
 		return nil, fmt.Errorf("initialize code_credential_watch_state: %w", err)
 	}
+
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS code_credential_watch_episodes (
+ skill_id TEXT NOT NULL, episode_id TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY (skill_id, episode_id))`); err != nil {
+		return nil, fmt.Errorf("initialize credential episodes: %w", err)
+	}
 	return s, nil
 }
 
@@ -63,4 +69,14 @@ func (s *PGCredentialStateStore) Record(ctx context.Context, skillID string, src
 		return fmt.Errorf("record credential state for %s: %w", skillID, err)
 	}
 	return nil
+}
+
+// RecordEpisode durably claims a transition before notification. Unique IDs make
+// retries/restarts safe, including a crash before guest acknowledgement.
+func (s *PGCredentialStateStore) RecordEpisode(ctx context.Context, skillID, episodeID string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `INSERT INTO code_credential_watch_episodes(skill_id,episode_id,observed_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, skillID, episodeID, at)
+	if err != nil {
+		return false, fmt.Errorf("record credential episode: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
