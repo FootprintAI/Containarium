@@ -31,22 +31,28 @@ var (
 var sentinelSSHAuthzPluginCmd = &cobra.Command{
 	Use:   "ssh-authz-plugin",
 	Short: "sshpiperd plugin: check live SSH authorization before ssh-session-plugin",
-	Long: `Run as the first sshpiperd chained plugin, before ssh-session-plugin and
-yaml. Every offered raw key is checked against its routed backend through the
-sentinel manager's private Unix socket. The manager signs the daemon request.
-Certificates and unknown logins defer. ALLOW, DENY and approval-pending results
-are logged and passed to ssh-session-plugin. Positive cache TTL comes from the
-daemon, and outage grace never renews the last successful authorization.
+	Long: `Run as the first sshpiperd chained plugin. Every offered raw key is
+checked against its routed backend through the sentinel manager's private
+Unix socket; the manager signs the daemon request. Only publickey is offered
+to the client; password, keyboard-interactive and none are refused here.
+Positive cache TTL comes from the daemon, and outage grace never renews the
+last successful authorization.
 
-By default every result defers (audit-only). With --ssh-authz-enforce a DENY,
-including UPSTREAM_UNAVAILABLE once the outage grace has passed, refuses that
-key: yaml's static authorized_keys is never consulted for it, and a "denied"
-record with enforced=true is appended to --records-file. Every other offer is
-routed from --sshpiper-config as the yaml plugin would route it, and never
-deferred, so a later offer on the same connection is still checked here. The
-plugin then writes the session's open and close records itself, and
-ssh-session-plugin, which never sees the credential, writes none. The plugin
-reopens --records-file on SIGHUP, like ssh-session-plugin.`,
+Audit-only (the default): every offer defers to the next plugin with the
+decision as metadata. Certificates and unknown logins are not checked.
+ssh-session-plugin writes the session records, and yaml's static
+authorized_keys decides who gets in.
+
+Enforce (--ssh-authz-enforce): nothing defers. A DENY, including
+UPSTREAM_UNAVAILABLE once the outage grace has passed, and a login no synced
+backend lists, refuse the key: yaml is never consulted for it, and a "denied"
+record with enforced=true is appended to --records-file. Every other offer
+(an ALLOW, a certificate) is routed by this plugin from --sshpiper-config
+exactly as yaml would route it, so a later offer on the same connection is
+still checked here. This plugin writes the session's open and close records
+itself, with enforced=true and the target it routed to; ssh-session-plugin
+and yaml never see these connections. The plugin reopens --records-file on
+SIGHUP, like ssh-session-plugin.`,
 	RunE: runSentinelSSHAuthzPlugin,
 }
 
