@@ -38,6 +38,7 @@ import (
 // plugin can tell them apart.
 type integrationChain struct {
 	address, records, dir string
+	upstream              string
 	allowKey, denyKey     ssh.Signer
 	outage                *atomic.Bool
 	calls                 *atomic.Int32
@@ -74,7 +75,21 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowKey := testKey(t)
+	// allowKey is on disk too, passphrase-protected, so OpenSSH in batch mode
+	// can offer its public half but never sign with it.
+	const allowPassphrase = "integration-only"
+	allowKeyFile := filepath.Join(dir, "allow_key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", allowPassphrase, "-f", allowKeyFile).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v %s", err, out)
+	}
+	raw, err = os.ReadFile(allowKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowKey, err := ssh.ParsePrivateKeyWithPassphrase(raw, []byte(allowPassphrase))
+	if err != nil {
+		t.Fatal(err)
+	}
 	allowFP := ssh.FingerprintSHA256(allowKey.PublicKey())
 	keysFile := filepath.Join(dir, "authorized_keys")
 	if err := os.WriteFile(keysFile, append(ssh.MarshalAuthorizedKey(allowKey.PublicKey()), ssh.MarshalAuthorizedKey(denyKey.PublicKey())...), 0600); err != nil {
@@ -149,7 +164,7 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 		t.Fatal(err)
 	}
 	args := []string{"-l", "127.0.0.1", "-p", strconv.Itoa(port), "-i", hostKey, "--drop-hostkeys-message",
-		ctn, "sentinel", "ssh-authz-plugin", "--ssh-authz-socket", socket, "--ssh-authz-grace", "2s", "--records-file", records}
+		ctn, "sentinel", "ssh-authz-plugin", "--ssh-authz-socket", socket, "--ssh-authz-grace", "2s", "--records-file", records, "--sshpiper-config", configFile}
 	args = append(args, authzArgs...)
 	args = append(args, "--",
 		ctn, "sentinel", "ssh-session-plugin", "--records-file", records, "--sshpiper-config", configFile, "--", yaml, "--config", configFile)
@@ -180,7 +195,7 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return &integrationChain{address: address, records: records, dir: dir, allowKey: allowKey, denyKey: denyKey, outage: &outage, calls: &calls}
+	return &integrationChain{address: address, records: records, dir: dir, upstream: upstream, allowKey: allowKey, denyKey: denyKey, outage: &outage, calls: &calls}
 }
 
 // dial authenticates as alice offering keys in order and runs one command.

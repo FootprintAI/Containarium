@@ -82,8 +82,12 @@ func processPolicyTools() []Tool {
 			Name: "security_process_policy_release",
 			Description: "Undo the open throttle or freeze on a container: restores the CPU limit " +
 				"recorded when it was throttled, or unfreezes it, marks the action released by the " +
-				"operator and resolves its finding. Fails (404) when no action is open on the " +
-				"container. Admin-only. Mirrors `containarium security process-policy release`.",
+				"operator and resolves its finding. A miner-signature finding shared with another " +
+				"box of the tenant that still has an action open or a response queued is kept open " +
+				"instead (`finding_kept_open: true`; the result's first line says \"Finding #N kept " +
+				"open: another box still has a response\") and is resolved when the last box is " +
+				"released. Fails (404) when no action is open on the container. Admin-only. " +
+				"Mirrors `containarium security process-policy release`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -203,7 +207,22 @@ func handleSecurityProcessPolicyRelease(client API, args map[string]interface{})
 	if err != nil {
 		return "", fmt.Errorf("release process action: %w", err)
 	}
-	return marshalProto(resp)
+	body, err := marshalProto(resp)
+	if err != nil {
+		return "", err
+	}
+	return releasedFindingNote(resp) + "\n" + body, nil
+}
+
+// releasedFindingNote is the result's first line: what the release did to
+// the finding. A miner-signature finding shared with another box of the
+// tenant that still has an action open or a response queued is kept open
+// (#2766); otherwise it is resolved. Same wording as the CLI.
+func releasedFindingNote(resp *pb.ReleaseProcessActionResponse) string {
+	if resp.GetFindingKeptOpen() {
+		return fmt.Sprintf("Finding #%d kept open: another box still has a response.", resp.GetFinding().GetId())
+	}
+	return fmt.Sprintf("Finding #%d resolved.", resp.GetFinding().GetId())
 }
 
 func marshalProto(m proto.Message) (string, error) {

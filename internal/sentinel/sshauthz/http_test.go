@@ -136,6 +136,42 @@ func TestBridgeUsesLiveRouteAndPreservesContract(t *testing.T) {
 	}
 }
 
+// The bridge passes the resolver's routing readiness through; a resolver
+// without the signal is always authoritative, and a dead bridge reads as not
+// ready, which is the safer thing for the enforcing plugin to log.
+func TestBridgeReportsRoutingReadiness(t *testing.T) {
+	authorizer := authorizerFunc(nil)
+	for _, tt := range []struct {
+		name     string
+		resolver BackendResolver
+		want     bool
+	}{
+		{name: "no signal is ready", resolver: resolverFunc(nil), want: true},
+		{name: "synced is ready", resolver: readyResolver{resolverFunc: resolverFunc(nil), ready: true}, want: true},
+		{name: "unsynced is not ready", resolver: readyResolver{resolverFunc: resolverFunc(nil), ready: false}, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			socket := filepath.Join(t.TempDir(), "bridge.sock")
+			ln, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := &http.Server{Handler: BridgeHandler(tt.resolver, authorizer), ReadHeaderTimeout: time.Second}
+			go func() { _ = srv.Serve(ln) }()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			client := NewBridgeClient(socket)
+			if got := client.RoutingReady(ctx); got != tt.want {
+				t.Fatalf("RoutingReady = %v, want %v", got, tt.want)
+			}
+			_ = srv.Close()
+			if client.RoutingReady(ctx) {
+				t.Fatal("a dead bridge must read as not ready")
+			}
+		})
+	}
+}
+
 func TestBridgePropagatesDeadlineAndProtocolFailure(t *testing.T) {
 	resolver := resolverFunc(func(context.Context, string) (string, bool, error) { return "backend", true, nil })
 	for _, protocolFailure := range []bool{false, true} {

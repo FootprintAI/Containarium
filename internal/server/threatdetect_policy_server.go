@@ -186,14 +186,14 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 	if req.GetContainer() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "container is required")
 	}
-	f, err := s.responder.Release(ctx, req.GetContainer())
+	f, keptOpen, err := s.responder.Release(ctx, req.GetContainer())
 	if err != nil {
 		if errors.Is(err, threatdetect.ErrNoOpenAction) {
 			return nil, status.Errorf(codes.NotFound, "%v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "release process action: %v", err)
 	}
-	resp := &pb.ReleaseProcessActionResponse{}
+	resp := &pb.ReleaseProcessActionResponse{FindingKeptOpen: keptOpen}
 	if f != nil {
 		resp.Finding = f.ToProto()
 	}

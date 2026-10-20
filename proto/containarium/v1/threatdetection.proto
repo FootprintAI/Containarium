@@ -282,6 +282,35 @@ message FindingResponse {
   string released_by = 7;
   // Incus error text when state is FAILED.
   string error = 8;
+  // Host pid (not a pid inside the box) of the process the responder last
+  // SIGKILLed; set with process_killed. A kill is delivered by the finding
+  // webhook (#2775), so a consumer learns which process died.
+  uint32 killed_pid = 9;
+  // Why the last kill_process attempt did not kill; UNSPECIFIED when nothing
+  // was skipped. The detail (pid, cgroup, error text) stays in the audit row.
+  KillSkipReason kill_skip_reason = 10;
+  // How many processes the responder has killed for this finding. A miner
+  // that respawns is killed again each time; the webhook delivers the first
+  // kill at once and later ones at most once a minute, carrying this count
+  // and the latest killed_pid.
+  uint32 kills = 11;
+}
+
+// KillSkipReason is why a kill_process attempt did not kill the process
+// (#2775). It is what the finding webhook carries; the audit row keeps the
+// full detail.
+enum KillSkipReason {
+  KILL_SKIP_REASON_UNSPECIFIED = 0;
+  // The pid now belongs to a different cgroup than the container's.
+  KILL_SKIP_REASON_PID_REUSED = 1;
+  // The process exited before the signal.
+  KILL_SKIP_REASON_PROCESS_GONE = 2;
+  // The pid is the container's init; killing it would stop the box.
+  KILL_SKIP_REASON_CONTAINER_INIT = 3;
+  // The effective process policy could not be read.
+  KILL_SKIP_REASON_POLICY_UNREADABLE = 4;
+  // Any other refusal (host or Incus error).
+  KILL_SKIP_REASON_OTHER = 5;
 }
 
 // ProcessPolicy says what a HIGH mining finding does to its container
@@ -345,9 +374,14 @@ message ReleaseProcessActionRequest {
 }
 
 message ReleaseProcessActionResponse {
-  // The finding the action belonged to, now resolved with its response in
-  // state RELEASED.
+  // The finding the action belonged to, with its response in state
+  // RELEASED. Resolved unless finding_kept_open is set.
   Finding finding = 1;
+  // The finding was left open because another box still holds it: a
+  // miner-signature finding is shared by every box of the tenant running
+  // the same miner, and another box still has an action open on it or a
+  // response queued. It is resolved when the last box is released.
+  bool finding_kept_open = 2;
 }
 
 // SentryState is the overall on/off state of the background threat-detection

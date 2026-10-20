@@ -104,7 +104,7 @@ func TestProcessResponderE2E_ThrottleAndFreezeOnRealIncus(t *testing.T) {
 			t.Fatalf("after throttle: kernel cpu.max = %q, want a hard quota \"10000 100000\" (was %q)", got, origMax)
 		}
 	}
-	if _, err := r.Release(ctx, name); err != nil {
+	if _, _, err := r.Release(ctx, name); err != nil {
 		t.Fatalf("Release throttle: %v", err)
 	}
 	count, allow, _ = act.CPULimit(name)
@@ -135,7 +135,7 @@ func TestProcessResponderE2E_ThrottleAndFreezeOnRealIncus(t *testing.T) {
 		}
 	}
 	waitStatus("Frozen")
-	if _, err := r.Release(ctx, name); err != nil {
+	if _, _, err := r.Release(ctx, name); err != nil {
 		t.Fatalf("Release freeze: %v", err)
 	}
 	waitStatus("Running")

@@ -109,7 +109,8 @@ jobs:
           go test -race -tags integration -count=1 -timeout 3m -v -run Integration \
             ./internal/sentinel/sshauthz | tee "$RUNNER_TEMP/ssh-authz/verification.log"
           # A skipped test proves nothing: fail unless each one actually ran.
-          for t in TestIntegrationAuditOnlyChain TestIntegrationEnforceChain TestIntegrationEnforceMultiOfferGap; do
+          for t in TestIntegrationAuditOnlyChain TestIntegrationEnforceChain TestIntegrationEnforceMultiOfferGap \
+            TestIntegrationEnforceAllowThenDeny TestIntegrationEnforcePasswordFirst TestIntegrationEnforceSessionRecords; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
               || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
           done
