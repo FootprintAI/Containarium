@@ -294,6 +294,10 @@ func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
 	killed := func(pid, n uint32) FindingResponse {
 		return FindingResponse{ProcessKilled: true, KilledPID: pid, Kills: n}
 	}
+	withSkip := func(k FindingResponse, skip pb.KillSkipReason) FindingResponse {
+		k.KillSkipReason = skip
+		return k
+	}
 	type step struct {
 		name     string
 		response *FindingResponse
@@ -354,6 +358,14 @@ func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
 			{name: "skip", response: alert(FindingResponse{KillSkipReason: reused}), want: true, wantSkip: reused, after: quick},
 			{name: "kill", response: alert(killed(9, 1)), want: true, wantPID: 9, wantN: 1},
 		}},
+		{"the first skip is immediate once, not after every delivered kill (review)", []step{
+			{name: "upsert", want: true, after: quick},
+			{name: "kill at t", response: alert(killed(1, 1)), want: true, wantPID: 1, wantN: 1, after: quick},
+			{name: "skip at t+5s: the first skip", response: alert(withSkip(killed(1, 1), gone)), want: true, wantPID: 1, wantN: 1, wantSkip: gone, after: quick},
+			{name: "kill at t+10s is held", response: alert(killed(2, 2)), after: 55 * time.Second},
+			{name: "kill at t+65s, a minute after the last kill post", response: alert(killed(3, 3)), want: true, wantPID: 3, wantN: 3, after: quick},
+			{name: "skip at t+70s is held: a skip was already delivered", response: alert(withSkip(killed(3, 3), gone))},
+		}},
 		{"no kill: alert-only adds no delivery", []step{
 			{name: "upsert", want: true, after: quick},
 			{name: "alert recorded", response: alert(FindingResponse{}), after: quick},
@@ -403,6 +415,39 @@ func TestWebhookNotifier_RespawnStormIsBounded(t *testing.T) {
 	posts := len(n.queue) // the queue holds every accepted delivery (256 slots; a storm would overflow it)
 	if posts > 1+3600/int(KillRenotifyInterval/time.Second)+1 {
 		t.Fatalf("1 hour of kills at 1/s delivered %d posts, want about one per minute plus the first", posts)
+	}
+}
+
+// #2775 review: a miner that alternately dies and escapes the signal (a kill,
+// then a PROCESS_GONE skip, every five seconds) is one post per interval in
+// steady state, not two: the "first skip" fast path fires once per finding.
+func TestWebhookNotifier_AlternatingKillAndSkipIsOnePostPerInterval(t *testing.T) {
+	n, clock := gatedNotifier(24 * time.Hour)
+	n.Notify(openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH))
+	const runFor = 10 * time.Minute
+	const step = 5 * time.Second
+	kills := uint32(0)
+	for elapsed := time.Duration(0); elapsed < runFor; elapsed += step {
+		f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+		r := &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE, ProcessKilled: kills > 0, KilledPID: 1000 + kills, Kills: kills}
+		if (elapsed/step)%2 == 0 {
+			kills++
+			r.ProcessKilled, r.KilledPID, r.Kills = true, 1000+kills, kills
+		} else {
+			r.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE
+		}
+		f.Response = r
+		*clock = clock.Add(step)
+		n.Notify(f)
+	}
+	posts := len(n.queue) - 1 // minus the new-finding delivery
+	// The first kill and the first skip are immediate; after that at most one
+	// changed outcome per KillRenotifyInterval.
+	if limit := 2 + int(runFor/KillRenotifyInterval); posts > limit {
+		t.Fatalf("%s of alternating kills and skips delivered %d posts, want at most %d (one per %s plus the first kill and the first skip)", runFor, posts, limit, KillRenotifyInterval)
+	}
+	if posts < 2+int(runFor/KillRenotifyInterval)-2 {
+		t.Fatalf("%s of alternating kills and skips delivered %d posts: the re-notify interval should still let the latest outcome through about once a minute", runFor, posts)
 	}
 }
 

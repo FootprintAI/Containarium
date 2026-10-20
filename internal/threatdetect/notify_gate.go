@@ -63,6 +63,11 @@ type gateEntry struct {
 	releasedBy string
 	kill       killKey
 	killAt     time.Time // when a changed kill outcome was last delivered
+	// skipSent: a skipped kill has been delivered for this finding. The
+	// "first skip is immediate" fast path fires once per finding; a delivered
+	// kill clears the skip on the delivered entry, so the entry's kill alone
+	// cannot tell a first skip from a later one (#2775 review).
+	skipSent bool
 }
 
 // KillRenotifyInterval bounds the webhook posts a respawning miner can cause
@@ -95,7 +100,10 @@ func killOf(f *Finding) killKey {
 // killNews reports whether f's kill outcome should reach the webhook now,
 // given what was last delivered for it. Skipped kills are keyed on the reason
 // kind, never on text, so a process that exits before every kill is one
-// delivery, not one per pid.
+// delivery, not one per pid. The first kill and the first skip of a finding
+// are each immediate exactly once; after that a changed outcome waits for
+// KillRenotifyInterval, so a miner that alternately dies and escapes the
+// signal is one post per interval, not two.
 func killNews(prev gateEntry, f *Finding, now time.Time) bool {
 	cur := killOf(f)
 	if cur == prev.kill {
@@ -104,7 +112,7 @@ func killNews(prev gateEntry, f *Finding, now time.Time) bool {
 	if cur.killed && !prev.kill.killed {
 		return true // the first kill
 	}
-	if cur.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED && prev.kill.skip == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
+	if cur.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED && !prev.skipSent {
 		return true // the first skip
 	}
 	changed := cur.killed && (cur.pid != prev.kill.pid || cur.kills != prev.kill.kills) ||
@@ -174,8 +182,14 @@ func (g *deliveryGate) delivered(f *Finding) {
 	state, by := responseOf(f)
 	now := g.now()
 	e := gateEntry{at: now, severity: f.Severity, response: state, releasedBy: by, kill: killOf(f)}
-	if prev, ok := g.last[f.ID]; ok && prev.kill == e.kill {
-		e.killAt = prev.killAt
+	e.skipSent = e.kill.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED
+	if prev, ok := g.last[f.ID]; ok {
+		e.skipSent = e.skipSent || prev.skipSent
+		if prev.kill == e.kill {
+			e.killAt = prev.killAt
+		} else {
+			e.killAt = now
+		}
 	} else {
 		e.killAt = now
 	}
