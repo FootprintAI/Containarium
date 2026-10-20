@@ -120,12 +120,33 @@ that pinned as well.
 
 | Target | Status |
 |---|---|
-| kind (`k8s-e2e`: throwaway kind v0.24.0 cluster, default node image) | exercised in CI on every change to the reconciler |
+| Kubernetes 1.31.0, kind v0.24.0 (`kindest/node:v1.31.0`) | published-chart install/upgrade CI on chart/release workflow changes and after each tag's OCI publish |
+| kind (`k8s-e2e`: throwaway kind v0.24.0 cluster, default node image) | backend lifecycle exercised in CI on every change to the reconciler |
 | `helm lint` and template rendering (default, gateway disabled, release-stamped) | exercised in CI on every change under `charts/` |
-| EKS (`values-eks.yaml`) and GKE (`values-gke.yaml`) presets | **not** exercised in CI; rendered by the lint job only |
+| EKS (`values-eks.yaml`) and GKE (`values-gke.yaml`) presets | configuration examples; **not** installed in CI, so no provider/version combination is certified |
 
-No minimum Kubernetes version is enforced by the chart (`kubeVersion` is
-unset); the versions above are the ones actually run.
+Kubernetes 1.31.0 is the chart's CI compatibility baseline. Other Kubernetes
+versions, including provider-specific EKS/GKE versions, need validation in
+your environment; the chart does not enforce a version range (`kubeVersion`
+is unset). The agent-sandbox controller has its own version requirements.
+
+`Helm install and upgrade` installs published chart `0.108.0`, upgrades it
+to the target release, and performs a clean install of that target from
+`oci://ghcr.io/footprintai/charts/containarium-k8s`. It waits for the daemon
+to become ready and checks that its pod actually pulled
+`ghcr.io/footprintai/containarium:v<version>` without an image override.
+On PRs it also upgrades to the current checkout's packaged chart using the
+published `0.109.0` daemon image. The test provisions the gateway's host and
+upstream keys and waits for both Deployments; SSH sessions, tenant isolation
+and box lifecycle belong to the backend e2e lane. The cluster and kubeconfig
+are created per run and always removed.
+
+To repeat the published-chart test locally (Docker, kind v0.24.0, kubectl,
+Helm 3.16.2, Python 3, OpenSSH and OpenSSL required):
+
+```bash
+bash scripts/ci/helm-install-upgrade.sh 0.108.0 <target-release-without-v>
+```
 
 ## Architecture
 
