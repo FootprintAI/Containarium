@@ -170,3 +170,61 @@ func TestGenerate_RealShell_UnreadableDeclarationIsError(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Anything at the declaration path counts as a declaration: a dangling
+// symlink or a directory there is unreadable, not absent, and must not
+// fall back to `make test`.
+func TestGenerate_RealShell_DeclarationPathNotARegularFile(t *testing.T) {
+	cases := map[string]func(t *testing.T, decl string){
+		"dangling symlink": func(t *testing.T, decl string) {
+			if err := os.Symlink("missing-target.yml", decl); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"directory": func(t *testing.T, decl string) {
+			if err := os.MkdirAll(decl, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, makeDecl := range cases {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			marker := filepath.Join(repo, "fallback-ran")
+			writeFile(t, filepath.Join(repo, "Makefile"), "test:\n\t@touch "+marker+"\n")
+			decl := filepath.Join(repo, DeclarationPath)
+			if err := os.MkdirAll(filepath.Dir(decl), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			makeDecl(t, decl)
+			_, err := Generate(context.Background(), localExecer{}, "local", Options{RepoDir: repo, StepTimeout: 30 * time.Second})
+			if err == nil || !strings.Contains(err.Error(), "cannot read") {
+				t.Errorf("err = %v, want a cannot-read error", err)
+			}
+			if _, serr := os.Stat(marker); serr == nil {
+				t.Errorf("make test ran as a fallback")
+			}
+		})
+	}
+}
+
+// A symlink to a readable file is a normal declaration.
+func TestGenerate_RealShell_SymlinkedDeclarationIsRead(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "ci", "containarium.yml"), "test: echo via-symlink\n")
+	decl := filepath.Join(repo, DeclarationPath)
+	if err := os.MkdirAll(filepath.Dir(decl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../ci/containarium.yml", decl); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := Generate(context.Background(), localExecer{}, "local", Options{RepoDir: repo, StepTimeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.GetCommandSource() != pb.ProofCommandSource_PROOF_COMMAND_SOURCE_DECLARED ||
+		string(pack.GetSteps()[0].GetLog()) != "via-symlink\n" {
+		t.Errorf("source=%v log=%q", pack.GetCommandSource(), pack.GetSteps()[0].GetLog())
+	}
+}

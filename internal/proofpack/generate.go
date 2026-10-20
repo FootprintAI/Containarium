@@ -50,12 +50,15 @@ type Options struct {
 // probeScript reports, in one exec, what Generate needs before running
 // anything: whether the repo dir exists, whether `timeout` is available,
 // the declaration file's content (stdout, bounded) and whether a Makefile
-// exists. The exit status is 10 + 1 (declaration present) + 2 (Makefile
-// present); 95, 96 and 97 are the refusals.
+// exists. Anything at the declaration path counts as present, including a
+// dangling symlink or a directory, so an unusable declaration is refused
+// (95) rather than mistaken for none. The exit status is 10 + 1
+// (declaration present) + 2 (Makefile present); 95, 96 and 97 are the
+// refusals.
 const probeScript = `cd -- "$1" || exit 97
 command -v timeout >/dev/null 2>&1 || exit 96
 rc=10
-if [ -f "$2" ]; then head -c "$3" -- "$2" || exit 95; rc=$((rc + 1)); fi
+if [ -e "$2" ] || [ -L "$2" ]; then head -c "$3" -- "$2" || exit 95; rc=$((rc + 1)); fi
 if [ -f Makefile ] || [ -f makefile ] || [ -f GNUmakefile ]; then rc=$((rc + 2)); fi
 exit "$rc"`
 

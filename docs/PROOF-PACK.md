@@ -51,7 +51,7 @@ When there is no `test:` key, the pack falls back:
 | no `test:` key, but a `Makefile` at its root | `make test`, as step `make-test` | `FALLBACK_MAKE_TEST` |
 | neither | nothing; the status is `NO_COMMANDS` | `NONE` |
 
-A declaration that cannot be read or parsed is an error, and no pack is produced. That includes a `test:` key with no value. It never falls back to `make test`; the fallback applies only when the key is absent.
+A declaration that cannot be read or parsed is an error, and no pack is produced. That includes a `test:` key with no value, and anything at that path that is not a readable file, such as a dangling symlink or a directory. It never falls back to `make test`; the fallback applies only when the key is absent.
 
 ## Generating a pack
 
