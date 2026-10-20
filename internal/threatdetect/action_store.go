@@ -187,6 +187,26 @@ func (s *PGActionStore) ListOrphaned(ctx context.Context, cutoff time.Time) ([]*
 	return out, nil
 }
 
+func (s *PGActionStore) ListByFinding(ctx context.Context, findingID int64) ([]*SecurityAction, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+actionColumns+` FROM security_actions WHERE finding_id = $1 ORDER BY id DESC`, findingID)
+	if err != nil {
+		return nil, fmt.Errorf("threatdetect: list security actions for finding %d: %w", findingID, err)
+	}
+	defer rows.Close()
+	var out []*SecurityAction
+	for rows.Next() {
+		a, err := scanAction(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("threatdetect: iterate security actions: %w", err)
+	}
+	return out, nil
+}
+
 func scanAction(row rowScanner) (*SecurityAction, error) {
 	var a SecurityAction
 	var action string
