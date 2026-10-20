@@ -1014,6 +1014,18 @@ func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return resp.Run, nil
 }
 
+// ValidateTaskGraph checks a task graph against the daemon's catalogs via
+// gRPC (#2803).
+func (c *GRPCClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.crewClient.ValidateTaskGraph(ctx, &pb.ValidateTaskGraphRequest{Graph: g})
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate task graph: %w", err)
+	}
+	return resp, nil
+}
+
 // TailRunLog reads one window of a run's journal via gRPC (#2096). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {

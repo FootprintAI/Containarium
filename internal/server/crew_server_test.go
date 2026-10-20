@@ -76,6 +76,34 @@ func TestRunCrew_ResponseCarriesRunID(t *testing.T) {
 	}
 }
 
+// TestValidateTaskGraph is #2803: the RPC validates against the daemon's own
+// crew + skill catalogs and maps a rejected graph to InvalidArgument.
+func TestValidateTaskGraph(t *testing.T) {
+	s := NewCrewServer(nil)
+	ctx := ctxAs("admin", true)
+
+	resp, err := s.ValidateTaskGraph(ctx, &pb.ValidateTaskGraphRequest{Graph: &pb.TaskGraph{
+		Nodes: []*pb.TaskNode{
+			{Id: "review", Goal: "review", Assignee: &pb.TaskNode_SkillId{SkillId: "code-review"}},
+			{Id: "build", Goal: "build", Assignee: &pb.TaskNode_CrewId{CrewId: "hello-crew"}},
+		},
+		Edges: []*pb.TaskEdge{{NodeId: "review", DependsOn: "build"}},
+	}})
+	if err != nil {
+		t.Fatalf("valid graph: %v", err)
+	}
+	if strings.Join(resp.GetOrder(), ",") != "build,review" || resp.GetDepth() != 2 {
+		t.Errorf("got order %v depth %d, want [build review] depth 2", resp.GetOrder(), resp.GetDepth())
+	}
+
+	_, err = s.ValidateTaskGraph(ctx, &pb.ValidateTaskGraphRequest{Graph: &pb.TaskGraph{
+		Nodes: []*pb.TaskNode{{Id: "a", Goal: "a", Assignee: &pb.TaskNode_SkillId{SkillId: "no-such-skill"}}},
+	}})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "no-such-skill") {
+		t.Errorf("unknown skill: err = %v, want InvalidArgument naming the skill", err)
+	}
+}
+
 func TestDriveCrew(t *testing.T) {
 	const trace = "trace-xyz"
 
