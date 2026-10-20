@@ -201,7 +201,12 @@ flowchart LR
    miner-signature finding shared with another box that still has an
    action open or a response queued stays open until the last box is
    released, or until that last queued response ends without an action;
-   the response reports `finding_kept_open`, #2766). A TTL
+   the response reports `finding_kept_open`, #2766; an action already
+   applied on another box holds it open too, #2779). Each box's apply and
+   release is its own webhook delivery naming the box in
+   `FindingResponse.container`, and while any box holds an applied action
+   the finding's `response` is that box's `APPLIED` record, never another
+   box's release (#2820). A TTL
    sweep (60 s) releases expired actions and upserts a MEDIUM
    `PROCESS_ACTION_EXPIRED` finding so an unattended throttle does not
    silently become permanent (the `auto_quarantine.go` backstop, same

@@ -1,6 +1,7 @@
 package threatdetect
 
 import (
+	"maps"
 	"sync"
 	"time"
 
@@ -17,11 +18,6 @@ const DefaultRenotifyInterval = time.Hour
 // re-delivers that one finding early.
 const gateMaxEntries = 4096
 
-// releaseResolveWindow bounds the release+resolve coalescing: a resolve is
-// dropped as the second half of an operator release only when it lands this
-// soon after the RELEASED delivery (see deliveryGate).
-const releaseResolveWindow = 30 * time.Second
-
 // deliveryGate decides which store writes reach the webhook. The stores call
 // Notify on every write, including the dedupe path that only bumps count on
 // an already-open (rule, tenant, subject); delivering all of those turns one
@@ -29,7 +25,7 @@ const releaseResolveWindow = 30 * time.Second
 // (#1640); this makes the delivery dedupe too.
 //
 // A finding is delivered when it is new to the gate, when its severity
-// escalates, when its response state changes (#2718: NONE→APPLIED,
+// escalates, when a box's response state changes (#2718: NONE→APPLIED,
 // APPLIED→RELEASED/EXPIRED, anything→FAILED — what the process responder did
 // is news, not a repeat), when its kill outcome changes (#2775: the first kill
 // and the first skipped kill at once, later ones at most once per
@@ -38,17 +34,19 @@ const releaseResolveWindow = 30 * time.Second
 // finding is delivered again on its next write, which is a re-notify, not a
 // storm.
 //
-// Release + resolve is one delivery, not two: an operator release
-// (ProcessResponder.Release) records RELEASED and then resolves the finding in
-// the same call. The RELEASED write is delivered; the resolve that follows it
-// is not, because it carries nothing the operator was not just told. The
-// release is the one kept, not the resolve, so the operator still hears of it
-// when the resolve fails. The coalescing is bounded: only a resolve landing
-// within releaseResolveWindow of the RELEASED delivery is dropped, and only
-// once, so if the release's own resolve failed, a later resolve is delivered.
-// Only an operator release coalesces: a TTL expiry or an orphan-sweep release
-// leaves the finding open, so a later resolve is a separate event and is
-// delivered.
+// Response state is tracked per box (#2820): a miner-signature finding is
+// keyed per tenant and pattern, so several boxes of one tenant can share it,
+// and each write names the box it is about in FindingResponse.Container.
+// Box B's APPLIED after box A's is B's transition, not a repeat of A's, and
+// so is each box's release. Severity, the kill outcome and the re-notify
+// interval stay per finding: a kill count is the finding's, so a respawn
+// storm across boxes is still bounded by KillRenotifyInterval.
+//
+// Every resolve is delivered. An operator release that resolves the finding
+// is one delivery, not two, because the store records the release and the
+// resolve in one write (ResponseWriter.ResolveWithResponse) whose delivery
+// is the resolve carrying the RELEASED record; nothing here needs to drop a
+// resolve as the second half of a release.
 type deliveryGate struct {
 	mu       sync.Mutex
 	interval time.Duration
@@ -57,12 +55,14 @@ type deliveryGate struct {
 }
 
 type gateEntry struct {
-	at         time.Time
-	severity   pb.ThreatSeverity
-	response   pb.ResponseState
-	releasedBy string
-	kill       killKey
-	killAt     time.Time // when a changed kill outcome was last delivered
+	at       time.Time
+	severity pb.ThreatSeverity
+	// boxes is the response state last delivered per box
+	// (FindingResponse.Container; "" for a response that names none). A box
+	// not in it has had no response delivered: NONE.
+	boxes  map[string]pb.ResponseState
+	kill   killKey
+	killAt time.Time // when a changed kill outcome was last delivered
 	// skipSent: a skipped kill has been delivered for this finding. The
 	// "first skip is immediate" fast path fires once per finding; a delivered
 	// kill clears the skip on the delivered entry, so the entry's kill alone
@@ -120,21 +120,21 @@ func killNews(prev gateEntry, f *Finding, now time.Time) bool {
 	return changed && now.Sub(prev.killAt) >= KillRenotifyInterval
 }
 
-// responseOf is f's response state and who released it; no response yet is
-// NONE.
-func responseOf(f *Finding) (pb.ResponseState, string) {
+// responseOf is the box f's response is about and its state; no response
+// yet is NONE for no box.
+func responseOf(f *Finding) (box string, state pb.ResponseState) {
 	if f.Response == nil {
-		return pb.ResponseState_RESPONSE_STATE_NONE, ""
+		return "", pb.ResponseState_RESPONSE_STATE_NONE
 	}
-	return f.Response.State, f.Response.ReleasedBy
+	return f.Response.Container, f.Response.State
 }
 
-// releaseResolve reports whether a resolve of f, at now, only repeats the
-// operator release just delivered for it (see deliveryGate).
-func releaseResolve(prev gateEntry, f *Finding, now time.Time) bool {
-	state, by := responseOf(f)
-	return prev.response == pb.ResponseState_RESPONSE_STATE_RELEASED && prev.releasedBy == ReleasedByOperator &&
-		state == prev.response && by == prev.releasedBy && now.Sub(prev.at) < releaseResolveWindow
+// boxState is the response state last delivered for box; NONE when none was.
+func (e gateEntry) boxState(box string) pb.ResponseState {
+	if s, ok := e.boxes[box]; ok {
+		return s
+	}
+	return pb.ResponseState_RESPONSE_STATE_NONE
 }
 
 func newDeliveryGate(interval time.Duration) *deliveryGate {
@@ -146,25 +146,16 @@ func newDeliveryGate(interval time.Duration) *deliveryGate {
 
 // shouldDeliver reports whether f should reach the webhook. It records
 // nothing for a delivery: call delivered once the finding was actually
-// queued, so a dropped delivery does not suppress the next attempt. A
-// resolve it suppresses (the second half of an operator release) forgets the
-// finding, since delivered will not be called for it.
+// queued, so a dropped delivery does not suppress the next attempt.
 func (g *deliveryGate) shouldDeliver(f *Finding) bool {
-	if f.ID == 0 {
-		return true // cannot be tracked; fail open
+	if f.ID == 0 || f.State == FindingStateResolved {
+		return true // untracked (fail open), or the resolution: always news
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	prev, seen := g.last[f.ID]
-	if f.State == FindingStateResolved {
-		if seen && releaseResolve(prev, f, g.now()) {
-			delete(g.last, f.ID) // forgotten: coalesced once, the next resolve delivers
-			return false
-		}
-		return true
-	}
-	state, _ := responseOf(f)
-	return !seen || f.Severity > prev.severity || state != prev.response || killNews(prev, f, g.now()) || g.now().Sub(prev.at) >= g.interval
+	box, state := responseOf(f)
+	return !seen || f.Severity > prev.severity || state != prev.boxState(box) || killNews(prev, f, g.now()) || g.now().Sub(prev.at) >= g.interval
 }
 
 // delivered records that f was queued. A resolved finding is forgotten: it
@@ -179,11 +170,12 @@ func (g *deliveryGate) delivered(f *Finding) {
 		delete(g.last, f.ID)
 		return
 	}
-	state, by := responseOf(f)
+	box, state := responseOf(f)
 	now := g.now()
-	e := gateEntry{at: now, severity: f.Severity, response: state, releasedBy: by, kill: killOf(f)}
+	e := gateEntry{at: now, severity: f.Severity, boxes: map[string]pb.ResponseState{}, kill: killOf(f)}
 	e.skipSent = e.kill.skip != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED
 	if prev, ok := g.last[f.ID]; ok {
+		maps.Copy(e.boxes, prev.boxes)
 		e.skipSent = e.skipSent || prev.skipSent
 		if prev.kill == e.kill {
 			e.killAt = prev.killAt
@@ -193,6 +185,7 @@ func (g *deliveryGate) delivered(f *Finding) {
 	} else {
 		e.killAt = now
 	}
+	e.boxes[box] = state
 	g.last[f.ID] = e
 	if len(g.last) > gateMaxEntries {
 		g.evictOldest()

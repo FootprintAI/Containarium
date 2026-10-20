@@ -135,6 +135,51 @@ func TestRunSecurityFindingsList_RendersKillFacts(t *testing.T) {
 	}
 }
 
+// #2820: a finding shared by two boxes shows which box its response is
+// about. Box A was released while box B is still throttled: the line reads
+// B's APPLIED, never RELEASED, and --json carries the box.
+func TestRunSecurityFindingsList_SharedFindingNamesTheBox(t *testing.T) {
+	const canned = `{
+		"findings": [
+			{"id": "6", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			 "tenantId": "acme", "container": "box-a-container", "state": "FINDING_STATE_OPEN", "count": "2",
+			 "lastSeen": "2026-10-20T03:22:13Z", "subject": "name:xmrig",
+			 "response": {"action": "PROCESS_ACTION_THROTTLE", "state": "RESPONSE_STATE_APPLIED",
+			              "container": "box-b-container"}}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(canned))
+	}))
+	defer srv.Close()
+	oldServer := serverAddr
+	serverAddr = srv.URL
+	defer func() { serverAddr = oldServer }()
+
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatalf("runSecurityFindingsList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "response THROTTLE APPLIED on box-b-container\n") || strings.Contains(out, "RELEASED") {
+		t.Errorf("shared finding's response line:\n%s\nwant `response THROTTLE APPLIED on box-b-container` and no RELEASED", out)
+	}
+	var env listFindingsEnvelope
+	if err := json.Unmarshal([]byte(canned), &env); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"state":"RESPONSE_STATE_APPLIED","processKilled":false,"container":"box-b-container"`) {
+		t.Errorf("--json envelope lost the response's box: %s", raw)
+	}
+}
+
 func TestRunSecurityFindingsList_EncodesFilters(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

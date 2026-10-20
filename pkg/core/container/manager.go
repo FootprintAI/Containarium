@@ -238,6 +238,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
+	// Record the requested stack so list/get can report it later (#2163).
+	if opts.Stack != "" {
+		labelConfig[incus.StackKey] = opts.Stack
+	}
 
 	config := incus.ContainerConfig{
 		Name:                   containerName,
