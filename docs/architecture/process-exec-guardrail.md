@@ -274,10 +274,12 @@ CREATE TABLE IF NOT EXISTS security_actions (
   prev_cpu_allow  TEXT        NOT NULL DEFAULT '',
   killed_pid      INTEGER,
   error           TEXT        NOT NULL DEFAULT '',
+  pending         BOOLEAN     NOT NULL DEFAULT FALSE, -- recorded, apply not yet confirmed
   applied_at      TIMESTAMPTZ NOT NULL,
   expires_at      TIMESTAMPTZ NOT NULL,
   released_at     TIMESTAMPTZ,
-  released_by     TEXT        NOT NULL DEFAULT ''  -- 'operator' | 'ttl' | 'resolve'
+  released_by     TEXT        NOT NULL DEFAULT '', -- 'operator' | 'ttl' | 'orphan-sweep' | 'container-deleted' | 'error'
+  instance_id     TEXT        NOT NULL DEFAULT ''  -- Incus volatile.uuid of the box acted on (#2835)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS security_actions_open_per_container
   ON security_actions (container) WHERE released_at IS NULL;

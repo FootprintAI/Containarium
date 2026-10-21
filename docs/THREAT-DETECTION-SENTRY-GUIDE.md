@@ -354,14 +354,21 @@ the last response. The same holds when B's action ends without a release:
 if B's TTL expires, the orphan sweep undoes B's never-confirmed apply, or B
 is deleted, the write that records B's end also resolves the finding
 (audited `resolve`, one post carrying B's record with finding `state: 2`).
-That only finishes an operator's release on another box: when no box of
-the finding was released by an operator, an expiry or deletion leaves the
-finding open for you, as a single box's expiry always has. Deleting a box
-(`containarium delete`, or the TTL sweeper) closes its open action without
-touching Incus, `released_by: container-deleted`, so the deleted box no
-longer holds the finding or shows as `APPLIED`; a box deleted some other
-way is closed the same way by the next TTL or orphan sweep, which finds it
-missing instead of retrying the undo. An apply that was recorded but never
+That only finishes an operator's release on another box, and only while
+that release is still the latest action on its box: if A was throttled
+again after its release, A's release no longer counts, and when the
+finding then ends by TTL or deletion with no operator involved it stays
+open for you, as a single box's expiry always has. Every delete the daemon
+makes (`containarium delete` and the TTL sweeper, cloud-managed boxes,
+sandboxes) closes the deleted box's open action in the background, without
+undoing anything on the box and without failing the delete (the delete
+makes one extra Incus lookup), `released_by: container-deleted`, so the deleted box no longer holds the finding or shows
+as `APPLIED`. A box removed outside the daemon (for example with `incus
+delete`) keeps its action open until the action's TTL, the orphan sweep or
+an operator release, which then finds the box missing, or replaced by a
+new box with the same name, and closes the action without touching the new
+box's limits. Until then a new box with that name gets no action of its
+own; `process-policy release <box>` clears it at once. An apply that was recorded but never
 confirmed (the daemon died between the two) on box B also holds the
 finding open, since the throttle may have taken effect, but it is never
 shown as `APPLIED`: releasing A then records A's `RELEASED`. The orphan
