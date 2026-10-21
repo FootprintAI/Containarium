@@ -2356,6 +2356,20 @@ func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.
 	return out, nil
 }
 
+// SetGuardrailBaselineMode switches the baseline response scan between LOG
+// and BLOCK via HTTP (#2738; admin only).
+func (c *HTTPClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error) {
+	body, err := protojson.Marshal(&pb.SetGuardrailBaselineModeRequest{Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetGuardrailBaselineModeResponse{}
+	if err := c.guardrailPolicyCall(http.MethodPut, "/v1/guardrail/baseline", body, out, "set guardrail baseline mode"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out proto.Message, op string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
