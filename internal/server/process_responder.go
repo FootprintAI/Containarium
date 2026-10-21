@@ -741,7 +741,7 @@ func (r *ProcessResponder) recordKill(ctx context.Context, f *threatdetect.Findi
 	if f.Response != nil {
 		resp = *f.Response
 		if resp.Container == "" {
-			resp.Container = f.Container
+			resp = r.recordOwner(ctx, f, resp)
 		}
 	}
 	// The kill facts are the finding's (one count across its boxes), so they
@@ -749,6 +749,21 @@ func (r *ProcessResponder) recordKill(ctx context.Context, f *threatdetect.Findi
 	// (#2820): rewriting it as this box's would make a box another box's
 	// action stands on read as if it had none.
 	return r.setResponse(ctx, f.ID, kill.on(resp))
+}
+
+// recordOwner names the box of resp, a record written by a daemon from
+// before per-box records (#2820), which carries no container (#2835). When an
+// action stands on a box of the finding, that box's APPLIED record is what
+// the finding shows: labelling the old record with this write's box could
+// turn another box's old RELEASED into "RELEASED on <this box>" while this
+// box is throttled. With no action standing it is this write's box, as
+// before. Caller holds r.mu.
+func (r *ProcessResponder) recordOwner(ctx context.Context, f *threatdetect.Finding, resp threatdetect.FindingResponse) threatdetect.FindingResponse {
+	if h := r.holders(ctx, f.ID, ""); h.applied != nil {
+		return standingOf(h.applied, killNoteOf(&resp))
+	}
+	resp.Container = f.Container
+	return resp
 }
 
 // recordFailure writes the failed row (released on insert so it never
@@ -891,29 +906,22 @@ func (r *ProcessResponder) release(ctx context.Context, container string) (f *th
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOperator, Container: container,
 	})
-	open := r.openElsewhere(ctx, row.FindingID, container)
+	h := r.holders(ctx, row.FindingID, container)
 	switch {
-	case len(open) > 0:
+	case h.applied != nil:
 		keptOpen = true
-		log.Printf("[process-responder] finding %d left open after release on %s: an action is still open on %s", row.FindingID, container, open[0].Container)
-		f = r.setResponseHeld(ctx, row.FindingID, box, standingOf(open[0], kill))
+		log.Printf("[process-responder] finding %d left open after release on %s: an action is still open on %s", row.FindingID, container, h.applied.Container)
+		f = r.setResponseHeld(ctx, row.FindingID, box, standingOf(h.applied, kill))
+	case h.unconfirmed != nil:
+		keptOpen = true
+		log.Printf("[process-responder] finding %d left open after release on %s: an apply on %s was never confirmed (the orphan sweep ends it)", row.FindingID, container, h.unconfirmed.Container)
+		f = r.setResponse(ctx, row.FindingID, box)
 	case r.pendingElsewhere(row.FindingID, container):
 		keptOpen = true
 		log.Printf("[process-responder] finding %d left open after release on %s: another box has a response queued", row.FindingID, container)
 		f = r.setResponse(ctx, row.FindingID, box)
 	default:
-		var rerr error
-		f, rerr = r.findings.ResolveWithResponse(ctx, row.FindingID, box)
-		switch {
-		case rerr == nil, errors.Is(rerr, threatdetect.ErrFindingNotOpen):
-			// Resolved here, or already resolved by hand: the release was
-			// recorded and delivered either way.
-		case errors.Is(rerr, threatdetect.ErrFindingNotFound):
-			// Gone from a degraded ring: the release itself still happened.
-		default:
-			log.Printf("[process-responder] resolve finding %d after release: %v", row.FindingID, rerr)
-			f = r.setResponse(ctx, row.FindingID, box) // the operator still hears of the release
-		}
+		f = r.resolveWith(ctx, row.FindingID, box)
 	}
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s restored_cpu=%q restored_allowance=%q finding_kept_open=%t",
 		row.FindingID, container, row.Action, threatdetect.ReleasedByOperator, row.PrevCPUCount, row.PrevCPUAllowance, keptOpen))
@@ -921,25 +929,50 @@ func (r *ProcessResponder) release(ctx context.Context, container string) (f *th
 	return f, keptOpen, box, nil
 }
 
-// openElsewhere is finding id's actions still open on boxes other than
-// container, newest first, read from the store (so an applied action counts
-// whether or not this process queued it, #2779). When the store cannot be
-// read it is empty: a release that then turns out to be too early still
-// happens, and a later release on the other box tolerates an
-// already-resolved finding.
-func (r *ProcessResponder) openElsewhere(ctx context.Context, id int64, container string) []*threatdetect.SecurityAction {
+// findingHolders is what still holds a finding open besides one box, read
+// from the store (so an applied action counts whether or not this process
+// queued it, #2779).
+type findingHolders struct {
+	// applied is the newest confirmed action still open on another box: its
+	// APPLIED record is what the finding shows while it stands (#2820).
+	applied *threatdetect.SecurityAction
+	// unconfirmed is the newest open action on another box whose apply was
+	// never confirmed (#2835): the daemon died, or the confirming write
+	// failed, between recording it and confirming it. The throttle or freeze
+	// may or may not have taken effect, so it holds the finding open like an
+	// applied action, but it is never shown as APPLIED. The orphan sweep ends
+	// it PendingOrphanAfter after it was recorded (plus up to one sweep
+	// interval), which bounds how long it can hold the finding.
+	unconfirmed *threatdetect.SecurityAction
+	// operatorReleased: an operator released some box of the finding, so
+	// the finding is only open because something else still held it.
+	operatorReleased bool
+}
+
+// holders reads what holds finding id open on boxes other than container
+// ("" for every box). When the store cannot be read it is empty: a release
+// that then turns out to be too early still happens, and a later release on
+// the other box tolerates an already-resolved finding.
+func (r *ProcessResponder) holders(ctx context.Context, id int64, container string) findingHolders {
+	var h findingHolders
 	rows, err := r.actions.ListByFinding(ctx, id)
 	if err != nil {
 		log.Printf("[process-responder] finding %d: list actions for %s: %v", id, container, err)
-		return nil
+		return h
 	}
-	var open []*threatdetect.SecurityAction
-	for _, row := range rows {
-		if row.Open() && row.Container != container {
-			open = append(open, row)
+	for _, row := range rows { // newest first
+		h.operatorReleased = h.operatorReleased || row.ReleasedBy == threatdetect.ReleasedByOperator
+		if !row.Open() || row.Container == container {
+			continue
+		}
+		switch {
+		case row.Pending && h.unconfirmed == nil:
+			h.unconfirmed = row
+		case !row.Pending && h.applied == nil:
+			h.applied = row
 		}
 	}
-	return open
+	return h
 }
 
 // standingOf is the APPLIED record of row, an action still open on another
@@ -959,10 +992,50 @@ func standingOf(row *threatdetect.SecurityAction, kill killNote) threatdetect.Fi
 // showing that box's APPLIED record and box is only delivered (#2820);
 // otherwise box is the finding's response.
 func (r *ProcessResponder) writeBox(ctx context.Context, id int64, box threatdetect.FindingResponse) *threatdetect.Finding {
-	if open := r.openElsewhere(ctx, id, box.Container); len(open) > 0 {
-		return r.setResponseHeld(ctx, id, box, standingOf(open[0], killNoteOf(&box)))
+	if h := r.holders(ctx, id, box.Container); h.applied != nil {
+		return r.setResponseHeld(ctx, id, box, standingOf(h.applied, killNoteOf(&box)))
 	}
 	return r.setResponse(ctx, id, box)
+}
+
+// endBox records box, the record of a box whose action just ended without
+// an operator release (TTL expiry, the orphan sweep, the box's deletion),
+// and resolves the finding when that box was the last thing holding open a
+// finding an operator already released on another box (#2835): that
+// release would have resolved it had this box not still held it, as settle
+// does for a queued response. Otherwise it is writeBox: another box's
+// applied action keeps showing, and a finding nobody released stays open
+// for the operator, as a single box's expiry always has. Caller holds r.mu.
+func (r *ProcessResponder) endBox(ctx context.Context, id int64, box threatdetect.FindingResponse) *threatdetect.Finding {
+	h := r.holders(ctx, id, box.Container)
+	switch {
+	case h.applied != nil:
+		return r.setResponseHeld(ctx, id, box, standingOf(h.applied, killNoteOf(&box)))
+	case !h.operatorReleased || h.unconfirmed != nil || r.pendingElsewhere(id, ""):
+		return r.setResponse(ctx, id, box)
+	}
+	f := r.resolveWith(ctx, id, box)
+	r.auditLog(ctx, "resolve", box.Container, fmt.Sprintf("finding=%d container=%s reason=%q",
+		id, box.Container, "released by operator on another box; the last box holding it ended ("+box.ReleasedBy+")"))
+	log.Printf("[process-responder] finding %d resolved: released by operator earlier, and the last box holding it (%s) ended (%s)", id, box.Container, box.ReleasedBy)
+	return f
+}
+
+// resolveWith records box and resolves finding id in one write, one webhook
+// delivery that carries both (#2820). A finding already resolved, or gone
+// from a degraded ring, still had box recorded. Any other error may come
+// after the store's resolve went through (Postgres reads the row back after
+// its UPDATE), so box is written once more as a plain response: the
+// operator still hears of it either way.
+func (r *ProcessResponder) resolveWith(ctx context.Context, id int64, box threatdetect.FindingResponse) *threatdetect.Finding {
+	f, err := r.findings.ResolveWithResponse(ctx, id, box)
+	switch {
+	case err == nil, errors.Is(err, threatdetect.ErrFindingNotOpen), errors.Is(err, threatdetect.ErrFindingNotFound):
+		return f
+	default:
+		log.Printf("[process-responder] resolve finding %d with %s's %s: %v", id, box.Container, box.State, err)
+		return r.setResponse(ctx, id, box)
+	}
 }
 
 // SweepExpired releases every action whose TTL passed and raises a MEDIUM
@@ -996,12 +1069,15 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 		return false, nil // released or superseded since the sweep listed it
 	}
 	if err := r.undo(row); err != nil {
-		return false, err
+		if !incus.IsNotFound(err) {
+			return false, err
+		}
+		return true, r.closeGone(ctx, row, now, "ttl expiry")
 	}
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByTTL, now); err != nil {
 		return false, err
 	}
-	r.writeBox(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
+	r.endBox(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByTTL, Container: row.Container,
 	}))
@@ -1062,18 +1138,66 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 		return nil
 	}
 	if err := r.undo(row); err != nil {
-		return err
+		if !incus.IsNotFound(err) {
+			return err
+		}
+		return r.closeGone(ctx, row, now, "orphan sweep")
 	}
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOrphanSweep, now); err != nil {
 		return err
 	}
-	r.writeBox(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
+	r.endBox(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
 		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOrphanSweep, Container: row.Container,
 	}))
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (pending apply never confirmed)",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByOrphanSweep))
 	log.Printf("[process-responder] orphaned %s on %s undone (finding %d)", row.Action, row.Container, row.FindingID)
+	return nil
+}
+
+// ContainerDeleted closes the action open on container, a box that was just
+// deleted (#2835). Nothing is undone: there is no box left to restore. The
+// row is released by ReleasedByContainerDeleted, so the deleted box stops
+// holding its finding open, and the finding stops showing the deleted box's
+// APPLIED record: it records the box's RELEASED, or keeps showing another
+// box's applied action, and is resolved when an operator already released
+// another box of it (endBox). A box with no open action is left alone.
+// Safe on a nil responder (a daemon without the sentry).
+func (r *ProcessResponder) ContainerDeleted(ctx context.Context, container string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, err := r.actions.Open(ctx, container)
+	switch {
+	case errors.Is(err, threatdetect.ErrNoOpenAction):
+		return
+	case err != nil:
+		log.Printf("[process-responder] %s deleted: read its open action: %v", container, err)
+		return
+	}
+	if err := r.closeGone(ctx, row, r.now(), "container deleted"); err != nil {
+		log.Printf("[process-responder] %s deleted: close %s (action %d): %v", container, row.Action, row.ID, err)
+	}
+}
+
+// closeGone closes row, an action on a box that no longer exists: deleted
+// through the daemon, or found gone by the TTL or orphan sweep (Incus answers
+// not found), so the sweep does not retry an undo that can never succeed.
+// how says which path found it, for the audit row. Caller holds r.mu.
+func (r *ProcessResponder) closeGone(ctx context.Context, row *threatdetect.SecurityAction, now time.Time, how string) error {
+	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByContainerDeleted, now); err != nil {
+		return err
+	}
+	r.endBox(ctx, row.FindingID, r.releaseKill(ctx, row).on(threatdetect.FindingResponse{
+		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
+		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByContainerDeleted, Container: row.Container,
+	}))
+	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (box no longer exists, found by %s; nothing to restore)",
+		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByContainerDeleted, how))
+	log.Printf("[process-responder] %s on %s closed: the box no longer exists (%s; finding %d)", row.Action, row.Container, how, row.FindingID)
 	return nil
 }
 
@@ -1160,11 +1284,10 @@ func (s *ActingSink) Upsert(ctx context.Context, f *threatdetect.Finding) (*thre
 	if target == nil {
 		target = lastExec(out)
 	}
-	// Likewise the box is the one this write came from. A finding shared by
-	// several boxes of a tenant (#2766) may come back from the store carrying
-	// the container that first opened it (the in-memory store does; the
-	// Postgres store returns the writer's); the response belongs to this
-	// write's box.
+	// Likewise the box is the one this write came from. Both stores return
+	// the writer's box (#2835), but a finding shared by several boxes of a
+	// tenant (#2766) stores the container that first opened it, and the
+	// response belongs to this write's box whatever a store returns.
 	if f.Container != "" && out.Container != f.Container {
 		cp := *out
 		cp.Container = f.Container

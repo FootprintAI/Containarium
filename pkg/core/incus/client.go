@@ -781,6 +781,9 @@ type ServerInfo struct {
 	// admission-gate posture (#2284). Nil when the source did not report
 	// one — local Incus mode, or a daemon that predates the field.
 	CPUBudget *CPUBudget
+	// StoragePools is each storage pool's fill as the daemon's capacity
+	// monitor last read it (#2823). Nil in local mode or from an older daemon.
+	StoragePools []StoragePoolCapacity
 }
 
 // DefaultSocketPath is the Incus unix socket path used by New() and by any
