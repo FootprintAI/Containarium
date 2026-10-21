@@ -462,6 +462,15 @@ message GetSentryStatusResponse {
   // full, cumulative since the object loaded. Non-zero means a burst
   // outran the consumer; the events are gone, never blocked the exec.
   int64 exec_events_lost = 6;
+  // Exec hash requests the miner-signature hasher dropped because its queue
+  // was full, cumulative since the daemon started (#2768). Requests are made
+  // only while sha256 entries exist; a dropped exec is never hashed, so a
+  // sha256 entry can miss it (name and argv entries still matched it).
+  // An executable already hashed is served from a cache by (device, inode,
+  // size, mtime, ctime) without being read again, so the queue drains fast
+  // and a non-zero count means a burst of execs the worker could not keep
+  // up with.
+  int64 exec_hashes_dropped = 7;
 }
 
 // ExecEvent is one live exec in a tenant container, as streamed by

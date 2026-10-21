@@ -2174,8 +2174,17 @@ type GetSentryStatusResponse struct {
 	// full, cumulative since the object loaded. Non-zero means a burst
 	// outran the consumer; the events are gone, never blocked the exec.
 	ExecEventsLost int64 `protobuf:"varint,6,opt,name=exec_events_lost,json=execEventsLost,proto3" json:"exec_events_lost,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Exec hash requests the miner-signature hasher dropped because its queue
+	// was full, cumulative since the daemon started (#2768). Requests are made
+	// only while sha256 entries exist; a dropped exec is never hashed, so a
+	// sha256 entry can miss it (name and argv entries still matched it).
+	// An executable already hashed is served from a cache by (device, inode,
+	// size, mtime, ctime) without being read again, so the queue drains fast
+	// and a non-zero count means a burst of execs the worker could not keep
+	// up with.
+	ExecHashesDropped int64 `protobuf:"varint,7,opt,name=exec_hashes_dropped,json=execHashesDropped,proto3" json:"exec_hashes_dropped,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetSentryStatusResponse) Reset() {
@@ -2246,6 +2255,13 @@ func (x *GetSentryStatusResponse) GetExecTelemetry() string {
 func (x *GetSentryStatusResponse) GetExecEventsLost() int64 {
 	if x != nil {
 		return x.ExecEventsLost
+	}
+	return 0
+}
+
+func (x *GetSentryStatusResponse) GetExecHashesDropped() int64 {
+	if x != nil {
+		return x.ExecHashesDropped
 	}
 	return 0
 }
@@ -3449,7 +3465,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x03 \x01(\tR\tlastError\x12>\n" +
 	"\rlast_error_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vlastErrorAt\"\x18\n" +
-	"\x16GetSentryStatusRequest\"\x8a\x02\n" +
+	"\x16GetSentryStatusRequest\"\xba\x02\n" +
 	"\x17GetSentryStatusResponse\x122\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1c.containarium.v1.SentryStateR\x05state\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
@@ -3457,7 +3473,8 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\vcpu_sampler\x18\x04 \x01(\tR\n" +
 	"cpuSampler\x12%\n" +
 	"\x0eexec_telemetry\x18\x05 \x01(\tR\rexecTelemetry\x12(\n" +
-	"\x10exec_events_lost\x18\x06 \x01(\x03R\x0eexecEventsLost\"\xa5\x01\n" +
+	"\x10exec_events_lost\x18\x06 \x01(\x03R\x0eexecEventsLost\x12.\n" +
+	"\x13exec_hashes_dropped\x18\a \x01(\x03R\x11execHashesDropped\"\xa5\x01\n" +
 	"\tExecEvent\x12\x1c\n" +
 	"\tcontainer\x18\x01 \x01(\tR\tcontainer\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12*\n" +

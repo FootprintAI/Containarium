@@ -86,6 +86,38 @@ func rec(container string, pid uint32, at time.Time) ExecEventRecord {
 		Event: netbpf.ExecEvent{HostPID: pid, PPID: 1, UID: 1000, CgroupID: 7, Comm: "sh", Filename: "/bin/sh", Argv: []string{"sh", "-c", "true"}}}
 }
 
+type fakeExecHashSource struct{ dropped int64 }
+
+func (f fakeExecHashSource) Dropped() int64 { return f.dropped }
+
+// TestGetSentryStatus_ExecHashesDropped (#2768): the hasher's queue-full drops
+// ride the status response, 0 while no hasher is wired.
+func TestGetSentryStatus_ExecHashesDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  execHashSource
+		want int64
+	}{
+		{name: "no hasher wired"},
+		{name: "hasher with drops", src: fakeExecHashSource{dropped: 37}, want: 37},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", false, nil, nil)
+			s := NewThreatDetectionServer(engine, true, true, "")
+			if tc.src != nil {
+				s.SetExecHashSource(tc.src)
+			}
+			resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
+			if err != nil {
+				t.Fatalf("GetSentryStatus: %v", err)
+			}
+			if resp.ExecHashesDropped != tc.want {
+				t.Fatalf("exec_hashes_dropped = %d, want %d", resp.ExecHashesDropped, tc.want)
+			}
+		})
+	}
+}
+
 // TestGetSentryStatus_ExecTelemetry: exec_telemetry and exec_events_lost
 // ride the status response while the sentry is running — "unavailable (not
 // started)" until a watcher is wired, then whatever the watcher reports.
