@@ -529,6 +529,18 @@ func TestProcessResponder_RecordKillWritesOnlyNews(t *testing.T) {
 	})
 }
 
+// orphanListStore lists every open action as orphaned, so the sweep reaps a
+// row the fixture confirmed (as if the daemon had died before confirming it).
+type orphanListStore struct{ threatdetect.ActionStore }
+
+func (s orphanListStore) ListOrphaned(ctx context.Context, _ time.Time) ([]*threatdetect.SecurityAction, error) {
+	row, err := s.Open(ctx, "box-a")
+	if err != nil {
+		return nil, err
+	}
+	return []*threatdetect.SecurityAction{row}, nil
+}
+
 // #2775 review: a recorded skip reason survives the release, expiry and
 // orphan-sweep writes. A box whose kill was refused has no kill of its own
 // on its action row (#2772: the record is per box), but the reason on record
@@ -564,6 +576,17 @@ func TestProcessResponder_ReleaseKeepsSkipReason(t *testing.T) {
 		}
 		if w := fx.findings.lastWrite(); w.State != pb.ResponseState_RESPONSE_STATE_EXPIRED || w.ProcessKilled || w.KillSkipReason != initSkip {
 			t.Fatalf("expiry write = %+v, want EXPIRED, not killed, CONTAINER_INIT kept", w)
+		}
+	})
+	t.Run("orphan sweep", func(t *testing.T) { // #2816 item 5: the third writer
+		fx, _ := setup(t)
+		fx.r.actions = orphanListStore{fx.actions}
+		if n := fx.r.SweepExpired(ctx, fx.clock.Add(time.Second)); n != 1 {
+			t.Fatalf("swept = %d, want 1", n)
+		}
+		if w := fx.findings.lastWrite(); w.State != pb.ResponseState_RESPONSE_STATE_RELEASED || w.ReleasedBy != threatdetect.ReleasedByOrphanSweep ||
+			w.ProcessKilled || w.KillSkipReason != initSkip {
+			t.Fatalf("orphan-sweep write = %+v, want RELEASED by the sweep, not killed, CONTAINER_INIT kept", w)
 		}
 	})
 	t.Run("the row is the fallback when the finding is gone", func(t *testing.T) {
