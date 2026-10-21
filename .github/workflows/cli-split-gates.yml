@@ -86,9 +86,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: build-all
 
       - name: Build release binaries (make build-all)
         # The real release recipe, minus its proto/web-ui/swagger-ui
@@ -108,9 +109,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: cli-binaries
 
       - name: Build containarium (client)
         run: CGO_ENABLED=0 go build -tags containarium_client -o /dev/null ./cmd/containarium
@@ -166,9 +168,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: cli-tests
 
       # ./internal/coderun/... joins this lane in #1727. It was in NO lane
       # before — this repo has no `go test ./...` gate (see the note in

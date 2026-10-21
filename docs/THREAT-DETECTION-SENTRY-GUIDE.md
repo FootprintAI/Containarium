@@ -350,7 +350,24 @@ response then ends
 without an action (an ALERT policy or override, a policy read error, a
 failed apply, a degraded backend, or a skip), the worker resolves the
 finding itself (audited `resolve`), so a kept-open finding never outlives
-the last response. The shared finding's response names the box it is about
+the last response. The same holds when B's action ends without a release:
+if B's TTL expires, the orphan sweep undoes B's never-confirmed apply, or B
+is deleted, the write that records B's end also resolves the finding
+(audited `resolve`, one post carrying B's record with finding `state: 2`).
+That only finishes an operator's release on another box: when no box of
+the finding was released by an operator, an expiry or deletion leaves the
+finding open for you, as a single box's expiry always has. Deleting a box
+(`containarium delete`, or the TTL sweeper) closes its open action without
+touching Incus, `released_by: container-deleted`, so the deleted box no
+longer holds the finding or shows as `APPLIED`; a box deleted some other
+way is closed the same way by the next TTL or orphan sweep, which finds it
+missing instead of retrying the undo. An apply that was recorded but never
+confirmed (the daemon died between the two) on box B also holds the
+finding open, since the throttle may have taken effect, but it is never
+shown as `APPLIED`: releasing A then records A's `RELEASED`. The orphan
+sweep ends such a row 5 minutes after it was recorded (up to one more
+minute for the sweep), which bounds how long it can hold the finding.
+The shared finding's response names the box it is about
 (`findings list` prints `response THROTTLE APPLIED on box-b`; `--json` has
 `response.container`). While any box still holds an applied action the
 response is that box's `APPLIED` record, so releasing A, or A's TTL
@@ -447,8 +464,17 @@ A finding is delivered when it is new, when its severity escalates, when
 the process responder's response on a box changes, and once more when it
 resolves.
 
-`response.container` names the box a response is about, and a response
-post's top-level `container` names the same box. A miner-signature finding
+`response.container` names the box a response is about. Every post that
+carries a response names the same box in its top-level `container`, with
+one exception: a post caused by a re-fire of the finding (the hourly
+re-notify, or a held-back kill delivered by the finding's next write, see
+below) names the box that re-fired, while `response.container` names the
+box whose record the finding shows, which can be another box of a shared
+finding. A post with no `response` names the box that wrote it. A
+resolve names the box of the response it carries, whether it came from a
+release, from the end of the last box holding the finding, or from
+`findings resolve`. Read `response.container`, not `container`, to learn
+which box a response is about. A miner-signature finding
 is per tenant and pattern, so several boxes of one tenant running the same
 miner share one finding (one `id`). Each box's apply, release, expiry and
 failure is its own post, naming that box: for two boxes A and B under
@@ -497,7 +523,9 @@ start time could not be read, so the pid could not be confirmed). The first skip
 delivered at once and a different reason at most once a minute; the pid
 and error detail stay in the audit log (`kill-skipped`), not the webhook.
 `response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
-RELEASED, `5` EXPIRED. Fields that are zero or empty are omitted from the
+RELEASED, `5` EXPIRED. `response.released_by` is `operator`, `ttl`,
+`orphan-sweep` or `container-deleted` (the box no longer exists, so
+nothing was restored). Fields that are zero or empty are omitted from the
 JSON.
 
 ## Managing the known-bad-destination list
