@@ -2724,8 +2724,11 @@ skipAppHosting:
 				// has an audit store. The reference rules engine runs
 				// in-process.
 				InboundPolicy: guardrailPolicyServer.Provider(),
-				InboundEngine: guardrail.RulesEngine{},
-				InboundAudit:  newGatewayInboundAudit(auditStore),
+				// The baseline's LOG/BLOCK switch (#2738), stored next to
+				// the policy; a switch invalidates the cached read below.
+				InboundBaselineMode: guardrailPolicyServer.BaselineModeProvider(),
+				InboundEngine:       guardrail.RulesEngine{},
+				InboundAudit:        newGatewayInboundAudit(auditStore),
 			})
 			modelGW = gw
 			guardrailPolicyServer.SetOnChange(gw.InvalidateInboundPolicy)

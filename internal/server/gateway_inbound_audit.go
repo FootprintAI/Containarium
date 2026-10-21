@@ -59,7 +59,9 @@ func (a gatewayInboundAudit) RecordInboundBlock(ctx context.Context, b modelgate
 
 // modelGatewayInboundDetectionAction is the audit action of one baseline
 // rule that matched in a model response while no admin policy exists
-// (#2736). Log-only: the response was delivered.
+// (#2736). Action "log": the response was delivered; action "block" (the
+// baseline's BLOCK mode, #2738): it was blocked, and a
+// model_gateway.inbound_block entry records the block itself.
 const modelGatewayInboundDetectionAction = "model_gateway.inbound_detection"
 
 // inboundDetectionAuditDetail is the Detail of a

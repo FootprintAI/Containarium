@@ -64,11 +64,14 @@ type CPUConsumer interface {
 // by the kernel program and never containing the environment. SHA256 is
 // empty on the first delivery; a rule that needs it asks the watcher to hash
 // /proc/<pid>/exe and gets a second OnExec with it filled (#2638).
+// StartTime is the process's /proc/<pid>/stat start time read when the
+// watcher decoded the exec, 0 when the process had already exited (#2765).
 type ExecEvent struct {
 	Container     string
 	TenantID      string
 	At            time.Time
 	PID           uint32
+	StartTime     ProcStartTicks
 	PPID          uint32
 	UID           uint32
 	Comm          string

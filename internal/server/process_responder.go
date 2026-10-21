@@ -683,6 +683,8 @@ func killSkipReasonOf(err error) pb.KillSkipReason {
 		return pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE
 	case errors.Is(err, errKillContainerInit):
 		return pb.KillSkipReason_KILL_SKIP_REASON_CONTAINER_INIT
+	case errors.Is(err, errKillStartTimeUnknown):
+		return pb.KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN
 	}
 	return pb.KillSkipReason_KILL_SKIP_REASON_OTHER
 }
@@ -710,9 +712,9 @@ func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Findin
 		return killOutcome{}
 	}
 	ex := *target
-	detail := fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s pid=%d comm=%q filename=%q matched=%q",
-		f.ID, f.Rule, f.TenantID, f.Container, ex.PID, ex.Comm, ex.Filename, ex.Matched)
-	if err := r.killer.KillInContainer(f.Container, ex.PID); err != nil {
+	detail := fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s pid=%d start_time=%d comm=%q filename=%q matched=%q",
+		f.ID, f.Rule, f.TenantID, f.Container, ex.PID, ex.StartTime, ex.Comm, ex.Filename, ex.Matched)
+	if err := r.killer.KillInContainer(f.Container, ex.PID, ex.StartTime); err != nil {
 		r.auditLog(ctx, "kill-skipped", f.Container, fmt.Sprintf("%s kill_skipped=%q", detail, err.Error()))
 		log.Printf("[process-responder] kill pid %d on %s (finding %d) skipped: %v", ex.PID, f.Container, f.ID, err)
 		return killOutcome{skip: killSkipReasonOf(err)}

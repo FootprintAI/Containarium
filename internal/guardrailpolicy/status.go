@@ -49,8 +49,14 @@ func DescribeStatus(resp *pb.GetGuardrailStatusResponse) string {
 	switch resp.GetResponsePolicy() {
 	case pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE:
 		b.WriteString("Response policy: baseline (no admin policy has been set)\n")
-		b.WriteString("  Model responses are scanned with the built-in rules, log-only: a match is\n")
-		b.WriteString("  audited and logged, and the response is delivered unchanged.\n")
+		describeBaselineMode(&b, resp.GetBaseline(), true)
+		if resp.GetBaseline().GetMode() == pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK {
+			b.WriteString("  Model responses are held, scanned with the built-in rules and blocked on a\n")
+			b.WriteString("  match; a match is audited and logged.\n")
+		} else {
+			b.WriteString("  Model responses are scanned with the built-in rules, log-only: a match is\n")
+			b.WriteString("  audited and logged, and the response is delivered unchanged.\n")
+		}
 		fmt.Fprintf(&b, "  Rules (%d):\n", len(resp.GetBaselineRuleIds()))
 		for _, id := range resp.GetBaselineRuleIds() {
 			fmt.Fprintf(&b, "    %s\n", id)
@@ -61,12 +67,32 @@ func DescribeStatus(resp *pb.GetGuardrailStatusResponse) string {
 		for _, k := range resp.GetInboundBlockKinds() {
 			fmt.Fprintf(&b, "    %s\n", strings.TrimPrefix(k.String(), "GUARDRAIL_KIND_"))
 		}
+		describeBaselineMode(&b, resp.GetBaseline(), false)
 	case pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_NONE:
 		fmt.Fprintf(&b, "Response policy: none (policy revision %d)\n", resp.GetPolicyRevision())
 		b.WriteString("  Model responses are not scanned: the admin policy has no inbound BLOCK rule,\n")
 		b.WriteString("  and a configured policy turns the baseline off.\n")
+		describeBaselineMode(&b, resp.GetBaseline(), false)
 	default:
 		b.WriteString("Response policy: unknown (the daemon did not report one)\n")
 	}
 	return b.String()
+}
+
+// describeBaselineMode prints the stored baseline mode (#2738). A daemon that
+// predates the mode sends none, and prints nothing: it is log-only.
+func describeBaselineMode(b *strings.Builder, bs *pb.GuardrailBaselineSetting, inEffect bool) {
+	if bs == nil {
+		return
+	}
+	mode := strings.ToLower(strings.TrimPrefix(bs.GetMode().String(), "GUARDRAIL_BASELINE_MODE_"))
+	if bs.GetRevision() == 0 {
+		fmt.Fprintf(b, "  Baseline mode: %s (default, never set)", mode)
+	} else {
+		fmt.Fprintf(b, "  Baseline mode: %s (revision %d, set by %s)", mode, bs.GetRevision(), bs.GetUpdatedBy())
+	}
+	if !inEffect {
+		b.WriteString("; not in effect while an admin policy is configured")
+	}
+	b.WriteString("\n")
 }

@@ -42,7 +42,59 @@ type SetResult struct {
 // signers as given; validation is the caller's job (see Validate).
 type Store interface {
 	PolicyProvider
+	BaselineModeProvider
 	Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error)
+	// SetBaselineMode stores the baseline mode (LOG or BLOCK; anything else
+	// is ErrInvalidBaselineMode), revision = previous + 1. It never touches
+	// the policy, so it cannot turn the baseline off. beforeCommit (nil =
+	// none) runs with the new setting while the change is still pending:
+	// an error from it discards the change and is returned, so a caller
+	// can make the change conditional on its audit entry being written.
+	SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit BaselineBeforeCommit) (*BaselineSetResult, error)
+}
+
+// BaselineModeProvider is the read side of the baseline mode (#2738), kept
+// next to the policy but separate from it. A mode never set reads as
+// DefaultBaseline (LOG, revision 0); any error is a read error.
+type BaselineModeProvider interface {
+	GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetting, error)
+}
+
+// BaselineSetResult is what one SetBaselineMode replaced and stored.
+// Previous is DefaultBaseline when the mode was never set.
+type BaselineSetResult struct {
+	Previous *pb.GuardrailBaselineSetting
+	Current  *pb.GuardrailBaselineSetting
+}
+
+// BaselineBeforeCommit is SetBaselineMode's hook; see Store.
+type BaselineBeforeCommit func(*BaselineSetResult) error
+
+// ErrInvalidBaselineMode is SetBaselineMode's answer to a mode other than
+// LOG or BLOCK.
+var ErrInvalidBaselineMode = errors.New("baseline mode must be LOG or BLOCK")
+
+// DefaultBaseline is the setting of a daemon whose baseline mode was never
+// set: log-only (#2575, Q3 on #2727).
+func DefaultBaseline() *pb.GuardrailBaselineSetting {
+	return &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG}
+}
+
+// ValidBaselineMode reports whether mode may be stored.
+func ValidBaselineMode(mode pb.GuardrailBaselineMode) bool {
+	return mode == pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG ||
+		mode == pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK
+}
+
+// NextBaseline builds the setting a SetBaselineMode stores on top of prev.
+// Exported for the Postgres store in pgstore.
+func NextBaseline(prev *pb.GuardrailBaselineSetting, mode pb.GuardrailBaselineMode, updatedBy string, now time.Time) *pb.GuardrailBaselineSetting {
+	return &pb.GuardrailBaselineSetting{
+		Mode:      mode,
+		Revision:  prev.GetRevision() + 1,
+		UpdatedAt: timestamppb.New(now.UTC().Truncate(time.Microsecond)),
+		UpdatedBy: updatedBy,
+	}
 }
 
 // Hash is the policy hash a GuardrailAttestation records for this policy:
@@ -78,11 +130,38 @@ func Clone(p *pb.ServerGuardrailPolicy) *pb.ServerGuardrailPolicy {
 // MemoryStore is the in-process store for daemons without a database and
 // for tests. It does not survive a restart.
 type MemoryStore struct {
-	mu  sync.Mutex
-	cur *pb.ServerGuardrailPolicy
+	mu       sync.Mutex
+	cur      *pb.ServerGuardrailPolicy
+	baseline *pb.GuardrailBaselineSetting
 }
 
-func NewMemoryStore() *MemoryStore { return &MemoryStore{} }
+func NewMemoryStore() *MemoryStore { return &MemoryStore{baseline: DefaultBaseline()} }
+
+func (m *MemoryStore) GetBaselineMode(context.Context) (*pb.GuardrailBaselineSetting, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return proto.Clone(m.baseline).(*pb.GuardrailBaselineSetting), nil
+}
+
+func (m *MemoryStore) SetBaselineMode(_ context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit BaselineBeforeCommit) (*BaselineSetResult, error) {
+	if !ValidBaselineMode(mode) {
+		return nil, ErrInvalidBaselineMode
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := NextBaseline(m.baseline, mode, updatedBy, time.Now())
+	res := &BaselineSetResult{
+		Previous: proto.Clone(m.baseline).(*pb.GuardrailBaselineSetting),
+		Current:  proto.Clone(cur).(*pb.GuardrailBaselineSetting),
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(res); err != nil {
+			return nil, err
+		}
+	}
+	m.baseline = cur
+	return res, nil
+}
 
 func (m *MemoryStore) Get(context.Context) (*pb.ServerGuardrailPolicy, error) {
 	m.mu.Lock()

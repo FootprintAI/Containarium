@@ -15,7 +15,8 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// fakeProc writes /proc/<pid>/cgroup files under a temp root.
+// fakeProc writes /proc/<pid>/cgroup files under a temp root, and a
+// /proc/<pid>/stat whose start time (field 22) is fakeStart(pid).
 func fakeProc(t *testing.T, cgroups map[int]string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -27,8 +28,130 @@ func fakeProc(t *testing.T, cgroups map[int]string) string {
 		if err := os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::"+path+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		writeStat(t, root, pid, "box proc", fakeStart(pid))
 	}
 	return root
+}
+
+// fakeStart is the start time fakeProc gives pid: distinct per pid.
+func fakeStart(pid int) threatdetect.ProcStartTicks {
+	return threatdetect.ProcStartTicks(1_000_000 + pid) // #nosec G115 -- small test pids
+}
+
+// statLine renders a /proc/<pid>/stat line with start (field 22) set.
+func statLine(pid int, comm string, start threatdetect.ProcStartTicks) string {
+	// Fields 3..21: state ppid pgrp session tty_nr tpgid flags minflt
+	// cminflt majflt cmajflt utime stime cutime cstime priority nice
+	// num_threads itrealvalue; then 22 starttime, 23 vsize, 24 rss.
+	return fmt.Sprintf("%d (%s) S 1 %d %d 0 -1 4194560 10 0 0 0 7 3 0 0 20 0 1 0 %d 1234567 89\n", pid, comm, pid, pid, start)
+}
+
+func writeStat(t *testing.T, root string, pid int, comm string, start threatdetect.ProcStartTicks) {
+	t.Helper()
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(statLine(pid, comm, start)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestParseProcStatStartTime: field 22 is counted from the LAST ')', so a
+// comm with spaces, parentheses or a ") S 1 2" lookalike cannot shift it.
+func TestParseProcStatStartTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    threatdetect.ProcStartTicks
+		wantErr bool
+	}{
+		{name: "plain", in: statLine(4242, "xmrig", 987654), want: 987654},
+		{name: "comm with spaces", in: statLine(4242, "my miner", 55), want: 55},
+		{name: "comm with parens", in: statLine(4242, "a) (b", 66), want: 66},
+		{name: "comm forging fields", in: statLine(4242, "x) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 999", 77), want: 77},
+		{name: "no closing paren", in: "4242 (xmrig S 1 2 3", wantErr: true},
+		{name: "truncated", in: "4242 (xmrig) S 1 4242 4242 0 -1", wantErr: true},
+		{name: "not a number", in: "4242 (xmrig) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 abc 1", wantErr: true},
+		{name: "zero is not a start time", in: statLine(4242, "xmrig", 0), wantErr: true},
+		{name: "empty", in: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseProcStatStartTime([]byte(tt.in))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("got %d, want an error", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("got %d, %v; want %d", got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestHostProcessKiller_StartTimeCheck (#2765): after the pin and the cgroup
+// re-check, the kill compares the pinned pid's start time with the matched
+// exec's. A pid reused by another process of the SAME box (same cgroup,
+// different start time) is refused as pid reused; a matching start time is
+// still killed; an exec with no recorded start time is never signalled.
+func TestHostProcessKiller_StartTimeCheck(t *testing.T) {
+	const initPID, pid = 100, 4242
+	proc := fakeProc(t, map[int]string{
+		initPID: "/lxc.payload.box-a/init.scope",
+		pid:     "/lxc.payload.box-a/system.slice/ssh.service",
+	})
+	tests := []struct {
+		name    string
+		start   threatdetect.ProcStartTicks // the matched exec's
+		noStat  bool
+		wantErr error // nil = killed
+	}{
+		{name: "matching start time is killed", start: fakeStart(pid)},
+		{name: "same-box pid reuse is refused", start: fakeStart(pid) - 500, wantErr: errKillPIDReused},
+		{name: "newer process holds the pid", start: fakeStart(pid) + 1, wantErr: errKillPIDReused},
+		{name: "no start time recorded is refused", start: 0, wantErr: errKillStartTimeUnknown},
+		{name: "stat gone after the pin", start: fakeStart(pid), noStat: true, wantErr: errKillProcessGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := proc
+			if tt.noStat {
+				root = fakeProc(t, map[int]string{initPID: "/lxc.payload.box-a/init.scope", pid: "/lxc.payload.box-a/user.slice"})
+				if err := os.Remove(filepath.Join(root, strconv.Itoa(pid), "stat")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var killed []int
+			opened := 0
+			k := &hostProcessKiller{
+				procRoot: root,
+				initPID:  func(string) (int64, error) { return initPID, nil },
+				open: func(p int) (pidHandle, error) {
+					opened++
+					return fakePIDHandle{killed: &killed, pid: p}, nil
+				},
+			}
+			err := k.KillInContainer("box-a", pid, tt.start)
+			if tt.wantErr == nil {
+				if err != nil || len(killed) != 1 || killed[0] != pid {
+					t.Fatalf("err=%v killed=%v, want pid %d killed", err, killed, pid)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if len(killed) != 0 {
+				t.Fatalf("signalled %v on a refused kill", killed)
+			}
+			if tt.wantErr == errKillPIDReused && opened != 1 {
+				t.Fatalf("pidfd opened %d times; the start time must be compared after the pin", opened)
+			}
+		})
+	}
 }
 
 type fakePIDHandle struct {
@@ -86,7 +209,7 @@ func TestHostProcessKiller_CgroupRecheck(t *testing.T) {
 					return fakePIDHandle{killed: &killed, pid: pid, err: tt.killErr}, nil
 				},
 			}
-			err := k.KillInContainer("box-a", tt.pid)
+			err := k.KillInContainer("box-a", tt.pid, fakeStart(int(tt.pid)))
 			if tt.wantErr == nil {
 				if err != nil || len(killed) != 1 || killed[0] != int(tt.pid) {
 					t.Fatalf("err=%v killed=%v, want pid %d killed", err, killed, tt.pid)
@@ -108,27 +231,29 @@ func TestHostProcessKiller_RefusesLowPIDsAndStoppedBox(t *testing.T) {
 		initPID: func(string) (int64, error) { return 0, nil },
 		open:    func(int) (pidHandle, error) { t.Fatal("must not open"); return nil, nil }}
 	for _, pid := range []uint32{0, 1} {
-		if err := k.KillInContainer("box-a", pid); err == nil {
+		if err := k.KillInContainer("box-a", pid, fakeStart(int(pid))); err == nil {
 			t.Errorf("pid %d: kill not refused", pid)
 		}
 	}
-	if err := k.KillInContainer("box-a", 4242); !errors.Is(err, errKillProcessGone) {
+	if err := k.KillInContainer("box-a", 4242, fakeStart(4242)); !errors.Is(err, errKillProcessGone) {
 		t.Errorf("stopped box: err = %v, want errKillProcessGone", err)
 	}
 	k.initPID = func(string) (int64, error) { return 0, errors.New("incus down") }
-	if err := k.KillInContainer("box-a", 4242); err == nil {
+	if err := k.KillInContainer("box-a", 4242, fakeStart(4242)); err == nil {
 		t.Error("init pid lookup failure must refuse the kill")
 	}
 }
 
 // fakeKiller records KillInContainer calls; err scripts a refusal.
 type fakeKiller struct {
-	calls []string
-	err   error
+	calls  []string
+	starts []threatdetect.ProcStartTicks
+	err    error
 }
 
-func (k *fakeKiller) KillInContainer(container string, pid uint32) error {
+func (k *fakeKiller) KillInContainer(container string, pid uint32, start threatdetect.ProcStartTicks) error {
 	k.calls = append(k.calls, fmt.Sprintf("%s:%d", container, pid))
+	k.starts = append(k.starts, start)
 	return k.err
 }
 
@@ -270,6 +395,52 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		d := auditDetails(fx.audit, "kill-skipped")
 		if len(d) != 1 || !strings.Contains(d[0], "pid reused") || len(auditDetails(fx.audit, "kill")) != 0 {
 			t.Fatalf("audit kill-skipped=%v", d)
+		}
+	})
+	t.Run("matched exec's start time reaches the killer", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{}
+		fx.r.SetProcessKiller(k)
+		fx.setKill(t, "", true)
+		if _, err := NewActingSink(fx.findings, fx.r).Upsert(context.Background(), &threatdetect.Finding{
+			Rule: ruleMinerSignature, Severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH, TenantID: "tenant-a",
+			Container: "box-a", Subject: "name:xmrig",
+			Evidence: threatdetect.Evidence{Execs: []threatdetect.ExecEvidence{{PID: 4242, StartTime: 987654, Comm: "xmrig",
+				Filename: "/tmp/xmrig", Matched: "name:xmrig"}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(k.starts) != 1 || k.starts[0] != 987654 {
+			t.Fatalf("killer got start times %v, want [987654] (#2765)", k.starts)
+		}
+		if d := auditDetails(fx.audit, "kill"); len(d) != 1 || !strings.Contains(d[0], "start_time=987654") {
+			t.Fatalf("kill audit = %v, want the start time it checked", d)
+		}
+	})
+	t.Run("same-box pid reuse is audited as skipped (#2765)", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{err: fmt.Errorf("pid 4242 start time 2 != matched 1: %w", errKillPIDReused)}
+		fx.r.SetProcessKiller(k)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 4242)
+		if f.Response == nil || f.Response.ProcessKilled || f.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED {
+			t.Fatalf("response = %+v, want not killed, PID_REUSED", f.Response)
+		}
+		if d := auditDetails(fx.audit, "kill-skipped"); len(d) != 1 || !strings.Contains(d[0], "pid reused") {
+			t.Fatalf("audit kill-skipped = %v", d)
+		}
+	})
+	t.Run("no start time is skipped as START_TIME_UNKNOWN", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{err: fmt.Errorf("pid 4242: %w", errKillStartTimeUnknown)}
+		fx.r.SetProcessKiller(k)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 4242)
+		if f.Response == nil || f.Response.ProcessKilled || f.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN {
+			t.Fatalf("response = %+v, want not killed, START_TIME_UNKNOWN", f.Response)
+		}
+		if d := auditDetails(fx.audit, "kill-skipped"); len(d) != 1 || !strings.Contains(d[0], "start time unknown") {
+			t.Fatalf("audit kill-skipped = %v", d)
 		}
 	})
 	t.Run("mining-behavior never kills", func(t *testing.T) {
