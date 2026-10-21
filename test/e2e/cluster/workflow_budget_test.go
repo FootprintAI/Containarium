@@ -18,6 +18,7 @@ package clustere2e
 // happening to read it. This does not.
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 )
 
 const containerLaneWorkflow = "../../../.github/workflows/cluster-container-e2e.yml"
+const kvmLaneWorkflow = "../../../.github/workflows/cluster-e2e.yml"
 
 // laneSetupBudget is the runner provisioning the job does before the
 // suite starts: Incus install, ZFS pool, build, Postgres image pull.
@@ -109,6 +111,49 @@ func TestContainerLaneJobCapExceedsItsTestBudget(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatalf("no job in %s sets CONTAINARIUM_E2E_GO_TIMEOUT; this test is checking nothing", containerLaneWorkflow)
+	}
+}
+
+func TestKVMLaneBudgetsAreConfigurableAndFit(t *testing.T) {
+	raw, err := os.ReadFile(kvmLaneWorkflow)
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	var wf workflowFile
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse workflow: %v", err)
+	}
+	job, ok := wf.Jobs["kvm-e2e"]
+	if !ok {
+		t.Fatalf("no kvm-e2e job in %s", kvmLaneWorkflow)
+	}
+
+	defaults := map[string]string{
+		"CONTAINARIUM_E2E_GO_TIMEOUT":        "130m",
+		"CONTAINARIUM_E2E_READY_TIMEOUT":     "25m",
+		"CONTAINARIUM_E2E_SCALEUP_TIMEOUT":   "12m",
+		"CONTAINARIUM_E2E_VPA_TIMEOUT":       "15m",
+		"CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT": "30m",
+		"CONTAINARIUM_E2E_DELETE_TIMEOUT":    "10m",
+	}
+	for key, fallback := range defaults {
+		want := fmt.Sprintf("${{ vars.%s || '%s' }}", key, fallback)
+		if got := job.Env[key]; got != want {
+			t.Errorf("kvm-e2e env %s = %q, want configurable repository variable with default %q", key, got, fallback)
+		}
+	}
+
+	goTimeout := mustDuration(t, defaults, "CONTAINARIUM_E2E_GO_TIMEOUT")
+	stepTotal := 2*mustDuration(t, defaults, "CONTAINARIUM_E2E_READY_TIMEOUT") +
+		2*mustDuration(t, defaults, "CONTAINARIUM_E2E_SCALEUP_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_VPA_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT") +
+		mustDuration(t, defaults, "CONTAINARIUM_E2E_DELETE_TIMEOUT")
+	if stepTotal > goTimeout {
+		t.Errorf("step budgets total %v but Go timeout is %v", stepTotal, goTimeout)
+	}
+	if job.TimeoutMinutes == 0 || time.Duration(job.TimeoutMinutes)*time.Minute <= goTimeout+laneSetupBudget {
+		t.Errorf("job cap %d minutes must exceed Go timeout %v plus %v of setup", job.TimeoutMinutes, goTimeout, laneSetupBudget)
 	}
 }
 
