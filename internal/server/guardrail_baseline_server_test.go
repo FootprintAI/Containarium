@@ -136,7 +136,8 @@ func TestSetBaselineMode_AuditFailureFailsTheSet(t *testing.T) {
 }
 
 // TestSetBaselineMode_NoAuditStoreKeepsCurrentBehaviour pins today's
-// behaviour on a daemon with no audit store (no Postgres): the switch
+// behaviour on a daemon with no audit store (no Postgres, REST disabled, or
+// an audit store that failed to start): the switch
 // succeeds without an entry. Whether that should change is an open question
 // on #2727; this test only records the current behaviour.
 func TestSetBaselineMode_NoAuditStoreKeepsCurrentBehaviour(t *testing.T) {

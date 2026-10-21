@@ -4469,7 +4469,7 @@
     "/v1/guardrail/baseline": {
       "put": {
         "summary": "Set the baseline response scan mode",
-        "description": "Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; a daemon without a database writes no entry. Admin role only.",
+        "description": "Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.",
         "operationId": "GuardrailPolicyService_SetGuardrailBaselineMode",
         "responses": {
           "200": {
