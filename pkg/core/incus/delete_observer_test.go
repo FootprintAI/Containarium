@@ -69,3 +69,19 @@ func TestDeleteContainer_TellsTheDeleteObservers(t *testing.T) {
 		t.Errorf("a removed observer was still told: %v", got)
 	}
 }
+
+// A panicking observer must not fail the delete or stop the others.
+func TestDeleteContainer_ObserverPanicIsContained(t *testing.T) {
+	removeBad := OnContainerDeleted(func(string, string) { panic("observer bug") })
+	defer removeBad()
+	called := false
+	removeGood := OnContainerDeleted(func(string, string) { called = true })
+	defer removeGood()
+	c := &Client{server: &fakeDeleteServer{inst: &api.Instance{Name: "box-a"}}}
+	if err := c.DeleteContainer("box-a"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("the other observer was not told")
+	}
+}

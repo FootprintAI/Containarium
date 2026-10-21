@@ -297,3 +297,97 @@ func TestUndoNotFound_BoxStillThereIsRetried(t *testing.T) {
 		t.Errorf("release audit = %v, want none", d)
 	}
 }
+
+// TestContainerDeleted_UnknownInstanceLooksTheBoxUp (#2897 review): when the
+// deleted instance's id or the open row's id is unknown, the close cannot
+// tell the deleted box's action from a new same-named box's. It looks the
+// box up and closes only when no box by that name exists; an existing box's
+// action is left to the sweep and its undo, never closed without one.
+func TestContainerDeleted_UnknownInstanceLooksTheBoxUp(t *testing.T) {
+	ctx := context.Background()
+	t.Run("no id at delete, a new box-b is throttled", func(t *testing.T) {
+		fx, _ := twoThrottled(t) // box-b's action is the live instance's
+		fx.r.ContainerDeleted(ctx, "box-b", "")
+		fx.r.waitBackground()
+		if _, err := openAction(fx, "box-b"); err != nil {
+			t.Errorf("box-b's action was closed without an undo: %v", err)
+		}
+	})
+	t.Run("no id at apply, the delete names an older instance", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		row := &threatdetect.SecurityAction{FindingID: 1, Container: "box-b", TenantID: "tenant-a",
+			Action: pb.ProcessAction_PROCESS_ACTION_FREEZE, AppliedAt: fx.clock, ExpiresAt: fx.clock.Add(time.Hour)}
+		if err := fx.actions.Insert(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		fx.r.ContainerDeleted(ctx, "box-b", "id-of-an-older-box-b")
+		fx.r.waitBackground()
+		if _, err := openAction(fx, "box-b"); err != nil {
+			t.Errorf("box-b's action was closed without an undo: %v", err)
+		}
+	})
+	t.Run("no id at delete, the box is gone", func(t *testing.T) {
+		fx, _ := twoThrottled(t)
+		fx.act.mu.Lock()
+		fx.act.missing["box-b"] = true
+		fx.act.mu.Unlock()
+		fx.r.ContainerDeleted(ctx, "box-b", "")
+		fx.r.waitBackground()
+		if row := latestRow(t, fx, "box-b"); row.Open() || row.ReleasedBy != threatdetect.ReleasedByContainerDeleted {
+			t.Errorf("box-b's row = %+v, want closed by %s", row, threatdetect.ReleasedByContainerDeleted)
+		}
+	})
+}
+
+// TestBoxGone_EmptyLiveIDIsUnknown: a box whose instance id reads empty is
+// not a different instance; its undo runs.
+func TestBoxGone_EmptyLiveIDIsUnknown(t *testing.T) {
+	fx := newResponderFixture(t, false)
+	fx.act.count["box-a"], fx.act.allow["box-a"] = "2", "200ms/100ms"
+	fx.act.ids["box-a"] = "uuid-1"
+	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+	fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+	fx.act.ids["box-a"] = ""
+	if n := fx.r.SweepExpired(context.Background(), fx.clock.Add(61*time.Minute)); n != 1 {
+		t.Fatalf("SweepExpired released %d, want 1", n)
+	}
+	if fx.act.count["box-a"] != "2" || fx.act.allow["box-a"] != "200ms/100ms" {
+		t.Errorf("limits = %q/%q, want the recorded 2/200ms/100ms restored", fx.act.count["box-a"], fx.act.allow["box-a"])
+	}
+}
+
+// TestRun_RegistersTheDeleteHook: the responder hooks Incus deletes for as
+// long as it runs (the daemon starts it with Run), and unhooks on shutdown.
+func TestRun_RegistersTheDeleteHook(t *testing.T) {
+	fx, _ := twoThrottled(t)
+	hooked := make(chan func(name, instanceID string), 1)
+	removed := make(chan struct{})
+	fx.r.registerDelete = func(fn func(name, instanceID string)) func() {
+		hooked <- fn
+		return func() { close(removed) }
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { fx.r.Run(ctx); close(done) }()
+	var fn func(string, string)
+	select {
+	case fn = <-hooked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not register the delete hook")
+	}
+	fx.act.mu.Lock()
+	fx.act.missing["box-b"] = true
+	fx.act.mu.Unlock()
+	fn("box-b", "id-box-b")
+	fx.r.waitBackground()
+	if row := latestRow(t, fx, "box-b"); row.Open() {
+		t.Errorf("box-b's row = %+v, want closed through the hook", row)
+	}
+	cancel()
+	<-done
+	select {
+	case <-removed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not remove the delete hook on shutdown")
+	}
+}

@@ -294,9 +294,11 @@ minutes plus one sweep).
 
 **Deleted boxes.** Every delete the daemon makes (the delete RPC and TTL
 sweeper, cloud-managed boxes, sandboxes) closes the deleted box's open
-action in the background, without calling Incus (there is nothing left to
-restore) and without delaying the delete, with `released_by`
-`container-deleted`. The finding records the box's `RELEASED` instead of
+action in the background, without undoing anything (there is nothing left
+to restore) and without failing the delete, with `released_by`
+`container-deleted`. When the deleted instance's id is unknown (or the
+action predates recording it), the close first looks the box up and only
+closes the action if no box by that name exists. The finding records the box's `RELEASED` instead of
 its `APPLIED`, and a finding the deleted box was the last to hold is
 resolved when an operator's release is still the latest action on another
 box of it. Each action row records the Incus instance it was applied to

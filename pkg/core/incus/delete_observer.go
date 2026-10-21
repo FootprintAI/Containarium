@@ -1,6 +1,9 @@
 package incus
 
-import "sync"
+import (
+	"log"
+	"sync"
+)
 
 // deleteObservers are told of every container this process deletes through
 // Client.DeleteContainer (#2835), whichever server path issued the delete:
@@ -43,8 +46,19 @@ func notifyContainerDeleted(name, instanceID string) {
 	}
 	deleteObservers.mu.RUnlock()
 	for _, fn := range fns {
-		fn(name, instanceID)
+		callObserver(fn, name, instanceID)
 	}
+}
+
+// callObserver runs one observer; a panic in it is logged, never allowed to
+// fail the delete that already happened or skip the other observers.
+func callObserver(fn func(string, string), name, instanceID string) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[incus] delete observer for %s panicked: %v", name, p)
+		}
+	}()
+	fn(name, instanceID)
 }
 
 // InstanceIDKey is the Incus config key holding an instance's UUID: unique

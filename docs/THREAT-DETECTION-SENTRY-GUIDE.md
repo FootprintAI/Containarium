@@ -344,8 +344,8 @@ finding then ends by TTL or deletion with no operator involved it stays
 open for you, as a single box's expiry always has. Every delete the daemon
 makes (`containarium delete` and the TTL sweeper, cloud-managed boxes,
 sandboxes) closes the deleted box's open action in the background, without
-touching Incus and without slowing the delete, `released_by:
-container-deleted`, so the deleted box no longer holds the finding or shows
+undoing anything on the box and without failing the delete (the delete
+makes one extra Incus lookup), `released_by: container-deleted`, so the deleted box no longer holds the finding or shows
 as `APPLIED`. A box removed outside the daemon (for example with `incus
 delete`) keeps its action open until the action's TTL, the orphan sweep or
 an operator release, which then finds the box missing, or replaced by a

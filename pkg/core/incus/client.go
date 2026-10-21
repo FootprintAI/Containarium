@@ -1094,6 +1094,8 @@ func (c *Client) DeleteContainer(name string) error {
 	var instanceID string
 	if inst, _, err := c.server.GetInstance(name); err == nil {
 		instanceID = inst.Config[InstanceIDKey]
+	} else {
+		log.Printf("[incus] delete %s: read its instance id first: %v (delete observers get none)", name, err)
 	}
 	op, err := c.server.DeleteInstance(name)
 	if err != nil {

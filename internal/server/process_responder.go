@@ -144,6 +144,9 @@ type ProcessResponder struct {
 	// it. deletedCloseTimeout bounds each one's store and Incus work.
 	bg                  sync.WaitGroup
 	deletedCloseTimeout time.Duration
+	// registerDelete hooks Incus deletes (incus.OnContainerDeleted); Run
+	// registers ContainerDeleted with it and removes it when Run ends.
+	registerDelete func(fn func(name, instanceID string)) (remove func())
 }
 
 // deletedCloseTimeout is how long closing a deleted box's action may take
@@ -159,6 +162,7 @@ func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions thre
 		pending: map[int64]map[string]int{},
 
 		deletedCloseTimeout: deletedCloseTimeout,
+		registerDelete:      incus.OnContainerDeleted,
 	}
 }
 
@@ -1260,6 +1264,18 @@ func (r *ProcessResponder) closeDeleted(parent context.Context, container, insta
 		return
 	case row.InstanceID != "" && instanceID != "" && row.InstanceID != instanceID:
 		return // another instance's action: not this delete's
+	case row.InstanceID == "" || instanceID == "":
+		// Either id is unknown, so the open row may be a new box's that took
+		// the name since (#2897 review). Close it only when the box it names
+		// is gone; a live box's action is left to the sweep and its undo,
+		// never closed without one.
+		gone, err := r.boxGone(row)
+		if err != nil || !gone {
+			if err != nil {
+				log.Printf("[process-responder] %s deleted: %v; its action is left to the sweep", container, err)
+			}
+			return
+		}
 	}
 	if err := r.closeGone(ctx, row, r.now(), "container deleted"); err != nil {
 		log.Printf("[process-responder] %s deleted: close %s (action %d): %v (the next sweep closes it)", container, row.Action, row.ID, err)
@@ -1296,7 +1312,8 @@ func (r *ProcessResponder) boxGone(row *threatdetect.SecurityAction) (bool, erro
 	case err != nil:
 		return false, fmt.Errorf("read instance %s: %w", row.Container, err)
 	}
-	return row.InstanceID != "" && id != row.InstanceID, nil
+	// An empty live id is unknown, not another instance: the undo runs.
+	return row.InstanceID != "" && id != "" && id != row.InstanceID, nil
 }
 
 // closeGone closes row, an action on a box that no longer exists: deleted
@@ -1321,6 +1338,15 @@ func (r *ProcessResponder) closeGone(ctx context.Context, row *threatdetect.Secu
 // Run drives the work queue and the TTL sweep (every
 // processActionSweepInterval) until ctx ends.
 func (r *ProcessResponder) Run(ctx context.Context) {
+	// Every Incus delete in this process (the DeleteContainer RPC, the cloud
+	// actuator, sandboxes) closes the deleted box's open action (#2835),
+	// for as long as the responder runs.
+	if r.registerDelete != nil {
+		remove := r.registerDelete(func(name, instanceID string) {
+			r.ContainerDeleted(context.Background(), name, instanceID)
+		})
+		defer remove()
+	}
 	go r.runQueue(ctx)
 	ticker := time.NewTicker(processActionSweepInterval)
 	defer ticker.Stop()
