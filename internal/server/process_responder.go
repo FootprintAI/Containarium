@@ -721,6 +721,8 @@ func killSkipReasonOf(err error) pb.KillSkipReason {
 		return pb.KillSkipReason_KILL_SKIP_REASON_CONTAINER_INIT
 	case errors.Is(err, errKillStartTimeUnknown):
 		return pb.KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN
+	case errors.Is(err, errKillRuntimeUnsupported):
+		return pb.KillSkipReason_KILL_SKIP_REASON_RUNTIME_UNSUPPORTED
 	}
 	return pb.KillSkipReason_KILL_SKIP_REASON_OTHER
 }
