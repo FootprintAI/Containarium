@@ -74,7 +74,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Restore and save the Go cache (main)
-      if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'  # TEMP: verify save path; revert before merge
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: |
@@ -86,7 +86,7 @@ runs:
           ${{ steps.go-cache.outputs.prefix }}
 
     - name: Restore the Go cache (read-only)
-      if: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}  # TEMP
+      if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: |
