@@ -155,6 +155,9 @@ authenticating and the sshpiper map is refreshing again.
 ## Rotating the secret
 
 Rotation is the same distribute-then-restart dance with a fresh
-`openssl rand -hex 32`. Push the new value to **every** host before restarting
-anything; during the window where hosts disagree, requests 401. Restart
-daemons first, then the sentinel, to minimize that window.
+`openssl rand -hex 32`, but hosts disagree between the first and last restart
+and the single-secret verifier has no previous-secret fallback, so requests 401
+in that window. For the full procedure (ordering, the ed25519 bridge that avoids
+the sentinel-to-daemon window, the ADMIN secret, converging two secret domains,
+verification and rollback) follow
+[SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md](./SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md).

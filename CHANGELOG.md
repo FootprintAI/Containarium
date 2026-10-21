@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`containarium info` and MCP `get_system_info` show each storage pool's fill** (#2823, part B2). The CLI prints a "Storage Pools" block that flags `WARNING` (85 % or more) and `CRITICAL` (95 % or more) pools, and the MCP tool lists each pool with its fill and level. Both read `SystemInfo.storage_pools` through the generated contract: gRPC directly, and the HTTP client and MCP through grpc-gateway JSON, decoded with protojson. `incus.ServerInfo` gains `StoragePools`, and the pool level type moves to `pkg/core/incus` (`StoragePoolLevel`) so the client side can carry it. `internal/poolcapacity` keeps aliases of the same names.
 
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
 ## [0.111.0] - 2026-10-21
 
 ### Added
