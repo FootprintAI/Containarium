@@ -462,7 +462,13 @@ findings list` always shows the current state: its response line reads
 `response THROTTLE APPLIED on box-a, kill skipped: CONTAINER_INIT`, and
 `--json` carries `killedPid`, `kills` and `killSkipReason`. The kill count
 is per finding, across the boxes that share it, so a miner respawning on
-several boxes is still at most about one post a minute.
+several boxes is bounded the same way. The bound holds when kills and
+skipped kills mix: the first kill and the first skip are each delivered at
+once, and after that the finding's kill outcome reaches the webhook at most
+once a minute. A miner that respawns every second for an hour, with or
+without an occasional skipped kill, gives 60 or 61 kill posts that hour. Each
+box's response transitions (`APPLIED`, `RELEASED`, `EXPIRED`, `FAILED`) and
+the resolve are delivered on top of that.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
