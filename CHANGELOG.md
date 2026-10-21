@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The exec watcher no longer reads `/proc/<pid>/stat` for every exec** (#2893, follow-up to #2765). The kill's pid-reuse check needed the matched process's start time, so #2765 read it on the ring consumer for every decoded exec, although only an exec that is killed ever uses it. Under an exec flood that per-exec read slows the consumer, and a slow consumer loses events (`exec-events-lost`). The watcher now stamps each exec with the boot clock (`CLOCK_BOOTTIME`, in the same clock ticks as field 22) when it decodes it. The kill reads the pinned pid's start time once and refuses a process that started after the stamp as `pid reused`. The matched process forked before it exec'd, so it always passes. The residual exec-to-decode window (at most one 50 ms drain) is the same as before. No stamp, or a stat that cannot be read, is refused as `START_TIME_UNKNOWN` (fail closed). `BenchmarkExecCapture` measures the per-exec cost on Linux, and the eBPF lane runs it. Enum values and the audit format are unchanged; the `kill` row's `start_time` is now the exec's stamp.
+
 ### Documentation
 
 - **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.

@@ -20,14 +20,16 @@ import (
 // event that may be seconds old; between the exec and the kill the process
 // can exit and its pid be reused by an unrelated process, on the host or in
 // another tenant's box. The cgroup re-check is what makes that reuse a
-// skipped kill rather than a signal to a stranger; the start-time compare
-// (#2765) does the same for a reuse inside the same box.
+// skipped kill rather than a signal to a stranger; the start-time check
+// (#2765) does the same for a reuse inside the same box: the pinned process
+// must not have started after the exec watcher stamped the matched exec
+// (exec_stamp.go).
 
 var (
 	// errKillPIDReused: the pid is no longer the matched process: it now
-	// lives in a different cgroup than the container's, or its start time
-	// differs from the matched exec's (reused inside the same box, #2765).
-	// The wrapping error says which.
+	// lives in a different cgroup than the container's, or it started after
+	// the matched exec was stamped (reused inside the same box, #2765). The
+	// wrapping error says which.
 	errKillPIDReused = errors.New("pid reused")
 	// errKillProcessGone: the process exited before the signal.
 	errKillProcessGone = errors.New("process already exited")
@@ -35,21 +37,23 @@ var (
 	// from the host would stop the whole box; the policy action (freeze,
 	// throttle) is the tool for that, not the kill.
 	errKillContainerInit = errors.New("pid is the container's init")
-	// errKillStartTimeUnknown: the matched exec carries no start time (#2765):
-	// its process had already exited when the watcher decoded the exec, so
-	// whatever holds the pid now cannot be confirmed as the matched process.
-	errKillStartTimeUnknown = errors.New("start time unknown: the matched process had exited before its exec was decoded")
+	// errKillStartTimeUnknown (#2765): the matched exec carries no stamp (the
+	// watcher could not read the boot clock), or the pinned pid's start time
+	// cannot be read or parsed, so whatever holds the pid cannot be confirmed
+	// as the matched process. Fail closed: no signal.
+	errKillStartTimeUnknown = errors.New("start time unknown: the pid cannot be confirmed as the matched process")
 )
 
 // processKiller is what the responder needs for kill_process. An interface
 // so the responder is unit-testable without signalling real processes.
 type processKiller interface {
-	// KillInContainer SIGKILLs host pid if, and only if, it is still the
-	// process of container that started at start (the matched exec's
-	// /proc/<pid>/stat start time, #2765). errKillPIDReused,
+	// KillInContainer SIGKILLs host pid if, and only if, it is still a
+	// process of container that started no later than stamp (the boot-clock
+	// stamp the exec watcher put on the matched exec, in /proc/<pid>/stat
+	// field 22 units, #2765). errKillPIDReused,
 	// errKillProcessGone, errKillContainerInit or errKillStartTimeUnknown
 	// (wrapped) when it refuses.
-	KillInContainer(container string, pid uint32, start threatdetect.ProcStartTicks) error
+	KillInContainer(container string, pid uint32, stamp threatdetect.ProcStartTicks) error
 }
 
 // pidHandle pins one process for the check-then-signal sequence. On Linux it
@@ -78,9 +82,11 @@ func newHostProcessKiller(initPID func(string) (int64, error)) *hostProcessKille
 // A reuse that happens after the pin makes the signal fail (the pinned
 // process is gone) instead of reaching the newcomer. The cgroup check
 // catches a reuse by the host or another box; the start-time check catches
-// a reuse inside the same box between the exec and the pin (#2765): both
-// sides are /proc/<pid>/stat field 22, the same clock and unit.
-func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start threatdetect.ProcStartTicks) error {
+// a reuse inside the same box between the stamp and the pin (#2765): the
+// pinned pid's /proc/<pid>/stat field 22 must not be later than the exec's
+// boot-clock stamp, both CLOCK_BOOTTIME in USER_HZ ticks. This is the only
+// stat read of the exec path: one per kill attempt, none per exec.
+func (k *hostProcessKiller) KillInContainer(container string, pid uint32, stamp threatdetect.ProcStartTicks) error {
 	if pid <= 1 {
 		return fmt.Errorf("refusing to signal pid %d", pid)
 	}
@@ -94,8 +100,8 @@ func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start 
 	if int64(pid) == initPID {
 		return fmt.Errorf("pid %d: %w", pid, errKillContainerInit)
 	}
-	if start == 0 {
-		return fmt.Errorf("pid %d: %w", pid, errKillStartTimeUnknown)
+	if stamp == 0 {
+		return fmt.Errorf("pid %d: matched exec has no stamp: %w", pid, errKillStartTimeUnknown)
 	}
 	h, err := k.open(int(pid))
 	if err != nil {
@@ -119,16 +125,17 @@ func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start 
 	}
 	// After the pin: while the pinned process lives it holds the pid, so
 	// /proc/<pid> is that process; if it died since, /proc/<pid> is gone
-	// or a newcomer, and either way the compare refuses.
-	cur, err := readProcStartTime(k.procRoot, pid)
+	// (process gone) or a newcomer that started after the pin, hence after
+	// the stamp (refused), and the pidfd signal would fail anyway.
+	cur, err := readProcStart(k.procRoot, pid)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("pid %d: %w", pid, errKillProcessGone)
 		}
-		return fmt.Errorf("read start time of pid %d: %w", pid, err)
+		return fmt.Errorf("pid %d: read start time: %v: %w", pid, err, errKillStartTimeUnknown)
 	}
-	if cur != start {
-		return fmt.Errorf("pid %d started at %d ticks, matched exec at %d: %w", pid, cur, start, errKillPIDReused)
+	if startedAfterStamp(cur, stamp) {
+		return fmt.Errorf("pid %d started at %d ticks since boot, after its matched exec was seen at %d: %w", pid, cur, stamp, errKillPIDReused)
 	}
 	if err := h.Kill(); err != nil {
 		return fmt.Errorf("pid %d: %w", pid, err)
@@ -157,6 +164,11 @@ func containerCgroupOf(procRoot string, pid int64) (string, error) {
 // the process start time (proc(5): "(22) starttime", clock ticks since
 // boot). Fields are counted from 3 after the comm's closing parenthesis.
 const procStatStartTimeField = 22
+
+// readProcStart is the stat reader the kill uses: readProcStartTime, a
+// counting fake in the tests that prove the exec path never reads /proc
+// per exec.
+var readProcStart = readProcStartTime
 
 // readProcStartTime reads pid's start time from <procRoot>/<pid>/stat. A
 // missing file (fs.ErrNotExist) means the process is gone.

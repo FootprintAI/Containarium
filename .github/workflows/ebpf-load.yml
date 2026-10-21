@@ -41,6 +41,9 @@ on:
     paths:
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/server/exec_watcher.go'
+      - 'internal/server/exec_stamp*.go'
+      - 'internal/server/process_kill*.go'
       - '.github/workflows/ebpf-load.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215, same
@@ -49,6 +52,9 @@ on:
     paths:
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/server/exec_watcher.go'
+      - 'internal/server/exec_stamp*.go'
+      - 'internal/server/process_kill*.go'
       - '.github/workflows/ebpf-load.yml'
 
 permissions:
@@ -153,6 +159,18 @@ jobs:
             exit 1
           fi
           echo "No skips — the load/attach/evaluate path actually ran."
+
+      # Per-exec capture cost on the exec ring consumer (#2765 follow-up):
+      # the boot-clock stamp the watcher takes on every exec against the
+      # /proc/<pid>/stat read it replaced, which now runs once per kill.
+      # A smoke, not a gate: it fails only if the benchmark cannot run, and
+      # the numbers land in the log for the verification doc.
+      - name: Benchmark the per-exec capture cost
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench 'BenchmarkExecCapture|BenchmarkExecWatcherOnExecEvent' \
+            -benchtime 200000x -count 3 ./internal/server/ | tee exec-capture-bench.log
+          grep -q '^BenchmarkExecCapture/bootclock' exec-capture-bench.log
 
       - name: Collect diagnostics on failure
         if: failure()

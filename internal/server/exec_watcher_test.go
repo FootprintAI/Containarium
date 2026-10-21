@@ -326,32 +326,112 @@ func TestExecWatcher_AttributesAndHandsToEngine(t *testing.T) {
 	}
 }
 
-// TestExecWatcher_RecordsStartTime (#2765): the watcher reads the exec'ing
-// process's start time (/proc/<pid>/stat field 22) on decode and hands it to
-// the engine, so the kill can later tell the matched process from a pid
-// reused inside the same box. A process that already exited by then (no
-// stat) is passed on with no start time, never a guessed one.
-func TestExecWatcher_RecordsStartTime(t *testing.T) {
+// TestExecWatcher_StampsExecsWithBootClock (#2765): the watcher stamps
+// every decoded exec with the boot clock and hands the stamp to the engine
+// as StartTime, including an exec whose process already exited (the kill
+// sorts that out against the live pid); a failed clock read gives no stamp
+// (0), never a guessed one. It never reads /proc/<pid>/stat for it.
+func TestExecWatcher_StampsExecsWithBootClock(t *testing.T) {
 	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
-	writeStat(t, procRoot, 4242, "my (miner)", 987654)
 	m := newFakeCgroupMap()
 	var got []threatdetect.ExecEvent
 	w := newTestWatcher(t, procRoot, cgroupRoot, m)
 	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	clock := []threatdetect.ProcStartTicks{987654, 987660}
+	var clockErr error
+	w.bootTicks = func() (threatdetect.ProcStartTicks, error) {
+		if clockErr != nil {
+			return 0, clockErr
+		}
+		v := clock[0]
+		clock = clock[1:]
+		return v, nil
+	}
+	reads := countProcStartReads(t)
 	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
 
 	cg := ino["lxc.payload.box-a"]
 	w.OnExecEvent(context.Background(), kernelEvent(cg, 4242, "xmrig", "./xmrig"))
 	w.OnExecEvent(context.Background(), kernelEvent(cg, 5555, "sh", "sh")) // exited before decode
+	clockErr = errors.New("clock_gettime failed")
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 6666, "sh", "sh"))
 
-	if len(got) != 2 {
-		t.Fatalf("engine got %d events, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("engine got %d events, want 3", len(got))
 	}
-	if got[0].StartTime != 987654 {
-		t.Fatalf("start time = %d, want 987654", got[0].StartTime)
+	if got[0].StartTime != 987654 || got[1].StartTime != 987660 {
+		t.Fatalf("stamps = %d, %d; want 987654, 987660", got[0].StartTime, got[1].StartTime)
 	}
-	if got[1].StartTime != 0 {
-		t.Fatalf("exited process: start time = %d, want 0 (unknown)", got[1].StartTime)
+	if got[2].StartTime != 0 {
+		t.Fatalf("failed clock read: stamp = %d, want 0 (unknown)", got[2].StartTime)
+	}
+	if *reads != 0 {
+		t.Fatalf("decode read /proc/<pid>/stat %d times, want 0", *reads)
+	}
+}
+
+// countProcStartReads swaps the stat reader for a counting one that still
+// reads the (fake) file, and returns the counter.
+func countProcStartReads(t *testing.T) *int {
+	t.Helper()
+	n := new(int)
+	withProcStartReader(t, func(root string, pid uint32) (threatdetect.ProcStartTicks, error) {
+		*n++
+		return readProcStartTime(root, pid)
+	})
+	return n
+}
+
+// TestExecWatcher_FloodOfNonMatchingExecsReadsNoProc: the whole exec path
+// (ring decode → watcher → engine with the miner-signature rule →
+// responder with the real host killer, kill_process on) reads
+// /proc/<pid>/stat zero times for a flood of execs no rule matches, and
+// exactly once for the one exec it kills. The stat read must stay off the
+// per-exec path: under an exec flood it is what would make the ring
+// consumer fall behind (exec_events_lost).
+func TestExecWatcher_FloodOfNonMatchingExecsReadsNoProc(t *testing.T) {
+	const initPID, minerPID = 100, 4242
+	proc := fakeProc(t, map[int]string{
+		initPID:  "/lxc.payload.box-a/init.scope",
+		minerPID: "/lxc.payload.box-a/user.slice",
+	})
+	reads := countProcStartReads(t)
+
+	fx := newResponderFixture(t, false)
+	fx.setKill(t, "", true)
+	var killed []int
+	fx.r.SetProcessKiller(&hostProcessKiller{
+		procRoot: proc,
+		initPID:  func(string) (int64, error) { return initPID, nil },
+		open:     func(p int) (pidHandle, error) { return fakePIDHandle{killed: &killed, pid: p}, nil },
+	})
+	engine := threatdetect.NewEngine(NewActingSink(fx.findings, fx.r), "b1", false, nil, nil)
+	rule, err := threatdetect.NewMinerSignatureRule(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Register(rule)
+	w := NewExecWatcher(engine.OnExec)
+	w.bootTicks = func() (threatdetect.ProcStartTicks, error) { return fakeStart(minerPID) + 10, nil }
+	w.byCgroup[42] = execTarget{Container: "box-a", TenantID: "tenant-a"}
+
+	const flood = 20_000
+	ctx := context.Background()
+	for i := 0; i < flood; i++ {
+		w.OnExecEvent(ctx, netbpf.ExecEvent{HostPID: uint32(10_000 + i), PPID: 1, CgroupID: 42, Comm: "sh", // #nosec G115 -- small test pids
+			Filename: "/usr/bin/sh", Argv: []string{"sh", "-c", "true"}})
+	}
+	if *reads != 0 || len(killed) != 0 {
+		t.Fatalf("%d non-matching execs: %d stat reads, %d kills; want 0, 0", flood, *reads, len(killed))
+	}
+	if got := fx.findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE); len(got) != 0 {
+		t.Fatalf("non-matching flood raised %d signature findings", len(got))
+	}
+
+	w.OnExecEvent(ctx, netbpf.ExecEvent{HostPID: minerPID, PPID: 1, CgroupID: 42, Comm: "xmrig",
+		Filename: "/tmp/xmrig", Argv: []string{"./xmrig", "--donate-level", "1"}})
+	if *reads != 1 || len(killed) != 1 || killed[0] != minerPID {
+		t.Fatalf("matched exec: %d stat reads, kills %v; want 1 read and pid %d killed", *reads, killed, minerPID)
 	}
 }
 
