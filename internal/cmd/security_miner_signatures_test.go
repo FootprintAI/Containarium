@@ -96,3 +96,32 @@ func TestMinerSignaturesRemove_QueryCarriesKindAndPattern(t *testing.T) {
 		t.Errorf("query = %q", ps.query)
 	}
 }
+
+// TestParseMinerSigKind (#2768 item 5): --kind is read off the proto enum,
+// so every kind the enum defines is accepted (in any case) and nothing else,
+// UNSPECIFIED included; the allowed-values list comes from the enum too.
+func TestParseMinerSigKind(t *testing.T) {
+	for k := range pb.MinerSignatureKind_name {
+		kind := pb.MinerSignatureKind(k)
+		if kind == pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED {
+			continue
+		}
+		label := minerSigKindLabel(kind)
+		for _, in := range []string{label, strings.ToUpper(label), " " + label + " "} {
+			if got, err := parseMinerSigKind(in); err != nil || got != kind {
+				t.Errorf("parseMinerSigKind(%q) = %v, %v; want %v", in, got, err, kind)
+			}
+		}
+		if !strings.Contains(minerSigKindAllowed(), label) {
+			t.Errorf("allowed values %q miss %q", minerSigKindAllowed(), label)
+		}
+	}
+	for _, in := range []string{"", "unspecified", "UNSPECIFIED", "md5", "MINER_SIGNATURE_KIND_NAME"} {
+		if _, err := parseMinerSigKind(in); err == nil {
+			t.Errorf("parseMinerSigKind(%q) accepted", in)
+		}
+	}
+	if got := minerSigKindAllowed(); got != "name, argv, sha256" {
+		t.Errorf("allowed values = %q, want enum order %q", got, "name, argv, sha256")
+	}
+}

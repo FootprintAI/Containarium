@@ -81,6 +81,9 @@ func TestNormalizeMinerSignature_RejectsCatchAll(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
 				}
+				if !errors.Is(err, ErrMinerSignatureInvalid) {
+					t.Fatalf("error = %v, want ErrMinerSignatureInvalid so the server maps it to InvalidArgument", err)
+				}
 				if tt.wantErr != "is empty" && !errors.Is(err, ErrMinerSignatureCatchAll) {
 					t.Fatalf("error = %v, want ErrMinerSignatureCatchAll so the server maps it to InvalidArgument", err)
 				}
@@ -93,6 +96,35 @@ func TestNormalizeMinerSignature_RejectsCatchAll(t *testing.T) {
 				t.Fatalf("normalized = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNormalizeMinerSignature_InvalidSentinel (#2768 item 5): every refusal,
+// whatever the kind, wraps ErrMinerSignatureInvalid, the one sentinel the
+// server maps to InvalidArgument; AddSignature and RemoveSignature return it
+// unchanged, so the server need not normalize first.
+func TestNormalizeMinerSignature_InvalidSentinel(t *testing.T) {
+	r := newTestMinerSigRule(t, nil)
+	for _, c := range []struct {
+		kind    pb.MinerSignatureKind
+		pattern string
+	}{
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, "/tmp/xmrig"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, "xm[rig"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, "-o [a-"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256, "abcd"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256, strings.Repeat("z", 64)},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED, "xmrig"},
+	} {
+		if _, err := NormalizeMinerSignature(c.kind, c.pattern); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("Normalize(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
+		if _, err := r.AddSignature(context.Background(), c.kind, c.pattern, ""); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("AddSignature(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
+		if err := r.RemoveSignature(context.Background(), c.kind, c.pattern); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("RemoveSignature(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
 	}
 }
 

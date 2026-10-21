@@ -47,6 +47,11 @@ var ErrMinerSignatureBuiltin = errors.New("miner signature is a baseline entry a
 // every box, so it is refused at insert (#2638 review).
 var ErrMinerSignatureCatchAll = errors.New("miner signature matches every process")
 
+// ErrMinerSignatureInvalid wraps every refusal of NormalizeMinerSignature
+// (empty, malformed, unknown kind, catch-all): the caller gave a pattern
+// that is not a signature. The server maps it to InvalidArgument.
+var ErrMinerSignatureInvalid = errors.New("invalid miner signature")
+
 // minMinerSigArgvLen is the fewest literal characters an argv marker must
 // carry — "-o *" or "ab" tell a miner from nothing. Baseline entries are
 // held to it too (TestMinerSignatureBaselineParses).
@@ -145,8 +150,17 @@ func globLiteralLen(p string) int {
 // form it is stored and matched in: lowercased (matching is
 // case-insensitive) except for an argv glob, whose option tokens match
 // case-sensitively; surrounding whitespace trimmed except for an argv
-// literal, whose trailing space is significant ("--coin ").
+// literal, whose trailing space is significant ("--coin "). Every refusal
+// wraps ErrMinerSignatureInvalid (and a catch-all also ErrMinerSignatureCatchAll).
 func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string, error) {
+	p, err := normalizeMinerSignature(kind, pattern)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMinerSignatureInvalid, err)
+	}
+	return p, nil
+}
+
+func normalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string, error) {
 	switch kind {
 	case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME:
 		p := strings.ToLower(strings.TrimSpace(pattern))

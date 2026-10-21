@@ -501,7 +501,10 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		}
 		f = cur
 	}
-	ko := r.maybeKill(ctx, f, target)
+	// One read of the effective policy serves the kill and the policy
+	// action (#2768), and only if either needs it.
+	policyOf := r.effectivePolicyOnce(ctx, f.Container)
+	ko := r.maybeKill(ctx, f, target, policyOf)
 	killedPID := ko.pid
 
 	r.mu.Lock()
@@ -543,7 +546,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		}
 		return r.recordKill(ctx, f, kill)
 	}
-	policy, err := r.policies.Effective(ctx, f.Container)
+	policy, err := policyOf()
 	if err != nil {
 		// Unknown policy: no policy action rather than guess. The finding
 		// itself is already recorded and delivered; a kill that already ran
@@ -722,6 +725,25 @@ func killSkipReasonOf(err error) pb.KillSkipReason {
 	return pb.KillSkipReason_KILL_SKIP_REASON_OTHER
 }
 
+// effectivePolicyOnce returns a function that resolves container's effective
+// policy on its first call and returns that same result (policy or error)
+// on every later one. One finding's handling calls it from one goroutine,
+// so it needs no lock.
+func (r *ProcessResponder) effectivePolicyOnce(ctx context.Context, container string) func() (*pb.ProcessPolicy, error) {
+	var (
+		done   bool
+		policy *pb.ProcessPolicy
+		err    error
+	)
+	return func() (*pb.ProcessPolicy, error) {
+		if !done {
+			policy, err = r.policies.Effective(ctx, container)
+			done = true
+		}
+		return policy, err
+	}
+}
+
 // maybeKill is the kill_process step (#2638): for a miner-signature finding
 // whose effective policy sets kill_process, SIGKILL the process of the exec
 // that just matched (target) after the killer re-checks its
@@ -730,11 +752,11 @@ func killSkipReasonOf(err error) pb.KillSkipReason {
 // Returns the killed pid, 0 when nothing was killed. Off on a degraded
 // backend like every other response (decided on #2641 Q2). Called without
 // r.mu.
-func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence) killOutcome {
+func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence, policyOf func() (*pb.ProcessPolicy, error)) killOutcome {
 	if r.killer == nil || !threatdetect.KillsProcess(f.Rule) || target == nil || target.PID == 0 || r.degraded {
 		return killOutcome{}
 	}
-	policy, err := r.policies.Effective(ctx, f.Container)
+	policy, err := policyOf()
 	if err != nil {
 		log.Printf("[process-responder] finding %d on %s: read policy for kill: %v", f.ID, f.Container, err)
 		r.auditLog(ctx, "kill-skipped", f.Container, fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s pid=%d kill_skipped=%q",
