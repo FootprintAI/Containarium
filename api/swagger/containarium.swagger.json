@@ -19692,6 +19692,49 @@
       "default": "STORAGE_ISOLATION_UNSPECIFIED",
       "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
     },
+    "StoragePoolCapacity": {
+      "type": "object",
+      "properties": {
+        "pool": {
+          "type": "string",
+          "description": "Storage pool name."
+        },
+        "driver": {
+          "$ref": "#/definitions/StorageDriver",
+          "description": "The pool's driver as a typed constant."
+        },
+        "usedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes used and usable size, as Incus reports them for the pool. For ZFS,\nIncus derives the size as used + available, so ZFS slop space is already\nexcluded (read from the Incus driver; not verified on a live pool)."
+        },
+        "totalBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "level": {
+          "$ref": "#/definitions/StoragePoolCapacityLevel",
+          "description": "Fill level against the daemon's fixed thresholds (warning \u003e= 85%,\ncritical \u003e= 95% of used_bytes / total_bytes)."
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the monitor read the pool."
+        }
+      },
+      "description": "StoragePoolCapacity is one storage pool's fill (#2823)."
+    },
+    "StoragePoolCapacityLevel": {
+      "type": "string",
+      "enum": [
+        "STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED",
+        "STORAGE_POOL_CAPACITY_LEVEL_OK",
+        "STORAGE_POOL_CAPACITY_LEVEL_WARNING",
+        "STORAGE_POOL_CAPACITY_LEVEL_CRITICAL"
+      ],
+      "default": "STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED",
+      "description": "StoragePoolCapacityLevel is a storage pool's fill level (#2823).\n\n - STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED: The pool did not report a size.\n - STORAGE_POOL_CAPACITY_LEVEL_OK: Below the warning threshold.\n - STORAGE_POOL_CAPACITY_LEVEL_WARNING: At or above 85%.\n - STORAGE_POOL_CAPACITY_LEVEL_CRITICAL: At or above 95%: containers on the pool may soon stop writing."
+    },
     "StreamExecEventsResponse": {
       "type": "object",
       "properties": {
@@ -19908,6 +19951,14 @@
             "type": "string"
           },
           "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+        },
+        "storagePools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/StoragePoolCapacity"
+          },
+          "description": "storage_pools is every Incus storage pool's fill as the daemon's pool\ncapacity monitor last read it (#2823), so a nearly full pool is visible\nper pool rather than hidden in the summed disk fields above. Served from\nthe monitor's snapshot (no extra Incus call); empty when the monitor has\nnot read yet or the daemon predates the field."
         }
       },
       "title": "SystemInfo contains information about the host system"
