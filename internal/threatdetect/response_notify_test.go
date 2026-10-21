@@ -524,3 +524,73 @@ func TestFindingStores_KillFactsAgreeOnEveryWriteSequence(t *testing.T) {
 		})
 	}
 }
+
+// captureNotifier records every finding a store hands the webhook, ungated.
+type captureNotifier struct{ got []*Finding }
+
+func (c *captureNotifier) Notify(f *Finding) { c.got = append(c.got, f) }
+
+func (c *captureNotifier) last(t *testing.T) *Finding {
+	t.Helper()
+	if len(c.got) == 0 {
+		t.Fatal("nothing delivered")
+	}
+	return c.got[len(c.got)-1]
+}
+
+// #2835 item 2, through each store: box-a opens a finding that box-b shares.
+// A re-fire is delivered naming the box it came from, and a post that
+// carries a response names the response's box at the top level, a plain
+// resolve included (the resolve of an operator's ResolveFinding, or the
+// responder's queued-job cleanup): the stored row still names box-a, which
+// says nothing about the box the response is about.
+func runPostContainerTable(t *testing.T, s responseNotifyStore) {
+	t.Helper()
+	ctx := context.Background()
+	c := &captureNotifier{}
+	s.SetNotifier(c)
+	fire := func(box string) *Finding {
+		f := sampleMemFinding()
+		f.Subject, f.Container = "post-container", box
+		out, err := s.Upsert(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	f := fire("box-a")
+	if got := fire("box-b"); got.Container != "box-b" || c.last(t).Container != "box-b" {
+		t.Errorf("re-fire from box-b: returned %q, delivered %q; want box-b for both", got.Container, c.last(t).Container)
+	}
+	if _, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT,
+		State: pb.ResponseState_RESPONSE_STATE_NONE, Container: "box-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.last(t); d.Container != "box-b" {
+		t.Errorf("response post names %q, want box-b", d.Container)
+	}
+	if stored, err := s.Get(ctx, f.ID); err != nil || stored.Container != "box-a" {
+		t.Fatalf("stored finding = %+v, %v; want it to keep box-a (the test needs the two to differ)", stored, err)
+	}
+	if _, err := s.Resolve(ctx, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	d := c.last(t)
+	if d.State != FindingStateResolved || d.Response == nil || d.Container != d.Response.Container || d.Container != "box-b" {
+		t.Errorf("resolve post: state %s, container %q, response %+v; want resolved naming box-b at the top level and in the response", d.State, d.Container, d.Response)
+	}
+}
+
+func TestMemFindingStore_PostNamesTheResponseBox(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runPostContainerTable(t, s)
+}
+
+func TestFindingStore_PostNamesTheResponseBox(t *testing.T) {
+	s, _, _ := newStores(t, threatdetectPool(t))
+	runPostContainerTable(t, s)
+}
