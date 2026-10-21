@@ -41,6 +41,18 @@ That's it — two files (three when the skills pin moves), one commit, conventio
 `main` for the pattern). PR it, get CI green, merge like any other
 change.
 
+**The release PR's CI takes about two minutes, not the full suite.** When a
+PR into `main` changes only `CHANGELOG.md` and the `Version` constant, and
+the `main` commit it sits on already passed each workflow on its own push,
+the heavy jobs (unit + e2e, the CLI build/test gates, golangci-lint) skip.
+gosec uploads the base commit's stored analysis instead of rescanning. A
+skipped job reports as passing, so the PR stays mergeable. The detector is
+`.github/actions/release-only-diff` and `scripts/ci/release-only-diff.sh`.
+Anything else in the diff, including a skills-pin bump, means a full run. So
+does a base whose `main` run is still in progress or failed. If you see the
+full suite on a release PR, that's why: wait for `main` to go green, or let
+it run.
+
 **Not required:** `web-ui/package.json`'s `version` field is versioned
 independently of the daemon and does not need to track the release tag.
 
