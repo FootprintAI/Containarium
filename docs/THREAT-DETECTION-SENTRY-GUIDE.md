@@ -273,9 +273,10 @@ every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
 argv entry matched, off the exec path (64 MiB cap, 200 ms budget, best
 effort: a process that exited first is not hashed). The hash is attributed
-to the exec only if, after `/proc/<pid>/exe` is opened, the pid still
-belongs to the process that exec'd (same `/proc/<pid>/stat` start time);
-a pid reused while the request waited is skipped, never hashed in the
+to the exec only if, after `/proc/<pid>/exe` is opened, the process holding
+the pid did not start after the exec was seen (its `/proc/<pid>/stat`
+start time against the exec's decode stamp, the check the kill uses); a
+pid reused while the request waited is skipped, never hashed in the
 original's name. A binary already hashed is not read again: the daemon
 caches hashes by the file's device, inode, size, mtime and ctime, so the
 same `/bin/sh` costs only an open and two stats. The hash queue holds 64

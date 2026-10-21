@@ -35,11 +35,12 @@ func newTestHasher(root string) (*execHasher, *[]threatdetect.ExecEvent) {
 }
 
 // TestExecHasher_PinsPIDBeforeHashing (#2768 item 2): /proc/<pid>/exe is
-// hashed only for the process the exec event named. The start time
-// (/proc/<pid>/stat field 22) is compared with the event's after exe is
-// opened, so a pid reused before the open, or by the time of the compare,
-// drops the event instead of attributing another binary's hash to it. An
-// event with no start time cannot be pinned and is dropped.
+// hashed only for the process the exec event named. After exe is opened,
+// the pid's start time (/proc/<pid>/stat field 22) is checked against the
+// event's decode stamp: a process that started after the stamp (beyond one
+// tick of slack, startedAfterStamp) took the pid later, so the event is
+// dropped instead of getting another binary's hash. An event with no stamp
+// cannot be pinned and is dropped.
 func TestExecHasher_PinsPIDBeforeHashing(t *testing.T) {
 	const pid = 4242
 	tests := []struct {
@@ -49,10 +50,12 @@ func TestExecHasher_PinsPIDBeforeHashing(t *testing.T) {
 		wantSum   bool
 		wantMoved uint64
 	}{
-		{name: "same process is hashed", start: fakeStart(pid), wantSum: true},
-		{name: "pid now held by an earlier-started process", start: fakeStart(pid) + 9, wantMoved: 1},
-		{name: "pid now held by a later-started process", start: fakeStart(pid) - 9, wantMoved: 1},
-		{name: "no start time cannot be pinned", start: 0, wantMoved: 1},
+		{name: "stamped in the tick it started", start: fakeStart(pid), wantSum: true},
+		{name: "stamped later than it started", start: fakeStart(pid) + 9, wantSum: true},
+		{name: "within the one-tick slack", start: fakeStart(pid) - 1, wantSum: true},
+		{name: "pid now held by a process started after the stamp", start: fakeStart(pid) - 2, wantMoved: 1},
+		{name: "pid now held by a much newer process", start: fakeStart(pid) - 900, wantMoved: 1},
+		{name: "no stamp cannot be pinned", start: 0, wantMoved: 1},
 		{name: "stat gone", start: fakeStart(pid), noStat: true},
 	}
 	for _, tt := range tests {
@@ -90,8 +93,9 @@ func TestExecHasher_ComparesStartTimeAfterOpen(t *testing.T) {
 	hasherProc(t, root, pid, "miner", fakeStart(pid))
 	h, got := newTestHasher(root)
 	h.open = func(name string) (*os.File, error) {
-		// The matched process exits and an unrelated one takes its pid.
-		hasherProc(t, root, pid, "unrelated", fakeStart(pid)+1)
+		// The matched process exits and an unrelated one takes its pid,
+		// starting well after the exec was stamped.
+		hasherProc(t, root, pid, "unrelated", fakeStart(pid)+100)
 		return os.Open(name) // #nosec G304 -- test fixture path
 	}
 	h.process(threatdetect.ExecEvent{PID: pid, StartTime: fakeStart(pid)})

@@ -27,11 +27,14 @@ import (
 //
 // Pinned (#2768): the request can wait in the queue while the process exits
 // and its pid is reused, so the hash is attributed to the event only when
-// the process holding the pid AFTER exe is opened has the event's start time
-// (/proc/<pid>/stat field 22, the same read the kill compares, #2765). While
-// that process lives it holds the pid, so the opened exe is its image. A
-// process that exec'd again under the same pid keeps its start time: its
-// newer image is what gets hashed, and the kill targets that same process.
+// the process holding the pid AFTER exe is opened did not start after the
+// event's decode stamp (/proc/<pid>/stat field 22 against ExecEvent.StartTime,
+// startedAfterStamp: the same test the kill applies, #2765/#2893). A
+// newcomer that took the pid while the request waited started after the
+// stamp and is refused; while the process holding the pid lives, the opened
+// exe is its image. A process that exec'd again under the same pid keeps its
+// start time: its newer image is what gets hashed, and the kill targets
+// that same process.
 //
 // Cached (#2768): a binary already hashed is not read again, keyed by the
 // opened file's (device, inode, size, mtime, ctime), so a busy host's
@@ -159,11 +162,11 @@ func (h *execHasher) hashPinned(ev threatdetect.ExecEvent) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// An event with no start time (0, its process gone before the decode)
-	// never matches: a start time read from stat is never 0.
-	if cur != ev.StartTime {
+	// An exec with no stamp (0: the boot clock could not be read) is refused
+	// here too: every tenant process started more than a tick after boot.
+	if startedAfterStamp(cur, ev.StartTime) {
 		h.pidMoved.Add(1)
-		return "", fmt.Errorf("started at %d ticks, exec at %d: %w", cur, ev.StartTime, errExecHashPIDMoved)
+		return "", fmt.Errorf("started at %d ticks, after the exec was seen at %d: %w", cur, ev.StartTime, errExecHashPIDMoved)
 	}
 	st, err := f.Stat()
 	if err != nil {
