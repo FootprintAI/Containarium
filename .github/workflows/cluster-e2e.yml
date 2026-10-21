@@ -118,6 +118,10 @@ on:
         #   correct. Needs the same two-key secret pair as the live job.
         options: ['none', 'join-token', 'no-revoke', 'slow-revoke', 'skip-workspace-removal', 'fixture-path-mismatch', 'blank-pr-title', 'swap-expected-providers']
         default: 'none'
+      short_scale_down:
+        description: 'Use the tag-run autoscaler scale-down timers (5m/1m) instead of stock, to rehearse the release gate'
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'test/e2e/cluster/**'
@@ -221,10 +225,10 @@ jobs:
       # 22:56:47 -> 23:08:30). 5m after the last scale-up (~2m into step 5
       # on that run) keeps the autoscaler from consolidating nodes while the
       # earlier steps still need them; 1m unneeded then removes the surplus
-      # promptly. Nightly and dispatch runs leave both unset, so the stock
-      # cadence is still exercised every night.
-      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD: ${{ startsWith(github.ref, 'refs/tags/v') && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD || '5m') || '' }}
-      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME: ${{ startsWith(github.ref, 'refs/tags/v') && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME || '1m') || '' }}
+      # promptly. Nightly runs, and dispatch runs without short_scale_down,
+      # leave both unset, so the stock cadence is still exercised every night.
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.short_scale_down) && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD || '5m') || '' }}
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.short_scale_down) && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME || '1m') || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run the lane
