@@ -145,15 +145,20 @@ flowchart LR
    plus operator entries persisted under
    `threatdetect.miner_signatures.operator` in `DaemonConfigStore`. Three
    matcher kinds, each a typed entry: `name` (exact or glob on the
-   basename of `filename` and on `comm`), `argv` (literal substring over
-   the joined argv), `sha256` (hex of the executable). The shipped baseline
+   basename of `filename` and on `comm`), `argv` (matched against the real
+   NUL-separated argument vector: a literal marker must begin an argument or
+   an `--opt=value` value, a glob matches consecutive whole arguments; an
+   argument that begins with a marker matches whatever the command), `sha256` (hex of the executable). The shipped baseline
    carries name and argv entries only; `sha256` entries are operator-added
    (decided on #2711 Q2: a hash list goes stale every upstream release and
    nobody owns refreshing it). Name and argv match
    in the hot path. The hash matcher runs only when the set has hash
    entries and no cheaper matcher hit: the watcher hashes
    `/proc/<pid>/exe` (cap 64 MiB, 200 ms budget, best effort; the process
-   may already be gone) outside the engine goroutine and feeds a second
+   may already be gone) outside the engine goroutine. It opens `exe` first to
+   pin the pid, skips the event if the pid's process started after the exec's
+   decode stamp (the kill's check), caches hashes by (device, inode, size,
+   mtime, ctime), and counts queue-full drops (`exec_hashes_dropped`). It feeds a second
    `OnExec` with `ev.SHA256` filled. A hit is a HIGH finding, subject
    `<matcher kind>:<entry>`, evidence one `ExecEvidence{pid, ppid, uid,
    comm, filename, argv, sha256, matched}`.
@@ -258,8 +263,12 @@ crash; Incus call fails → action row carries the error, finding says
 degrades to the in-memory ring exactly like findings and `sentry status`
 says `DEGRADED (no persistence)`; a false positive → `release` in one
 command, previous limit restored from the row; pid reuse between finding
-and kill → the cgroup re-check refuses the kill and records
-`kill_skipped: pid reused`.
+and kill → the pidfd pin plus the cgroup re-check refuse a pid now in another
+cgroup, and the start-time check (the pinned process's `/proc/<pid>/stat`
+start against the exec's decode stamp) refuses one reused inside the same
+box; both record `kill_skipped: pid reused` (`PID_REUSED`). No stamp or an
+unreadable stat is `START_TIME_UNKNOWN`; a non-Incus runtime is refused up
+front as `RUNTIME_UNSUPPORTED`.
 
 ### Data model
 
