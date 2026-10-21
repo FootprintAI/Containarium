@@ -7,8 +7,11 @@ paths:
   .github/workflows/**/*.{yml,yaml}:
     # shellcheck codes silenced in existing scripts (#2793, reviewed in #2904).
     # Each is kept deliberately; every other shellcheck code, and all
-    # non-shellcheck actionlint rules, still fail the lane. SC2015 and SC2034
-    # were fixed or no longer fire and are not listed.
+    # non-shellcheck actionlint rules, still fail the lane. SC2034 was fixed
+    # and is not listed.
+    #  SC2015  `A && B || C` used deliberately as "B, else C" or "|| true" guards
+    #          in the e2e scripts (C is a no-op or the fallback, never a trap).
+    #          Fires on the CI runner's shellcheck, not on every local version.
     #  SC2024  `sudo cmd > file`: the redirect runs as the unprivileged runner
     #          user on purpose (a runner-owned log/state file, not a root file).
     #  SC2046  `go test $(go list ./... | grep -v ...)`: the package list must
@@ -20,4 +23,4 @@ paths:
     #  SC2209  `VAR=value cmd` prefix in the Postgres readiness loop, read by
     #          shellcheck as an assignment of the string; intended as written.
     ignore:
-      - 'shellcheck reported issue in this script: SC(2024|2046|2086|2129|2209):'
+      - 'shellcheck reported issue in this script: SC(2015|2024|2046|2086|2129|2209):'
