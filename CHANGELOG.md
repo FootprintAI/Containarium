@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The sentinel's `/status` reports per-primary auth health** (#2892). `primary_auth_health` lists, per primary, whether its last request to a daemon-AUTH route (registration, heartbeat, `/sentinel/ca`, `/sentinel/peer-cert`, `/sentinel/fetch-release`, `/sentinel/keys/resync`) authenticated (`ok`) or got 401 (`failing_401`), with the time of the last success and failure. An AUTH secret mismatch after a partial rotation is now visible without reading logs. It holds nothing derived from the secret (no hash, no fingerprint). A primary appears only after one of its requests authenticates, and a 401 counts against it only when it comes from the source address that primary last authenticated from, never by the pool name in the request; every other 401 bumps `unattributed_auth_failures`. At most 256 primaries are tracked, for 24 hours after they were last heard from.
+
 ## [0.113.0] - 2026-10-22
 
 ### Added
