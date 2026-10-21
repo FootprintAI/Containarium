@@ -154,7 +154,11 @@ miner binaries; `--donate-level`, `stratum+tcp://`, `stratum+ssl://`,
 **no SHA-256 entries**: a hash list goes stale with every upstream release.
 Add hashes for builds you have seen; the daemon hashes an executable only
 when such entries exist and no name or argv entry matched, off the exec
-path (64 MiB cap, 200 ms budget, best effort).
+path (64 MiB cap, 200 ms budget, best effort). After `/proc/<pid>/exe` is
+opened, a pid whose process started after the exec's decode stamp is
+skipped (the kill's check), hashes are cached by (device,
+inode, size, mtime, ctime), and queue-full drops show as
+`exec_hashes_dropped` in the sentry status (#2768).
 
 ```bash
 containarium security miner-signatures list [--json]

@@ -60,6 +60,7 @@ type ThreatDetectionServer struct {
 	unavailableReason string
 	cpuSamplerStatus  string              // GetSentryStatus.cpu_sampler (#2645); "" until wired
 	execTelemetry     execTelemetrySource // exec telemetry (#2637); nil until wired
+	execHash          execHashSource      // miner-signature exec hasher (#2768); nil until wired
 
 	// responderDegradedReason is why the process responder is ALERT-only
 	// ("" when it can apply THROTTLE/FREEZE). Reported as DEGRADED even when
@@ -74,6 +75,20 @@ type execTelemetrySource interface {
 	Status() string
 	Lost() int64
 	Subscribe(container string, since time.Duration, buffer int) (replay []ExecEventRecord, ch <-chan ExecEventRecord, cancel func())
+}
+
+// execHashSource is what the server reads from the exec hasher (#2768): the
+// count of hash requests dropped on a full queue.
+type execHashSource interface {
+	Dropped() int64
+}
+
+// SetExecHashSource wires the exec hasher: GetSentryStatus reports its
+// Dropped as exec_hashes_dropped.
+func (s *ThreatDetectionServer) SetExecHashSource(src execHashSource) {
+	s.mu.Lock()
+	s.execHash = src
+	s.mu.Unlock()
 }
 
 // NewThreatDetectionServer builds the server. engine must be non-nil iff
@@ -427,8 +442,13 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 	s.mu.Lock()
 	cpuSampler := s.cpuSamplerStatus
 	execSrc := s.execTelemetry
+	hashSrc := s.execHash
 	responderReason := s.responderDegradedReason
 	s.mu.Unlock()
+	var hashesDropped int64
+	if hashSrc != nil {
+		hashesDropped = hashSrc.Dropped()
+	}
 	if cpuSampler == "" {
 		cpuSampler = cpuSamplerNotStartedStatus
 	}
@@ -472,12 +492,13 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 		}
 	}
 	return &pb.GetSentryStatusResponse{
-		State:          state,
-		Reason:         strings.Join(reasons, "; "),
-		Rules:          rules,
-		CpuSampler:     cpuSampler,
-		ExecTelemetry:  execStatus,
-		ExecEventsLost: execLost,
+		State:             state,
+		Reason:            strings.Join(reasons, "; "),
+		Rules:             rules,
+		CpuSampler:        cpuSampler,
+		ExecTelemetry:     execStatus,
+		ExecEventsLost:    execLost,
+		ExecHashesDropped: hashesDropped,
 	}
 }
 

@@ -45,8 +45,10 @@ type sentryStatusEnvelope struct {
 	ExecTelemetry string `json:"execTelemetry"`
 	// ExecEventsLost is an int64 on the wire, which protojson renders as a
 	// JSON string; json.Number accepts either spelling.
-	ExecEventsLost json.Number        `json:"execEventsLost"`
-	Rules          []sentryRuleStatus `json:"rules"`
+	ExecEventsLost json.Number `json:"execEventsLost"`
+	// ExecHashesDropped (#2768) is an int64 too.
+	ExecHashesDropped json.Number        `json:"execHashesDropped"`
+	Rules             []sentryRuleStatus `json:"rules"`
 }
 
 type sentryRuleStatus struct {
@@ -89,6 +91,9 @@ func printSentryStatus(w interface{ Write([]byte) (int, error) }, out sentryStat
 		if lost := out.ExecEventsLost.String(); lost != "" && lost != "0" {
 			fmt.Fprintf(w, "exec-events-lost: %s\n", lost)
 		}
+	}
+	if dropped := out.ExecHashesDropped.String(); dropped != "" && dropped != "0" {
+		fmt.Fprintf(w, "exec-hashes-dropped: %s (sha256 entries can miss these execs)\n", dropped)
 	}
 	if len(out.Rules) == 0 {
 		return

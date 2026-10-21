@@ -2533,6 +2533,7 @@ skipAppHosting:
 					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
 				})
 				threatDetectEngine.SetExecHasher(execHash.Request)
+				threatDetectServer.SetExecHashSource(execHash)
 			}
 		}
 	}
