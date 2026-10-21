@@ -290,6 +290,47 @@ message SystemInfo {
   // An open string set rather than an enum so a newer daemon's extra names
   // never fail to decode in an older client.
   repeated string capabilities = 30;
+
+  // storage_pools is every Incus storage pool's fill as the daemon's pool
+  // capacity monitor last read it (#2823), so a nearly full pool is visible
+  // per pool rather than hidden in the summed disk fields above. Served from
+  // the monitor's snapshot (no extra Incus call); empty when the monitor has
+  // not read yet or the daemon predates the field.
+  repeated StoragePoolCapacity storage_pools = 31;
+}
+
+// StoragePoolCapacity is one storage pool's fill (#2823).
+message StoragePoolCapacity {
+  // Storage pool name.
+  string pool = 1;
+
+  // The pool's driver as a typed constant.
+  StorageDriver driver = 2;
+
+  // Bytes used and usable size, as Incus reports them for the pool. For ZFS,
+  // Incus derives the size as used + available, so ZFS slop space is already
+  // excluded (read from the Incus driver; not verified on a live pool).
+  int64 used_bytes = 3;
+  int64 total_bytes = 4;
+
+  // Fill level against the daemon's fixed thresholds (warning >= 85%,
+  // critical >= 95% of used_bytes / total_bytes).
+  StoragePoolCapacityLevel level = 5;
+
+  // When the monitor read the pool.
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+// StoragePoolCapacityLevel is a storage pool's fill level (#2823).
+enum StoragePoolCapacityLevel {
+  // The pool did not report a size.
+  STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED = 0;
+  // Below the warning threshold.
+  STORAGE_POOL_CAPACITY_LEVEL_OK = 1;
+  // At or above 85%.
+  STORAGE_POOL_CAPACITY_LEVEL_WARNING = 2;
+  // At or above 95%: containers on the pool may soon stop writing.
+  STORAGE_POOL_CAPACITY_LEVEL_CRITICAL = 3;
 }
 
 // CPUAdmissionMode is the CPU overcommit admission gate's posture
