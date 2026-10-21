@@ -17,7 +17,7 @@
 # platform-sidecar decision #4: each Containarium release publishes
 # matching tags ghcr.io/footprintai/containarium-otel-sidecar:vX.Y.Z.
 
-FROM golang:1.26.9-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 # The image's Go is the toolchain the binary is built with; never let go.mod
 # pull a different one (the stdlib CVE fixes depend on it).
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
