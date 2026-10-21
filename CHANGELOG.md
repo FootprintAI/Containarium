@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`containarium box delete <username> --yes [--force]`**, the noun-verb form of `delete`. It refuses without `--yes`, because deleting a box removes the container and its disk; the box must be stopped unless `--force`. It shares one code path with `containarium delete`, which is unchanged (it still has no `--yes`, so existing scripts keep working). The cloud side got the matching `cloud-cli box delete --yes`.
+
 ## [0.112.0] - 2026-10-21
 
 ### Added
