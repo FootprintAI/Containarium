@@ -63,7 +63,7 @@ type execHasher struct {
 	budget   time.Duration
 	deliver  func(threatdetect.ExecEvent)
 	queue    chan threatdetect.ExecEvent
-	dropped  atomic.Uint64
+	dropped  atomic.Int64
 	failed   atomic.Uint64
 	// pidMoved counts events dropped because the pid no longer held the
 	// exec's process (or the event had no start time to pin it by).
@@ -85,7 +85,7 @@ type exeIdentity struct {
 }
 
 // Dropped is the count of requests dropped on a full queue.
-func (h *execHasher) Dropped() int64 { return int64(h.dropped.Load()) }
+func (h *execHasher) Dropped() int64 { return h.dropped.Load() }
 
 // newExecHasher builds a hasher that redelivers hashed events to deliver
 // (the engine's OnExec). Run starts the worker.
