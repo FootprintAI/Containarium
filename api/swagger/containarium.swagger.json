@@ -11961,7 +11961,7 @@
         },
         "podmanEnabled": {
           "type": "boolean",
-          "title": "Whether Podman support is enabled (nesting)"
+          "description": "Whether the box was created with Podman support (enable_podman), read back\nfrom the box. Boxes created before this was recorded have no stored value\nand report true, as every box did previously; the K8s backend has no\npodman toggle and reports true."
         },
         "stack": {
           "type": "string",
