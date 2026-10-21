@@ -27,7 +27,7 @@
 # source with a current Go toolchain, plus a targeted grpc pin below, closes
 # that gap without waiting on an upstream rebuild.
 
-FROM golang:1.26.9-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 ARG SSHPIPER_VERSION=v1.6.1
 ENV CGO_ENABLED=0
 RUN apt-get update \
