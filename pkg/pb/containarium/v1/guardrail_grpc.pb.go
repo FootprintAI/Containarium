@@ -136,9 +136,10 @@ var GuardrailEngineService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	GuardrailPolicyService_GetGuardrailStatus_FullMethodName = "/containarium.v1.GuardrailPolicyService/GetGuardrailStatus"
-	GuardrailPolicyService_GetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/GetGuardrailPolicy"
-	GuardrailPolicyService_SetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/SetGuardrailPolicy"
+	GuardrailPolicyService_GetGuardrailStatus_FullMethodName       = "/containarium.v1.GuardrailPolicyService/GetGuardrailStatus"
+	GuardrailPolicyService_GetGuardrailPolicy_FullMethodName       = "/containarium.v1.GuardrailPolicyService/GetGuardrailPolicy"
+	GuardrailPolicyService_SetGuardrailPolicy_FullMethodName       = "/containarium.v1.GuardrailPolicyService/SetGuardrailPolicy"
+	GuardrailPolicyService_SetGuardrailBaselineMode_FullMethodName = "/containarium.v1.GuardrailPolicyService/SetGuardrailBaselineMode"
 )
 
 // GuardrailPolicyServiceClient is the client API for GuardrailPolicyService service.
@@ -152,6 +153,7 @@ type GuardrailPolicyServiceClient interface {
 	GetGuardrailStatus(ctx context.Context, in *GetGuardrailStatusRequest, opts ...grpc.CallOption) (*GetGuardrailStatusResponse, error)
 	GetGuardrailPolicy(ctx context.Context, in *GetGuardrailPolicyRequest, opts ...grpc.CallOption) (*GetGuardrailPolicyResponse, error)
 	SetGuardrailPolicy(ctx context.Context, in *SetGuardrailPolicyRequest, opts ...grpc.CallOption) (*SetGuardrailPolicyResponse, error)
+	SetGuardrailBaselineMode(ctx context.Context, in *SetGuardrailBaselineModeRequest, opts ...grpc.CallOption) (*SetGuardrailBaselineModeResponse, error)
 }
 
 type guardrailPolicyServiceClient struct {
@@ -192,6 +194,16 @@ func (c *guardrailPolicyServiceClient) SetGuardrailPolicy(ctx context.Context, i
 	return out, nil
 }
 
+func (c *guardrailPolicyServiceClient) SetGuardrailBaselineMode(ctx context.Context, in *SetGuardrailBaselineModeRequest, opts ...grpc.CallOption) (*SetGuardrailBaselineModeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetGuardrailBaselineModeResponse)
+	err := c.cc.Invoke(ctx, GuardrailPolicyService_SetGuardrailBaselineMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GuardrailPolicyServiceServer is the server API for GuardrailPolicyService service.
 // All implementations must embed UnimplementedGuardrailPolicyServiceServer
 // for forward compatibility.
@@ -203,6 +215,7 @@ type GuardrailPolicyServiceServer interface {
 	GetGuardrailStatus(context.Context, *GetGuardrailStatusRequest) (*GetGuardrailStatusResponse, error)
 	GetGuardrailPolicy(context.Context, *GetGuardrailPolicyRequest) (*GetGuardrailPolicyResponse, error)
 	SetGuardrailPolicy(context.Context, *SetGuardrailPolicyRequest) (*SetGuardrailPolicyResponse, error)
+	SetGuardrailBaselineMode(context.Context, *SetGuardrailBaselineModeRequest) (*SetGuardrailBaselineModeResponse, error)
 	mustEmbedUnimplementedGuardrailPolicyServiceServer()
 }
 
@@ -221,6 +234,9 @@ func (UnimplementedGuardrailPolicyServiceServer) GetGuardrailPolicy(context.Cont
 }
 func (UnimplementedGuardrailPolicyServiceServer) SetGuardrailPolicy(context.Context, *SetGuardrailPolicyRequest) (*SetGuardrailPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetGuardrailPolicy not implemented")
+}
+func (UnimplementedGuardrailPolicyServiceServer) SetGuardrailBaselineMode(context.Context, *SetGuardrailBaselineModeRequest) (*SetGuardrailBaselineModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetGuardrailBaselineMode not implemented")
 }
 func (UnimplementedGuardrailPolicyServiceServer) mustEmbedUnimplementedGuardrailPolicyServiceServer() {
 }
@@ -298,6 +314,24 @@ func _GuardrailPolicyService_SetGuardrailPolicy_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GuardrailPolicyService_SetGuardrailBaselineMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetGuardrailBaselineModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailPolicyServiceServer).SetGuardrailBaselineMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailPolicyService_SetGuardrailBaselineMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailPolicyServiceServer).SetGuardrailBaselineMode(ctx, req.(*SetGuardrailBaselineModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GuardrailPolicyService_ServiceDesc is the grpc.ServiceDesc for GuardrailPolicyService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -316,6 +350,10 @@ var GuardrailPolicyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetGuardrailPolicy",
 			Handler:    _GuardrailPolicyService_SetGuardrailPolicy_Handler,
+		},
+		{
+			MethodName: "SetGuardrailBaselineMode",
+			Handler:    _GuardrailPolicyService_SetGuardrailBaselineMode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
