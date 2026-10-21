@@ -1,6 +1,6 @@
 module github.com/footprintai/containarium
 
-go 1.26.7
+go 1.26.10
 
 require (
 	cloud.google.com/go/compute v1.70.0

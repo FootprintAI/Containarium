@@ -39,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.10'
 
       - name: Install buf
         # `make build-release` transitively runs `make proto`, which
@@ -49,7 +49,7 @@ jobs:
         #
         # Pinned release BINARY, not `go install .../buf@latest`: buf's
         # own go.mod tracks current Go releases closely (e.g. v1.73.0
-        # requires go >= 1.26.7), so `@latest` silently breaks this step
+        # requires go >= 1.26.10), so `@latest` silently breaks this step
         # the day upstream bumps past whatever Go version this repo's
         # workflows pin — with no code change on our side to explain it
         # (caught rehearsing the v0.77.0 release build, 2026-09-13).
@@ -165,7 +165,7 @@ jobs:
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Build agent-runtime bundle
         # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by
@@ -451,7 +451,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.10'
 
       - name: Install buf
         # Pinned release binary — see the build-and-release job's "Install
