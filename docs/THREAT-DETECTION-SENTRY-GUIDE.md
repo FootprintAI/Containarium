@@ -298,7 +298,13 @@ containarium security process-policy set --container box-a --kill-process=false 
 ```
 
 `kill_process` defaults to **false** at every level and is never turned on
-for you; unset inherits from the backend default. Before the kill the
+for you; unset inherits from the backend default. **`kill_process` is
+Incus-only.** On any other container runtime (the box's init has no Incus
+payload cgroup, `lxc.payload.<name>`) the daemon cannot confirm a pid
+belongs to the box, so it refuses every kill up front: the finding is still
+raised and the policy action still applies, and the response reads `kill
+skipped: RUNTIME_UNSUPPORTED` (audit `kill-skipped`, reason
+`kill_process is Incus-only`). Before the kill the
 daemon pins the process with a pidfd (no pidfd, no kill), re-reads
 `/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
 so a pid reused by another process, on the host or in another box, is never
@@ -322,7 +328,7 @@ under `security.action`: `kill` names the pid and, as `start_time=`, the
 matched exec's boot-clock stamp (ticks since boot; an upper bound for the
 process's start time, not the start time itself), `kill-skipped`
 gives the reason (`pid reused`, `start time unknown`, `process already
-exited`, …). The finding's response
+exited`, `kill_process is Incus-only`, …). The finding's response
 shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
 <reason>` when the last attempt did not happen, and an action row opened by
 the same finding records `killed_pid`. The kill and the throttle/freeze run on the responder's own
@@ -391,10 +397,19 @@ a degraded backend (no Postgres) responses are off, the kill included.
 name or argv entry, and a fresh build matches no hash: only the
 mining-behavior rule (sustained CPU plus a stratum flow) catches it. The
 rule sees the exec, not later renames inside the process.
-Literal argv markers match any command line that merely mentions them:
-`grep -r -- --donate-level .` raises the finding too, and with
-`kill_process` it is killed. Keep that in mind before turning the kill on
-for boxes where people inspect miner configs. A glob token without `=`
+Argv markers are matched against the real argument vector (the
+NUL-separated argv the kernel records), not the space-joined line. A
+literal marker must begin an argument, or the value of an option argument
+`--opt=value`; a space in a marker is an argument boundary (`--coin ` is the
+argument `--coin` followed by another). A marker that only appears inside an
+argument is not a match: `git commit -m "document stratum+tcp:// pool
+format"` raises nothing. An argument that *begins* with a marker matches
+whatever the command, and there is no command allowlist: `grep -r
+--donate-level docs/` (the argument `--donate-level`) and `grep
+--regexp=stratum+tcp:// .` raise the finding, and with `kill_process` the
+grep is killed. Keep that in mind before turning the kill on for boxes where
+people inspect miner configs. A glob marker matches consecutive whole
+arguments the same way. A glob token without `=`
 never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444`
 does not hit the `-o <host>:<port>` markers, and `-o` is case-sensitive, so
 `cc -O ...` is not a match. Pool addresses in other spellings (a config file,
@@ -526,7 +541,9 @@ cgroup, or to another process of the same box: it started after the
 matched exec was seen), `2` PROCESS_GONE (it exited first), `3`
 CONTAINER_INIT (the box's init, never signalled), `4` POLICY_UNREADABLE, `5`
 OTHER, `6` START_TIME_UNKNOWN (the exec has no boot-clock stamp or the pid's
-start time could not be read, so the pid could not be confirmed). The first skip is
+start time could not be read, so the pid could not be confirmed), `7`
+RUNTIME_UNSUPPORTED (the box does not run under Incus; `kill_process` is
+Incus-only). The first skip is
 delivered at once and a different reason at most once a minute; the pid
 and error detail stay in the audit log (`kill-skipped`), not the webhook.
 `response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
