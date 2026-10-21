@@ -221,10 +221,18 @@ func TestFlowEvidence_SeenAndMatched_ToProto(t *testing.T) {
 	}
 }
 
-// TestFindingClone verifies that later Count and Response changes leave the snapshot unchanged.
+// TestFindingClone verifies that later Count, Evidence and Response changes leave the snapshot unchanged.
 func TestFindingClone(t *testing.T) {
 	original := &Finding{
 		Count: 1,
+		Evidence: Evidence{
+			Flows:     []FlowEvidence{{DstIP: "203.0.113.9"}},
+			Denies:    []DenyEvidence{{Reason: "policy"}},
+			Configs:   []ConfigEvidence{{Value: "yes"}},
+			Listeners: []ListenerEvidence{{Port: 22}},
+			CPU:       []CPUEvidence{{Samples: 1}},
+			Execs:     []ExecEvidence{{PID: 42}},
+		},
 		Response: &FindingResponse{
 			ProcessKilled: true,
 		},
@@ -233,10 +241,24 @@ func TestFindingClone(t *testing.T) {
 	snapshot := original.clone()
 
 	original.Count = 2
+	original.Evidence.Flows[0].DstIP = "198.51.100.7"
+	original.Evidence.Denies[0].Reason = "changed"
+	original.Evidence.Configs[0].Value = "no"
+	original.Evidence.Listeners[0].Port = 2222
+	original.Evidence.CPU[0].Samples = 2
+	original.Evidence.Execs[0].PID = 43
 	original.Response.ProcessKilled = false
 
 	if snapshot.Count != 1 {
 		t.Fatalf("snapshot count = %d, want 1", snapshot.Count)
+	}
+	if snapshot.Evidence.Flows[0].DstIP != "203.0.113.9" ||
+		snapshot.Evidence.Denies[0].Reason != "policy" ||
+		snapshot.Evidence.Configs[0].Value != "yes" ||
+		snapshot.Evidence.Listeners[0].Port != 22 ||
+		snapshot.Evidence.CPU[0].Samples != 1 ||
+		snapshot.Evidence.Execs[0].PID != 42 {
+		t.Fatalf("changing the original evidence changed the snapshot: %+v", snapshot.Evidence)
 	}
 	if !snapshot.Response.ProcessKilled {
 		t.Fatal("changing the original response changed the snapshot")
