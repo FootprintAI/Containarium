@@ -36,7 +36,7 @@ func policyPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS guardrail_policy`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS guardrail_policy, guardrail_baseline`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	return pool
@@ -86,6 +86,69 @@ func TestGuardrailPolicyPGStore_RevisionSurvivesRestart(t *testing.T) {
 	}
 	if res.Current.GetRevision() != 3 || res.Previous.GetRevision() != 2 {
 		t.Fatalf("after restart Set = rev %d (prev %d), want 3 (prev 2)", res.Current.GetRevision(), res.Previous.GetRevision())
+	}
+}
+
+// TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart (#2738): the stored
+// baseline mode and its revision survive a restarted daemon's bootstrap, and
+// a damaged mode column reads as an error, never as a default.
+func TestGuardrailPolicyPGStore_BaselineModeSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	pool := policyPool(t)
+	if _, err := pgStore(t, pool).SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, "admin-a", nil); err != nil {
+		t.Fatalf("SetBaselineMode: %v", err)
+	}
+	restarted := pgStore(t, pool)
+	got, err := restarted.GetBaselineMode(ctx)
+	if err != nil || got.GetMode() != pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK || got.GetRevision() != 1 || got.GetUpdatedBy() != "admin-a" {
+		t.Fatalf("after restart = (%v, %v), want BLOCK at revision 1 by admin-a", got, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE guardrail_baseline SET mode = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("damage row: %v", err)
+	}
+	if got, err := restarted.GetBaselineMode(ctx); err == nil {
+		t.Fatalf("damaged mode read = %v, want an error", got)
+	}
+}
+
+// TestGuardrailPolicyPGStore_ConcurrentBaselineModeSetsGetDistinctRevisions
+// (#2738): N racing mode switches get revisions 1..N with no duplicate, and
+// the stored row ends at N.
+func TestGuardrailPolicyPGStore_ConcurrentBaselineModeSetsGetDistinctRevisions(t *testing.T) {
+	ctx := context.Background()
+	s := pgStore(t, policyPool(t))
+	const n = 8
+	var wg sync.WaitGroup
+	revs := make([]int64, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			mode := pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG
+			if i%2 == 0 {
+				mode = pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK
+			}
+			res, err := s.SetBaselineMode(ctx, mode, "admin-a", nil)
+			errs[i] = err
+			if err == nil {
+				revs[i] = res.Current.GetRevision()
+			}
+		}(i)
+	}
+	wg.Wait()
+	seen := map[int64]bool{}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("SetBaselineMode %d: %v", i, errs[i])
+		}
+		if revs[i] < 1 || revs[i] > n || seen[revs[i]] {
+			t.Fatalf("revision %d out of range or assigned twice", revs[i])
+		}
+		seen[revs[i]] = true
+	}
+	if got, err := s.GetBaselineMode(ctx); err != nil || got.GetRevision() != n {
+		t.Fatalf("stored = (%v, %v), want revision %d", got, err, n)
 	}
 }
 

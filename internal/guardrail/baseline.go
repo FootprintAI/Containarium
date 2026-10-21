@@ -64,20 +64,25 @@ func BaselineRules() []BaselineRule {
 	return append([]BaselineRule(nil), baselineRules...)
 }
 
-// BaselineAction is what the baseline does with a detection. Only Log ships
-// in this slice; the per-deployment switch to block is #2738 and extends this
-// type rather than adding a string.
+// BaselineAction is what the baseline did with a detection, as logs and audit
+// records name it. The stored per-daemon mode (pb.GuardrailBaselineMode,
+// #2738) decides which one applies.
 type BaselineAction int
 
 const (
 	// BaselineActionLog flags and audits; the response is never held or blocked.
 	BaselineActionLog BaselineAction = iota + 1
+	// BaselineActionBlock flags and audits, and the held response is blocked.
+	BaselineActionBlock
 )
 
 // String is the stable name used in logs and audit details.
 func (a BaselineAction) String() string {
-	if a == BaselineActionLog {
+	switch a {
+	case BaselineActionLog:
 		return "log"
+	case BaselineActionBlock:
+		return "block"
 	}
 	return "unknown"
 }

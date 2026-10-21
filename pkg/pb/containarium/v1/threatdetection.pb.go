@@ -364,7 +364,9 @@ type KillSkipReason int32
 
 const (
 	KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED KillSkipReason = 0
-	// The pid now belongs to a different cgroup than the container's.
+	// The pid now belongs to a different cgroup than the container's, or to a
+	// different process of the same container: its start time no longer
+	// matches the matched exec's (#2765).
 	KillSkipReason_KILL_SKIP_REASON_PID_REUSED KillSkipReason = 1
 	// The process exited before the signal.
 	KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE KillSkipReason = 2
@@ -374,6 +376,10 @@ const (
 	KillSkipReason_KILL_SKIP_REASON_POLICY_UNREADABLE KillSkipReason = 4
 	// Any other refusal (host or Incus error).
 	KillSkipReason_KILL_SKIP_REASON_OTHER KillSkipReason = 5
+	// The matched exec carries no process start time (the process had already
+	// exited when the exec watcher decoded it), so the pid cannot be confirmed
+	// as the matched process and is never signalled (#2765).
+	KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN KillSkipReason = 6
 )
 
 // Enum value maps for KillSkipReason.
@@ -385,14 +391,16 @@ var (
 		3: "KILL_SKIP_REASON_CONTAINER_INIT",
 		4: "KILL_SKIP_REASON_POLICY_UNREADABLE",
 		5: "KILL_SKIP_REASON_OTHER",
+		6: "KILL_SKIP_REASON_START_TIME_UNKNOWN",
 	}
 	KillSkipReason_value = map[string]int32{
-		"KILL_SKIP_REASON_UNSPECIFIED":       0,
-		"KILL_SKIP_REASON_PID_REUSED":        1,
-		"KILL_SKIP_REASON_PROCESS_GONE":      2,
-		"KILL_SKIP_REASON_CONTAINER_INIT":    3,
-		"KILL_SKIP_REASON_POLICY_UNREADABLE": 4,
-		"KILL_SKIP_REASON_OTHER":             5,
+		"KILL_SKIP_REASON_UNSPECIFIED":        0,
+		"KILL_SKIP_REASON_PID_REUSED":         1,
+		"KILL_SKIP_REASON_PROCESS_GONE":       2,
+		"KILL_SKIP_REASON_CONTAINER_INIT":     3,
+		"KILL_SKIP_REASON_POLICY_UNREADABLE":  4,
+		"KILL_SKIP_REASON_OTHER":              5,
+		"KILL_SKIP_REASON_START_TIME_UNKNOWN": 6,
 	}
 )
 
@@ -3536,14 +3544,15 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x16RESPONSE_STATE_APPLIED\x10\x02\x12\x19\n" +
 	"\x15RESPONSE_STATE_FAILED\x10\x03\x12\x1b\n" +
 	"\x17RESPONSE_STATE_RELEASED\x10\x04\x12\x1a\n" +
-	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\xdf\x01\n" +
+	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\x88\x02\n" +
 	"\x0eKillSkipReason\x12 \n" +
 	"\x1cKILL_SKIP_REASON_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bKILL_SKIP_REASON_PID_REUSED\x10\x01\x12!\n" +
 	"\x1dKILL_SKIP_REASON_PROCESS_GONE\x10\x02\x12#\n" +
 	"\x1fKILL_SKIP_REASON_CONTAINER_INIT\x10\x03\x12&\n" +
 	"\"KILL_SKIP_REASON_POLICY_UNREADABLE\x10\x04\x12\x1a\n" +
-	"\x16KILL_SKIP_REASON_OTHER\x10\x05*\x94\x01\n" +
+	"\x16KILL_SKIP_REASON_OTHER\x10\x05\x12'\n" +
+	"#KILL_SKIP_REASON_START_TIME_UNKNOWN\x10\x06*\x94\x01\n" +
 	"\vSentryState\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +

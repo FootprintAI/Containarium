@@ -27,6 +27,7 @@ import (
 	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
@@ -432,6 +433,10 @@ type ContainerServer struct {
 	// github_tag path return Unavailable, same as an unconfigured autoUpdater
 	// does for the sentinel path.
 	binaryPath string
+
+	// storagePools returns the pool capacity monitor's last snapshot (#2823).
+	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
+	storagePools func() poolcapacity.Snapshot
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -3208,6 +3213,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	if driver, derr := client.PoolDriver("default"); derr == nil {
 		info.Storage = backendStorageFromPool("default", driver)
 	}
+	info.StoragePools = s.storagePoolCapacities()
 
 	// This backend's spare-capacity advertisement (#680) and capability
 	// profile (#681), so a peer's GetSystemInfo carries them to the

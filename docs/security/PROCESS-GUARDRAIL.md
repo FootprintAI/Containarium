@@ -337,12 +337,18 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
 - The daemon pins the process with a pidfd (no pidfd, no kill), then
   re-reads `/proc/<pid>/cgroup` and confirms it is still in that box's
   cgroup, so a reused pid on the host or in another box is never signalled.
-  A reused pid inside the same box within the queue delay is not excluded
-  (start-time check tracked in #2765).
+- It then compares the pinned process's start time (`/proc/<pid>/stat`
+  field 22, clock ticks since boot) with the start time the exec watcher
+  read when it decoded the matched exec (#2765). A mismatch is a pid reused
+  inside the same box: skipped as `pid reused`. An exec whose process had
+  already exited when it was decoded carries no start time and is never
+  signalled: skipped as `start time unknown` (`START_TIME_UNKNOWN`).
 - A box's init is never killed.
 - Every attempt is audited under `security.action`: `kill` (names the pid)
   or `kill-skipped` (with the pid and the reason, for example
-  `kill_skipped="pid 211757: process already exited"`).
+  `kill_skipped="pid 211757: process already exited"` or
+  `kill_skipped="pid 211757 started at 4400 ticks, matched exec at 4100:
+  pid reused"`).
 - `findings list` shows the result under the finding:
 
   ```text
@@ -545,7 +551,8 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   minute for a respawning miner. After a storm stops, the last `kills` in
   the webhook can be short of the true count; `findings list` is exact. A
   skipped kill carries a numeric `kill_skip_reason` (`PID_REUSED`=1,
-  `PROCESS_GONE`=2, `CONTAINER_INIT`=3, `POLICY_UNREADABLE`=4, `OTHER`=5).
+  `PROCESS_GONE`=2, `CONTAINER_INIT`=3, `POLICY_UNREADABLE`=4, `OTHER`=5,
+  `START_TIME_UNKNOWN`=6).
 
 Abridged kill post:
 

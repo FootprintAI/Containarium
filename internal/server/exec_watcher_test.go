@@ -326,6 +326,35 @@ func TestExecWatcher_AttributesAndHandsToEngine(t *testing.T) {
 	}
 }
 
+// TestExecWatcher_RecordsStartTime (#2765): the watcher reads the exec'ing
+// process's start time (/proc/<pid>/stat field 22) on decode and hands it to
+// the engine, so the kill can later tell the matched process from a pid
+// reused inside the same box. A process that already exited by then (no
+// stat) is passed on with no start time, never a guessed one.
+func TestExecWatcher_RecordsStartTime(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	writeStat(t, procRoot, 4242, "my (miner)", 987654)
+	m := newFakeCgroupMap()
+	var got []threatdetect.ExecEvent
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	cg := ino["lxc.payload.box-a"]
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 4242, "xmrig", "./xmrig"))
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 5555, "sh", "sh")) // exited before decode
+
+	if len(got) != 2 {
+		t.Fatalf("engine got %d events, want 2", len(got))
+	}
+	if got[0].StartTime != 987654 {
+		t.Fatalf("start time = %d, want 987654", got[0].StartTime)
+	}
+	if got[1].StartTime != 0 {
+		t.Fatalf("exited process: start time = %d, want 0 (unknown)", got[1].StartTime)
+	}
+}
+
 // TestExecWatcher_FanOutDropsSlowSubscriberWithoutBlocking: two subscribers,
 // one never reads. The fast one receives every event, the slow one is
 // dropped (its channel closed) once its buffer is full, and OnExecEvent

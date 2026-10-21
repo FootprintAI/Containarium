@@ -297,9 +297,15 @@ for you; unset inherits from the backend default. Before the kill the
 daemon pins the process with a pidfd (no pidfd, no kill), re-reads
 `/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
 so a pid reused by another process, on the host or in another box, is never
-signalled; the container's init is never killed. Every attempt is audited
-under `security.action`: `kill` names the pid, `kill-skipped` gives the
-reason (`pid reused`, `process already exited`, …). The finding's response
+signalled. It then compares the pinned process's start time
+(`/proc/<pid>/stat` field 22) with the one the exec watcher read when it
+decoded the matched exec, so a pid reused by another process inside the
+same box is not signalled either; an exec whose process had already exited
+when it was decoded has no start time and is never killed. The container's
+init is never killed. Every attempt is audited
+under `security.action`: `kill` names the pid and start time, `kill-skipped`
+gives the reason (`pid reused`, `start time unknown`, `process already
+exited`, …). The finding's response
 shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
 <reason>` when the last attempt did not happen, and an action row opened by
 the same finding records `killed_pid`. The kill and the throttle/freeze run on the responder's own
@@ -456,12 +462,21 @@ findings list` always shows the current state: its response line reads
 `response THROTTLE APPLIED on box-a, kill skipped: CONTAINER_INIT`, and
 `--json` carries `killedPid`, `kills` and `killSkipReason`. The kill count
 is per finding, across the boxes that share it, so a miner respawning on
-several boxes is still at most about one post a minute.
+several boxes is bounded the same way. The bound holds when kills and
+skipped kills mix: the first kill and the first skip are each delivered at
+once, and after that the finding's kill outcome reaches the webhook at most
+once a minute. A miner that respawns every second for an hour, with or
+without an occasional skipped kill, gives 60 or 61 kill posts that hour. Each
+box's response transitions (`APPLIED`, `RELEASED`, `EXPIRED`, `FAILED`) and
+the resolve are delivered on top of that.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
-cgroup), `2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's
-init, never signalled), `4` POLICY_UNREADABLE, `5` OTHER. The first skip is
+cgroup, or to another process of the same box: its start time differs),
+`2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's init,
+never signalled), `4` POLICY_UNREADABLE, `5` OTHER, `6` START_TIME_UNKNOWN
+(the process had exited before its exec was decoded, so the pid could not
+be confirmed). The first skip is
 delivered at once and a different reason at most once a minute; the pid
 and error detail stay in the audit log (`kill-skipped`), not the webhook.
 `response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
