@@ -183,11 +183,13 @@ jobs:
       # TestPiModelsJSON tables.
       # ./internal/guardrail/... joins in #2367 for the same reason: its own
       # package tests (reference rules, InboundDecision) were in no lane.
+      # ./internal/proofpack/... joins in #2797, default tags only: it backs
+      # the server-side `proof-pack generate`, which the client build lacks.
       # The job name above is left unchanged so a required-check name stays put.
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/sshkey/... ./internal/guardrail/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/sshkey/... ./internal/guardrail/... ./internal/proofpack/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
