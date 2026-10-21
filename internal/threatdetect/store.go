@@ -414,7 +414,7 @@ func (s *FindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) 
 	if err != nil {
 		return nil, err
 	}
-	s.resolved(ctx, f, f)
+	s.resolved(ctx, f, resolveDelivery(f))
 	return f, nil
 }
 

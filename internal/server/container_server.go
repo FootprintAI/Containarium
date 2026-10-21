@@ -298,6 +298,9 @@ type ContainerServer struct {
 	// owned, so deleting an LXC actually deletes the public hostname too.
 	routeStore   routeLister
 	proxyManager *app.ProxyManager
+	// processActions, when set, is told of every box DeleteContainer
+	// removes, so its open process action is closed (#2835).
+	processActions processActionReleaser
 	// passthroughStore, when set, lets DeleteContainer also cascade-remove
 	// any TCP/UDP passthrough routes the container owned (#1462) — the
 	// passthrough analog of routeStore above. nil on a daemon with no
@@ -1523,6 +1526,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 			return nil, fmt.Errorf("failed to delete container: %w", err)
 		}
 		s.cascadeContainerCleanup(ctx, containerName, req.Username)
+		s.closeProcessActions(ctx, containerName)
 		s.emitter.EmitContainerDeleted(containerName)
 		// Retire the box's sshpiper pipe now, not on the next tick — see
 		// the LXC delete path below for why (cloud #971).
@@ -1581,6 +1585,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 	// succeeded, and partial-cascade is better than telling the caller
 	// "delete failed" when the container is in fact gone.
 	s.cascadeContainerCleanup(ctx, containerName, req.Username)
+	s.closeProcessActions(ctx, containerName)
 
 	// Emit container deleted event
 	s.emitter.EmitContainerDeleted(containerName)
@@ -4924,4 +4929,28 @@ func (s *ContainerServer) deregisterGuacamoleConnection(username string) {
 	}
 
 	log.Printf("Guacamole RDP connection removed for %s (id=%s)", username, connID)
+}
+
+// processActionReleaser is what DeleteContainer tells about a deleted box:
+// the process responder (#2835), so an action open on the box stops holding
+// its finding open. *ProcessResponder satisfies it.
+type processActionReleaser interface {
+	ContainerDeleted(ctx context.Context, container string)
+}
+
+// SetProcessActionReleaser wires the process responder into DeleteContainer
+// (#2835). nil (or a nil *ProcessResponder, on a daemon without the sentry)
+// leaves deletion as it was.
+func (s *ContainerServer) SetProcessActionReleaser(r processActionReleaser) {
+	s.processActions = r
+}
+
+// closeProcessActions tells the process responder that containerName was
+// deleted. Best effort, like the rest of the cascade: the box is already
+// gone, and an action left open is closed by the next TTL or orphan sweep
+// that finds the box missing.
+func (s *ContainerServer) closeProcessActions(ctx context.Context, containerName string) {
+	if s.processActions != nil {
+		s.processActions.ContainerDeleted(ctx, containerName)
+	}
 }
