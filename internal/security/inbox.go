@@ -170,6 +170,19 @@ func inBoxScanCommand(timeout time.Duration) []string {
 	}
 }
 
+// presenceProbe is a shell snippet that exits 0 when bin is on the box's PATH
+// and exactly 1 when it is not.
+//
+// A bare `command -v bin` is NOT safe here: under dash (the /bin/sh of Debian
+// and Ubuntu) it exits 127 for a missing command, and Incus turns an exec
+// exit status of 127 into an error ("Command not found") instead of an exit
+// code. The boxes that most need the ClamAV install are exactly the ones where
+// the binary is missing, so the unwrapped probe made both the install and the
+// scan fail with "could not reach the box" there. The if/else pins the status.
+func presenceProbe(bin string) string {
+	return "if command -v " + bin + " >/dev/null 2>&1; then exit 0; else exit 1; fi"
+}
+
 // preflight returns a non-empty status (with reason) when the scan must not be
 // attempted. All of these produce a report; none is ever clean.
 func (s *Scanner) preflight(box boxAPI, name string) (status, reason string) {
@@ -184,7 +197,7 @@ func (s *Scanner) preflight(box boxAPI, name string) (status, reason string) {
 		return ScanStatusUnsupportedSize,
 			fmt.Sprintf(reasonTooSmallFmt, info.Memory, MinBoxMemoryBytes/1_000_000_000)
 	}
-	if _, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", "command -v clamscan"}); err != nil {
+	if _, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", presenceProbe("clamscan")}); err != nil {
 		return ScanStatusIncomplete, fmt.Sprintf(reasonExecFailedFmt, err)
 	} else if code != 0 {
 		return ScanStatusNotInstalled, reasonNoClamscan

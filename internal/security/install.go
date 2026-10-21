@@ -32,10 +32,14 @@ const (
 	msgVerifyFailed   = "the install finished but ClamAV or its signatures are still missing in the box"
 )
 
+// debianFamilyProbe exits 0 on a Debian-family box (apt-get present, no
+// /etc/redhat-release) and 1 otherwise, never 127 (see presenceProbe).
+const debianFamilyProbe = "if command -v apt-get >/dev/null 2>&1 && [ ! -f /etc/redhat-release ]; then exit 0; else exit 1; fi"
+
 // clamavPresent reports whether clamscan and a signature database exist in the
 // box. err means the box could not be asked at all.
 func clamavPresent(box boxAPI, name string) (haveBin, haveSigs bool, err error) {
-	_, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", "command -v clamscan"})
+	_, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", presenceProbe("clamscan")})
 	if err != nil {
 		return false, false, err
 	}
@@ -50,7 +54,7 @@ func clamavPresent(box boxAPI, name string) (haveBin, haveSigs bool, err error) 
 // isDebianFamily mirrors ostype.DetectFamily's probes through the exit-code
 // exec: a Debian-family box has apt-get and no /etc/redhat-release.
 func isDebianFamily(box boxAPI, name string) (bool, error) {
-	_, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", "command -v apt-get >/dev/null 2>&1 && [ ! -f /etc/redhat-release ]"})
+	_, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", debianFamilyProbe})
 	if err != nil {
 		return false, err
 	}
