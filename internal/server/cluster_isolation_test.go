@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Node isolation contract (#1428): a cluster's isolation class is the

@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // mTLS transport tests for the CA-provider surface (#1415, option 1):

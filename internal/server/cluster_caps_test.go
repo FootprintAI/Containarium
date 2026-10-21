@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Server-side caps (#1417): the operator's hard ceiling on what any
