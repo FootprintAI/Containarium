@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sync/atomic"
 
@@ -19,6 +20,19 @@ import (
 
 // guardrailPolicySetAction is the audit action every successful Set writes.
 const guardrailPolicySetAction = "guardrail.policy.set"
+
+// guardrailBaselineSetAction is the audit action every successful baseline
+// mode switch writes (#2738).
+const guardrailBaselineSetAction = "guardrail.baseline.set"
+
+// guardrailBaselineAuditDetail is the Detail of a guardrail.baseline.set
+// entry: the mode and revision replaced and stored (enum names).
+type guardrailBaselineAuditDetail struct {
+	PreviousMode     string `json:"previous_mode"`
+	PreviousRevision int64  `json:"previous_revision"`
+	Mode             string `json:"mode"`
+	Revision         int64  `json:"revision"`
+}
 
 // guardrailPolicyAuditDetail is the Detail of a guardrail.policy.set entry:
 // revisions, hashes and signer key ids. Never key bytes.
@@ -76,6 +90,14 @@ func (w *swappableGuardrailPolicyStore) Set(ctx context.Context, p *pb.Guardrail
 	return w.current().Set(ctx, p, signers, updatedBy)
 }
 
+func (w *swappableGuardrailPolicyStore) GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetting, error) {
+	return w.current().GetBaselineMode(ctx)
+}
+
+func (w *swappableGuardrailPolicyStore) SetBaselineMode(ctx context.Context, mode pb.GuardrailBaselineMode, updatedBy string, beforeCommit guardrailpolicy.BaselineBeforeCommit) (*guardrailpolicy.BaselineSetResult, error) {
+	return w.current().SetBaselineMode(ctx, mode, updatedBy, beforeCommit)
+}
+
 // errGuardrailPolicyStoreUnavailable is what every read and write returns
 // while Postgres is configured but its guardrail policy store is not
 // installed. It is a real error, never guardrailpolicy.ErrNotConfigured.
@@ -92,6 +114,14 @@ func (unavailableGuardrailPolicyStore) Get(context.Context) (*pb.ServerGuardrail
 }
 
 func (unavailableGuardrailPolicyStore) Set(context.Context, *pb.GuardrailPolicy, []*pb.GuardrailTrustedSigner, string) (*guardrailpolicy.SetResult, error) {
+	return nil, errGuardrailPolicyStoreUnavailable
+}
+
+func (unavailableGuardrailPolicyStore) GetBaselineMode(context.Context) (*pb.GuardrailBaselineSetting, error) {
+	return nil, errGuardrailPolicyStoreUnavailable
+}
+
+func (unavailableGuardrailPolicyStore) SetBaselineMode(context.Context, pb.GuardrailBaselineMode, string, guardrailpolicy.BaselineBeforeCommit) (*guardrailpolicy.BaselineSetResult, error) {
 	return nil, errGuardrailPolicyStoreUnavailable
 }
 
@@ -126,6 +156,12 @@ func (s *GuardrailPolicyServer) SetStore(store guardrailpolicy.Store) { s.store.
 // the recovery retry (#2483) reaches them without re-wiring.
 func (s *GuardrailPolicyServer) Provider() guardrailpolicy.PolicyProvider { return s.store }
 
+// BaselineModeProvider is the model gateway's read side of the baseline mode
+// (#2738); like Provider, it follows a later durable install.
+func (s *GuardrailPolicyServer) BaselineModeProvider() guardrailpolicy.BaselineModeProvider {
+	return s.store
+}
+
 // Durable reports whether the server is off the fail-closed stand-in: the
 // Postgres store is installed, or no Postgres is configured and the
 // in-memory store is the store.
@@ -149,7 +185,8 @@ func (s *GuardrailPolicyServer) InstallDurableStore(open func() (guardrailpolicy
 	return nil
 }
 
-// SetOnChange registers a callback run after every successful Set. Call
+// SetOnChange registers a callback run after every successful Set (policy
+// or baseline mode). Call
 // before the server serves.
 func (s *GuardrailPolicyServer) SetOnChange(fn func()) { s.onChange = fn }
 
@@ -201,7 +238,81 @@ func (s *GuardrailPolicyServer) GetGuardrailStatus(ctx context.Context, _ *pb.Ge
 		log.Printf("[guardrail-policy] status read: %v", err)
 		return nil, status.Error(codes.Internal, "read guardrail policy failed")
 	}
+	if resp.Baseline, err = s.store.GetBaselineMode(ctx); err != nil {
+		log.Printf("[guardrail-policy] status baseline mode read: %v", err)
+		return nil, status.Error(codes.Internal, "read guardrail baseline mode failed")
+	}
 	return resp, nil
+}
+
+// errBaselineAuditFailed marks a switch refused because its audit entry
+// could not be written.
+var errBaselineAuditFailed = errors.New("audit write failed")
+
+// SetGuardrailBaselineMode switches the baseline between LOG and BLOCK
+// (#2738). Admin-only, rate-limited with Set, and audited. It never touches
+// the policy, so it cannot turn the baseline off; under a configured policy
+// the mode is stored and unused.
+//
+// Unlike the policy's best-effort audit, the audit entry is part of the
+// change (decision A on #2727): it is written while the store holds the new
+// setting uncommitted, and a failed write rolls the change back and fails
+// the call. A commit that fails after a written entry leaves an entry whose
+// revision the store never reached; the status shows the lower revision.
+// With no audit store the switch succeeds without an entry; whether it
+// should is an open question. That is the case when the daemon has no
+// Postgres, when REST is disabled (the audit store is wired only on the REST
+// path in dual_server.go), or when the audit store failed to start; it has
+// no startup retry.
+func (s *GuardrailPolicyServer) SetGuardrailBaselineMode(ctx context.Context, req *pb.SetGuardrailBaselineModeRequest) (*pb.SetGuardrailBaselineModeResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if err := checkGuardrailRate(ctx, s.setLimit); err != nil {
+		return nil, err
+	}
+	if !guardrailpolicy.ValidBaselineMode(req.GetMode()) {
+		return nil, status.Error(codes.InvalidArgument, guardrailpolicy.ErrInvalidBaselineMode.Error())
+	}
+	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
+	var beforeCommit guardrailpolicy.BaselineBeforeCommit
+	if s.audit != nil {
+		beforeCommit = func(res *guardrailpolicy.BaselineSetResult) error { return s.auditBaselineSet(ctx, subject, res) }
+	}
+	res, err := s.store.SetBaselineMode(ctx, req.GetMode(), subject, beforeCommit)
+	if errors.Is(err, errBaselineAuditFailed) {
+		log.Printf("[guardrail-policy] baseline mode switch refused: %v", err)
+		return nil, status.Error(codes.Internal, "write the guardrail baseline audit entry failed; the baseline mode is unchanged")
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "store guardrail baseline mode: %v", err)
+	}
+	if s.onChange != nil {
+		s.onChange()
+	}
+	return &pb.SetGuardrailBaselineModeResponse{Baseline: res.Current}, nil
+}
+
+// auditBaselineSet writes the switch's audit entry. Its error (wrapping
+// errBaselineAuditFailed) aborts the switch.
+func (s *GuardrailPolicyServer) auditBaselineSet(ctx context.Context, subject string, res *guardrailpolicy.BaselineSetResult) error {
+	payload, err := json.Marshal(guardrailBaselineAuditDetail{
+		PreviousMode: res.Previous.GetMode().String(), PreviousRevision: res.Previous.GetRevision(),
+		Mode: res.Current.GetMode().String(), Revision: res.Current.GetRevision(),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: marshal detail: %v", errBaselineAuditFailed, err)
+	}
+	if err := s.audit.Log(ctx, &audit.AuditEntry{
+		Username:     subject,
+		Action:       guardrailBaselineSetAction,
+		ResourceType: "guardrail_baseline",
+		ResourceID:   "cluster",
+		Detail:       string(payload),
+	}); err != nil {
+		return fmt.Errorf("%w: %s revision %d: %v", errBaselineAuditFailed, guardrailBaselineSetAction, res.Current.GetRevision(), err)
+	}
+	return nil
 }
 
 func (s *GuardrailPolicyServer) SetGuardrailPolicy(ctx context.Context, req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {

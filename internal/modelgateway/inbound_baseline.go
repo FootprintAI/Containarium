@@ -3,6 +3,7 @@ package modelgateway
 import (
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -96,21 +97,40 @@ func (t *baselineTee) finish() {
 		units = inboundUnitsJSON(t.buf)
 	}
 	for _, d := range guardrail.ScanBaseline(units) {
-		t.br.in.detect(t.br.sub, d)
+		t.br.in.detect(t.br.sub, d, guardrail.BaselineActionLog)
 	}
 	t.buf = nil
 }
 
 // detect records one baseline detection: a log line (ids and counts only),
 // the counter, and a queued audit entry.
-func (in *inbound) detect(sub inboundSubject, d guardrail.BaselineDetection) {
+func (in *inbound) detect(sub inboundSubject, d guardrail.BaselineDetection, action guardrail.BaselineAction) {
 	in.logger.Printf("model-gateway: INBOUND-BASELINE tenant=%s skill=%s provider=%s model=%s rule=%s kind=%s action=%s matches=%d",
-		sub.tenant, sub.skill, sub.provider, sub.model, d.RuleID, kindName(d.Kind), in.baselineAction, d.Matches)
+		sub.tenant, sub.skill, sub.provider, sub.model, d.RuleID, kindName(d.Kind), action, d.Matches)
 	in.mu.Lock()
 	in.baselineHits[d.RuleID]++
 	in.mu.Unlock()
 	in.enqueueAudit(auditJob{d: &InboundDetection{
 		Tenant: sub.tenant, SkillID: sub.skill, Provider: sub.provider, Model: sub.model,
-		RuleID: d.RuleID, Kind: d.Kind, Action: in.baselineAction, Matches: d.Matches,
+		RuleID: d.RuleID, Kind: d.Kind, Action: action, Matches: d.Matches,
 	}})
+}
+
+// scanBaseline is the BLOCK-mode scan (#2738), run inside the hold path of
+// inboundRequest.enforce: the held units against the baseline rules. Each
+// matching rule is recorded as a detection with action block; any match
+// blocks the response, which enforce then records as a block (reason
+// finding, engine "baseline").
+func (ir *inboundRequest) scanBaseline(units []*pb.GuardrailTextUnit) guardrail.InboundDecision {
+	dec := guardrail.InboundDecision{Reason: guardrail.InboundReasonClean, EngineID: BaselineEngineID}
+	for _, d := range guardrail.ScanBaseline(units) {
+		ir.in.detect(ir.sub, d, guardrail.BaselineActionBlock)
+		dec.Blocked, dec.Reason = true, guardrail.InboundReasonFinding
+		dec.Findings += d.Matches
+		if !slices.Contains(dec.Kinds, d.Kind) {
+			dec.Kinds = append(dec.Kinds, d.Kind)
+		}
+	}
+	slices.Sort(dec.Kinds)
+	return dec
 }

@@ -1271,6 +1271,18 @@ func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.
 	return resp, nil
 }
 
+// SetGuardrailBaselineMode switches the baseline response scan between LOG
+// and BLOCK via gRPC (#2738; admin only).
+func (c *GRPCClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailBaselineMode(ctx, &pb.SetGuardrailBaselineModeRequest{Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail baseline mode: %w", err)
+	}
+	return resp, nil
+}
+
 // ListApps lists all applications via gRPC
 func (c *GRPCClient) ListApps(username string, stateFilter pb.AppState) ([]*pb.App, int32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
