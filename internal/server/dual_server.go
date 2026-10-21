@@ -2448,9 +2448,6 @@ skipAppHosting:
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
-	if processResponder != nil {
-		containerServer.SetProcessActionReleaser(processResponder)
-	}
 	threatDetectServer.SetResponderDegraded(responderStatusReason)
 	if threatCfg.SentryEnabled && healthStore == nil {
 		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
