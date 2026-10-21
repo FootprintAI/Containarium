@@ -106,6 +106,7 @@ type ExecWatcher struct {
 	nextSub      int
 	unattributed uint64
 	subsDropped  uint64
+	stampFails   uint64 // boot-clock reads that failed (see noteStampFailure)
 
 	watch  *netbpf.ExecWatch
 	cancel context.CancelFunc
@@ -499,9 +500,14 @@ func cgroupIDForPID(procRoot, cgroupRoot string, pid int64) (uint64, error) {
 // runs for every exec of every watched box, and only the rare exec a rule
 // matches and the policy kills ever needs the stat (see exec_stamp.go for
 // the soundness argument and the residual exec → stamp window). A failed
-// clock read leaves 0, and a kill with no stamp is refused.
+// clock read leaves 0, and a kill with no stamp is refused; it is counted
+// and logged (noteStampFailure), so a run of START_TIME_UNKNOWN skips has a
+// cause in the log.
 func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
-	start, _ := w.bootTicks()
+	start, err := w.bootTicks()
+	if err != nil {
+		w.noteStampFailure(ev.HostPID, err)
+	}
 	w.mu.Lock()
 	target, ok := w.byCgroup[ev.CgroupID]
 	if !ok {
@@ -543,6 +549,32 @@ func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
 			ArgvTruncated: ev.ArgvTruncated,
 		})
 	}
+}
+
+// execStampFailLogEvery: a failed boot-clock read is logged the first time
+// and then every this many failures, so a clock that keeps failing on an
+// exec flood cannot flood the log.
+const execStampFailLogEvery = 1000
+
+// noteStampFailure counts a failed boot-clock read and logs the first and
+// every execStampFailLogEvery-th. Every kill for such an exec is refused as
+// START_TIME_UNKNOWN; this is where that shows up.
+func (w *ExecWatcher) noteStampFailure(pid uint32, err error) {
+	w.mu.Lock()
+	w.stampFails++
+	n := w.stampFails
+	w.mu.Unlock()
+	if n == 1 || n%execStampFailLogEvery == 0 {
+		log.Printf("[exec-telemetry] boot-clock stamp failed for pid %d (%d failures so far): %v; a kill for such an exec is refused as start time unknown", pid, n, err)
+	}
+}
+
+// StampFailures counts execs decoded without a boot-clock stamp (the clock
+// read failed); a kill for any of them is refused as START_TIME_UNKNOWN.
+func (w *ExecWatcher) StampFailures() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stampFails
 }
 
 func (w *ExecWatcher) appendRingLocked(rec ExecEventRecord) {
