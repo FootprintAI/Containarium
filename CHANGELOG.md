@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
+
 ### Security
 
 - **Every GitHub Action is pinned to a full commit SHA, and a `workflow-lint` lane keeps it that way** (#2793). All 157 floating `uses:` references (tags and the `@master` / `@release/v1` branches) now carry the commit they resolved to, with the old ref as a trailing comment so Dependabot still bumps them. Branch pins (`trivy-action`, `gosec`, `gh-action-pypi-publish`) are frozen at the branch head on the pinning day. The new workflow runs a checksum-verified `actionlint` and `scripts/ci/check-action-pins.sh`, which has a self-test proving it rejects tag and branch pins. Open Dependabot action PRs need a rebase.
