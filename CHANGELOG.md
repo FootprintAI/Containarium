@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
+
 ### Internal
 
 - **Release builds no longer compile every binary twice, and the heavy CI jobs get a Go build cache that actually holds their own work.** `release.yml`'s `build-bundle` reran `make build-release` (plus buf and the eBPF compile) after `build-and-release` had already built the same binaries. That was ~8 minutes on the critical path of every tag. It now downloads the three `linux-amd64` binaries `build-and-release` attached to the Release, so the air-gapped bundle ships byte-identical copies of the checksummed files. A new composite action, `.github/actions/setup-go-cached`, replaces `actions/setup-go`'s built-in cache in the five heavy compile jobs: the release build, the release-artifact gate, the CLI build and test jobs, and the full-tree `-race` run. The built-in cache shared one key per `go.sum` across every job, so each job restored whichever job had saved first, and that cache never refreshed. It also saved PR-scoped entries no other PR can read, which kept the repo over its 10 GB cache limit and evicted main's. The new cache is scoped per job, saved only from `main`, refreshed daily, and restored read-only everywhere else. Cached test results are invalidated after restore, so only compilation is reused.
