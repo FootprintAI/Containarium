@@ -396,20 +396,54 @@ func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
 }
 
 // #2775: a respawning miner (one kill a second for an hour) is bounded by the
-// kill interval, not one post per kill.
+// kill interval, not one post per kill. #2816: so is one whose kill sometimes
+// misses (the process exits first), at any skip spacing: the first kill and
+// the first skip are immediate, then at most one post per
+// KillRenotifyInterval. Measured: 60 or 61 posts an hour for every case below. With
+// the "first skip" fast path re-armed after every delivered kill (the rule
+// before skipSent) the skip-every-7s, -13s and -61s cases gave 116, 112 and
+// 118, about two a minute.
 func TestWebhookNotifier_RespawnStormIsBounded(t *testing.T) {
-	n, clock := gatedNotifier(24 * time.Hour)
-	n.Notify(openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH))
-	for i := uint32(1); i <= 3600; i++ {
-		f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
-		f.Response = &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
-			ProcessKilled: true, KilledPID: 1000 + i, Kills: i}
-		*clock = clock.Add(time.Second)
-		n.Notify(f)
-	}
-	posts := len(n.queue) // the queue holds every accepted delivery (256 slots; a storm would overflow it)
-	if posts > 1+3600/int(KillRenotifyInterval/time.Second)+1 {
-		t.Fatalf("1 hour of kills at 1/s delivered %d posts, want about one per minute plus the first", posts)
+	for _, tc := range []struct {
+		name      string
+		skipEvery int // every n-th exec's kill is skipped (PROCESS_GONE); 0 = never
+	}{
+		{"kills only", 0},
+		{"a skip every 7s", 7},
+		{"a skip every 13s", 13},
+		{"a skip every 61s", 61},
+		{"a skip every 2s", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clock := gatedNotifier(24 * time.Hour)
+			n.Notify(openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH))
+			// The stored response as the responder's killFacts folds each
+			// attempt into it: a kill bumps the count and clears the skip, a
+			// skip keeps the last kill and records its reason.
+			cur := FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE}
+			for i := 1; i <= 3600; i++ {
+				if tc.skipEvery > 0 && i%tc.skipEvery == 0 {
+					cur.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE
+				} else {
+					cur.ProcessKilled, cur.KilledPID, cur.Kills = true, uint32(1000+i), cur.Kills+1
+					cur.KillSkipReason = pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED
+				}
+				f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+				r := cur
+				f.Response = &r
+				*clock = clock.Add(time.Second)
+				n.Notify(f)
+			}
+			posts := len(n.queue) - 1 // the queue holds every accepted delivery (256 slots; a storm would overflow it), minus the new finding
+			t.Logf("1 hour of execs at 1/s: %d posts", posts)
+			perInterval := int(time.Hour / KillRenotifyInterval)
+			if limit := 2 + perInterval; posts > limit {
+				t.Fatalf("1 hour of kills at 1/s delivered %d posts, want at most %d (the first kill, the first skip, then one per %s)", posts, limit, KillRenotifyInterval)
+			}
+			if posts < perInterval-1 {
+				t.Fatalf("1 hour of kills at 1/s delivered %d posts: the latest outcome should still get through about once per %s", posts, KillRenotifyInterval)
+			}
+		})
 	}
 }
 
