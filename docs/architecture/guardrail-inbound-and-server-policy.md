@@ -373,8 +373,9 @@ setting per daemon, stored next to the policy but not in it (Postgres table
 never marks a policy as configured. Every switch increments the setting's
 revision. Non-admins are refused.
 
-Auditing depends on whether the daemon has an audit store:
-- **With an audit store** (a daemon with Postgres), the switch writes a
+Auditing depends on whether the guardrail server was given an audit store
+at startup:
+- **With an audit store**, the switch writes a
   `guardrail.baseline.set` audit entry naming the caller, with the previous
   and new mode and revision. The entry is part of the change: it is written
   while the store holds the new setting uncommitted, and if the write fails,
@@ -383,13 +384,24 @@ Auditing depends on whether the daemon has an audit store:
   was written, the entry names a revision the store never reached, and
   `guardrail status` shows the lower revision. This differs from
   `guardrail.policy.set`, whose audit write is best-effort.
-- **With no audit store** (a daemon without Postgres), the switch succeeds
-  and **no audit entry is written**. Whether this case should be refused is
-  an open question.
+- **With no audit store**, the switch succeeds and **no audit entry is
+  written**. There are three ways to get here, and the last two can happen
+  on a daemon that does have Postgres:
+  1. the daemon has no Postgres;
+  2. REST is disabled, because the audit store is wired to the guardrail
+     server only when REST is enabled;
+  3. the audit store failed to start, for example because Postgres was down
+     at startup. The audit store is not retried later, even when the policy
+     store is installed afterwards by its own retry.
+
+  Whether the switch should be refused in these cases is an open question.
 
 The switch invalidates the gateway's cached policy read. A read that was
 already in flight when the switch committed does not refresh the cache, so
-the switch applies on the next call after it returns.
+the switch applies on the next call after it returns. This assumes the store
+can be read on that call. If a read was in flight during a LOG to BLOCK
+switch and the next read fails, the gateway keeps the stale LOG it last read
+until the store can be read again.
 
 In BLOCK mode the baseline uses the admin policy's hold-and-block path
 ("Enforcement in the gateway" above) with the baseline rules in place of the

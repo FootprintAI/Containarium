@@ -259,8 +259,11 @@ var errBaselineAuditFailed = errors.New("audit write failed")
 // setting uncommitted, and a failed write rolls the change back and fails
 // the call. A commit that fails after a written entry leaves an entry whose
 // revision the store never reached; the status shows the lower revision.
-// With no audit store configured (a daemon without Postgres) the switch
-// succeeds without an entry; whether it should is an open question.
+// With no audit store the switch succeeds without an entry; whether it
+// should is an open question. That is the case when the daemon has no
+// Postgres, when REST is disabled (the audit store is wired only on the REST
+// path in dual_server.go), or when the audit store failed to start; it has
+// no startup retry.
 func (s *GuardrailPolicyServer) SetGuardrailBaselineMode(ctx context.Context, req *pb.SetGuardrailBaselineModeRequest) (*pb.SetGuardrailBaselineModeResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err

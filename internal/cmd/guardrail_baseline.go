@@ -54,8 +54,9 @@ responses only while no admin guardrail policy has been set.
 The mode is stored apart from the policy, so setting it never turns the
 baseline off. Admin role required; every change increments the setting's
 revision. On a daemon with an audit store the change writes an audit entry,
-and it is refused if that entry cannot be written; a daemon without a
-database keeps no audit entry. Check it with 'containarium guardrail status'.
+and it is refused if that entry cannot be written. A daemon with no audit
+store (no Postgres, REST disabled, or an audit store that failed to start)
+keeps no audit entry. Check it with 'containarium guardrail status'.
 
 Examples:
   containarium guardrail baseline set --mode block --server <host>:50051
