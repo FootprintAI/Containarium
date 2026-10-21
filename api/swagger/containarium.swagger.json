@@ -14752,6 +14752,11 @@
           "type": "string",
           "format": "int64",
           "description": "Exec events the kernel could not hand over because the ring buffer was\nfull, cumulative since the object loaded. Non-zero means a burst\noutran the consumer; the events are gone, never blocked the exec."
+        },
+        "execHashesDropped": {
+          "type": "string",
+          "format": "int64",
+          "description": "Exec hash requests the miner-signature hasher dropped because its queue\nwas full, cumulative since the daemon started (#2768). Requests are made\nonly while sha256 entries exist; a dropped exec is never hashed, so a\nsha256 entry can miss it (name and argv entries still matched it).\nAn executable already hashed is served from a cache by (device, inode,\nsize, mtime, ctime) without being read again, so the queue drains fast\nand a non-zero count means a burst of execs the worker could not keep\nup with."
         }
       }
     },

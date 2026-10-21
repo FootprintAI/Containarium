@@ -272,7 +272,20 @@ and `--url=<host>:<port>`). It carries **no hashes**: a hash list goes stale wit
 every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
 argv entry matched, off the exec path (64 MiB cap, 200 ms budget, best
-effort: a process that exited first is not hashed).
+effort: a process that exited first is not hashed). The hash is attributed
+to the exec only if, after `/proc/<pid>/exe` is opened, the process holding
+the pid did not start after the exec was seen (its `/proc/<pid>/stat`
+start time against the exec's decode stamp, the check the kill uses); a
+pid reused while the request waited is skipped, never hashed in the
+original's name. A binary already hashed is not read again: the daemon
+caches hashes by the file's device, inode, size, mtime and ctime, so the
+same `/bin/sh` costs only an open and two stats. The hash queue holds 64
+requests; when a burst overflows it, the dropped requests are counted, and
+`containarium security sentry status` prints `exec-hashes-dropped: N`
+(`exec_hashes_dropped` in the status JSON). A dropped exec is never hashed,
+so a sha256 entry can miss it, while name and argv entries still match it.
+A process that exec's a second binary under the same pid keeps its start
+time, so its newer image is the one hashed.
 
 ```bash
 containarium security miner-signatures list

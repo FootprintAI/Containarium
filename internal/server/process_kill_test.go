@@ -612,31 +612,33 @@ func TestHashProcExe(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "exe"), []byte("hello"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sum, err := hashProcExe(root, 4242, 1<<20, time.Second)
+	hash := func(maxBytes int64) (string, error) {
+		f, err := os.Open(filepath.Join(dir, "exe"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		return hashOpenFile(f, 5, maxBytes, time.Second)
+	}
+	sum, err := hash(1 << 20)
 	if err != nil || sum != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" {
 		t.Fatalf("sum=%q err=%v", sum, err)
 	}
-	if _, err := hashProcExe(root, 4242, 3, time.Second); !errors.Is(err, errExecHashTooLarge) {
+	if _, err := hash(3); !errors.Is(err, errExecHashTooLarge) {
 		t.Fatalf("size cap: err = %v", err)
 	}
-	if _, err := hashProcExe(root, 9999, 1<<20, time.Second); err == nil {
-		t.Fatal("missing process hashed")
-	}
 
-	// The worker redelivers with SHA256 set; a gone process is dropped.
+	// The worker redelivers with SHA256 set; a gone process is dropped. The
+	// event's start time pins the pid (#2768; TestExecHasher_* in
+	// exec_hasher_test.go cover the pin, the cache and the drop count).
+	writeStat(t, root, 4242, "proc", fakeStart(4242))
 	var got []threatdetect.ExecEvent
 	h := newExecHasher(func(ev threatdetect.ExecEvent) { got = append(got, ev) })
 	h.procRoot = root
-	h.process(threatdetect.ExecEvent{PID: 4242, Container: "box-a"})
-	h.process(threatdetect.ExecEvent{PID: 9999})
+	h.process(threatdetect.ExecEvent{PID: 4242, StartTime: fakeStart(4242), Container: "box-a"})
+	h.process(threatdetect.ExecEvent{PID: 9999, StartTime: fakeStart(9999)})
 	if len(got) != 1 || got[0].SHA256 != sum || got[0].Container != "box-a" {
 		t.Fatalf("redelivered %+v", got)
-	}
-	for i := 0; i < execHashQueue+5; i++ {
-		h.Request(threatdetect.ExecEvent{PID: 1})
-	}
-	if h.dropped.Load() != 5 {
-		t.Fatalf("dropped = %d, want 5 (Request must never block)", h.dropped.Load())
 	}
 }
 
