@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Unit coverage for ClusterServer (#1413): scope gates, tenant isolation

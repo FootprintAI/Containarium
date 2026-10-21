@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Contract tests for the externalgrpc CloudProvider implementation
