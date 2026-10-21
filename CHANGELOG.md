@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`containarium box delete <username> --yes [--force]`**, the noun-verb form of `delete`. It refuses without `--yes`, because deleting a box removes the container and its disk; the box must be stopped unless `--force`. It shares one code path with `containarium delete`, which is unchanged (it still has no `--yes`, so existing scripts keep working). The cloud side got the matching `cloud-cli box delete --yes`.
+- **Managed-cluster autoscaler scale-down timers can be overridden for test lanes, and the release-gating KVM e2e uses that to stop waiting ~12 minutes per tag.** Two daemon env vars, `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD` and `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME` (Go durations), are rendered into the cluster-autoscaler unit as `--scale-down-delay-after-add` / `--scale-down-unneeded-time`. Unset, the unit is byte-for-byte what it was: stock CA, 10m each, which is what production runs. A malformed or non-positive value is logged and ignored. The KVM lane sets `5m` / `1m` on tag runs only, which cuts its scale-down step from ~12m to an expected ~4m, the bulk of the release's critical path. Nightly runs keep the stock timers, so the default cadence is still exercised. Both values can be tuned through repository variables of the same names.
 
 ## [0.112.0] - 2026-10-21
 

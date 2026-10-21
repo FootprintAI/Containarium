@@ -215,6 +215,16 @@ jobs:
       CONTAINARIUM_E2E_VPA_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_VPA_TIMEOUT || '15m' }}
       CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT || '30m' }}
       CONTAINARIUM_E2E_DELETE_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_DELETE_TIMEOUT || '10m' }}
+      # Autoscaler scale-down timers, TAG RUNS ONLY (the release gate). The
+      # stock timers (10m delay-after-add + 10m unneeded) made step 5 about
+      # 12 of the lane's ~22 minutes of pure waiting (v0.110.0: step 5 ran
+      # 22:56:47 -> 23:08:30). 5m after the last scale-up (~2m into step 5
+      # on that run) keeps the autoscaler from consolidating nodes while the
+      # earlier steps still need them; 1m unneeded then removes the surplus
+      # promptly. Nightly and dispatch runs leave both unset, so the stock
+      # cadence is still exercised every night.
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD: ${{ startsWith(github.ref, 'refs/tags/v') && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD || '5m') || '' }}
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME: ${{ startsWith(github.ref, 'refs/tags/v') && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME || '1m') || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run the lane

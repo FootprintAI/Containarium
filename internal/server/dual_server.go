@@ -1797,6 +1797,15 @@ skipAppHosting:
 							return clustercore.CACredentials{ClientCertPEM: cert, ClientKeyPEM: key, CACertPEM: pki.CAPEM()}, nil
 						})
 						log.Printf("Managed-cluster autoscaler enabled (provider %s)", caAdvertise)
+						// Opt-in scale-down timer overrides (test lanes); unset = stock.
+						// A malformed value is logged and ignored rather than
+						// fatal: it only ever shortens a wait.
+						if delay, unneeded, sdErr := parseCAScaleDownEnv(os.Getenv); sdErr != nil {
+							log.Printf("[cluster] ignoring autoscaler scale-down override: %v", sdErr)
+						} else if delay > 0 || unneeded > 0 {
+							clusterReconciler.SetCAScaleDown(delay, unneeded)
+							log.Printf("[cluster] autoscaler scale-down timers overridden: delay-after-add=%v unneeded-time=%v (0 = stock)", delay, unneeded)
+						}
 					}
 				}
 			} else {
