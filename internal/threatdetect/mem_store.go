@@ -116,8 +116,13 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 	}
 	// The caller, the event and the webhook worker all read the finding
 	// after the lock is released, while a concurrent Upsert of the same key
-	// may be updating the stored entry. Hand them a copy (#2748).
+	// may be updating the stored entry. Hand them a copy (#2748). The copy
+	// names the box this write came from, as the Postgres store's does
+	// (#2835): the stored entry keeps the box that first opened it.
 	snap := *out
+	if ok {
+		snap.Container = f.Container
+	}
 	out = &snap
 	s.mu.Unlock()
 
@@ -290,6 +295,7 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 	if s.byKey[key] == f {
 		delete(s.byKey, key)
 	}
+	delivery := resolveDelivery(f) // a snapshot, taken under the lock
 	s.mu.Unlock()
 
 	if err := s.audit.Log(ctx, &audit.AuditEntry{
@@ -302,7 +308,7 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
 	if s.notifier != nil {
-		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+		s.notifier.Notify(delivery) // delivered once: the resolution (#2643)
 	}
 	return f, nil
 }

@@ -13800,7 +13800,7 @@
         },
         "releasedBy": {
           "type": "string",
-          "description": "\"operator\" or \"ttl\"; empty while the action is in effect."
+          "description": "Who ended the action: \"operator\", \"ttl\", \"orphan-sweep\" (an apply that\nwas never confirmed, undone by the sweep) or \"container-deleted\" (the box\nno longer exists, so nothing was restored; #2835). Empty while the\naction is in effect."
         },
         "error": {
           "type": "string",

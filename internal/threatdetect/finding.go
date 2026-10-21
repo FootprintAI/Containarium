@@ -365,7 +365,12 @@ type ResponseWriter interface {
 	// the box was released and that the finding resolved). When the finding
 	// is no longer open, r is still recorded and delivered as SetResponse
 	// would, and the error wraps ErrFindingNotOpen; ErrFindingNotFound when
-	// id does not exist. Any other error means nothing was written.
+	// id does not exist. Any other error does not say whether r was written:
+	// the Postgres store reads the row back after its UPDATE, so a failed
+	// read (or a failed SetResponse on the not-open path) can come after r
+	// was recorded and the finding resolved, with nothing delivered. A
+	// caller that must be sure re-reads the finding, or records r again (the
+	// process responder does: SetResponse of the same record is harmless).
 	ResolveWithResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 }
 
@@ -384,6 +389,20 @@ func ResponseDelivery(stored *Finding, box FindingResponse) *Finding {
 		out.Container = box.Container
 	}
 	return &out
+}
+
+// resolveDelivery is the finding a plain resolve (Resolve, not
+// ResolveWithResponse) hands the webhook (#2835): the stored finding, naming
+// the box of the response it carries, if any, so that every post carrying a
+// response names that response's box at the top level. The stored row keeps
+// the box that first opened a shared finding, which says nothing about the
+// response. A copy.
+func resolveDelivery(stored *Finding) *Finding {
+	if stored.Response == nil {
+		out := *stored
+		return &out
+	}
+	return ResponseDelivery(stored, *stored.Response)
 }
 
 // FindingState is the lifecycle state of a Finding.
