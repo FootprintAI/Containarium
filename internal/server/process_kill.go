@@ -21,7 +21,8 @@ import (
 // can exit and its pid be reused by an unrelated process, on the host or in
 // another tenant's box. The cgroup re-check is what makes that reuse a
 // skipped kill rather than a signal to a stranger; the start-time compare
-// (#2765) does the same for a reuse inside the same box.
+// (#2765) does the same for a reuse inside the same box. The kill is
+// Incus-only (#2768): on another runtime it is refused up front.
 
 var (
 	// errKillPIDReused: the pid is no longer the matched process: it now
@@ -39,6 +40,11 @@ var (
 	// its process had already exited when the watcher decoded the exec, so
 	// whatever holds the pid now cannot be confirmed as the matched process.
 	errKillStartTimeUnknown = errors.New("start time unknown: the matched process had exited before its exec was decoded")
+	// errKillRuntimeUnsupported: the container's init has no Incus payload
+	// cgroup, so there is no container root to confirm the pid against
+	// (#2768, decided on #2781). Refused before anything else is checked,
+	// instead of every kill failing the cgroup compare as "pid reused".
+	errKillRuntimeUnsupported = errors.New("kill_process is Incus-only: the container's init has no Incus payload cgroup")
 )
 
 // processKiller is what the responder needs for kill_process. An interface
@@ -47,8 +53,8 @@ type processKiller interface {
 	// KillInContainer SIGKILLs host pid if, and only if, it is still the
 	// process of container that started at start (the matched exec's
 	// /proc/<pid>/stat start time, #2765). errKillPIDReused,
-	// errKillProcessGone, errKillContainerInit or errKillStartTimeUnknown
-	// (wrapped) when it refuses.
+	// errKillProcessGone, errKillContainerInit, errKillStartTimeUnknown or
+	// errKillRuntimeUnsupported (wrapped) when it refuses.
 	KillInContainer(container string, pid uint32, start threatdetect.ProcStartTicks) error
 }
 
@@ -91,6 +97,18 @@ func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start 
 	if initPID <= 0 {
 		return fmt.Errorf("container %s is not running: %w", container, errKillProcessGone)
 	}
+	// Up front, before any pid is pinned or compared (#2768, decided on
+	// #2781): only an Incus container has a payload cgroup that every one of
+	// its processes sits under. On another runtime the compare below could
+	// never hold and would misreport every kill as "pid reused".
+	initRel, err := cgroupV2PathOf(k.procRoot, initPID)
+	if err != nil {
+		return fmt.Errorf("resolve cgroup of %s init %d: %w", container, initPID, err)
+	}
+	want, ok := incusPayloadRoot(initRel)
+	if !ok {
+		return fmt.Errorf("container %s init cgroup %q: %w", container, initRel, errKillRuntimeUnsupported)
+	}
 	if int64(pid) == initPID {
 		return fmt.Errorf("pid %d: %w", pid, errKillContainerInit)
 	}
@@ -103,10 +121,6 @@ func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start 
 	}
 	defer func() { _ = h.Close() }()
 
-	want, err := containerCgroupOf(k.procRoot, initPID)
-	if err != nil {
-		return fmt.Errorf("resolve cgroup of %s init %d: %w", container, initPID, err)
-	}
 	got, err := containerCgroupOf(k.procRoot, int64(pid))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -140,6 +154,15 @@ func (k *hostProcessKiller) KillInContainer(container string, pid uint32, start 
 // cgroup it sits under (containerCgroupRoot), the same resolution the exec
 // watcher registers with the kernel.
 func containerCgroupOf(procRoot string, pid int64) (string, error) {
+	rel, err := cgroupV2PathOf(procRoot, pid)
+	if err != nil {
+		return "", err
+	}
+	return containerCgroupRoot(rel), nil
+}
+
+// cgroupV2PathOf reads pid's cgroup v2 path from /proc/<pid>/cgroup.
+func cgroupV2PathOf(procRoot string, pid int64) (string, error) {
 	// #nosec G304 -- procRoot is a constant (or a test fixture) and pid an
 	// integer from Incus or the kernel's exec record.
 	raw, err := os.ReadFile(filepath.Join(procRoot, strconv.FormatInt(pid, 10), "cgroup"))
@@ -150,7 +173,7 @@ func containerCgroupOf(procRoot string, pid int64) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("pid %d: no cgroup v2 path", pid)
 	}
-	return containerCgroupRoot(rel), nil
+	return rel, nil
 }
 
 // procStatStartTimeField is the 1-based field of /proc/<pid>/stat holding

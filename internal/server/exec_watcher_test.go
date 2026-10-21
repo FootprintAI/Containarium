@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -318,11 +319,28 @@ func TestExecWatcher_AttributesAndHandsToEngine(t *testing.T) {
 	}
 	ev := got[0]
 	if ev.Container != "box-a" || ev.TenantID != "t-box-a" || ev.PID != 4242 || ev.PPID != 1 || ev.UID != 1000 ||
-		ev.Comm != "xmrig" || ev.Filename != "/usr/bin/xmrig" || ev.Argv != "./xmrig -o pool:3333" || !ev.At.Equal(time.Unix(1700000000, 0)) {
+		ev.Comm != "xmrig" || ev.Filename != "/usr/bin/xmrig" || ev.ArgvString() != "./xmrig -o pool:3333" || !ev.At.Equal(time.Unix(1700000000, 0)) {
 		t.Fatalf("engine event = %+v", ev)
 	}
 	if w.Unattributed() != 1 {
 		t.Fatalf("unattributed = %d, want 1", w.Unattributed())
+	}
+}
+
+// TestExecWatcher_KeepsArgumentBoundaries (#2768): the engine gets the real
+// NUL-separated argument vector, so an argument holding spaces (a commit
+// message) stays one argument for the argv matchers.
+func TestExecWatcher_KeepsArgumentBoundaries(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	var got []threatdetect.ExecEvent
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	want := []string{"git", "commit", "-m", "document stratum+tcp:// pool format"}
+	w.OnExecEvent(context.Background(), kernelEvent(ino["lxc.payload.box-a"], 4242, "git", want...))
+	if len(got) != 1 || !slices.Equal(got[0].Argv, want) {
+		t.Fatalf("engine events = %+v, want one with argv %q", got, want)
 	}
 }
 

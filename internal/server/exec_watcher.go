@@ -435,13 +435,22 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 // init's own execs would ever be seen. A path with no payload component
 // (a non-Incus runtime) is used as is.
 func containerCgroupRoot(rel string) string {
+	if root, ok := incusPayloadRoot(rel); ok {
+		return root
+	}
+	return rel
+}
+
+// incusPayloadRoot returns the prefix of rel through its Incus payload
+// component; ok is false when rel has none (a non-Incus runtime).
+func incusPayloadRoot(rel string) (root string, ok bool) {
 	parts := strings.Split(strings.Trim(rel, "/"), "/")
 	for i, p := range parts {
 		if strings.HasPrefix(p, "lxc.payload.") {
-			return strings.Join(parts[:i+1], "/")
+			return strings.Join(parts[:i+1], "/"), true
 		}
 	}
-	return rel
+	return "", false
 }
 
 // cgroupIDForPID resolves a container's init pid to the cgroup v2 id the
@@ -534,7 +543,7 @@ func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
 			UID:           ev.UID,
 			Comm:          ev.Comm,
 			Filename:      ev.Filename,
-			Argv:          ev.ArgvString(),
+			Argv:          ev.Argv,
 			ArgvTruncated: ev.ArgvTruncated,
 		})
 	}

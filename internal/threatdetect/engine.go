@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,10 +77,17 @@ type ExecEvent struct {
 	UID           uint32
 	Comm          string
 	Filename      string
-	Argv          string
+	// Argv is the real argument vector (netbpf.ExecEvent.Argv, split on
+	// NUL), so an argument holding spaces stays one argument: argv markers
+	// match argument boundaries, not the joined line (#2768).
+	Argv          []string
 	ArgvTruncated bool
 	SHA256        string
 }
+
+// ArgvString joins Argv with single spaces: the display form the finding
+// evidence, logs and the CLI carry.
+func (e ExecEvent) ArgvString() string { return strings.Join(e.Argv, " ") }
 
 // ExecConsumer is an optional interface a Rule implements to receive exec
 // events (#2637), the exec twin of CPUConsumer: type-asserted on Register,
