@@ -244,6 +244,7 @@ func TestMinerSignatureRule_FindingCarriesExec(t *testing.T) {
 	r := newTestMinerSigRule(t, nil)
 	ev := execEv("/tmp/xmrig", "xmrig", "./xmrig --donate-level 1")
 	ev.ArgvTruncated = true
+	ev.StartTime = 987654 // #2765: the kill compares it against the pid's
 	got := r.OnExec(RuleContext{}, ev)
 	if len(got) != 1 {
 		t.Fatalf("findings = %d, want 1", len(got))
@@ -253,7 +254,7 @@ func TestMinerSignatureRule_FindingCarriesExec(t *testing.T) {
 		f.Container != "box-1" || f.TenantID != "t1" || f.Subject != "name:xmrig" {
 		t.Fatalf("finding = %+v", f)
 	}
-	want := ExecEvidence{PID: 4242, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/xmrig",
+	want := ExecEvidence{PID: 4242, StartTime: 987654, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/xmrig",
 		Argv: "./xmrig --donate-level 1", ArgvTruncated: true, Matched: "name:xmrig"}
 	if len(f.Evidence.Execs) != 1 || f.Evidence.Execs[0] != want {
 		t.Fatalf("evidence = %+v, want %+v", f.Evidence.Execs, want)

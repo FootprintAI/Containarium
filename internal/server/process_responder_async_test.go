@@ -248,7 +248,9 @@ func queueSignature(t *testing.T, fx *responderFixture, sink *ActingSink, pid ui
 // something mid-flight.
 type killerFunc func(container string, pid uint32) error
 
-func (k killerFunc) KillInContainer(container string, pid uint32) error { return k(container, pid) }
+func (k killerFunc) KillInContainer(container string, pid uint32, _ threatdetect.ProcStartTicks) error {
+	return k(container, pid)
+}
 
 // TestQueuedResponse_ResolvedBeforeWorkerSkipsKill (#2638 review blocker 2):
 // the finding was released or resolved after the job was queued and before
