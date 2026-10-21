@@ -17,14 +17,68 @@ permissions:
   security-events: write
 
 jobs:
+  # Release-PR fast path (.github/actions/release-only-diff): on a diff that
+  # only cuts a release on top of a main commit that already passed this
+  # workflow, the heavy jobs below skip. Any doubt runs them.
+  changes:
+    name: Release-only diff?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release-only: ${{ steps.diff.outputs.release-only }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide
+        id: diff
+        uses: ./.github/actions/release-only-diff
+
   gosec:
     name: SAST (gosec)
+    # Never skipped, unlike the other fast-path jobs: the required `gosec`
+    # check is created by the SARIF upload below, so a skipped job would leave
+    # it missing and block the merge. On a release-only diff the job uploads
+    # the base commit's stored analysis instead of rescanning: the code is
+    # identical, so it is the same result, in seconds rather than ~5 minutes.
+    # !cancelled() keeps it running when the detector job fails.
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Reuse the base commit's gosec analysis (release-only diff)
+        id: reuse
+        if: needs.changes.outputs.release-only == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Falls through to a real scan on any failure (reused=false).
+        run: |
+          set -uo pipefail
+          base="$(git rev-parse HEAD^1)"
+          id="$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/analyses?ref=refs/heads/main&per_page=100" \
+            --jq "[.[] | select(.commit_sha == \"${base}\" and .category == \".github/workflows/security.yml:gosec\")][0].id // empty")"
+          if [ -n "$id" ] && gh api -H "Accept: application/sarif+json" \
+               "repos/${GITHUB_REPOSITORY}/code-scanning/analyses/${id}" >gosec-results.sarif \
+             && jq -e '.runs | length > 0' gosec-results.sarif >/dev/null; then
+            echo "reused analysis ${id} of base ${base}"
+            echo "reused=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::no reusable gosec analysis for base ${base}; scanning instead"
+            rm -f gosec-results.sarif
+            echo "reused=false" >>"$GITHUB_OUTPUT"
+          fi
 
       - name: Run gosec
+        if: steps.reuse.outputs.reused != 'true'
         uses: securego/gosec@14ef84f6feccf40be7f5092fd2db119bf3f5f836 # master
         with:
           # -exclude-generated: generated protobuf/grpc-gateway stubs
@@ -53,9 +107,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

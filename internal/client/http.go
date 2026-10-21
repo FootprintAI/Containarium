@@ -251,6 +251,8 @@ type systemInfo struct {
 	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
 	CpuAdmissionMode      string  `json:"cpuAdmissionMode"`
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// Storage pools (#2823), decoded per entry with protojson.
+	StoragePools []json.RawMessage `json:"storagePools"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
@@ -1525,6 +1527,7 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 			result.Info.CoreCommittedCpuCores,
 			pb.CPUAdmissionMode(pb.CPUAdmissionMode_value[result.Info.CpuAdmissionMode]),
 			result.Info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromJSON(result.Info.StoragePools),
 	}
 
 	return info, nil

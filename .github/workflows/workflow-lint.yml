@@ -10,10 +10,12 @@ on:
     paths:
       - '.github/**'
       - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/release-only-diff.sh'
   pull_request:
     paths:
       - '.github/**'
       - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/release-only-diff.sh'
 
 permissions:
   contents: read
@@ -39,6 +41,11 @@ jobs:
 
       - name: Require SHA-pinned actions
         run: scripts/ci/check-action-pins.sh .github
+
+      - name: Release-only diff detector self-test
+        # Decides which PRs may skip the heavy jobs
+        # (.github/actions/release-only-diff); a wrong "true" skips real tests.
+        run: scripts/ci/release-only-diff.sh --self-test
 
       - name: Install actionlint (pinned, checksum-verified)
         run: |

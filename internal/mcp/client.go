@@ -2438,4 +2438,16 @@ type SystemInfo struct {
 	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
 	CpuAdmissionMode      string  `json:"cpuAdmissionMode,omitempty"`
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// StoragePools is each storage pool's fill (#2823), as the daemon's
+	// SystemInfo carries it (int64 as strings, enums by proto name).
+	StoragePools []StoragePoolCapacity `json:"storagePools,omitempty"`
+}
+
+// StoragePoolCapacity mirrors the proto StoragePoolCapacity (#2823).
+type StoragePoolCapacity struct {
+	Pool       string `json:"pool"`
+	Driver     string `json:"driver,omitempty"`
+	UsedBytes  int64  `json:"usedBytes,string"`
+	TotalBytes int64  `json:"totalBytes,string"`
+	Level      string `json:"level,omitempty"`
 }

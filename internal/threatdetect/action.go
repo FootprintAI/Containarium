@@ -23,6 +23,10 @@ const (
 	// confirmed applied — the daemon died mid-apply) and was undone by the
 	// sweep.
 	ReleasedByOrphanSweep = "orphan-sweep"
+	// ReleasedByContainerDeleted marks an action closed because its box no
+	// longer exists (#2835): the box was deleted through the daemon, or a
+	// sweep found it gone. There is nothing to restore on a deleted box.
+	ReleasedByContainerDeleted = "container-deleted"
 )
 
 // PendingOrphanAfter is how long a PENDING row may wait for its actuator
