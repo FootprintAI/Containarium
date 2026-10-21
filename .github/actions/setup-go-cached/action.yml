@@ -1,0 +1,102 @@
+name: Set up Go with a per-job build cache
+description: >
+  actions/setup-go with its built-in cache turned off, replaced by a module +
+  build cache that is scoped to one job's work and refreshed from main daily.
+
+# Why not setup-go's own cache (`cache: true`, its default):
+#
+#   * Every job in the repo shares ONE key per go.sum hash. Whichever job
+#     finishes first saves its GOCACHE and every other job restores that one,
+#     so a job doing cross-compiles or -race builds restores a cache that holds
+#     none of its own objects ("Cache restored" in the log, full rebuild in
+#     practice: containariumd 137s, `make build-all` 460s).
+#   * The key never changes until go.sum does, so even the right job's cache
+#     goes stale and is never re-saved.
+#   * It saves on pull_request too. A PR-scoped cache can only be read by that
+#     same PR, so those entries are dead weight. They pushed the repo past the
+#     10 GB Actions cache limit (10.55 GB on 2026-10-21), and that limit evicts
+#     main's caches, the only ones every PR and tag can read.
+#
+# What this does instead:
+#
+#   * `cache-name` scopes the cache to one job's work. Jobs that compile the
+#     same set may share a name (the PR-time release-artifact gate and the
+#     release build both use `build-all`).
+#   * The key carries the UTC date, so main re-saves once per name per day.
+#     That keeps it fresh without uploading a ~1 GB archive on every merge.
+#     restore-keys falls back to the newest entry for the name, so a new day
+#     or a go.sum bump restores yesterday's cache (the build cache is
+#     content-addressed, so stale entries only cost space, never
+#     correctness).
+#   * Saving happens on pushes to main only. Every other event restores
+#     main's cache read-only.
+#   * Cached test RESULTS are invalidated after restore (`go clean
+#     -testcache`), so caching speeds up compilation only. A test that talks
+#     to the network, a real Postgres or Incus is never reported as passing
+#     from a previous run. This matches what CI does today, where the shared
+#     cache almost never contained a usable result.
+inputs:
+  go-version:
+    description: Passed to actions/setup-go.
+    required: false
+    default: ''
+  go-version-file:
+    description: Passed to actions/setup-go.
+    required: false
+    default: ''
+  cache-name:
+    description: Names the work this job compiles, e.g. `build-all` or `unit-race`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go (built-in cache off)
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: false
+
+    - name: Resolve Go cache paths and key
+      id: go-cache
+      shell: bash
+      env:
+        CACHE_NAME: ${{ inputs.cache-name }}
+      run: |
+        set -euo pipefail
+        prefix="go-${CACHE_NAME}-${RUNNER_OS}-${RUNNER_ARCH}-$(go env GOVERSION)-"
+        {
+          echo "modcache=$(go env GOMODCACHE)"
+          echo "buildcache=$(go env GOCACHE)"
+          echo "prefix=${prefix}"
+          echo "date=$(date -u +%Y%m%d)"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore and save the Go cache (main)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-${{ steps.go-cache.outputs.date }}
+        restore-keys: |
+          ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-
+          ${{ steps.go-cache.outputs.prefix }}
+
+    - name: Restore the Go cache (read-only)
+      if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-${{ steps.go-cache.outputs.date }}
+        restore-keys: |
+          ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-
+          ${{ steps.go-cache.outputs.prefix }}
+
+    - name: Invalidate cached test results
+      shell: bash
+      run: go clean -testcache
