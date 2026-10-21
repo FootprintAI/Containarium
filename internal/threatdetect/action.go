@@ -65,6 +65,12 @@ type SecurityAction struct {
 	Pending   bool
 	AppliedAt time.Time
 	ExpiresAt time.Time
+	// InstanceID is the Incus instance id (volatile.uuid) of the box the
+	// action was applied to (#2835): a box re-created under the same name is
+	// another instance, and an undo must never write this row's saved limits
+	// onto it. "" on rows recorded before it existed, or when it could not
+	// be read.
+	InstanceID string
 	// ReleasedAt is zero while the action is in effect.
 	ReleasedAt time.Time
 	ReleasedBy string

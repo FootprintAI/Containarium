@@ -2448,7 +2448,12 @@ skipAppHosting:
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
 	if processResponder != nil {
-		containerServer.SetProcessActionReleaser(processResponder)
+		// Every Incus delete in this process (the DeleteContainer RPC, the
+		// cloud actuator, sandboxes) closes the deleted box's open action
+		// (#2835). Non-blocking: the responder closes it in the background.
+		incus.OnContainerDeleted(func(name, instanceID string) {
+			processResponder.ContainerDeleted(context.Background(), name, instanceID)
+		})
 	}
 	threatDetectServer.SetResponderDegraded(responderStatusReason)
 	if threatCfg.SentryEnabled && healthStore == nil {

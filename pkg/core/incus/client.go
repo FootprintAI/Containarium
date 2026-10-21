@@ -1089,6 +1089,12 @@ func (c *Client) updateState(name, action string) error {
 
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(name string) error {
+	// The instance id goes to the delete observers (#2835), so they can tell
+	// this instance from a later one created under the same name.
+	var instanceID string
+	if inst, _, err := c.server.GetInstance(name); err == nil {
+		instanceID = inst.Config[InstanceIDKey]
+	}
 	op, err := c.server.DeleteInstance(name)
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %w", err)
@@ -1098,6 +1104,7 @@ func (c *Client) DeleteContainer(name string) error {
 		return fmt.Errorf("failed to delete container (operation failed): %w", err)
 	}
 
+	notifyContainerDeleted(name, instanceID)
 	return nil
 }
 
