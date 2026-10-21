@@ -97,3 +97,31 @@ func TestStoragePoolAlertRules(t *testing.T) {
 		t.Errorf("found %d of %d storage pool rules in DefaultAlertRules", seen, len(want))
 	}
 }
+
+// A peer's pools are recorded under the peer's backend id.
+func TestStoragePoolRecorder_PeerBackendLabel(t *testing.T) {
+	rd := metric.NewManualReader()
+	rec, err := newStoragePoolRecorder(metric.NewMeterProvider(metric.WithReader(rd)), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.recordPeer("peer-a", []incus.StoragePoolUsage{{Name: "p1", UsedBytes: 96, TotalBytes: 100}})
+	var rm metricdata.ResourceMetrics
+	if err := rd.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, dp := range m.Data.(metricdata.Gauge[int64]).DataPoints {
+				n++
+				if b, _ := dp.Attributes.Value(attribute.Key("backend.id")); b.AsString() != "peer-a" {
+					t.Errorf("%s backend.id = %q, want peer-a", m.Name, b.AsString())
+				}
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("got %d data points, want 2 (used + total)", n)
+	}
+}
