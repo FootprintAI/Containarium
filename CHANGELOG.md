@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-pool storage capacity in `SystemInfo`, with the storage-pool alerts covering peer backends** (#2823, part B1). `SystemInfo` gains `storage_pools`, a list of `StoragePoolCapacity` entries (`pool`, the typed `driver`, `used_bytes`, `total_bytes`, a `StoragePoolCapacityLevel` enum of `OK`, `WARNING` (85 % or more) or `CRITICAL` (95 % or more), and `observed_at`). The daemon fills it from the pool capacity monitor's last snapshot, so `GetSystemInfo` makes no extra Incus call. The metrics host reads each peer's pools from the forwarded `GetSystemInfo` and records `storage_pool_used_bytes` and `storage_pool_total_bytes` under the peer's `backend_id`, so the `storage_pool_alerts` rules now fire for peer backends as well. Previously a peer reported only its summed disk. That forwarded response is now decoded with protojson against the contract instead of a hand-written struct. The `containarium info` block and the MCP `get_system_info` lines follow in part B2. Not verified: the 95 %-is-about-92 %-of-zpool reading (taken from the Incus ZFS driver), a run against a real Incus host, and the series names in a live VictoriaMetrics.
+
 ### Security
 
 - **Every GitHub Action is pinned to a full commit SHA, and a `workflow-lint` lane keeps it that way** (#2793). All 157 floating `uses:` references (tags and the `@master` / `@release/v1` branches) now carry the commit they resolved to, with the old ref as a trailing comment so Dependabot still bumps them. Branch pins (`trivy-action`, `gosec`, `gh-action-pypi-publish`) are frozen at the branch head on the pinning day. The new workflow runs a checksum-verified `actionlint` and `scripts/ci/check-action-pins.sh`, which has a self-test proving it rejects tag and branch pins. Open Dependabot action PRs need a rebase.

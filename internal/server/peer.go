@@ -1326,45 +1326,26 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []m
 		if err != nil {
 			continue
 		}
-		var resp struct {
-			Info struct {
-				TotalCpus            json.Number `json:"totalCpus"`
-				TotalMemoryBytes     json.Number `json:"totalMemoryBytes"`
-				AvailableMemoryBytes json.Number `json:"availableMemoryBytes"`
-				TotalDiskBytes       json.Number `json:"totalDiskBytes"`
-				AvailableDiskBytes   json.Number `json:"availableDiskBytes"`
-				CpuLoad1Min          json.Number `json:"cpuLoad1min"`
-				CpuLoad5Min          json.Number `json:"cpuLoad5min"`
-				CpuLoad15Min         json.Number `json:"cpuLoad15min"`
-				ContainersRunning    json.Number `json:"containersRunning"`
-				ContainersStopped    json.Number `json:"containersStopped"`
-			} `json:"info"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
+		// protojson against the contract (int64 as strings, enums by name);
+		// DiscardUnknown so a newer peer's extra fields never drop it.
+		var resp pb.GetSystemInfoResponse
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &resp); err != nil {
 			continue
 		}
-		totalCpus, _ := resp.Info.TotalCpus.Int64()
-		totalMem, _ := resp.Info.TotalMemoryBytes.Int64()
-		availMem, _ := resp.Info.AvailableMemoryBytes.Int64()
-		totalDisk, _ := resp.Info.TotalDiskBytes.Int64()
-		availDisk, _ := resp.Info.AvailableDiskBytes.Int64()
-		load1, _ := resp.Info.CpuLoad1Min.Float64()
-		load5, _ := resp.Info.CpuLoad5Min.Float64()
-		load15, _ := resp.Info.CpuLoad15Min.Float64()
-		cRunning, _ := resp.Info.ContainersRunning.Int64()
-		cStopped, _ := resp.Info.ContainersStopped.Int64()
+		in := resp.GetInfo()
 		results = append(results, metricsPackage.PeerSystemMetrics{
 			BackendID:         peer.ID,
-			TotalCPUs:         totalCpus,
-			TotalMemoryBytes:  totalMem,
-			UsedMemoryBytes:   totalMem - availMem,
-			TotalDiskBytes:    totalDisk,
-			UsedDiskBytes:     totalDisk - availDisk,
-			CPULoad1Min:       load1,
-			CPULoad5Min:       load5,
-			CPULoad15Min:      load15,
-			ContainersRunning: cRunning,
-			ContainersStopped: cStopped,
+			TotalCPUs:         int64(in.GetTotalCpus()),
+			TotalMemoryBytes:  in.GetTotalMemoryBytes(),
+			UsedMemoryBytes:   in.GetTotalMemoryBytes() - in.GetAvailableMemoryBytes(),
+			TotalDiskBytes:    in.GetTotalDiskBytes(),
+			UsedDiskBytes:     in.GetTotalDiskBytes() - in.GetAvailableDiskBytes(),
+			CPULoad1Min:       in.GetCpuLoad_1Min(),
+			CPULoad5Min:       in.GetCpuLoad_5Min(),
+			CPULoad15Min:      in.GetCpuLoad_15Min(),
+			ContainersRunning: int64(in.GetContainersRunning()),
+			ContainersStopped: int64(in.GetContainersStopped()),
+			StoragePools:      storagePoolUsagesFromProto(in.GetStoragePools()),
 		})
 	}
 	return results

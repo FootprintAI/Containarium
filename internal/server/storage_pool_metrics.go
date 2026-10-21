@@ -48,28 +48,37 @@ func newStoragePoolRecorder(provider *sdkmetric.MeterProvider, backendID string)
 	return &storagePoolRecorder{backendID: backendID, used: used, total: total}, nil
 }
 
-// record is the monitor's OnSample hook.
+// record is the monitor's OnSample hook: this daemon's own pools.
 func (r *storagePoolRecorder) record(samples []poolcapacity.Sample) {
-	ctx := context.Background()
 	for _, s := range samples {
-		attrs := otelmetric.WithAttributes(
-			attribute.String("pool", s.Name),
-			attribute.String("backend.id", r.backendID),
-		)
-		r.used.Record(ctx, s.UsedBytes, attrs)
-		r.total.Record(ctx, s.TotalBytes, attrs)
+		r.recordOne(r.backendID, s.StoragePoolUsage)
 	}
+}
+
+// recordPeer records a peer backend's pools, read from its forwarded
+// GetSystemInfo, under the peer's backend id.
+func (r *storagePoolRecorder) recordPeer(backendID string, pools []incus.StoragePoolUsage) {
+	for _, p := range pools {
+		r.recordOne(backendID, p)
+	}
+}
+
+func (r *storagePoolRecorder) recordOne(backendID string, p incus.StoragePoolUsage) {
+	attrs := otelmetric.WithAttributes(attribute.String("pool", p.Name), attribute.String("backend.id", backendID))
+	r.used.Record(context.Background(), p.UsedBytes, attrs)
+	r.total.Record(context.Background(), p.TotalBytes, attrs)
 }
 
 // startStoragePoolMonitor runs the pool capacity monitor on every daemon, so
 // the WARN log exists even where no metrics pipeline is configured. mc may be
-// nil (no gauges then). Reads go through their own bounded client and never
-// through GET /1.0/resources (#2325).
-func startStoragePoolMonitor(ctx context.Context, mc *metrics.Collector, backendID string) {
+// nil (no gauges then); when set, peers' pools are recorded too. Reads go
+// through their own bounded client and never through GET /1.0/resources
+// (#2325). Returns nil when the monitor could not start.
+func startStoragePoolMonitor(ctx context.Context, mc *metrics.Collector, backendID string) *poolcapacity.Monitor {
 	client, err := incus.NewWithSocketAndTimeout(incus.DefaultSocketPath, storagePoolReadTimeout)
 	if err != nil {
 		log.Printf("Warning: storage pool capacity monitor disabled: %v", err)
-		return
+		return nil
 	}
 	opts := poolcapacity.Options{Timeout: storagePoolReadTimeout}
 	if mc != nil {
@@ -78,9 +87,12 @@ func startStoragePoolMonitor(ctx context.Context, mc *metrics.Collector, backend
 			log.Printf("Warning: storage pool metrics disabled: %v", err)
 		} else {
 			opts.OnSample = rec.record
+			mc.SetPeerStoragePoolHook(rec.recordPeer)
 		}
 	}
-	go poolcapacity.New(client.StoragePoolUsages, opts).Run(ctx, storagePoolInterval)
+	m := poolcapacity.New(client.StoragePoolUsages, opts)
+	go m.Run(ctx, storagePoolInterval)
+	return m
 }
 
 // storagePoolAlertRules is the vmalert group for pool fill, built from the

@@ -42,6 +42,8 @@ type PeerSystemMetrics struct {
 	CPULoad15Min      float64
 	ContainersRunning int64
 	ContainersStopped int64
+	// StoragePools is the peer's per-pool fill from its SystemInfo (#2823).
+	StoragePools []incus.StoragePoolUsage
 }
 
 // PeerBackendHealth represents the health status of a backend instance.
@@ -145,6 +147,7 @@ type Collector struct {
 	peerFetcher   PeerMetricsFetcher
 	egressFetcher EgressFanoutFetcher
 	cpuHook       func(at time.Time, readings []ContainerCPUReading)
+	peerPoolHook  func(backendID string, pools []incus.StoragePoolUsage)
 }
 
 // ContainerCPUReading is one local running container's cumulative CPU
@@ -445,6 +448,9 @@ func (c *Collector) collect() {
 			c.systemCPULoad15m.Record(ctx, ps.CPULoad15Min, peerAttrs)
 			c.containersRunning.Record(ctx, ps.ContainersRunning, peerAttrs)
 			c.containersStopped.Record(ctx, ps.ContainersStopped, peerAttrs)
+			if c.peerPoolHook != nil {
+				c.peerPoolHook(ps.BackendID, ps.StoragePools)
+			}
 		}
 	}
 
@@ -571,6 +577,13 @@ func (c *Collector) SetPeerFetcher(fetcher PeerMetricsFetcher) {
 // read instead of polling Incus again. Must be called before Start.
 func (c *Collector) SetCPUHook(fn func(at time.Time, readings []ContainerCPUReading)) {
 	c.cpuHook = fn
+}
+
+// SetPeerStoragePoolHook wires the recorder for peers' storage pools
+// (#2823); called on each tick with every healthy peer's pools. Must be
+// called before Start.
+func (c *Collector) SetPeerStoragePoolHook(fn func(backendID string, pools []incus.StoragePoolUsage)) {
+	c.peerPoolHook = fn
 }
 
 // SetEgressFetcher sets the egress fan-out fetcher (crawler-detection signal).
