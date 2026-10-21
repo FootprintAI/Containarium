@@ -58,6 +58,17 @@ func TestGuardrailStatusCLI_PrintsEachEffectivePolicy(t *testing.T) {
 			ResponsePolicy: pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_NONE,
 			PolicyRevision: 4,
 		}, []string{"Response policy: none", "revision 4"}},
+		// #2738: the switch shows in the status.
+		{"baseline block", &pb.GetGuardrailStatusResponse{
+			ResponsePolicy:  pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE,
+			BaselineRuleIds: []string{"baseline.pem_private_key"},
+			Baseline:        &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, Revision: 1, UpdatedBy: "ops"},
+		}, []string{"Response policy: baseline", "Baseline mode: block (revision 1, set by ops)", "blocked on a"}},
+		{"baseline default log", &pb.GetGuardrailStatusResponse{
+			ResponsePolicy:  pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE,
+			BaselineRuleIds: []string{"baseline.pem_private_key"},
+			Baseline:        &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG},
+		}, []string{"Baseline mode: log (default, never set)", "log-only"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

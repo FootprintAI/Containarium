@@ -2723,8 +2723,11 @@ skipAppHosting:
 				// has an audit store. The reference rules engine runs
 				// in-process.
 				InboundPolicy: guardrailPolicyServer.Provider(),
-				InboundEngine: guardrail.RulesEngine{},
-				InboundAudit:  newGatewayInboundAudit(auditStore),
+				// The baseline's LOG/BLOCK switch (#2738), stored next to
+				// the policy; a switch invalidates the cached read below.
+				InboundBaselineMode: guardrailPolicyServer.BaselineModeProvider(),
+				InboundEngine:       guardrail.RulesEngine{},
+				InboundAudit:        newGatewayInboundAudit(auditStore),
 			})
 			modelGW = gw
 			guardrailPolicyServer.SetOnChange(gw.InvalidateInboundPolicy)
@@ -3659,10 +3662,29 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if anchorPath == "" {
 			anchorPath = defaultAuditAnchorPath
 		}
-		anchorSink, err := audit.NewFileSink(anchorPath)
+		fileSink, err := audit.NewFileSink(anchorPath)
 		if err != nil {
 			log.Printf("[audit-anchor] disabled: %v", err)
 		} else {
+			// #2880: CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
+			// adds an external copy in a retention-locked GCS bucket, written
+			// after the local file. Unset keeps file-only anchoring.
+			anchorSink, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
+			if err != nil {
+				log.Printf("[audit-anchor] ERROR: external anchor bucket disabled, anchoring to the local file only: %v", err)
+			}
+			if bucketSink != nil {
+				log.Printf("[audit-anchor] anchoring to %s and to %s (file first)", anchorPath, bucketSink.URI())
+				// Off the startup path: a slow gcloud call must not delay serving.
+				go func() {
+					st, err := bucketSink.CheckRetentionLock(ctx)
+					if warn := audit.RetentionLockWarning(bucketSink.URI(), st, err); warn != "" {
+						log.Printf("[audit-anchor] %s", warn)
+					} else {
+						log.Printf("[audit-anchor] %s retention policy is locked (%ss)", bucketSink.URI(), st.RetentionPeriod)
+					}
+				}()
+			}
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {

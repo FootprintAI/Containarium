@@ -89,11 +89,15 @@ type Config struct {
 	// baseline detection (nil = log only). InboundHoldLimit (bytes; also
 	// the baseline's scan buffer) and InboundScanTimeout take the Default*
 	// constants when zero.
-	InboundPolicy      guardrailpolicy.PolicyProvider
-	InboundEngine      guardrail.Engine
-	InboundAudit       InboundAuditSink
-	InboundHoldLimit   int
-	InboundScanTimeout time.Duration
+	InboundPolicy guardrailpolicy.PolicyProvider
+	// InboundBaselineMode is the stored baseline mode (#2738), read with the
+	// policy while none is configured. nil = always LOG. In BLOCK the
+	// baseline takes the hold-and-block path instead of the tee.
+	InboundBaselineMode guardrailpolicy.BaselineModeProvider
+	InboundEngine       guardrail.Engine
+	InboundAudit        InboundAuditSink
+	InboundHoldLimit    int
+	InboundScanTimeout  time.Duration
 	// InboundPolicyTTL is how long a successful policy read is reused
 	// (default DefaultInboundPolicyTTL; negative = read every call). Call
 	// Gateway.InvalidateInboundPolicy when the policy changes so a new rule
@@ -383,7 +387,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
 		return
 	}
-	// No admin policy: the baseline scan, log-only and never held (#2736).
+	// No admin policy: the baseline scan. LOG mode is never held (#2736);
+	// BLOCK mode is scanned below through the hold path (#2738), and uses bl
+	// only for an upstream error the hold path passes through unscanned.
 	var bl *baselineRequest
 	if inMode.baseline {
 		bl = &baselineRequest{in: g.inbound, sub: inSub}
@@ -480,7 +486,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		ModifyResponse: func(resp *http.Response) error {
 			// Baseline (#2736): tee the final body, whatever the steps below
 			// make of it, and scan it once the proxy has written it all.
-			if bl != nil {
+			if bl != nil && !inMode.baselineBlock {
 				defer bl.watch(resp)
 			}
 			// Scanned mode (#2367): hold the whole response here, scan it,
@@ -490,6 +496,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			if ir != nil {
 				if err := ir.enforce(resp); err != nil {
 					return err
+				}
+				if bl != nil && ir.passedThrough {
+					defer bl.watch(resp)
 				}
 			}
 			// Streaming (SSE): intercept to meter usage + redact prompt leakage.

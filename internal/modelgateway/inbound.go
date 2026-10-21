@@ -52,6 +52,9 @@ const (
 	// InboundBlockType is the "type" of the error body a blocked response
 	// receives, so a client can tell a guardrail block from an upstream error.
 	InboundBlockType = "guardrail_inbound_block"
+	// BaselineEngineID is the engine id a baseline BLOCK-mode block records
+	// (#2738): the baseline rule table, not the policy engine.
+	BaselineEngineID = "baseline"
 )
 
 // InboundAuditSink receives one entry per blocked response, and one per
@@ -140,25 +143,35 @@ type InboundStatus struct {
 	// neither ever blocks.
 	BaselineDetections map[string]uint64 `json:"baseline_detections"`
 	BaselineUnscanned  uint64            `json:"baseline_unscanned"`
+	// BaselineMode is the last known stored baseline mode, "log" or "block"
+	// (#2738). It applies only while no admin policy is configured; in
+	// "block" a detection blocks and is counted under Blocked as well.
+	BaselineMode string `json:"baseline_mode"`
 }
 
 // inboundMode is what one request runs under, resolved from the policy.
 type inboundMode struct {
 	scan bool
-	// baseline is set when the store answered "not configured": the
-	// response is teed to the client and scanned at its end (#2736).
-	baseline bool
-	kinds    []pb.GuardrailKind // inbound kinds with a BLOCK rule
-	policy   *pb.GuardrailPolicy
-	revision int64
+	// baseline is set when the store answered "not configured". In LOG mode
+	// the response is teed to the client and scanned at its end (#2736); with
+	// baselineBlock (BLOCK mode, #2738) scan is set too, and the response
+	// takes the hold-and-block path, scanned with the baseline rules.
+	baseline      bool
+	baselineBlock bool
+	kinds         []pb.GuardrailKind // inbound kinds with a BLOCK rule
+	policy        *pb.GuardrailPolicy
+	revision      int64
 }
 
-func modeOf(p *pb.ServerGuardrailPolicy) inboundMode {
+func modeOf(p *pb.ServerGuardrailPolicy, bm pb.GuardrailBaselineMode) inboundMode {
 	m := inboundMode{policy: p.GetPolicy(), revision: p.GetRevision(), kinds: guardrail.InboundBlockKinds(p)}
 	m.scan = len(m.kinds) > 0
 	// Callers only reach here with a nil policy after a read answered
 	// ErrNotConfigured; a wired-but-unread or absent provider never does.
 	m.baseline = p == nil
+	if m.baseline && bm == pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK {
+		m.baselineBlock, m.scan = true, true
+	}
 	return m
 }
 
@@ -185,9 +198,8 @@ type inbound struct {
 	holdSeconds *histogram
 	holdBytes   *histogram
 
-	// baselineAction is what a baseline detection does. Always Log in this
-	// slice; it is the typed seam for the switch in #2738.
-	baselineAction    guardrail.BaselineAction
+	// baselineModes is the stored baseline mode (#2738); nil reads as LOG.
+	baselineModes     guardrailpolicy.BaselineModeProvider
 	baselineUnscanned atomic.Uint64
 
 	// Policy read cache (#2454). fetchMu serialises refreshes so concurrent
@@ -197,11 +209,16 @@ type inbound struct {
 	fetchedAt   time.Time
 	policyReads atomic.Uint64
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// gen counts invalidations. A read that started before one may still
+	// update the last known state, but it does not mark the cache fresh,
+	// so a switch committed during that read applies on the next call.
+	gen           uint64
 	auditDropped  uint64
 	auditFailed   uint64
 	loaded        bool                      // a read has succeeded (policy or ErrNotConfigured)
 	policy        *pb.ServerGuardrailPolicy // last known; nil = not configured
+	baselineMode  pb.GuardrailBaselineMode  // last known; read only while not configured
 	blocked       map[guardrail.InboundReason]uint64
 	blockedByKind map[pb.GuardrailKind]uint64
 	baselineHits  map[guardrail.BaselineRuleID]uint64
@@ -213,7 +230,8 @@ func newInbound(cfg Config) *inbound {
 		limit: cfg.InboundHoldLimit, timeout: cfg.InboundScanTimeout, logger: cfg.Logger,
 		blocked: map[guardrail.InboundReason]uint64{}, blockedByKind: map[pb.GuardrailKind]uint64{},
 		holdSeconds: newHistogram(holdSecondsBounds), holdBytes: newHistogram(holdBytesBounds),
-		ttl: cfg.InboundPolicyTTL, baselineAction: guardrail.BaselineActionLog,
+		ttl: cfg.InboundPolicyTTL, baselineModes: cfg.InboundBaselineMode,
+		baselineMode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG,
 		baselineHits: map[guardrail.BaselineRuleID]uint64{},
 	}
 	if in.ttl == 0 {
@@ -284,24 +302,53 @@ func (in *inbound) resolve(ctx context.Context) (mode inboundMode, ok bool) {
 		return m, true
 	}
 	in.policyReads.Add(1)
+	in.mu.Lock()
+	gen := in.gen
+	in.mu.Unlock()
 	p, err := in.provider.Get(ctx)
+	// The baseline mode matters only while no policy is configured. A failed
+	// mode read is handled like a failed policy read: the last known state
+	// decides, so it never loosens a BLOCK mode (#2738).
+	notConfigured := errors.Is(err, guardrailpolicy.ErrNotConfigured)
+	bm := pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG
+	if notConfigured {
+		bm, err = in.readBaselineMode(ctx)
+	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	switch {
+	case err == nil && !notConfigured:
+		in.loaded, in.policy = true, p
+		in.markFresh(gen)
 	case err == nil:
-		in.loaded, in.policy, in.fetchedAt = true, p, time.Now()
-	case errors.Is(err, guardrailpolicy.ErrNotConfigured):
-		in.loaded, in.policy, in.fetchedAt = true, nil, time.Now()
+		in.loaded, in.policy, in.baselineMode = true, nil, bm
+		in.markFresh(gen)
 	default:
 		// fetchedAt is untouched, so the next call reads again.
 		in.logger.Printf("model-gateway: inbound guardrail policy read failed (last known revision kept): %v", err)
 		if !in.loaded {
 			return inboundMode{}, false
 		}
-		m := modeOf(in.policy)
+		m := modeOf(in.policy, in.baselineMode)
 		return m, !m.scan
 	}
-	return modeOf(in.policy), true
+	return modeOf(in.policy, in.baselineMode), true
+}
+
+// readBaselineMode reads the stored baseline mode; no provider is LOG. A
+// mode other than LOG or BLOCK is an error, never a silent default.
+func (in *inbound) readBaselineMode(ctx context.Context) (pb.GuardrailBaselineMode, error) {
+	if in.baselineModes == nil {
+		return pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG, nil
+	}
+	s, err := in.baselineModes.GetBaselineMode(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("baseline mode: %w", err)
+	}
+	if !guardrailpolicy.ValidBaselineMode(s.GetMode()) {
+		return 0, fmt.Errorf("baseline mode: stored mode %v is not LOG or BLOCK", s.GetMode())
+	}
+	return s.GetMode(), nil
 }
 
 // cached returns the mode from the last successful read while it is within
@@ -312,7 +359,7 @@ func (in *inbound) cached() (inboundMode, bool) {
 	if in.ttl < 0 || !in.loaded || in.fetchedAt.IsZero() || time.Since(in.fetchedAt) >= in.ttl {
 		return inboundMode{}, false
 	}
-	return modeOf(in.policy), true
+	return modeOf(in.policy, in.baselineMode), true
 }
 
 // invalidate forgets the cached read so the next call goes to the store. The
@@ -320,7 +367,16 @@ func (in *inbound) cached() (inboundMode, bool) {
 func (in *inbound) invalidate() {
 	in.mu.Lock()
 	in.fetchedAt = time.Time{}
+	in.gen++
 	in.mu.Unlock()
+}
+
+// markFresh starts the cache TTL for a read that began at generation gen,
+// unless an invalidation happened since. Called with mu held.
+func (in *inbound) markFresh(gen uint64) {
+	if in.gen == gen {
+		in.fetchedAt = time.Now()
+	}
 }
 
 func (in *inbound) status() InboundStatus {
@@ -328,8 +384,9 @@ func (in *inbound) status() InboundStatus {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	st.Ready = in.provider == nil || in.loaded
-	m := modeOf(in.policy)
+	m := modeOf(in.policy, in.baselineMode)
 	st.Scanning, st.PolicyRevision = m.scan, m.revision
+	st.BaselineMode = strings.ToLower(strings.TrimPrefix(in.baselineMode.String(), "GUARDRAIL_BASELINE_MODE_"))
 	st.AuditDropped, st.AuditFailed = in.auditDropped, in.auditFailed
 	st.UpstreamErrors = in.upstreamErrors.Load()
 	st.HoldSeconds, st.HoldBytes = in.holdSeconds.snapshot(), in.holdBytes.snapshot()
@@ -498,6 +555,10 @@ type inboundRequest struct {
 	// held (#2452). Nil skips metering. It is not called when the hold hit
 	// its limit: the body is truncated, so any usage in it would be invented.
 	onBlocked func(held []byte, streaming bool)
+	// passedThrough is set when enforce let the response through unscanned
+	// (an upstream error). Under the baseline's BLOCK mode the gateway then
+	// tees it like LOG mode, so BLOCK never records less than LOG (#2738).
+	passedThrough bool
 }
 
 // enforce is the ModifyResponse pre-stage in scanned mode. It holds the
@@ -521,6 +582,7 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 	// through with its status and headers. A 2xx of that shape stays blocked.
 	if !recognised && (resp.StatusCode < 200 || resp.StatusCode > 299) {
 		ir.in.upstreamErrors.Add(1)
+		ir.passedThrough = true
 		return nil
 	}
 	// An unscannable body cannot pass a gate that claims to scan. The
@@ -564,13 +626,16 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 // that is not valid UTF-8 is a coverage gap, as in guardrail.LoadUnits: a
 // lenient decode would hand the engine quietly corrupted text.
 func (ir *inboundRequest) scan(ctx context.Context, units []*pb.GuardrailTextUnit) guardrail.InboundDecision {
-	if ir.in.engine == nil {
+	if ir.in.engine == nil && !ir.mode.baselineBlock {
 		return guardrail.InboundBlocked(guardrail.InboundReasonEngineError)
 	}
 	for _, u := range units {
 		if !utf8.ValidString(u.GetText()) {
 			return guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap)
 		}
+	}
+	if ir.mode.baselineBlock {
+		return ir.scanBaseline(units)
 	}
 	ctx, cancel := context.WithTimeout(ctx, ir.in.timeout)
 	defer cancel()
