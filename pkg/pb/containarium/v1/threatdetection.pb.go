@@ -1470,7 +1470,10 @@ type FindingResponse struct {
 	// When the TTL backstop will release the action if no operator does.
 	ExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	ReleasedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=released_at,json=releasedAt,proto3" json:"released_at,omitempty"`
-	// "operator" or "ttl"; empty while the action is in effect.
+	// Who ended the action: "operator", "ttl", "orphan-sweep" (an apply that
+	// was never confirmed, undone by the sweep) or "container-deleted" (the box
+	// no longer exists, so nothing was restored; #2835). Empty while the
+	// action is in effect.
 	ReleasedBy string `protobuf:"bytes,7,opt,name=released_by,json=releasedBy,proto3" json:"released_by,omitempty"`
 	// Incus error text when state is FAILED.
 	Error string `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`

@@ -275,13 +275,31 @@ operator decision, marks the finding's response `EXPIRED`, and raises a
 MEDIUM `PROCESS_ACTION_EXPIRED` finding on the box saying so, so an
 unattended throttle never silently becomes permanent. The original
 mining finding stays open. If the box keeps mining, the rule fires again
-once its window re-fills and the policy applies again.
+once its window re-fills and the policy applies again. One exception, on a
+finding shared by several boxes (#2835): when an operator already released
+another box and the finding stayed open only because this box still held
+it, the expiry resolves the finding in the same write. The orphan sweep and
+a box's deletion (below) follow the same rule.
 
 **Pending and orphaned actions.** If the daemon dies between recording an
 action and confirming it, the row stays pending. The same 60 s sweep
 undoes pending rows older than 5 minutes (writing back the recorded
 limits, which is harmless if the box was never touched) and records them
-released by the orphan sweep.
+released by the orphan sweep. While it waits, a pending row on one box of
+a shared finding holds the finding open, because the throttle may have
+taken effect, but it is never shown as `APPLIED`: nothing confirmed it.
+So a pending row holds a finding open for at most about 6 minutes (5
+minutes plus one sweep).
+
+**Deleted boxes.** Deleting a box through the daemon closes its open
+action without calling Incus (there is nothing left to restore), with
+`released_by` `container-deleted`. The finding records the box's
+`RELEASED` instead of its `APPLIED`, and a finding the deleted box was the
+last to hold is resolved when an operator already released another box of
+it. A box removed some other way is closed the same way by the next TTL or
+orphan sweep, which finds it missing (Incus answers not found) instead of
+retrying the undo every minute; no `PROCESS_ACTION_EXPIRED` finding is
+raised for it.
 
 **Failures.** If an Incus call fails, the row records the error, the
 finding's response says `FAILED` with the error, and an audit entry is
@@ -539,9 +557,13 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   the next release (#2820) that post has `state: 2` (resolved) with
   `response.state: 4`; before it, it had `state: 1` and the resolve was
   dropped. A TTL expiry or orphan-sweep release leaves the finding open, so
-  its later resolve is posted.
+  its later resolve is posted, unless it ends the last box holding a
+  shared finding an operator already released elsewhere: then it is one
+  post with `state: 2` carrying that box's record (#2835).
 - **Shared findings** (next release, #2820): `response.container` and the
-  post's `container` name the box. Each box's apply, release, expiry and
+  post's `container` name the box, except on a post caused by a re-fire
+  (the re-notify, or a held-back kill), whose `container` is the box that
+  re-fired (#2835). Each box's apply, release, expiry and
   failure is its own post. For boxes A and B under `THROTTLE`, released A
   then B: new finding, A `APPLIED`, B `APPLIED`, A `RELEASED` (`state: 1`,
   B is still throttled), B `RELEASED` with `state: 2`. Key per-box state on

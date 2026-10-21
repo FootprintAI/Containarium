@@ -74,7 +74,6 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 	var out *Finding
 	var rollback func()
 	if ok && existing.State == FindingStateOpen {
-		prevCount, prevLastSeen, prevEvidence, prevSeverity := existing.Count, existing.LastSeen, existing.Evidence, existing.Severity
 		existing.Count++
 		existing.LastSeen = now
 		existing.Severity = maxSeverity(existing.Severity, f.Severity)
@@ -83,7 +82,8 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 		rollback = func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			existing.Count, existing.LastSeen, existing.Evidence, existing.Severity = prevCount, prevLastSeen, prevEvidence, prevSeverity
+			// shortcut: keep merged fields on failure; audit under the lock if exact rollback is needed.
+			existing.Count--
 		}
 	} else {
 		s.nextID++
@@ -116,9 +116,13 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 	}
 	// The caller, the event and the webhook worker all read the finding
 	// after the lock is released, while a concurrent Upsert of the same key
-	// may be updating the stored entry. Hand them a copy (#2748).
-	snap := *out
-	out = &snap
+	// may be updating the stored entry. Hand them a copy (#2748). The copy
+	// names the box this write came from, as the Postgres store's does
+	// (#2835): the stored entry keeps the box that first opened it.
+	out = out.clone()
+	if ok {
+		out.Container = f.Container
+	}
 	s.mu.Unlock()
 
 	detail := fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s count=%d", out.Rule, out.Severity, out.TenantID, out.Subject, out.Count)
@@ -144,7 +148,7 @@ func (s *MemFindingStore) Get(ctx context.Context, id int64) (*Finding, error) {
 	defer s.mu.Unlock()
 	for _, f := range s.ring {
 		if f.ID == id {
-			return f, nil
+			return f.clone(), nil
 		}
 	}
 	return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
@@ -179,7 +183,7 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 		if filter.BackendID != "" && f.BackendID != filter.BackendID {
 			continue
 		}
-		matches = append(matches, f)
+		matches = append(matches, f.clone())
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].LastSeen.After(matches[j].LastSeen) })
 	if len(matches) > limit {
@@ -239,10 +243,8 @@ func (s *MemFindingStore) writeResponse(ctx context.Context, id int64, stored, b
 	// The webhook worker reads its finding after this returns; hand it a
 	// snapshot so a later write to the ring entry cannot change what this
 	// delivery says.
-	snap := *f
-	snapResp := cp
-	snap.Response = &snapResp // its own copy: f.Response is the stored one
-	delivery := ResponseDelivery(&snap, box)
+	snap := f.clone()
+	delivery := ResponseDelivery(snap, box)
 	state := f.State
 	s.mu.Unlock()
 	if resolved {
@@ -260,9 +262,9 @@ func (s *MemFindingStore) writeResponse(ctx context.Context, id int64, stored, b
 		s.notifier.Notify(delivery) // a response transition, or the resolve it made, is delivered (#2718, #2820)
 	}
 	if notOpen {
-		return f, fmt.Errorf("threatdetect: finding %d is not open (state=%s): %w", id, state, ErrFindingNotOpen)
+		return snap, fmt.Errorf("threatdetect: finding %d is not open (state=%s): %w", id, state, ErrFindingNotOpen)
 	}
-	return f, nil
+	return snap, nil
 }
 
 // Resolve transitions a finding to FindingStateResolved (mirrors
@@ -290,6 +292,9 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 	if s.byKey[key] == f {
 		delete(s.byKey, key)
 	}
+	// Snapshot under the lock so later writes cannot change this result.
+	f = f.clone()
+	delivery := resolveDelivery(f)
 	s.mu.Unlock()
 
 	if err := s.audit.Log(ctx, &audit.AuditEntry{
@@ -302,7 +307,7 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
 	if s.notifier != nil {
-		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+		s.notifier.Notify(delivery) // delivered once: the resolution (#2643)
 	}
 	return f, nil
 }

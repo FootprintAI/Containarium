@@ -21,6 +21,15 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
+// Keep the received pointers so the test can detect later changes to them.
+type recordingFindingNotifier struct {
+	findings []*Finding
+}
+
+func (n *recordingFindingNotifier) Notify(f *Finding) {
+	n.findings = append(n.findings, f)
+}
+
 func memTestDeps(t *testing.T) (*audit.Store, *events.Bus) {
 	t.Helper()
 	pool := threatdetectPool(t) // requires CONTAINARIUM_TEST_DSN; see store_integration_test.go
@@ -215,7 +224,8 @@ func TestMemFindingStore_UpsertReturnsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemFindingStore: %v", err)
 	}
-	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil) // no worker: queue length = deliveries
+
+	n := &recordingFindingNotifier{}
 	s.SetNotifier(n)
 
 	ctx := context.Background()
@@ -226,14 +236,15 @@ func TestMemFindingStore_UpsertReturnsSnapshot(t *testing.T) {
 	if _, err := s.Upsert(ctx, sampleMemFinding()); err != nil {
 		t.Fatalf("Upsert #2: %v", err)
 	}
+
 	if first.Count != 1 {
-		t.Fatalf("finding returned by Upsert #1 has count %d after Upsert #2, want 1", first.Count)
+		t.Fatalf("first returned finding has count %d, want 1", first.Count)
 	}
-	if got := len(n.queue); got != 1 {
-		t.Fatalf("deliveries = %d, want 1", got)
+	if got := len(n.findings); got != 2 {
+		t.Fatalf("notifications = %d, want 2", got)
 	}
-	if delivered := <-n.queue; delivered.Count != 1 {
-		t.Fatalf("queued delivery has count %d after Upsert #2, want 1", delivered.Count)
+	if delivered := n.findings[0]; delivered.Count != 1 {
+		t.Fatalf("first notification has count %d after the second upsert, want 1", delivered.Count)
 	}
 }
 
@@ -345,5 +356,229 @@ func TestMemFindingStore_SetResponseKeepsProcessKilled(t *testing.T) {
 	}
 	if !back.Response.ProcessKilled {
 		t.Fatalf("stored response = %+v, want process_killed kept", back.Response)
+	}
+}
+
+// A failed audit must preserve another upsert's count, evidence and severity.
+func TestMemFindingStore_AuditRollbackKeepsConcurrentUpdate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := threatdetectPool(t)
+	auditStore, err := audit.NewStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("audit.NewStore: %v", err)
+	}
+
+	s, err := NewMemFindingStore(events.NewEmitter(events.NewBus()), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+
+	first, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("initial Upsert: %v", err)
+	}
+
+	// Pause audit writes while both in-memory updates are applied.
+	lockTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin audit lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = lockTx.Rollback(context.Background())
+	})
+	if _, err := lockTx.Exec(ctx, "LOCK TABLE audit_logs IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("lock audit table: %v", err)
+	}
+
+	waitForCount := func(want int64) {
+		t.Helper()
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			got, err := s.Get(ctx, first.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Count == want {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("waiting for count %d: %v", want, ctx.Err())
+			case <-ticker.C:
+			}
+		}
+	}
+
+	ctxA, cancelA := context.WithCancel(ctx)
+	defer cancelA()
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := s.Upsert(ctxA, sampleMemFinding())
+		aDone <- err
+	}()
+	waitForCount(2)
+
+	b := sampleMemFinding()
+	b.Severity = pb.ThreatSeverity_THREAT_SEVERITY_HIGH
+	b.Evidence.Denies[0].Reason = "successful-update"
+
+	bDone := make(chan error, 1)
+	go func() {
+		_, err := s.Upsert(ctx, b)
+		bDone <- err
+	}()
+	waitForCount(3)
+
+	// Fail A only after B's update has been merged.
+	cancelA()
+	select {
+	case err := <-aDone:
+		if err == nil {
+			t.Fatal("A succeeded, want an audit failure")
+		}
+	case <-ctx.Done():
+		t.Fatalf("waiting for A: %v", ctx.Err())
+	}
+
+	// Release the table so B can finish its audit.
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatalf("release audit lock: %v", err)
+	}
+	select {
+	case err := <-bDone:
+		if err != nil {
+			t.Fatalf("B failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("waiting for B: %v", ctx.Err())
+	}
+
+	got, err := s.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("Get after rollback: %v", err)
+	}
+	if got.Count != 2 {
+		t.Errorf("count = %d, want 2", got.Count)
+	}
+	if got.Severity != pb.ThreatSeverity_THREAT_SEVERITY_HIGH {
+		t.Errorf("severity = %v, want HIGH", got.Severity)
+	}
+
+	found := false
+	for _, evidence := range got.Evidence.Denies {
+		if evidence.Reason == "successful-update" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("B's evidence was lost during A's rollback")
+	}
+}
+
+// Findings already handed out must stay stable while the store is updated.
+func TestMemFindingStore_ConcurrentHandoutSnapshots(t *testing.T) {
+	for _, name := range []string{"Get", "List", "SetResponse", "Resolve"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			auditStore, bus := memTestDeps(t)
+			s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+			if err != nil {
+				t.Fatalf("NewMemFindingStore: %v", err)
+			}
+
+			n := &recordingFindingNotifier{}
+			s.SetNotifier(n)
+
+			applied := FindingResponse{
+				Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
+				State:  pb.ResponseState_RESPONSE_STATE_APPLIED,
+			}
+			input := sampleMemFinding()
+			input.Response = &applied
+			first, err := s.Upsert(ctx, input)
+			if err != nil {
+				t.Fatalf("initial Upsert: %v", err)
+			}
+
+			var snapshot *Finding
+			wantState := pb.FindingState_FINDING_STATE_OPEN
+			switch name {
+			case "Get":
+				snapshot, err = s.Get(ctx, first.ID)
+			case "List":
+				rows, listErr := s.List(ctx, ListFilter{})
+				if listErr != nil {
+					t.Fatalf("List: %v", listErr)
+				}
+				if len(rows) != 1 {
+					t.Fatalf("List returned %d findings, want 1", len(rows))
+				}
+				snapshot = rows[0]
+			case "SetResponse":
+				snapshot, err = s.SetResponse(ctx, first.ID, applied)
+			case "Resolve":
+				snapshot, err = s.Resolve(ctx, first.ID)
+				wantState = pb.FindingState_FINDING_STATE_RESOLVED
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			// Capture these before the updater starts appending notifications.
+			snapshots := []*Finding{
+				snapshot,
+				n.findings[len(n.findings)-1],
+			}
+
+			expired := applied
+			expired.State = pb.ResponseState_RESPONSE_STATE_EXPIRED
+			done := make(chan error, 1)
+			go func() {
+				for i := 0; i < 16; i++ {
+					if _, err := s.Upsert(ctx, sampleMemFinding()); err != nil {
+						done <- err
+						return
+					}
+					// Responses can still change on the original resolved finding.
+					if _, err := s.SetResponse(ctx, first.ID, expired); err != nil {
+						done <- err
+						return
+					}
+				}
+				done <- nil
+			}()
+
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			for running := true; running; {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("concurrent update: %v", err)
+					}
+					running = false
+				case <-ctx.Done():
+					t.Fatalf("waiting for updates: %v", ctx.Err())
+				case <-ticker.C:
+				}
+
+				for _, finding := range snapshots {
+					got := finding.ToProto()
+					if got.GetCount() != 1 ||
+						got.GetState() != wantState ||
+						got.GetResponse().GetState() != pb.ResponseState_RESPONSE_STATE_APPLIED ||
+						len(got.GetEvidence().GetDenies()) != 1 {
+						t.Fatalf("snapshot changed: %v", got)
+					}
+				}
+			}
+		})
 	}
 }

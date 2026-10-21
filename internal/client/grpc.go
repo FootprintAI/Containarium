@@ -717,6 +717,7 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 		KernelVersion: resp.Info.KernelVersion,
 		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
 			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),
 	}
 
 	return info, nil
