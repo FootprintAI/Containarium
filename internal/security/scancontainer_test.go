@@ -175,15 +175,16 @@ func TestInBoxScanCommand_DropsPrivilegeAndKeepsReadOnly(t *testing.T) {
 	}
 	j := strings.Join(box.scanArgv, " ")
 	for _, want := range []string{
-		"timeout 60 setpriv", "--reuid=65534", "--regid=65534", "--clear-groups",
-		"--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search",
+		"timeout 60 setpriv", "--ruid=0", "--euid=65534", "--rgid=65534", "--egid=65534", "--clear-groups",
+		"--bounding-set=-all,+dac_read_search", "--inh-caps=-all,+dac_read_search", "--ambient-caps=-all,+dac_read_search",
+		"--no-new-privs",
 		"clamscan -r -i --no-summary --stdout", "--exclude-dir=^/proc", "--exclude-dir=^/sys", "--exclude-dir=^/dev", "--exclude-dir=^/run", " /",
 	} {
 		if !strings.Contains(j, want) {
 			t.Errorf("scan argv %q is missing %q", j, want)
 		}
 	}
-	for _, bad := range []string{"--reuid=0", "dac_override", "sys_admin", "--no-clear-groups", "--remove"} {
+	for _, bad := range []string{"--reuid=0", "--euid=0", "--egid=0", "dac_override", "sys_admin", "setuid", "--no-clear-groups", "--remove"} {
 		if strings.Contains(j, bad) {
 			t.Errorf("scan argv %q must not contain %q", j, bad)
 		}

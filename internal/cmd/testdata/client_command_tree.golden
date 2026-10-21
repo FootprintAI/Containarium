@@ -36,6 +36,7 @@ backup list
 backup prune
 backup restore
 backup verify
+box delete
 bridge-dns status
 capacity advertise
 capacity get
