@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The in-box malware scan can now read root-only files** (#2888). `clamscan` pre-checks each file with `access(2)`, which the kernel evaluates with the real uid and, for a non-root real uid, without effective capabilities, so the scan (real uid `nobody`, holding `CAP_DAC_READ_SEARCH`) reported "Access denied" on `/root`, the logs and every other root-only file and always ended `incomplete (clamscan exit 2)`. The scanner now runs with real uid 0, effective uid and gid 65534, a bounding/inheritable/ambient set pruned to `dac_read_search` only, and `no_new_privs`. Residual risk (a compromised scanner can `setuid(0)` back, holding that one capability) is documented in `docs/security/TENANT-MALWARE-SCAN.md`. Found on the first real run on a real box.
 
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
 ## [0.111.0] - 2026-10-21
 
 ### Added
