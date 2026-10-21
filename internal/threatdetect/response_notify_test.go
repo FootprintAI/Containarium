@@ -398,3 +398,129 @@ func TestFindingStore_SharedWritesKeepTheKill(t *testing.T) {
 	s, _, _ := newStores(t, threatdetectPool(t))
 	runKeepKillSharedTable(t, s)
 }
+
+// killStoreOp is which ResponseWriter call a step of the store sequence
+// table makes.
+type killStoreOp int
+
+const (
+	opSetResponse killStoreOp = iota
+	opSetResponseHeld
+	opResolveWithResponse
+)
+
+// killFactsOf is the kill facts a response carries, the part of it the
+// stores keep sticky.
+func killFactsOf(r *FindingResponse) killKey {
+	if r == nil {
+		return killKey{}
+	}
+	return killKey{r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason}
+}
+
+// #2816: one write sequence, both stores, identical kill facts. Every case
+// runs against the in-memory store and the Postgres store (the real SQL),
+// and each step's stored and delivered kill facts must match the expected
+// value on both. Items 1 (a write carrying its own, newer kill), 4 (a no-kill
+// write that carries a skip over a stored kill) and 6 (a stale kill, such as
+// the release fallback's row pid with count 1, never overwrites a newer
+// count).
+func TestFindingStores_KillFactsAgreeOnEveryWriteSequence(t *testing.T) {
+	ctx := context.Background()
+	alert, throttle := pb.ProcessAction_PROCESS_ACTION_ALERT, pb.ProcessAction_PROCESS_ACTION_THROTTLE
+	applied, released := pb.ResponseState_RESPONSE_STATE_APPLIED, pb.ResponseState_RESPONSE_STATE_RELEASED
+	gone, reused := pb.KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE, pb.KillSkipReason_KILL_SKIP_REASON_PID_REUSED
+	kill := func(action pb.ProcessAction, state pb.ResponseState, pid, n uint32) FindingResponse {
+		return FindingResponse{Action: action, State: state, ProcessKilled: true, KilledPID: pid, Kills: n}
+	}
+	noKill := func(state pb.ResponseState, skip pb.KillSkipReason) FindingResponse {
+		return FindingResponse{Action: throttle, State: state, KillSkipReason: skip, ReleasedBy: ReleasedByOperator}
+	}
+	type step struct {
+		op       killStoreOp
+		r        FindingResponse // the write (SetResponse/ResolveWithResponse) or the box record (SetResponseHeld)
+		standing FindingResponse // SetResponseHeld only
+		want     killKey         // stored and delivered after this step
+	}
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"a stored kill, then a new kill: the new one wins (item 1)", []step{
+			{op: opSetResponse, r: kill(alert, 0, 22, 2), want: killKey{true, 22, 2, 0}},
+			{op: opSetResponse, r: kill(alert, 0, 33, 3), want: killKey{true, 33, 3, 0}},
+		}},
+		{"a stored kill, then a no-kill write carrying a skip: the kill on record is kept whole (item 4)", []step{
+			{op: opSetResponse, r: kill(throttle, applied, 22, 2), want: killKey{true, 22, 2, 0}},
+			{op: opSetResponse, r: noKill(released, gone), want: killKey{true, 22, 2, 0}},
+		}},
+		{"a stored kill with a skip, then a no-kill release keeps both", []step{
+			{op: opSetResponse, r: func() FindingResponse { r := kill(alert, 0, 22, 2); r.KillSkipReason = reused; return r }(), want: killKey{true, 22, 2, reused}},
+			{op: opSetResponse, r: noKill(released, 0), want: killKey{true, 22, 2, reused}},
+		}},
+		{"a stale kill never overwrites a newer count (item 6, release fallback)", []step{
+			{op: opSetResponse, r: kill(throttle, applied, 33, 3), want: killKey{true, 33, 3, 0}},
+			{op: opSetResponse, r: kill(throttle, released, 22, 1), want: killKey{true, 33, 3, 0}},
+		}},
+		{"a stale kill on a held write and on the resolving write", []step{
+			{op: opSetResponse, r: kill(throttle, applied, 33, 3), want: killKey{true, 33, 3, 0}},
+			{op: opSetResponseHeld, r: kill(throttle, released, 22, 1), standing: kill(throttle, applied, 22, 1), want: killKey{true, 33, 3, 0}},
+			{op: opResolveWithResponse, r: kill(throttle, released, 22, 1), want: killKey{true, 33, 3, 0}},
+		}},
+		{"a skip with no kill on record is the writer's", []step{
+			{op: opSetResponse, r: noKill(applied, gone), want: killKey{false, 0, 0, gone}},
+			{op: opSetResponse, r: kill(throttle, applied, 44, 1), want: killKey{true, 44, 1, 0}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pg, auditStore, bus := newStores(t, threatdetectPool(t))
+			mem, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []struct {
+				name  string
+				store responseNotifyStore
+			}{{"mem", mem}, {"postgres", pg}} {
+				n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil) // no worker: the queue holds every delivery
+				s.store.SetNotifier(n)
+				seed := sampleMemFinding()
+				seed.Subject = tc.name
+				f, err := s.store.Upsert(ctx, seed)
+				if err != nil {
+					t.Fatalf("%s: upsert: %v", s.name, err)
+				}
+				for len(n.queue) > 0 {
+					<-n.queue
+				}
+				for i, st := range tc.steps {
+					var got *Finding
+					switch st.op {
+					case opSetResponse:
+						got, err = s.store.SetResponse(ctx, f.ID, st.r)
+					case opSetResponseHeld:
+						got, err = s.store.SetResponseHeld(ctx, f.ID, st.r, st.standing)
+					case opResolveWithResponse:
+						got, err = s.store.ResolveWithResponse(ctx, f.ID, st.r)
+					}
+					if err != nil {
+						t.Fatalf("%s step %d: %v", s.name, i, err)
+					}
+					if k := killFactsOf(got.Response); k != st.want {
+						t.Errorf("%s step %d: stored kill facts %+v, want %+v", s.name, i, k, st.want)
+					}
+					if reread, err := s.store.Get(ctx, f.ID); err != nil || killFactsOf(reread.Response) != st.want {
+						t.Errorf("%s step %d: re-read kill facts %+v (err %v), want %+v", s.name, i, killFactsOf(reread.Response), err, st.want)
+					}
+					var delivered *Finding
+					for len(n.queue) > 0 {
+						delivered = <-n.queue
+					}
+					if delivered != nil && killFactsOf(delivered.Response) != st.want {
+						t.Errorf("%s step %d: delivered kill facts %+v, want %+v", s.name, i, killFactsOf(delivered.Response), st.want)
+					}
+				}
+			}
+		})
+	}
+}
