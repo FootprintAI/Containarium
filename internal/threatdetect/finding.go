@@ -101,6 +101,15 @@ type CPUEvidence struct {
 	Samples       int32   `json:"samples"`
 }
 
+// ProcStartTicks is a process's start time as /proc/<pid>/stat field 22
+// reports it: clock ticks (USER_HZ) since boot. It is constant for the life
+// of a process (exec does not change it) and differs between two processes
+// that held the same pid one after the other, which is what makes it the
+// identity check against pid reuse (#2765). 0 means unknown. Only ever
+// compared with another value read the same way, never converted to a
+// wall-clock time.
+type ProcStartTicks uint64
+
 // ExecEvidence is one process exec attached to a finding (#2637, used by the
 // miner-signature rule #2638): the host-side exec telemetry record,
 // attributed to the container. PID/PPID are host-namespace ids.
@@ -114,6 +123,11 @@ type ExecEvidence struct {
 	ArgvTruncated bool   `json:"argv_truncated,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
 	Matched       string `json:"matched,omitempty"`
+
+	// StartTime is the process's start time read when the exec was decoded
+	// (#2765); the kill refuses a pid whose start time no longer matches.
+	// Not on the wire message: it is an internal identity check.
+	StartTime ProcStartTicks `json:"start_time,omitempty"`
 }
 
 // ToProto renders the evidence as the wire message.
@@ -254,12 +268,15 @@ type findingResponseJSON struct {
 
 // KeepKillOf makes the kill on record sticky (#2766, #2775): when prev has a
 // kill and r (a write from a box that killed nothing, such as its release)
-// has none, r keeps prev's process_killed, latest pid, count and skip reason,
-// so the stored response never says killed with pid 0 and a shared finding
-// keeps another box's kill. A write that carries its own kill is left alone.
-// The SQL in FindingStore.SetResponse does the same in one UPDATE.
+// has none, r takes prev's process_killed, latest pid, count and skip reason
+// (or its lack of one: #2816, a skip r carries does not survive), so the
+// stored response never says killed with pid 0 and a shared finding keeps
+// another box's kill. A write that carries its own kill is left alone unless
+// its count is lower than prev's: a stale kill (such as a release's fallback
+// to its action row's pid) never rolls the count back. stickyResponseSQL
+// does the same for the Postgres store in one UPDATE.
 func (r *FindingResponse) KeepKillOf(prev *FindingResponse) {
-	if prev == nil || !prev.ProcessKilled || r.ProcessKilled {
+	if prev == nil || !prev.ProcessKilled || r.ProcessKilled && r.Kills >= prev.Kills {
 		return
 	}
 	r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason = true, prev.KilledPID, prev.Kills, prev.KillSkipReason
@@ -329,9 +346,11 @@ type ResponseWriter interface {
 	// SetResponse replaces the finding's response, emits the updated
 	// finding on the event bus, hands it to the notifier (a response
 	// transition is a webhook delivery, #2718), and returns it.
-	// ErrFindingNotFound if id does not exist. ProcessKilled is sticky: the
-	// stored flag is OR-ed with r's in the same write, so a kill once on
-	// record for the finding survives every later response (#2766).
+	// ErrFindingNotFound if id does not exist. The kill facts are sticky
+	// (#2766, #2816): when the finding has a kill on record and r carries no
+	// kill, or one with a lower count, the stored kill (process_killed, the
+	// latest pid, the count and the skip reason) is kept whole in the same
+	// write, as FindingResponse.KeepKillOf describes.
 	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 	// SetResponseHeld records box's response while another box of a shared
 	// finding still holds an applied action (#2820): standing (that box's

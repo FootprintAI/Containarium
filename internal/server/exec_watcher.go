@@ -486,7 +486,17 @@ func cgroupIDForPID(procRoot, cgroupRoot string, pid int64) (uint64, error) {
 // its container, append it to the replay ring, fan it out to subscribers
 // (never blocking: a full subscriber is dropped) and hand it to the engine.
 // Runs on the ring consumer goroutine.
+//
+// It also reads the process's start time (#2765) here, as early as
+// userspace sees the exec and before taking w.mu: the kill compares it with
+// the pid's start time right before signalling, so a pid reused inside the
+// same box is refused. A process that already exited (or whose stat cannot
+// be read) gets no start time (0), and a kill for it is refused rather than
+// aimed at whatever holds the pid by then. The residual window is exec →
+// this read (one ring drain); closing it would need the kernel record to
+// carry start_boottime.
 func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
+	start, _ := readProcStartTime(w.procRoot, ev.HostPID)
 	w.mu.Lock()
 	target, ok := w.byCgroup[ev.CgroupID]
 	if !ok {
@@ -519,6 +529,7 @@ func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
 			TenantID:      rec.TenantID,
 			At:            rec.At,
 			PID:           ev.HostPID,
+			StartTime:     start,
 			PPID:          ev.PPID,
 			UID:           ev.UID,
 			Comm:          ev.Comm,
