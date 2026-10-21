@@ -165,9 +165,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
       - name: Compile the gated e2e package
         run: go vet -tags 'incus cluster_e2e' ./test/e2e/cluster/
       - name: Helper unit tests (pure, no Incus)
@@ -275,9 +276,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -310,9 +312,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -428,10 +431,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
@@ -479,9 +483,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -593,10 +598,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
@@ -639,9 +645,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
