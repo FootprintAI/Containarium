@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
       - name: Build the pinned sshpiperd
         # cmd/sshpiperd is a nested module; build from the same tag as
         # images/sshpiper/Dockerfile, preserving its sshpiper.crypto fork.
