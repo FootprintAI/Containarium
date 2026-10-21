@@ -68,15 +68,15 @@ type CPUConsumer interface {
 // StartTime is the process's /proc/<pid>/stat start time read when the
 // watcher decoded the exec, 0 when the process had already exited (#2765).
 type ExecEvent struct {
-	Container     string
-	TenantID      string
-	At            time.Time
-	PID           uint32
-	StartTime     ProcStartTicks
-	PPID          uint32
-	UID           uint32
-	Comm          string
-	Filename      string
+	Container string
+	TenantID  string
+	At        time.Time
+	PID       uint32
+	StartTime ProcStartTicks
+	PPID      uint32
+	UID       uint32
+	Comm      string
+	Filename  string
 	// Argv is the real argument vector (netbpf.ExecEvent.Argv, split on
 	// NUL), so an argument holding spaces stays one argument: argv markers
 	// match argument boundaries, not the joined line (#2768).
