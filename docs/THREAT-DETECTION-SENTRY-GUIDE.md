@@ -245,7 +245,12 @@ cause this deliberately, flooding execs to hide one exec among the dropped
 ones, so **alert on `exec-events-lost` increasing**: a non-zero delta means
 the exec rules did not see every exec in that window. In the lane, 10,000
 undrained execs keep exactly the ring's capacity and count the rest lost,
-with no crash.
+with no crash. The consumer does no `/proc` read per exec (the kill-safety
+identity is a boot-clock stamp, see below), so its per-exec cost does not
+grow with a flood; `BenchmarkExecCapture` in `internal/server` measures it
+on Linux and the eBPF lane logs it. On a 4-vCPU runner, the stamp costs
+~0.4 µs per exec. The stat read it replaced cost ~14 µs, which at 20,000
+execs/s is ~28 % of one core on the consumer alone.
 
 ## Miner signatures and kill-process
 
@@ -297,13 +302,25 @@ for you; unset inherits from the backend default. Before the kill the
 daemon pins the process with a pidfd (no pidfd, no kill), re-reads
 `/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
 so a pid reused by another process, on the host or in another box, is never
-signalled. It then compares the pinned process's start time
-(`/proc/<pid>/stat` field 22) with the one the exec watcher read when it
-decoded the matched exec, so a pid reused by another process inside the
-same box is not signalled either; an exec whose process had already exited
-when it was decoded has no start time and is never killed. The container's
+signalled. It then reads the pinned process's start time
+(`/proc/<pid>/stat` field 22, clock ticks since boot) and refuses a process
+that started after the exec watcher saw the matched exec, so a pid reused by
+another process inside the same box is not signalled either. The watcher
+does not read `/proc` per exec: it stamps each exec with the boot clock
+(`CLOCK_BOOTTIME`, in the same ticks) when it decodes it, and the stat is
+read once, for the process about to be killed. The matched process forked
+before it exec'd, so its start time is never later than the stamp (one tick
+of slack covers clock skew). The only reuse this cannot see is one inside
+the exec-to-decode window, at most one 50 ms drain: the matched process
+would have to exit and the kernel hand its pid to a new process of the same
+box within it, which takes a full wrap of the pid space (`kernel.pid_max`
+minus the pids in use) in 50 ms. If the stamp is missing or the stat cannot
+be read, the kill is refused (`start time unknown`); a failed clock read is
+logged as `boot-clock stamp failed` (the first, then every 1,000th). The container's
 init is never killed. Every attempt is audited
-under `security.action`: `kill` names the pid and start time, `kill-skipped`
+under `security.action`: `kill` names the pid and, as `start_time=`, the
+matched exec's boot-clock stamp (ticks since boot; an upper bound for the
+process's start time, not the start time itself), `kill-skipped`
 gives the reason (`pid reused`, `start time unknown`, `process already
 exited`, …). The finding's response
 shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
@@ -505,11 +522,11 @@ the resolve are delivered on top of that.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
-cgroup, or to another process of the same box: its start time differs),
-`2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's init,
-never signalled), `4` POLICY_UNREADABLE, `5` OTHER, `6` START_TIME_UNKNOWN
-(the process had exited before its exec was decoded, so the pid could not
-be confirmed). The first skip is
+cgroup, or to another process of the same box: it started after the
+matched exec was seen), `2` PROCESS_GONE (it exited first), `3`
+CONTAINER_INIT (the box's init, never signalled), `4` POLICY_UNREADABLE, `5`
+OTHER, `6` START_TIME_UNKNOWN (the exec has no boot-clock stamp or the pid's
+start time could not be read, so the pid could not be confirmed). The first skip is
 delivered at once and a different reason at most once a minute; the pid
 and error detail stay in the audit log (`kill-skipped`), not the webhook.
 `response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
