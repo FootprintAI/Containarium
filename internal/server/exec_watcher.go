@@ -89,6 +89,8 @@ type ExecWatcher struct {
 	cgroupRoot string
 	engine     func(threatdetect.ExecEvent) // nil = no engine consumer
 	now        func() time.Time
+	// bootTicks stamps each decoded exec (bootClockTicks; a fake in tests).
+	bootTicks func() (threatdetect.ProcStartTicks, error)
 
 	mu           sync.Mutex
 	status       string
@@ -104,6 +106,7 @@ type ExecWatcher struct {
 	nextSub      int
 	unattributed uint64
 	subsDropped  uint64
+	stampFails   uint64 // boot-clock reads that failed (see noteStampFailure)
 
 	watch  *netbpf.ExecWatch
 	cancel context.CancelFunc
@@ -118,6 +121,7 @@ func NewExecWatcher(engine func(threatdetect.ExecEvent)) *ExecWatcher {
 		cgroupRoot:  execCgroupRoot,
 		engine:      engine,
 		now:         time.Now,
+		bootTicks:   bootClockTicks,
 		status:      execTelemetryNotStartedStatus,
 		byCgroup:    make(map[uint64]execTarget),
 		byName:      make(map[string]uint64),
@@ -496,16 +500,23 @@ func cgroupIDForPID(procRoot, cgroupRoot string, pid int64) (uint64, error) {
 // (never blocking: a full subscriber is dropped) and hand it to the engine.
 // Runs on the ring consumer goroutine.
 //
-// It also reads the process's start time (#2765) here, as early as
-// userspace sees the exec and before taking w.mu: the kill compares it with
-// the pid's start time right before signalling, so a pid reused inside the
-// same box is refused. A process that already exited (or whose stat cannot
-// be read) gets no start time (0), and a kill for it is refused rather than
-// aimed at whatever holds the pid by then. The residual window is exec →
-// this read (one ring drain); closing it would need the kernel record to
-// carry start_boottime.
+// It also stamps the exec with the boot clock (#2765) here, as early as
+// userspace sees it and before taking w.mu, and carries the stamp as the
+// event's StartTime: an upper bound for the process's start time, in
+// /proc/<pid>/stat field 22 units. The kill reads the pinned pid's real
+// start time and refuses one that started after the stamp, so a pid reused
+// inside the same box is not signalled. No /proc read happens here: this
+// runs for every exec of every watched box, and only the rare exec a rule
+// matches and the policy kills ever needs the stat (see exec_stamp.go for
+// the soundness argument and the residual exec → stamp window). A failed
+// clock read leaves 0, and a kill with no stamp is refused; it is counted
+// and logged (noteStampFailure), so a run of START_TIME_UNKNOWN skips has a
+// cause in the log.
 func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
-	start, _ := readProcStartTime(w.procRoot, ev.HostPID)
+	start, err := w.bootTicks()
+	if err != nil {
+		w.noteStampFailure(ev.HostPID, err)
+	}
 	w.mu.Lock()
 	target, ok := w.byCgroup[ev.CgroupID]
 	if !ok {
@@ -547,6 +558,32 @@ func (w *ExecWatcher) OnExecEvent(_ context.Context, ev netbpf.ExecEvent) {
 			ArgvTruncated: ev.ArgvTruncated,
 		})
 	}
+}
+
+// execStampFailLogEvery: a failed boot-clock read is logged the first time
+// and then every this many failures, so a clock that keeps failing on an
+// exec flood cannot flood the log.
+const execStampFailLogEvery = 1000
+
+// noteStampFailure counts a failed boot-clock read and logs the first and
+// every execStampFailLogEvery-th. Every kill for such an exec is refused as
+// START_TIME_UNKNOWN; this is where that shows up.
+func (w *ExecWatcher) noteStampFailure(pid uint32, err error) {
+	w.mu.Lock()
+	w.stampFails++
+	n := w.stampFails
+	w.mu.Unlock()
+	if n == 1 || n%execStampFailLogEvery == 0 {
+		log.Printf("[exec-telemetry] boot-clock stamp failed for pid %d (%d failures so far): %v; a kill for such an exec is refused as start time unknown", pid, n, err)
+	}
+}
+
+// StampFailures counts execs decoded without a boot-clock stamp (the clock
+// read failed); a kill for any of them is refused as START_TIME_UNKNOWN.
+func (w *ExecWatcher) StampFailures() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stampFails
 }
 
 func (w *ExecWatcher) appendRingLocked(rec ExecEventRecord) {

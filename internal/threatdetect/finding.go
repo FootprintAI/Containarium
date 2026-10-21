@@ -101,12 +101,12 @@ type CPUEvidence struct {
 	Samples       int32   `json:"samples"`
 }
 
-// ProcStartTicks is a process's start time as /proc/<pid>/stat field 22
-// reports it: clock ticks (USER_HZ) since boot. It is constant for the life
-// of a process (exec does not change it) and differs between two processes
-// that held the same pid one after the other, which is what makes it the
-// identity check against pid reuse (#2765). 0 means unknown. Only ever
-// compared with another value read the same way, never converted to a
+// ProcStartTicks is a point on the boot clock in /proc/<pid>/stat field 22
+// units: clock ticks (USER_HZ) since boot (CLOCK_BOOTTIME). A process's
+// field 22 (its fork time) is constant for its life, and the exec watcher
+// stamps each exec on the same clock; the kill refuses a pid whose start
+// time is later than the matched exec's stamp, which is the identity check
+// against pid reuse (#2765). 0 means unknown. Never converted to a
 // wall-clock time.
 type ProcStartTicks uint64
 
@@ -124,9 +124,10 @@ type ExecEvidence struct {
 	SHA256        string `json:"sha256,omitempty"`
 	Matched       string `json:"matched,omitempty"`
 
-	// StartTime is the process's start time read when the exec was decoded
-	// (#2765); the kill refuses a pid whose start time no longer matches.
-	// Not on the wire message: it is an internal identity check.
+	// StartTime is the boot-clock stamp the exec watcher put on the exec when
+	// it decoded it: an upper bound for the process's start time (#2765). The
+	// kill refuses a pid that started after it. Not on the wire message: it
+	// is an internal identity check.
 	StartTime ProcStartTicks `json:"start_time,omitempty"`
 }
 

@@ -365,8 +365,8 @@ type KillSkipReason int32
 const (
 	KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED KillSkipReason = 0
 	// The pid now belongs to a different cgroup than the container's, or to a
-	// different process of the same container: its start time no longer
-	// matches the matched exec's (#2765).
+	// different process of the same container: it started after the matched
+	// exec was seen (#2765).
 	KillSkipReason_KILL_SKIP_REASON_PID_REUSED KillSkipReason = 1
 	// The process exited before the signal.
 	KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE KillSkipReason = 2
@@ -376,9 +376,9 @@ const (
 	KillSkipReason_KILL_SKIP_REASON_POLICY_UNREADABLE KillSkipReason = 4
 	// Any other refusal (host or Incus error).
 	KillSkipReason_KILL_SKIP_REASON_OTHER KillSkipReason = 5
-	// The matched exec carries no process start time (the process had already
-	// exited when the exec watcher decoded it), so the pid cannot be confirmed
-	// as the matched process and is never signalled (#2765).
+	// The pid cannot be confirmed as the matched process: the matched exec has
+	// no boot-clock stamp, or the pid's start time could not be read. It is
+	// never signalled (#2765).
 	KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN KillSkipReason = 6
 	// The container does not run under Incus: its init has no Incus payload
 	// cgroup ("lxc.payload.<name>"), so the pid cannot be confirmed as one of
