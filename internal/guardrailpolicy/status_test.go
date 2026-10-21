@@ -116,6 +116,23 @@ func TestDescribeStatus(t *testing.T) {
 			PolicyRevision: 2,
 		}, []string{"Response policy: none", "revision 2", "not scanned"}},
 		{"unspecified", &pb.GetGuardrailStatusResponse{}, []string{"Response policy: unknown"}},
+		// #2738: the stored baseline mode shows, and BLOCK changes the meaning.
+		{"baseline log, mode set", &pb.GetGuardrailStatusResponse{
+			ResponsePolicy:  pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE,
+			BaselineRuleIds: allBaselineRuleIDs(),
+			Baseline:        &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG, Revision: 2, UpdatedBy: "admin-a"},
+		}, []string{"Response policy: baseline", "Baseline mode: log (revision 2, set by admin-a)", "log-only"}},
+		{"baseline block", &pb.GetGuardrailStatusResponse{
+			ResponsePolicy:  pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE,
+			BaselineRuleIds: allBaselineRuleIDs(),
+			Baseline:        &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, Revision: 1, UpdatedBy: "admin-a"},
+		}, append([]string{"Response policy: baseline", "Baseline mode: block (revision 1, set by admin-a)", "held", "blocked"}, allBaselineRuleIDs()...)},
+		{"admin with a stored block mode", &pb.GetGuardrailStatusResponse{
+			ResponsePolicy:    pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_ADMIN,
+			PolicyRevision:    7,
+			InboundBlockKinds: []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE},
+			Baseline:          &pb.GuardrailBaselineSetting{Mode: pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, Revision: 1},
+		}, []string{"Response policy: admin", "Baseline mode: block (revision 1", "not in effect"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

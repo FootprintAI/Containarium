@@ -88,6 +88,7 @@ gateway mint
 gateway models
 get
 guardrail apply
+guardrail baseline set
 guardrail keygen
 guardrail policy get
 guardrail policy set

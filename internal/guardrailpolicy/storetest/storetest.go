@@ -128,4 +128,99 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 			t.Fatalf("mutating Set's result changed the stored policy")
 		}
 	})
+
+	runBaselineModeContract(t, newStore)
+}
+
+// runBaselineModeContract is the baseline mode's part of the contract
+// (#2738): LOG at revision 0 until set, a monotonic revision, and no effect
+// on the stored policy (setting it must not turn the baseline off).
+func runBaselineModeContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.Store) {
+	ctx := context.Background()
+	const (
+		logMode   = pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG
+		blockMode = pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK
+	)
+
+	t.Run("baseline mode is LOG at revision 0 until set", func(t *testing.T) {
+		got, err := newStore(t).GetBaselineMode(ctx)
+		if err != nil {
+			t.Fatalf("GetBaselineMode on an empty store: %v", err)
+		}
+		if got.GetMode() != logMode || got.GetRevision() != 0 || got.GetUpdatedBy() != "" {
+			t.Fatalf("default = %v, want LOG at revision 0 by nobody", got)
+		}
+	})
+
+	t.Run("baseline mode set round-trips with a monotonic revision", func(t *testing.T) {
+		s := newStore(t)
+		prev, _ := s.GetBaselineMode(ctx)
+		for i, mode := range []pb.GuardrailBaselineMode{blockMode, logMode, blockMode} {
+			res, err := s.SetBaselineMode(ctx, mode, "admin-a", nil)
+			if err != nil {
+				t.Fatalf("SetBaselineMode #%d: %v", i+1, err)
+			}
+			if !proto.Equal(res.Previous, prev) {
+				t.Fatalf("set #%d previous = %v, want %v", i+1, res.Previous, prev)
+			}
+			if res.Current.GetMode() != mode || res.Current.GetRevision() != int64(i+1) ||
+				res.Current.GetUpdatedBy() != "admin-a" || res.Current.GetUpdatedAt() == nil {
+				t.Fatalf("set #%d current = %v, want %v at revision %d by admin-a with a time", i+1, res.Current, mode, i+1)
+			}
+			got, err := s.GetBaselineMode(ctx)
+			if err != nil || !proto.Equal(got, res.Current) {
+				t.Fatalf("GetBaselineMode after set #%d = (%v, %v), want %v", i+1, got, err, res.Current)
+			}
+			prev = res.Current
+		}
+	})
+
+	t.Run("baseline mode rejects UNSPECIFIED and leaves the setting", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.SetBaselineMode(ctx, pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_UNSPECIFIED, "admin-a", nil); err == nil {
+			t.Fatal("SetBaselineMode(UNSPECIFIED) succeeded, want an error")
+		}
+		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetRevision() != 0 {
+			t.Fatalf("after a rejected set = (%v, %v), want the untouched default", got, err)
+		}
+	})
+
+	t.Run("baseline mode beforeCommit sees the change and a failure discards it", func(t *testing.T) {
+		s := newStore(t)
+		var seen *guardrailpolicy.BaselineSetResult
+		_, err := s.SetBaselineMode(ctx, blockMode, "admin-a", func(r *guardrailpolicy.BaselineSetResult) error {
+			seen = r
+			return errors.New("audit store down")
+		})
+		if err == nil {
+			t.Fatal("SetBaselineMode with a failing beforeCommit succeeded, want its error")
+		}
+		if seen == nil || seen.Current.GetMode() != blockMode || seen.Current.GetRevision() != 1 || seen.Previous.GetRevision() != 0 {
+			t.Fatalf("beforeCommit saw %+v, want LOG rev 0 -> BLOCK rev 1", seen)
+		}
+		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetMode() != logMode || got.GetRevision() != 0 {
+			t.Fatalf("after a failed beforeCommit = (%v, %v), want the untouched default", got, err)
+		}
+		// The next set reuses revision 1: nothing of the discarded one remains.
+		res, err := s.SetBaselineMode(ctx, blockMode, "admin-a", func(*guardrailpolicy.BaselineSetResult) error { return nil })
+		if err != nil || res.Current.GetRevision() != 1 {
+			t.Fatalf("set after a discarded one = (%v, %v), want revision 1", res, err)
+		}
+	})
+
+	t.Run("baseline mode is independent of the policy", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.SetBaselineMode(ctx, blockMode, "admin-a", nil); err != nil {
+			t.Fatalf("SetBaselineMode: %v", err)
+		}
+		if got, err := s.Get(ctx); !errors.Is(err, guardrailpolicy.ErrNotConfigured) {
+			t.Fatalf("Get after setting the baseline mode = (%v, %v), want ErrNotConfigured", got, err)
+		}
+		if _, err := s.Set(ctx, Policy(0), nil, "admin-b"); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetMode() != blockMode || got.GetRevision() != 1 {
+			t.Fatalf("baseline mode after a policy Set = (%v, %v), want BLOCK at revision 1", got, err)
+		}
+	})
 }

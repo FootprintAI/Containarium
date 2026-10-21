@@ -474,6 +474,7 @@ func (r *MinerSignatureRule) OnExec(ctx RuleContext, ev ExecEvent) []RawFinding 
 		Subject:   hit.Subject(),
 		Evidence: Evidence{Execs: []ExecEvidence{{
 			PID:           ev.PID,
+			StartTime:     ev.StartTime,
 			PPID:          ev.PPID,
 			UID:           ev.UID,
 			Comm:          ev.Comm,
