@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,27 +61,34 @@ type CPUConsumer interface {
 // ExecEvent is one process exec inside a tenant container, as the host-side
 // exec telemetry (#2637) delivers it: the kernel record decoded and
 // attributed to its container by the server's ExecWatcher. PID and PPID are
-// host-namespace ids. Argv is joined with single spaces, capped at 512 bytes
-// by the kernel program and never containing the environment. SHA256 is
+// host-namespace ids. Argv is the argument vector, capped at 512 bytes by
+// the kernel program and never containing the environment. SHA256 is
 // empty on the first delivery; a rule that needs it asks the watcher to hash
 // /proc/<pid>/exe and gets a second OnExec with it filled (#2638).
 // StartTime is the watcher's boot-clock stamp at decode, in /proc/<pid>/stat
 // field 22 units: an upper bound for the process's start time, 0 when the
 // clock could not be read (#2765).
 type ExecEvent struct {
-	Container     string
-	TenantID      string
-	At            time.Time
-	PID           uint32
-	StartTime     ProcStartTicks
-	PPID          uint32
-	UID           uint32
-	Comm          string
-	Filename      string
-	Argv          string
+	Container string
+	TenantID  string
+	At        time.Time
+	PID       uint32
+	StartTime ProcStartTicks
+	PPID      uint32
+	UID       uint32
+	Comm      string
+	Filename  string
+	// Argv is the real argument vector (netbpf.ExecEvent.Argv, split on
+	// NUL), so an argument holding spaces stays one argument: argv markers
+	// match argument boundaries, not the joined line (#2768).
+	Argv          []string
 	ArgvTruncated bool
 	SHA256        string
 }
+
+// ArgvString joins Argv with single spaces: the display form the finding
+// evidence, logs and the CLI carry.
+func (e ExecEvent) ArgvString() string { return strings.Join(e.Argv, " ") }
 
 // ExecConsumer is an optional interface a Rule implements to receive exec
 // events (#2637), the exec twin of CPUConsumer: type-asserted on Register,

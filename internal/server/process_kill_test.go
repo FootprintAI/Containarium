@@ -314,6 +314,42 @@ func TestHostProcessKiller_CgroupRecheck(t *testing.T) {
 	}
 }
 
+// TestHostProcessKiller_RefusesNonIncusRuntime (#2768 item 1, decided on
+// #2781: refuse up front): when the container's init does not sit under an
+// Incus payload cgroup ("lxc.payload.<name>"), the cgroup re-check has no
+// container root to compare against and would refuse every kill as "pid
+// reused". The kill is refused before anything is pinned or compared, with
+// errKillRuntimeUnsupported, whatever the pid or its start time.
+func TestHostProcessKiller_RefusesNonIncusRuntime(t *testing.T) {
+	const initPID = 100
+	for name, cgroups := range map[string]map[int]string{
+		"systemd box, init.scope at the root": {initPID: "/init.scope", 4242: "/system.slice/app.service"},
+		"other runtime's slice":               {initPID: "/machine.slice/box-a.scope/init.scope", 4242: "/machine.slice/box-a.scope/system.slice/app.service"},
+		"same cgroup as init":                 {initPID: "/docker/abc123", 4242: "/docker/abc123"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			proc := fakeProc(t, cgroups)
+			for _, start := range []threatdetect.ProcStartTicks{fakeStart(4242), 0} {
+				k := &hostProcessKiller{
+					procRoot: proc,
+					initPID:  func(string) (int64, error) { return initPID, nil },
+					open: func(int) (pidHandle, error) {
+						t.Fatal("pinned a pid on a non-Incus runtime; the refusal must come first")
+						return nil, nil
+					},
+				}
+				err := k.KillInContainer("box-a", 4242, start)
+				if !errors.Is(err, errKillRuntimeUnsupported) || errors.Is(err, errKillPIDReused) {
+					t.Fatalf("start %d: err = %v, want errKillRuntimeUnsupported", start, err)
+				}
+				if !strings.Contains(err.Error(), "kill_process is Incus-only") {
+					t.Fatalf("err = %v, want the reason to say kill_process is Incus-only", err)
+				}
+			}
+		})
+	}
+}
+
 func TestHostProcessKiller_RefusesLowPIDsAndStoppedBox(t *testing.T) {
 	k := &hostProcessKiller{procRoot: t.TempDir(),
 		initPID: func(string) (int64, error) { return 0, nil },
@@ -529,6 +565,20 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		}
 		if d := auditDetails(fx.audit, "kill-skipped"); len(d) != 1 || !strings.Contains(d[0], "start time unknown") {
 			t.Fatalf("audit kill-skipped = %v", d)
+		}
+	})
+	t.Run("non-Incus runtime is skipped as RUNTIME_UNSUPPORTED (#2768)", func(t *testing.T) {
+		fx := newResponderFixture(t, false)
+		k := &fakeKiller{err: fmt.Errorf("container box-a init cgroup %q: %w", "/init.scope", errKillRuntimeUnsupported)}
+		fx.r.SetProcessKiller(k)
+		fx.setKill(t, "", true)
+		f := fx.fireSignature(t, "box-a", 4242)
+		if f.Response == nil || f.Response.ProcessKilled || f.Response.KillSkipReason != pb.KillSkipReason_KILL_SKIP_REASON_RUNTIME_UNSUPPORTED {
+			t.Fatalf("response = %+v, want not killed, RUNTIME_UNSUPPORTED", f.Response)
+		}
+		d := auditDetails(fx.audit, "kill-skipped")
+		if len(d) != 1 || !strings.Contains(d[0], "kill_process is Incus-only") || strings.Contains(d[0], "pid reused") {
+			t.Fatalf("audit kill-skipped = %v, want the Incus-only reason, not pid reused", d)
 		}
 	})
 	t.Run("mining-behavior never kills", func(t *testing.T) {

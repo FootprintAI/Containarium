@@ -145,7 +145,7 @@ kinds:
 | Kind | Matches | Example |
 |---|---|---|
 | `name` | basename of the exec'd file and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
-| `argv` | the joined command line: a literal substring, or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` are case-sensitive) | `--donate-level`, `-o *:3333` |
+| `argv` | the real argument vector: a literal that begins an argument (or the value of `--opt=value`; a space in it is an argument boundary, and a marker inside a quoted argument does not match), or, with a glob character, space-separated globs over consecutive whole arguments (option tokens such as `-o` are case-sensitive) | `--donate-level`, `-o *:3333` |
 | `sha256` | hex SHA-256 of the executable | operator entries only |
 
 The embedded baseline ships `name` and `argv` entries only (well-known
@@ -388,6 +388,9 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
   failed boot-clock read leaves the exec unstamped (its kill is skipped as
   `start time unknown`); the daemon logs it as `boot-clock stamp failed`.
 - A box's init is never killed.
+- The kill is Incus-only (#2768): on any other runtime (the box's init has
+  no `lxc.payload.<name>` cgroup) it is refused up front as
+  `RUNTIME_UNSUPPORTED`, before any pid is pinned or compared.
 - Every attempt is audited under `security.action`: `kill` (names the pid,
   and as `start_time=` the matched exec's boot-clock stamp, not the
   process's own start time)
@@ -602,7 +605,7 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   the webhook can be short of the true count; `findings list` is exact. A
   skipped kill carries a numeric `kill_skip_reason` (`PID_REUSED`=1,
   `PROCESS_GONE`=2, `CONTAINER_INIT`=3, `POLICY_UNREADABLE`=4, `OTHER`=5,
-  `START_TIME_UNKNOWN`=6).
+  `START_TIME_UNKNOWN`=6, `RUNTIME_UNSUPPORTED`=7).
 
 Abridged kill post:
 
