@@ -164,8 +164,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.10'
       - name: Compile the gated e2e package
@@ -216,7 +216,7 @@ jobs:
       CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT || '30m' }}
       CONTAINARIUM_E2E_DELETE_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_DELETE_TIMEOUT || '10m' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run the lane
         # No pipes around the go test inside — its exit status is the
         # script's, and the script's is the job's.
@@ -228,7 +228,7 @@ jobs:
     runs-on: [self-hosted, incus, kvm]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Corrupt join tokens and expect the suite to fail
         # Inversion is explicit and lives only in this dispatch-only
         # job: green here means the lane DETECTED the sabotage.
@@ -273,9 +273,9 @@ jobs:
     # runner without letting a wedged daemon hold the queue.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
@@ -308,9 +308,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
@@ -361,7 +361,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run the lane with no model credential and require a SKIP
         # The empty values are deliberate rather than redundant: they defend
@@ -423,12 +423,12 @@ jobs:
       # fetch-depth 0: the script defaults its agent-runtime RELEASE to the
       # newest reachable v-tag, and actions/checkout's default shallow fetch
       # brings none — the lane would fail pre-flight on "no release tag".
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
         with:
           go-version-file: go.mod
@@ -475,11 +475,11 @@ jobs:
           echo "::error::no model credential secret is set, so this sabotage would only prove the skip gate works, not that the lane can fail. Add ANTHROPIC_API_KEY or GEMINI_API_KEY before dispatching a sabotage."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
@@ -524,7 +524,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run the lane with no model credential and require a SKIP
         # Deliberately empty, same reasoning as engineer-crew-skip-gate: a
@@ -588,12 +588,12 @@ jobs:
         run: |
           echo "::notice title=two-engine-crew live lane not run::This lane needs BOTH an ANTHROPIC_API_KEY and an OPENAI_API_KEY secret on this repository, and at least one is missing, so #2225's Story 4 has not been measured. The scaffolding is green (see two-engine-crew-skip-gate on every PR); what is missing is a human decision to fund the spend (and add the OPENAI_API_KEY secret, which does not exist here yet). Add both and this job runs the real lane on the next nightly."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
         with:
           go-version-file: go.mod
@@ -635,11 +635,11 @@ jobs:
           echo "::error::both ANTHROPIC_API_KEY and OPENAI_API_KEY secrets are required to dispatch this sabotage — without them this would only prove the skip gate works, not that the lane can fail."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
