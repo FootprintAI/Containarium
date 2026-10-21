@@ -17,6 +17,36 @@ type StoragePoolUsage struct {
 	TotalBytes int64
 }
 
+// StoragePoolLevel is a pool's fill classification against the daemon's
+// thresholds (internal/poolcapacity, #2823).
+type StoragePoolLevel int
+
+const (
+	StoragePoolLevelUnknown StoragePoolLevel = iota // total not reported
+	StoragePoolLevelOK
+	StoragePoolLevelWarning
+	StoragePoolLevelCritical
+)
+
+func (l StoragePoolLevel) String() string {
+	switch l {
+	case StoragePoolLevelOK:
+		return "ok"
+	case StoragePoolLevelWarning:
+		return "warning"
+	case StoragePoolLevelCritical:
+		return "critical"
+	default:
+		return "unknown"
+	}
+}
+
+// StoragePoolCapacity is one pool reading with its level.
+type StoragePoolCapacity struct {
+	StoragePoolUsage
+	Level StoragePoolLevel
+}
+
 // StoragePoolUsages reads every pool's used/total through the per-pool
 // resources endpoint only. It never touches GET /1.0/resources, which can hang
 // on a saturated host (#2325), and it is uncached so a full pool is never

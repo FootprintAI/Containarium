@@ -25,28 +25,16 @@ const (
 	CritPercent = 95
 )
 
-// Level is a pool's fill classification.
-type Level int
+// Level is a pool's fill classification. It lives in incus so the client
+// side (ServerInfo) can carry it without importing this package.
+type Level = incus.StoragePoolLevel
 
 const (
-	LevelUnknown Level = iota // total not reported
-	LevelOK
-	LevelWarning
-	LevelCritical
+	LevelUnknown  = incus.StoragePoolLevelUnknown // total not reported
+	LevelOK       = incus.StoragePoolLevelOK
+	LevelWarning  = incus.StoragePoolLevelWarning
+	LevelCritical = incus.StoragePoolLevelCritical
 )
-
-func (l Level) String() string {
-	switch l {
-	case LevelOK:
-		return "ok"
-	case LevelWarning:
-		return "warning"
-	case LevelCritical:
-		return "critical"
-	default:
-		return "unknown"
-	}
-}
 
 // Classify maps used/total onto a Level.
 func Classify(used, total int64) Level {
@@ -64,10 +52,7 @@ func Classify(used, total int64) Level {
 }
 
 // Sample is one pool reading with its level.
-type Sample struct {
-	incus.StoragePoolUsage
-	Level Level
-}
+type Sample = incus.StoragePoolCapacity
 
 // Snapshot is the last successful read.
 type Snapshot struct {
