@@ -1,0 +1,51 @@
+name: workflow-lint
+
+# Supply-chain gate (#2793, story 4 of #2649): every `uses:` is a full commit
+# SHA, and workflows pass actionlint. Dependabot keeps the pins fresh; it reads
+# the trailing `# vX` comment.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/**'
+      - 'scripts/ci/check-action-pins.sh'
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'scripts/ci/check-action-pins.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  workflow-lint:
+    name: actionlint + SHA pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Pin checker self-test
+        run: scripts/ci/check-action-pins.sh --self-test
+
+      - name: Require SHA-pinned actions
+        run: scripts/ci/check-action-pins.sh .github
+
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color'
