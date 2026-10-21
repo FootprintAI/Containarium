@@ -455,6 +455,23 @@ type Finding struct {
 	Response *FindingResponse
 }
 
+// clone copies Evidence and Response separately so later changes cannot alter the snapshot.
+func (f *Finding) clone() *Finding {
+	snapshot := *f
+	snapshot.Evidence.Flows = slices.Clone(f.Evidence.Flows)
+	snapshot.Evidence.Denies = slices.Clone(f.Evidence.Denies)
+	snapshot.Evidence.Configs = slices.Clone(f.Evidence.Configs)
+	snapshot.Evidence.Listeners = slices.Clone(f.Evidence.Listeners)
+	snapshot.Evidence.CPU = slices.Clone(f.Evidence.CPU)
+	snapshot.Evidence.Execs = slices.Clone(f.Evidence.Execs)
+
+	if f.Response != nil {
+		response := *f.Response
+		snapshot.Response = &response
+	}
+	return &snapshot
+}
+
 // ToProto converts a Finding to its wire representation.
 func (f *Finding) ToProto() *pb.Finding {
 	state := pb.FindingState_FINDING_STATE_UNSPECIFIED
