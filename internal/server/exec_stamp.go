@@ -27,9 +27,13 @@ import "github.com/footprintai/containarium/internal/threatdetect"
 // free pid after the last one handed out) up to kernel.pid_max and only then
 // wraps, so the same pid comes back only after every other free pid has
 // been handed out. pid_max is 32,768 by kernel default and 4,194,304 where
-// systemd raises it (most current distributions): a reuse inside 50 ms
-// needs ~650,000 to ~84 million forks a second across the whole host,
-// against the tens of thousands a host can sustain. The #2867 design,
+// systemd raises it (most current distributions). With the pid space
+// mostly free, a reuse inside 50 ms needs ~650,000 to ~84 million forks a
+// second across the whole host, against the tens of thousands a host can
+// sustain. Pids still in use are skipped, so a host that already holds most
+// of its pid space wraps sooner: the bound is (pid_max - pids in use) forks
+// in 50 ms, still far out of reach unless the host is close to pid
+// exhaustion, where fork itself starts failing. The #2867 design,
 // which read the stat at decode, had the same window (exec -> read). The
 // pidfd pin and the cgroup re-check stay in front of this compare and are
 // unchanged: they cover reuse on the host and by another box at any time.
@@ -38,8 +42,10 @@ import "github.com/footprintai/containarium/internal/threatdetect"
 // may have started and still be the matched one. Both sides are floored to
 // the same tick, so the exact bound is 0; one tick (10 ms at USER_HZ=100)
 // absorbs clocksource skew between the CPU that forked the process and the
-// CPU that read the stamp, and a wrong tick rate guess (see userHZ). It
-// widens the residual window by that tick, not more.
+// CPU that read the stamp. It widens the residual window by that tick, not
+// more. It does not cover a wrong tick rate: the stamp's ticks must be the
+// kernel's USER_HZ, which is why userHZ is read from AT_CLKTCK rather than
+// assumed.
 const execStampSlackTicks = 1
 
 // bootTicksOf converts a CLOCK_BOOTTIME reading in nanoseconds to clock

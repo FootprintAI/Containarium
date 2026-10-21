@@ -314,11 +314,13 @@ of slack covers clock skew). The only reuse this cannot see is one inside
 the exec-to-decode window, at most one 50 ms drain: the matched process
 would have to exit and the kernel hand its pid to a new process of the same
 box within it, which takes a full wrap of the pid space (`kernel.pid_max`
-pids) in 50 ms. If the stamp is missing or the stat cannot be read, the kill
-is refused (`start time unknown`). The container's
+minus the pids in use) in 50 ms. If the stamp is missing or the stat cannot
+be read, the kill is refused (`start time unknown`); a failed clock read is
+logged as `boot-clock stamp failed` (the first, then every 1,000th). The container's
 init is never killed. Every attempt is audited
-under `security.action`: `kill` names the pid and the exec's stamp
-(`start_time`, ticks since boot), `kill-skipped`
+under `security.action`: `kill` names the pid and, as `start_time=`, the
+matched exec's boot-clock stamp (ticks since boot; an upper bound for the
+process's start time, not the start time itself), `kill-skipped`
 gives the reason (`pid reused`, `start time unknown`, `process already
 exited`, …). The finding's response
 shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:

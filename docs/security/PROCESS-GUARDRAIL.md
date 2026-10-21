@@ -350,10 +350,15 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
 - The one reuse not excluded is inside the exec-to-decode window (at most
   one 50 ms ring drain): the matched process exits and its pid goes to a
   new process of the same box within it. Linux hands out pids cyclically up
-  to `kernel.pid_max`, so that takes a full wrap of the pid space in 50 ms
-  (32,768 to 4,194,304 forks host-wide), far beyond what a host sustains.
+  to `kernel.pid_max`, so that takes a full wrap of the pid space in 50 ms:
+  `pid_max` (32,768 to 4,194,304) minus the pids in use, forks host-wide,
+  far beyond what a host sustains unless it is near pid exhaustion. A
+  failed boot-clock read leaves the exec unstamped (its kill is skipped as
+  `start time unknown`); the daemon logs it as `boot-clock stamp failed`.
 - A box's init is never killed.
-- Every attempt is audited under `security.action`: `kill` (names the pid)
+- Every attempt is audited under `security.action`: `kill` (names the pid,
+  and as `start_time=` the matched exec's boot-clock stamp, not the
+  process's own start time)
   or `kill-skipped` (with the pid and the reason, for example
   `kill_skipped="pid 211757: process already exited"` or
   `kill_skipped="pid 211757 started at 4400 ticks since boot, after its

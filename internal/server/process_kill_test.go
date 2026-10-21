@@ -173,9 +173,10 @@ func TestHostProcessKiller_StartTimeCheck(t *testing.T) {
 }
 
 // TestHostProcessKiller_StampToleranceBoundary: with a fake stat source, a
-// process that started up to execStampSlackTicks after the stamp is still
-// the matched one (clock skew, tick flooring); one tick later is refused.
-// A process that started before the stamp is always killed.
+// process that started up to one tick after the stamp is still the matched
+// one (clock skew between CPUs); two ticks later is refused. A process that
+// started before the stamp is always killed. The tick values are literal on
+// purpose: a slack of 0 or 2 fails this test.
 func TestHostProcessKiller_StampToleranceBoundary(t *testing.T) {
 	const initPID, pid, stamp = 100, 4242, threatdetect.ProcStartTicks(500_000)
 	tests := []struct {
@@ -185,8 +186,8 @@ func TestHostProcessKiller_StampToleranceBoundary(t *testing.T) {
 		{start: 1, kill: true},
 		{start: stamp - 1, kill: true},
 		{start: stamp, kill: true},
-		{start: stamp + execStampSlackTicks, kill: true},
-		{start: stamp + execStampSlackTicks + 1, kill: false},
+		{start: stamp + 1, kill: true},
+		{start: stamp + 2, kill: false},
 		{start: stamp + 100_000, kill: false},
 	}
 	for _, tt := range tests {
