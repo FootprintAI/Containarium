@@ -10,8 +10,10 @@ name: CLI client/server split gates
 #   2. command-tree allow-list gate — the client's registered command set
 #      matches a checked-in golden list exactly
 #   3. untagged-build parity — containariumd's tree is a strict superset of
-#      that golden list (the split never *loses* a command server-side)
-#   4. both tag sets build and go test clean
+#      that golden list (the split never *loses* a command server-side).
+#      Runs in proxyproto-e2e's full-tree default-tags job, not here.
+#   4. both tag sets build here; the client tag set's go test runs here, and
+#      the default tag set's in that full-tree job
 #   5. stale install-path gate (#1781) — no host-side script/unit/terraform
 #      file installs or downloads the daemon binary under the pre-rollout
 #      /usr/local/bin/containarium path (scripts/test-old-binary-path-gate.sh)
@@ -76,9 +78,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
 
       - name: Run test-cli-split-deps.sh
         run: ./scripts/test-cli-split-deps.sh
@@ -210,24 +213,16 @@ jobs:
           go-version: '1.26.10'
           cache-name: cli-tests
 
-      # ./internal/coderun/... joins this lane in #1727. It was in NO lane
-      # before — this repo has no `go test ./...` gate (see the note in
-      # cluster-e2e.yml) — so the resumable reader's own forced-disconnect
-      # harness (TestStreamOutput_SurvivesTwentyForcedDrops, Part B1 of
-      # docs/architecture/remote-coding-agent.md) has never run in CI despite
-      # that doc calling it "the layer that runs in CI". It does now, along with
-      # the engine seam's TestRunCommand / TestCodeConfigRoundTrip /
-      # TestPiModelsJSON tables.
-      # ./internal/guardrail/... joins in #2367 for the same reason: its own
-      # package tests (reference rules, InboundDecision) were in no lane.
-      # ./internal/proofpack/... joins in #2797, default tags only: it backs
-      # the server-side `proof-pack generate`, which the client build lacks.
+      # Client tag set only. The default-tag run of these packages (including
+      # TestContainariumdCommandTree_SupersetOfClientGolden, the untagged-build
+      # parity gate) used to be a step here too, but proxyproto-e2e's required
+      # "Unit + default e2e" job already runs the whole module under -race with
+      # default tags, these packages included. Running them twice cost ~4
+      # minutes per PR and measured nothing new. ./internal/coderun/...
+      # (#1727) and ./internal/guardrail/... (#2367) joined this lane before
+      # that full-tree run existed. ./internal/proofpack/... (#2797) was
+      # default-tags only, so it now lives entirely in the full-tree run.
       # The job name above is left unchanged so a required-check name stays put.
-      - name: Test containariumd (default tags)
-        # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
-        # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/sshkey/... ./internal/guardrail/... ./internal/proofpack/...
-
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
