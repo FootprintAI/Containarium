@@ -93,34 +93,47 @@ func TestParseProcStatStartTime(t *testing.T) {
 }
 
 // TestHostProcessKiller_StartTimeCheck (#2765): after the pin and the cgroup
-// re-check, the kill compares the pinned pid's start time with the matched
-// exec's. A pid reused by another process of the SAME box (same cgroup,
-// different start time) is refused as pid reused; a matching start time is
-// still killed; an exec with no recorded start time is never signalled.
+// re-check, the kill reads the pinned pid's start time and compares it with
+// the boot-clock stamp the exec watcher put on the matched exec. The matched
+// process started before its exec was stamped and is killed; a pid reused
+// by another process of the SAME box (same cgroup, started after the stamp)
+// is refused as pid reused, with both times in the error the audit row
+// carries; an exec with no stamp, or a pid whose stat cannot be read or
+// parsed, is never signalled (fail closed); a pid gone by then is gone.
 func TestHostProcessKiller_StartTimeCheck(t *testing.T) {
 	const initPID, pid = 100, 4242
-	proc := fakeProc(t, map[int]string{
-		initPID: "/lxc.payload.box-a/init.scope",
-		pid:     "/lxc.payload.box-a/system.slice/ssh.service",
-	})
+	live := fakeStart(pid) // the start time fakeProc gives pid
 	tests := []struct {
-		name    string
-		start   threatdetect.ProcStartTicks // the matched exec's
-		noStat  bool
-		wantErr error // nil = killed
+		name     string
+		stamp    threatdetect.ProcStartTicks // the matched exec's
+		stat     string                      // "" = fakeProc's line; "-" = no stat file
+		wantErr  error                       // nil = killed
+		wantText []string
 	}{
-		{name: "matching start time is killed", start: fakeStart(pid)},
-		{name: "same-box pid reuse is refused", start: fakeStart(pid) - 500, wantErr: errKillPIDReused},
-		{name: "newer process holds the pid", start: fakeStart(pid) + 1, wantErr: errKillPIDReused},
-		{name: "no start time recorded is refused", start: 0, wantErr: errKillStartTimeUnknown},
-		{name: "stat gone after the pin", start: fakeStart(pid), noStat: true, wantErr: errKillProcessGone},
+		{name: "stamped in the tick it started is killed", stamp: live},
+		{name: "stamped after it started is killed", stamp: live + 500},
+		{name: "same-box pid reuse is refused", stamp: live - 500, wantErr: errKillPIDReused,
+			wantText: []string{fmt.Sprintf("started at %d ticks", live), fmt.Sprintf("seen at %d", live-500), "pid reused"}},
+		{name: "no stamp is refused", stamp: 0, wantErr: errKillStartTimeUnknown},
+		{name: "stat gone after the pin", stamp: live, stat: "-", wantErr: errKillProcessGone},
+		{name: "unparsable stat fails closed", stamp: live, stat: "4242 (xmrig S 1", wantErr: errKillStartTimeUnknown},
+		{name: "zero start time fails closed", stamp: live, stat: statLine(pid, "xmrig", 0), wantErr: errKillStartTimeUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := proc
-			if tt.noStat {
-				root = fakeProc(t, map[int]string{initPID: "/lxc.payload.box-a/init.scope", pid: "/lxc.payload.box-a/user.slice"})
-				if err := os.Remove(filepath.Join(root, strconv.Itoa(pid), "stat")); err != nil {
+			root := fakeProc(t, map[int]string{
+				initPID: "/lxc.payload.box-a/init.scope",
+				pid:     "/lxc.payload.box-a/system.slice/ssh.service",
+			})
+			statPath := filepath.Join(root, strconv.Itoa(pid), "stat")
+			switch tt.stat {
+			case "":
+			case "-":
+				if err := os.Remove(statPath); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(statPath, []byte(tt.stat), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -134,7 +147,7 @@ func TestHostProcessKiller_StartTimeCheck(t *testing.T) {
 					return fakePIDHandle{killed: &killed, pid: p}, nil
 				},
 			}
-			err := k.KillInContainer("box-a", pid, tt.start)
+			err := k.KillInContainer("box-a", pid, tt.stamp)
 			if tt.wantErr == nil {
 				if err != nil || len(killed) != 1 || killed[0] != pid {
 					t.Fatalf("err=%v killed=%v, want pid %d killed", err, killed, pid)
@@ -147,10 +160,85 @@ func TestHostProcessKiller_StartTimeCheck(t *testing.T) {
 			if len(killed) != 0 {
 				t.Fatalf("signalled %v on a refused kill", killed)
 			}
+			for _, w := range tt.wantText {
+				if !strings.Contains(err.Error(), w) {
+					t.Fatalf("err %q does not contain %q (the audit row needs both times)", err, w)
+				}
+			}
 			if tt.wantErr == errKillPIDReused && opened != 1 {
 				t.Fatalf("pidfd opened %d times; the start time must be compared after the pin", opened)
 			}
 		})
+	}
+}
+
+// TestHostProcessKiller_StampToleranceBoundary: with a fake stat source, a
+// process that started up to one tick after the stamp is still the matched
+// one (clock skew between CPUs); two ticks later is refused. A process that
+// started before the stamp is always killed. The tick values are literal on
+// purpose: a slack of 0 or 2 fails this test.
+func TestHostProcessKiller_StampToleranceBoundary(t *testing.T) {
+	const initPID, pid, stamp = 100, 4242, threatdetect.ProcStartTicks(500_000)
+	tests := []struct {
+		start threatdetect.ProcStartTicks
+		kill  bool
+	}{
+		{start: 1, kill: true},
+		{start: stamp - 1, kill: true},
+		{start: stamp, kill: true},
+		{start: stamp + 1, kill: true},
+		{start: stamp + 2, kill: false},
+		{start: stamp + 100_000, kill: false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("start=%d", tt.start), func(t *testing.T) {
+			withProcStartReader(t, func(string, uint32) (threatdetect.ProcStartTicks, error) { return tt.start, nil })
+			var killed []int
+			k := &hostProcessKiller{
+				procRoot: fakeProc(t, map[int]string{initPID: "/lxc.payload.box-a/init.scope", pid: "/lxc.payload.box-a/user.slice"}),
+				initPID:  func(string) (int64, error) { return initPID, nil },
+				open:     func(p int) (pidHandle, error) { return fakePIDHandle{killed: &killed, pid: p}, nil },
+			}
+			err := k.KillInContainer("box-a", pid, stamp)
+			if tt.kill != (err == nil && len(killed) == 1) {
+				t.Fatalf("err=%v killed=%v, want kill=%v", err, killed, tt.kill)
+			}
+			if !tt.kill && !errors.Is(err, errKillPIDReused) {
+				t.Fatalf("err = %v, want pid reused", err)
+			}
+		})
+	}
+}
+
+// withProcStartReader swaps the kill's stat reader for the test. Tests that
+// use it must not run in parallel.
+func withProcStartReader(t *testing.T, f func(string, uint32) (threatdetect.ProcStartTicks, error)) {
+	t.Helper()
+	prev := readProcStart
+	readProcStart = f
+	t.Cleanup(func() { readProcStart = prev })
+}
+
+// TestBootTicksOf: the stamp is floored to USER_HZ ticks exactly as the
+// kernel renders /proc/<pid>/stat field 22 (nsec_to_clock_t).
+func TestBootTicksOf(t *testing.T) {
+	tests := []struct {
+		ns   int64
+		hz   uint64
+		want threatdetect.ProcStartTicks
+	}{
+		{ns: 12_345_678_901, hz: 100, want: 1234},
+		{ns: 9_999_999, hz: 100, want: 0},
+		{ns: 10_000_000, hz: 100, want: 1},
+		{ns: 12_345_678_901, hz: 1000, want: 12345},
+		{ns: 0, hz: 100, want: 0},
+		{ns: -5, hz: 100, want: 0},
+		{ns: 5, hz: 0, want: 0},
+	}
+	for _, tt := range tests {
+		if got := bootTicksOf(tt.ns, tt.hz); got != tt.want {
+			t.Errorf("bootTicksOf(%d, %d) = %d, want %d", tt.ns, tt.hz, got, tt.want)
+		}
 	}
 }
 
