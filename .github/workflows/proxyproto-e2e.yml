@@ -15,8 +15,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Release-PR fast path (.github/actions/release-only-diff): on a diff that
+  # only cuts a release on top of a main commit that already passed this
+  # workflow, the heavy jobs below skip. Any doubt runs them.
+  changes:
+    name: Release-only diff?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release-only: ${{ steps.diff.outputs.release-only }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide
+        id: diff
+        uses: ./.github/actions/release-only-diff
+
   unit-and-default-e2e:
     name: Unit + default e2e
+    needs: changes
+    # !cancelled(): a failed detector leaves the output empty and this job
+    # RUNS. Without it the job would skip, and a skipped required check passes.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -89,6 +114,10 @@ jobs:
 
   real-caddy-e2e:
     name: Real Caddy wire-compat e2e
+    needs: changes
+    # !cancelled(): a failed detector leaves the output empty and this job
+    # RUNS. Without it the job would skip, and a skipped required check passes.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
