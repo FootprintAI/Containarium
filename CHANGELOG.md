@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Opt-in daemon self-restart when core Postgres comes back** (#2824, follow-up to the bounded startup in 0.110.0). A daemon whose startup Postgres check failed serves DEGRADED until it is restarted. With `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1` (off by default) it now restarts itself once Postgres is reachable again, so every database-backed store is wired through the normal startup path: a watcher pings Postgres (backing off from 5 s to 60 s), and after 3 consecutive successful pings and at least `CONTAINARIUM_POSTGRES_RECOVERY_MIN_UPTIME` (default `2m`) of uptime it shuts the daemon down gracefully and exits with status 75. Any failed ping resets the count, and a daemon whose startup check passed never exits for this. Needs a supervisor that restarts a non-zero exit: every unit this repository ships has `Restart=on-failure`; a custom unit must not list 75 in `SuccessExitStatus=`. The operator runbook has the details.
+
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
 ## [0.111.0] - 2026-10-21
 
 ### Added
