@@ -261,7 +261,7 @@ with operator entries. Three matcher kinds:
 | Kind | Matches | Example |
 |------|---------|---------|
 | `name` | basename of the exec'd file, and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
-| `argv` | the joined command line: a literal substring (case-insensitive), or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
+| `argv` | the real argument vector: a literal marker (case-insensitive) must begin an argument or an `--opt=value` value; with a glob character, space-separated globs over consecutive whole arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
 | `sha256` | hex SHA-256 of the executable (`/proc/<pid>/exe`) | operator-added only |
 
 The baseline ships `name` and `argv` entries only (xmrig, minerd,
@@ -443,9 +443,10 @@ a box legitimately runs such a command, leave `kill_process` off for it
 
 The kill and policy action run on the responder's queue, so a little time
 can pass between the exec and the kill. The cgroup re-check stops a pid
-reused by another box or the host, but a pid reused by another process in
-the *same* box within that window would be killed; a process start-time
-check to close it is a follow-up (#2765).
+reused by another box or the host, and the start-time check against the
+exec's decode stamp (see *What a match does*) stops one reused by another
+process in the *same* box (skipped as `PID_REUSED`). Only a reuse inside
+the exec-to-decode window, at most one 50 ms ring drain, is not excluded.
 
 ## Triaging findings
 
