@@ -4246,9 +4246,13 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		},
 		Labels:    st.Labels,
 		CreatedAt: st.CreatedAt.Unix(),
-		// Podman is installed in every box image regardless of the create-time
-		// flag (the Incus backend does not read plain EnablePodman), so true
-		// is correct for every box.
+		// Known inaccurate (#2858): reported as true for every box
+		// regardless of the create-time enable_podman flag. On LXC that flag
+		// decides whether podman is installed, whether nesting is enabled and
+		// whether the baked image is used (pkg/core/container/manager.go), so a
+		// box created with enable_podman=false still reports true here. Kept
+		// as-is pending the decision on the follow-up, which would persist and
+		// read the flag back the way Stack is.
 		PodmanEnabled: true,
 		// Empty when no stack is recorded: K8s does not persist it, and LXC
 		// boxes created before user.containarium.stack existed have none.
