@@ -437,13 +437,17 @@ func (s *FindingStore) resolved(ctx context.Context, f, delivery *Finding) {
 
 // stickyResponseSQL is the response column's new value for a write of $1
 // (#2766): $1 as given, except that a kill on record survives a write that
-// carries none (process_killed, the latest pid, the count and the skip
-// reason). One expression, so two writers cannot lose it; every response
-// write uses it.
+// carries none, or carries an older one with a lower kill count (#2816: a
+// stale fallback never rolls the count back). The kill on record is kept
+// whole (process_killed, the latest pid, the count and the skip reason, or
+// the lack of one), exactly as FindingResponse.KeepKillOf does for the
+// in-memory store. One expression, so two writers cannot lose it; every
+// response write uses it.
 const stickyResponseSQL = `CASE
 			WHEN COALESCE((response->>'process_killed')::boolean, FALSE)
-				AND NOT COALESCE(($1::jsonb->>'process_killed')::boolean, FALSE)
-				THEN $1::jsonb || jsonb_strip_nulls(jsonb_build_object(
+				AND (NOT COALESCE(($1::jsonb->>'process_killed')::boolean, FALSE)
+					OR COALESCE(($1::jsonb->>'kills')::bigint, 0) < COALESCE((response->>'kills')::bigint, 0))
+				THEN ($1::jsonb - 'killed_pid' - 'kills' - 'kill_skip_reason') || jsonb_strip_nulls(jsonb_build_object(
 					'process_killed', TRUE,
 					'killed_pid', response->'killed_pid',
 					'kills', response->'kills',
@@ -454,10 +458,11 @@ const stickyResponseSQL = `CASE
 // SetResponse records what the process responder did about finding id
 // (#2636) and emits the updated finding. The audit entry for the action
 // itself is the responder's (category security.action); this only updates
-// the finding row. process_killed is sticky: once a kill is on record for
-// the finding, every later response keeps it, whichever path (release,
-// expiry, a later box's action on a shared finding) rewrites the rest. The
-// OR happens in the UPDATE itself, so two writers cannot lose it.
+// the finding row. The kill facts are sticky: once a kill is on record for
+// the finding, every later response that carries no newer kill keeps it
+// whole (see stickyResponseSQL), whichever path (release, expiry, a later
+// box's action on a shared finding) rewrites the rest. That happens in the
+// UPDATE itself, so two writers cannot lose it.
 func (s *FindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
 	return s.setResponse(ctx, id, r, r)
 }
