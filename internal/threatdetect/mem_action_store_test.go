@@ -145,12 +145,16 @@ func runActionStoreContract(t *testing.T, s ActionStore, findingID int64, prefix
 
 	// Pending lifecycle: inserted pending, visible as open, confirmed once.
 	p := mk("pend", t0, true)
+	p.InstanceID = "uuid-" + prefix
 	if err := s.Insert(ctx, p); err != nil {
 		t.Fatalf("Insert pending: %v", err)
 	}
 	got, err := s.Open(ctx, p.Container)
 	if err != nil || got.ID != p.ID || !got.Pending {
 		t.Fatalf("Open after pending insert = %+v, %v; want the row with Pending=true", got, err)
+	}
+	if got.InstanceID != p.InstanceID {
+		t.Fatalf("Open instance id = %q, want %q (#2835: the row names the instance it acted on)", got.InstanceID, p.InstanceID)
 	}
 	if err := s.MarkApplied(ctx, p.ID); err != nil {
 		t.Fatalf("MarkApplied: %v", err)

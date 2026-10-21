@@ -51,6 +51,7 @@ func (s *PGActionStore) initSchema(ctx context.Context) error {
 			released_by     TEXT        NOT NULL DEFAULT ''
 		);
 		ALTER TABLE security_actions ADD COLUMN IF NOT EXISTS pending BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE security_actions ADD COLUMN IF NOT EXISTS instance_id TEXT NOT NULL DEFAULT '';
 		CREATE UNIQUE INDEX IF NOT EXISTS security_actions_open_per_container
 			ON security_actions (container) WHERE released_at IS NULL;
 	`
@@ -59,7 +60,7 @@ func (s *PGActionStore) initSchema(ctx context.Context) error {
 }
 
 const actionColumns = `id, finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow,
-	killed_pid, error, pending, applied_at, expires_at, released_at, released_by`
+	killed_pid, error, pending, applied_at, expires_at, released_at, released_by, instance_id`
 
 func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 	var releasedAt *time.Time
@@ -74,11 +75,11 @@ func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO security_actions
-			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, killed_pid, error, pending, applied_at, expires_at, released_at, released_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, killed_pid, error, pending, applied_at, expires_at, released_at, released_by, instance_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id
 	`, a.FindingID, a.Container, a.TenantID, a.Action.String(), a.PrevCPUCount, a.PrevCPUAllowance,
-		killedPID, a.Error, a.Pending, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy)
+		killedPID, a.Error, a.Pending, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy, a.InstanceID)
 	if err := row.Scan(&a.ID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
@@ -213,7 +214,7 @@ func scanAction(row rowScanner) (*SecurityAction, error) {
 	var releasedAt *time.Time
 	var killedPID *int64
 	if err := row.Scan(&a.ID, &a.FindingID, &a.Container, &a.TenantID, &action, &a.PrevCPUCount, &a.PrevCPUAllowance,
-		&killedPID, &a.Error, &a.Pending, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy); err != nil {
+		&killedPID, &a.Error, &a.Pending, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy, &a.InstanceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}

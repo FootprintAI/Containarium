@@ -15,8 +15,9 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// goneActuator is fakeActuator for boxes that may no longer exist: an undo on
-// a box in gone fails the way Incus does for a deleted instance (404).
+// goneActuator is fakeActuator for boxes that no longer exist: a box in gone
+// answers not found to the instance lookup and to an undo, as Incus does for
+// a deleted instance (404).
 type goneActuator struct {
 	*fakeActuator
 	mu   sync.Mutex
@@ -27,6 +28,13 @@ func (a *goneActuator) isGone(name string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.gone[name]
+}
+
+func (a *goneActuator) InstanceID(name string) (string, error) {
+	if a.isGone(name) {
+		return "", api.StatusErrorf(http.StatusNotFound, "Instance not found")
+	}
+	return a.fakeActuator.InstanceID(name)
 }
 
 func (a *goneActuator) SetCPULimit(name, count, allowance string) error {
@@ -150,7 +158,7 @@ func TestSharedFinding_LastBoxEndingResolves(t *testing.T) {
 		fx, id := twoThrottled(t)
 		releaseKeptOpen(t, fx, "box-a")
 		calls := len(fx.act.calls)
-		fx.r.ContainerDeleted(ctx, "box-b")
+		deleteBox(fx, "box-b")
 		if got := fx.act.calls[calls:]; len(got) != 0 {
 			t.Errorf("Incus calls for a deleted box = %v, want none", got)
 		}
@@ -215,7 +223,7 @@ func TestBoxEndingWithoutOperatorDecisionKeepsFindingOpen(t *testing.T) {
 	ctx := context.Background()
 	t.Run("box-b deleted while box-a holds", func(t *testing.T) {
 		fx, id := twoThrottled(t)
-		fx.r.ContainerDeleted(ctx, "box-b")
+		deleteBox(fx, "box-b")
 		f := mustGet(t, fx, id)
 		if f.State != threatdetect.FindingStateOpen {
 			t.Fatalf("finding = %s, want open: box-a still holds it", f.State)
@@ -224,7 +232,7 @@ func TestBoxEndingWithoutOperatorDecisionKeepsFindingOpen(t *testing.T) {
 	})
 	t.Run("then box-a expires: nobody decided", func(t *testing.T) {
 		fx, id := twoThrottled(t)
-		fx.r.ContainerDeleted(ctx, "box-b")
+		deleteBox(fx, "box-b")
 		fx.clock = fx.clock.Add(31 * time.Minute) // past box-a's TTL
 		if n := fx.r.SweepExpired(ctx, fx.clock); n != 1 {
 			t.Fatalf("SweepExpired released %d, want 1", n)
@@ -241,7 +249,7 @@ func TestBoxEndingWithoutOperatorDecisionKeepsFindingOpen(t *testing.T) {
 		fx := newResponderFixture(t, false)
 		fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_FREEZE, "", time.Hour)
 		f := fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
-		fx.r.ContainerDeleted(ctx, "box-a")
+		deleteBox(fx, "box-a")
 		got := mustGet(t, fx, f.ID)
 		if got.State != threatdetect.FindingStateOpen {
 			t.Errorf("finding = %s, want open", got.State)
@@ -255,7 +263,7 @@ func TestBoxEndingWithoutOperatorDecisionKeepsFindingOpen(t *testing.T) {
 	})
 	t.Run("a box with no action: nothing happens", func(t *testing.T) {
 		fx := newResponderFixture(t, false)
-		fx.r.ContainerDeleted(ctx, "box-a")
+		deleteBox(fx, "box-a")
 		if got := fx.audit.actions(); len(got) != 0 {
 			t.Errorf("audit = %v, want nothing", got)
 		}
@@ -379,7 +387,7 @@ func TestSharedFinding_LastBoxEndingWaitsForOtherHolders(t *testing.T) {
 		fx, id := twoThrottled(t)
 		pendingOn(t, fx, id, "box-c")
 		releaseKeptOpen(t, fx, "box-a")
-		fx.r.ContainerDeleted(ctx, "box-b")
+		deleteBox(fx, "box-b")
 		if f := mustGet(t, fx, id); f.State != threatdetect.FindingStateOpen {
 			t.Fatalf("finding = %s, want open: box-c's apply may stand", f.State)
 		}
@@ -397,7 +405,7 @@ func TestSharedFinding_LastBoxEndingWaitsForOtherHolders(t *testing.T) {
 		fx.r.runJob(ctx, jobB)
 		releaseKeptOpen(t, fx, "box-a")
 		jobC := queueFor(t, fx, sink, "box-c")
-		fx.r.ContainerDeleted(ctx, "box-b")
+		deleteBox(fx, "box-b")
 		if f := mustGet(t, fx, jobB.f.ID); f.State != threatdetect.FindingStateOpen {
 			t.Fatalf("finding = %s, want open: box-c's response is still queued", f.State)
 		}

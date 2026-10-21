@@ -51,6 +51,10 @@ type containerActuator interface {
 	SetCPULimit(name, count, allowance string) error
 	Freeze(name string) error
 	Unfreeze(name string) error
+	// InstanceID reads the box's Incus instance id (volatile.uuid, #2835):
+	// a box re-created under the same name has another one. An error that
+	// incus.IsNotFound accepts means there is no such box.
+	InstanceID(name string) (string, error)
 }
 
 // incusActuator adapts *incus.Client to containerActuator.
@@ -66,6 +70,14 @@ func (a incusActuator) CPULimit(name string) (string, string, error) {
 
 func (a incusActuator) SetCPULimit(name, count, allowance string) error {
 	return a.c.SetCPUConfig(name, count, allowance)
+}
+
+func (a incusActuator) InstanceID(name string) (string, error) {
+	cfg, _, err := a.c.GetRawInstance(name)
+	if err != nil {
+		return "", err
+	}
+	return cfg[incus.InstanceIDKey], nil
 }
 
 func (a incusActuator) Freeze(name string) error   { return a.c.FreezeContainer(name) }
@@ -127,7 +139,19 @@ type ProcessResponder struct {
 
 	mu        sync.Mutex
 	backendID string
+
+	// bg tracks the background closes ContainerDeleted starts; tests wait on
+	// it. deletedCloseTimeout bounds each one's store and Incus work.
+	bg                  sync.WaitGroup
+	deletedCloseTimeout time.Duration
+	// registerDelete hooks Incus deletes (incus.OnContainerDeleted); Run
+	// registers ContainerDeleted with it and removes it when Run ends.
+	registerDelete func(fn func(name, instanceID string)) (remove func())
 }
+
+// deletedCloseTimeout is how long closing a deleted box's action may take
+// before it gives up and leaves it to the sweeps (#2835 review).
+const deletedCloseTimeout = 10 * time.Second
 
 // NewProcessResponder wires the responder. degraded forces ALERT-only.
 func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions threatdetect.ActionStore, findings findingLifecycle, act containerActuator, auditLog auditLogger, degraded bool) *ProcessResponder {
@@ -136,6 +160,9 @@ func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions thre
 		degraded: degraded, now: time.Now,
 		queue:   make(chan responseJob, processResponseQueue),
 		pending: map[int64]map[string]int{},
+
+		deletedCloseTimeout: deletedCloseTimeout,
+		registerDelete:      incus.OnContainerDeleted,
 	}
 }
 
@@ -372,14 +399,12 @@ func (r *ProcessResponder) settle(ctx context.Context, job responseJob, out *thr
 		log.Printf("[process-responder] finding %d: list actions after queued response on %s: %v", job.f.ID, job.f.Container, err)
 		return
 	}
-	released := false
 	for _, row := range rows {
 		if row.Open() {
 			return // an action still stands somewhere: the finding stays open
 		}
-		released = released || row.ReleasedBy == threatdetect.ReleasedByOperator
 	}
-	if !released || r.pendingElsewhere(job.f.ID, "") {
+	if !operatorReleaseStands(rows) || r.pendingElsewhere(job.f.ID, "") {
 		return
 	}
 	_, rerr := r.findings.Resolve(ctx, job.f.ID)
@@ -566,6 +591,14 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 			return r.recordFailure(ctx, f, row, fmt.Errorf("read cpu limit: %w", err), detail, kill)
 		}
 		row.PrevCPUCount, row.PrevCPUAllowance = count, allow
+	}
+	// The instance the action is applied to (#2835), so no later undo can
+	// write its saved limits onto another box re-created under the name.
+	// Unknown is recorded as "": the undo then runs as it always did.
+	if id, err := r.act.InstanceID(row.Container); err == nil {
+		row.InstanceID = id
+	} else {
+		log.Printf("[process-responder] finding %d on %s: read instance id: %v", f.ID, f.Container, err)
 	}
 	row.Pending = true
 	if err := r.actions.Insert(ctx, row); err != nil {
@@ -896,8 +929,18 @@ func (r *ProcessResponder) release(ctx context.Context, container string) (f *th
 	if err != nil {
 		return nil, false, box, err
 	}
-	if err := r.undo(row); err != nil {
+	gone, err := r.undoUnlessGone(row)
+	switch {
+	case err != nil:
 		return nil, false, box, fmt.Errorf("release %s on %s: %w", row.Action, container, err)
+	case gone:
+		// The open action belonged to a box that no longer exists (deleted,
+		// or re-created under the same name): close it without touching the
+		// box there now, which has no action of its own.
+		if cerr := r.closeGone(ctx, row, r.now(), "operator release"); cerr != nil {
+			return nil, false, box, cerr
+		}
+		return nil, false, box, fmt.Errorf("release on %s: the open action belonged to an earlier box with this name, now closed: %w", container, threatdetect.ErrNoOpenAction)
 	}
 	now := r.now()
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOperator, now); err != nil {
@@ -946,9 +989,32 @@ type findingHolders struct {
 	// it PendingOrphanAfter after it was recorded (plus up to one sweep
 	// interval), which bounds how long it can hold the finding.
 	unconfirmed *threatdetect.SecurityAction
-	// operatorReleased: an operator released some box of the finding, so
-	// the finding is only open because something else still held it.
+	// operatorReleased: an operator's release is still the latest word on
+	// some box of the finding (operatorReleaseStands), so the finding is
+	// only open because something else still held it.
 	operatorReleased bool
+}
+
+// operatorReleaseStands reports whether, among a finding's action rows
+// (newest first), some box's latest row was released by an operator
+// (#2835 review). That release is a decision about the finding, the one
+// Release would have resolved it on had another box not still held it. A
+// release that a later action on the same box superseded is not: the box
+// was throttled again and that action ended on its own (TTL, orphan sweep,
+// deletion), so nobody decided about it, and a finding nobody decided about
+// stays open for the operator.
+func operatorReleaseStands(rows []*threatdetect.SecurityAction) bool {
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if seen[row.Container] {
+			continue
+		}
+		seen[row.Container] = true
+		if row.ReleasedBy == threatdetect.ReleasedByOperator {
+			return true
+		}
+	}
+	return false
 }
 
 // holders reads what holds finding id open on boxes other than container
@@ -962,8 +1028,8 @@ func (r *ProcessResponder) holders(ctx context.Context, id int64, container stri
 		log.Printf("[process-responder] finding %d: list actions for %s: %v", id, container, err)
 		return h
 	}
+	h.operatorReleased = operatorReleaseStands(rows)
 	for _, row := range rows { // newest first
-		h.operatorReleased = h.operatorReleased || row.ReleasedBy == threatdetect.ReleasedByOperator
 		if !row.Open() || row.Container == container {
 			continue
 		}
@@ -1070,10 +1136,9 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 	if !r.stillOpen(ctx, row) {
 		return false, nil // released or superseded since the sweep listed it
 	}
-	if err := r.undo(row); err != nil {
-		if !incus.IsNotFound(err) {
-			return false, err
-		}
+	if gone, err := r.undoUnlessGone(row); err != nil {
+		return false, err
+	} else if gone {
 		return true, r.closeGone(ctx, row, now, "ttl expiry")
 	}
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByTTL, now); err != nil {
@@ -1139,10 +1204,9 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	if !r.stillOpen(ctx, row) {
 		return nil
 	}
-	if err := r.undo(row); err != nil {
-		if !incus.IsNotFound(err) {
-			return err
-		}
+	if gone, err := r.undoUnlessGone(row); err != nil {
+		return err
+	} else if gone {
 		return r.closeGone(ctx, row, now, "orphan sweep")
 	}
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOrphanSweep, now); err != nil {
@@ -1158,36 +1222,106 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	return nil
 }
 
-// ContainerDeleted closes the action open on container, a box that was just
-// deleted (#2835). Nothing is undone: there is no box left to restore. The
-// row is released by ReleasedByContainerDeleted, so the deleted box stops
-// holding its finding open, and the finding stops showing the deleted box's
-// APPLIED record: it records the box's RELEASED, or keeps showing another
-// box's applied action, and is resolved when an operator already released
-// another box of it (endBox). A box with no open action is left alone.
-// Safe on a nil responder (a daemon without the sentry).
-func (r *ProcessResponder) ContainerDeleted(ctx context.Context, container string) {
+// ContainerDeleted is told by the Incus delete hook (incus.OnContainerDeleted)
+// that container, instance instanceID, was just deleted (#2835). It closes
+// the action open on that instance: nothing is undone, there is no box left
+// to restore. The row is released by ReleasedByContainerDeleted, so the
+// deleted box stops holding its finding open, and the finding stops showing
+// its APPLIED record (endBox).
+//
+// It never holds up the delete (#2835 review): the close runs in the
+// background, detached from ctx (a client that disconnects mid-delete cannot
+// cancel it), waits for the responder's lock there rather than on the
+// deleting goroutine, and gives up after deletedCloseTimeout. A close that
+// fails or gives up only logs; the TTL or orphan sweep then finds the box
+// gone and closes the action. A row naming another instance (a box
+// re-created under the name since) is left alone; a row with no instance id
+// (recorded before it existed) is closed. Safe on a nil responder.
+func (r *ProcessResponder) ContainerDeleted(ctx context.Context, container, instanceID string) {
 	if r == nil {
 		return
 	}
+	detached := context.WithoutCancel(ctx)
+	r.bg.Add(1)
+	go func() {
+		defer r.bg.Done()
+		r.closeDeleted(detached, container, instanceID)
+	}()
+}
+
+// waitBackground waits for the closes ContainerDeleted started.
+func (r *ProcessResponder) waitBackground() { r.bg.Wait() }
+
+func (r *ProcessResponder) closeDeleted(parent context.Context, container, instanceID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, r.deletedCloseTimeout)
+	defer cancel()
 	row, err := r.actions.Open(ctx, container)
 	switch {
 	case errors.Is(err, threatdetect.ErrNoOpenAction):
 		return
 	case err != nil:
-		log.Printf("[process-responder] %s deleted: read its open action: %v", container, err)
+		log.Printf("[process-responder] %s deleted: read its open action: %v (the next sweep closes it)", container, err)
 		return
+	case row.InstanceID != "" && instanceID != "" && row.InstanceID != instanceID:
+		return // another instance's action: not this delete's
+	case row.InstanceID == "" || instanceID == "":
+		// Either id is unknown, so the open row may be a new box's that took
+		// the name since (#2897 review). Close it only when the box it names
+		// is gone; a live box's action is left to the sweep and its undo,
+		// never closed without one.
+		gone, err := r.boxGone(row)
+		if err != nil || !gone {
+			if err != nil {
+				log.Printf("[process-responder] %s deleted: %v; its action is left to the sweep", container, err)
+			}
+			return
+		}
 	}
 	if err := r.closeGone(ctx, row, r.now(), "container deleted"); err != nil {
-		log.Printf("[process-responder] %s deleted: close %s (action %d): %v", container, row.Action, row.ID, err)
+		log.Printf("[process-responder] %s deleted: close %s (action %d): %v (the next sweep closes it)", container, row.Action, row.ID, err)
 	}
 }
 
+// undoUnlessGone undoes row's action, unless the box it was applied to no
+// longer exists, which it reports as gone instead (#2835): a missing box has
+// nothing to restore, and a box re-created under the same name is another
+// instance whose limits row's saved ones must never overwrite. The instance
+// is read before the undo; a not-found from the undo itself is confirmed by
+// a fresh read, since an operation can 404 on a box that is still there.
+func (r *ProcessResponder) undoUnlessGone(row *threatdetect.SecurityAction) (gone bool, err error) {
+	if gone, err := r.boxGone(row); err != nil || gone {
+		return gone, err
+	}
+	err = r.undo(row)
+	if err != nil && incus.IsNotFound(err) {
+		if gone, gerr := r.boxGone(row); gerr == nil && gone {
+			return true, nil
+		}
+	}
+	return false, err
+}
+
+// boxGone reports whether row's box no longer exists: no instance by that
+// name, or one with another instance id than the row recorded. A row with
+// no recorded id cannot tell a re-created box from its own.
+func (r *ProcessResponder) boxGone(row *threatdetect.SecurityAction) (bool, error) {
+	id, err := r.act.InstanceID(row.Container)
+	switch {
+	case incus.IsNotFound(err):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("read instance %s: %w", row.Container, err)
+	}
+	// An empty live id is unknown, not another instance: the undo runs.
+	return row.InstanceID != "" && id != "" && id != row.InstanceID, nil
+}
+
 // closeGone closes row, an action on a box that no longer exists: deleted
-// through the daemon, or found gone by the TTL or orphan sweep (Incus answers
-// not found), so the sweep does not retry an undo that can never succeed.
+// (ContainerDeleted), or found gone or replaced by the TTL or orphan sweep or
+// an operator release (undoUnlessGone), so nothing retries an undo that can
+// never succeed or writes old limits onto a new box.
 // how says which path found it, for the audit row. Caller holds r.mu.
 func (r *ProcessResponder) closeGone(ctx context.Context, row *threatdetect.SecurityAction, now time.Time, how string) error {
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByContainerDeleted, now); err != nil {
@@ -1206,6 +1340,15 @@ func (r *ProcessResponder) closeGone(ctx context.Context, row *threatdetect.Secu
 // Run drives the work queue and the TTL sweep (every
 // processActionSweepInterval) until ctx ends.
 func (r *ProcessResponder) Run(ctx context.Context) {
+	// Every Incus delete in this process (the DeleteContainer RPC, the cloud
+	// actuator, sandboxes) closes the deleted box's open action (#2835),
+	// for as long as the responder runs.
+	if r.registerDelete != nil {
+		remove := r.registerDelete(func(name, instanceID string) {
+			r.ContainerDeleted(context.Background(), name, instanceID)
+		})
+		defer remove()
+	}
 	go r.runQueue(ctx)
 	ticker := time.NewTicker(processActionSweepInterval)
 	defer ticker.Stop()
