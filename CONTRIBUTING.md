@@ -87,7 +87,7 @@ tool download, name the exact version and where it comes from.
 | Static analysis, known vulnerabilities, dependency scan | `security.yml` | `gosec`, `govulncheck`, `Trivy`. See [`SECURITY.md`](SECURITY.md#automated-scanning). |
 | Lint | `golangci-lint.yml` | `golangci-lint` on Go code. |
 | Proto lint and compatibility | `proto.yml` | `buf` lint and breaking-change checks. |
-| Workflow lint and action pins | `workflow-lint.yml` | `actionlint`, and every `uses:` must be a full 40-hex commit SHA with the version as a trailing comment (`scripts/ci/check-action-pins.sh`; local `./` actions are exempt). Dependabot bumps the SHA and the comment. |
+| Workflow lint and action pins | `workflow-lint.yml` | `actionlint`; every `uses:` must be a full 40-hex commit SHA with the version as a trailing comment (`scripts/ci/check-action-pins.sh`; local `./` actions are exempt); and `zizmor` (`scripts/ci/check-workflow-security.sh`) fails on `pull_request_target`, `${{ }}` event data expanded inside a `run:` block (pass it through `env:` instead) and over-broad `permissions:` (grant write scopes per job, not per workflow). A justified exception is a per-finding entry with a reason in `.github/zizmor.yml`. Dependabot bumps the SHA and the comment. |
 | Dependency updates | `.github/dependabot.yml` | Weekly Go module and GitHub Actions update PRs. They are reviewed like any other PR. |
 
 Run `scripts/ci/check-action-pins.sh` to check action pins before you push.

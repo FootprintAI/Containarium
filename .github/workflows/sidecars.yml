@@ -28,12 +28,14 @@ on:
 
 permissions:
   contents: read
-  packages: write   # for GHCR push
-  security-events: write   # for the Trivy SARIF upload in each job below
 
 jobs:
   otel-sidecar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR push
+      security-events: write   # Trivy SARIF upload
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -53,10 +55,12 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           # Strip the leading 'v' from the tag to get e.g. 0.16.10
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
@@ -128,6 +132,10 @@ jobs:
 
   sshpiper:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR push
+      security-events: write   # Trivy SARIF upload
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,9 +152,11 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
@@ -205,6 +215,10 @@ jobs:
 
   agent-box:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR push
+      security-events: write   # Trivy SARIF upload
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -221,9 +235,11 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi

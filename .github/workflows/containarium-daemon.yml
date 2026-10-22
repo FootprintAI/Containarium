@@ -28,11 +28,13 @@ on:
 
 permissions:
   contents: read
-  packages: write   # for GHCR push
-  security-events: write   # for the Trivy SARIF upload below
 
 jobs:
   daemon:
+    permissions:
+      contents: read
+      packages: write   # for GHCR push
+      security-events: write   # for the Trivy SARIF upload below
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -50,9 +52,11 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi

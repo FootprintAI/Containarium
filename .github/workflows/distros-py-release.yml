@@ -27,10 +27,12 @@ on:
 #   - Environment name: pypi
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish-pypi:
+    permissions:
+      contents: read
+      id-token: write   # PyPI trusted publishing (OIDC)
     name: Build and publish containarium-telemetry
     runs-on: ubuntu-latest
     environment:
@@ -47,9 +49,11 @@ jobs:
 
       - name: Resolve version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
@@ -57,12 +61,14 @@ jobs:
           echo "Publishing containarium-telemetry==${version}"
 
       - name: Stamp version into pyproject.toml
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           cd distros/py
           # pyproject.toml's `version = "0.20.0"` is the local-dev value;
           # the release workflow rewrites it to the tag's version so
           # devs don't have to keep a separate VERSION file in sync.
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
           grep '^version' pyproject.toml
 
       - name: Install build deps
