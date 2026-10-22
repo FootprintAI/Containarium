@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -775,7 +776,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		go recoverJumpServerAccounts()
 	}
 
-	return dualServer.Start(ctx)
+	err = dualServer.Start(ctx)
+	if errors.Is(err, server.ErrRestartForPostgresRecovery) {
+		// #2824: a distinct non-zero status so a supervisor with
+		// Restart=on-failure (or always) restarts the daemon fully wired.
+		log.Printf("%v (exit %d)", err, server.ExitCodePostgresRecovered)
+		os.Exit(server.ExitCodePostgresRecovered)
+	}
+	return err
 }
 
 // recoverJumpServerAccounts re-provisions any missing host jump-server accounts
