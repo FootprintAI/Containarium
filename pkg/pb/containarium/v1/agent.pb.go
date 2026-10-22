@@ -1594,6 +1594,10 @@ type RunAgentSkillResponse struct {
 	// Absolute path of the fetched workspace inside the box. Empty when the
 	// request carried no git_source.
 	WorkspacePath string `protobuf:"bytes,5,opt,name=workspace_path,json=workspacePath,proto3" json:"workspace_path,omitempty"`
+	// Human-readable status from the server, e.g. how to follow a run that is
+	// still in flight on a server that runs skills asynchronously. Empty when
+	// the server has nothing to add; clients print it as-is when present.
+	Message       string `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1659,6 +1663,13 @@ func (x *RunAgentSkillResponse) GetGitCommit() string {
 func (x *RunAgentSkillResponse) GetWorkspacePath() string {
 	if x != nil {
 		return x.WorkspacePath
+	}
+	return ""
+}
+
+func (x *RunAgentSkillResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
 	}
 	return ""
 }
@@ -3782,14 +3793,15 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12-\n" +
 	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\x124\n" +
 	"\x06engine\x18\n" +
-	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\"\xd3\x01\n" +
+	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\"\xed\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +
 	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12\x1d\n" +
 	"\n" +
 	"git_commit\x18\x04 \x01(\tR\tgitCommit\x12%\n" +
-	"\x0eworkspace_path\x18\x05 \x01(\tR\rworkspacePath\"Q\n" +
+	"\x0eworkspace_path\x18\x05 \x01(\tR\rworkspacePath\x12\x18\n" +
+	"\amessage\x18\x06 \x01(\tR\amessage\"Q\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

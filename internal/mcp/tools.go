@@ -3307,10 +3307,19 @@ func handleRunAgentSkill(client API, args map[string]interface{}) (string, error
 		out += fmt.Sprintf("Git:       %s\n", resp.GitCommit)
 		out += fmt.Sprintf("Workspace: %s\n", resp.WorkspacePath)
 	}
-	if resp.ArtifactJSON != "" {
+	if resp.RunID != "" {
+		out += fmt.Sprintf("Run:       %s\n", resp.RunID)
+	}
+	if resp.Message != "" {
+		out += fmt.Sprintf("Message:   %s\n", resp.Message)
+	}
+	switch {
+	case resp.ArtifactJSON != "":
 		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
-	} else {
-		out += "(no artifact — the in-box agent loop is a Phase 0 seam)\n"
+	case resp.RunID != "":
+		out += fmt.Sprintf("(no artifact yet — follow the run with crew_logs run_id=%s)\n", resp.RunID)
+	default:
+		out += "(no artifact returned)\n"
 	}
 	return out, nil
 }

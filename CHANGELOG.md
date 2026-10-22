@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK=1` stops the model gateway billing a tenant's calls to a daemon-global provider key** (#3028). A token carrying a `key_owner` normally falls back to `<PROVIDER>_API_KEY` when its owner has no key of its own. With the option set it resolves through its owner or is refused up front, with or without a key resolver wired. Unset keeps today's behaviour, which a self-hosted daemon running on one global key relies on. Tokens without a `key_owner` are unaffected. Engine readiness follows the same rule, so a skill run whose owner has no key is refused up front (`FailedPrecondition`, `ListAgentEngines` shows the engine not ready) instead of being admitted on a global key the gateway will not spend.
 
+### Fixed
+
+- **`run_agent_skill` (MCP) and `containarium agent run` print the run id and the server's status message** (#2919). Both printed the box, git commit and artifact, but never the response's `run_id`, and with no artifact they fell back to a stale "the in-box agent loop is a Phase 0 seam" line. Against a control plane that runs skills asynchronously (it returns a run id and a status message, no artifact yet) the caller got no handle to follow the run, and a failed run looked the same as one still running. Both now print `Run: <run_id>` whenever one is returned, print the server's message as `Message:` when present, and, with a run id but no artifact, say how to follow it (`crew_logs` / `containarium crew logs <run-id>`). With neither, they print `(no artifact returned)`. `RunAgentSkillResponse` gains an optional `message` field (6) for that server status; this daemon leaves it empty, so its responses are unchanged.
+
 ## [0.113.0] - 2026-10-22
 
 ### Added
