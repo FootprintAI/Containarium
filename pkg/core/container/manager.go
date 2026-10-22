@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -264,6 +265,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Env:                    otelEnvVars(opts, containerName),
 		ExtraConfig:            labelConfig,
 	}
+	// Record whether podman was requested, always, so a box created with it
+	// off is distinguishable from a legacy box with no key (#2858).
+	config.ExtraConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
 
 	// VMs: nesting and privileged podman are LXC concepts (the guest has its
 	// own kernel; Docker inside it needs nothing from the host). Windows

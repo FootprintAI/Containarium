@@ -192,6 +192,12 @@ type BoxStatus struct {
 	// on LXC boxes created before the key existed.
 	Stack string
 
+	// PodmanEnabled is whether the box was created with podman support. LXC
+	// reads user.containarium.podman_enabled back; boxes created before that
+	// key existed report true (the value status always returned). The K8s
+	// backend has no podman toggle and reports true.
+	PodmanEnabled bool
+
 	// Image is a human-readable label for the image the box was launched
 	// from (LXC: Incus's image.description / volatile.base_image config
 	// keys). Empty when the backend has no such data.
