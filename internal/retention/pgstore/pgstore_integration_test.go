@@ -76,6 +76,31 @@ func TestRetentionPGStore_SurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestRetentionPGStore_DaysCapIsADatabaseCheck: the cap holds even for a
+// write that bypasses the store's validation, including on a table created
+// before the cap existed (the bootstrap adds the constraint to it).
+func TestRetentionPGStore_DaysCapIsADatabaseCheck(t *testing.T) {
+	ctx := context.Background()
+	pool := retentionPool(t)
+	// The table as the first version of this store created it: no upper bound.
+	if _, err := pool.Exec(ctx, `CREATE TABLE retention_windows (class INTEGER PRIMARY KEY, days INTEGER NOT NULL CHECK (days > 0))`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	pgStore(t, pool)
+	pgStore(t, pool) // a second bootstrap is a no-op, not a duplicate-constraint error
+	insert := func(days int32) error {
+		_, err := pool.Exec(ctx, `INSERT INTO retention_windows (class, days) VALUES (1, $1)
+			ON CONFLICT (class) DO UPDATE SET days = EXCLUDED.days`, days)
+		return err
+	}
+	if err := insert(retention.MaxDays); err != nil {
+		t.Fatalf("insert %d days: %v", retention.MaxDays, err)
+	}
+	if err := insert(retention.MaxDays + 1); err == nil {
+		t.Fatalf("insert %d days succeeded; the CHECK is missing", retention.MaxDays+1)
+	}
+}
+
 func TestRetentionPGStore_ConcurrentSetsGetDistinctRevisions(t *testing.T) {
 	ctx := context.Background()
 	s := pgStore(t, retentionPool(t))
