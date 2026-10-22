@@ -1512,6 +1512,16 @@ func (m *Manager) InstallStack(username, stackID string) error {
 		}
 	}
 
+	// Record the stack so list/get report it (#2859). Single-valued: a second
+	// stack replaces the first, matching Container.stack. Base scripts are not
+	// stacks (the startup reconcile runs one in every box) and never record.
+	// A failure to record is logged, not returned: the install itself succeeded.
+	if !isBaseScript {
+		if err := m.incus.SetConfig(containerName, incus.StackKey, stackID); err != nil {
+			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
+		}
+	}
+
 	// Install cgroup wrapper for docker stack so nested containers see LXC limits
 	if stackID == "docker" {
 		if err := m.installCgroupWrappers(containerName, false, true); err != nil {

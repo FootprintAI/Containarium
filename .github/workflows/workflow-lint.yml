@@ -1,8 +1,11 @@
 name: workflow-lint
 
 # Supply-chain gate (#2793, story 4 of #2649): every `uses:` is a full commit
-# SHA, and workflows pass actionlint. Dependabot keeps the pins fresh; it reads
-# the trailing `# vX` comment.
+# SHA, and workflows pass actionlint. zizmor (#2904) additionally fails the
+# lane on pull_request_target, template injection from event data in `run:`,
+# and over-broad `permissions:` (scripts/ci/check-workflow-security.sh; a
+# seeded violation of each rule is its self-test). Dependabot keeps the pins
+# fresh; it reads the trailing `# vX` comment.
 
 on:
   push:
@@ -10,11 +13,15 @@ on:
     paths:
       - '.github/**'
       - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/check-workflow-security.sh'
+      - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
   pull_request:
     paths:
       - '.github/**'
       - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/check-workflow-security.sh'
+      - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
 
 permissions:
@@ -27,10 +34,14 @@ concurrency:
 env:
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  # zizmorcore/zizmor release asset zizmor-x86_64-unknown-linux-gnu.tar.gz
+  # (sha256 from the release's published asset digest). Bump both together.
+  ZIZMOR_VERSION: 1.31.1
+  ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
 
 jobs:
   workflow-lint:
-    name: actionlint + SHA pins
+    name: actionlint + zizmor + SHA pins
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -56,3 +67,19 @@ jobs:
 
       - name: actionlint
         run: '"$RUNNER_TEMP/actionlint" -color'
+
+      - name: Install zizmor (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/zizmor.tgz" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  $RUNNER_TEMP/zizmor.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor.tgz" -C "$RUNNER_TEMP" zizmor
+
+      - name: Workflow security rules self-test (seeded violations must fail)
+        # One seeded bad workflow per rule under scripts/ci/testdata/zizmor
+        # (pull_request_target + head checkout, template injection, broad
+        # permissions) must be rejected, and the good one accepted.
+        run: ZIZMOR="$RUNNER_TEMP/zizmor" scripts/ci/check-workflow-security.sh --self-test
+
+      - name: zizmor (pull_request_target, template injection, permissions)
+        run: ZIZMOR="$RUNNER_TEMP/zizmor" scripts/ci/check-workflow-security.sh

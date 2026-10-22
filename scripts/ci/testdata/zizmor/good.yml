@@ -1,0 +1,17 @@
+name: good
+on:
+  pull_request:
+permissions: {}
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: event data via env, not interpolated into the script
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: echo "${TITLE}"
