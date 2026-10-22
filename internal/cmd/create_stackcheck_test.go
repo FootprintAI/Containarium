@@ -23,3 +23,19 @@ func TestValidateStackLocal(t *testing.T) {
 		}
 	}
 }
+
+// Pins the ORDER, not just the helper: with --force and an unknown stack in
+// local mode, runCreate must fail on the stack before it looks for (let alone
+// deletes) the existing box. If the check moved after the --force block, the
+// first thing reached would be the local box lookup, which errors differently
+// (no Incus here), so the error would not name the stack.
+func TestRunCreate_UnknownStackFailsBeforeForceTouchesTheBox(t *testing.T) {
+	savedForce, savedNoKey, savedStack, savedAddr := forceRecreate, noSSHKey, stackID, serverAddr
+	defer func() { forceRecreate, noSSHKey, stackID, serverAddr = savedForce, savedNoKey, savedStack, savedAddr }()
+	forceRecreate, noSSHKey, stackID, serverAddr = true, true, "typo", ""
+
+	err := runCreate(nil, []string{"alice"})
+	if err == nil || !strings.Contains(err.Error(), `unknown stack "typo"`) {
+		t.Fatalf("runCreate = %v, want the unknown-stack error before any --force work", err)
+	}
+}

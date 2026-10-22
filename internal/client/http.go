@@ -267,6 +267,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
 		IdleThresholdMinutes: c.IdleThresholdMinutes,
+		PodmanEnabled:        c.PodmanEnabled,
 	}
 
 	if c.Network != nil {
