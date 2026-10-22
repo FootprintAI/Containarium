@@ -35,7 +35,9 @@ func withTempHome(t *testing.T) string {
 		t.Setenv("USERPROFILE", home)
 	}
 	// Reset the package-level flag globals between tests so a
-	// previous test's --token / --server doesn't leak.
+	// previous test's --token / --server doesn't leak — on the way in as
+	// well as on the way out (#2922).
+	authToken, serverAddr = "", ""
 	t.Cleanup(func() {
 		authToken = ""
 		serverAddr = ""
@@ -111,7 +113,7 @@ func TestResolveAuthToken_PrecedenceChain(t *testing.T) {
 			defer func() { authToken = ""; serverAddr = "" }()
 			got := resolveAuthToken(tc.setServer)
 			if got != tc.want {
-				t.Fatalf("resolveAuthToken = %q, want %q", got, tc.want)
+				t.Fatalf("resolveAuthToken = %s, want %s", tokenFingerprint(got), tokenFingerprint(tc.want))
 			}
 		})
 	}
@@ -226,7 +228,7 @@ func TestFetchSessionStatus_NormalizesProtoEnum(t *testing.T) {
 		t.Errorf("Status = %q, want normalized %q", st.Status, "approved")
 	}
 	if st.Token != "ctnr_test" {
-		t.Errorf("Token = %q, want ctnr_test", st.Token)
+		t.Errorf("Token = %s, want %s", tokenFingerprint(st.Token), tokenFingerprint("ctnr_test"))
 	}
 	if st.UserEmail != "" || st.OrgID != "" {
 		t.Errorf("email/org must be empty (cloud status response omits them): email=%q org=%q", st.UserEmail, st.OrgID)
@@ -259,10 +261,10 @@ func TestLogin_HappyPath_WritesCredentials(t *testing.T) {
 	}
 	creds, ok := cf.Get(f.srv.URL)
 	if !ok {
-		t.Fatalf("credentials not stored for %s; file: %+v", f.srv.URL, cf)
+		t.Fatalf("credentials not stored for %s (file holds %d server(s))", f.srv.URL, len(cf.Servers))
 	}
 	if creds.Token != "ctnr_test_token" {
-		t.Fatalf("Token = %q, want ctnr_test_token", creds.Token)
+		t.Fatalf("Token = %s, want %s", tokenFingerprint(creds.Token), tokenFingerprint("ctnr_test_token"))
 	}
 	if creds.UserEmail != "alice@example.com" {
 		t.Fatalf("UserEmail = %q", creds.UserEmail)
@@ -693,7 +695,7 @@ func TestPollSession_RidesTransientErrors(t *testing.T) {
 		t.Fatalf("pollSession should ride out transient 5xx then approve, got err: %v", err)
 	}
 	if st.Token != "ctnr_ok" {
-		t.Fatalf("Token = %q, want ctnr_ok", st.Token)
+		t.Fatalf("Token = %s, want %s", tokenFingerprint(st.Token), tokenFingerprint("ctnr_ok"))
 	}
 	if !strings.Contains(out.String(), "retrying") {
 		t.Errorf("expected a transient-retry notice in output, got:\n%s", out.String())

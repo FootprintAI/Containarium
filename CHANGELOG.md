@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK=1` stops the model gateway billing a tenant's calls to a daemon-global provider key** (#3028). A token carrying a `key_owner` normally falls back to `<PROVIDER>_API_KEY` when its owner has no key of its own. With the option set it resolves through its owner or is refused up front, with or without a key resolver wired. Unset keeps today's behaviour, which a self-hosted daemon running on one global key relies on. Tokens without a `key_owner` are unaffected. Engine readiness follows the same rule, so a skill run whose owner has no key is refused up front (`FailedPrecondition`, `ListAgentEngines` shows the engine not ready) instead of being admitted on a global key the gateway will not spend.
 
+### Fixed
+
+- **`internal/cmd` tests no longer read the developer's real credential store** (#2922). `TestCanonicalServerAddr_SchemelessResolvesToStoredURL` failed in package order on a machine with real credentials, and its failure output printed the real token. The test binary now runs with `HOME` and the `CONTAINARIUM_*` environment replaced by a throwaway directory, `withTempHome` resets the flag globals on the way in as well as out, a guard test fails if the credential store resolves outside the temp dir, and no assertion in the package prints a token (a short hash is printed instead).
+
 ## [0.113.0] - 2026-10-22
 
 ### Added
