@@ -132,6 +132,34 @@ type Gateway struct {
 	// cover the provider. Nil when the daemon has no per-owner store (no
 	// Postgres) — then only GlobalProviders can make a provider ready.
 	Keys KeyResolver
+	// NoGlobalFallback mirrors modelgateway.Config.DisableGlobalKeyFallback:
+	// for a run with a key owner, GlobalProviders no longer makes a provider
+	// ready and no longer picks the default — only the owner's own key does.
+	// Without it a run is admitted on a daemon-global key that the gateway will
+	// then refuse to spend, and fails inside the box instead of up front.
+	NoGlobalFallback bool
+}
+
+// defaultProviderOrder is the order an unspecified engine is matched to a
+// provider when the choice is per owner (NoGlobalFallback); the same order the
+// daemon uses to pick its global default.
+var defaultProviderOrder = []string{"anthropic", "openai", "gemini"}
+
+// globalCovers reports whether the daemon-global key makes provider ready for
+// this caller.
+func (g *Gateway) globalCovers(provider, keyOwner string) bool {
+	if g.NoGlobalFallback && keyOwner != "" {
+		return false
+	}
+	return g.GlobalProviders[provider]
+}
+
+func (g *Gateway) ownerHasKey(ctx context.Context, keyOwner, provider string) bool {
+	if g.Keys == nil {
+		return false
+	}
+	_, ok := g.Keys.KeyFor(ctx, keyOwner, provider)
+	return ok
 }
 
 // Resolved is the engine and provider one run actually uses.
@@ -209,6 +237,21 @@ func Resolve(ctx context.Context, want pb.AgentEngine, keyOwner string, gw *Gate
 		return Resolved{Engine: want, Default: false}, nil
 	}
 
+	if want == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED && gw.NoGlobalFallback && keyOwner != "" {
+		for _, p := range defaultProviderOrder {
+			if gw.ownerHasKey(ctx, keyOwner, p) {
+				return Resolved{Engine: ForProvider(p), Provider: p, Default: true}, nil
+			}
+		}
+		return Resolved{}, &NotReadyError{
+			Engine:   want,
+			Provider: defaultProviderOrder[0],
+			KeyOwner: keyOwner,
+			Reason:   "no provider key is registered for this key owner, and this daemon does not fall back to a daemon-global key",
+			Fix:      fmt.Sprintf("containarium gateway key set %s --provider %s --key <value>", keyOwner, defaultProviderOrder[0]),
+		}
+	}
+
 	if want == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
 		return Resolved{
 			Engine:   ForProvider(gw.DefaultProvider),
@@ -226,13 +269,8 @@ func Resolve(ctx context.Context, want pb.AgentEngine, keyOwner string, gw *Gate
 		return Resolved{}, fmt.Errorf("engine %v has no known gateway provider", want)
 	}
 
-	if gw.GlobalProviders[provider] {
+	if gw.globalCovers(provider, keyOwner) || gw.ownerHasKey(ctx, keyOwner, provider) {
 		return Resolved{Engine: want, Provider: provider, Default: false}, nil
-	}
-	if gw.Keys != nil {
-		if _, hasKey := gw.Keys.KeyFor(ctx, keyOwner, provider); hasKey {
-			return Resolved{Engine: want, Provider: provider, Default: false}, nil
-		}
 	}
 
 	return Resolved{}, &NotReadyError{
@@ -304,7 +342,7 @@ func Statuses(ctx context.Context, keyOwner string, gw *Gateway, skills []SkillE
 		res, err := Resolve(ctx, e, keyOwner, gw)
 		if err == nil {
 			row.Readiness = pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY
-			if gw.GlobalProviders[res.Provider] {
+			if gw.globalCovers(res.Provider, keyOwner) {
 				row.Source = pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY
 			} else {
 				row.Source = pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_OWNER_KEY

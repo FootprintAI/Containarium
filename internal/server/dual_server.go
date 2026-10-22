@@ -2784,6 +2784,7 @@ skipAppHosting:
 				globalProviders[p] = true
 			}
 			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver, gw)
+			agentSkillServer.SetNoGlobalKeyFallback(os.Getenv(appconfig.EnvGatewayNoGlobalKeyFallback) == "1")
 			// The providers a recipe box may be seeded for: every provider the
 			// daemon holds a global key for, plus every operator-registered
 			// upstream (whose keys arrive per owner, so there is no global key to
