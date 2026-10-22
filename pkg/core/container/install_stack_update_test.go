@@ -161,6 +161,9 @@ func TestInstallStack_RecordFailureIsLoggedNotReturned(t *testing.T) {
 		if _, ok := b.config[incus.StackKey]; ok {
 			t.Error("the key was written despite both attempts failing")
 		}
+		if b.setConfigCalls != 2 {
+			t.Errorf("SetConfig calls = %d, want exactly 2 (one retry, bounded)", b.setConfigCalls)
+		}
 	})
 	t.Run("one conflicting write is retried", func(t *testing.T) {
 		b := &installStackBackend{setConfigErrs: []error{errors.New("etag mismatch")}}

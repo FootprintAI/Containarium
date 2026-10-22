@@ -506,8 +506,13 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
-// createTargetsPeer reports whether the create is routed to a remote backend,
-// by the same rule as the forwarding block in createContainerAuthorized.
+// createTargetsPeer reports whether the create names a remote backend, by the
+// same rule as the forwarding block in createContainerAuthorized. It is
+// evaluated BEFORE pool placement, so it sees only an explicit backend_id: a
+// --pool create that placement later routes to a peer is still validated
+// against THIS daemon's stack catalog (known gap; moving the check after
+// placement would mean allocating encrypted tenant storage before rejecting a
+// typo).
 func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
 	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
 }
