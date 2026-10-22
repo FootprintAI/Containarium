@@ -23,7 +23,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +30,9 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
     name: build image
     runs-on: ubuntu-latest
     steps:
