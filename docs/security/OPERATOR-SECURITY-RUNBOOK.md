@@ -1333,9 +1333,24 @@ While DEGRADED:
   guardrail and egress policy stores keep their own background retry
   (previous section).
 
-**Recovery.** Start Postgres (or fix connectivity), then restart the daemon
-(`systemctl restart containarium`). The restart wires every store through the
-normal startup path.
+**Recovery.** By default you restart the daemon once Postgres is back. To
+have it restart itself, set `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`:
+
+- A daemon whose startup check failed then pings Postgres in the background,
+  backing off from 5 s to 60 s.
+- Once Postgres answers **3 pings in a row**, the daemon shuts down
+  gracefully and exits with status **75**. The supervisor starts it again,
+  and every store is wired through the normal path.
+- Flap guard: it never exits before `CONTAINARIUM_POSTGRES_RECOVERY_MIN_UPTIME`
+  (default `2m`), and any failed ping resets the count.
+- A daemon whose startup check passed never exits for this.
+
+**Supervisor requirement.** The self-restart needs a supervisor that
+restarts the daemon after a non-zero exit. Every unit this repository ships
+has `Restart=on-failure`: `containarium service install`,
+`scripts/containarium.service` and the Terraform startup scripts. If you run
+your own unit, check for `Restart=on-failure` (or `always`), and check that
+75 is not listed in `SuccessExitStatus=`. Otherwise leave the flag off.
 
 ## Auditing recent administrative actions
 

@@ -375,6 +375,10 @@ message RunAgentSkillResponse {
   // Absolute path of the fetched workspace inside the box. Empty when the
   // request carried no git_source.
   string workspace_path = 5;
+  // Human-readable status from the server, e.g. how to follow a run that is
+  // still in flight on a server that runs skills asynchronously. Empty when
+  // the server has nothing to add; clients print it as-is when present.
+  string message = 6;
 }
 
 // ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
