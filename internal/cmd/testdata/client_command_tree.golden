@@ -231,6 +231,8 @@ token list-revoked
 token refresh
 token revoke
 token unscoped-report
+tool-access get
+tool-access set
 tracker change submit
 tracker change view
 tracker connect
