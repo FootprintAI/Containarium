@@ -111,6 +111,11 @@ type setContainerDeletePolicyRequest struct {
 	DeletePolicy string `json:"delete_policy"`
 }
 
+// setContainerToolAccessRequest is POST /v1/containers/{name}/tool-access.
+type setContainerToolAccessRequest struct {
+	ToolAccess string `json:"tool_access"`
+}
+
 // setContainerAttributionRequest is POST /v1/containers/{name}/attribution.
 type setContainerAttributionRequest struct {
 	Labels map[string]string `json:"labels"`

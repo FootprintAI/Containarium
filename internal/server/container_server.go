@@ -33,6 +33,7 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	"github.com/footprintai/containarium/pkg/core/backup"
@@ -4308,6 +4309,9 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	if st.DeletePolicy == incus.DeletePolicyProtected {
 		pc.DeletePolicy = pb.DeletePolicy_DELETE_POLICY_PROTECTED
 	}
+	// Tool-access level for platform-started runs (#2944): absent or any
+	// unrecognised value reads back as UNSPECIFIED (none recorded).
+	pc.ToolAccess = toolaccess.FromConfig(st.ToolAccess)
 	return pc
 }
 
