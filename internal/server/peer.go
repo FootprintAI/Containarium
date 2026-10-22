@@ -767,6 +767,9 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			Labels    map[string]string `json:"labels"`
 			GpuDevice string            `json:"gpuDevice"`
 			BackendID string            `json:"backendId"`
+			// A pointer so a peer that predates the field (omits it) is
+			// distinguishable from an explicit false (#2858).
+			PodmanEnabled *bool `json:"podmanEnabled"`
 		} `json:"containers"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
@@ -784,16 +787,21 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			state = "Stopped"
 		}
 
+		// Absent = an older peer: report true, as every box did before the
+		// flag was recorded.
+		podmanEnabled := c.PodmanEnabled == nil || *c.PodmanEnabled
+
 		containers = append(containers, incus.ContainerInfo{
-			Name:      c.Name,
-			State:     state,
-			IPAddress: c.Network.IPAddress,
-			CPU:       c.Resources.CPU,
-			Memory:    c.Resources.Memory,
-			Disk:      c.Resources.Disk,
-			GPU:       c.GpuDevice,
-			Labels:    c.Labels,
-			BackendID: pc.ID, // Tag with peer's backend ID
+			Name:          c.Name,
+			PodmanEnabled: podmanEnabled,
+			State:         state,
+			IPAddress:     c.Network.IPAddress,
+			CPU:           c.Resources.CPU,
+			Memory:        c.Resources.Memory,
+			Disk:          c.Resources.Disk,
+			GPU:           c.GpuDevice,
+			Labels:        c.Labels,
+			BackendID:     pc.ID, // Tag with peer's backend ID
 		})
 	}
 	return containers, nil

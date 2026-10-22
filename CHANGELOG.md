@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK=1` stops the model gateway billing a tenant's calls to a daemon-global provider key** (#3028). A token carrying a `key_owner` normally falls back to `<PROVIDER>_API_KEY` when its owner has no key of its own. With the option set it resolves through its owner or is refused up front, with or without a key resolver wired. Unset keeps today's behaviour, which a self-hosted daemon running on one global key relies on. Tokens without a `key_owner` are unaffected. Engine readiness follows the same rule, so a skill run whose owner has no key is refused up front (`FailedPrecondition`, `ListAgentEngines` shows the engine not ready) instead of being admitted on a global key the gateway will not spend.
 
+### Fixed
+
+- **`podman_enabled` now reports whether the box was created with Podman** (#2858). Create records `user.containarium.podman_enabled` (`true` or `false`) and list/get read it back; the REST client now decodes the field under its real name (`podmanEnabled`; it read a stale `dockerEnabled` tag and so never saw it). Boxes created before this release have no stored value and keep reporting `true`, which is wrong for any of them created with `enable_podman=false`; peer backends on an older version also report `true`. Kubernetes boxes report `true` (no toggle). This supersedes the 0.110.0 note that `PodmanEnabled` is `true` for every box because Podman is in every image: it is not, since `enable_podman` decides whether Podman is installed, nesting and the baked image.
+
 ## [0.113.0] - 2026-10-22
 
 ### Added
