@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.114.2] - 2026-10-22
+
+### Upgrading
+
+- **`v0.114.0` and `v0.114.1` have no daemon image, so a Helm install of those chart versions cannot pull it.** `containarium-daemon.yml` was rejected by GitHub on both tags (two job-level `permissions:` blocks), so `ghcr.io/footprintai/containarium:v0.114.0` and `:v0.114.1` were never built or signed, and the release's Helm install-and-upgrade check failed at "Wait for the exact release images". The binaries, the other images and the PyPI distro of both releases are published normally. Upgrade to `0.114.2`, the first release since 0.113.0 whose tag builds the daemon image.
+
 ### Fixed
 
 - **The daemon image workflow is valid again, so a release tag builds and signs `ghcr.io/footprintai/containarium`.** `containarium-daemon.yml` had two job-level `permissions:` blocks after #2909 and #2866 each added one, which GitHub rejects as a whole: the workflow did not run at all on the `v0.114.0` tag, so that release has no daemon image. The two blocks are merged into one (`contents: read`, `packages: write`, `security-events: write`, `id-token: write`). actionlint reports the duplicate (`key "permissions" is duplicated in "daemon" job`) and passes on the fixed file.
