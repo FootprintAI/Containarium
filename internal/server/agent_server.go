@@ -687,7 +687,7 @@ type provisionOptions struct {
 	// value) means "no override, use the manifest", unchanged pre-#2228
 	// behavior for every caller that doesn't set this.
 	engineOverride pb.AgentEngine
-	// orgID (#3028) is the validated on_behalf_of_org_id of the request: the
+	// orgID is the validated on_behalf_of_org_id of the request: the
 	// org whose provider key the run spends. Empty = derive the owner from the
 	// box label or the caller, as before.
 	orgID string

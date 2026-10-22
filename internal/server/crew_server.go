@@ -158,7 +158,7 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	if err != nil {
 		return nil, err
 	}
-	// on_behalf_of_org_id (#3028): refuse an unauthorized or malformed org
+	// on_behalf_of_org_id: refuse an unauthorized or malformed org
 	// attribution before any member is provisioned.
 	if _, err := authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
 		return nil, err

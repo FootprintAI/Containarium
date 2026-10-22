@@ -1475,8 +1475,8 @@ type RunAgentSkillRequest struct {
 	// way an unready manifest engine is. UNSPECIFIED (the default) means "use
 	// the manifest", unchanged pre-#2228 behavior.
 	Engine AgentEngine `protobuf:"varint,10,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
-	// The organization this run is attributed to for MODEL KEY RESOLUTION
-	// (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+	// The organization this run is attributed to for MODEL KEY RESOLUTION:
+	// when set, the run's gateway token carries key_owner "org:<id>"
 	// and spends that org's registered provider key, instead of the owner
 	// derived from the shared skill box's cloud_org_id label or the calling
 	// identity. The skill box is shared across runs, so the org has to travel
@@ -3095,8 +3095,8 @@ type RunCrewRequest struct {
 	// no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
 	// unchanged pre-#2228 behavior.
 	EngineOverrides map[string]AgentEngine `protobuf:"bytes,9,rep,name=engine_overrides,json=engineOverrides,proto3" json:"engine_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value,enum=containarium.v1.AgentEngine"`
-	// The organization every member run is attributed to for MODEL KEY RESOLUTION
-	// (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+	// The organization every member run is attributed to for MODEL KEY RESOLUTION:
+	// when set, the run's gateway token carries key_owner "org:<id>"
 	// and spends that org's registered provider key, instead of the owner
 	// derived from the shared skill box's cloud_org_id label or the calling
 	// identity. The skill box is shared across runs, so the org has to travel

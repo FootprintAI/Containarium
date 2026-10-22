@@ -18560,7 +18560,7 @@
         },
         "onBehalfOfOrgId": {
           "type": "string",
-          "description": "The organization this run is attributed to for MODEL KEY RESOLUTION\n(#3028): when set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
+          "description": "The organization this run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -18628,7 +18628,7 @@
         },
         "onBehalfOfOrgId": {
           "type": "string",
-          "description": "The organization every member run is attributed to for MODEL KEY RESOLUTION\n(#3028): when set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
+          "description": "The organization every member run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       }
     },

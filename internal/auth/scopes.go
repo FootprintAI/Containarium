@@ -112,7 +112,7 @@ const (
 	// agents:run-for-org — carried by a service credential (the managed
 	// control plane's driver token) that has ALREADY authorized the end user
 	// and starts a skill/crew run attributed to an organization, so the run
-	// spends that org's registered provider key (#3028). Matched literally:
+	// spends that org's registered provider key. Matched literally:
 	// neither the wildcard nor an unscoped admin token carries it, so an
 	// operator token cannot spend another org's key.
 	ScopeAgentsRunForOrg = "agents:run-for-org"

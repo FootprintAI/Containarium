@@ -147,7 +147,7 @@ func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner,
 func runKeyOwner(ctx context.Context, box *pb.Container, orgID string) string {
 	var owner string
 	if orgID != "" {
-		// The request's own org attribution (#3028) wins: the skill box is
+		// The request's own org attribution wins: the skill box is
 		// shared across runs, so its label cannot say whose run this is.
 		owner = modelgateway.OrgKeyOwner(orgID)
 	} else if orgID := strings.TrimSpace(box.GetLabels()[cloudOrgIDLabel]); orgID != "" {
@@ -165,7 +165,7 @@ func runKeyOwner(ctx context.Context, box *pb.Container, orgID string) string {
 }
 
 // authorizeRunOrg validates RunAgentSkillRequest/RunCrewRequest.
-// on_behalf_of_org_id (#3028) and returns it, or "" when unset. Setting it
+// on_behalf_of_org_id and returns it, or "" when unset. Setting it
 // spends that org's provider key, so only a service credential carrying the
 // literal agents:run-for-org scope may; it must also be a well-formed id.
 func authorizeRunOrg(ctx context.Context, orgID string) (string, error) {

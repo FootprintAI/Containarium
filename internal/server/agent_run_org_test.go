@@ -19,7 +19,7 @@ func runOrgCtx(scopes string) context.Context {
 	))
 }
 
-// TestAuthorizeRunOrg pins who may attribute a run to an org (#3028): only a
+// TestAuthorizeRunOrg pins who may attribute a run to an org: only a
 // credential holding the literal agents:run-for-org scope. The wildcard, an
 // unscoped admin token, and a plain agents:run token must not, or any caller
 // could spend another org's provider key.
