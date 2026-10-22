@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -54,6 +55,15 @@ const (
 // req. Returns nil if every field is within bounds; otherwise a
 // gRPC InvalidArgument status that names the offending field +
 // limit so the caller can fix.
+// validateStackID rejects an unknown stack ID with InvalidArgument, naming the
+// valid IDs (#2860). Empty means no stack and is valid.
+func validateStackID(id string) error {
+	if err := stacks.GetDefault().CheckStackID(id); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return nil
+}
+
 func validateCreateContainerBounds(req *pb.CreateContainerRequest) error {
 	if n := len(req.SshKeys); n > MaxSSHKeys {
 		return status.Errorf(codes.InvalidArgument,

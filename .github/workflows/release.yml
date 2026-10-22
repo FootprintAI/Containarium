@@ -237,7 +237,7 @@ jobs:
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Build agent-runtime bundle
         # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by

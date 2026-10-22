@@ -173,6 +173,14 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
+	// An unknown stack is refused before anything is created (#2860):
+	// installPackages silently skips an ID it cannot resolve, which would
+	// leave a box with nothing installed. The RPC rejects it first; this
+	// guards callers that reach the Manager directly.
+	if err := stacks.GetDefault().CheckStackID(opts.Stack); err != nil {
+		return nil, err
+	}
+
 	if opts.Verbose {
 		fmt.Printf("Creating container: %s\n", containerName)
 	}
@@ -1501,6 +1509,16 @@ func (m *Manager) InstallStack(username, stackID string) error {
 			// Dev stacks: run as user
 			userCmd := []string{"su", "-", effectiveUser, "-c", cmd}
 			_ = m.incus.Exec(containerName, userCmd)
+		}
+	}
+
+	// Record the stack so list/get report it (#2859). Single-valued: a second
+	// stack replaces the first, matching Container.stack. Base scripts are not
+	// stacks (the startup reconcile runs one in every box) and never record.
+	// A failure to record is logged, not returned: the install itself succeeded.
+	if !isBaseScript {
+		if err := m.incus.SetConfig(containerName, incus.StackKey, stackID); err != nil {
+			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
 		}
 	}
 
