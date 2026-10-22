@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A skill box with no `agent-runtime` is reported as `FailedPrecondition` (runtime missing) on a real incus host, not as a generic exec failure** (#2931). Incus converts exit statuses 127 and 126 into exec errors ("Command not found" / "Command not executable"), so the exit-127 check added in 0.114.1 never fired outside unit tests; those errors are now recognised as a missing runtime. The run-lease e2e lane's warm-up accepts that outcome too, which it relies on whenever the recipe's best-effort runtime install does not land.
+
 ## [0.114.2] - 2026-10-22
 
 ### Upgrading
