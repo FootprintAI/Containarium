@@ -112,7 +112,10 @@ Two further lanes cover the supply chain:
   `.github/workflows` is pinned to a full commit SHA (version kept as a
   trailing comment), and the
   [`workflow-lint`](.github/workflows/workflow-lint.yml) workflow runs
-  `actionlint` and fails on any unpinned action. Workflows that pin a
+  `actionlint` and fails on any unpinned action. It also runs `zizmor` and
+  fails on `pull_request_target`, template injection from event data in
+  `run:` blocks, and over-broad `permissions:`; a seeded violation of each
+  rule is part of the lane's self-test. Workflows that pin a
   branch were frozen at the branch head on the day of pinning; Dependabot
   moves the pin forward.
 

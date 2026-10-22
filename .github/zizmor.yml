@@ -1,0 +1,3 @@
+# zizmor configuration for scripts/ci/check-workflow-security.sh (#2904).
+# Per-finding ignores only, each with a reason; no rule is disabled.
+rules: {}
