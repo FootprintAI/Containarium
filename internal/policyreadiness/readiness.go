@@ -82,7 +82,7 @@ func (r Result) Detail() string {
 	case r.Status == healthpb.HealthCheckResponse_SERVING:
 		return "ready"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == CorePostgresService:
-		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; they stay off until the daemon restarts"
+		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; they stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers)"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
 		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed until the daemon's retry reaches the database"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:
