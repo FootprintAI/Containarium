@@ -39,6 +39,8 @@ const (
 	ContainerService_AdoptMigratedContainer_FullMethodName    = "/containarium.v1.ContainerService/AdoptMigratedContainer"
 	ContainerService_ToggleMonitoring_FullMethodName          = "/containarium.v1.ContainerService/ToggleMonitoring"
 	ContainerService_ToggleAutoSleep_FullMethodName           = "/containarium.v1.ContainerService/ToggleAutoSleep"
+	ContainerService_GetToolAccessLevel_FullMethodName        = "/containarium.v1.ContainerService/GetToolAccessLevel"
+	ContainerService_SetToolAccessLevel_FullMethodName        = "/containarium.v1.ContainerService/SetToolAccessLevel"
 	ContainerService_SetContainerTTL_FullMethodName           = "/containarium.v1.ContainerService/SetContainerTTL"
 	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
@@ -221,6 +223,12 @@ type ContainerServiceClient interface {
 	// HTTP wake proxy are separate work — this RPC only sets the flag
 	// they will consume.
 	ToggleAutoSleep(ctx context.Context, in *ToggleAutoSleepRequest, opts ...grpc.CallOption) (*ToggleAutoSleepResponse, error)
+	// GetToolAccessLevel reads a box's tool-access level for unattended
+	// coding-agent runs. A box that was never given a level reads as NONE.
+	GetToolAccessLevel(ctx context.Context, in *GetToolAccessLevelRequest, opts ...grpc.CallOption) (*GetToolAccessLevelResponse, error)
+	// SetToolAccessLevel records a box's tool-access level. Stores the level
+	// only; applying it on the box (allow list, sudoers) is separate work.
+	SetToolAccessLevel(ctx context.Context, in *SetToolAccessLevelRequest, opts ...grpc.CallOption) (*SetToolAccessLevelResponse, error)
 	// SetContainerTTL schedules or clears a container's auto-delete time.
 	// duration_seconds == 0 clears any existing TTL; > 0 sets
 	// ttl_expires_at to now() + duration. duration_seconds is capped at
@@ -631,6 +639,26 @@ func (c *containerServiceClient) ToggleAutoSleep(ctx context.Context, in *Toggle
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ToggleAutoSleepResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ToggleAutoSleep_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetToolAccessLevel(ctx context.Context, in *GetToolAccessLevelRequest, opts ...grpc.CallOption) (*GetToolAccessLevelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetToolAccessLevelResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetToolAccessLevel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetToolAccessLevel(ctx context.Context, in *SetToolAccessLevelRequest, opts ...grpc.CallOption) (*SetToolAccessLevelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetToolAccessLevelResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetToolAccessLevel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,6 +1286,12 @@ type ContainerServiceServer interface {
 	// HTTP wake proxy are separate work — this RPC only sets the flag
 	// they will consume.
 	ToggleAutoSleep(context.Context, *ToggleAutoSleepRequest) (*ToggleAutoSleepResponse, error)
+	// GetToolAccessLevel reads a box's tool-access level for unattended
+	// coding-agent runs. A box that was never given a level reads as NONE.
+	GetToolAccessLevel(context.Context, *GetToolAccessLevelRequest) (*GetToolAccessLevelResponse, error)
+	// SetToolAccessLevel records a box's tool-access level. Stores the level
+	// only; applying it on the box (allow list, sudoers) is separate work.
+	SetToolAccessLevel(context.Context, *SetToolAccessLevelRequest) (*SetToolAccessLevelResponse, error)
 	// SetContainerTTL schedules or clears a container's auto-delete time.
 	// duration_seconds == 0 clears any existing TTL; > 0 sets
 	// ttl_expires_at to now() + duration. duration_seconds is capped at
@@ -1533,6 +1567,12 @@ func (UnimplementedContainerServiceServer) ToggleMonitoring(context.Context, *To
 }
 func (UnimplementedContainerServiceServer) ToggleAutoSleep(context.Context, *ToggleAutoSleepRequest) (*ToggleAutoSleepResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ToggleAutoSleep not implemented")
+}
+func (UnimplementedContainerServiceServer) GetToolAccessLevel(context.Context, *GetToolAccessLevelRequest) (*GetToolAccessLevelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetToolAccessLevel not implemented")
+}
+func (UnimplementedContainerServiceServer) SetToolAccessLevel(context.Context, *SetToolAccessLevelRequest) (*SetToolAccessLevelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetToolAccessLevel not implemented")
 }
 func (UnimplementedContainerServiceServer) SetContainerTTL(context.Context, *SetContainerTTLRequest) (*SetContainerTTLResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerTTL not implemented")
@@ -2058,6 +2098,42 @@ func _ContainerService_ToggleAutoSleep_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ToggleAutoSleep(ctx, req.(*ToggleAutoSleepRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetToolAccessLevel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetToolAccessLevelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetToolAccessLevel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetToolAccessLevel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetToolAccessLevel(ctx, req.(*GetToolAccessLevelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetToolAccessLevel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetToolAccessLevelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetToolAccessLevel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetToolAccessLevel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetToolAccessLevel(ctx, req.(*SetToolAccessLevelRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3030,6 +3106,14 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ToggleAutoSleep",
 			Handler:    _ContainerService_ToggleAutoSleep_Handler,
+		},
+		{
+			MethodName: "GetToolAccessLevel",
+			Handler:    _ContainerService_GetToolAccessLevel_Handler,
+		},
+		{
+			MethodName: "SetToolAccessLevel",
+			Handler:    _ContainerService_SetToolAccessLevel_Handler,
 		},
 		{
 			MethodName: "SetContainerTTL",

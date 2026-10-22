@@ -581,6 +581,12 @@ type ContainerInfo struct {
 	// defaults to 15 when the key is missing or unparseable.
 	IdleThresholdMinutes int32
 
+	// ToolAccessLevel mirrors user.containarium.tool_access_level, the raw
+	// stored string ("none", "build_tools", "full_sudo"); empty when never
+	// set. Callers map it to the proto enum and treat anything unrecognised
+	// as the lowest level.
+	ToolAccessLevel string
+
 	// LastStartedAt mirrors user.containarium.last_started_at, stamped by
 	// StartContainer. Zero value when the key is missing or unparseable.
 	// Consumed by the Phase 2 auto-sleep ticker for its anti-thrash window.
@@ -627,6 +633,10 @@ const AutoSleepEnabledKey = "user.containarium.auto_sleep_enabled"
 // IdleThresholdMinutesKey is the Incus config key storing the per-container
 // idle threshold in minutes consumed by the Phase 2 auto-sleep ticker.
 const IdleThresholdMinutesKey = "user.containarium.idle_threshold_minutes"
+
+// ToolAccessLevelKey is the Incus config key storing the per-box tool-access
+// level for unattended coding-agent runs (#2944). Absent means "none".
+const ToolAccessLevelKey = "user.containarium.tool_access_level"
 
 // LastStartedAtKey is the Incus config key storing the RFC3339 timestamp of
 // the most recent StartContainer success. The Phase 2 auto-sleep ticker
@@ -1240,6 +1250,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
+			ToolAccessLevel:           inst.Config[ToolAccessLevelKey],
 			LastStartedAt:             parseLastStartedAt(inst.Config),
 			TTLExpiresAt:              parseTTLExpiresAt(inst.Config),
 			StoppedAt:                 parseStoppedAt(inst.Config),
@@ -1326,6 +1337,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
+		ToolAccessLevel:      inst.Config[ToolAccessLevelKey],
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],

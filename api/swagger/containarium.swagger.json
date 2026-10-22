@@ -4271,6 +4271,78 @@
         ]
       }
     },
+    "/v1/containers/{username}/tool-access": {
+      "get": {
+        "summary": "Get a box's tool-access level",
+        "description": "Returns the recorded tool-access level (NONE, BUILD_TOOLS or FULL_SUDO) that bounds what an unattended coding-agent run may do on the box. NONE when never set.",
+        "operationId": "ContainerService_GetToolAccessLevel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetToolAccessLevelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      },
+      "put": {
+        "summary": "Set a box's tool-access level",
+        "description": "Records the tool-access level for unattended coding-agent runs on the box. UNSPECIFIED is rejected. FULL_SUDO is an explicit per-box choice.",
+        "operationId": "ContainerService_SetToolAccessLevel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetToolAccessLevelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetToolAccessLevelBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/crew-runs/{id}": {
       "get": {
         "summary": "Get crew run",
@@ -14982,6 +15054,16 @@
         }
       }
     },
+    "GetToolAccessLevelResponse": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/ToolAccessLevel",
+          "description": "Recorded level. TOOL_ACCESS_LEVEL_NONE when none was ever set; never\nTOOL_ACCESS_LEVEL_UNSPECIFIED."
+        }
+      },
+      "description": "GetToolAccessLevelResponse reports the level recorded for the box."
+    },
     "GetTrackerChangeResponse": {
       "type": "object",
       "properties": {
@@ -19666,6 +19748,30 @@
         }
       }
     },
+    "SetToolAccessLevelBody": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/ToolAccessLevel",
+          "description": "Desired level. TOOL_ACCESS_LEVEL_UNSPECIFIED is rejected with\nInvalidArgument. Setting the level a box already has is a no-op success."
+        }
+      },
+      "description": "SetToolAccessLevelRequest records a box's tool-access level. This stores\nthe level only; it does not yet change what runs on the box (#2944, later\nslices apply it)."
+    },
+    "SetToolAccessLevelResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary of what changed."
+        },
+        "level": {
+          "$ref": "#/definitions/ToolAccessLevel",
+          "description": "Level now recorded for the box."
+        }
+      },
+      "description": "SetToolAccessLevelResponse reports the level now recorded."
+    },
     "SetTrackerConnectionRequest": {
       "type": "object",
       "properties": {
@@ -20638,6 +20744,17 @@
         }
       },
       "description": "ToggleMonitoringResponse reports the new monitoring state."
+    },
+    "ToolAccessLevel": {
+      "type": "string",
+      "enum": [
+        "TOOL_ACCESS_LEVEL_UNSPECIFIED",
+        "TOOL_ACCESS_LEVEL_NONE",
+        "TOOL_ACCESS_LEVEL_BUILD_TOOLS",
+        "TOOL_ACCESS_LEVEL_FULL_SUDO"
+      ],
+      "default": "TOOL_ACCESS_LEVEL_UNSPECIFIED",
+      "description": "ToolAccessLevel is the per-box tool-access level for unattended\n(headless) coding-agent runs. It bounds what such a run may do without a\nhuman approving each command (#2944). The default for every box is NONE,\nwhich is today's behaviour.\n\n - TOOL_ACCESS_LEVEL_UNSPECIFIED: Not set. Requests must name a level; a box that was never given one reads\nback as TOOL_ACCESS_LEVEL_NONE.\n - TOOL_ACCESS_LEVEL_NONE: Default. An unattended run may do nothing that needs approval.\n - TOOL_ACCESS_LEVEL_BUILD_TOOLS: An unattended run may use the platform's managed build/test toolchains.\n - TOOL_ACCESS_LEVEL_FULL_SUDO: Passwordless sudo for the box user. An explicit, per-box choice: software\ninstalled this way is the owner's to maintain, the platform does not\npatch it."
     },
     "TrackerChange": {
       "type": "object",

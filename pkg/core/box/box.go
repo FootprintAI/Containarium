@@ -179,9 +179,12 @@ type BoxStatus struct {
 	IsCore bool
 
 	// Lifecycle metadata (LXC: user.containarium.* config keys).
-	MonitoringEnabled         bool
-	AutoSleepEnabled          bool
-	IdleThresholdMinutes      int32
+	MonitoringEnabled    bool
+	AutoSleepEnabled     bool
+	IdleThresholdMinutes int32
+	// ToolAccessLevel is the raw stored tool-access level ("none",
+	// "build_tools", "full_sudo"); empty when never set (#2944).
+	ToolAccessLevel           string
 	TTLExpiresAt              time.Time
 	StoppedAt                 time.Time
 	DeleteAfterStoppedSeconds int64

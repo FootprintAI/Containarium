@@ -106,6 +106,13 @@ type setContainerTTLRequest struct {
 	DurationSeconds int64 `json:"duration_seconds"`
 }
 
+// setToolAccessLevelRequest is PUT /v1/containers/{name}/tool-access. Level is
+// the proto enum's name (e.g. "TOOL_ACCESS_LEVEL_BUILD_TOOLS"), which protojson
+// on the gateway accepts.
+type setToolAccessLevelRequest struct {
+	Level string `json:"level"`
+}
+
 // setContainerDeletePolicyRequest is POST /v1/containers/{name}/delete-policy.
 type setContainerDeletePolicyRequest struct {
 	DeletePolicy string `json:"delete_policy"`

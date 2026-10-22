@@ -225,6 +225,7 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		MonitoringEnabled:         info.MonitoringEnabled,
 		AutoSleepEnabled:          info.AutoSleepEnabled,
 		IdleThresholdMinutes:      info.IdleThresholdMinutes,
+		ToolAccessLevel:           info.ToolAccessLevel,
 		TTLExpiresAt:              info.TTLExpiresAt,
 		StoppedAt:                 info.StoppedAt,
 		DeleteAfterStoppedSeconds: info.DeleteAfterStoppedSeconds,

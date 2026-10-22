@@ -388,6 +388,33 @@ service ContainerService {
     };
   }
 
+  // GetToolAccessLevel reads a box's tool-access level for unattended
+  // coding-agent runs. A box that was never given a level reads as NONE.
+  rpc GetToolAccessLevel(GetToolAccessLevelRequest) returns (GetToolAccessLevelResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/tool-access"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a box's tool-access level";
+      description: "Returns the recorded tool-access level (NONE, BUILD_TOOLS or FULL_SUDO) that bounds what an unattended coding-agent run may do on the box. NONE when never set.";
+      tags: "Container Operations";
+    };
+  }
+
+  // SetToolAccessLevel records a box's tool-access level. Stores the level
+  // only; applying it on the box (allow list, sudoers) is separate work.
+  rpc SetToolAccessLevel(SetToolAccessLevelRequest) returns (SetToolAccessLevelResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/tool-access"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set a box's tool-access level";
+      description: "Records the tool-access level for unattended coding-agent runs on the box. UNSPECIFIED is rejected. FULL_SUDO is an explicit per-box choice.";
+      tags: "Container Operations";
+    };
+  }
+
   // SetContainerTTL schedules or clears a container's auto-delete time.
   // duration_seconds == 0 clears any existing TTL; > 0 sets
   // ttl_expires_at to now() + duration. duration_seconds is capped at

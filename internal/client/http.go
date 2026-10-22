@@ -471,6 +471,62 @@ func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	return out, nil
 }
 
+// GetToolAccessLevel reads a box's tool-access level via HTTP.
+func (c *HTTPClient) GetToolAccessLevel(username string) (*pb.GetToolAccessLevelResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/tool-access", url.PathEscape(username))
+	out := &pb.GetToolAccessLevelResponse{}
+	if err := c.doToolAccess(ctx, http.MethodGet, path, nil, out); err != nil {
+		return nil, fmt.Errorf("get tool-access level: %w", err)
+	}
+	return out, nil
+}
+
+// SetToolAccessLevel records a box's tool-access level via HTTP. See
+// GRPCClient.SetToolAccessLevel for semantics.
+func (c *HTTPClient) SetToolAccessLevel(username string, level pb.ToolAccessLevel) (*pb.SetToolAccessLevelResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/tool-access", url.PathEscape(username))
+	body, err := json.Marshal(setToolAccessLevelRequest{Level: level.String()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	out := &pb.SetToolAccessLevelResponse{}
+	if err := c.doToolAccess(ctx, http.MethodPut, path, body, out); err != nil {
+		return nil, fmt.Errorf("set tool-access level: %w", err)
+	}
+	return out, nil
+}
+
+// doToolAccess runs one tool-access request and decodes the protojson
+// response into out, surfacing the server's {"error": ...} text on failure.
+func (c *HTTPClient) doToolAccess(ctx context.Context, method, path string, body []byte, out proto.Message) error {
+	resp, err := c.doRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 // SetContainerTTL schedules (durationSeconds > 0) or clears (== 0) a
 // container's auto-delete TTL via the REST shim. Used by the containarium-run
 // keep-on-failure path so a kept debug box self-reaps (#264 TTL-404).

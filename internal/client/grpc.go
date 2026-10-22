@@ -336,6 +336,32 @@ func (c *GRPCClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	return resp, nil
 }
 
+// GetToolAccessLevel reads a box's tool-access level. A box that never had
+// one set reads as NONE.
+func (c *GRPCClient) GetToolAccessLevel(username string) (*pb.GetToolAccessLevelResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetToolAccessLevel(ctx, &pb.GetToolAccessLevelRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tool-access level: %w", err)
+	}
+	return resp, nil
+}
+
+// SetToolAccessLevel records a box's tool-access level. It stores the level;
+// it does not by itself change what runs on the box.
+func (c *GRPCClient) SetToolAccessLevel(username string, level pb.ToolAccessLevel) (*pb.SetToolAccessLevelResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.SetToolAccessLevel(ctx, &pb.SetToolAccessLevelRequest{Username: username, Level: level})
+	if err != nil {
+		return nil, fmt.Errorf("failed to set tool-access level: %w", err)
+	}
+	return resp, nil
+}
+
 // SetContainerTTL schedules (durationSeconds > 0) or clears (== 0) a
 // container's auto-delete TTL. The daemon stamps
 // user.containarium.ttl_expires_at, which the ttlsweeper consumes to

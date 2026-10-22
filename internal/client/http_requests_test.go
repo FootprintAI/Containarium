@@ -37,6 +37,7 @@ func TestRequestPayloadWireFormat(t *testing.T) {
 		{"containerResources", containerResources{}, []string{"cpu", "disk", "memory"}},
 		{"toggleAutoSleepRequest", toggleAutoSleepRequest{}, []string{"enabled", "idle_threshold_minutes"}},
 		{"setContainerTTLRequest", setContainerTTLRequest{}, []string{"duration_seconds"}},
+		{"setToolAccessLevelRequest", setToolAccessLevelRequest{}, []string{"level"}},
 		{"setContainerDeletePolicyRequest", setContainerDeletePolicyRequest{}, []string{"delete_policy"}},
 		{"setContainerAttributionRequest", setContainerAttributionRequest{}, []string{"labels"}},
 		{"startContainerRequest", startContainerRequest{}, []string{"ready_timeout_seconds", "wait_for_ready"}},

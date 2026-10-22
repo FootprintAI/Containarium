@@ -55,6 +55,27 @@ enum AccessType {
   ACCESS_TYPE_RDP = 1;
 }
 
+// ToolAccessLevel is the per-box tool-access level for unattended
+// (headless) coding-agent runs. It bounds what such a run may do without a
+// human approving each command (#2944). The default for every box is NONE,
+// which is today's behaviour.
+enum ToolAccessLevel {
+  // Not set. Requests must name a level; a box that was never given one reads
+  // back as TOOL_ACCESS_LEVEL_NONE.
+  TOOL_ACCESS_LEVEL_UNSPECIFIED = 0;
+
+  // Default. An unattended run may do nothing that needs approval.
+  TOOL_ACCESS_LEVEL_NONE = 1;
+
+  // An unattended run may use the platform's managed build/test toolchains.
+  TOOL_ACCESS_LEVEL_BUILD_TOOLS = 2;
+
+  // Passwordless sudo for the box user. An explicit, per-box choice: software
+  // installed this way is the owner's to maintain, the platform does not
+  // patch it.
+  TOOL_ACCESS_LEVEL_FULL_SUDO = 3;
+}
+
 // ContainerState represents the current state of a container
 enum ContainerState {
   // Unspecified state (should not be used)
@@ -805,6 +826,40 @@ message ToggleMonitoringResponse {
   // the toggle (mirrors Container.monitoring_enabled in subsequent
   // GetContainer responses).
   bool monitoring_enabled = 2;
+}
+
+// GetToolAccessLevelRequest reads a box's tool-access level.
+message GetToolAccessLevelRequest {
+  // Username of the container.
+  string username = 1;
+}
+
+// GetToolAccessLevelResponse reports the level recorded for the box.
+message GetToolAccessLevelResponse {
+  // Recorded level. TOOL_ACCESS_LEVEL_NONE when none was ever set; never
+  // TOOL_ACCESS_LEVEL_UNSPECIFIED.
+  ToolAccessLevel level = 1;
+}
+
+// SetToolAccessLevelRequest records a box's tool-access level. This stores
+// the level only; it does not yet change what runs on the box (#2944, later
+// slices apply it).
+message SetToolAccessLevelRequest {
+  // Username of the container.
+  string username = 1;
+
+  // Desired level. TOOL_ACCESS_LEVEL_UNSPECIFIED is rejected with
+  // InvalidArgument. Setting the level a box already has is a no-op success.
+  ToolAccessLevel level = 2;
+}
+
+// SetToolAccessLevelResponse reports the level now recorded.
+message SetToolAccessLevelResponse {
+  // Operator-facing summary of what changed.
+  string message = 1;
+
+  // Level now recorded for the box.
+  ToolAccessLevel level = 2;
 }
 
 // ToggleAutoSleepRequest opts a container into (or out of) auto-sleep
