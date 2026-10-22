@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,14 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
+	// An unknown stack is refused before anything is created (#2860):
+	// installPackages silently skips an ID it cannot resolve, which would
+	// leave a box with nothing installed. The RPC rejects it first; this
+	// guards callers that reach the Manager directly.
+	if err := stacks.GetDefault().CheckStackID(opts.Stack); err != nil {
+		return nil, err
+	}
+
 	if opts.Verbose {
 		fmt.Printf("Creating container: %s\n", containerName)
 	}
@@ -238,9 +247,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
-	// Record the requested stack so list/get can report it later (#2163), but
-	// only a stack that resolves: installPackages silently skips an unknown
-	// ID, so recording it would report a stack that was never installed.
+	// Record the requested stack so list/get can report it later (#2163).
+	// Create refuses an unknown stack above, so this is always a resolvable
+	// ID; the check stays as defence in depth so a stack that was never
+	// installed can never be recorded.
 	if opts.Stack != "" && stacks.GetDefault().ValidateStackID(opts.Stack) {
 		labelConfig[incus.StackKey] = opts.Stack
 	}
@@ -256,6 +266,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Env:                    otelEnvVars(opts, containerName),
 		ExtraConfig:            labelConfig,
 	}
+	// Record whether podman was requested, always, so a box created with it
+	// off is distinguishable from a legacy box with no key (#2858).
+	config.ExtraConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
 
 	// VMs: nesting and privileged podman are LXC concepts (the guest has its
 	// own kernel; Docker inside it needs nothing from the host). Windows
@@ -1508,8 +1521,15 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	// stack replaces the first, matching Container.stack. Base scripts are not
 	// stacks (the startup reconcile runs one in every box) and never record.
 	// A failure to record is logged, not returned: the install itself succeeded.
+	// One retry on any SetConfig error (no typed conflict error exists): the
+	// write is a read-modify-write that can lose an Incus ETag race to another
+	// config update on the same instance, and a second attempt re-reads.
 	if !isBaseScript {
-		if err := m.incus.SetConfig(containerName, incus.StackKey, stackID); err != nil {
+		err := m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		if err != nil {
+			err = m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		}
+		if err != nil {
 			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
 		}
 	}

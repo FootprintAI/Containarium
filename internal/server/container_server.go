@@ -506,6 +506,17 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
+// createTargetsPeer reports whether the create names a remote backend, by the
+// same rule as the forwarding block in createContainerAuthorized. It is
+// evaluated BEFORE pool placement, so it sees only an explicit backend_id: a
+// --pool create that placement later routes to a peer is still validated
+// against THIS daemon's stack catalog (known gap; moving the check after
+// placement would mean allocating encrypted tenant storage before rejecting a
+// typo).
+func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
+	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
+}
+
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -541,6 +552,14 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// resolution and peer routing.
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
+	}
+	// Unknown stack (#2860): refuse before any allocation or placement. A
+	// create bound for a peer is forwarded as is: the peer validates it against
+	// its own catalog, which may define stacks this daemon does not.
+	if !s.createTargetsPeer(req) {
+		if err := validateStackID(req.Stack); err != nil {
+			return nil, err
+		}
 	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
 	// create path did not provision an encrypted dataset. It now does
@@ -4252,14 +4271,9 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		},
 		Labels:    st.Labels,
 		CreatedAt: st.CreatedAt.Unix(),
-		// Known inaccurate (#2858): reported as true for every box
-		// regardless of the create-time enable_podman flag. On LXC that flag
-		// decides whether podman is installed, whether nesting is enabled and
-		// whether the baked image is used (pkg/core/container/manager.go), so a
-		// box created with enable_podman=false still reports true here. Kept
-		// as-is pending the decision on the follow-up, which would persist and
-		// read the flag back the way Stack is.
-		PodmanEnabled: true,
+		// Read back from the box (user.containarium.podman_enabled); boxes
+		// created before that key existed report true. See #2858.
+		PodmanEnabled: st.PodmanEnabled,
 		// Empty when no stack is recorded: K8s does not persist it, and LXC
 		// boxes created before user.containarium.stack existed have none.
 		Stack:                st.Stack,

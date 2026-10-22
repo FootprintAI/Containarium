@@ -158,16 +158,14 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:                 container.Name,
-			Username:             container.Username,
-			SSHHost:              container.SshHost,
-			State:                container.State.String(),
-			Labels:               container.Labels,
-			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
-			MonitoringEnabled:    container.MonitoringEnabled,
-			AutoSleepEnabled:     container.AutoSleepEnabled,
-			IdleThresholdMinutes: container.IdleThresholdMinutes,
+			Name:         container.Name,
+			Username:     container.Username,
+			SSHHost:      container.SshHost,
+			State:        container.State.String(),
+			Labels:       container.Labels,
+			InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
+		applyProtoLifecycle(&info, container)
 
 		// Get IP address from network info
 		if container.Network != nil {
@@ -568,14 +566,12 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:                 container.Name,
-		Username:             container.Username,
-		State:                container.State.String(),
-		MonitoringEnabled:    container.MonitoringEnabled,
-		AutoSleepEnabled:     container.AutoSleepEnabled,
-		IdleThresholdMinutes: container.IdleThresholdMinutes,
-		Labels:               container.Labels,
+		Name:     container.Name,
+		Username: container.Username,
+		State:    container.State.String(),
+		Labels:   container.Labels,
 	}
+	applyProtoLifecycle(info, container)
 
 	if container.Network != nil {
 		info.IPAddress = container.Network.IpAddress
@@ -1984,4 +1980,13 @@ func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
+}
+
+// applyProtoLifecycle copies the box lifecycle flags a daemon reports, shared
+// by the list and get converters so they cannot drift (#2858).
+func applyProtoLifecycle(info *incus.ContainerInfo, c *pb.Container) {
+	info.MonitoringEnabled = c.MonitoringEnabled
+	info.AutoSleepEnabled = c.AutoSleepEnabled
+	info.IdleThresholdMinutes = c.IdleThresholdMinutes
+	info.PodmanEnabled = c.PodmanEnabled
 }

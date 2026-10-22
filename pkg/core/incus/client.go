@@ -569,6 +569,10 @@ type ContainerInfo struct {
 	// Empty when none was requested or the box predates the key.
 	Stack string
 
+	// PodmanEnabled mirrors user.containarium.podman_enabled: whether the box
+	// was created with podman support. True for boxes that predate the key.
+	PodmanEnabled bool
+
 	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
 	// on the Incus config — opt-in flag for the serverless feature.
 	AutoSleepEnabled bool
@@ -659,6 +663,25 @@ const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_sec
 // created with (--stack), so list/get can report it after creation (#2163).
 // Absent = no stack requested, or a box created before this key existed.
 const StackKey = "user.containarium.stack"
+
+// PodmanEnabledKey is the Incus config key recording whether a box was created
+// with podman support (enable_podman), "true" or "false" (#2858). It is
+// written on every create so a box created with podman off is distinguishable
+// from one that predates the key. Absent = created before this key existed;
+// those boxes keep reporting podman enabled, which is what status reported
+// for every box before the key (see podmanEnabledFromConfig).
+const PodmanEnabledKey = "user.containarium.podman_enabled"
+
+// podmanEnabledFromConfig reads PodmanEnabledKey. Absent or unparseable means
+// a box created before the key existed and reports true, the value status
+// always returned for it; only an explicit "false" reports false.
+func podmanEnabledFromConfig(cfg map[string]string) bool {
+	v, err := strconv.ParseBool(cfg[PodmanEnabledKey])
+	if err != nil {
+		return true
+	}
+	return v
+}
 
 // DeletePolicyKey is the Incus config key carrying a box's delete policy
 // (#284). A box set to DeletePolicyProtected is skipped by every automated /
@@ -1223,6 +1246,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
 			Stack:                     inst.Config[StackKey],
+			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1306,6 +1330,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
 		Stack:                inst.Config[StackKey],
+		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 

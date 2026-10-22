@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/retention"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -79,7 +80,9 @@ func TestRetentionServer_AdminOnly(t *testing.T) {
 }
 
 // TestRetentionServer_ChangesAreAuditedWithTheCaller: a set, a hold and a
-// release each write one entry naming the admin who made it.
+// release each write one entry naming the admin who made it. The hold is
+// released by a different admin, so the release entry must name the releaser
+// while its detail keeps who set the hold.
 func TestRetentionServer_ChangesAreAuditedWithTheCaller(t *testing.T) {
 	s, a := newRetentionTestServer()
 	ctx := gpAdminCtx()
@@ -93,19 +96,20 @@ func TestRetentionServer_ChangesAreAuditedWithTheCaller(t *testing.T) {
 	if _, err := s.SetLegalHold(ctx, &pb.SetLegalHoldRequest{OrgId: "org-a", Reason: "case 7"}); err != nil {
 		t.Fatalf("SetLegalHold: %v", err)
 	}
-	if _, err := s.ReleaseLegalHold(ctx, &pb.ReleaseLegalHoldRequest{OrgId: "org-a"}); err != nil {
+	releaser := auth.ContextWithTestSubject(context.Background(), "ops-2", auth.RoleAdmin)
+	if _, err := s.ReleaseLegalHold(releaser, &pb.ReleaseLegalHoldRequest{OrgId: "org-a"}); err != nil {
 		t.Fatalf("ReleaseLegalHold: %v", err)
 	}
-	entry := func(action string) string {
+	entry := func(action, by string) string {
 		t.Helper()
 		got := a.byAction(action)
-		if len(got) != 1 || got[0].Username != "ops" {
-			t.Fatalf("%s entries = %+v, want one by ops", action, got)
+		if len(got) != 1 || got[0].Username != by {
+			t.Fatalf("%s entries = %+v, want one by %s", action, got, by)
 		}
 		return got[0].Detail
 	}
 	var pol retentionPolicyAuditDetail
-	if err := json.Unmarshal([]byte(entry(retentionPolicySetAction)), &pol); err != nil {
+	if err := json.Unmarshal([]byte(entry(retentionPolicySetAction, "ops")), &pol); err != nil {
 		t.Fatalf("policy detail: %v", err)
 	}
 	wantPol := retentionPolicyAuditDetail{PreviousRevision: 0, Revision: 1,
@@ -113,9 +117,9 @@ func TestRetentionServer_ChangesAreAuditedWithTheCaller(t *testing.T) {
 	if fmt.Sprint(pol) != fmt.Sprint(wantPol) {
 		t.Errorf("policy detail = %+v, want %+v", pol, wantPol)
 	}
-	for _, action := range []string{retentionHoldSetAction, retentionHoldReleaseAction} {
+	for action, by := range map[string]string{retentionHoldSetAction: "ops", retentionHoldReleaseAction: "ops-2"} {
 		var hold retentionHoldAuditDetail
-		if err := json.Unmarshal([]byte(entry(action)), &hold); err != nil {
+		if err := json.Unmarshal([]byte(entry(action, by)), &hold); err != nil {
 			t.Fatalf("%s detail: %v", action, err)
 		}
 		if hold.OrgID != "org-a" || hold.Reason != "case 7" || hold.SetBy != "ops" {

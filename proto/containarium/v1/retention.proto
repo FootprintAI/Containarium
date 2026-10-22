@@ -34,7 +34,8 @@ enum RetentionClass {
 // RetentionWindow is how long one class is kept, at most.
 message RetentionWindow {
   RetentionClass class = 1;
-  // Days a record of this class is kept, at most. Must be 1 or more.
+  // Days a record of this class is kept, at most. Must be between 1 and
+  // 36500 (100 years); the cap keeps a sweeper's cutoff arithmetic in range.
   int32 days = 2;
   // True when no admin has set this class and days is the built-in default.
   // Ignored on a set.
@@ -68,7 +69,7 @@ message GetRetentionPolicyResponse {
 
 message SetRetentionPolicyRequest {
   // The classes to change. Classes not listed keep their window. A class may
-  // appear once; UNSPECIFIED, an unknown class or days < 1 is
+  // appear once; UNSPECIFIED, an unknown class, or days outside 1..36500 is
   // INVALID_ARGUMENT.
   repeated RetentionWindow windows = 1;
 }
@@ -126,7 +127,7 @@ service RetentionService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set retention windows";
-      description: "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days < 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.";
+      description: "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days outside 1..36500 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller while the change is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes (if the commit itself fails after the entry was written, the log keeps an entry for a change that never happened); with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.";
       tags: "Retention";
     };
   }

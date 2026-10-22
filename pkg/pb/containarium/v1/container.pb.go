@@ -742,7 +742,10 @@ type Container struct {
 	Labels map[string]string `protobuf:"bytes,9,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Image used to create the container (e.g., "images:ubuntu/24.04")
 	Image string `protobuf:"bytes,10,opt,name=image,proto3" json:"image,omitempty"`
-	// Whether Podman support is enabled (nesting)
+	// Whether the box was created with Podman support (enable_podman), read back
+	// from the box. Boxes created before this was recorded have no stored value
+	// and report true, as every box did previously; the K8s backend has no
+	// podman toggle and reports true.
 	PodmanEnabled bool `protobuf:"varint,11,opt,name=podman_enabled,json=podmanEnabled,proto3" json:"podman_enabled,omitempty"`
 	// Software stack installed in the container (e.g., "nodejs", "python")
 	Stack string `protobuf:"bytes,12,opt,name=stack,proto3" json:"stack,omitempty"`
@@ -1234,7 +1237,9 @@ type CreateContainerRequest struct {
 	// Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
 	// Run `containarium create --help` for the ids and what each one installs; the
 	// catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
-	// /etc/containarium/stacks.yaml.
+	// /etc/containarium/stacks.yaml. An unknown id is rejected with
+	// INVALID_ARGUMENT, and the error lists the valid ids; a create routed to a
+	// peer backend is validated by that backend against its own catalog.
 	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
 	//
