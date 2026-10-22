@@ -161,6 +161,11 @@ recipe workspace-access
 regions
 remind-me
 resize
+retention hold list
+retention hold release
+retention hold set
+retention policy get
+retention policy set
 route add
 route delete
 route list
