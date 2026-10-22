@@ -63,6 +63,7 @@ func TestKeyResolution(t *testing.T) {
 		ownerKeys  map[string]string // the KeyResolver's table
 		globalKeys map[string]string // Config.ProviderKeys
 		noResolver bool
+		noFallback bool // Config.DisableGlobalKeyFallback
 		wantStatus int
 		wantAuth   string   // Authorization the upstream saw
 		wantCalls  []string // resolver lookups
@@ -125,6 +126,39 @@ func TestKeyResolution(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantAuth:   "Bearer GLOBAL",
 		},
+		{
+			name:       "no-fallback: owner key is still used",
+			keyOwner:   "org:acme",
+			ownerKeys:  map[string]string{"org:acme|openai": "OWNER"},
+			globalKeys: map[string]string{"openai": "GLOBAL"},
+			noFallback: true,
+			wantStatus: http.StatusOK,
+			wantAuth:   "Bearer OWNER",
+			wantCalls:  []string{"org:acme|openai"},
+		},
+		{
+			name:       "no-fallback: owner with no key is refused despite a global key",
+			keyOwner:   "org:acme",
+			globalKeys: map[string]string{"openai": "GLOBAL"},
+			noFallback: true,
+			wantStatus: http.StatusBadGateway,
+			wantCalls:  []string{"org:acme|openai"},
+		},
+		{
+			name:       "no-fallback: key_owner with no resolver wired is refused despite a global key",
+			keyOwner:   "org:acme",
+			noResolver: true,
+			globalKeys: map[string]string{"openai": "GLOBAL"},
+			noFallback: true,
+			wantStatus: http.StatusBadGateway,
+		},
+		{
+			name:       "no-fallback: a legacy token without key_owner still uses the global key",
+			globalKeys: map[string]string{"openai": "GLOBAL"},
+			noFallback: true,
+			wantStatus: http.StatusOK,
+			wantAuth:   "Bearer GLOBAL",
+		},
 	}
 
 	for _, tc := range tests {
@@ -139,7 +173,7 @@ func TestKeyResolution(t *testing.T) {
 			providers := DefaultProviders()
 			providers["openai"].UpstreamURL = up.URL
 			res := &recordingResolver{keys: tc.ownerKeys}
-			cfg := Config{Secret: secret, Providers: providers, ProviderKeys: tc.globalKeys}
+			cfg := Config{Secret: secret, Providers: providers, ProviderKeys: tc.globalKeys, DisableGlobalKeyFallback: tc.noFallback}
 			if !tc.noResolver {
 				cfg.KeyResolver = res
 			}
