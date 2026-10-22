@@ -60,9 +60,17 @@ containarium agent run hello-agent \
 # Running agent skill "hello-agent"...
 #
 # ✓ box ready: agent-hello-agent-container (RUNNING)
+# Run:       <run-id>
 #
-# (no artifact — the in-box agent loop is a Phase 0 seam; see docs/AGENT-SKILLS-QUICKSTART.md)
+# Artifact:
+# {...the skill's output JSON...}
 ```
+
+The run id is always printed when the server returns one. A server that runs
+skills asynchronously returns the run id before any artifact exists; the CLI
+then prints the server's `Message:` (if any) and how to follow the run with
+`containarium crew logs <run-id>`. With neither an artifact nor a run id it
+prints `(no artifact returned)`.
 
 ### Scopes
 

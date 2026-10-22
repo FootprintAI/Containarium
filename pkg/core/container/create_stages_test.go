@@ -3,6 +3,7 @@ package container
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -250,9 +251,6 @@ func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
 	}{
 		{"with stack", "nodejs", true},
 		{"no stack", "", false},
-		// installPackages silently skips an unknown ID, so recording it would
-		// make the box report a stack that was never installed.
-		{"unknown stack", "no-such-stack", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := &stagesBackend{}
@@ -271,6 +269,26 @@ func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
 				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, want, tc.wantKey)
 			}
 		})
+	}
+}
+
+// TestCreate_UnknownStackRejectedBeforeAnythingIsCreated (#2860): defence in
+// depth behind the RPC check. installPackages silently skips an unknown ID, so
+// the create must fail up front rather than produce a box with nothing
+// installed.
+func TestCreate_UnknownStackRejectedBeforeAnythingIsCreated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	backend := &stagesBackend{}
+	m := NewWithBackend(backend)
+	opts := stagesOpts()
+	opts.Stack = "no-such-stack"
+	_, err := m.Create(opts)
+	if err == nil || !strings.Contains(err.Error(), "no-such-stack") || !strings.Contains(err.Error(), "nodejs") {
+		t.Fatalf("Create err = %v, want an error naming the bad stack and listing valid IDs", err)
+	}
+	if backend.createdConfig.Name != "" {
+		t.Errorf("CreateContainer was called for %q despite the unknown stack", backend.createdConfig.Name)
 	}
 }
 

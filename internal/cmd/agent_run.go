@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -112,17 +113,34 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if resp.Container != nil {
-		fmt.Printf("\n✓ box ready: %s (%s)\n", resp.Container.Name, resp.Container.State)
-	}
-	if resp.GitCommit != "" {
-		fmt.Printf("Git:       %s @ %s\n", agentRunGitSource, resp.GitCommit)
-		fmt.Printf("Workspace: %s\n", resp.WorkspacePath)
-	}
-	if resp.ArtifactJson != "" {
-		fmt.Printf("\nArtifact:\n%s\n", resp.ArtifactJson)
-	} else {
-		fmt.Println("\n(no artifact — the in-box agent loop is a Phase 0 seam; see docs/AGENT-SKILLS-QUICKSTART.md)")
-	}
+	printAgentRunResult(os.Stdout, resp, agentRunGitSource)
 	return nil
+}
+
+// printAgentRunResult renders a RunAgentSkill response. The run id is always
+// shown when present, with how to follow it, so a server that runs skills
+// asynchronously (returning a run id and no artifact yet) still hands the
+// caller a handle; a server-provided message is shown as-is.
+func printAgentRunResult(w io.Writer, resp *pb.RunAgentSkillResponse, gitSource string) {
+	if resp.GetContainer() != nil {
+		fmt.Fprintf(w, "\n✓ box ready: %s (%s)\n", resp.GetContainer().GetName(), resp.GetContainer().GetState())
+	}
+	if resp.GetGitCommit() != "" {
+		fmt.Fprintf(w, "Git:       %s @ %s\n", gitSource, resp.GetGitCommit())
+		fmt.Fprintf(w, "Workspace: %s\n", resp.GetWorkspacePath())
+	}
+	if resp.GetRunId() != "" {
+		fmt.Fprintf(w, "Run:       %s\n", resp.GetRunId())
+	}
+	if resp.GetMessage() != "" {
+		fmt.Fprintf(w, "Message:   %s\n", resp.GetMessage())
+	}
+	switch {
+	case resp.GetArtifactJson() != "":
+		fmt.Fprintf(w, "\nArtifact:\n%s\n", resp.GetArtifactJson())
+	case resp.GetRunId() != "":
+		fmt.Fprintf(w, "\n(no artifact yet — follow the run with: containarium crew logs %s)\n", resp.GetRunId())
+	default:
+		fmt.Fprintln(w, "\n(no artifact returned)")
+	}
 }
