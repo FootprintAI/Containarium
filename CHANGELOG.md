@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The daemon image workflow is valid again, so a release tag builds and signs `ghcr.io/footprintai/containarium`.** `containarium-daemon.yml` had two job-level `permissions:` blocks after #2909 and #2866 each added one, which GitHub rejects as a whole: the workflow did not run at all on the `v0.114.0` tag, so that release has no daemon image. The two blocks are merged into one (`contents: read`, `packages: write`, `security-events: write`, `id-token: write`). actionlint reports the duplicate (`key "permissions" is duplicated in "daemon" job`) and passes on the fixed file.
 
+### Internal
+
+- **The agent-skill run-lease e2e lane works with failed runs reported as failed** (#2931). Its warm-up run accepts the 500 that names an in-box agent failure (the lane runs with a dummy provider key, so the real agent always fails upstream), and its stub `agent-runtime` writes a minimal `artifact.json` before exiting so the measured runs are real successes. Without this, the release-blocking lane failed at warm-up on v0.114.1.
+
+## [0.114.1] - 2026-10-22
+
+### Upgrading
+
+- **A box without `agent-runtime` now fails `RunAgentSkill` instead of returning OK with an empty artifact** (#2931). Before this release a skill run on a box image that does not ship `agent-runtime` (or whose in-box agent failed for any reason) was reported as a successful run with no output. It now returns `FailedPrecondition` when the runtime is missing and `Internal` for any other in-box failure, with the engine's own reason. A REST caller sees a 4xx/5xx where it used to see 200. Before upgrading, make sure every image you run skills on ships `agent-runtime`, and that callers treat a non-2xx run response as a failed run, not as a transient error to retry.
+
+### Fixed
+
+- **A failed agent skill run is reported as failed, with the engine's own reason** (#2931). When the in-box `agent-runtime` exited non-zero, the daemon returned `in-box runtime did not run on <box>: command exited with code 1` without reading `artifact.json`, where the runtime had already written the real error (for example an engine whose provider rejects the credential: `upstream 401: API key not valid`). `RunAgentSkill` then logged that and returned OK with an empty `artifact_json`. The daemon now reads `artifact.json` on a non-zero exit and puts its `error` in the returned error, redacted (JWTs, bearer tokens, provider API keys, `key=value` secrets) and capped at 1 KiB. `RunAgentSkill` returns `INTERNAL` for a failed run and `FAILED_PRECONDITION` when the box has no `agent-runtime` (exit 127), naming the run id in both. It no longer reports a failed run as a success. The "image may not ship it yet" log hint now shows only for that missing-runtime case. A tracker-dispatched run records the same reason as its failure.
+
 ## [0.114.0] - 2026-10-22
 
 ### Added
