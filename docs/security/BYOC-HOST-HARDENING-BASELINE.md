@@ -27,8 +27,8 @@ enrollment is an open product decision (#1103) — this baseline defines
 Each row is one check in `internal/hostcheck/posture.go`, run by
 `containarium doctor`, at `cloud enroll` / `pool join` time, and again
 every status-report cycle (so drift after enrollment is caught too, not
-just the moment you joined). The wire name matches the check name
-verbatim — grep for it if you want the exact logic.
+just the moment you joined). On the wire, each posture check name is
+prefixed with `posture: ` to distinguish it from capability checks.
 
 | Check | What a pass means | What a miss means |
 |---|---|---|
@@ -38,7 +38,9 @@ verbatim — grep for it if you want the exact logic.
 | `sshd hardened (no root login, no password auth)` | `PermitRootLogin` is not `yes` AND `PasswordAuthentication` is `no` | The host is brute-forceable, or root is reachable without a key |
 | `unattended security upgrades enabled` | APT's periodic unattended-upgrade is on (Debian-family only; other distros report unknown, not fail) | Security patches require someone to remember to `apt upgrade` |
 | `cloud metadata endpoint blocked` | `169.254.169.254:80` is unreachable from the host | A workload that escapes its container can reach instance credentials — see the network-policy caveat below |
+| `recovery config on durable storage` | The recovery config directory is its own mount point, so its contents survive instance recreation | The directory is missing, is not on its own mount, or durability could not be determined; recovery configuration may not survive instance recreation |
 | `tunnel unit does not carry its token on ExecStart` | The pool-join bearer token lives in a root-only `EnvironmentFile=`, not on the (world-readable) `ExecStart=` line | Any local user can read a live bearer-equivalent credential via `systemctl show`, `ps`, or journald |
+| `platform daemons CPU weight` | The platform daemons' effective systemd CPU weight is at least 1000 | The effective weight is too low or could not be determined, so platform daemons may not get their configured scheduling priority |
 
 A check that cannot gather evidence reports **unmet**, never a silent
 pass — an ordinary, unhardened host is expected to light up several

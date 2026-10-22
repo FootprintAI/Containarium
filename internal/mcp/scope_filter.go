@@ -73,7 +73,33 @@ func (s *Server) allowedScopes() []string {
 		return nil
 	}
 	scopes, _ := scopesFromJWT(token)
+	if hasScope(scopes, boxMCPUserScope) {
+		// A box principal token (issued to a coding-agent box, not to a person at
+		// a keyboard) carries scopes from a different vocabulary — "git:credential"
+		// and "mcp:user" — and NONE of them is a tool's RequiredScope, so filtering
+		// by them listed no tools at all and the agent had none (#2529).
+		//
+		// "mcp:user" means "this token may use the MCP surface, as the person it
+		// was issued for": the control plane applies that person's role on every
+		// call, which is the enforcement that matters. This filter is advisory —
+		// it catches an agent's overreach before a network round trip — so for
+		// this scope it steps aside rather than narrow to nothing.
+		return nil
+	}
 	return scopes
+}
+
+// boxMCPUserScope is the scope a box principal token carries to use the MCP
+// surface (the hosted control plane's box-token vocabulary).
+const boxMCPUserScope = "mcp:user"
+
+func hasScope(scopes []string, want string) bool {
+	for _, s := range scopes {
+		if strings.TrimSpace(s) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // toolAllowed returns true when the tool's required scope

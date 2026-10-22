@@ -30,7 +30,7 @@ default_theme = light
 // dashboard port reachable from every tenant, anonymous Viewer meant any
 // tenant could read platform dashboards with no credential at all.
 func TestGrafanaIni_AnonymousDisabled(t *testing.T) {
-	ini := renderGrafanaIni("10.100.0.242", "containarium", "secret")
+	ini := renderGrafanaIni("10.100.0.242", "containarium", "secret", "adminpw")
 
 	got, ok := grafanaAnonymousEnabled(ini)
 	if !ok {

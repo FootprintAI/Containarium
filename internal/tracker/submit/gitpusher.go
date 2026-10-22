@@ -2,6 +2,7 @@ package submit
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -39,7 +40,8 @@ type PushSpec struct {
 	// Credential is supplied to git as an http.extraHeader through
 	// process environment only (GIT_CONFIG_COUNT/KEY_N/VALUE_N) — never
 	// argv — so it is absent from the host process table. See
-	// TestGitPusher_EnvAndArgv.
+	// TestGitPusher_EnvAndArgv. The header's form depends on the
+	// credential type — see authHeader.
 	Credential string
 	// RunID, IssueNumber, and Title feed BranchName. See PushSpec's own
 	// doc comment above for why there is no separate branch field.
@@ -190,15 +192,42 @@ func hardenedEnv(home, credential string) []string {
 		"GIT_CONFIG_KEY_1=transfer.fsckObjects",
 		"GIT_CONFIG_VALUE_1=true",
 		"GIT_CONFIG_KEY_2=http.extraHeader",
-		// Same header shape as pkg/core/container/git_source.go's
-		// buildGitFetchScript, for one consistent credential-injection
-		// convention across the box-side fetch and the host-side push.
-		"GIT_CONFIG_VALUE_2=AUTHORIZATION: bearer " + credential,
+		"GIT_CONFIG_VALUE_2=" + authHeader(credential),
 	}
 	if path, ok := os.LookupEnv("PATH"); ok {
 		env = append(env, "PATH="+path)
 	}
 	return env
+}
+
+// installationTokenPrefix is GitHub's documented prefix for a GitHub App
+// installation token — the same prefix convention
+// internal/tracker/github's breadthFromTokenPrefix and DescribeCredential
+// classify credentials by. Not imported from there: this package must not
+// depend on internal/tracker (see runIDShortLen in branch.go).
+const installationTokenPrefix = "ghs_"
+
+// authHeader is the http.extraHeader value that authenticates credential
+// to the remote.
+//
+// A GitHub App installation token (ghs_…) gets Basic auth with the
+// literal username "x-access-token" — the form GitHub documents for
+// installation tokens over git HTTPS; a bearer header carrying one is not
+// that form (#2271).
+//
+// Everything else (PATs, GitLab tokens) keeps the bearer form, the same
+// header shape as pkg/core/container/git_source.go's buildGitFetchScript.
+func authHeader(credential string) string {
+	if strings.HasPrefix(credential, installationTokenPrefix) {
+		return "AUTHORIZATION: Basic " + installationTokenBasic(credential)
+	}
+	return "AUTHORIZATION: bearer " + credential
+}
+
+// installationTokenBasic is the Basic-auth credential for an installation
+// token: base64("x-access-token:<token>").
+func installationTokenBasic(token string) string {
+	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 }
 
 // wrapGitErr folds a failed step's context and stderr into one error,
@@ -210,6 +239,9 @@ func wrapGitErr(step string, err error, stderr, credential string) error {
 	msg := strings.TrimSpace(stderr)
 	if credential != "" {
 		msg = strings.ReplaceAll(msg, credential, "[redacted]")
+		// The installation-token header carries the credential base64-
+		// encoded, which the raw-substring redaction above would miss.
+		msg = strings.ReplaceAll(msg, installationTokenBasic(credential), "[redacted]")
 	}
 	if msg == "" {
 		return fmt.Errorf("submit: %s: %w", step, err)

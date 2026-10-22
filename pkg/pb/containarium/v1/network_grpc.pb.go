@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	NetworkService_GetNetworkGuardStatus_FullMethodName  = "/containarium.v1.NetworkService/GetNetworkGuardStatus"
 	NetworkService_GetRoutes_FullMethodName              = "/containarium.v1.NetworkService/GetRoutes"
 	NetworkService_AddRoute_FullMethodName               = "/containarium.v1.NetworkService/AddRoute"
 	NetworkService_UpdateRoute_FullMethodName            = "/containarium.v1.NetworkService/UpdateRoute"
@@ -42,6 +43,8 @@ const (
 //
 // NetworkService provides network and firewall management
 type NetworkServiceClient interface {
+	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
+	GetNetworkGuardStatus(ctx context.Context, in *GetNetworkGuardStatusRequest, opts ...grpc.CallOption) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
 	GetRoutes(ctx context.Context, in *GetRoutesRequest, opts ...grpc.CallOption) (*GetRoutesResponse, error)
 	// AddRoute adds a new proxy route (domain to container mapping)
@@ -84,6 +87,16 @@ type networkServiceClient struct {
 
 func NewNetworkServiceClient(cc grpc.ClientConnInterface) NetworkServiceClient {
 	return &networkServiceClient{cc}
+}
+
+func (c *networkServiceClient) GetNetworkGuardStatus(ctx context.Context, in *GetNetworkGuardStatusRequest, opts ...grpc.CallOption) (*NetworkGuardStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NetworkGuardStatus)
+	err := c.cc.Invoke(ctx, NetworkService_GetNetworkGuardStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *networkServiceClient) GetRoutes(ctx context.Context, in *GetRoutesRequest, opts ...grpc.CallOption) (*GetRoutesResponse, error) {
@@ -242,6 +255,8 @@ func (c *networkServiceClient) StopEgressProxy(ctx context.Context, in *StopEgre
 //
 // NetworkService provides network and firewall management
 type NetworkServiceServer interface {
+	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
+	GetNetworkGuardStatus(context.Context, *GetNetworkGuardStatusRequest) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
 	GetRoutes(context.Context, *GetRoutesRequest) (*GetRoutesResponse, error)
 	// AddRoute adds a new proxy route (domain to container mapping)
@@ -286,6 +301,9 @@ type NetworkServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNetworkServiceServer struct{}
 
+func (UnimplementedNetworkServiceServer) GetNetworkGuardStatus(context.Context, *GetNetworkGuardStatusRequest) (*NetworkGuardStatus, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNetworkGuardStatus not implemented")
+}
 func (UnimplementedNetworkServiceServer) GetRoutes(context.Context, *GetRoutesRequest) (*GetRoutesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRoutes not implemented")
 }
@@ -350,6 +368,24 @@ func RegisterNetworkServiceServer(s grpc.ServiceRegistrar, srv NetworkServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&NetworkService_ServiceDesc, srv)
+}
+
+func _NetworkService_GetNetworkGuardStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNetworkGuardStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkServiceServer).GetNetworkGuardStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkService_GetNetworkGuardStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkServiceServer).GetNetworkGuardStatus(ctx, req.(*GetNetworkGuardStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _NetworkService_GetRoutes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -629,6 +665,10 @@ var NetworkService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.NetworkService",
 	HandlerType: (*NetworkServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetNetworkGuardStatus",
+			Handler:    _NetworkService_GetNetworkGuardStatus_Handler,
+		},
 		{
 			MethodName: "GetRoutes",
 			Handler:    _NetworkService_GetRoutes_Handler,

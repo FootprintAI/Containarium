@@ -4,10 +4,9 @@ package containarium.v1;
 
 import "containarium/v1/container.proto";
 import "containarium/v1/config.proto";
-import "containarium/v1/app.proto";
-import "containarium/v1/network.proto";
 import "containarium/v1/alert.proto";
 import "containarium/v1/secrets.proto";
+import "containarium/v1/box_run.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -476,6 +475,67 @@ service ContainerService {
     };
   }
 
+  // StartBoxRun starts (or resumes) a coding-agent run on a box through the
+  // daemon API, with no SSH client needed (#2193) — the host-with-no-SSH
+  // case ListBoxRuns/TailBoxRunLog could read but not drive. Same access as
+  // connecting to the box: ssh:write, and the box owner or one of its
+  // collaborators.
+  rpc StartBoxRun(StartBoxRunRequest) returns (StartBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start a box's code run";
+      description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // ListBoxRuns lists the `code run` records on a box (#2123). Same access
+  // as connecting to the box: ssh:write, and the box owner or one of its
+  // collaborators.
+  rpc ListBoxRuns(ListBoxRunsRequest) returns (ListBoxRunsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List a box's code runs";
+      description: "Returns the box's current code-run records (containarium code run): name, start and end time, exit code, outcome (running/exited/unknown), and log path. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // TailBoxRunLog reads one byte window of a box run's log (#2123), the
+  // TailRunLog contract (#2096) for `code run` logs: resumable (pass
+  // end_offset back as start_offset) and bounded (max_bytes,
+  // follow_seconds). A framed log is demuxed to its stdout.
+  rpc TailBoxRunLog(TailBoxRunLogRequest) returns (TailBoxRunLogResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs/{run_name}/log"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Tail a box code run's log";
+      description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+  // `containarium code stop`, for a caller with no SSH client. Same access as
+  // StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+  rpc StopBoxRun(StopBoxRunRequest) returns (StopBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs/{run_name}:stop"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stop a box's code run";
+      description: "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // AddCollaborator adds a collaborator to a container
   rpc AddCollaborator(AddCollaboratorRequest) returns (AddCollaboratorResponse) {
     option (google.api.http) = {
@@ -510,6 +570,24 @@ service ContainerService {
       summary: "List collaborators";
       description: "Returns all collaborators with access to a container.";
       tags: "Collaborators";
+    };
+  }
+
+  // TerminateUserSessions ends every live SSH session a user holds on this
+  // backend: their owner box and every box they reach as a collaborator,
+  // in-box and on the host jump account. Nothing is deleted and no
+  // authorized_keys file changes; the user can connect again (#2522).
+  // Callers need ssh:write; the admin role (which service tokens carry) may
+  // name any user, any other caller only themselves.
+  rpc TerminateUserSessions(TerminateUserSessionsRequest) returns (TerminateUserSessionsResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{username}/sessions:terminate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Terminate user sessions";
+      description: "Ends every live SSH session the user holds on this backend (owner box and collaborator boxes). Deletes nothing; the user can connect again. Requires ssh:write; the admin role may name any user, any other caller only themselves.";
+      tags: "SSHSessions";
     };
   }
 
@@ -750,6 +828,20 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Poll upgrade status";
       description: "Returns the status of an upgrade started by TriggerUpgrade. Note: a local self-upgrade restarts the daemon and drops job state, returning 'unknown' afterward; compare the backend version in ListBackends to confirm.";
+      tags: "System";
+    };
+  }
+
+  // GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+  // app-hosting base domain to core-caddy matches core-caddy's live address,
+  // and why not when it does not (#2188). Admin-only.
+  rpc GetBridgeDNSStatus(GetBridgeDNSStatusRequest) returns (GetBridgeDNSStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/system/bridge-dns"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get bridge DNS record status";
+      description: "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -> core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.";
       tags: "System";
     };
   }

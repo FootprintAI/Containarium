@@ -2,7 +2,9 @@ package modelgateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"math"
@@ -14,6 +16,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
 )
 
 // UsageSink receives every metered model call so token usage can be forwarded
@@ -72,15 +77,48 @@ type Config struct {
 	// requires "Authorization: Bearer <AdminToken>", compared in constant
 	// time (#1820).
 	AdminToken string
+
+	// Inbound guardrail scan (#2367; see inbound.go). InboundPolicy is the
+	// server policy source; nil (the standalone binary) means no policy
+	// source exists, scanning is unavailable, and the gateway says so at
+	// startup. With a provider wired, responses are scanned by InboundEngine
+	// whenever the policy carries an inbound BLOCK rule, and every failure
+	// to scan blocks. When the provider answers "not configured", responses
+	// are instead scanned log-only against the baseline rules, never held
+	// (inbound_baseline.go). InboundAudit receives one entry per block or
+	// baseline detection (nil = log only). InboundHoldLimit (bytes; also
+	// the baseline's scan buffer) and InboundScanTimeout take the Default*
+	// constants when zero.
+	InboundPolicy guardrailpolicy.PolicyProvider
+	// InboundBaselineMode is the stored baseline mode (#2738), read with the
+	// policy while none is configured. nil = always LOG. In BLOCK the
+	// baseline takes the hold-and-block path instead of the tee.
+	InboundBaselineMode guardrailpolicy.BaselineModeProvider
+	InboundEngine       guardrail.Engine
+	InboundAudit        InboundAuditSink
+	InboundHoldLimit    int
+	InboundScanTimeout  time.Duration
+	// InboundPolicyTTL is how long a successful policy read is reused
+	// (default DefaultInboundPolicyTTL; negative = read every call). Call
+	// Gateway.InvalidateInboundPolicy when the policy changes so a new rule
+	// does not wait for the TTL.
+	InboundPolicyTTL time.Duration
+	// InboundAuditQueue bounds entries waiting for InboundAudit (default
+	// DefaultInboundAuditQueue; a full queue drops and counts) and
+	// InboundAuditTimeout bounds one sink write (default
+	// DefaultInboundAuditTimeout). Sink writes never run on the request path.
+	InboundAuditQueue   int
+	InboundAuditTimeout time.Duration
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
 // scoped gateway token, injects the real provider key (which never leaves the
 // gateway), proxies to the provider, and meters per-tenant token usage.
 type Gateway struct {
-	cfg    Config
-	meter  *Meter
-	policy *Policy
+	cfg     Config
+	meter   *Meter
+	policy  *Policy
+	inbound *inbound
 
 	// Request-lifecycle observability: a monotonic request id, a live
 	// in-flight gauge, and lifetime completed/failed counters. These make
@@ -102,8 +140,22 @@ func New(cfg Config) *Gateway {
 	if cfg.Policy != nil {
 		pc = *cfg.Policy
 	}
-	return &Gateway{cfg: cfg, meter: NewMeter(), policy: NewPolicy(pc)}
+	return &Gateway{cfg: cfg, meter: NewMeter(), policy: NewPolicy(pc), inbound: newInbound(cfg)}
 }
+
+// InboundStatus exposes the inbound scan state: whether a policy source is
+// wired, whether the first read has happened, whether the last known policy
+// scans, and the block counters.
+func (g *Gateway) InboundStatus() InboundStatus { return g.inbound.status() }
+
+// FlushInboundAudit waits until every inbound-block audit entry queued so far
+// has been handed to the sink, or ctx ends. Call it before shutting the daemon
+// down; the request path never does.
+func (g *Gateway) FlushInboundAudit(ctx context.Context) error { return g.inbound.flushAudit(ctx) }
+
+// InvalidateInboundPolicy makes the next model call re-read the inbound
+// policy instead of waiting out the cache TTL.
+func (g *Gateway) InvalidateInboundPolicy() { g.inbound.invalidate() }
 
 // Meter exposes the usage rollups (for tests / the usage endpoint).
 func (g *Gateway) Meter() *Meter { return g.meter }
@@ -131,7 +183,14 @@ func (g *Gateway) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(g.policy.Status())
 	})
-	mux.HandleFunc("/__gateway/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/__gateway/healthz", func(w http.ResponseWriter, r *http.Request) {
+		// Cold start with a policy provider wired: until the first policy
+		// read succeeds the gateway cannot know whether to scan, so it is
+		// not ready rather than guessing in either direction.
+		if !g.inbound.ready(r.Context()) {
+			http.Error(w, "inbound guardrail policy not yet read", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -152,6 +211,7 @@ func (g *Gateway) Handler() http.Handler {
 			"inflight":  g.inflight.Load(),
 			"completed": g.completed.Load(),
 			"failed":    g.failed.Load(),
+			"inbound":   g.inbound.status(),
 		})
 	})
 	return mux
@@ -225,7 +285,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	if g.isOwnerRevoked(r.Context(), claims) {
 		g.cfg.Logger.Printf("model-gateway: REVOKED-OWNER tenant=%s key_owner=%s provider=%s jti=%s",
 			claims.Tenant, claims.KeyOwner, provName, claims.ID)
-		http.Error(w, "gateway tokens for this key owner are revoked", http.StatusUnauthorized)
+		http.Error(w, OwnerRevokedMessage, http.StatusUnauthorized)
 		return
 	}
 
@@ -311,6 +371,61 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inbound guardrail policy (#2367). Resolved per call, before the ladder
+	// and the Director: a call refused because the policy is unavailable
+	// (cold start, or a read error while the last known policy scanned)
+	// never reaches the provider. ir is nil when this call is not scanned.
+	inSub := inboundSubject{tenant: claims.Tenant, skill: claims.SkillID, provider: provName, model: logModel}
+	inMode, inOK := g.inbound.resolve(r.Context())
+	if !inOK {
+		dec := guardrail.InboundBlocked(guardrail.InboundReasonPolicyUnavailable)
+		// block's returned error is what ModifyResponse hands the proxy; here
+		// the response is written directly, so only its side effects
+		// (log, counters, audit) are wanted.
+		_ = g.inbound.block(inSub, dec, inMode.revision)
+		g.failed.Add(1)
+		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
+		return
+	}
+	// No admin policy: the baseline scan. LOG mode is never held (#2736);
+	// BLOCK mode is scanned below through the hold path (#2738), and uses bl
+	// only for an upstream error the hold path passes through unscanned.
+	var bl *baselineRequest
+	if inMode.baseline {
+		bl = &baselineRequest{in: g.inbound, sub: inSub}
+	}
+	var ir *inboundRequest
+	if inMode.scan {
+		ir = &inboundRequest{in: g.inbound, mode: inMode, sub: inSub}
+		ir.onBlocked = func(held []byte, streaming bool) {
+			m := reqModel
+			if m == "" {
+				m = pathModel
+			}
+			var u Usage
+			var ok bool
+			if streaming {
+				u, ok = usageFromSSE(held, func(b map[string]any) Usage { return prov.parseUsage(b, m) })
+				if ok && u.Model == "" {
+					u.Model = m
+				}
+			} else {
+				var decoded map[string]any
+				if json.Unmarshal(held, &decoded) == nil {
+					u, ok = prov.parseUsage(decoded, pathModel), true
+				}
+			}
+			if !ok {
+				return // no usage in the held bytes; record nothing rather than guess
+			}
+			g.meter.recordBlocked(claims.Tenant, claims.SkillID, provName, u)
+			g.policy.RecordUsage(claims.Tenant, u)
+			if g.cfg.Sink != nil {
+				g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
+			}
+		}
+	}
+
 	// Enforcement ladder. Deliberately the last gate before proxying: a denied
 	// request never reaches the Director, so the real provider key is never
 	// injected and never leaves the gateway on a call we refused.
@@ -369,6 +484,23 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// Baseline (#2736): tee the final body, whatever the steps below
+			// make of it, and scan it once the proxy has written it all.
+			if bl != nil && !inMode.baselineBlock {
+				defer bl.watch(resp)
+			}
+			// Scanned mode (#2367): hold the whole response here, scan it,
+			// and either block (typed error via ErrorHandler, nothing
+			// committed to the client yet) or restore the held bytes for the
+			// unchanged metering/filter path below. See inbound.go.
+			if ir != nil {
+				if err := ir.enforce(resp); err != nil {
+					return err
+				}
+				if bl != nil && ir.passedThrough {
+					defer bl.watch(resp)
+				}
+			}
 			// Streaming (SSE): intercept to meter usage + redact prompt leakage.
 			if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 				meterModel := reqModel
@@ -437,6 +569,11 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			var blocked *inboundBlockError
+			if errors.As(err, &blocked) {
+				writeInboundBlock(w, http.StatusBadGateway, blocked.dec)
+				return
+			}
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
 	}
@@ -478,8 +615,13 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // statusWriter wraps http.ResponseWriter to capture the response status code for
-// the END lifecycle log while preserving http.Flusher, so streamed (SSE)
-// responses still flush each chunk promptly.
+// the END lifecycle log. It deliberately does NOT implement http.Flusher:
+// httputil.ReverseProxy flushes through http.NewResponseController, which
+// checks for a Flusher before it follows Unwrap, so a Flush method here would
+// shadow Unwrap and silently no-op whenever this writer sits above another
+// wrapper (the #2773 class of bug — SSE token streams buffer until the
+// upstream closes). Unwrap alone lets the controller reach the real Flusher
+// however many wrappers sit in between.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -499,11 +641,9 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-func (s *statusWriter) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
+// Unwrap lets http.NewResponseController reach the underlying writer's
+// Flusher, Hijacker and deadline setters.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func contains(s []string, v string) bool {
 	for _, x := range s {

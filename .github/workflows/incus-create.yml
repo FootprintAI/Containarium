@@ -31,6 +31,8 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
@@ -47,6 +49,8 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
 
 permissions:
@@ -73,7 +77,7 @@ jobs:
       CONTAINARIUM_LANE_IMAGE: lane-box
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # #1614's actual root cause turned out NOT to be disk pressure — a
       # live run of this exact step showed 86G free before, 102G after,
@@ -91,9 +95,10 @@ jobs:
           echo "--- after ---"; df -h /
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Install ZFS
         run: |
@@ -233,7 +238,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
-            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ -run 'TestIntegrationIncus' | tee incus-test.log
+            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ ./pkg/core/network/ \
+            -run 'TestIntegrationIncus|TestIntegrationHairpin' | tee incus-test.log
 
       # #1368 — the daemon BINARY, with its flags.
       #

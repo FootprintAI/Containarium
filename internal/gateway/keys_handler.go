@@ -30,7 +30,30 @@ type KeysResponse struct {
 	// ingress here (e.g. the sshpiper Service's NodePort), since nothing
 	// listens on the node's :22 for boxes.
 	SSHPort int `json:"ssh_port,omitempty"`
+
+	// TrustedUserCAKeys, when non-empty, is the SSH CA trust-bundle file
+	// content (sshd TrustedUserCAKeys form) this node's cloud client has
+	// cached — see internal/cloud.Client.SSHTrustedUserCAKeys and #1928. A
+	// sentinel with no cloud credential of its own relays this from
+	// whichever backend it polls, the same way it already relays
+	// authorized_keys. Empty/absent = this node has nothing cached (no
+	// cloud enrollment, no SSH CA configured, or not yet heartbeated) —
+	// the sentinel must leave whatever it already has on disk untouched,
+	// never clear it.
+	TrustedUserCAKeys string `json:"trusted_user_ca_keys,omitempty"`
+	// SSHTrustVersion is the version TrustedUserCAKeys was cached at, so
+	// the sentinel can skip rewriting the file + reapplying sshpiper's
+	// config when it already matches (cheap, frequent polling stays cheap).
+	SSHTrustVersion string `json:"ssh_trust_version,omitempty"`
 }
+
+// TrustBundleProvider returns the most recently cached SSH CA trust-bundle
+// file content and version for /authorized-keys to advertise, or ok=false
+// when nothing is cached yet. The LXC daemon wires this to
+// cloud.Client.SSHTrustedUserCAKeys; nil (no cloud enrollment, or the K8s
+// runtime, which has no sshd to hold TrustedUserCAKeys — see cloud#1122) =
+// never advertise a bundle.
+type TrustBundleProvider func() (content, version string, ok bool)
 
 // SentinelKeyRequest is the JSON body for POST /authorized-keys/sentinel.
 type SentinelKeyRequest struct {
@@ -129,7 +152,7 @@ func ServeAuthorizedKeysFromLister(lister ClientKeyLister, sshPort func() int) h
 // resulting "Container <name>-container not found" inside the SSH
 // session was the user-facing symptom in #343). Pass nil to disable
 // the filter (back-compat / tests).
-func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string) bool) http.HandlerFunc {
+func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string) bool, trustBundle TrustBundleProvider) http.HandlerFunc {
 	if homeRoot == "" {
 		homeRoot = "/home"
 	}
@@ -190,11 +213,19 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 			log.Printf("[keys] WARNING: %d orphan authorized_keys found (no live container); orphan-reaper will clean up on next tick", orphanCount)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
+		resp := KeysResponse{Keys: keys}
 		// SSHPort deliberately omitted (0): on the LXC runtime boxes are
 		// reached on the node's own sshd port, which is the sentinel's
 		// legacy 22/20022 convention.
-		_ = json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
+		if trustBundle != nil {
+			if content, version, ok := trustBundle(); ok {
+				resp.TrustedUserCAKeys = content
+				resp.SSHTrustVersion = version
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

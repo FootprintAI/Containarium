@@ -30,10 +30,8 @@ const MaxListPages = 50
 // Following it would send the connection's credential to a host the
 // operator never configured, so the list call fails instead.
 //
-// This guards only the Link header. HTTP redirects are followed by the
-// adapters' http.Client, and Go strips Authorization on a cross-domain
-// redirect but not custom headers such as GitLab's PRIVATE-TOKEN; that
-// gap predates pagination and is not closed here.
+// HTTP redirects are guarded separately by WithSameOriginRedirects, which
+// both adapters install on their clients.
 var ErrCrossOriginNextLink = errors.New("refusing to follow pagination link to a different host")
 
 // NextPageURL returns the rel="next" target of an RFC 8288 Link header

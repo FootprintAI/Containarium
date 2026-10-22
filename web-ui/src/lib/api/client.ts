@@ -6,6 +6,7 @@ import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, 
 import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse, PentestScanRunsResponse, PentestFindingsResponse, PentestFindingSummaryResponse, PentestConfigResponse, TriggerPentestScanResponse, ListPentestFindingsParams, InstallPentestToolResponse, RemediatePentestFindingResponse, ZapScanRunsResponse, ZapAlertsResponse, ZapAlertSummaryResponse, ZapConfigResponse, TriggerZapScanResponse, ZapReportResponse, InstallZapResponse, ListZapAlertsParams } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
 import { AlertRule, AlertRulesResponse, AlertingInfoResponse, CreateAlertRuleRequest, UpdateAlertRuleRequest, UpdateAlertingConfigResponse, TestWebhookResponse, WebhookDeliveriesResponse } from '@/src/types/alerts';
+import { ListAgentEnginesResponse, ListAgentEnginesResponseSchema } from '@/src/types/agents';
 
 /**
  * Core infrastructure service info (read-only)
@@ -260,6 +261,14 @@ export class ContaineriumClient {
   async listBackends(): Promise<BackendInfo[]> {
     const response = await this.client.get('/backends');
     return response.data.backends || [];
+  }
+
+  /**
+   * Configured agent engines and their readiness (#2224).
+   */
+  async listAgentEngines(): Promise<ListAgentEnginesResponse> {
+    const response = await this.client.get('/v1/agent-engines');
+    return ListAgentEnginesResponseSchema.parse(response.data);
   }
 
   /**
@@ -1013,7 +1022,7 @@ export class ContaineriumClient {
 
   /**
    * Trigger an on-demand ClamAV scan
-   * @param containerName - Optional container name (empty = scan all)
+   * @param containerName - Container to scan (required by the daemon: scan-all was removed, #2631)
    */
   async triggerClamavScan(containerName?: string): Promise<TriggerScanResponse> {
     const response = await this.client.post<TriggerScanResponse>('/security/clamav-scan', {

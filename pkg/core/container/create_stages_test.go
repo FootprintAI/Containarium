@@ -9,6 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 )
 
 // stagesBackend fakes exactly what Create touches on the baked-image path.
@@ -21,6 +22,7 @@ type stagesBackend struct {
 	deleteCalls     int    // DeleteContainer invocations (cleanup evidence)
 	createdConfig   incus.ContainerConfig
 	setLabelsCalled bool
+	config          map[string]string // SetConfig writes, by key
 }
 
 func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
@@ -44,7 +46,17 @@ func (b *stagesBackend) SetLabels(string, map[string]string) error {
 	b.setLabelsCalled = true
 	return nil
 }
+func (b *stagesBackend) SetConfig(_, key, value string) error {
+	if b.config == nil {
+		b.config = map[string]string{}
+	}
+	b.config[key] = value
+	return nil
+}
 func (b *stagesBackend) Exec(string, []string) error { return nil }
+func (b *stagesBackend) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", 1, nil // no cloud-init: the stack-install path skips its wait
+}
 func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
 	return nil
 }
@@ -75,6 +87,20 @@ func newStageLog() *stageLog {
 	return &stageLog{durations: make(map[CreateStage]time.Duration)}
 }
 
+// snapshot copies the log under its lock. The jump-account stage reports from
+// its own goroutine, and since #2489 that goroutine also runs for creates with
+// no SSH keys, so tests must not read stages/durations directly.
+func (l *stageLog) snapshot() ([]CreateStage, map[CreateStage]time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	stages := append([]CreateStage(nil), l.stages...)
+	durs := make(map[CreateStage]time.Duration, len(l.durations))
+	for k, v := range l.durations {
+		durs[k] = v
+	}
+	return stages, durs
+}
+
 func (l *stageLog) observer() StageObserver {
 	return func(s CreateStage, d time.Duration) {
 		l.mu.Lock()
@@ -88,15 +114,16 @@ func stagesOpts() CreateOptions {
 	return CreateOptions{
 		Username: "alice",
 		Image:    "images:ubuntu/24.04",
-		// No SSHKeys: the jump-account stage runs host useradd, which a unit
-		// test must not touch. Its absence is asserted below.
+		// No SSHKeys: the jump account is still created, keyless (#2489); the
+		// package TestMain stubs the host useradd so a unit test never runs it.
 	}
 }
 
 // TestCreate_ObservesStagesInOrder pins the Phase 0 instrumentation contract
 // (docs/architecture/two-digit-ms-sandbox-spawn.md): every stage that runs is
 // observed, in execution order, and stages that are skipped — baked image,
-// no SSH keys, no git source — produce no observation at all.
+// no git source — produce no observation at all. The jump account is NOT
+// skipped without SSH keys (#2489): it runs keyless.
 func TestCreate_ObservesStagesInOrder(t *testing.T) {
 	// Keep getJumpServerSSHKey from finding a real key in $HOME, which would
 	// nondeterministically add an add_ssh_keys stage on developer machines.
@@ -121,21 +148,29 @@ func TestCreate_ObservesStagesInOrder(t *testing.T) {
 		StageGetInfo,
 		StageTotal,
 	}
-	assertSubsequence(t, log.stages, want)
+	stages, durations := log.snapshot()
+	assertSubsequence(t, stages, want)
 
-	for _, absent := range []CreateStage{StageJumpAccount, StageInstallPackages, StageGitSource, StageAddSSHKeys} {
-		if _, ok := log.durations[absent]; ok {
-			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, log.stages)
+	// The jump account runs concurrently with the guest stages, so WHEN it is
+	// observed is not deterministic and it stays out of the ordered list; that
+	// it ran (keyless, #2489) is the contract.
+	if _, ok := durations[StageJumpAccount]; !ok {
+		t.Errorf("jump_account stage not observed on a create with no SSH keys (observed: %v)", stages)
+	}
+
+	for _, absent := range []CreateStage{StageInstallPackages, StageGitSource, StageAddSSHKeys} {
+		if _, ok := durations[absent]; ok {
+			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, stages)
 		}
 	}
 
-	for stage, d := range log.durations {
+	for stage, d := range durations {
 		if d < 0 {
 			t.Errorf("stage %q recorded negative duration %v", stage, d)
 		}
 	}
-	if log.durations[StageTotal] < log.durations[StageStartInstance] {
-		t.Errorf("total (%v) must cover start_instance (%v)", log.durations[StageTotal], log.durations[StageStartInstance])
+	if durations[StageTotal] < durations[StageStartInstance] {
+		t.Errorf("total (%v) must cover start_instance (%v)", durations[StageTotal], durations[StageStartInstance])
 	}
 }
 
@@ -165,11 +200,12 @@ func TestCreate_FailedStageIsStillObserved(t *testing.T) {
 		t.Fatal("Create should fail when WaitForNetwork fails")
 	}
 
-	if _, ok := log.durations[StageWaitNetwork]; !ok {
-		t.Errorf("failed wait_network stage was not observed (observed: %v)", log.stages)
+	stages, durations := log.snapshot()
+	if _, ok := durations[StageWaitNetwork]; !ok {
+		t.Errorf("failed wait_network stage was not observed (observed: %v)", stages)
 	}
-	if _, ok := log.durations[StageTotal]; ok {
-		t.Errorf("total must not be observed on a failed create (observed: %v)", log.stages)
+	if _, ok := durations[StageTotal]; ok {
+		t.Errorf("total must not be observed on a failed create (observed: %v)", stages)
 	}
 }
 
@@ -202,6 +238,42 @@ func TestCreate_LabelsRideInTheCreateRequest(t *testing.T) {
 	}
 }
 
+// TestCreate_StackPersistedAsConfigKey: the requested stack is stamped into
+// the instance config at create so list/get can report it later (#2163).
+// A create with no stack writes no key.
+func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	for _, tc := range []struct {
+		name, stack string
+		wantKey     bool
+	}{
+		{"with stack", "nodejs", true},
+		{"no stack", "", false},
+		// installPackages silently skips an unknown ID, so recording it would
+		// make the box report a stack that was never installed.
+		{"unknown stack", "no-such-stack", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &stagesBackend{}
+			m := NewWithBackend(backend)
+			opts := stagesOpts()
+			opts.Stack = tc.stack
+			if _, err := m.Create(opts); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			want := ""
+			if tc.wantKey {
+				want = tc.stack
+			}
+			got, ok := backend.createdConfig.ExtraConfig[incus.StackKey]
+			if ok != tc.wantKey || got != want {
+				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, want, tc.wantKey)
+			}
+		})
+	}
+}
+
 // assertSubsequence fails unless want appears in got in order (other
 // elements may be interleaved).
 func assertSubsequence(t *testing.T, got, want []CreateStage) {
@@ -214,5 +286,20 @@ func assertSubsequence(t *testing.T, got, want []CreateStage) {
 	}
 	if i != len(want) {
 		t.Errorf("stage order mismatch: missing %q\n  got:  %v\n  want subsequence: %v", want[i], got, want)
+	}
+}
+
+// The baked-image path skips installPackages, but the box must still be
+// stamped as provisioned under the sshd policy (#2424); otherwise the posture
+// reconciler would silently backfill a tenant edit made before its first pass.
+func TestCreate_BakedPathMarksSSHDPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := &stagesBackend{}
+	if _, err := NewWithBackend(b).Create(stagesOpts()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := b.config[sshdpolicy.MarkerKey]; got != sshdpolicy.MarkerValue {
+		t.Errorf("%s = %q, want %q", sshdpolicy.MarkerKey, got, sshdpolicy.MarkerValue)
 	}
 }

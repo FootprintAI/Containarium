@@ -42,8 +42,12 @@ type MockBackend struct {
 	ExecWithExitCodeFunc      func(containerName string, command []string) (string, string, int, error)
 	WriteFileFunc             func(containerName, path string, content []byte, mode string) error
 	ReadFileFunc              func(containerName, path string) ([]byte, error)
+	ListDirFunc               func(containerName, path string) ([]string, error)
 	SetConfigFunc             func(containerName, key, value string) error
 	SetCPULimitFunc           func(containerName, cpu string) error
+	SetCPUConfigFunc          func(containerName, count, allowance string) error
+	FreezeContainerFunc       func(name string) error
+	UnfreezeContainerFunc     func(name string) error
 	UnsetConfigFunc           func(containerName, key string) error
 	SetDeviceSizeFunc         func(containerName, deviceName, size string) error
 	ResolveGPUInputToPCIFunc  func(input string) (string, error)
@@ -57,7 +61,10 @@ type MockBackend struct {
 	GetNetworkACLFunc         func(name string) (*api.NetworkACL, error)
 	CreateNetworkACLFunc      func(config incus.ACLConfig) error
 	UpdateNetworkACLFunc      func(name string, config incus.ACLConfig) error
+	ListNetworkACLsFunc       func() ([]api.NetworkACL, error)
+	DeleteNetworkACLFunc      func(name string) error
 	AttachACLToContainerFunc  func(containerName, aclName, deviceName string) error
+	SetOwnedACLFunc           func(containerName, aclName, deviceName, ownedPrefix string) error
 	EnsureNICDeviceFunc       func(containerName string, want incus.NICDevice) error
 	SetDeviceConfigFunc       func(containerName, deviceName string, keys map[string]string) error
 	SetLabelsFunc             func(containerName string, labels map[string]string) error
@@ -203,6 +210,13 @@ func (m *MockBackend) ReadFile(containerName, path string) ([]byte, error) {
 	return nil, nil
 }
 
+func (m *MockBackend) ListDir(containerName, path string) ([]string, error) {
+	if m.ListDirFunc != nil {
+		return m.ListDirFunc(containerName, path)
+	}
+	return nil, nil
+}
+
 func (m *MockBackend) SetConfig(containerName, key, value string) error {
 	if m.SetConfigFunc != nil {
 		return m.SetConfigFunc(containerName, key, value)
@@ -213,6 +227,27 @@ func (m *MockBackend) SetConfig(containerName, key, value string) error {
 func (m *MockBackend) SetCPULimit(containerName, cpu string) error {
 	if m.SetCPULimitFunc != nil {
 		return m.SetCPULimitFunc(containerName, cpu)
+	}
+	return nil
+}
+
+func (m *MockBackend) SetCPUConfig(containerName, count, allowance string) error {
+	if m.SetCPUConfigFunc != nil {
+		return m.SetCPUConfigFunc(containerName, count, allowance)
+	}
+	return nil
+}
+
+func (m *MockBackend) FreezeContainer(name string) error {
+	if m.FreezeContainerFunc != nil {
+		return m.FreezeContainerFunc(name)
+	}
+	return nil
+}
+
+func (m *MockBackend) UnfreezeContainer(name string) error {
+	if m.UnfreezeContainerFunc != nil {
+		return m.UnfreezeContainerFunc(name)
 	}
 	return nil
 }
@@ -361,6 +396,27 @@ func (m *MockBackend) CreateNetworkACL(config incus.ACLConfig) error {
 func (m *MockBackend) UpdateNetworkACL(name string, config incus.ACLConfig) error {
 	if m.UpdateNetworkACLFunc != nil {
 		return m.UpdateNetworkACLFunc(name, config)
+	}
+	return nil
+}
+
+func (m *MockBackend) ListNetworkACLs() ([]api.NetworkACL, error) {
+	if m.ListNetworkACLsFunc != nil {
+		return m.ListNetworkACLsFunc()
+	}
+	return nil, nil
+}
+
+func (m *MockBackend) DeleteNetworkACL(name string) error {
+	if m.DeleteNetworkACLFunc != nil {
+		return m.DeleteNetworkACLFunc(name)
+	}
+	return nil
+}
+
+func (m *MockBackend) SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error {
+	if m.SetOwnedACLFunc != nil {
+		return m.SetOwnedACLFunc(containerName, aclName, deviceName, ownedPrefix)
 	}
 	return nil
 }

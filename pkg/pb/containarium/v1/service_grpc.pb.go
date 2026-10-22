@@ -44,9 +44,14 @@ const (
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
+	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
+	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
+	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
+	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
+	ContainerService_TerminateUserSessions_FullMethodName     = "/containarium.v1.ContainerService/TerminateUserSessions"
 	ContainerService_GetMetrics_FullMethodName                = "/containarium.v1.ContainerService/GetMetrics"
 	ContainerService_CleanupDisk_FullMethodName               = "/containarium.v1.ContainerService/CleanupDisk"
 	ContainerService_InstallStack_FullMethodName              = "/containarium.v1.ContainerService/InstallStack"
@@ -63,6 +68,7 @@ const (
 	ContainerService_ValidateGPU_FullMethodName               = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName            = "/containarium.v1.ContainerService/TriggerUpgrade"
 	ContainerService_GetUpgradeStatus_FullMethodName          = "/containarium.v1.ContainerService/GetUpgradeStatus"
+	ContainerService_GetBridgeDNSStatus_FullMethodName        = "/containarium.v1.ContainerService/GetBridgeDNSStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName         = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_SetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/SetMetricsExport"
 	ContainerService_GetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/GetMetricsExport"
@@ -248,12 +254,38 @@ type ContainerServiceClient interface {
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error)
+	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
+	// daemon API, with no SSH client needed (#2193) — the host-with-no-SSH
+	// case ListBoxRuns/TailBoxRunLog could read but not drive. Same access as
+	// connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	StartBoxRun(ctx context.Context, in *StartBoxRunRequest, opts ...grpc.CallOption) (*StartBoxRunResponse, error)
+	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
+	// as connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	ListBoxRuns(ctx context.Context, in *ListBoxRunsRequest, opts ...grpc.CallOption) (*ListBoxRunsResponse, error)
+	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
+	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes,
+	// follow_seconds). A framed log is demuxed to its stdout.
+	TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error)
+	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+	// `containarium code stop`, for a caller with no SSH client. Same access as
+	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
 	RemoveCollaborator(ctx context.Context, in *RemoveCollaboratorRequest, opts ...grpc.CallOption) (*RemoveCollaboratorResponse, error)
 	// ListCollaborators lists all collaborators for a container
 	ListCollaborators(ctx context.Context, in *ListCollaboratorsRequest, opts ...grpc.CallOption) (*ListCollaboratorsResponse, error)
+	// TerminateUserSessions ends every live SSH session a user holds on this
+	// backend: their owner box and every box they reach as a collaborator,
+	// in-box and on the host jump account. Nothing is deleted and no
+	// authorized_keys file changes; the user can connect again (#2522).
+	// Callers need ssh:write; the admin role (which service tokens carry) may
+	// name any user, any other caller only themselves.
+	TerminateUserSessions(ctx context.Context, in *TerminateUserSessionsRequest, opts ...grpc.CallOption) (*TerminateUserSessionsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
@@ -326,6 +358,10 @@ type ContainerServiceClient interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
+	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+	// app-hosting base domain to core-caddy matches core-caddy's live address,
+	// and why not when it does not (#2188). Admin-only.
+	GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -651,6 +687,46 @@ func (c *containerServiceClient) RemoveSSHKey(ctx context.Context, in *RemoveSSH
 	return out, nil
 }
 
+func (c *containerServiceClient) StartBoxRun(ctx context.Context, in *StartBoxRunRequest, opts ...grpc.CallOption) (*StartBoxRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartBoxRunResponse)
+	err := c.cc.Invoke(ctx, ContainerService_StartBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListBoxRuns(ctx context.Context, in *ListBoxRunsRequest, opts ...grpc.CallOption) (*ListBoxRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBoxRunsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListBoxRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TailBoxRunLogResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TailBoxRunLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StopBoxRunResponse)
+	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddCollaboratorResponse)
@@ -675,6 +751,16 @@ func (c *containerServiceClient) ListCollaborators(ctx context.Context, in *List
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCollaboratorsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ListCollaborators_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TerminateUserSessions(ctx context.Context, in *TerminateUserSessionsRequest, opts ...grpc.CallOption) (*TerminateUserSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TerminateUserSessionsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TerminateUserSessions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -835,6 +921,16 @@ func (c *containerServiceClient) GetUpgradeStatus(ctx context.Context, in *GetUp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetUpgradeStatusResponse)
 	err := c.cc.Invoke(ctx, ContainerService_GetUpgradeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBridgeDNSStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetBridgeDNSStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1195,12 +1291,38 @@ type ContainerServiceServer interface {
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error)
+	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
+	// daemon API, with no SSH client needed (#2193) — the host-with-no-SSH
+	// case ListBoxRuns/TailBoxRunLog could read but not drive. Same access as
+	// connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error)
+	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
+	// as connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error)
+	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
+	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes,
+	// follow_seconds). A framed log is demuxed to its stdout.
+	TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error)
+	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+	// `containarium code stop`, for a caller with no SSH client. Same access as
+	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
 	RemoveCollaborator(context.Context, *RemoveCollaboratorRequest) (*RemoveCollaboratorResponse, error)
 	// ListCollaborators lists all collaborators for a container
 	ListCollaborators(context.Context, *ListCollaboratorsRequest) (*ListCollaboratorsResponse, error)
+	// TerminateUserSessions ends every live SSH session a user holds on this
+	// backend: their owner box and every box they reach as a collaborator,
+	// in-box and on the host jump account. Nothing is deleted and no
+	// authorized_keys file changes; the user can connect again (#2522).
+	// Callers need ssh:write; the admin role (which service tokens carry) may
+	// name any user, any other caller only themselves.
+	TerminateUserSessions(context.Context, *TerminateUserSessionsRequest) (*TerminateUserSessionsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
@@ -1273,6 +1395,10 @@ type ContainerServiceServer interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
+	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+	// app-hosting base domain to core-caddy matches core-caddy's live address,
+	// and why not when it does not (#2188). Admin-only.
+	GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -1423,6 +1549,18 @@ func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKey
 func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSSHKey not implemented")
 }
+func (UnimplementedContainerServiceServer) StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBoxRuns not implemented")
+}
+func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TailBoxRunLog not implemented")
+}
+func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
+}
 func (UnimplementedContainerServiceServer) AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCollaborator not implemented")
 }
@@ -1431,6 +1569,9 @@ func (UnimplementedContainerServiceServer) RemoveCollaborator(context.Context, *
 }
 func (UnimplementedContainerServiceServer) ListCollaborators(context.Context, *ListCollaboratorsRequest) (*ListCollaboratorsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCollaborators not implemented")
+}
+func (UnimplementedContainerServiceServer) TerminateUserSessions(context.Context, *TerminateUserSessionsRequest) (*TerminateUserSessionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TerminateUserSessions not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
@@ -1479,6 +1620,9 @@ func (UnimplementedContainerServiceServer) TriggerUpgrade(context.Context, *Trig
 }
 func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUpgradeStatus not implemented")
+}
+func (UnimplementedContainerServiceServer) GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBridgeDNSStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -2008,6 +2152,78 @@ func _ContainerService_RemoveSSHKey_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_StartBoxRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartBoxRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).StartBoxRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_StartBoxRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).StartBoxRun(ctx, req.(*StartBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListBoxRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBoxRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListBoxRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListBoxRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListBoxRuns(ctx, req.(*ListBoxRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TailBoxRunLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TailBoxRunLogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TailBoxRunLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, req.(*TailBoxRunLogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopBoxRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).StopBoxRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_StopBoxRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_AddCollaborator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AddCollaboratorRequest)
 	if err := dec(in); err != nil {
@@ -2058,6 +2274,24 @@ func _ContainerService_ListCollaborators_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ListCollaborators(ctx, req.(*ListCollaboratorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TerminateUserSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TerminateUserSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TerminateUserSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TerminateUserSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TerminateUserSessions(ctx, req.(*TerminateUserSessionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2346,6 +2580,24 @@ func _ContainerService_GetUpgradeStatus_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).GetUpgradeStatus(ctx, req.(*GetUpgradeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetBridgeDNSStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBridgeDNSStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetBridgeDNSStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, req.(*GetBridgeDNSStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2800,6 +3052,22 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_RemoveSSHKey_Handler,
 		},
 		{
+			MethodName: "StartBoxRun",
+			Handler:    _ContainerService_StartBoxRun_Handler,
+		},
+		{
+			MethodName: "ListBoxRuns",
+			Handler:    _ContainerService_ListBoxRuns_Handler,
+		},
+		{
+			MethodName: "TailBoxRunLog",
+			Handler:    _ContainerService_TailBoxRunLog_Handler,
+		},
+		{
+			MethodName: "StopBoxRun",
+			Handler:    _ContainerService_StopBoxRun_Handler,
+		},
+		{
 			MethodName: "AddCollaborator",
 			Handler:    _ContainerService_AddCollaborator_Handler,
 		},
@@ -2810,6 +3078,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCollaborators",
 			Handler:    _ContainerService_ListCollaborators_Handler,
+		},
+		{
+			MethodName: "TerminateUserSessions",
+			Handler:    _ContainerService_TerminateUserSessions_Handler,
 		},
 		{
 			MethodName: "GetMetrics",
@@ -2874,6 +3146,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUpgradeStatus",
 			Handler:    _ContainerService_GetUpgradeStatus_Handler,
+		},
+		{
+			MethodName: "GetBridgeDNSStatus",
+			Handler:    _ContainerService_GetBridgeDNSStatus_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",

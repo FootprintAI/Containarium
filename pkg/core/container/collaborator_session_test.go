@@ -16,6 +16,14 @@ type recordingBackend struct {
 	calls       [][]string
 	userdelErr  error // injected failure for the userdel step
 	userdelSeen bool
+	// pkillExit / pkillErr are what ExecWithExitCode reports (#2522).
+	pkillExit int
+	pkillErr  error
+}
+
+func (r *recordingBackend) ExecWithExitCode(_ string, command []string) (string, string, int, error) {
+	r.calls = append(r.calls, command)
+	return "", "", r.pkillExit, r.pkillErr
 }
 
 func (r *recordingBackend) Exec(_ string, command []string) error {

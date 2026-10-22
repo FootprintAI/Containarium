@@ -38,7 +38,7 @@ their security review).
 | Go | 1.25.10 | matches `go.mod` and the Containarium repo's CI |
 | Node | 22.11.0 | LTS line; matches runner-kit's `setup_22.x` |
 | pnpm | 9.12.3 | matches runner-kit's `pnpm@9` |
-| buf | 1.38.0 | matches Containarium-cloud's CI pin |
+| buf | See `scripts/buf-version.env` | shared with Makefile and release/proto CI; checksum-verified |
 | golangci-lint | 2.1.6 | latest v2; bump conservatively |
 | actions-runner | 2.319.1 | matches `hacks/runner/install.sh`'s `RUNNER_VERSION` |
 
@@ -128,8 +128,9 @@ alongside the per-platform binaries on the GitHub release. See the
 
 ## v0 limitations
 
-- **No cosign signing.** v0.1 adds keyless Sigstore signing of
-  `CHECKSUMS.sha256`.
+- **Inner `CHECKSUMS.sha256` is not signed on its own.** The release
+  signs the tarball and its `.sha256` (keyless cosign; see
+  `docs/security/VERIFYING-RELEASES.md`), which covers everything inside.
 - **No OCI artifact mirror.** v0.1 publishes bundles to
   `ghcr.io/footprintai/containarium-bundle:vX.Y.Z` via `oras push`.
 - **No SBOM.** v0.1 ships `bundle.sbom.json` via `syft sbom`.

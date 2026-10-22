@@ -8,11 +8,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/footprintai/containarium/internal/hostcheck"
 )
 
 const systemdServicePath = "/etc/systemd/system/containarium.service"
+
+// incusCPUWeightDropInPath is where the platform CPU weight for incusd lands
+// (#2284). incus.service belongs to the distro / Zabbly package, so it is
+// never edited in place — a drop-in is the only edit that survives a package
+// upgrade. Numbered 50- so an operator's own drop-in (sorted later) wins.
+const incusCPUWeightDropInPath = "/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf"
 
 // compatSymlinkOldPath / compatSymlinkNewPath name the Phase 1 rollout
 // compat symlink (design doc, Rollout Phase 1, #1780): for the duration of
@@ -128,6 +137,16 @@ Group=root
 # for 27 days precisely because nothing was measuring.
 MemoryAccounting=yes
 
+# CPU weight well above the tenant default (#2284). Every tenant instance
+# runs at systemd's default weight of 100; so did this daemon, which meant a
+# CPU-saturated host starved the very process that creates boxes while the
+# platform software was healthy. A weight is a share, not a cap or a
+# priority: under contention the daemon gets ~10x a tenant's slice, and when
+# the host is idle nothing changes. incusd gets the same weight via a
+# drop-in (see ensureIncusCPUWeightDropIn); hostcheck checks both.
+CPUAccounting=yes
+CPUWeight=1000
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -205,6 +224,7 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("failed to reload systemd: %w", err)
 	}
+	applyPlatformCPUWeightNow()
 
 	// Enable service
 	if err := exec.Command("systemctl", "enable", "containarium").Run(); err != nil {
@@ -292,7 +312,65 @@ func ensureDaemonUnitAndSecret() error {
 	if err := ensureCompatSymlink("/"); err != nil {
 		return err
 	}
+	if err := ensureIncusCPUWeightDropIn("/"); err != nil {
+		return err
+	}
 	return nil
+}
+
+// renderIncusCPUWeightDropIn is the systemd drop-in that gives incusd the
+// same CPU weight the daemon unit carries inline (#2284). Weight only — no
+// ExecStart (incus's own unit is not ours to rewrite) and no quota (a cap on
+// incusd would turn tenant load into a platform outage, the opposite of the
+// goal). hostcheck.PlatformCPUWeight is the single source of the number so
+// the doctor's check and this file cannot disagree.
+func renderIncusCPUWeightDropIn() string {
+	var b strings.Builder
+	b.WriteString("# Written by `containariumd service install` (#2284). Tenant instances run at\n")
+	b.WriteString("# systemd's default CPUWeight=100; incusd must keep answering the daemon's\n")
+	b.WriteString("# health probe and every create while they contend. A weight is a share under\n")
+	b.WriteString("# contention, not a cap. Override with a later-sorted drop-in, not by editing.\n")
+	b.WriteString("[Service]\n")
+	b.WriteString("CPUAccounting=yes\n")
+	fmt.Fprintf(&b, "CPUWeight=%d\n", hostcheck.PlatformCPUWeight)
+	return b.String()
+}
+
+// ensureIncusCPUWeightDropIn writes the incusd CPU-weight drop-in under
+// root (callers pass "/"; tests a temp dir). Idempotent. The caller's
+// `systemctl daemon-reload` makes it the unit's configuration; see
+// applyPlatformCPUWeightNow for the already-running incusd.
+func ensureIncusCPUWeightDropIn(root string) error {
+	path := filepath.Join(root, incusCPUWeightDropInPath)
+	// #nosec G301 -- systemd drop-in directory under /etc/systemd/system, world-readable by convention like its parent; no secrets
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
+	}
+	// #nosec G306 -- systemd drop-in, world-readable config by convention; no secrets
+	if err := os.WriteFile(path, []byte(renderIncusCPUWeightDropIn()), 0o644); err != nil {
+		return fmt.Errorf("failed to write incus CPU-weight drop-in: %w", err)
+	}
+	log.Printf("incus CPU-weight drop-in written: %s", path)
+	return nil
+}
+
+// applyPlatformCPUWeightNow pushes the weight onto the RUNNING incus.service
+// cgroup. A daemon-reload makes the drop-in the unit's configuration but
+// does not re-realize cgroup attributes on a unit that is already running;
+// the alternative — restarting incusd — would stop every tenant on the
+// host. `set-property --runtime` applies it immediately without persisting
+// a second copy (the drop-in is the persistent one, and takes over at the
+// next incus restart or boot). Best-effort: a host without systemd or
+// without incus running just logs it.
+func applyPlatformCPUWeightNow() {
+	// #nosec G204 -- fixed argv: a constant unit name and a compile-time weight, no caller input
+	out, err := exec.Command("systemctl", "set-property", "--runtime", "incus.service",
+		fmt.Sprintf("CPUWeight=%d", hostcheck.PlatformCPUWeight), "CPUAccounting=yes").CombinedOutput()
+	if err != nil {
+		log.Printf("could not apply CPUWeight to the running incus.service (will apply on its next restart): %v %s", err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("incus.service CPUWeight=%d applied to the running unit", hostcheck.PlatformCPUWeight)
 }
 
 func runServiceUninstall(cmd *cobra.Command, args []string) error {

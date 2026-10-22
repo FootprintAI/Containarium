@@ -1,0 +1,43 @@
+name: sdlc-skills-lock
+
+# pkg/core/sdlcskills/sdlc-skills.lock pins the open-sdlc-skills commit and the
+# sha256 of the tarball built from it (#2065). This rebuilds the tarball from
+# the pinned commit and fails if the digest in the lock does not match, so a
+# hand-edited ref or a stale digest cannot reach a release.
+
+on:
+  pull_request:
+    paths:
+      - 'pkg/core/sdlcskills/sdlc-skills.lock'
+      - 'scripts/build-sdlc-skills-bundle.sh'
+      - 'scripts/install-sdlc-skills.sh'
+      - '.github/workflows/sdlc-skills-lock.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/core/sdlcskills/sdlc-skills.lock'
+      - 'scripts/build-sdlc-skills-bundle.sh'
+      - 'scripts/install-sdlc-skills.sh'
+      - '.github/workflows/sdlc-skills-lock.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    name: sdlc-skills lock matches a rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Rebuild from the pinned commit and compare the digest
+        run: scripts/build-sdlc-skills-bundle.sh "$RUNNER_TEMP/sdlc"
+      - name: The pinned engineer-implement still has the section the hosted skill composes in (#2488)
+        # pkg/core/skills declares standard_from/standard_section for the hosted
+        # issue-implementer. If a pin bump renames that heading, the daemon would
+        # fall back to the inline prompt without anyone noticing; fail here instead.
+        run: |
+          tar -xzOf "$RUNNER_TEMP/sdlc/sdlc-skills.tar.gz" engineer-implement/SKILL.md \
+            | grep -qxF '**Engineering principles**' \
+            || { echo "pinned engineer-implement has no '**Engineering principles**' section" >&2; exit 1; }
+      - name: Shellcheck the skills scripts
+        run: shellcheck scripts/build-sdlc-skills-bundle.sh scripts/install-sdlc-skills.sh

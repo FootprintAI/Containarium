@@ -25,11 +25,15 @@ package netbpf
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/footprintai/containarium/internal/netpolicy"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Test topology: a throwaway veth pair, one end (ebpfLoadHostVeth) left in
@@ -277,5 +281,155 @@ func TestDetachVeth_RemovesLink(t *testing.T) {
 	}
 	if err := loader.DetachVeth(ifindex); err != nil {
 		t.Fatalf("final DetachVeth: %v", err)
+	}
+}
+
+// A second, routed address on the host side of the veth pair. The netns (the
+// "box") reaches it via the host-side veth address, so from the box's point of
+// view it is a separate peer host — distinct from the host veth address, which
+// plays the daemon. Outside the /30 so it cannot collide with either end.
+const (
+	ebpfLoadPeerBoxAddr = "10.250.112.1"
+	// a2aPort mirrors internal/server's a2aPort (the in-box A2A server's
+	// port). Duplicated rather than imported: internal/server imports this
+	// package, and the value is part of the agent-runtime contract, not a knob.
+	ebpfLoadA2APort   = 8674
+	ebpfLoadOtherPort = 8675
+)
+
+// TestAttachedProgram_BoxCannotReachPeerA2APort is #2140's boundary, proven on
+// a real kernel with real TCP rather than asserted on the compiled policy: a
+// box whose policy is the agent-skill shape — the peer's /32 allowed, the
+// daemon's address allowed (CONTAINARIUM_AGENT_EGRESS_CIDRS), and a tcp/8674
+// deny on the peer — under ENFORCE
+//
+//   - cannot open a TCP connection to the peer's :8674,
+//   - can still open one to any other port on the same peer (the /32 is kept),
+//   - and the daemon (the host) can still open one to the box's own :8674 —
+//     the only legitimate A2A path.
+func TestAttachedProgram_BoxCannotReachPeerA2APort(t *testing.T) {
+	loader, err := Load(ebpfLoadObjPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer func() { _ = loader.Close() }()
+	if !loader.HasDenyRules() {
+		t.Fatal("object has no deny_cidr map — the A2A-port deny cannot be installed; rebuild netpolicy.bpf.o")
+	}
+
+	// Topology: a peer address on the host, routed from the box.
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); /* #nosec G204 -- fixed argv */ err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("ip", "addr", "add", ebpfLoadPeerBoxAddr+"/32", "dev", ebpfLoadHostVeth)
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "addr", "del", ebpfLoadPeerBoxAddr+"/32", "dev", ebpfLoadHostVeth).Run() // #nosec G204 -- fixed argv
+	})
+	run("ip", "netns", "exec", ebpfLoadNetns, "ip", "route", "add", ebpfLoadPeerBoxAddr+"/32", "via", ebpfLoadHostAddr)
+
+	// Listeners on the "peer" (host netns): its A2A port and some other port.
+	for _, port := range []int{ebpfLoadA2APort, ebpfLoadOtherPort} {
+		ln, err := net.Listen("tcp4", net.JoinHostPort(ebpfLoadPeerBoxAddr, fmt.Sprint(port)))
+		if err != nil {
+			t.Fatalf("listen on peer :%d: %v", port, err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go acceptAndClose(ln)
+	}
+
+	// The box's policy, compiled through the same path the daemon uses.
+	c, err := netpolicy.Compile(&pb.NetworkPolicy{
+		Tenant:      "agent-caller",
+		EgressCidrs: []string{ebpfLoadPeerBoxAddr + "/32", ebpfLoadHostAddr + "/32"},
+		DenyRules:   []*pb.NetworkPolicyDenyRule{{Cidr: ebpfLoadPeerBoxAddr + "/32", Port: ebpfLoadA2APort, Proto: "tcp"}},
+		Mode:        pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	ifindex, err := VethIndex(ebpfLoadHostVeth)
+	if err != nil {
+		t.Fatalf("VethIndex(%q): %v", ebpfLoadHostVeth, err)
+	}
+	if err := loader.SetVethPolicy(ifindex, CompileConfig(ebpfLoadTenant, c)); err != nil {
+		t.Fatalf("SetVethPolicy: %v", err)
+	}
+	egress, err := CompileEgress(ebpfLoadTenant, c)
+	if err != nil {
+		t.Fatalf("CompileEgress: %v", err)
+	}
+	for _, e := range egress {
+		if err := loader.AddEgress(e); err != nil {
+			t.Fatalf("AddEgress: %v", err)
+		}
+	}
+	deny, err := CompileDeny(ebpfLoadTenant, c)
+	if err != nil {
+		t.Fatalf("CompileDeny: %v", err)
+	}
+	for _, d := range deny {
+		if err := loader.AddDeny(d); err != nil {
+			t.Fatalf("AddDeny: %v", err)
+		}
+	}
+	if err := loader.AttachVeth(ifindex); err != nil {
+		t.Fatalf("AttachVeth: %v", err)
+	}
+	t.Cleanup(func() { _ = loader.DetachVeth(ifindex) })
+
+	// Box -> peer: connect from inside the netns with bash's /dev/tcp (no
+	// extra tooling on the runner). A dropped SYN shows up as a timeout.
+	boxDial := func(port int) error {
+		script := fmt.Sprintf("exec 3<>/dev/tcp/%s/%d", ebpfLoadPeerBoxAddr, port)
+		out, err := exec.Command("ip", "netns", "exec", ebpfLoadNetns, // #nosec G204 -- fixed argv, constant script
+			"timeout", "3", "bash", "-c", script).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
+	if err := boxDial(ebpfLoadOtherPort); err != nil {
+		t.Fatalf("box -> peer :%d must still connect (the peer /32 is kept): %v", ebpfLoadOtherPort, err)
+	}
+	if err := boxDial(ebpfLoadA2APort); err == nil {
+		t.Fatalf("box -> peer :%d connected; the A2A-port deny rule did not drop it", ebpfLoadA2APort)
+	}
+
+	// Daemon -> box: the host dials the box's own A2A port. A listener in the
+	// netns (python3's stdlib server — present on the runner image) stands in
+	// for the in-box A2A server.
+	srv := exec.Command("ip", "netns", "exec", ebpfLoadNetns, // #nosec G204 -- fixed argv
+		"python3", "-m", "http.server", fmt.Sprint(ebpfLoadA2APort), "--bind", ebpfLoadPeerAddr)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start in-netns listener: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Process.Kill(); _ = srv.Wait() })
+	daemonAddr := net.JoinHostPort(ebpfLoadPeerAddr, fmt.Sprint(ebpfLoadA2APort))
+	var dialErr error
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var conn net.Conn
+		conn, dialErr = net.DialTimeout("tcp4", daemonAddr, time.Second)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		time.Sleep(200 * time.Millisecond) // listener still starting
+	}
+	if dialErr != nil {
+		t.Fatalf("daemon -> box %s must connect (the deny is on the box's egress to peers, not on delivery to the box): %v", daemonAddr, dialErr)
+	}
+}
+
+func acceptAndClose(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
 	}
 }

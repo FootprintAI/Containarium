@@ -108,7 +108,7 @@ func TestConditionalFieldsAreOmittedWhenUnset(t *testing.T) {
 		keys := marshalKeys(t, createContainerRequest{})
 		for _, absent := range []string{
 			"gitSource", "gitRef", "gitCredential", "workspacePath",
-			"ttlSeconds", "idleStopMinutes", "deleteAfterStoppedSeconds",
+			"ttlSeconds", "idleStopMinutes", "disableAutoSleep", "deleteAfterStoppedSeconds",
 		} {
 			if contains(keys, absent) {
 				t.Errorf("%q must be absent when unset", absent)
@@ -130,6 +130,16 @@ func TestConditionalFieldsAreOmittedWhenUnset(t *testing.T) {
 		keys := marshalKeys(t, revokeTokenRequest{JTI: "j"})
 		if contains(keys, "reason") || contains(keys, "expires_at") {
 			t.Errorf("optional revoke fields must be absent when unset, got %v", keys)
+		}
+	})
+
+	t.Run("runAgentSkillRequest tracker_connection", func(t *testing.T) {
+		if contains(marshalKeys(t, runAgentSkillRequest{}), "tracker_connection") {
+			t.Error("tracker_connection must be absent when unset so an unbound run stays byte-identical")
+		}
+		b, _ := json.Marshal(runAgentSkillRequest{TrackerConnection: "conn-a"})
+		if !strings.Contains(string(b), `"tracker_connection":"conn-a"`) {
+			t.Errorf("tracker_connection must be sent when set (#2042), got %s", b)
 		}
 	})
 

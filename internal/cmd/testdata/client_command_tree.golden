@@ -1,9 +1,19 @@
 agent call
+agent credential-status
+agent engines
 agent enqueue
 agent get
 agent list
+agent provision-box
 agent run
 agent worker
+anon ban
+anon claim
+anon disable
+anon enable
+anon list
+anon status
+anon unban
 app delete
 app deploy
 app get
@@ -26,11 +36,14 @@ backup list
 backup prune
 backup restore
 backup verify
+box delete
+bridge-dns status
 capacity advertise
 capacity get
 capacity withdraw
 cert generate
 cert generate-with-ca
+claim
 cluster create
 cluster delete
 cluster get
@@ -39,8 +52,13 @@ cluster list
 cluster node-pool
 cluster status
 code attach
+code egress-policy delete
+code egress-policy get
+code egress-policy set
 code install
+code logs
 code run
+code runs
 code status
 code stop
 collaborator add
@@ -57,6 +75,7 @@ create
 crew get
 crew list
 crew logs
+crew plan validate
 crew run
 crew status
 debug
@@ -69,6 +88,14 @@ gateway key status
 gateway mint
 gateway models
 get
+guardrail apply
+guardrail baseline set
+guardrail keygen
+guardrail policy get
+guardrail policy set
+guardrail scan
+guardrail status
+guardrail verify
 info
 install-stack
 kms envelope-coverage
@@ -104,12 +131,14 @@ moved:service
 moved:sync-accounts
 moved:tunnel
 moved:upgrade-watchdog
+network-guard status
 network-policy delete
 network-policy get
 network-policy list
 network-policy patch add
 network-policy patch list
 network-policy patch rm
+network-policy plan
 network-policy set
 network-policy signature add
 network-policy signature list
@@ -130,7 +159,13 @@ recipe get
 recipe list
 recipe workspace-access
 regions
+remind-me
 resize
+retention hold list
+retention hold release
+retention hold set
+retention policy get
+retention policy set
 route add
 route delete
 route list
@@ -157,13 +192,25 @@ secrets set-kms-key
 security bad-destinations add
 security bad-destinations list
 security bad-destinations remove
+security clamav install
+security exec-events
 security findings
 security findings list
 security findings resolve
+security miner-signatures add
+security miner-signatures list
+security miner-signatures remove
+security process-policy get
+security process-policy release
+security process-policy set
+security scan-opt-in allow
+security scan-opt-in list
+security scan-opt-in refuse
 security sentry status
 security-findings
 security-remediate
 security-scan
+sessions terminate
 sleep
 snapshot create
 snapshot delete
@@ -172,6 +219,7 @@ snapshot rollback
 ssh list
 ssh propagate
 ssh remove
+ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync

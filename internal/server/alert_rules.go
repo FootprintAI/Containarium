@@ -2,7 +2,11 @@ package server
 
 // DefaultAlertRules is the YAML content for vmalert default rules.
 // Written to /etc/vmalert/rules/default.yml inside the VictoriaMetrics container.
-const DefaultAlertRules = `groups:
+// The bridge DNS (#2194) and storage pool (#2823) groups are generated from
+// their recorders' series names.
+var DefaultAlertRules = baseAlertRules + bridgeDNSAlertRules() + storagePoolAlertRules()
+
+const baseAlertRules = `groups:
   - name: system_alerts
     interval: 30s
     rules:

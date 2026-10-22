@@ -51,6 +51,10 @@ func TestTrackerRoute_NilStoreUnavailable(t *testing.T) {
 	}
 }
 
+// TestTrackerRoute_CrossTenantDenied pins that all three route RPCs share
+// requireTrackerRouteAccess's tenant check (#2035's bundled test-gap nit):
+// alice acting on bob's tenant without an admin role is denied for
+// Set, List and Delete alike, not just Set.
 func TestTrackerRoute_CrossTenantDenied(t *testing.T) {
 	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
 	ctx := kmsKeyTestCtx("tracker-route-rpc-alice", "member", "tracker:admin")
@@ -58,7 +62,21 @@ func TestTrackerRoute_CrossTenantDenied(t *testing.T) {
 		Username: "tracker-route-rpc-bob", Connection: "default", Scope: "product", SkillId: "product-define",
 	})
 	if status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("code = %v, want PermissionDenied", status.Code(err))
+		t.Fatalf("SetTrackerRoute code = %v, want PermissionDenied", status.Code(err))
+	}
+
+	_, err = s.ListTrackerRoutes(ctx, &pb.ListTrackerRoutesRequest{
+		Username: "tracker-route-rpc-bob", Connection: "default",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("ListTrackerRoutes code = %v, want PermissionDenied", status.Code(err))
+	}
+
+	_, err = s.DeleteTrackerRoute(ctx, &pb.DeleteTrackerRouteRequest{
+		Username: "tracker-route-rpc-bob", Connection: "default", Scope: "product",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("DeleteTrackerRoute code = %v, want PermissionDenied", status.Code(err))
 	}
 }
 

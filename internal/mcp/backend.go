@@ -42,11 +42,16 @@ type API interface {
 	ListRecipes() (*ListRecipesResponse, error)
 	DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error)
 	ListAgentSkills() (*ListAgentSkillsResponse, error)
+	ListAgentEngines() (*ListAgentEnginesResponse, error)
 	RunAgentSkill(req RunAgentSkillRequest) (*RunAgentSkillResponse, error)
 	CallAgent(req CallAgentRequest) (*CallAgentResponse, error)
 	ListCrews() (*ListCrewsResponse, error)
 	RunCrew(req RunCrewRequest) (*RunCrewResponse, error)
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
+	ListBoxRuns(username string) ([]*pb.BoxRun, error)
+	TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error)
+	// Coding-tool egress allowlist, read only (#2378).
+	GetCodingToolEgressPolicy(req *pb.GetCodingToolEgressPolicyRequest) (*pb.GetCodingToolEgressPolicyResponse, error)
 
 	// Backups.
 	CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error)
@@ -63,10 +68,16 @@ type API interface {
 	GetKMSStatus() (*KMSStatusResponse, error)
 	GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error)
 	MigrateToEnvelope(req MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error)
+	// Guardrail policy (#2368): read only; the write stays CLI-only.
+	GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error)
 
 	// Model gateway (#1726). Mint only: the key verbs are operator-gated and
 	// deliberately not exposed to an agent (see gateway_tools.go).
 	MintGatewayToken(req MintGatewayTokenBody) (*MintGatewayTokenResponse, error)
+
+	// Network guards (#2353): the tenant ↔ tenant and tenant → core NIC-ACL
+	// posture of the backend, read-only.
+	GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error)
 
 	// Routes / backends.
 	AddRoute(req AddRouteRequest) (*AddRouteResponse, error)
@@ -84,6 +95,8 @@ type API interface {
 	AddCollaborator(req AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	ListCollaborators(ownerUsername string) (*ListCollaboratorsResponse, error)
 	RemoveCollaborator(ownerUsername, collaboratorUsername string) (*RemoveCollaboratorResponse, error)
+	// SSH sessions (#2522), through the CLI's shared client.
+	TerminateUserSessions(username string) (*pb.TerminateUserSessionsResponse, error)
 
 	// Security.
 	TriggerSecurityScan(kind, containerName, username string) (*SecurityScanResponse, error)
@@ -92,6 +105,19 @@ type API interface {
 
 	// Threat-detection sentry (#1640).
 	GetSentryStatus() (*SentryStatusResponse, error)
+
+	// Process policy (#2636, #2666): what a HIGH mining finding does to its box.
+	GetProcessPolicy(container string) (*pb.GetProcessPolicyResponse, error)
+	SetProcessPolicy(req *pb.SetProcessPolicyRequest) (*pb.SetProcessPolicyResponse, error)
+	ReleaseProcessAction(container string) (*pb.ReleaseProcessActionResponse, error)
+
+	// Miner-signature list (#2638, #2763).
+	ListMinerSignatures() (*pb.ListMinerSignaturesResponse, error)
+	AddMinerSignature(req *pb.AddMinerSignatureRequest) (*pb.AddMinerSignatureResponse, error)
+	RemoveMinerSignature(kind pb.MinerSignatureKind, pattern string) (*pb.RemoveMinerSignatureResponse, error)
+
+	// Bridge DNS record status (#2188).
+	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
 
 	// Known-bad destination rule (#1641).
 	ListBadDestinations() (*ListBadDestinationsResponse, error)
@@ -140,6 +166,9 @@ type API interface {
 	// security container. Host-level — a daemon manages exactly one
 	// security container, so there's no per-tenant scoping.
 	InstallZap() (*InstallZapResponse, error)
+	// InstallClamav installs ClamAV and its signatures inside one box so the
+	// tenant-run malware scan can run (#2659).
+	InstallClamav(containerName string) (*InstallClamavResponse, error)
 
 	// Transport-level escape hatches used by handlers that issue a raw
 	// request (compose, move, connect) or need the effective token (scope
@@ -196,8 +225,16 @@ func (cloudClient) GetUpgradeStatus(string) (*UpgradeStatusResponse, error) {
 	return nil, errUnsupportedOnCloud("get_upgrade_status", "")
 }
 
+func (cloudClient) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
+	return nil, errUnsupportedOnCloud("bridge_dns_status", "the platform operator owns the bridge DNS record")
+}
+
 func (cloudClient) InstallZap() (*InstallZapResponse, error) {
 	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
+}
+
+func (cloudClient) InstallClamav(string) (*InstallClamavResponse, error) {
+	return nil, errUnsupportedOnCloud("install_clamav", "run this against the box owner's own daemon")
 }
 
 func (cloudClient) SetMetricsExport(bool, string, []string) (*SetMetricsExportResponse, error) {
@@ -206,6 +243,23 @@ func (cloudClient) SetMetricsExport(bool, string, []string) (*SetMetricsExportRe
 
 func (cloudClient) GetMetricsExport() (*GetMetricsExportResponse, error) {
 	return nil, errUnsupportedOnCloud("get_metrics_export", "")
+}
+
+// KMS is platform-wide and managed per OSS daemon; the control plane
+// deliberately does not proxy it (cloud#2679), so answer client-side instead
+// of a round-trip that can only return 501.
+const kmsCloudAlt = "run `containarium kms status|envelope-coverage` on the OSS daemon's own host"
+
+func (cloudClient) GetKMSStatus() (*KMSStatusResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_status", kmsCloudAlt)
+}
+
+func (cloudClient) GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_envelope_coverage", kmsCloudAlt)
+}
+
+func (cloudClient) MigrateToEnvelope(MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_migrate_to_envelope", "run `containarium kms migrate-to-envelope` on the OSS daemon's own host")
 }
 
 // newBackend builds the API the handlers use, classifying the target from the

@@ -550,7 +550,11 @@ func (s *Store) resolveEncryptKMS(username string) (corecrypto.KMSClient, error)
 // per-tenant keys aren't implemented for those backends (#1630 scope).
 func (s *Store) resolveDecryptKMS(kekID string) (corecrypto.KMSClient, error) {
 	if s.tenantKMSFactory != nil {
-		if keyName, ok := strings.CutPrefix(kekID, corecrypto.GCPKEKPrefix); ok {
+		// A GCP kek_id names the key VERSION (#2402); decrypt is
+		// addressed to the CryptoKey, which Cloud KMS resolves to the
+		// right version from the ciphertext. Pre-#2402 rows carry the
+		// bare key name and parse the same way.
+		if keyName, ok := corecrypto.GCPCryptoKeyFromKEKID(kekID); ok {
 			return s.kekClient(keyName)
 		}
 	}

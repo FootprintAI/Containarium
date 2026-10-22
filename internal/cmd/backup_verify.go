@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -14,10 +15,19 @@ var (
 	backupVerifyDBPass string
 	backupVerifyDBHost string
 	backupVerifyDBPort int32
+
+	// #2295: path to the age identity file for an encrypted record.
+	backupVerifyAgeIdentityFile string
+
+	// #2403: managed key and newest-record selection.
+	backupVerifyManaged  bool
+	backupVerifyLatest   bool
+	backupVerifyUser     string
+	backupVerifyDatabase string
 )
 
 var backupVerifyCmd = &cobra.Command{
-	Use:   "verify <id>",
+	Use:   "verify [<id>]",
 	Short: "Restore-test a stored dump against a throwaway container",
 	Long: `Prove a backup is restorable, not merely intact.
 
@@ -37,10 +47,28 @@ the engine's own error — the command exits non-zero, so it can gate a
 scheduled job. The outcome is recorded on the backup record, so
 "last verified" survives the run and is retrievable as A.8.13 evidence.
 
+An encrypted backup (created with --age-recipient) needs the matching age
+identity to be restore-tested at all: pass the key file with
+--age-identity-file, same as 'backup restore'. The platform holds no
+decryption key, so verification refuses to even attempt the test without
+one. Given the WRONG identity, decryption fails and that failure is
+itself recorded as a FAILED verification (#2295) — this is exactly the
+check that catches a backup that looks healthy ("Encrypted: yes") but is
+actually unrecoverable because nobody holds the matching private key.
+
+Name the backup by id, or pass --latest with --user and --database to
+verify the newest backup of that tenant's database.
+
+` + managedHelp + `
+
 Examples:
   containarium backup verify alice-app-20260605T130405Z --target scratch --server <host>
+  containarium backup verify alice-app-20260605T130405Z --target scratch \
+      --age-identity-file backup.key --server <host>
+  containarium backup verify --managed --latest --user alice --database app \
+      --target scratch --server <host>
   containarium backup list alice --server <host>   # shows last-verified state`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runBackupVerify,
 }
 
@@ -52,20 +80,66 @@ func init() {
 	f.StringVar(&backupVerifyDBPass, "db-password", "", "Postgres password on the target (omit for peer/trust auth)")
 	f.StringVar(&backupVerifyDBHost, "db-host", "", "DB host as seen inside the target container (default: 127.0.0.1)")
 	f.Int32Var(&backupVerifyDBPort, "db-port", 0, "DB port on the target (default: 5432)")
+	f.StringVar(&backupVerifyAgeIdentityFile, "age-identity-file", "", "age identity file (AGE-SECRET-KEY-1...) that decrypts an encrypted backup; required to verify a record created with --age-recipient")
+	f.BoolVar(&backupVerifyManaged, "managed", false, "unwrap the record's managed key with your own cloud credentials (audited by the KMS) instead of --age-identity-file")
+	f.BoolVar(&backupVerifyLatest, "latest", false, "verify the newest backup for --user and --database instead of a named id")
+	f.StringVar(&backupVerifyUser, "user", "", "tenant whose newest backup --latest selects")
+	f.StringVar(&backupVerifyDatabase, "database", "", "database whose newest backup --latest selects")
 	_ = backupVerifyCmd.MarkFlagRequired("target")
 }
 
 func runBackupVerify(cmd *cobra.Command, args []string) error {
+	sel := backupSelection{
+		args: args, latest: backupVerifyLatest, user: backupVerifyUser, database: backupVerifyDatabase,
+		managed: backupVerifyManaged, ageIdentityFile: backupVerifyAgeIdentityFile,
+	}
+	if err := sel.validate(); err != nil {
+		return err
+	}
+	// Read the identity before dialing: a missing key file is a local
+	// mistake and should fail fast, without a round trip (same as
+	// 'backup restore').
+	var ageIdentity string
+	if backupVerifyAgeIdentityFile != "" {
+		content, err := os.ReadFile(backupVerifyAgeIdentityFile) // #nosec G304 -- operator-named identity file, read on the operator's own machine
+		if err != nil {
+			return fmt.Errorf("read age identity file: %w", err)
+		}
+		ageIdentity, err = parseAgeIdentity(content)
+		if err != nil {
+			return fmt.Errorf("%s: %w", backupVerifyAgeIdentityFile, err)
+		}
+	}
+	if backupVerifyAgeIdentityFile != "" || backupVerifyManaged {
+		if err := requireSecureTransportForIdentity(serverAddr, httpMode, insecure); err != nil {
+			return err
+		}
+	}
+
 	c, err := newBackupClientFn()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = c.Close() }()
 
-	fmt.Printf("Restore-testing backup %q against target %q...\n", args[0], backupVerifyTarget)
+	rec, err := sel.resolve(c)
+	if err != nil {
+		return err
+	}
+	if backupVerifyManaged {
+		secret, err := unwrapManagedIdentity(cmd.Context(), rec)
+		if err != nil {
+			return err
+		}
+		defer secrets.ZeroBytes(secret)
+		ageIdentity = string(secret)
+	}
+
+	fmt.Printf("Restore-testing backup %q against target %q...\n", rec.Id, backupVerifyTarget)
 	resp, err := c.VerifyBackup(&pb.VerifyBackupRequest{
-		Id:             args[0],
+		Id:             rec.Id,
 		TargetUsername: backupVerifyTarget,
+		AgeIdentity:    ageIdentity,
 		Connection: &pb.PgConnection{
 			User:     backupVerifyDBUser,
 			Password: backupVerifyDBPass,

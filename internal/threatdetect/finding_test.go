@@ -119,3 +119,152 @@ func TestFinding_ToProto_ZeroTimeOmitted(t *testing.T) {
 		t.Errorf("LastSeen = %v, want nil for a zero time.Time", got.LastSeen)
 	}
 }
+
+// A deduped repeat may raise an open finding's severity, never lower it.
+func TestMaxSeverity(t *testing.T) {
+	const (
+		unspec = pb.ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED
+		medium = pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM
+		high   = pb.ThreatSeverity_THREAT_SEVERITY_HIGH
+	)
+	for _, c := range []struct{ a, b, want pb.ThreatSeverity }{
+		{medium, high, high},
+		{high, medium, high},
+		{medium, medium, medium},
+		{unspec, medium, medium},
+		{medium, unspec, medium},
+	} {
+		if got := maxSeverity(c.a, c.b); got != c.want {
+			t.Errorf("maxSeverity(%v, %v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// Config evidence is a state snapshot: re-merging an identical entry (a box
+// that stays permissive, pass after pass) must not grow the list, while a
+// changed entry is still added.
+func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
+	a := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes"}
+	b := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes", Remediated: true}
+
+	got := Evidence{Configs: []ConfigEvidence{a}}
+	for i := 0; i < 5; i++ {
+		got = got.merged(Evidence{Configs: []ConfigEvidence{a}})
+	}
+	if len(got.Configs) != 1 {
+		t.Fatalf("5 identical repeats left %d entries, want 1: %+v", len(got.Configs), got.Configs)
+	}
+
+	got = got.merged(Evidence{Configs: []ConfigEvidence{a, b, b}})
+	if len(got.Configs) != 2 || got.Configs[1] != b {
+		t.Fatalf("a changed entry must be added exactly once, got %+v", got.Configs)
+	}
+}
+
+// Exec evidence (#2637) rides the same wire, cap and merge paths as the other
+// kinds.
+func TestEvidence_Execs_ToProtoCappedMerged(t *testing.T) {
+	f := &Finding{Evidence: Evidence{Execs: []ExecEvidence{{PID: 4242, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: "./xmrig -o pool:3333", ArgvTruncated: true, SHA256: "ab", Matched: "name:xmrig"}}}}
+	got := f.ToProto().GetEvidence().GetExecs()
+	if len(got) != 1 || got[0].Pid != 4242 || got[0].Ppid != 1 || got[0].Uid != 1000 || got[0].Comm != "xmrig" || got[0].Filename != "/tmp/.x/xmrig" ||
+		got[0].Argv != "./xmrig -o pool:3333" || !got[0].ArgvTruncated || got[0].Sha256 != "ab" || got[0].Matched != "name:xmrig" {
+		t.Fatalf("ToProto exec evidence = %v", got)
+	}
+	var many Evidence
+	for i := 0; i < EvidenceCap+3; i++ {
+		many.Execs = append(many.Execs, ExecEvidence{PID: uint32(i)}) // #nosec G115 -- small test loop
+	}
+	if capped := many.Capped(); len(capped.Execs) != EvidenceCap || capped.Execs[0].PID != 3 {
+		t.Fatalf("Capped Execs = %+v, want the most recent %d", capped.Execs, EvidenceCap)
+	}
+	merged := Evidence{Execs: []ExecEvidence{{PID: 1}}}.merged(Evidence{Execs: []ExecEvidence{{PID: 2}}})
+	if len(merged.Execs) != 2 || merged.Execs[1].PID != 2 {
+		t.Fatalf("merged Execs = %+v", merged.Execs)
+	}
+}
+
+// CPU evidence (#2635) rides the same wire, cap and merge paths as the other
+// evidence kinds.
+func TestEvidence_CPU_ToProtoCappedMerged(t *testing.T) {
+	f := &Finding{Evidence: Evidence{CPU: []CPUEvidence{{MeanCores: 16, PeakCores: 16.5, WindowSeconds: 300, Samples: 20}}}}
+	got := f.ToProto().GetEvidence().GetCpu()
+	if len(got) != 1 || got[0].GetMeanCores() != 16 || got[0].GetPeakCores() != 16.5 || got[0].GetWindowSeconds() != 300 || got[0].GetSamples() != 20 {
+		t.Fatalf("ToProto CPU evidence = %v", got)
+	}
+	var many Evidence
+	for i := 0; i < EvidenceCap+3; i++ {
+		many.CPU = append(many.CPU, CPUEvidence{Samples: int32(i)}) // #nosec G115 -- small test loop
+	}
+	if capped := many.Capped(); len(capped.CPU) != EvidenceCap || capped.CPU[0].Samples != 3 {
+		t.Fatalf("Capped CPU = %+v, want the most recent %d", capped.CPU, EvidenceCap)
+	}
+	merged := Evidence{CPU: []CPUEvidence{{Samples: 1}}}.merged(Evidence{CPU: []CPUEvidence{{Samples: 2}}})
+	if len(merged.CPU) != 2 || merged.CPU[1].Samples != 2 {
+		t.Fatalf("merged CPU = %+v", merged.CPU)
+	}
+}
+
+// FlowEvidence's first/last seen and matched (#2635) reach the wire; a flow
+// without them (every other rule) leaves the timestamps nil.
+func TestFlowEvidence_SeenAndMatched_ToProto(t *testing.T) {
+	first, last := time.Unix(1000, 0), time.Unix(1240, 0)
+	f := &Finding{Evidence: Evidence{Flows: []FlowEvidence{
+		{DstIP: "203.0.113.9", DstPort: 3333, FirstSeen: first, LastSeen: last, Matched: "port:3333"},
+		{DstIP: "198.51.100.7"},
+	}}}
+	got := f.ToProto().GetEvidence().GetFlows()
+	if got[0].GetFirstSeen().AsTime() != first.UTC() || got[0].GetLastSeen().AsTime() != last.UTC() || got[0].GetMatched() != "port:3333" {
+		t.Fatalf("flow 0 = %v", got[0])
+	}
+	if got[1].GetFirstSeen() != nil || got[1].GetLastSeen() != nil || got[1].GetMatched() != "" {
+		t.Fatalf("flow 1 should leave the new fields unset: %v", got[1])
+	}
+}
+
+// TestFindingClone verifies that later Count, Evidence and Response changes leave the snapshot unchanged.
+func TestFindingClone(t *testing.T) {
+	original := &Finding{
+		Count: 1,
+		Evidence: Evidence{
+			Flows:     []FlowEvidence{{DstIP: "203.0.113.9"}},
+			Denies:    []DenyEvidence{{Reason: "policy"}},
+			Configs:   []ConfigEvidence{{Value: "yes"}},
+			Listeners: []ListenerEvidence{{Port: 22}},
+			CPU:       []CPUEvidence{{Samples: 1}},
+			Execs:     []ExecEvidence{{PID: 42}},
+		},
+		Response: &FindingResponse{
+			ProcessKilled: true,
+		},
+	}
+
+	snapshot := original.clone()
+
+	original.Count = 2
+	original.Evidence.Flows[0].DstIP = "198.51.100.7"
+	original.Evidence.Denies[0].Reason = "changed"
+	original.Evidence.Configs[0].Value = "no"
+	original.Evidence.Listeners[0].Port = 2222
+	original.Evidence.CPU[0].Samples = 2
+	original.Evidence.Execs[0].PID = 43
+	original.Response.ProcessKilled = false
+
+	if snapshot.Count != 1 {
+		t.Fatalf("snapshot count = %d, want 1", snapshot.Count)
+	}
+	if snapshot.Evidence.Flows[0].DstIP != "203.0.113.9" ||
+		snapshot.Evidence.Denies[0].Reason != "policy" ||
+		snapshot.Evidence.Configs[0].Value != "yes" ||
+		snapshot.Evidence.Listeners[0].Port != 22 ||
+		snapshot.Evidence.CPU[0].Samples != 1 ||
+		snapshot.Evidence.Execs[0].PID != 42 {
+		t.Fatalf("changing the original evidence changed the snapshot: %+v", snapshot.Evidence)
+	}
+	if !snapshot.Response.ProcessKilled {
+		t.Fatal("changing the original response changed the snapshot")
+	}
+
+	if got := (&Finding{}).clone(); got.Response != nil {
+		t.Fatal("cloning a finding without a response should preserve nil")
+	}
+}

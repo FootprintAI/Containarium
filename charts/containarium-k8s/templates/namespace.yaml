@@ -1,4 +1,5 @@
-{{- if .Values.gateway.enabled }}
+{{- /* Default on; set false when pre-created (#2776): the walkthroughs create this namespace by hand so the sshpiper Secrets exist before install, and Helm 3 will not adopt a namespace lacking its ownership metadata. */ -}}
+{{- if and .Values.gateway.enabled .Values.gateway.createNamespace }}
 apiVersion: v1
 kind: Namespace
 metadata:

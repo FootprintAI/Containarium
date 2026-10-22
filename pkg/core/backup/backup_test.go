@@ -1,6 +1,8 @@
 package backup
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -77,6 +79,21 @@ func (f *fakeOps) ReadFile(container, path string) ([]byte, error) {
 func (f *fakeOps) WriteFile(container, path string, content []byte, mode string) error {
 	f.written[path] = content
 	return nil
+}
+
+func (f *fakeOps) ReadFileStream(container, path string) (io.ReadCloser, error) {
+	b, err := f.ReadFile(container, path)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+func (f *fakeOps) WriteFileStream(container, path string, content io.Reader, mode string) error {
+	b, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	return f.WriteFile(container, path, b, mode)
 }
 
 var (
@@ -348,9 +365,13 @@ func TestCreateGCS(t *testing.T) {
 }
 
 // fakeUploader records uploads in memory and serves them back on download.
+// uploadOrder / deleteOrder record every destURI in call order, so a test
+// can assert "dump before sidecar" (#2402) rather than just "both happened".
 type fakeUploader struct {
-	uploaded map[string]int
-	blobs    map[string][]byte
+	uploaded    map[string]int
+	blobs       map[string][]byte
+	uploadOrder []string
+	deleteOrder []string
 }
 
 func (f *fakeUploader) Upload(localPath, destURI string) error {
@@ -364,18 +385,21 @@ func (f *fakeUploader) Upload(localPath, destURI string) error {
 	}
 	f.uploaded[destURI]++
 	f.blobs[destURI] = b
+	f.uploadOrder = append(f.uploadOrder, destURI)
 	return nil
 }
 
-func (f *fakeUploader) Download(destURI, localPath string) error {
+func (f *fakeUploader) DownloadStream(destURI string, dst io.Writer) error {
 	b, ok := f.blobs[destURI]
 	if !ok {
 		return errNotFound
 	}
-	return os.WriteFile(localPath, b, 0o600)
+	_, err := io.Copy(dst, bytes.NewReader(b))
+	return err
 }
 
 func (f *fakeUploader) Delete(destURI string) error {
+	f.deleteOrder = append(f.deleteOrder, destURI)
 	delete(f.blobs, destURI)
 	delete(f.uploaded, destURI)
 	return nil

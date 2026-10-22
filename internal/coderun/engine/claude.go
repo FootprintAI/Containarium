@@ -123,6 +123,64 @@ fi`
 	return script
 }
 
+// claudeCredentialStatusScript probes for a Claude Code credential by NAME
+// only (#2272), mirroring VerifyScript's own detection above but condensed to
+// the single canonical answer a caller needs: the one source a run would
+// actually use right now, in the same priority a human reading VerifyScript's
+// multi-line output would pick — an interactive sign-in first (Anthropic's
+// own flow), then a user-placed key, then none. set -e is intentionally
+// absent: every branch exits explicitly, and the loop/grep below must not
+// abort the script on a legitimate "not found".
+//
+// #nosec G101 -- this is a shell script that checks for the PRESENCE of a
+// credentials file and the NAMES of env vars (ANTHROPIC_API_KEY,
+// ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_*) — it never contains, reads, or
+// echoes a credential value. Same rationale as GatewayTokenEnvVar's
+// annotation in engine.go.
+//
+// Expiry (#2371): when the sign-in file exists, the ONLY thing read out of
+// it is the numeric `expiresAt` timestamp. `grep -o` emits just the
+// `"expiresAt":<digits>` match — never the rest of the line, which in the
+// minified file also holds the token values — and that match is captured
+// into a shell variable, reduced to its digits, and never echoed. Claude
+// Code writes epoch milliseconds; a value of 13+ digits is divided down to
+// seconds, a shorter one is taken as seconds already. No timestamp at all
+// reports "interactive": an unknown expiry is not guessed to be past.
+const claudeCredentialStatusScript = `cred="$HOME/.claude/.credentials.json"
+if [ -f "$cred" ]; then
+  exp=$(grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9][0-9]*' "$cred" 2>/dev/null | head -n 1 | grep -o '[0-9][0-9]*$')
+  if [ -n "$exp" ]; then
+    if [ "${#exp}" -ge 13 ]; then
+      exp=$((exp / 1000))
+    fi
+    if [ "$exp" -le "$(date +%s)" ]; then
+      echo expired
+      exit 0
+    fi
+  fi
+  echo interactive
+  exit 0
+fi
+settings="$HOME/.claude/settings.json"
+for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  if [ -f "$settings" ] && grep -q "\"$key\"" "$settings"; then
+    echo api-key
+    exit 0
+  fi
+done
+if env | grep -q '^CLAUDE_CODE_USE_[A-Z0-9_]*='; then
+  echo api-key
+  exit 0
+fi
+echo none`
+
+// ClaudeStructuredOutputFlag, appended to a Claude run command, makes
+// `claude -p` print ONE JSON result object (type "result", subtype, is_error,
+// result text, session_id, usage, ...) instead of plain text. `json` rather
+// than `stream-json`: stream-json under -p additionally requires --verbose.
+// Appending is safe because it is a trailing flag after -p/--resume/--continue.
+const ClaudeStructuredOutputFlag = " --output-format json"
+
 // RunCommand renders the command process_start spawns.
 //
 // For a tenant secret this is coderun.BuildClaudeRunCommand verbatim — the
@@ -130,7 +188,7 @@ fi`
 // differs: the box has a scoped gateway token instead of a provider key, and
 // Claude Code reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN out of its
 // environment either way.
-func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool) string {
+func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool, sessionID string) string {
 	var cmd string
 	if e.opts.Credential != nil && e.opts.Credential.Kind() == KindGateway {
 		cmd = sourceEnvPrefix(`"`+claudeGatewayEnvPath+`"`) + claudeRunBody(prompt)
@@ -140,7 +198,13 @@ func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool
 	} else {
 		cmd = coderun.BuildClaudeRunCommand(prompt, streamJSON)
 	}
-	if continueSession {
+	switch {
+	case sessionID != "":
+		// --resume names a SPECIFIC session (Claude Code's own session id),
+		// not "the most recent one" — takes priority over continueSession
+		// (#2193; callers must not set both).
+		cmd += " --resume " + shellQuoteSingle(sessionID)
+	case continueSession:
 		cmd += " --continue"
 	}
 	return cmd

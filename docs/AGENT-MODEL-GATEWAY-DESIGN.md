@@ -1,8 +1,11 @@
 # Agent Model Gateway — Design Note
 
-> Status: **Exploration / not yet approved.** This proposes a daemon-side
+> Status: **Implemented** (`internal/modelgateway`, `cmd/model-gateway`; the
+> gateway image is published with each release). This note is kept for the
+> rationale and threat model; where it says something is "not yet built" or a
+> proposal, read the code, which is authoritative. It described a daemon-side
 > *model gateway* that every agent box calls instead of reaching the model
-> provider directly. Nothing here is built yet. Builds on the in-box loop
+> provider directly. Builds on the in-box loop
 > (`docs/AGENT-RUNTIME-INBOX-LOOP-DESIGN.md`) and the agent-skills mechanism
 > (`docs/AGENT-SKILLS-CREWS-DESIGN.md`).
 
@@ -353,6 +356,29 @@ label when it is stamped (`ContainerService.SetContainerAttribution`) →
 sandbox path writes a *username* there and the cloud actuator writes an *org id*,
 and reading a username as an org id is exactly the namespace collision the
 `user:`/`org:` prefixes exist to make impossible.
+
+**`key_owner` on skill and crew runs (#2134).** A run's box does not go through
+`MintGatewayToken`: `provisionSkillBox` mints the run's token itself, for every
+push run, crew member and queue worker. That mint resolves the owner the same
+way — the box's `cloud_org_id` attribution → `org:<org_id>` — except that its
+fallback is the run's **dispatching caller** → `user:<username>`, not the box
+name: a skill box is `agent-<skill>`, shared by everyone who runs that skill,
+so the box name identifies no one. An owner that fails `ValidateKeyOwner` is
+never stamped. Two differences from the mint RPC, both deliberate:
+
+- An owner **with no registered key** is still minted a `key_owner` token, and
+  the gateway's case-3 fallback bills the daemon-global key and logs it. A run
+  that fails outright is worse than one that runs and is logged; a caller of
+  `MintGatewayToken` can fix its config and retry.
+- A run with **no attributable owner** (system-started, no authenticated
+  subject) mints no claim and uses the daemon-global key, as before, logged
+  once per run at mint (decided on the Containarium-cloud#1917 sprint,
+  2026-09-29).
+
+Because runs now carry the claim, `RevokeByKeyOwner` kills an owner's in-flight
+run tokens. The 401 body (`modelgateway.OwnerRevokedMessage`) says the
+revocation was intentional, so the run's own error does not read as an
+unexplained auth failure.
 
 **Ownership, and why cross-tenant reads as NotFound here.** A caller may only
 mint for a box it owns (admins excepted). Cross-tenant and non-existent return

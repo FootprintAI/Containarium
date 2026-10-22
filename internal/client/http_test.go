@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -190,11 +192,46 @@ func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "us-east", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if gotBody["region"] != "us-east" {
 		t.Errorf("region = %v, want us-east", gotBody["region"])
+	}
+}
+
+// TestHTTPCreateContainer_SendsLabels: --labels reach the daemon over the
+// REST path (#2358 — they used to be parsed and then dropped on the floor
+// before the request was built).
+func TestHTTPCreateContainer_SendsLabels(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":{"name":"c","username":"alice"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	labels := map[string]string{"cloud_org_id": "org-a", "team": "dev"}
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", labels); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	got, _ := gotBody["labels"].(map[string]any)
+	if got["cloud_org_id"] != "org-a" || got["team"] != "dev" {
+		t.Errorf("labels = %v, want %v", gotBody["labels"], labels)
+	}
+
+	// No labels → no field, so an older daemon sees the same body as before.
+	gotBody = nil
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if _, present := gotBody["labels"]; present {
+		t.Errorf("labels present in body = %v, want absent when unset", gotBody["labels"])
 	}
 }
 
@@ -214,7 +251,7 @@ func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["region"]; present {
@@ -238,5 +275,141 @@ func TestHTTPSetContainerTTL_404IsUnimplemented(t *testing.T) {
 	_, err = c.SetContainerTTL("alice", 3600)
 	if status.Code(err) != codes.Unimplemented {
 		t.Errorf("404 mapped to %v; want Unimplemented", status.Code(err))
+	}
+}
+
+// TestContainerToIncusInfo_CreatedAt (#2146): the wire `createdAt` field is
+// the Container proto's int64 Unix-seconds field, which protojson renders as
+// a quoted decimal string (e.g. "1738000000") — not RFC3339. The parser must
+// accept both shapes so it also survives a future switch to
+// google.protobuf.Timestamp; empty or unparseable input leaves the zero
+// time, same as before.
+func TestContainerToIncusInfo_CreatedAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		createdAt string
+		want      time.Time
+	}{
+		{
+			name:      "unix seconds string",
+			createdAt: "1738000000",
+			want:      time.Unix(1738000000, 0),
+		},
+		{
+			name:      "rfc3339 string",
+			createdAt: "2025-01-27T12:00:00Z",
+			want:      time.Date(2025, 1, 27, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name:      "zero as unix seconds",
+			createdAt: "0",
+			want:      time.Unix(0, 0),
+		},
+		{
+			name:      "empty stays zero time",
+			createdAt: "",
+			want:      time.Time{},
+		},
+		{
+			name:      "garbage stays zero time",
+			createdAt: "not-a-timestamp",
+			want:      time.Time{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := containerToIncusInfo(&containerResponse{
+				Name:      "alice-container",
+				CreatedAt: tt.createdAt,
+			})
+			if !info.CreatedAt.Equal(tt.want) {
+				t.Errorf("CreatedAt = %v, want %v", info.CreatedAt, tt.want)
+			}
+		})
+	}
+}
+
+// TestHTTPListContainers_ParsesUnixSecondsCreatedAt (#2146): proves the fix
+// end to end at the client level — an HTTP daemon (mocked here, no live
+// server needed) whose `createdAt` is a Unix-seconds string, as protojson
+// actually renders the int64 field, round-trips through ListContainers into
+// a populated, non-zero CreatedAt. This is the exact fetch `containarium
+// list --http` (and `prune --http`'s preview, which shares the same age
+// formatter) uses, so a non-zero CreatedAt here is what lets the CLI's age
+// column render instead of showing nothing.
+func TestHTTPListContainers_ParsesUnixSecondsCreatedAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"containers":[{"name":"alice-container","username":"alice","state":"Running","createdAt":"1738000000"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	containers, err := c.ListContainers()
+	if err != nil {
+		t.Fatalf("ListContainers: %v", err)
+	}
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+
+	want := time.Unix(1738000000, 0)
+	if containers[0].CreatedAt.IsZero() {
+		t.Fatalf("CreatedAt is zero — the age column would show nothing, reproducing #2146")
+	}
+	if !containers[0].CreatedAt.Equal(want) {
+		t.Errorf("CreatedAt = %v, want %v", containers[0].CreatedAt, want)
+	}
+}
+
+// TestHTTPListAgentEngines_DecodesReadinessRows (#2223) pins the HTTP path
+// and that the daemon's camelCase JSON enum names decode onto the typed
+// Go/proto values the CLI and MCP tool read — not strings pulled out of a
+// map.
+func TestHTTPListAgentEngines_DecodesReadinessRows(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"engines": [
+				{"engine":"AGENT_ENGINE_CLAUDE","provider":"GATEWAY_PROVIDER_ANTHROPIC","readiness":"AGENT_ENGINE_READINESS_READY","source":"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY","isDefault":true,"skillIds":["hello-agent"]},
+				{"engine":"AGENT_ENGINE_CODEX","provider":"GATEWAY_PROVIDER_OPENAI","readiness":"AGENT_ENGINE_READINESS_NOT_READY","reason":"no key for provider openai"}
+			],
+			"keyOwner": "user:alice"
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	resp, err := c.ListAgentEngines()
+	if err != nil {
+		t.Fatalf("ListAgentEngines: %v", err)
+	}
+	if gotPath != "/v1/agent-engines" {
+		t.Errorf("path = %q, want /v1/agent-engines", gotPath)
+	}
+	if resp.GetKeyOwner() != "user:alice" {
+		t.Errorf("key_owner = %q, want user:alice", resp.GetKeyOwner())
+	}
+	if len(resp.GetEngines()) != 2 {
+		t.Fatalf("engines = %d, want 2", len(resp.GetEngines()))
+	}
+	claude := resp.GetEngines()[0]
+	if claude.GetEngine() != pb.AgentEngine_AGENT_ENGINE_CLAUDE ||
+		claude.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY ||
+		!claude.GetIsDefault() || claude.GetSkillIds()[0] != "hello-agent" {
+		t.Errorf("claude row decoded wrong: %+v", claude)
+	}
+	codex := resp.GetEngines()[1]
+	if codex.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY || codex.GetReason() == "" {
+		t.Errorf("codex row decoded wrong: %+v", codex)
 	}
 }

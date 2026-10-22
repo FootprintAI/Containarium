@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // containerSuffix is the trailing tag every tenant container name carries; the
@@ -59,12 +60,6 @@ type FlowSink interface {
 	PersistEBPFFlows(flows []traffic.EBPFFlow)
 }
 
-// defaultDomainRefreshInterval is how often egress_domains are re-resolved to
-// IPs (Phase C). A fixed interval rather than per-record DNS TTL — TTL-aware
-// refresh (raw DNS) is a future enhancement; for now a short fixed cadence keeps
-// the allow-list reasonably fresh without a DNS library.
-const defaultDomainRefreshInterval = 60 * time.Second
-
 // containerInspector is the slice of the Incus client the enforcer needs.
 type containerInspector interface {
 	ListContainers() ([]incus.ContainerInfo, error)
@@ -89,8 +84,12 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
-	resolver      *DomainResolver // Phase C: egress_domains -> IPs
-	domainRefresh time.Duration
+	// gateway is the bridge gateway, the box's DNS resolver. A policy with an
+	// egress preset (#2440) implicitly allows it; the zero value means the
+	// daemon could not name it and the preset adds nothing.
+	gateway netip.Addr
+
+	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
 	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
 	flowPoll        time.Duration // how often to read the BPF flows map
@@ -105,6 +104,15 @@ type NetworkPolicyEnforcer struct {
 	denyHook func(ev netbpf.DenyEvent)
 
 	loader *netbpf.Loader
+
+	// execWatcher is the exec-telemetry userspace half (#2637). It rides this
+	// enforcer's lifecycle and 10 s reconcile (the container list with init
+	// pids is already gathered here) but loads its own BPF object, so its
+	// failure never touches flow enforcement. nil = sentry off.
+	execWatcher *ExecWatcher
+	// lastContainers is the raw ListContainers result of the latest gather,
+	// handed to the exec watcher's reconcile. Only touched from reconcile.
+	lastContainers []incus.ContainerInfo
 
 	// vethCache maps a running container name -> its host veth name, so a steady
 	// reconcile resolves the ifindex with a cheap local netlink lookup
@@ -142,7 +150,6 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		interval:          defaultNetPolicyReconcileInterval,
 		enforceEnabled:    enforceEnabled,
 		resolver:          NewDomainResolver(nil),
-		domainRefresh:     defaultDomainRefreshInterval,
 		flowPoll:          defaultFlowPollInterval,
 		flowIdleTimeout:   defaultFlowIdleTimeout,
 		vethCache:         make(map[string]string),
@@ -155,6 +162,11 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 	}
 }
 
+// SetImplicitGateway tells the enforcer the bridge gateway address, the
+// DNS resolver every box uses, so a policy with an egress preset (#2440) can
+// allow it without the operator listing it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetImplicitGateway(a netip.Addr) { e.gateway = a }
+
 // SetFlowSink wires the traffic collector so the enforcer can feed it per-flow
 // accounting read from the BPF flows map (#627). Must be called before Start.
 // Nil leaves flow accounting off.
@@ -166,6 +178,11 @@ func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 // flowsToEBPF turns into traffic-view rows. Must be called before Start.
 // Nil (default) leaves detection off.
 func (e *NetworkPolicyEnforcer) SetFlowHook(fn func(flows []netbpf.FlowRecord)) { e.flowHook = fn }
+
+// SetExecWatcher wires the exec-telemetry watcher (#2637): Start loads its
+// object after this enforcer's, every reconcile hands it the container list,
+// Stop stops it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetExecWatcher(w *ExecWatcher) { e.execWatcher = w }
 
 // SetDenyHook wires the threat-detection engine's deny-event consumer
 // (#1640). Called synchronously from OnDenyEvent, alongside the existing
@@ -325,6 +342,18 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	e.loader = loader
 	e.ctx, e.cancel = context.WithCancel(ctx)
 
+	// Exec telemetry (#2637): the second object. Resolved from the same
+	// operator value; a failure (no BTF, verifier reject, object not built) is
+	// the watcher's own `unavailable (<reason>)` status and nothing else —
+	// the flow program above is already loaded and keeps running.
+	if e.execWatcher != nil {
+		if err := e.execWatcher.Start(e.ctx, e.objPath); err != nil {
+			log.Printf("[netpolicy] exec telemetry unavailable: %v (flow rules unaffected; see `containarium security sentry status`)", err)
+		} else {
+			log.Printf("[netpolicy] exec telemetry started (tracepoint sched/sched_process_exec)")
+		}
+	}
+
 	// Tier 2 (#661): load the built-in exploit signatures + arm the scan gate once
 	// (the set is static; no per-reconcile churn). No-op unless opted in.
 	e.armSignatures()
@@ -337,23 +366,12 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
 	}
 
-	// Domain refresh loop (Phase C): re-resolve egress_domains on a cadence. The
+	// Domain refresh loop (Phase C): wake when the earliest name is due —
+	// min(record TTL, 60s) per name (#2379) — and re-resolve the due ones. The
 	// next reconcile folds the refreshed IPs into the egress map (and diffEgress
 	// prunes IPs a domain no longer resolves to).
 	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		t := time.NewTicker(e.domainRefresh)
-		defer t.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-t.C:
-				e.refreshDomains()
-			}
-		}
-	}()
+	go e.domainRefreshLoop()
 
 	// Perf consumer: would-deny events -> audit rows.
 	rd, err := perf.NewReader(loader.EventsMap(), 4096)
@@ -445,6 +463,9 @@ func (e *NetworkPolicyEnforcer) Stop() {
 		e.cancel()
 	}
 	e.wg.Wait()
+	if e.execWatcher != nil {
+		e.execWatcher.Stop()
+	}
 	if e.loader != nil {
 		if err := e.loader.Close(); err != nil {
 			log.Printf("[netpolicy] loader close: %v", err)
@@ -458,14 +479,17 @@ func (e *NetworkPolicyEnforcer) Stop() {
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
 	// #1640: hand every deny event to the threat-detection engine, same as
 	// the audit write below — nil hook is the default (sentry disabled).
-	if e.denyHook != nil {
-		e.denyHook(ev)
-	}
-
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
 	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
+	// The hook learns the tenant's effective mode (#2612): the BPF program
+	// emits the event for a log_only would-deny exactly as for a drop.
+	if e.denyHook != nil {
+		hookEv := ev
+		hookEv.LogOnly = !dropped
+		e.denyHook(hookEv)
+	}
 	// Always log the denied flow. The program emits the event whether or not it
 	// drops, so the action depends on the tenant's effective mode: a DROP under
 	// enforce, an observation under log_only. This line is the operator's signal.
@@ -682,6 +706,11 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Exec telemetry (#2637): converge watched_cgroups with the same container
+	// list this pass gathered (no extra Incus call). Before the policy fetch:
+	// it needs only the container list, so a policy-store (Postgres) outage
+	// must not freeze the watched set.
+	e.reconcileExec()
 	policies, err := e.compiledPolicies(ctx)
 	if err != nil {
 		return err
@@ -775,6 +804,14 @@ func boolStr(b bool) string {
 	return "false"
 }
 
+// reconcileExec converges the exec watcher with the latest gathered
+// container list; a no-op without a watcher.
+func (e *NetworkPolicyEnforcer) reconcileExec() {
+	if e.execWatcher != nil {
+		e.execWatcher.Reconcile(e.lastContainers)
+	}
+}
+
 // gather snapshots the running containers into reconcile views, resolving each
 // one's host veth ifindex (Linux). It also returns the id->name map for the
 // audit sink.
@@ -783,6 +820,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	if err != nil {
 		return nil, nil, err
 	}
+	e.lastContainers = containers
 	views := make([]containerView, 0, len(containers))
 	idName := make(map[uint32]string)
 	running := make(map[string]bool, len(containers))
@@ -884,6 +922,14 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
 			}
 		}
+		// Egress preset (#2440): fold in what the preset allows implicitly (the
+		// box's DNS resolver). Not stored on the policy, so `get` still shows
+		// what the operator wrote.
+		if imp := netpolicy.ImplicitEgress(c, e.gateway); len(imp) > 0 {
+			c.EgressCIDRs = append(c.EgressCIDRs, imp...)
+		} else if c.EgressPreset != pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED {
+			log.Printf("[netpolicy] tenant %q has an egress preset but the bridge gateway is unknown; the resolver is NOT implicitly allowed", c.Tenant)
+		}
 		// Virtual-patch deny rules (#660): drop any whose expiry has passed so an
 		// expired patch self-removes from the kernel on the next reconcile. Done
 		// here (not in the pure netpolicy/plan layer) so those stay time-free.
@@ -893,21 +939,41 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 	return out, nil
 }
 
+// domainRefreshLoop (Phase C, #2379) wakes when the earliest cached name is due
+// and re-resolves; it runs until e.ctx is cancelled. The caller does wg.Add(1).
+func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
+	defer e.wg.Done()
+	t := time.NewTimer(e.resolver.NextRefreshDelay())
+	defer t.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-t.C:
+			e.refreshDomains()
+			t.Reset(e.resolver.NextRefreshDelay())
+		}
+	}
+}
+
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
 func (e *NetworkPolicyEnforcer) refreshDomains() {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
 		log.Printf("[netpolicy] domain refresh: list policies: %v", err)
+		// Keep the cached addresses and retry on each name's interval, so a
+		// store outage is not polled at the 1s floor.
+		e.resolver.Postpone()
 		return
 	}
 	var domains []string
 	for _, p := range stored {
 		domains = append(domains, p.GetEgressDomains()...)
 	}
-	if len(domains) == 0 {
-		return
-	}
+	// No early return on an empty list: Refresh with no domains prunes the
+	// cache, so a removed last domain cannot leave a stale past-due entry that
+	// would floor NextRefreshDelay and wake this loop every second.
 	cctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 	e.resolver.Refresh(cctx, domains)
@@ -931,13 +997,7 @@ const cloudOrgIDLabel = "cloud_org_id"
 // the <tenant>-container naming convention; "" if none yield a tenant (the
 // container is then left unmanaged).
 func resolveTenant(tenantLabel, cloudOrgID, containerName string) string {
-	if t := strings.TrimSpace(tenantLabel); t != "" {
-		return t
-	}
-	if t := strings.TrimSpace(cloudOrgID); t != "" {
-		return t
-	}
-	return tenantOf(containerName)
+	return incus.ResolveTenant(tenantLabel, cloudOrgID, containerName)
 }
 
 // tenantOf extracts the tenant name from a container name, or "" if it doesn't

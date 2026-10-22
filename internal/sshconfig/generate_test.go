@@ -130,3 +130,267 @@ func TestGenerate_IdentityFileEmitsIdentitiesOnly(t *testing.T) {
 // see containarium#1980 PR review finding 5 (this package, plugin.go, and
 // egress_via_client.go each had their own copy; all three now share
 // internal/hostport.Split).
+
+// --- FootprintAI/Containarium-cloud#1851 ---------------------------------
+//
+// Against a remote daemon (`--server ... --http`, or gRPC) every container
+// arrives with the *protobuf enum identifier* as its state, not incus's
+// friendly "Running": the HTTP client copies protojson's
+// "CONTAINER_STATE_RUNNING" straight through (internal/client/http.go
+// containerToIncusInfo) and the gRPC client calls State.String(), which
+// yields the same identifier. Generate compared against the local-incus
+// spelling only, so against a hosted control plane it classified *every*
+// box as stopped and wrote an ssh_config with zero Host blocks -- 41
+// running boxes reported as "67 skipped stopped".
+//
+// Same normalization the `connect` verb already does
+// (connectcore.IsRunning, OSS #1036).
+
+func TestGenerate_ProtoEnumRunningRendersHost(t *testing.T) {
+	// The single-box repro: a box the control plane reports RUNNING must
+	// get a Host block, not be counted as "skipped stopped".
+	cs := []incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.10"},
+	}
+	g := Generate(cs, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 1 || g.SkippedStopped != 0 {
+		t.Fatalf("Count=%d SkippedStopped=%d, want 1/0 -- a RUNNING box was classified stopped", g.Count, g.SkippedStopped)
+	}
+	if !strings.Contains(g.Content, "Host alice") {
+		t.Errorf("expected a Host block for the running box:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_RunningStateSpellings(t *testing.T) {
+	// Every spelling a running box can arrive as, across transports.
+	for _, state := range []string{
+		"CONTAINER_STATE_RUNNING", // remote: protojson / State.String()
+		"Running",                 // local incus
+		"running",
+		"RUNNING",
+	} {
+		t.Run(state, func(t *testing.T) {
+			g := Generate([]incus.ContainerInfo{
+				{Name: "box", State: state, IPAddress: "10.0.0.1"},
+			}, Options{})
+			if g.Count != 1 {
+				t.Errorf("state %q: Count=%d SkippedStopped=%d, want 1 host", state, g.Count, g.SkippedStopped)
+			}
+		})
+	}
+}
+
+func TestGenerate_ProtoEnumNonRunningStillSkipped(t *testing.T) {
+	// The fix must not turn --include-stopped into the default: the other
+	// proto enum states stay skipped. 18 of the fleet in cloud#1851 were
+	// genuinely in ERROR and must not get Host blocks.
+	for _, state := range []string{
+		"CONTAINER_STATE_STOPPED",
+		"CONTAINER_STATE_ERROR",
+		"CONTAINER_STATE_CREATING",
+		"CONTAINER_STATE_PROVISIONING",
+		"CONTAINER_STATE_UNSPECIFIED",
+		"",
+	} {
+		t.Run(state, func(t *testing.T) {
+			g := Generate([]incus.ContainerInfo{
+				{Name: "box", State: state, IPAddress: "10.0.0.1"},
+			}, Options{})
+			if g.Count != 0 || g.SkippedStopped != 1 {
+				t.Errorf("state %q: Count=%d SkippedStopped=%d, want 0/1", state, g.Count, g.SkippedStopped)
+			}
+		})
+	}
+}
+
+func TestGenerate_MixedFleetMatchesControlPlaneCounts(t *testing.T) {
+	// The whole-fleet shape from the report: a remote daemon reporting a
+	// mix of RUNNING/ERROR/STOPPED as proto enums. Only the running boxes
+	// render; the rest are counted as skipped.
+	cs := []incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.10"},
+		{Name: "bob", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.11"},
+		{Name: "broken", State: "CONTAINER_STATE_ERROR", IPAddress: "10.0.0.12"},
+		{Name: "idle", State: "CONTAINER_STATE_STOPPED", IPAddress: "10.0.0.13"},
+	}
+	g := Generate(cs, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 2 || g.SkippedStopped != 2 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedStopped=%d SkippedNoAddr=%d, want 2/2/0", g.Count, g.SkippedStopped, g.SkippedNoAddr)
+	}
+	for _, want := range []string{"Host alice", "Host bob"} {
+		if !strings.Contains(g.Content, want) {
+			t.Errorf("missing %q:\n%s", want, g.Content)
+		}
+	}
+	for _, notWant := range []string{"Host broken", "Host idle"} {
+		if strings.Contains(g.Content, notWant) {
+			t.Errorf("unexpected %q rendered:\n%s", notWant, g.Content)
+		}
+	}
+}
+
+func TestGenerate_SentinelModeRunningWithNoIPStillRenders(t *testing.T) {
+	// In sentinel mode routing is by username, so a running box with no
+	// LAN IP visible to the client (the remote case -- the IP is inside
+	// the backend's own network) still deserves a Host block.
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING"},
+	}, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 1 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
+	}
+}
+
+// block returns the Host block for name from generated content, so a test
+// asserts on one box's lines rather than the whole file.
+func block(t *testing.T, content, name string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(content, "Host "+name+"\n")
+	if !ok {
+		t.Fatalf("no Host block for %q in:\n%s", name, content)
+	}
+	blk, _, _ := strings.Cut(rest, "\n\n")
+	return blk
+}
+
+// #2239: against a hosted control plane the daemon reports ssh_host and the
+// SSH username; sync must use them instead of the private container IP and
+// the hard-coded "ubuntu".
+func TestGenerate_DirectMode_PrefersDaemonSSHHostAndUsername(t *testing.T) {
+	cs := []incus.ContainerInfo{{
+		Name:      "test",
+		Username:  "test-container-7f3a",
+		State:     "CONTAINER_STATE_RUNNING",
+		IPAddress: "192.0.2.10",
+		SSHHost:   "region-a.example.com",
+	}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	for _, want := range []string{"HostName region-a.example.com", "Port 22", "User test-container-7f3a"} {
+		if !strings.Contains(blk, want) {
+			t.Errorf("block missing %q:\n%s", want, blk)
+		}
+	}
+	for _, bad := range []string{"192.0.2.10", "ubuntu"} {
+		if strings.Contains(blk, bad) {
+			t.Errorf("block must not contain %q:\n%s", bad, blk)
+		}
+	}
+}
+
+// Without ssh_host (older daemon) the IP is still used, but the daemon's
+// username still wins over "ubuntu".
+func TestGenerate_DirectMode_NoSSHHostFallsBackToIP(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", IPAddress: "192.0.2.10"}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	if !strings.Contains(blk, "HostName 192.0.2.10") || !strings.Contains(blk, "User alice") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+// Local Incus reports neither ssh_host nor a username: unchanged output.
+func TestGenerate_DirectMode_LocalIncusKeepsIPAndUbuntu(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", State: "Running", IPAddress: "192.0.2.10"}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	if !strings.Contains(blk, "HostName 192.0.2.10") || !strings.Contains(blk, "User ubuntu") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+func TestGenerate_DirectMode_UserFlagStillWins(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	blk := block(t, Generate(cs, Options{User: "root"}).Content, "test")
+	if !strings.Contains(blk, "User root") || !strings.Contains(blk, "HostName region-a.example.com") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+// A running box with ssh_host but no IP is reachable and must not be
+// skipped as "no address".
+func TestGenerate_DirectMode_SSHHostWithoutIPIsNotSkipped(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	g := Generate(cs, Options{})
+	if g.Count != 1 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
+	}
+}
+
+func TestGenerate_SentinelModeIgnoresSSHHost(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	blk := block(t, Generate(cs, Options{Sentinel: "sentinel.example.com"}).Content, "test")
+	if !strings.Contains(blk, "HostName sentinel.example.com") || !strings.Contains(blk, "User test") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+// Every rejected key offer counts toward the SSH front's failtoban budget,
+// so the pin is not conditional on --identity (#2089).
+func TestGenerate_IdentitiesOnlyEmittedWithoutIdentityFile(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "alice", State: "Running", IPAddress: "10.0.0.10"}}
+	g := Generate(cs, Options{})
+	if !strings.Contains(g.Content, "IdentitiesOnly yes") {
+		t.Errorf("expected IdentitiesOnly in every Host block:\n%s", g.Content)
+	}
+	if strings.Contains(g.Content, "IdentityFile") {
+		t.Errorf("no IdentityFile was requested:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_JumpHostOnlyForBoxesWithoutSSHHost(t *testing.T) {
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice-container", Username: "alice", State: "Running", IPAddress: "10.0.3.100"},
+		{Name: "bob-container", Username: "bob", State: "Running", SSHHost: "ssh.example.com"},
+		{Name: "stopped-container", Username: "stopped", State: "Stopped", IPAddress: "10.0.3.101"},
+	}, Options{JumpHost: "vm.example.com", IdentityFile: "~/.ssh/box_key"})
+	if g.Count != 2 || g.SkippedStopped != 1 {
+		t.Fatalf("Count=%d SkippedStopped=%d, want 2/1", g.Count, g.SkippedStopped)
+	}
+	alice := block(t, g.Content, "alice-container")
+	jump := block(t, g.Content, "alice-container-jump")
+	bob := block(t, g.Content, "bob-container")
+	if !strings.Contains(alice, "ProxyJump alice-container-jump") || !strings.Contains(jump, "User alice") {
+		t.Fatalf("missing per-box jump route:\n%s", g.Content)
+	}
+	for _, blk := range []string{alice, jump} {
+		if !strings.Contains(blk, "IdentityFile ~/.ssh/box_key") || !strings.Contains(blk, "IdentitiesOnly yes") {
+			t.Errorf("key must apply on both hops:\n%s", blk)
+		}
+	}
+	if strings.Contains(bob, "ProxyJump") || !strings.Contains(bob, "HostName ssh.example.com") || strings.Contains(g.Content, "Host bob-container-jump") || strings.Contains(g.Content, "Host stopped-container-jump") {
+		t.Fatalf("jump route replaced advertised SSH host or rendered a stopped box:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_JumpAliasesAvoidDestinationCollisions(t *testing.T) {
+	cs := []incus.ContainerInfo{
+		{Name: "foo", Username: "alice", State: "Running", IPAddress: "10.0.3.100"},
+		{Name: "foo-jump", Username: "bob", State: "Running", IPAddress: "10.0.3.101"},
+		{Name: "foo-jump-2", Username: "charlie", State: "Running", IPAddress: "10.0.3.102"},
+	}
+	opts := Options{JumpHost: "vm.example.com"}
+	g := Generate(cs, opts)
+	aliases := make(map[string]bool)
+	for _, line := range strings.Split(g.Content, "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "Host" {
+			alias := strings.ToLower(fields[1])
+			if aliases[alias] {
+				t.Errorf("duplicate Host alias %q", fields[1])
+			}
+			aliases[alias] = true
+		}
+	}
+	if len(aliases) != 2*len(cs) || g.Count != len(cs) {
+		t.Errorf("got %d unique aliases and %d boxes, want 6/3", len(aliases), g.Count)
+	}
+	for _, c := range cs {
+		if blk := block(t, g.Content, c.Name); !strings.Contains(blk, "HostName "+c.IPAddress+"\n") || !strings.Contains(blk, "User "+c.Username+"\n") {
+			t.Errorf("destination %q resolves to the wrong host or user:\n%s", c.Name, blk)
+		}
+	}
+	cs[0], cs[2] = cs[2], cs[0]
+	reversed := Generate(cs, opts)
+	for alias := range aliases {
+		if block(t, g.Content, alias) != block(t, reversed.Content, alias) {
+			t.Errorf("Host %q changed when input order changed", alias)
+		}
+	}
+}

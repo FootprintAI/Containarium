@@ -30,16 +30,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history + tags: the changelog step below diffs this ref
           # against the previous tag, which a depth-1 clone cannot see.
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: build-all
 
       - name: Install buf
         # `make build-release` transitively runs `make proto`, which
@@ -49,21 +50,15 @@ jobs:
         #
         # Pinned release BINARY, not `go install .../buf@latest`: buf's
         # own go.mod tracks current Go releases closely (e.g. v1.73.0
-        # requires go >= 1.26.10), so `@latest` silently breaks this step
+        # requires go >= 1.26.7), so `@latest` silently breaks this step
         # the day upstream bumps past whatever Go version this repo's
         # workflows pin — with no code change on our side to explain it
         # (caught rehearsing the v0.77.0 release build, 2026-09-13).
         # A pinned binary download has no such dependency on the runner's
-        # Go toolchain at all. Bump BUF_VERSION deliberately, not via a
-        # moving target.
+        # Go toolchain at all. Bump scripts/buf-version.env deliberately.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Get version
@@ -138,9 +133,24 @@ jobs:
         # serves every little-endian backend (amd64/arm64). UAPI-only program, so
         # portable across kernel versions; the verifier still runs at load time.
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          make build-bpf BPFTOOL="$BPFTOOL"
 
       - name: Build all release artifacts
         # `make build-release` builds containariumd (server) + mcp-server +
@@ -151,6 +161,64 @@ jobs:
         # release if containarium-* is not the client build. The eBPF object
         # built above is embedded in containariumd-* only (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Hand the bundle's binaries to build-bundle
+        # build-bundle used to rerun `make build-release` (plus buf and the
+        # eBPF compile) to get these three files: ~8 minutes on the release's
+        # critical path, and the bundle shipped a second build of each binary
+        # rather than the bytes listed in SHA256SUMS.txt. It now takes them
+        # from here.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: bundle-binaries-linux-amd64
+          path: |
+            bin/containariumd-linux-amd64
+            bin/mcp-server-linux-amd64
+            bin/agent-box-linux-amd64
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Tunnel client and sentinel interoperate (#2469)
+        # Runs the built containariumd as BOTH the sentinel and the tunnel
+        # client: reads the pin with `sentinel tunnel-identity`, registers a
+        # spot over TLS and round-trips a request through the tunnel. Every
+        # in-process tunnel test builds both halves from one tree, so none of
+        # them noticed v0.101.0/.1 shipping a client that required a pin the
+        # sentinel could not yet supply. Needs passwordless sudo (the sentinel
+        # adds a loopback alias), which the runner has. Fails the release
+        # before anything is published.
+        run: |
+          chmod +x bin/containariumd-linux-amd64
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64
+
+      - name: Previous release's tunnel client still registers (#2469)
+        # The upgrade path: a tunnel host on the last release talking to the
+        # NEW sentinel. A rollout upgrades sentinels and hosts at different
+        # times, so this is the combination operators actually run. Skipped
+        # (with a notice) when there is no previous release to fetch, e.g. the
+        # first release or a rehearsal on a fork.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prev="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' || true)"
+          if [ -z "${prev}" ] || [ "${prev}" = "${GITHUB_REF_NAME}" ]; then
+            echo "::notice::no previous release to test as a tunnel client; skipping"
+            exit 0
+          fi
+          mkdir -p prev-release
+          gh release download "${prev}" --repo "${GITHUB_REPOSITORY}" -p 'containariumd-linux-amd64' -D prev-release --clobber
+          chmod +x prev-release/containariumd-linux-amd64
+          echo "tunnel client under test: ${prev}"
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64 prev-release/containariumd-linux-amd64
+
+      - name: Build macOS 11 client (best effort)
+        # Stock Go >= 1.25 targets macOS 12+; this builds the CLIENT with a
+        # privately patched toolchain so macOS 11 machines get a working
+        # binary, published as containarium-darwin-<arch>-macos11 beside the
+        # normal assets. See scripts/build-macos11.sh for what is patched and
+        # why. It cannot be run-tested here (no macOS 11 runner): the script
+        # only gates that the macOS-12-only symbol is gone from the binary.
+        run: make build-macos11 VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Build pre-built Caddy binary (#1617)
         # One Caddy binary with caddy-l4 + every DNS-01 provider baked in, so
@@ -163,7 +231,7 @@ jobs:
       - name: Set up Node
         # agent-runtime is a Node/TS sibling package (the in-box agent loop);
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
 
@@ -171,6 +239,42 @@ jobs:
         # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by
         # scripts/install-agent-runtime.sh alongside agent-box-linux-amd64.
         run: make bundle-agent-runtime
+
+      - name: List agent-runtime bundle in SHA256SUMS.txt (#2702)
+        # Appends (>>) to the file build-release wrote, like build-caddy, so
+        # every asset on the Release page has a checksum.
+        run: (cd bin && shasum -a 256 agent-runtime-bundle.tar.gz >> SHA256SUMS.txt)
+
+      - name: Build SDLC skills bundle
+        # The pinned open-sdlc-skills role skills (#2065): fetched at the commit
+        # in pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically, so a
+        # lock whose sha256 does not match a rebuild fails the release here.
+        # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
+        # recipe and `containarium code install`).
+        run: make bundle-sdlc-skills
+
+      - name: List SDLC skills bundle in SHA256SUMS.txt (#2702)
+        run: (cd bin && shasum -a 256 sdlc-skills.tar.gz >> SHA256SUMS.txt)
+
+      - name: Install syft (SBOM generator)
+        id: syft
+        # Pinned to an exact tool version: the SPDX output differs between
+        # syft releases and a release's SBOMs should be reproducible by
+        # rerunning the same version.
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: v1.54.1
+
+      - name: Generate SBOMs for the Linux binaries (#2561)
+        # One SPDX document per distinct program, read from the shipped binary
+        # itself (Go embeds its module list), then listed in SHA256SUMS.txt so
+        # verifying the release's checksums covers them. Fails the release if a
+        # document is empty. The container images carry their own SBOM.
+        env:
+          # The download action returns the binary's path as an output rather
+          # than promising it is on PATH.
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: scripts/release/generate-sboms.sh bin
 
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
@@ -231,6 +335,7 @@ jobs:
           # parameter expansion AFTER the file is written instead, which
           # never re-parses the value as syntax.
           RELEASE_REF: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
           cat > release_notes.md << 'EOF'
           ## Containarium __RELEASE_REF__
@@ -286,6 +391,26 @@ jobs:
 
           Verify checksums via `SHA256SUMS.txt`.
 
+          ### SBOMs
+
+          Each Linux binary has an SPDX 2.3 SBOM next to it (`<binary>-linux-amd64.spdx.json`), generated from the shipped file and listed in `SHA256SUMS.txt`. The container images carry their own SBOM and provenance attestations.
+
+          ### Signatures
+
+          Every file on this page has a keyless cosign signature next to it, `<file>.sigstore.json`, made by this release workflow through GitHub OIDC. Verify with `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity https://github.com/__RELEASE_REPOSITORY__/.github/workflows/release.yml@refs/tags/__RELEASE_REF__ --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`. See `docs/security/VERIFYING-RELEASES.md`.
+
+          ### Kubernetes (Helm)
+
+          Chart version `__CHART_VERSION__` (installs the `__RELEASE_REF__` daemon image):
+
+          ```bash
+          helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
+            --version __CHART_VERSION__ \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+            --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+            --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
+          ```
+
           ### MCP client setup
 
           Wire the platform MCP into Claude Code (`~/.claude.json`):
@@ -327,6 +452,8 @@ jobs:
           # substitutes the value as a literal string, full stop.
           notes="$(cat release_notes.md)"
           notes="${notes//__RELEASE_REF__/$RELEASE_REF}"
+          notes="${notes//__RELEASE_REPOSITORY__/$RELEASE_REPOSITORY}"
+          notes="${notes//__CHART_VERSION__/${RELEASE_REF#v}}"
           printf '%s\n' "$notes" > release_notes.md
 
           # Changelog first, boilerplate under it — a reader wants to know
@@ -341,11 +468,28 @@ jobs:
           } > release_notes.combined.md
           mv release_notes.combined.md release_notes.md
 
+      - name: Verify SHA256SUMS.txt before publishing (#2702)
+        # Every checksum must match, and every non-sidecar file this job
+        # attaches must be listed. Not listed by design: *.sha256 sidecars,
+        # SHA256SUMS.txt itself. The chart is appended later by helm-chart.
+        run: |
+          cd bin
+          sha256sum -c SHA256SUMS.txt
+          missing=0
+          # The files: list of the next step; best-effort files that were not
+          # built (the -macos11 builds) are skipped.
+          while read -r f; do
+            [ -f "$f" ] || continue
+            grep -q "  $f\$" SHA256SUMS.txt || { echo "::error::$f is attached to the Release but not in SHA256SUMS.txt"; missing=1; }
+          done < <(awk '/name: Create GitHub Release/{a=1} a&&/files: \|/{b=1;next} b&&/draft:/{exit} b' ../.github/workflows/release.yml \
+                   | grep -o 'bin/[^ ]*' | sed 's|^bin/||' | grep -v '\.sha256$' | grep -v '^SHA256SUMS.txt$' | sort -u)
+          exit $missing
+
       - name: Create GitHub Release
         # Tag pushes only. A rehearsal builds every artifact above and stops
         # here — that is the whole point of the workflow_dispatch trigger.
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Containarium ${{ github.ref_name }}
@@ -357,6 +501,8 @@ jobs:
             bin/containarium-linux-amd64
             bin/containarium-darwin-amd64
             bin/containarium-darwin-arm64
+            bin/containarium-darwin-amd64-macos11
+            bin/containarium-darwin-arm64-macos11
             bin/containarium-windows-amd64.exe
             bin/containariumd-linux-amd64
             bin/containariumd-darwin-amd64
@@ -368,10 +514,22 @@ jobs:
             bin/agent-box-darwin-amd64
             bin/agent-box-darwin-arm64
             bin/agent-runtime-bundle.tar.gz
+            bin/sdlc-skills.tar.gz
+            bin/sdlc-skills.tar.gz.sha256
             bin/caddy-linux-amd64
+            bin/containariumd-linux-amd64.spdx.json
+            bin/containarium-linux-amd64.spdx.json
+            bin/mcp-server-linux-amd64.spdx.json
+            bin/agent-box-linux-amd64.spdx.json
             bin/SHA256SUMS.txt
+            LICENSE
+            NOTICE
           draft: false
-          prerelease: false
+          # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
+          # pre-release: it is left out of releases/latest, so the daemon's
+          # update check and the host install path keep serving the newest
+          # full release. Only the dev rung installs an rc, by exact tag.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Apply release notes
         # Composes the release body idempotently (#1600).
@@ -446,45 +604,27 @@ jobs:
           # - { os: linux, arch: arm64 }
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.10'
-
-      - name: Install buf
-        # Pinned release binary — see the build-and-release job's "Install
-        # buf" step for why this isn't `go install .../buf@latest`.
-        run: |
-          set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
-          buf --version
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install apt-rdepends
         # Needed by scripts/bundle/download-deps.sh to resolve transitive
         # .deb dependencies. Runner is ubuntu-latest so apt is present.
         run: sudo apt-get update && sudo apt-get install -y apt-rdepends
 
-      - name: Compile eBPF network-policy object (#627)
-        # Same as the build-and-release job: build the object first so the
-        # bundle's containarium binary embeds it (-tags embed_bpf, auto-enabled
-        # by the Makefile when internal/netbpf/netpolicy.bpf.o is present).
-        run: |
-          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+      - name: Fetch the released binaries
+        # The exact files build-and-release attached to the Release (eBPF
+        # object embedded in containariumd), not a rebuild. build-bundle.sh
+        # reads only these three from bin/. No Go toolchain or buf is needed
+        # in this job any more: download-deps.sh fetches its toolchains as
+        # tarballs.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle-binaries-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: bin
 
-      - name: Build per-platform binaries
-        # build-bundle depends on build-release; calling explicitly so
-        # the binary outputs land in bin/ before the bundle script reads
-        # them. (The job above only writes binaries to the release page,
-        # not to a workflow artifact; we rebuild here.)
-        run: make build-release VERSION="${GITHUB_REF_NAME#v}"
+      - name: Restore executable bits
+        # Workflow artifacts do not preserve file modes.
+        run: chmod 0755 bin/*-${{ matrix.target.os }}-${{ matrix.target.arch }}
 
       - name: Download bundle dependencies
         run: |
@@ -526,7 +666,7 @@ jobs:
         # Without it a rehearsal would still attempt a real upload, which is
         # exactly the accidental publish this trigger is designed to prevent.
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ github.ref_name }}
           # append_files preserves the binary release uploaded above;
@@ -536,7 +676,11 @@ jobs:
             dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz
             dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz.sha256
           draft: false
-          prerelease: false
+          # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
+          # pre-release: it is left out of releases/latest, so the daemon's
+          # update check and the host install path keep serving the newest
+          # full release. Only the dev rung installs an rc, by exact tag.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # model-gateway credential-proxy image (#1820). The daemon
   # (images/daemon/Dockerfile) and the sidecar images each publish from their
@@ -545,6 +689,120 @@ jobs:
   # repo's release surface already reads this file for "what does a tag
   # publish", and a `push:`-tag-triggered job needs no `needs:` on
   # build-and-release to run — it fires independently, so a slow or failing
+  # Publishes the Helm chart for the tag (#2574): stamped with the release
+  # version and its exact image tag, pushed to GHCR as an OCI chart and
+  # attached to the GitHub Release. A rehearsal packages and renders it and
+  # pushes nothing. Independent of the image jobs' success, like them it is
+  # job-scoped for packages:write.
+  helm-chart:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.2
+
+      - name: Derive version
+        id: v
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Package chart stamped with the release
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          helm package charts/containarium-k8s \
+            --version "${VERSION}" --app-version "v${VERSION}" --destination dist-chart
+          ls -l dist-chart
+
+      - name: Render and check the daemon and gateway images
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          rendered="$(helm template containarium "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            --set gateway.upstreamKeySecret=release-render-check)"
+          grep -q "image: ghcr.io/footprintai/containarium:v${VERSION}\$" <<<"$rendered" || {
+            echo "::error::chart does not pin ghcr.io/footprintai/containarium:v${VERSION}"
+            exit 1
+          }
+          grep -q "image: ghcr.io/footprintai/containarium-sshpiper:v${VERSION}\$" <<<"$rendered" || {
+            echo "::error::chart does not pin ghcr.io/footprintai/containarium-sshpiper:v${VERSION}"
+            exit 1
+          }
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push chart (OCI) and attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          helm push "dist-chart/containarium-k8s-${VERSION}.tgz" oci://ghcr.io/footprintai/charts
+          # SHA256SUMS.txt is already written by build-and-release before this
+          # job runs, so the chart ships its own .sha256 (same convention as
+          # the SDLC skills and air-gapped bundles) rather than racing a
+          # re-upload of that file. Relative name so `sha256sum -c` works
+          # from the download directory.
+          (cd dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz" > "containarium-k8s-${VERSION}.tgz.sha256")
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz.sha256" --clobber
+
+      - name: List the chart in SHA256SUMS.txt (#2702)
+        # The sidecar above is kept; this also puts the chart in the one file
+        # that claims to cover the release. Fetch, append, re-upload; the
+        # build-and-release job is finished by now (needs:), so nothing else
+        # is writing that file.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir sums && cd sums
+          gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS.txt
+          before=$(wc -l < SHA256SUMS.txt)
+          # Idempotent on a re-run. grep exits 1 when nothing is left to
+          # keep; 2 is a real error and must stop the job.
+          grep -vF " containarium-k8s-${VERSION}.tgz" SHA256SUMS.txt > tmp || [ $? -eq 1 ]
+          mv tmp SHA256SUMS.txt
+          (cd ../dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz") >> SHA256SUMS.txt
+          after=$(wc -l < SHA256SUMS.txt)
+          # Never upload a truncated list over the real one.
+          if [ "$before" -lt 2 ] || [ "$after" -lt "$before" ]; then
+            echo "::error::SHA256SUMS.txt shrank ($before -> $after lines); not uploading" >&2
+            exit 1
+          fi
+          # --clobber briefly removes SHA256SUMS.txt from the published
+          # Release; if the upload fails it is missing (fails closed).
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
+
+  # Pull the chart back from GHCR and prove a clean install and upgrade on
+  # kind. The reusable workflow waits for the independently published daemon
+  # image first. Rehearsals remain publish-free and do not exercise a fake tag.
+  helm-install-upgrade:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: helm-chart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helm-install-upgrade.yml
+    with:
+      target-version: ${{ github.ref_name }}
+
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).
   model-gateway-image:
@@ -558,15 +816,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # for the Trivy SARIF upload below
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -584,11 +843,18 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-model-gateway"
           {
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest" ;;
+            esac
+            echo "tags=${tags}"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push model-gateway image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           # Repo root context: the Dockerfile builds ./cmd/model-gateway.
           context: .
@@ -598,6 +864,103 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM, explicit so it's reviewable, matching
-          # the daemon and sidecar image jobs.
+          # the daemon and sidecar image jobs. NOTE: this is why the Trivy
+          # step below pulls the pushed tag rather than using `load: true`
+          # here — buildx's docker-load exporter can't emit a manifest list,
+          # and provenance/sbom force one even for a single-platform build.
           provenance: true
           sbom: true
+
+      # This image has no separate PR-validation build, so this only scans
+      # on a real release tag — a workflow_dispatch rehearsal doesn't push,
+      # so there's nothing to pull and scan.
+      - name: Pull published image for scanning
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0 # master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-model-gateway-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
+        with:
+          sarif_file: trivy-model-gateway-results.sarif
+
+  # Signs every file on the Release (#2561). Runs last because the binaries
+  # come from build-and-release, the bundle from build-bundle and the chart
+  # from helm-chart: signing what the Release actually serves, after all
+  # three have uploaded, covers all of it with one identity. Keyless: the
+  # job's OIDC token (id-token: write) is exchanged for a short-lived Fulcio
+  # certificate naming this workflow at this tag; there is no key to store or
+  # rotate. Tag pushes only. A rehearsal would write a public Rekor entry for
+  # a build that is not a release, so it stops before this job.
+  sign-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-and-release, build-bundle, helm-chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Download the Release's files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir release-files
+          gh release download "$TAG" --dir release-files --pattern '*' --clobber
+          # A rerun finds the last run's bundles; they are re-made below.
+          rm -f release-files/*.sigstore.json
+          ls -l release-files
+
+      - name: Sign and verify every file
+        run: scripts/release/sign-assets.sh release-files
+
+      - name: Attach the signatures to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-files/*.sigstore.json --clobber
+
+      - name: Verify the uploaded signature bundles and release inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Payloads above were downloaded from this Release. Replace the
+          # local signing output with the bundles a consumer actually gets.
+          rm -f release-files/*.sigstore.json
+          gh release download "$TAG" --dir release-files --pattern '*.sigstore.json'
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release-metadata.json"
+          python3 scripts/release/verify_assets.py release-files \
+            --metadata "$RUNNER_TEMP/release-metadata.json" \
+            --repository "$GITHUB_REPOSITORY" --tag "$TAG" \
+            | tee "$RUNNER_TEMP/release-verification.json"
+
+      - name: Save release verification evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-verification
+          path: ${{ runner.temp }}/release-verification.json

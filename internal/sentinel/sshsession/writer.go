@@ -1,6 +1,7 @@
 package sshsession
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ type JSONLRecorder struct {
 	mu   sync.Mutex
 	w    io.Writer
 	file *os.File // non-nil only when this recorder opened its own file.
+	path string   // the path file was opened at; empty for a writer-backed recorder.
 }
 
 // NewJSONLFileRecorder opens (creating if needed) path for append-only
@@ -46,7 +48,7 @@ func NewJSONLFileRecorder(path string) (*JSONLRecorder, error) {
 		return nil, fmt.Errorf("open session record sink %q: %w", path, err)
 	}
 
-	return &JSONLRecorder{w: f, file: f}, nil
+	return &JSONLRecorder{w: f, file: f, path: path}, nil
 }
 
 // NewJSONLRecorder wraps an already-open writer (e.g. a bytes.Buffer in
@@ -73,8 +75,61 @@ func (j *JSONLRecorder) Record(rec Record) error {
 	return nil
 }
 
+// Reopen closes the sink and opens the same PATH again (#2415). logrotate in
+// create mode renames the sink and leaves a fresh file at the path; without a
+// reopen the plugin keeps appending to the renamed file for as long as
+// sshpiperd runs, so new sessions would land in a file about to be
+// compressed and expired. Wired to SIGHUP by ReopenOn.
+//
+// The new file is opened BEFORE the old one is released: if it cannot be
+// opened the recorder keeps its old handle and returns the error, because
+// writing to the rotated file loses nothing and dropping records does.
+// A writer-backed recorder (no path) has nothing to reopen.
+func (j *JSONLRecorder) Reopen() error {
+	if j.path == "" {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	// #nosec G304 -- same operator-supplied sink path NewJSONLFileRecorder opened.
+	f, err := os.OpenFile(j.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("reopen session record sink %q: %w", j.path, err)
+	}
+	old := j.file
+	j.w, j.file = f, f
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+// Reopener is what ReopenOn drives.
+type Reopener interface{ Reopen() error }
+
+// ReopenOn calls r.Reopen once per value received on sigs until ctx is
+// cancelled, logging (never failing on) an error: a plugin that exits
+// because a rotation hiccuped would drop the live SSH proxy chain with it.
+func ReopenOn(ctx context.Context, sigs <-chan os.Signal, r Reopener, logf func(format string, args ...any)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sigs:
+			if err := r.Reopen(); err != nil {
+				logf("ssh-session-plugin: SIGHUP reopen failed, still writing to the previous file: %v", err)
+				continue
+			}
+			logf("ssh-session-plugin: reopened session record sink after SIGHUP")
+		}
+	}
+}
+
 // Close closes the underlying file, if this recorder opened one.
 func (j *JSONLRecorder) Close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	if j.file == nil {
 		return nil
 	}

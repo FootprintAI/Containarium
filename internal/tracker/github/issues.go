@@ -322,6 +322,17 @@ func getAllPages[P any, T any](ctx context.Context, a *Adapter, firstURL, token 
 // doWithHeader is do, also returning the response headers on success
 // (pagination reads the Link header).
 func (a *Adapter) doWithHeader(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) (http.Header, error) {
+	return a.doWithHeaderClient(ctx, a.http, method, rawURL, token, reqBody, out)
+}
+
+// doCreate runs an upstream issue create under the create budget
+// (tracker.UpstreamCreateTimeout, #2045), not the general client timeout.
+func (a *Adapter) doCreate(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) error {
+	_, err := a.doWithHeaderClient(ctx, a.create, method, rawURL, token, reqBody, out)
+	return err
+}
+
+func (a *Adapter) doWithHeaderClient(ctx context.Context, client *http.Client, method, rawURL, token string, reqBody, out interface{}) (http.Header, error) {
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -339,9 +350,9 @@ func (a *Adapter) doWithHeader(ctx context.Context, method, rawURL, token string
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := a.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 

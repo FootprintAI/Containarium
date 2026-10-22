@@ -11,6 +11,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// explicitServerAddr is the server named by --server or CONTAINARIUM_SERVER
+// for this invocation ("" when only a login's default_server, or nothing,
+// supplied one).
+var explicitServerAddr string
+
 var (
 	cfgFile        string
 	verbose        bool
@@ -80,7 +85,11 @@ Examples:
 		case loginCmd, logoutCmd, whoamiCmd, configGetTokenCmd:
 			return nil
 		}
-		serverAddr = resolveServerAddr(serverAddr)
+		// Recorded before resolution: --server or CONTAINARIUM_SERVER, never
+		// the credentials file's default_server. `guardrail apply/verify`
+		// contact a server only when it was named this way (#2368).
+		explicitServerAddr = serverAddr
+		serverAddr = canonicalServerAddr(resolveServerAddr(serverAddr))
 		if authToken == "" {
 			authToken = resolveAuthToken(serverAddr)
 		}
@@ -163,7 +172,7 @@ func init() {
 
 	// Remote server flags (HTTP mode)
 	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
-	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
+	secretEnvFlag(rootCmd.PersistentFlags(), &authToken, "token", "CONTAINARIUM_TOKEN", "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")

@@ -67,6 +67,15 @@ const (
 	ScopeSecurityRead  = "security:read"
 	ScopeSecurityWrite = "security:write"
 
+	// security:trigger-for-owner — carried by a service credential (the
+	// managed control plane's driver token) that has ALREADY authorized the
+	// end user as the box's owner and starts the in-box malware scan on
+	// that owner's behalf (#2655). It is the only way a non-owner token
+	// passes RequireContainerOwner. It is matched literally: neither the
+	// wildcard scope nor an unscoped admin token carries it, so an operator
+	// token cannot start a scan of a customer's box.
+	ScopeSecurityTriggerForOwner = "security:trigger-for-owner"
+
 	// alerting rules + webhook config
 	ScopeAlertsRead  = "alerts:read"
 	ScopeAlertsWrite = "alerts:write"
@@ -110,6 +119,19 @@ const (
 	ScopeCrewsRead = "crews:read"
 	ScopeCrewsRun  = "crews:run"
 
+	// Anonymous-box door (#2197). anon:door is what the sentinel's door
+	// plugin carries to EnsureAnonymousBox — it can resolve/create a box
+	// for a key and nothing else. anon:admin is the operator surface
+	// (claim, kill switch, bans, list).
+	ScopeAnonDoor  = "anon:door"
+	ScopeAnonAdmin = "anon:admin"
+
+	// ssh:authorize is what a sentinel-signed SSHAuthzService.Authorize
+	// call carries (#2516): the gateway stamps it after verifying the
+	// sentinel signature on /v1/ssh/authorize, the only way that route is
+	// reached. It grants that one query and nothing else.
+	ScopeSSHAuthorize = "ssh:authorize"
+
 	// managed Kubernetes clusters (ClusterServer, #1413).
 	// clusters:read lists/inspects clusters and their scale history;
 	// clusters:write creates/deletes clusters, edits node pools, and
@@ -130,6 +152,18 @@ const (
 	ScopeAuditRead         = "audit:read"          // audit-log query
 	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
 	ScopeTokensRead        = "tokens:read"         // token listing
+
+	// audit:ingest (#2415) is the ONLY scope that may append externally
+	// sourced rows to the tamper-evident audit chain — today, the
+	// sentinel's SSH session records via AuditService.IngestSSHSessionRecords.
+	// It is deliberately not implied by audit:read, by any role, or by an
+	// unscoped token: the handler gates on RequireExplicitScope, so a token
+	// must name it.
+	ScopeAuditIngest = "audit:ingest"
+
+	// code-egress:read lets a tenant read its own coding-tool egress policy
+	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
+	ScopeCodeEgressRead = "code-egress:read"
 
 	// ephemeral sandboxes (SandboxServer, #1488). A sandbox has no
 	// per-tenant Linux account and no SSH — spawn/exec/file/delete is its
@@ -181,15 +215,19 @@ var AllScopes = []string{
 	ScopeBackupsRead, ScopeBackupsWrite,
 	ScopeVolumesRead, ScopeVolumesWrite,
 	ScopeRoutesRead, ScopeRoutesWrite,
-	ScopeSecurityRead, ScopeSecurityWrite,
+	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
 	ScopeCodeWrite, ScopeSSHWrite,
 	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
+	ScopeAnonDoor, ScopeAnonAdmin,
+	ScopeSSHAuthorize,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeAuditIngest,
+	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
 	ScopeGatewayAdmin, ScopeGatewayMint,

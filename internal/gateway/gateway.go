@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -30,6 +31,7 @@ import (
 	"github.com/rs/cors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -81,11 +83,22 @@ type GatewayServer struct {
 	// sentinel but cannot forge a request — the BYOC-safe configuration.
 	sentinelPubKey ed25519.PublicKey
 
+	// sshAuthzTokenFallback lets /v1/ssh/authorize also accept a JWT
+	// carrying ssh:authorize, for the jump host's AuthorizedKeysCommand
+	// (#2527). Off by default: the route stays sentinel-only.
+	sshAuthzTokenFallback bool
+
 	// containerExistsFn is the orphan filter used by
 	// /authorized-keys (#343). When set, the handler drops users
 	// whose container has been deleted but whose home dir survived.
 	// Wired from dual_server using the container manager.
 	containerExistsFn func(username string) bool
+
+	// trustBundleProvider feeds /authorized-keys' cached SSH CA trust
+	// bundle (#1928). nil = this daemon has no cloud client enrolled, so
+	// the response never carries one. Wired from dual_server to
+	// cloud.Client.SSHTrustedUserCAKeys when the host is cloud-enrolled.
+	trustBundleProvider TrustBundleProvider
 
 	// authorizedKeysHandler overrides the default home-dir-walking
 	// /authorized-keys handler. The K8s runtime installs a lister-backed
@@ -237,6 +250,15 @@ func (gs *GatewayServer) SetSentinelPublicKey(pub ed25519.PublicKey) {
 	gs.sentinelPubKey = pub
 }
 
+// SetSSHAuthzTokenFallback turns on the token fallback on
+// /v1/ssh/authorize (#2527): an unsigned request authenticated by a JWT
+// that carries ssh:authorize explicitly reaches Authorize, alongside the
+// sentinel-signed path. Off by default. Source is the daemon's
+// --ssh-authz-keys-command flag.
+func (gs *GatewayServer) SetSSHAuthzTokenFallback(enabled bool) {
+	gs.sshAuthzTokenFallback = enabled
+}
+
 // SetAuthorizedKeysHandler overrides the default /authorized-keys handler
 // (the LXC home-dir walker) — the K8s runtime installs a lister-backed one.
 func (gs *GatewayServer) SetAuthorizedKeysHandler(h http.HandlerFunc) {
@@ -256,6 +278,15 @@ func (gs *GatewayServer) SetSentinelKeyHandler(h http.HandlerFunc) {
 // disconnected" symptom.
 func (gs *GatewayServer) SetContainerExistsFn(fn func(username string) bool) {
 	gs.containerExistsFn = fn
+}
+
+// SetTrustBundleProvider wires /authorized-keys to advertise the cached SSH
+// CA trust bundle (#1928). Called from dual_server with
+// cloudClient.SSHTrustedUserCAKeys when the host is cloud-enrolled; left
+// unset (nil) makes the response never carry a bundle, unchanged from
+// before this existed.
+func (gs *GatewayServer) SetTrustBundleProvider(p TrustBundleProvider) {
+	gs.trustBundleProvider = p
 }
 
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
@@ -409,10 +440,12 @@ func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, web
 	}
 }
 
-// Start starts the HTTP gateway server
-func (gs *GatewayServer) Start(ctx context.Context) error {
-	// Create grpc-gateway mux with custom options
-	mux := runtime.NewServeMux(
+// NewRESTMux returns the grpc-gateway mux with the daemon's options: error
+// mapping, identity metadata, reserved-header filtering and the JSON wire
+// format. Start serves every /v1 REST route through it; contract tests use
+// it so they pin the same wire format the daemon serves.
+func NewRESTMux() *runtime.ServeMux {
+	return runtime.NewServeMux(
 		runtime.WithErrorHandler(customErrorHandler),
 		runtime.WithMetadata(annotateContext),
 		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
@@ -428,6 +461,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 			},
 		}),
 	)
+}
+
+// Start starts the HTTP gateway server
+func (gs *GatewayServer) Start(ctx context.Context) error {
+	// Create grpc-gateway mux with custom options
+	mux := NewRESTMux()
 
 	// Setup connection to gRPC server
 	var opts []grpc.DialOption
@@ -513,9 +552,35 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register kms service gateway: %w", err)
 	}
 
+	// AuditService (#2415): sentinel SSH session record ingest.
+	if err := pb.RegisterAuditServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register audit service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
+	}
+	// CodingToolEgressPolicyService (#2378)
+	if err := pb.RegisterCodingToolEgressPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register coding-tool egress policy service gateway: %w", err)
+	}
+	// GuardrailPolicyService (#2368): the server-side guardrail policy.
+	if err := pb.RegisterGuardrailPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register guardrail policy service gateway: %w", err)
+	}
+	// RetentionService (#2875): retention windows and legal holds.
+	if err := pb.RegisterRetentionServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register retention service gateway: %w", err)
+	}
+	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
+	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
+	}
+	// SSHAuthzService (#2516): per-connection SSH authorization, reached
+	// only through the sentinel-signed mount below.
+	if err := pb.RegisterSSHAuthzServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register ssh authz service gateway: %w", err)
 	}
 
 	// Register TrafficService gateway handler
@@ -562,25 +627,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register model-gateway service gateway: %w", err)
 	}
 
-	// Create HTTP handler with authentication middleware, then audit middleware.
-	// Audit wraps the inner handler so auth runs first (sets username in context),
-	// then audit captures the response on the way out.
-	var handler http.Handler = mux
+	// The production REST chain (cors → auth → audit → GuardSSHAuthzPath →
+	// mux) is built by wrapHTTPHandler so the #2773 streaming test exercises
+	// exactly this chain. rest is the bare guarded mux the sentinel-signed
+	// routes below wrap with their own identity check.
+	var store auditLogger
 	if gs.auditStore != nil {
-		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
+		// Assign only when non-nil: a nil *audit.Store stored in the
+		// interface would read as non-nil inside wrapHTTPHandler.
+		store = gs.auditStore
 	}
-	handler = gs.authMiddleware.HTTPMiddleware(handler)
-
-	// Add CORS support with configurable origins (secure by default)
-	// Set CONTAINARIUM_ALLOWED_ORIGINS env var to configure allowed origins
-	corsHandler := cors.New(cors.Options{
-		AllowedOrigins:   getAllowedOrigins(),
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
-		ExposedHeaders:   []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}).Handler(handler)
+	corsHandler, rest := wrapHTTPHandler(mux, gs.authMiddleware.HTTPMiddleware, store)
 
 	// Create HTTP mux for routing
 	httpMux := http.NewServeMux()
@@ -659,7 +716,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				}
 			}
 
-			gs.terminalHandler.HandleTerminal(w, r)
+			// #2696: record that this bearer passed ValidateToken; the
+			// upgrader's no-Origin exemption reads this, not the raw
+			// headers. See checkTerminalOrigin.
+			gs.terminalHandler.HandleTerminal(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 		}))
 
 		// Console-attach WebSocket route (live VM serial console, #1751).
@@ -713,7 +773,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 					}
 				}
 
-				gs.consoleHandler.HandleConsole(w, r)
+				// #2721: same contract as the terminal route above — record that
+				// this bearer passed ValidateToken so the shared upgrader's
+				// no-Origin exemption (checkTerminalOrigin) can honour it.
+				// Without this record the console upgrader refuses every
+				// Origin-less request, including the CLI's.
+				gs.consoleHandler.HandleConsole(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 			}))
 		}
 
@@ -858,6 +923,13 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Health check endpoint (no auth required)
 	httpMux.HandleFunc("/health", healthHandler)
 
+	// Policy-store readiness (#2483): grpc.health.v1 through the gateway.
+	healthConn, err := grpc.NewClient(grpcTarget, opts...)
+	if err != nil {
+		return fmt.Errorf("failed to dial gRPC server for the health endpoint: %w", err)
+	}
+	MountPolicyHealth(httpMux, mux, healthpb.NewHealthClient(healthConn))
+
 	mountInternalProxies(httpMux, gs)
 
 	// Session-cookie set/clear endpoint. Lets the webui promote its
@@ -916,7 +988,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.Handle("/certs", sentinelVerifier.Middleware(ServeCerts(gs.caddyCertDir)))
 	authorizedKeysHandler := gs.authorizedKeysHandler
 	if authorizedKeysHandler == nil {
-		authorizedKeysHandler = ServeAuthorizedKeys("", gs.containerExistsFn)
+		authorizedKeysHandler = ServeAuthorizedKeys("", gs.containerExistsFn, gs.trustBundleProvider)
 	}
 	httpMux.Handle("/authorized-keys", sentinelVerifier.Middleware(authorizedKeysHandler))
 	sentinelKeyHandler := gs.sentinelKeyHandler
@@ -924,6 +996,28 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		sentinelKeyHandler = ServeSentinelKey()
 	}
 	httpMux.Handle("/authorized-keys/sentinel", sentinelVerifier.Middleware(sentinelKeyHandler))
+
+	// #2197: the anonymous-box door. The sentinel's door plugin signs
+	// EnsureAnonymousBox with the same signature it uses for the routes
+	// above; everyone else still needs a JWT (anon:door or admin). Exact
+	// path, so it wins over the "/v1/" catch-all. The inner chain keeps
+	// the audit middleware but skips JWT auth — the door identity comes
+	// from the verified signature instead.
+	anonInner := rest
+	if gs.auditStore != nil {
+		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
+	}
+	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
+
+	// #2516: SSHAuthzService.Authorize, sentinel signature. Same inner
+	// chain as the door: audited, identity from the verified signature.
+	// #2527: when enabled, an ssh:authorize JWT is accepted too, for the
+	// jump host's AuthorizedKeysCommand; otherwise no JWT fallback.
+	var sshAuthzTokenAuth func(http.Handler) http.Handler
+	if gs.sshAuthzTokenFallback {
+		sshAuthzTokenAuth = gs.authMiddleware.HTTPMiddleware
+	}
+	MountSSHAuthz(httpMux, sentinelVerifier, sshAuthzTokenAuth, anonInner)
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
@@ -1033,12 +1127,57 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	if conn, ok := auth.TrackerConnFromContext(ctx); ok && conn != "" {
 		md.Set(auth.MDKeyTrackerConn, conn)
 	}
+	// #2268 — forward the optional `run_tenant` claim the same way.
+	if tenant, ok := auth.RunTenantFromContext(ctx); ok && tenant != "" {
+		md.Set(auth.MDKeyRunTenant, tenant)
+	}
 	return md
 }
 
 // getAllowedOrigins returns the list of allowed CORS origins.
 // Configurable via CONTAINARIUM_ALLOWED_ORIGINS environment variable (comma-separated).
 // Defaults to localhost origins only for security.
+// auditLogger is what the REST chain needs from the audit store —
+// Log(ctx, *AuditEntry) error, the same narrowing audit.HTTPAuditMiddleware
+// accepts — so the chain test can pass a fake where Start passes *audit.Store.
+type auditLogger interface {
+	Log(ctx context.Context, entry *audit.AuditEntry) error
+}
+
+// wrapHTTPHandler builds the production REST chain around the grpc-gateway
+// mux:
+//
+//	cors → auth → audit (when store != nil) → GuardSSHAuthzPath → mux
+//
+// Audit sits inside auth so the username is already on the context when the
+// audit row is written, and captures the response on the way out.
+// GuardSSHAuthzPath keeps the sentinel-only authorize route (#2516) out of
+// the JWT chain however its path is spelled. CORS origins come from
+// CONTAINARIUM_ALLOWED_ORIGINS (localhost only by default).
+//
+// Start and the #2773 streaming test both call this, so a wrapper added to
+// any layer that hides the writer's Flusher fails the test rather than
+// resurfacing as "unexpected type of web server" in production. It returns
+// the full chain and the bare guarded mux (rest), which the sentinel-signed
+// routes wrap with their own identity check instead of JWT auth.
+func wrapHTTPHandler(mux http.Handler, authMW func(http.Handler) http.Handler, store auditLogger) (handler, rest http.Handler) {
+	rest = GuardSSHAuthzPath(mux)
+	handler = rest
+	if store != nil {
+		handler = audit.HTTPAuditMiddleware(handler, store)
+	}
+	handler = authMW(handler)
+	handler = cors.New(cors.Options{
+		AllowedOrigins:   getAllowedOrigins(),
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		ExposedHeaders:   []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}).Handler(handler)
+	return handler, rest
+}
+
 func getAllowedOrigins() []string {
 	envOrigins := os.Getenv("CONTAINARIUM_ALLOWED_ORIGINS")
 	if envOrigins != "" {
@@ -1081,4 +1220,14 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 		Status:  "healthy",
 		Version: version.GetVersion(),
 	})
+}
+
+// MountPolicyHealth serves grpc.health.v1.Health/Check through the
+// grpc-gateway at policyreadiness.HTTPPath (`?service=<name>`), so
+// `containarium doctor` can read policy-store readiness from the local
+// daemon (#2483). It is mounted outside the JWT chain: it carries a serving
+// status only, like /health.
+func MountPolicyHealth(httpMux *http.ServeMux, rest *runtime.ServeMux, client healthpb.HealthClient) {
+	runtime.WithHealthEndpointAt(client, policyreadiness.HTTPPath)(rest)
+	httpMux.Handle(policyreadiness.HTTPPath, rest)
 }

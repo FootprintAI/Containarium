@@ -3,7 +3,9 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -27,8 +29,8 @@ var sentinelSSHSessionPluginCmd = &cobra.Command{
 sshpiperd on the sentinel is the only place a client's SSH key or certificate is
 verified — containers run no sshd of their own — but an accepted connection has
 never produced a structured record: only the failtoban plugin's auth-failure
-line exists. This subcommand IS that missing record: chained as the FIRST
-plugin in sshpiperd's invocation (ahead of the "yaml" routing plugin), it
+line exists. This subcommand IS that missing record: chained after
+ssh-authz-plugin and ahead of the "yaml" routing plugin, it
 observes the offered credential (certificate key_id/serial/CA fingerprint, or a
 raw key's fingerprint) and the accept/close of every pipe, and appends one
 JSON line per event to --records-file. It never accepts or rejects a
@@ -39,6 +41,8 @@ failure path failtoban's fail2ban regex depends on.
 Wire it into sshpiperd's ExecStart ahead of "yaml", e.g.:
 
   sshpiperd -i host_key -p 22 \
+    containarium sentinel ssh-authz-plugin \
+    -- \
     containarium sentinel ssh-session-plugin --records-file /var/log/containarium/ssh-sessions.jsonl \
     -- yaml --config /etc/sshpiper/config.yaml \
     -- failtoban --max-failures 100 --ban-duration 5m
@@ -47,7 +51,15 @@ Blocks serving the plugin gRPC protocol over stdio until sshpiperd closes it
 (e.g. on its own shutdown/restart), at which point any session this process
 saw an open for but never a close gets a final record with
 close_reason=proxy_shutdown, so it isn't left indistinguishable from a session
-still legitimately running.`,
+still legitimately running.
+
+On SIGHUP it closes and reopens --records-file at the same path, so logrotate
+can rotate the sink (rename + create) without restarting sshpiperd:
+  postrotate: pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'
+The pattern is anchored because sshpiperd's own command line CONTAINS this
+plugin's, and it must not receive the signal. It accepts both binary names
+(containarium is the compat symlink to containariumd) so it keeps matching after
+the unit's ExecStart moves to the daemon name.`,
 	RunE: runSentinelSSHSessionPlugin,
 }
 
@@ -72,9 +84,12 @@ func runSentinelSSHSessionPlugin(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = recorder.Close() }()
 
+	// SkipUnobserved: in enforce mode ssh-authz-plugin routes the connection
+	// and writes its records; this plugin never sees the credential (#2741).
 	plugin := &sshsession.Plugin{
-		Recorder: recorder,
-		Target:   sshsession.NewTargetResolver(sentinelSSHSessionPluginConfigFile),
+		Recorder:       recorder,
+		Target:         sshsession.NewTargetResolver(sentinelSSHSessionPluginConfigFile),
+		SkipUnobserved: true,
 	}
 
 	piperPlugin, err := libplugin.NewFromStdio(plugin.Config())
@@ -109,6 +124,17 @@ func runSentinelSSHSessionPlugin(cmd *cobra.Command, args []string) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigc)
+
+	// SIGHUP: logrotate (create mode) renamed the sink — reopen the path
+	// (#2415). Registering the handler also matters on its own: Go's default
+	// action for SIGHUP is to terminate, which would take the SSH proxy's
+	// plugin chain down on every rotation.
+	hupc := make(chan os.Signal, 1)
+	signal.Notify(hupc, syscall.SIGHUP)
+	defer signal.Stop(hupc)
+	reopenCtx, stopReopen := context.WithCancel(context.Background())
+	defer stopReopen()
+	go sshsession.ReopenOn(reopenCtx, hupc, recorder, log.Printf)
 
 	done := make(chan error, 1)
 	go func() { done <- piperPlugin.Serve() }()

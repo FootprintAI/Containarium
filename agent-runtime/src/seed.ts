@@ -8,7 +8,8 @@ export const DEFAULT_SEED_DIR = "/etc/containarium/agent";
 
 // AgentCard mirrors the relevant fields of the seeded agent-card.json
 // (grpc-gateway camelCase). Only output_schema_json is load-bearing for the
-// runtime today; the rest is passed through for discovery.
+// runtime — it becomes Seed.outputSchema, which the engines enforce (#2002);
+// the rest is passed through for discovery.
 export interface AgentCard {
   id?: string;
   name?: string;
@@ -44,6 +45,9 @@ export interface Seed {
   // The platform MCP to mount as a second MCP server, or null when the daemon
   // did not seed one (the run is not bound to a tracker connection).
   platformMcp: PlatformMcpConfig | null;
+  // agent_card.output_schema_json parsed into the JSON Schema object the
+  // engines enforce (#2002), or null when the skill declares none.
+  outputSchema: Record<string, unknown> | null;
 }
 
 function readIfPresent(dir: string, file: string): string {
@@ -87,6 +91,23 @@ export function parsePlatformMcp(raw: string): PlatformMcpConfig {
   };
 }
 
+// parseOutputSchema validates a declared agent_card.output_schema_json. Like
+// parsePlatformMcp it throws rather than degrades: the catalog declared a
+// contract for this artifact, and a run that silently dropped it would be
+// unenforced with no signal why — the exact failure #2002 is about.
+export function parseOutputSchema(raw: string): Record<string, unknown> {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`agent-card.json: output_schema_json is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
+    throw new Error("agent-card.json: output_schema_json must be a JSON Schema object");
+  }
+  return obj as Record<string, unknown>;
+}
+
 // loadSeed reads the seed directory the daemon populated at launch. Missing
 // files degrade gracefully (empty prompt, "{}" input) so a partially-seeded
 // box still runs rather than crashing.
@@ -110,5 +131,8 @@ export function loadSeed(dir: string = process.env.AGENT_SEED_DIR ?? DEFAULT_SEE
   const mcpRaw = readIfPresent(dir, "platform_mcp.json").trim();
   const platformMcp = mcpRaw ? parsePlatformMcp(mcpRaw) : null;
 
-  return { systemPrompt, inputJson, agentCard, tokenPath, platformMcp };
+  const schemaRaw = typeof agentCard?.outputSchemaJson === "string" ? agentCard.outputSchemaJson.trim() : "";
+  const outputSchema = schemaRaw ? parseOutputSchema(schemaRaw) : null;
+
+  return { systemPrompt, inputJson, agentCard, tokenPath, platformMcp, outputSchema };
 }

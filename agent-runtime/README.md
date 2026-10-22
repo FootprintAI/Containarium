@@ -38,12 +38,21 @@ default model makes it a budget-friendly way to exercise the mechanism end-to-en
 - `run` (default) — one-shot: read `input.json`, run once, write `artifact.json`.
   This is the `agent run` path (Phase 4a).
 - `serve` — start the in-box **A2A server** on `:8674` and stay up:
-  - `GET /agent-card` → the seeded agent card (peer discovery)
+  - `GET /agent-card` → the seeded agent card (peer discovery; unauthenticated)
   - `POST /tasks` → run one delegated task (`AgentTask` in → `AgentArtifact`
     out), the listener the daemon's `SendAgentTask` reaches (Phase 4b).
 
   A failed task returns `200` with `state: AGENT_TASK_STATE_FAILED` so the caller
   still gets the artifact rather than an HTTP error.
+
+  **`POST /tasks` is daemon-only** (#2125). Every request must carry
+  `Authorization: Bearer $CONTAINARIUM_A2A_TOKEN` — the per-box secret the daemon
+  derives for this box and exports when it launches serve mode. A missing
+  credential is `401`, a wrong one `403`, and neither reaches the engine or
+  writes a journal line. Without `CONTAINARIUM_A2A_TOKEN` in the environment the
+  server still starts, and still serves `/agent-card`, but refuses every task: a
+  box that cannot tell the daemon from a peer serves nobody. Why it is shaped
+  this way: `docs/architecture/execution-scoped-authorization.md`.
 
 ## What it reads (the seed)
 
@@ -54,11 +63,21 @@ default model makes it a budget-friendly way to exercise the mechanism end-to-en
 | --- | --- |
 | `system_prompt.txt` | the engine's system prompt |
 | `input.json` | the task |
-| `agent-card.json` | discovery / output schema |
+| `agent-card.json` | discovery; its `outputSchemaJson` is the artifact's enforced schema |
 | `token` | scoped platform JWT (for the platform MCP; not the model key) |
 
 …and writes `artifact.json` (`{outputJson, engine, model, usage, error?}`,
 mode 0600) for the daemon to return.
+
+When the skill's `agent_card.output_schema_json` is set, the engine hands it
+to its provider's structured-output mechanism and `outputJson` is the
+provider-validated result (#2002): Claude via the Agent SDK's `outputFormat`
+(validated, re-prompted on mismatch; a run that never conforms fails with
+`error` set rather than writing prose), Codex via the turn's `outputSchema`.
+Gemini is prompt-only for now — its API accepts a response schema alongside
+function calling only on Gemini 3 preview models — and journals that gap as a
+`status` line. A malformed schema fails the seed load, never a silent
+unenforced run.
 
 ## Run journal
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/runlog"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -258,35 +259,51 @@ func (c *Client) ListRecipes() (*ListRecipesResponse, error) {
 
 // DeployRecipeRequest is the body for a recipe deploy.
 type DeployRecipeRequest struct {
-	RecipeID   string            `json:"recipe_id"`
-	Name       string            `json:"name"`
-	GPU        string            `json:"gpu,omitempty"`
-	BackendID  string            `json:"backend_id,omitempty"`
-	Pool       string            `json:"pool,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	RecipeID       string                 `json:"recipe_id"`
+	Name           string                 `json:"name"`
+	GPU            string                 `json:"gpu,omitempty"`
+	BackendID      string                 `json:"backend_id,omitempty"`
+	Pool           string                 `json:"pool,omitempty"`
+	Parameters     map[string]string      `json:"parameters,omitempty"`
+	GuardrailInput *pb.GuardrailGateInput `json:"guardrail_input,omitempty"`
+}
+
+// DeployRecipeContainer is the deployed container's MCP summary.
+type DeployRecipeContainer struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
 }
 
 // DeployRecipeResponse is the result of a recipe deploy.
 type DeployRecipeResponse struct {
-	URL       string `json:"url"`
-	Message   string `json:"message"`
-	Container *struct {
-		Name  string `json:"name"`
-		State string `json:"state"`
-	} `json:"container"`
+	URL       string                 `json:"url"`
+	Message   string                 `json:"message"`
+	Container *DeployRecipeContainer `json:"container"`
 }
 
-// DeployRecipe provisions a new dedicated container from a recipe.
+// DeployRecipe wraps the CLI's typed HTTP client, retaining MCP's TLS
+// restrictions, configured transport and per-request token-file rotation.
 func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/recipes/"+req.RecipeID+"/deploy", req)
+	if c.tlsConfigErr != nil {
+		return nil, fmt.Errorf("MCP client refuses to send request: %w", c.tlsConfigErr)
+	}
+	token, err := c.readToken()
+	if err != nil {
+		return nil, fmt.Errorf("authenticate: %w", err)
+	}
+	typed, err := client.NewHTTPClient(c.baseURL, token, client.WithHTTPClient(c.httpClient))
 	if err != nil {
 		return nil, err
 	}
-	var resp DeployRecipeResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, req.GPU, req.BackendID, req.Pool, req.Parameters, req.GuardrailInput)
+	if err != nil {
+		return nil, err
 	}
-	return &resp, nil
+	out := &DeployRecipeResponse{URL: resp.GetUrl(), Message: resp.GetMessage()}
+	if container := resp.GetContainer(); container != nil {
+		out.Container = &DeployRecipeContainer{Name: container.GetName(), State: container.GetState().String()}
+	}
+	return out, nil
 }
 
 // --- agent skills (AgentSkillService) ---
@@ -319,6 +336,41 @@ func (c *Client) ListAgentSkills() (*ListAgentSkillsResponse, error) {
 	return &resp, nil
 }
 
+// AgentEngineStatusSummary is one entry of the /v1/agent-engines response.
+// JSON tags are the grpc-gateway camelCase output names; Engine/Provider/
+// Readiness/Source arrive as the proto enum's NAME string (e.g.
+// "AGENT_ENGINE_CLAUDE"), which is grpc-gateway's default enum encoding.
+type AgentEngineStatusSummary struct {
+	Engine    string   `json:"engine"`
+	Provider  string   `json:"provider"`
+	Readiness string   `json:"readiness"`
+	Reason    string   `json:"reason"`
+	Source    string   `json:"source"`
+	IsDefault bool     `json:"isDefault"`
+	SkillIDs  []string `json:"skillIds"`
+}
+
+// ListAgentEnginesResponse is the /v1/agent-engines response (#2223).
+type ListAgentEnginesResponse struct {
+	Engines  []AgentEngineStatusSummary `json:"engines"`
+	KeyOwner string                     `json:"keyOwner"`
+}
+
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now — the same check RunAgentSkill's refusal
+// enforces, read-only.
+func (c *Client) ListAgentEngines() (*ListAgentEnginesResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/agent-engines", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListAgentEnginesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // RunAgentSkillRequest is the body for an agent-skill run. Snake_case tags
 // match the proto field names, which grpc-gateway accepts on input.
 // GitSource/GitRef (#1859) fetch a repo into the run's workspace before the
@@ -331,6 +383,11 @@ type RunAgentSkillRequest struct {
 	InputJSON string `json:"input_json,omitempty"`
 	GitSource string `json:"git_source,omitempty"`
 	GitRef    string `json:"git_ref,omitempty"`
+	// Engine (#2228) is the proto enum's NAME string (e.g.
+	// "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum field.
+	// handleRunAgentSkill validates+normalizes the tool's lowercase "engine"
+	// argument into this shape before it ever reaches here.
+	Engine string `json:"engine,omitempty"`
 }
 
 // RunAgentSkillResponse is the result of an agent-skill run.
@@ -464,6 +521,32 @@ func (c *Client) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, 
 	return out, nil
 }
 
+// ListBoxRuns lists a box's code-run records (#2123).
+func (c *Client) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
+	respBody, err := c.doRequest("GET", runlog.BoxRunsPath(username), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListBoxRunsResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out.GetRuns(), nil
+}
+
+// TailBoxRunLog reads one window of a box run's log (#2123).
+func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
+	respBody, err := c.doRequest("GET", runlog.BoxQuery(req), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.TailBoxRunLogResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case
@@ -488,6 +571,15 @@ type CreateBackupRequest struct {
 	Hook         string `json:"hook,omitempty"`
 	Label        string `json:"label,omitempty"`
 	AgeRecipient string `json:"age_recipient,omitempty"`
+
+	// #2402: the proto enum NAME ("BACKUP_KEY_MODE_MANAGED", ...). Empty
+	// is UNSPECIFIED — the daemon default.
+	KeyMode string `json:"key_mode,omitempty"`
+
+	// #2405: declared hook output format, as the pb.HookFormat value NAME
+	// (what protojson decodes). Empty is omitted, which the daemon reads
+	// as opaque.
+	HookFormat string `json:"hook_format,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -509,6 +601,13 @@ type BackupRecord struct {
 	Encrypted    bool   `json:"encrypted,omitempty"`
 	AgeRecipient string `json:"ageRecipient,omitempty"`
 	Hook         string `json:"hook,omitempty"`
+
+	// #2402: the proto enum NAME; bytes are base64 in proto JSON. The
+	// daemon never unwraps WrappedKey — whoever restores does.
+	WrappedKey string `json:"wrappedKey,omitempty"`
+	KekID      string `json:"kekId,omitempty"`
+	KeyMode    string `json:"keyMode,omitempty"`
+	HookFormat string `json:"hookFormat,omitempty"` // #2405, enum value name
 }
 
 // VerificationCheck is one assertion made during a restore test.
@@ -549,6 +648,9 @@ type RestoreBackupRequest struct {
 	Clean      bool              `json:"clean,omitempty"`
 	// AgeIdentity decrypts an encrypted record for this one call (#1831).
 	AgeIdentity string `json:"age_identity,omitempty"`
+	// TargetContainer restores into another tenant container; empty is
+	// the backup's own container (#2403).
+	TargetContainer string `json:"target_container,omitempty"`
 }
 
 // RestoreBackupResponse is the result of a restore.
@@ -591,6 +693,9 @@ type VerifyBackupRequest struct {
 	ID             string            `json:"id"`
 	TargetUsername string            `json:"target_username"`
 	Connection     *PgConnectionBody `json:"connection,omitempty"`
+	// AgeIdentity decrypts an encrypted record for this one call, same
+	// contract as RestoreBackupRequest.AgeIdentity (#1831, #2295).
+	AgeIdentity string `json:"age_identity,omitempty"`
 }
 
 // VerifyBackupResponse is the result of a restore test.
@@ -676,6 +781,19 @@ func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
 		return nil, err
 	}
 	var resp SentryStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetBridgeDNSStatus reports the bridge DNS reconciler's last pass (#2188).
+func (c *Client) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/system/bridge-dns", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp BridgeDNSStatusResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -1202,6 +1320,7 @@ type LatestReleaseResponse struct {
 	LatestRelease   string `json:"latestRelease"`
 	CurrentVersion  string `json:"currentVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
+	TargetVersion   string `json:"targetVersion"` // sentinel-served version (#2171)
 }
 
 // GetLatestRelease reports the latest published Containarium release vs the
@@ -1267,6 +1386,7 @@ type TriggerUpgradeResponse struct {
 	CurrentVersion string `json:"currentVersion"`
 	Message        string `json:"message"`
 	BackendID      string `json:"backendId"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 // TriggerUpgrade asks a backend to upgrade its daemon to the sentinel-served
@@ -1294,6 +1414,7 @@ type UpgradeStatusResponse struct {
 	CurrentVersion string `json:"currentVersion"`
 	Error          string `json:"error"`
 	CompletedAt    string `json:"completedAt"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 // GetUpgradeStatus polls an upgrade started by TriggerUpgrade. Returns status
@@ -1336,6 +1457,49 @@ func (c *Client) AddRoute(req AddRouteRequest) (*AddRouteResponse, error) {
 func (c *Client) DeleteRoute(domain string) error {
 	_, err := c.doRequest("DELETE", "/v1/network/routes/"+url.PathEscape(domain), nil)
 	return err
+}
+
+// GuardEntryResponse / GuardStatusResponse / NetworkGuardStatusResponse mirror
+// the proto NetworkGuardStatus as grpc-gateway renders it (GET /v1/network/guard).
+type GuardEntryResponse struct {
+	Container string `json:"container"`
+	Subject   string `json:"subject"`
+	IP        string `json:"ip"`
+	ACLName   string `json:"aclName"`
+	Attached  bool   `json:"attached"`
+	LastError string `json:"lastError"`
+}
+
+type GuardStatusResponse struct {
+	Mode           string               `json:"mode"`
+	FirewallDriver string               `json:"firewallDriver"`
+	Unsupported    bool                 `json:"unsupported"`
+	LastPass       string               `json:"lastPass"`
+	LastError      string               `json:"lastError"`
+	StaleSince     string               `json:"staleSince"`
+	Entries        []GuardEntryResponse `json:"entries"`
+	Unresolved     []string             `json:"unresolved"`
+	Unmanaged      []string             `json:"unmanaged"`
+	Subjects       int                  `json:"subjects"`
+}
+
+type NetworkGuardStatusResponse struct {
+	Core   *GuardStatusResponse `json:"core"`
+	Tenant *GuardStatusResponse `json:"tenant"`
+}
+
+// GetNetworkGuardStatus reads both NIC-ACL guards' last-pass state — the
+// same endpoint `containarium network-guard status` uses (#2353).
+func (c *Client) GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/network/guard", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp NetworkGuardStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
 }
 
 // ListRoutes returns all proxy routes the sentinel currently serves. Both
@@ -1830,6 +1994,28 @@ func (c *Client) InstallZap() (*InstallZapResponse, error) {
 	return &resp, nil
 }
 
+// InstallClamav asks the daemon to install ClamAV and its signatures inside
+// one box (#2659). It is the single Go call behind both the
+// `containarium security clamav install` CLI command and the
+// `install_clamav` MCP tool. The install can take minutes (package download
+// and the first signature fetch), so this uses a longer timeout than the
+// default 120s client.
+func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, error) {
+	long := *c
+	hc := *c.httpClient
+	hc.Timeout = 20 * time.Minute
+	long.httpClient = &hc
+	body, err := long.doRequest("POST", "/v1/security/clamav-install", map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	var resp InstallClamavResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse install response: %w", err)
+	}
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {
@@ -1839,6 +2025,11 @@ type CreateContainerRequest struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
+
+	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
+	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
+	// standalone daemon ignores it.
+	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
 
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.
@@ -1879,6 +2070,16 @@ type CreateContainerRequest struct {
 	// Region places the container on a multi-region hosted control plane
 	// (#1606). A standalone/single-region daemon ignores it.
 	Region string `json:"region,omitempty"`
+
+	// Isolation is the IsolationType enum *name* ("ISOLATION_TYPE_VM"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2196).
+	Isolation string `json:"isolation,omitempty"`
+
+	// OSType is the OSType enum *name* ("OS_TYPE_ROCKY_9"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2208).
+	OSType string `json:"osType,omitempty"`
 }
 
 type ResourceLimits struct {
@@ -2228,4 +2429,25 @@ type SystemInfo struct {
 	// whether an external SSH/deploy entrypoint exists and what host it is,
 	// instead of assuming a sentinel that may not exist. See #1011.
 	SSHIngressHost string `json:"sshIngressHost,omitempty"`
+	// CPU budget (#2284): tenant-committed, core-committed and physical
+	// cores plus the admission gate's posture, exactly as the daemon's
+	// SystemInfo carries them (enum by its proto name). CpuAdmissionMode
+	// empty or UNSPECIFIED means the daemon predates the field.
+	TotalCpus             int32   `json:"totalCpus"`
+	CommittedCpuCores     float64 `json:"committedCpuCores"`
+	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
+	CpuAdmissionMode      string  `json:"cpuAdmissionMode,omitempty"`
+	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// StoragePools is each storage pool's fill (#2823), as the daemon's
+	// SystemInfo carries it (int64 as strings, enums by proto name).
+	StoragePools []StoragePoolCapacity `json:"storagePools,omitempty"`
+}
+
+// StoragePoolCapacity mirrors the proto StoragePoolCapacity (#2823).
+type StoragePoolCapacity struct {
+	Pool       string `json:"pool"`
+	Driver     string `json:"driver,omitempty"`
+	UsedBytes  int64  `json:"usedBytes,string"`
+	TotalBytes int64  `json:"totalBytes,string"`
+	Level      string `json:"level,omitempty"`
 }

@@ -28,7 +28,7 @@ func createJumpServerAccountLocal(_, _ string, _ bool) error {
 	return errNoLocalMode
 }
 func cleanupJumpServerAccountLocal(_ string) {}
-func createLocal(_, _, _, _, _, _ string, _ []string, _ map[string]string, _ bool, _ string, _ []string, _ pb.OSType, _ bool, _ client.GitSourceOpts, _ int64, _ int32, _ int64, _ string) (*incus.ContainerInfo, error) {
+func createLocal(_, _, _, _, _, _ string, _ []string, _ map[string]string, _ bool, _ string, _ []string, _ pb.OSType, _ pb.IsolationType, _ bool, _ client.GitSourceOpts, _ int64, _ int32, _ int64, _ string) (*incus.ContainerInfo, error) {
 	return nil, errNoLocalMode
 }
 

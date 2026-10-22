@@ -1,6 +1,10 @@
 package client
 
-import pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+import (
+	"encoding/json"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
 
 // Request payload types for the REST client.
 //
@@ -56,10 +60,13 @@ type createContainerRequest struct {
 	// The generated enum, not a string: json.Marshal emits its numeric
 	// value, which is what the previous map sent and what protojson
 	// accepts on the server side.
-	OSType     pb.OSType `json:"osType"`
-	Monitoring bool      `json:"monitoring"`
-	Pool       string    `json:"pool"`
-	BackendID  string    `json:"backendId"`
+	OSType pb.OSType `json:"osType"`
+	// Same shape as OSType; omitted when UNSPECIFIED so an older daemon
+	// never sees a field it does not know.
+	Isolation  pb.IsolationType `json:"isolation,omitempty"`
+	Monitoring bool             `json:"monitoring"`
+	Pool       string           `json:"pool"`
+	BackendID  string           `json:"backendId"`
 
 	GitSource     *string `json:"gitSource,omitempty"`
 	GitRef        *string `json:"gitRef,omitempty"`
@@ -75,12 +82,17 @@ type createContainerRequest struct {
 	// unless enabled, so a plain create's body is unchanged.
 	TTLSeconds                int64 `json:"ttlSeconds,omitempty"`
 	IdleStopMinutes           int32 `json:"idleStopMinutes,omitempty"`
+	DisableAutoSleep          bool  `json:"disableAutoSleep,omitempty"`
 	DeleteAfterStoppedSeconds int64 `json:"deleteAfterStoppedSeconds,omitempty"`
 
 	// Region places the container on a multi-region hosted control plane
 	// (#1606) — a standalone/single-region daemon ignores it. Absent unless
 	// set, so a plain create's body is unchanged.
 	Region string `json:"region,omitempty"`
+	// Labels are user labels (`--labels k=v`), stored under the daemon's
+	// label prefix; omitted when empty so older daemons see the same body
+	// (#2358).
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // toggleAutoSleepRequest is POST /v1/containers/{name}/autosleep.
@@ -235,6 +247,18 @@ type deployRecipeRequest struct {
 	BackendID  string            `json:"backend_id"`
 	Pool       string            `json:"pool"`
 	Parameters map[string]string `json:"parameters"`
+	// GuardrailInput is the protojson of pb.GuardrailGateInput (the
+	// attestation carries enums and bytes, so it is encoded the way the
+	// grpc-gateway decodes it, not by encoding/json).
+	GuardrailInput json.RawMessage `json:"guardrail_input,omitempty"`
+}
+
+// provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box
+// (#2272): create-or-reuse the skill's box, no token minted, nothing seeded.
+type provisionSkillBoxRequest struct {
+	SkillID   string `json:"skill_id"`
+	BackendID string `json:"backend_id"`
+	Pool      string `json:"pool"`
 }
 
 // runAgentSkillRequest is POST /v1/agent-skills/run. GitSource/GitRef/
@@ -249,6 +273,40 @@ type runAgentSkillRequest struct {
 	GitSource     string `json:"git_source"`
 	GitRef        string `json:"git_ref"`
 	GitCredential string `json:"git_credential"`
+	// TrackerConnection is omitted when empty so an unbound run sends
+	// exactly the body it did before #2042.
+	TrackerConnection string `json:"tracker_connection,omitempty"`
+	// Engine (#2228) is the proto enum's NAME string (e.g.
+	// "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum field —
+	// omitted (so "" never needs translating to AGENT_ENGINE_UNSPECIFIED)
+	// when the caller named no override.
+	Engine string `json:"engine,omitempty"`
+}
+
+// engineJSON converts a typed engine override to the JSON string protojson
+// expects for an enum field: the proto enum's NAME (e.g. "AGENT_ENGINE_
+// CODEX"), or "" for AGENT_ENGINE_UNSPECIFIED so the request's `omitempty`
+// field is dropped entirely rather than sent as the literal unspecified name.
+func engineJSON(e pb.AgentEngine) string {
+	if e == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+		return ""
+	}
+	return e.String()
+}
+
+// engineOverridesJSON converts a per-member engine override map to the
+// map[string]string shape runCrewRequest.EngineOverrides sends — same
+// name-or-empty conversion as engineJSON, applied per entry. A nil map stays
+// nil so an unset EngineOverrides (every pre-#2228 caller) is omitted.
+func engineOverridesJSON(overrides map[string]pb.AgentEngine) map[string]string {
+	if overrides == nil {
+		return nil
+	}
+	out := make(map[string]string, len(overrides))
+	for skillID, e := range overrides {
+		out[skillID] = engineJSON(e)
+	}
+	return out
 }
 
 // enqueueAgentTaskRequest is POST /v1/agent-tasks.
@@ -281,6 +339,10 @@ type runCrewRequest struct {
 	GitSource     string `json:"git_source"`
 	GitRef        string `json:"git_ref"`
 	GitCredential string `json:"git_credential"`
+	// EngineOverrides (#2228) maps skill_id -> the proto enum's NAME string
+	// (e.g. "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum
+	// map value. Omitted when the caller named no override for any member.
+	EngineOverrides map[string]string `json:"engine_overrides,omitempty"`
 }
 
 // addRouteRequest is POST /v1/network/routes.

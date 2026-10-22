@@ -3,7 +3,10 @@ package server
 import (
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -77,6 +80,19 @@ func ResolvePostgresURL() (dsn string, source string, err error) {
 // Returns (password, source) so the caller can log the
 // active source without leaking the password itself.
 func ResolvePostgresPassword() (password string, source string, err error) {
+	password, source, err = resolvePostgresPasswordQuiet()
+	if err == nil && source == "default" {
+		log.Printf("WARNING: Postgres password defaulting to the compiled-in dev value (%q). Set %s or %s for production.",
+			DefaultPostgresPassword, envPostgresPassword, envPostgresPasswordFile)
+	}
+	return password, source, err
+}
+
+// resolvePostgresPasswordQuiet is ResolvePostgresPassword without the
+// default-value warning. NewCoreServices is built several times per start and
+// must resolve the same password the daemon's own connection uses (#2091)
+// without repeating a warning the daemon already logs once.
+func resolvePostgresPasswordQuiet() (password string, source string, err error) {
 	if path := strings.TrimSpace(os.Getenv(envPostgresPasswordFile)); path != "" {
 		b, err := readSecretFile(path, envPostgresPasswordFile)
 		if err != nil {
@@ -87,9 +103,23 @@ func ResolvePostgresPassword() (password string, source string, err error) {
 	if pw := os.Getenv(envPostgresPassword); pw != "" {
 		return pw, "env", nil
 	}
-	log.Printf("WARNING: Postgres password defaulting to the compiled-in dev value (%q). Set %s or %s for production.",
-		DefaultPostgresPassword, envPostgresPassword, envPostgresPasswordFile)
 	return DefaultPostgresPassword, "default", nil
+}
+
+// PostgresDSN builds the connection URL the daemon uses for the core Postgres.
+// User and password go through url.UserPassword, so a character that is
+// meaningful in a URL (@ / : # ? %) is escaped instead of corrupting the host
+// or database (#2091). For the usual alphanumeric values the result is the same
+// string the daemon has always produced, so existing hosts see no change.
+func PostgresDSN(user, password, host string, port int, database string) string {
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(user, password),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:     "/" + database,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String()
 }
 
 // readSecretFile reads a credential file with the same

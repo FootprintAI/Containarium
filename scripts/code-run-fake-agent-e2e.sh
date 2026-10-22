@@ -24,10 +24,8 @@
 # so the streaming assertions MUST go red:
 #   E2E_SABOTAGE=silent-agent E2E_BOX=<box> bash scripts/code-run-fake-agent-e2e.sh; echo $?  # non-zero
 #
-# KNOWN GAP surfaced while writing this: `code status` prints only the
-# "<icon> <name> (pid N, exited)" header line, not the exit code, even though
-# its --help promises one. So a failing agent is indistinguishable from a
-# passing one via `code status`; assertion 5 pins today's behaviour and says so.
+# Assertion 5 proves `code status` surfaces a failing agent's exit code
+# (#2011), and that `code run` itself exits non-zero when the agent does.
 
 set -uo pipefail
 
@@ -170,13 +168,15 @@ if wait_status "$RUN-long" ', running\)' 3 >/dev/null; then fail "4e run still r
 out="$(attach_for 6)"
 assert_contains "4f log stays readable after stop" "$out" 'heartbeat-0'
 
-# ---- 5. failing agent (pins current behaviour, see KNOWN GAP) -------------
+# ---- 5. failing agent (#2011: exit status is now surfaced, not swallowed) -
 echo "== 5. failing agent"
-out="$(code run --name "$RUN-b" --prompt 'please FAIL' 2>&1)"
+out="$(code run --name "$RUN-b" --prompt 'please FAIL' 2>&1)"; rc=$?
 assert_contains "5a failing agent's output still streams" "$out" 'FAKE-AGENT-DONE'
+[ "$rc" -ne 0 ] && ok "5b 'code run' itself exits non-zero when the agent does" \
+  || fail "5b 'code run' exited 0 for a failing agent (rc=$rc)"
 st="$(code status --name "$RUN-b" 2>&1)"
-assert_contains "5b status shows exited" "$st" 'exited'
-if grep -qiE 'exit(ed)? *(code)?[ :=]*1' <<<"$st"; then ok "5c status surfaces exit code 1"; else echo "NOTE 5c status does not surface the exit code (known gap) — flip this to a hard assertion once fixed"; fi
+assert_contains "5c status shows exited" "$st" 'exited'
+assert_contains "5d status surfaces exit code 1" "$st" 'exit_code: 1'
 
 # ---- 6. same-box concurrency ----------------------------------------------
 echo "== 6. concurrent names"

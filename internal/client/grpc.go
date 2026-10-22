@@ -9,6 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -27,10 +28,16 @@ type GRPCClient struct {
 	agentClient   pb.AgentSkillServiceClient
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
+	auditClient   pb.AuditServiceClient // #2415
 	sandboxClient pb.SandboxServiceClient
+	anonClient    pb.AnonymousBoxServiceClient
 	trackerClient pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
+	// guardrailPolicyClient is the server-side guardrail policy (#2368).
+	guardrailPolicyClient pb.GuardrailPolicyServiceClient
+	// retentionClient is the retention policy and legal holds (#2875).
+	retentionClient pb.RetentionServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -94,6 +101,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	crewClient := pb.NewCrewServiceClient(conn)
 	clusterClient := pb.NewClusterServiceClient(conn)
 	sandboxClient := pb.NewSandboxServiceClient(conn)
+	anonClient := pb.NewAnonymousBoxServiceClient(conn)
 	trackerClient := pb.NewTrackerServiceClient(conn)
 	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
@@ -109,9 +117,14 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		agentClient:        agentClient,
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
+		auditClient:        pb.NewAuditServiceClient(conn),
 		sandboxClient:      sandboxClient,
+		anonClient:         anonClient,
 		trackerClient:      trackerClient,
 		modelGatewayClient: modelGatewayClient,
+
+		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
+		retentionClient:       pb.NewRetentionServiceClient(conn),
 	}, nil
 }
 
@@ -147,8 +160,10 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 		info := incus.ContainerInfo{
 			Name:                 container.Name,
 			Username:             container.Username,
+			SSHHost:              container.SshHost,
 			State:                container.State.String(),
 			Labels:               container.Labels,
+			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
 			MonitoringEnabled:    container.MonitoringEnabled,
 			AutoSleepEnabled:     container.AutoSleepEnabled,
 			IdleThresholdMinutes: container.IdleThresholdMinutes,
@@ -177,41 +192,10 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
-
-	req := &pb.CreateContainerRequest{
-		Username: username,
-		Resources: &pb.ResourceLimits{
-			Cpu:           cpu,
-			Memory:        memory,
-			Disk:          disk,
-			StorageClass:  storageClass,
-			MemoryRequest: memoryRequest,
-			CpuRequest:    cpuRequest,
-		},
-		SshKeys:                   sshKeys,
-		Image:                     image,
-		EnablePodman:              enablePodman,
-		Stack:                     stack,
-		Gpus:                      gpus,
-		OsType:                    osType,
-		Monitoring:                monitoring,
-		Pool:                      pool,
-		BackendId:                 backendID,
-		Encrypted:                 enc.Encrypted,
-		TenantId:                  enc.TenantID,
-		GitSource:                 git.Source,
-		GitRef:                    git.Ref,
-		GitCredential:             git.Credential,
-		WorkspacePath:             git.WorkspacePath,
-		TtlSeconds:                ttlSeconds,
-		IdleStopMinutes:           idleStopMinutes,
-		DeleteAfterStoppedSeconds: deleteAfterStoppedSeconds,
-		Region:                    region,
-	}
-
+	req := newCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
 	resp, err := c.client.CreateContainer(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -220,9 +204,12 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:     container.Name,
-		Username: container.Username,
-		State:    container.State.String(),
+		Name:         container.Name,
+		Username:     container.Username,
+		SSHHost:      container.SshHost,
+		State:        container.State.String(),
+		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
 	}
 
 	if container.Network != nil {
@@ -242,6 +229,49 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	}
 
 	return info, nil
+}
+
+// newCreateContainerRequest builds the wire request for CreateContainer;
+// pure, so what the CLI flags turn into is unit-testable (#2358 — labels
+// used to be dropped between the CLI and this request).
+func newCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
+	req := &pb.CreateContainerRequest{
+		Username: username,
+		Resources: &pb.ResourceLimits{
+			Cpu:           cpu,
+			Memory:        memory,
+			Disk:          disk,
+			StorageClass:  storageClass,
+			MemoryRequest: memoryRequest,
+			CpuRequest:    cpuRequest,
+		},
+		SshKeys:                   sshKeys,
+		Image:                     image,
+		EnablePodman:              enablePodman,
+		Stack:                     stack,
+		Gpus:                      gpus,
+		OsType:                    osType,
+		Isolation:                 isolation,
+		Monitoring:                monitoring,
+		Pool:                      pool,
+		BackendId:                 backendID,
+		Encrypted:                 enc.Encrypted,
+		TenantId:                  enc.TenantID,
+		GitSource:                 git.Source,
+		GitRef:                    git.Ref,
+		GitCredential:             git.Credential,
+		WorkspacePath:             git.WorkspacePath,
+		TtlSeconds:                ttlSeconds,
+		IdleStopMinutes:           idleStopMinutes,
+		DisableAutoSleep:          disableAutoSleep,
+		DeleteAfterStoppedSeconds: deleteAfterStoppedSeconds,
+		Region:                    region,
+	}
+
+	if len(labels) > 0 {
+		req.Labels = labels
+	}
+	return req
 }
 
 // ToggleMonitoring enables / disables OTel app telemetry on an
@@ -544,6 +574,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		MonitoringEnabled:    container.MonitoringEnabled,
 		AutoSleepEnabled:     container.AutoSleepEnabled,
 		IdleThresholdMinutes: container.IdleThresholdMinutes,
+		Labels:               container.Labels,
 	}
 
 	if container.Network != nil {
@@ -612,6 +643,25 @@ func (c *GRPCClient) ListCollaborators(ownerUsername string) (*pb.ListCollaborat
 	return resp, nil
 }
 
+// ListBoxRuns lists a box's code-run records via gRPC (#2123).
+func (c *GRPCClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.ListBoxRuns(ctx, &pb.ListBoxRunsRequest{Username: username})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetRuns(), nil
+}
+
+// TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
+// deadline covers the server's follow_seconds wait.
+func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.TailBoxRunLog(ctx, req)
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *GRPCClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -668,6 +718,9 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	info := &incus.ServerInfo{
 		Version:       resp.Info.IncusVersion,
 		KernelVersion: resp.Info.KernelVersion,
+		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
+			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),
 	}
 
 	return info, nil
@@ -737,21 +790,37 @@ func (c *GRPCClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
-func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+// guardrailInput is the dataset and attestation for a guardrail-gated recipe
+// (#2368); nil for an ungated one.
+func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	req := &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		Gpu:        gpu,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: params,
+		RecipeId:       recipeID,
+		Name:           name,
+		Gpu:            gpu,
+		BackendId:      backendID,
+		Pool:           pool,
+		Parameters:     params,
+		GuardrailInput: guardrailInput,
 	}
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy recipe: %w", err)
+	}
+	return resp, nil
+}
+
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now (#2223) — via gRPC.
+func (c *GRPCClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.ListAgentEngines(ctx, &pb.ListAgentEnginesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent engines: %w", err)
 	}
 	return resp, nil
 }
@@ -780,22 +849,61 @@ func (c *GRPCClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 	return resp.Skill, nil
 }
 
+// ProvisionSkillBox creates or reuses a skill's deterministic box
+// (agent-<skill_id>) via gRPC, without running it: no token minted, nothing
+// seeded, no model call (#2272). Lets a human get the box provisioned ahead
+// of any real run, so they can sign in to its coding agent before any
+// inference credential exists.
+func (c *GRPCClient) ProvisionSkillBox(skillID, backendID, pool string) (*pb.ProvisionSkillBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // box deploy can take time
+	defer cancel()
+
+	resp, err := c.agentClient.ProvisionSkillBox(ctx, &pb.ProvisionSkillBoxRequest{
+		SkillId:   skillID,
+		BackendId: backendID,
+		Pool:      pool,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to provision skill box: %w", err)
+	}
+	return resp, nil
+}
+
+// GetSkillBoxCredentialStatus reports, via gRPC, whether a skill's
+// already-provisioned box has a credential its configured coding engine
+// would use — the source NAME only, never a value (#2272, #2030 posture).
+func (c *GRPCClient) GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBoxCredentialStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.GetSkillBoxCredentialStatus(ctx, &pb.GetSkillBoxCredentialStatusRequest{SkillId: skillID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get skill box credential status: %w", err)
+	}
+	return resp, nil
+}
+
 // RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
 // and returns the box via gRPC. gitSource/gitRef/gitCredential (#1859) fetch a
 // repo into the run's workspace before the agent starts; empty gitSource
-// means no fetch.
-func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.RunAgentSkillResponse, error) {
+// means no fetch. trackerConnection (#2042) binds the run to one of the
+// caller's tracker connections; empty means no binding. engine (#2228) wins
+// over the skill's own manifest engine; AGENT_ENGINE_UNSPECIFIED means "use
+// the manifest", unchanged pre-#2228 behavior.
+func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string, engine pb.AgentEngine) (*pb.RunAgentSkillResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
 	defer cancel()
 
 	req := &pb.RunAgentSkillRequest{
-		SkillId:       skillID,
-		BackendId:     backendID,
-		Pool:          pool,
-		InputJson:     inputJSON,
-		GitSource:     gitSource,
-		GitRef:        gitRef,
-		GitCredential: gitCredential,
+		SkillId:           skillID,
+		BackendId:         backendID,
+		Pool:              pool,
+		InputJson:         inputJSON,
+		GitSource:         gitSource,
+		GitRef:            gitRef,
+		GitCredential:     gitCredential,
+		TrackerConnection: trackerConnection,
+		Engine:            engine,
 	}
 	resp, err := c.agentClient.RunAgentSkill(ctx, req)
 	if err != nil {
@@ -877,17 +985,21 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 // RunCrew launches a crew via gRPC. gitSource/gitRef/gitCredential (#1554)
 // are fetched into EVERY member's own per-run workspace — see
 // RunCrewRequest.git_source in proto/containarium/v1/agent.proto.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error) {
+// engineOverrides (#2228), keyed by skill_id, wins over that member's own
+// manifest engine; a member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps
+// its manifest's own choice, unchanged pre-#2228 behavior.
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
-		CrewId:        crewID,
-		BackendId:     backendID,
-		Pool:          pool,
-		InputJson:     inputJSON,
-		GitSource:     gitSource,
-		GitRef:        gitRef,
-		GitCredential: gitCredential,
+		CrewId:          crewID,
+		BackendId:       backendID,
+		Pool:            pool,
+		InputJson:       inputJSON,
+		GitSource:       gitSource,
+		GitRef:          gitRef,
+		GitCredential:   gitCredential,
+		EngineOverrides: engineOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)
@@ -904,6 +1016,18 @@ func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("failed to get crew run: %w", err)
 	}
 	return resp.Run, nil
+}
+
+// ValidateTaskGraph checks a task graph against the daemon's catalogs via
+// gRPC (#2803).
+func (c *GRPCClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.crewClient.ValidateTaskGraph(ctx, &pb.ValidateTaskGraphRequest{Graph: g})
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate task graph: %w", err)
+	}
+	return resp, nil
 }
 
 // TailRunLog reads one window of a run's journal via gRPC (#2096). The
@@ -1114,6 +1238,100 @@ func (c *GRPCClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 		return nil, fmt.Errorf("migrate to envelope: %w", err)
 	}
 	return resp, nil
+}
+
+// GetGuardrailPolicy reads the server-side guardrail policy via gRPC (#2368).
+func (c *GRPCClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.GetGuardrailPolicy(ctx, &pb.GetGuardrailPolicyRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail policy: %w", err)
+	}
+	return resp, nil
+}
+
+// GetGuardrailStatus reads the effective response guardrail policy via gRPC
+// (#2737).
+func (c *GRPCClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.GetGuardrailStatus(ctx, &pb.GetGuardrailStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail status: %w", err)
+	}
+	return resp, nil
+}
+
+// SetGuardrailPolicy replaces the server-side guardrail policy via gRPC
+// (admin only).
+func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailPolicy(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail policy: %w", err)
+	}
+	return resp, nil
+}
+
+// SetGuardrailBaselineMode switches the baseline response scan between LOG
+// and BLOCK via gRPC (#2738; admin only).
+func (c *GRPCClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailBaselineMode(ctx, &pb.SetGuardrailBaselineModeRequest{Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail baseline mode: %w", err)
+	}
+	return resp, nil
+}
+
+// retentionCall runs one RetentionService call with the usual timeout (#2875).
+func retentionCall[T any](op string, call func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := call(ctx)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", op, err)
+	}
+	return resp, nil
+}
+
+// GetRetentionPolicy reads the retention windows via gRPC (admin only).
+func (c *GRPCClient) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
+	return retentionCall("get retention policy", func(ctx context.Context) (*pb.GetRetentionPolicyResponse, error) {
+		return c.retentionClient.GetRetentionPolicy(ctx, &pb.GetRetentionPolicyRequest{})
+	})
+}
+
+// SetRetentionPolicy changes retention windows via gRPC (admin only).
+func (c *GRPCClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	return retentionCall("set retention policy", func(ctx context.Context) (*pb.SetRetentionPolicyResponse, error) {
+		return c.retentionClient.SetRetentionPolicy(ctx, req)
+	})
+}
+
+// ListLegalHolds lists the active legal holds via gRPC (admin only).
+func (c *GRPCClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
+	return retentionCall("list legal holds", func(ctx context.Context) (*pb.ListLegalHoldsResponse, error) {
+		return c.retentionClient.ListLegalHolds(ctx, &pb.ListLegalHoldsRequest{})
+	})
+}
+
+// SetLegalHold places a legal hold on an org via gRPC (admin only).
+func (c *GRPCClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	return retentionCall("set legal hold", func(ctx context.Context) (*pb.SetLegalHoldResponse, error) {
+		return c.retentionClient.SetLegalHold(ctx, req)
+	})
+}
+
+// ReleaseLegalHold releases an org's legal hold via gRPC (admin only).
+func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error) {
+	return retentionCall("release legal hold", func(ctx context.Context) (*pb.ReleaseLegalHoldResponse, error) {
+		return c.retentionClient.ReleaseLegalHold(ctx, &pb.ReleaseLegalHoldRequest{OrgId: orgID})
+	})
 }
 
 // ListApps lists all applications via gRPC
@@ -1595,11 +1813,12 @@ func (c *GRPCClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (stri
 
 // DispatchTrackerIssues runs one dispatcher tick (#2022). Same long
 // deadline as the HTTP transport: the tick provisions boxes
-// synchronously.
-func (c *GRPCClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
+// synchronously. maxStarts bounds the runs the tick starts (#2270); 0
+// is unlimited.
+func (c *GRPCClient) DispatchTrackerIssues(username, connection string, maxStarts int32) (*pb.DispatchTrackerIssuesResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), TrackerDispatchTimeout)
 	defer cancel()
-	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection, MaxStarts: maxStarts})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch tracker issues: %w", err)
 	}
@@ -1728,4 +1947,41 @@ func (c *GRPCClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, fmt.Errorf("create tracker issue: %w", err)
 	}
 	return resp.Issue, nil
+}
+
+// --- AnonymousBoxService (#2197) ---------------------------------------
+
+// EnsureAnonymousBox resolves or creates the anonymous VM for a key.
+func (c *GRPCClient) EnsureAnonymousBox(req *pb.EnsureAnonymousBoxRequest) (*pb.EnsureAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // a cold VM boot
+	defer cancel()
+	return c.anonClient.EnsureAnonymousBox(ctx, req)
+}
+
+// ClaimAnonymousBox binds an anonymous box to a tenant via its claim token.
+func (c *GRPCClient) ClaimAnonymousBox(req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return c.anonClient.ClaimAnonymousBox(ctx, req)
+}
+
+// GetAnonymousDoorConfig returns the door's state and fixed limits.
+func (c *GRPCClient) GetAnonymousDoorConfig() (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.GetAnonymousDoorConfig(ctx, &pb.GetAnonymousDoorConfigRequest{})
+}
+
+// SetAnonymousDoorConfig flips the kill switch / edits bans.
+func (c *GRPCClient) SetAnonymousDoorConfig(cfg *pb.AnonymousDoorConfig) (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.SetAnonymousDoorConfig(ctx, &pb.SetAnonymousDoorConfigRequest{Config: cfg})
+}
+
+// ListAnonymousBoxes lists every live anonymous box on the daemon.
+func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
 }

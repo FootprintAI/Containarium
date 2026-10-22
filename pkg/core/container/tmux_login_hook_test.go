@@ -19,7 +19,8 @@ type provisionRecorder struct {
 	writes       map[string][]byte
 	modes        map[string]string
 	writeFileErr error
-	moshExecErr  error // returned by the separate mosh install script (RHEL/EPEL)
+	failPath     string // when set, only a WriteFile to this path returns writeFileErr
+	moshExecErr  error  // returned by the separate mosh install script (RHEL/EPEL)
 }
 
 func (b *provisionRecorder) ExecWithExitCode(_ string, _ []string) (string, string, int, error) {
@@ -41,7 +42,7 @@ func isMoshInstall(c []string) bool {
 }
 
 func (b *provisionRecorder) WriteFile(_ string, path string, content []byte, mode string) error {
-	if b.writeFileErr != nil {
+	if b.writeFileErr != nil && (b.failPath == "" || b.failPath == path) {
 		return b.writeFileErr
 	}
 	if b.writes == nil {
@@ -106,7 +107,7 @@ func TestInstallPackages_InstallsTmuxMoshAndLoginHook(t *testing.T) {
 // A box without the hook is still a working box: a failed write must not
 // fail provisioning.
 func TestInstallPackages_LoginHookWriteFailureIsNotFatal(t *testing.T) {
-	b := &provisionRecorder{writeFileErr: errors.New("push failed")}
+	b := &provisionRecorder{writeFileErr: errors.New("push failed"), failPath: tmuxLoginHookPath}
 	if err := NewWithBackend(b).installPackages("box-container", false, "", nil, "", ostype.Debian); err != nil {
 		t.Fatalf("installPackages failed on a hook write error: %v", err)
 	}

@@ -46,6 +46,52 @@ func (m *Manager) recordFailover() {
 	m.failoverTotal.Add(1)
 }
 
+// recordFailback counts one switch back to a preferred primary (#2476).
+func (m *Manager) recordFailback() {
+	m.failbackTotal.Add(1)
+}
+
+// FailbackCount returns the number of failbacks to a preferred primary.
+func (m *Manager) FailbackCount() int64 {
+	return m.failbackTotal.Load()
+}
+
+// primaryIsPreferred reports whether the current primary is the best-priority
+// backend registered (healthy or not). False means the sentinel is sitting on a
+// fallback, which is what an alert should page on if it lasts more than a few
+// minutes: it is the condition #2476 left in place indefinitely.
+func (m *Manager) primaryIsPreferred() bool {
+	m.mu.RLock()
+	cur := m.primary
+	m.mu.RUnlock()
+	if cur == nil {
+		return true // maintenance / nothing elected: not "on a fallback"
+	}
+	for _, b := range m.backends.All() {
+		if b.Priority < cur.Priority {
+			return false
+		}
+	}
+	return true
+}
+
+// renderFailbackMetrics is the exposition for the failback counter and the
+// preferred-primary gauge. Pure, like renderBackendMetrics.
+func renderFailbackMetrics(failbacks int64, preferred bool) string {
+	var b bytes.Buffer
+	fmt.Fprint(&b, "# HELP sentinel_failback_total Total switches back to a preferred primary after it recovered.\n")
+	fmt.Fprint(&b, "# TYPE sentinel_failback_total counter\n")
+	fmt.Fprintf(&b, "sentinel_failback_total %d\n", failbacks)
+	v := 0
+	if preferred {
+		v = 1
+	}
+	fmt.Fprint(&b, "# HELP sentinel_primary_preferred 1 if the active primary is the best-priority registered backend, 0 if the sentinel is on a fallback.\n")
+	fmt.Fprint(&b, "# TYPE sentinel_primary_preferred gauge\n")
+	fmt.Fprintf(&b, "sentinel_primary_preferred %d\n", v)
+	return b.String()
+}
+
 // FailoverCount returns the number of primary-backend failovers observed.
 func (m *Manager) FailoverCount() int64 {
 	return m.failoverTotal.Load()

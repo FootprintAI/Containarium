@@ -25,6 +25,11 @@
 # the `stop` is a no-op, the running daemon keeps the binary open, and the
 # `cp` fails with "Text file busy".
 #
+# This script only swaps the binary. It never touches the daemon's persisted
+# configuration (`daemon_config`, including `base_domain`). For bringing up a
+# new BYOC backend, and the checks to run after an upgrade, see
+# docs/BYOC-BACKEND-BRINGUP.md.
+#
 
 set -euo pipefail
 

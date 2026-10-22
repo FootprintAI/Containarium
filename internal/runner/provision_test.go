@@ -225,6 +225,28 @@ func TestValidateOptions(t *testing.T) {
 			opts:    Options{Repo: "owner/repo", PAT: "ghp_x", Count: 3},
 			wantErr: "",
 		},
+		{
+			name:    "runner group on an organization target",
+			opts:    Options{Repo: "footprintai", PAT: "ghp_x", Count: 1, RunnerGroup: "gpu runners"},
+			wantErr: "",
+		},
+		{
+			// Runner groups exist only at organization scope; GitHub has no
+			// repository-level group to register into.
+			name:    "runner group on a repository target",
+			opts:    Options{Repo: "owner/repo", PAT: "ghp_x", Count: 1, RunnerGroup: "gpu"},
+			wantErr: "runner group requires an organization target",
+		},
+		{
+			name:    "blank runner group",
+			opts:    Options{Repo: "footprintai", PAT: "ghp_x", Count: 1, RunnerGroup: "   "},
+			wantErr: "runner group must not be blank",
+		},
+		{
+			name:    "runner group with a control character",
+			opts:    Options{Repo: "footprintai", PAT: "ghp_x", Count: 1, RunnerGroup: "gpu\nevil"},
+			wantErr: "runner group must not contain control characters",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -237,6 +259,51 @@ func TestValidateOptions(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestProvision_RunnerGroupEnv pins how the runner group reaches the box:
+// an org target with a group passes RUNNER_GROUP to the install script, and a
+// target without one passes no RUNNER_GROUP at all, so the repository path's
+// install env stays exactly what it was before runner groups existed.
+func TestProvision_RunnerGroupEnv(t *testing.T) {
+	cases := []struct {
+		name      string
+		repo      string
+		group     string
+		wantGroup string
+		wantSet   bool
+	}{
+		{name: "org target with a group", repo: "footprintai", group: "gpu runners", wantGroup: "gpu runners", wantSet: true},
+		{name: "org target without a group", repo: "footprintai", wantSet: false},
+		{name: "repo target", repo: "footprintai/containarium", wantSet: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installer := &fakeInstaller{alreadyInstalled: map[string]bool{}}
+			gh := &fakeGitHub{registerOnAttempt: map[string]int{"ci-runner-1": 1}}
+			_, err := Provision(context.Background(), Deps{
+				Boxes:  &fakeBoxes{existing: map[string]bool{}},
+				SSH:    installer,
+				GitHub: gh,
+				Clock:  newFakeClock(),
+			}, Options{
+				Repo:                tc.repo,
+				PAT:                 "ghp_test",
+				Count:               1,
+				RunnerGroup:         tc.group,
+				RegistrationTimeout: 30 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			env := installer.gotEnv["ci-runner-1"]
+			got, set := env["RUNNER_GROUP"]
+			if set != tc.wantSet || got != tc.wantGroup {
+				t.Fatalf("RUNNER_GROUP = %q (set=%v), want %q (set=%v); env=%+v",
+					got, set, tc.wantGroup, tc.wantSet, env)
 			}
 		})
 	}

@@ -50,24 +50,6 @@ func TestApplyQuarantine(t *testing.T) {
 	}
 }
 
-func TestReleaseQuarantine(t *testing.T) {
-	// Removes ONLY our quarantine rule, keeps an operator's 0.0.0.0/0 and others.
-	rules := []*pb.NetworkPolicyDenyRule{
-		{Cidr: "1.2.3.4/32", Note: "CVE-x"},
-		{Cidr: quarantineCIDR, Note: quarantineNote}, // ours
-	}
-	got := releaseQuarantine(rules)
-	if len(got) != 1 || got[0].GetCidr() != "1.2.3.4/32" {
-		t.Fatalf("release should drop only the quarantine rule: %+v", denyCidrs(got))
-	}
-
-	// Operator's own 0.0.0.0/0 (different note) survives release.
-	opRules := []*pb.NetworkPolicyDenyRule{{Cidr: quarantineCIDR, Note: "operator block"}}
-	if got := releaseQuarantine(opRules); len(got) != 1 {
-		t.Fatalf("operator's 0.0.0.0/0 deny must survive release: %+v", denyCidrs(got))
-	}
-}
-
 // fakeMutator records the deny rules after each mutation, applying the mutator
 // to its current state (like the real atomic store).
 type fakeMutator struct {
@@ -101,10 +83,15 @@ func TestAutoQuarantine_OnScanResult(t *testing.T) {
 		t.Fatalf("re-infected should not duplicate: %+v", denyCidrs(f.rules))
 	}
 
-	// clean → released.
+	// clean → NOT released (#2631): the verdict is produced inside the tenant's
+	// own box, so a compromised box must not be able to lift its own quarantine.
+	callsBefore := f.calls
 	q.OnScanResult("alice-container", "alice", "clean")
-	if len(f.rules) != 0 {
-		t.Fatalf("clean should release quarantine: %+v", denyCidrs(f.rules))
+	if len(f.rules) != 1 || f.rules[0].GetNote() != quarantineNote {
+		t.Fatalf("clean must leave the quarantine in place: %+v", denyCidrs(f.rules))
+	}
+	if f.calls != callsBefore {
+		t.Errorf("clean must not touch the store (calls %d→%d)", callsBefore, f.calls)
 	}
 
 	// unknown status / empty tenant → no store call.

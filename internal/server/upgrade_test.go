@@ -154,3 +154,111 @@ func TestTriggerUpgrade_GithubTag_DoesNotRequireAutoUpdater(t *testing.T) {
 	}
 	t.Fatal("job never reached a terminal \"failed\" status")
 }
+
+// fakeSentinel serves /containarium/checksum and /containarium/version the way
+// a sentinel does. versionHits counts version lookups so tests can assert the
+// daemon-side cache. #2171.
+func fakeSentinel(t *testing.T, checksum, servedVersion string, versionHits *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/containarium/checksum":
+			_, _ = w.Write([]byte(checksum))
+		case "/containarium/version":
+			if versionHits != nil {
+				*versionHits++
+			}
+			if servedVersion == "" {
+				http.NotFound(w, r) // an older sentinel without the route
+				return
+			}
+			_, _ = w.Write([]byte(`{"version":"` + servedVersion + `","checksum":"` + checksum + `"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAutoUpdater_ServedVersion_CachedBriefly(t *testing.T) {
+	hits := 0
+	srv := fakeSentinel(t, "abc", "0.91.1", &hits)
+	u := NewAutoUpdater(srv.URL, "/nonexistent", time.Hour)
+
+	for i := 0; i < 3; i++ {
+		v, err := u.ServedVersion(context.Background())
+		if err != nil || v != "0.91.1" {
+			t.Fatalf("ServedVersion = %q, %v; want 0.91.1", v, err)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("sentinel version hits = %d, want 1 (cached)", hits)
+	}
+}
+
+// An older sentinel has no /containarium/version: unknown, not a failure that
+// blocks anything.
+func TestAutoUpdater_ServedVersion_OldSentinel(t *testing.T) {
+	srv := fakeSentinel(t, "abc", "", nil)
+	u := NewAutoUpdater(srv.URL, "/nonexistent", time.Hour)
+	if v, err := u.ServedVersion(context.Background()); err == nil {
+		t.Fatalf("want error from an old sentinel, got %q", v)
+	}
+}
+
+// Sentinel path: the response and the job both name the sentinel-served
+// version as the target, including when the job ends as a noop.
+func TestTriggerUpgrade_SentinelPath_ReportsTargetVersion(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := dir + "/containariumd"
+	if err := os.WriteFile(binaryPath, []byte("current build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := checksumFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := fakeSentinel(t, sum, "0.91.1", nil) // checksum matches → noop, no swap
+
+	s := &ContainerServer{}
+	s.SetAutoUpdater(NewAutoUpdater(srv.URL, binaryPath, time.Hour))
+
+	resp, err := s.TriggerUpgrade(adminUpgradeCtx(), &pb.TriggerUpgradeRequest{})
+	if err != nil {
+		t.Fatalf("TriggerUpgrade: %v", err)
+	}
+	if resp.TargetVersion != "0.91.1" {
+		t.Fatalf("response target_version = %q, want 0.91.1", resp.TargetVersion)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := s.GetUpgradeStatus(adminUpgradeCtx(), &pb.GetUpgradeStatusRequest{UpgradeId: resp.UpgradeId})
+		if err != nil {
+			t.Fatalf("GetUpgradeStatus: %v", err)
+		}
+		if st.Status == "noop" {
+			if st.TargetVersion != "0.91.1" {
+				t.Fatalf("status target_version = %q, want 0.91.1", st.TargetVersion)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("job never reached noop")
+}
+
+func TestUpgradeTargetVersion_GithubTag(t *testing.T) {
+	s := &ContainerServer{}
+	if got := s.upgradeTargetVersion(context.Background(), "v0.99.0"); got != "0.99.0" {
+		t.Fatalf("target for github_tag v0.99.0 = %q, want 0.99.0", got)
+	}
+}
+
+func TestUpgradeTargetVersion_NoSentinel(t *testing.T) {
+	s := &ContainerServer{}
+	if got := s.upgradeTargetVersion(context.Background(), ""); got != "" {
+		t.Fatalf("target with no auto-updater = %q, want empty", got)
+	}
+}

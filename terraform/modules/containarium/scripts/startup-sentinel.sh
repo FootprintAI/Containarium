@@ -166,7 +166,7 @@ done
 # Install sshpiper — SSH reverse proxy with built-in fail-to-ban
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
-SSHPIPER_VERSION="v1.5.3"
+SSHPIPER_VERSION="v1.6.1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
@@ -235,6 +235,83 @@ reconcile_sshpiper_service() {
 
 reconcile_sshpiper_service
 
+# reconcile_sshpiper_anon_service is the same live-metadata reconcile for the
+# anonymous-box door's own sshpiperd (sshpiper-anon.service, #2198), keyed on
+# "sshpiper-anon-service-unit". That key exists only when Terraform's
+# anon_door_addr is set: a 404 means "no door" — disable and remove the unit
+# if one is installed — so turning the door off is a terraform apply too.
+reconcile_sshpiper_anon_service() {
+    http_code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || {
+        echo "WARNING: failed to fetch sshpiper-anon-service-unit metadata; leaving sshpiper-anon.service as-is"
+        return 0
+    }
+    if [ "$http_code" = "404" ]; then
+        if [ -f /etc/systemd/system/sshpiper-anon.service ]; then
+            systemctl disable --now sshpiper-anon >/dev/null 2>&1 || true
+            rm -f /etc/systemd/system/sshpiper-anon.service
+            systemctl daemon-reload
+            echo "sshpiper-anon.service removed (door disabled)"
+        fi
+        return 0
+    fi
+    if [ "$http_code" != "200" ]; then
+        echo "WARNING: sshpiper-anon-service-unit metadata returned HTTP $http_code; leaving sshpiper-anon.service as-is"
+        return 0
+    fi
+    desired="$(cat /tmp/sshpiper-anon.unit)"
+    if [ -f /etc/systemd/system/sshpiper-anon.service ] && [ "$(cat /etc/systemd/system/sshpiper-anon.service)" = "$desired" ]; then
+        return 0
+    fi
+    printf '%s' "$desired" > /etc/systemd/system/sshpiper-anon.service
+    systemctl daemon-reload
+    # Unlike sshpiper.service it needs no seeded config.yaml, so it can start
+    # as soon as it is installed.
+    systemctl enable --now sshpiper-anon >/dev/null 2>&1 || true
+    if systemctl is-active --quiet sshpiper-anon; then
+        systemctl restart sshpiper-anon
+        echo "sshpiper-anon.service content changed; reloaded and restarted"
+    fi
+}
+
+reconcile_sshpiper_anon_service
+
+# SSH session sink rotation + retention (#2415, ISO 27001 A.8.15).
+# The sshpiperd ssh-session-plugin appends one JSONL record per accepted/closed
+# session to this file; the shipper (inside `containarium sentinel`) copies each
+# record into the owning backend's tamper-evident audit chain. This stanza only
+# bounds the LOCAL copy: without it the file grows without limit and no
+# retention period can be stated.
+#
+#  - `create` + a SIGHUP to the plugin (which reopens its sink). NOT
+#    copytruncate: that loses records written between the copy and the
+#    truncate, and replaces no inode, so the shipper could not tell the file
+#    had rotated.
+#  - delaycompress keeps the just-rotated file (.1) uncompressed for one more
+#    cycle, which is the file the shipper reads to finish its tail.
+#  - The pkill pattern is ANCHORED: sshpiperd's own command line contains the
+#    plugin's, and it must not receive the signal. It matches both writers:
+#    ssh-authz-plugin appends enforced denials to the same file (#2520).
+#  - Retention = `rotate N` with `daily`, i.e. N days. Set via the Terraform
+#    variable ssh_session_log_retention_days (default 90).
+cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
+/var/log/containarium/ssh-sessions.jsonl {
+    daily
+    rotate ${ssh_session_log_retention_days}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 root root
+    postrotate
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-ban-plugin .*--records-file' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-authz-plugin .*--ssh-authz-enforce' || true
+    endscript
+}
+LOGROTATE_EOF
+chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
+
 # Periodic reconcile timer: re-runs reconcile_sshpiper_service every 6h so a
 # terraform-side tuning change reaches this sentinel without waiting for a
 # reboot/recreation (issue #933).
@@ -256,6 +333,38 @@ fi
 RECONCILE_EOF
 chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
 
+# Door unit (#2198): same reconcile, separate script so a metadata fetch
+# failure on one never blocks the other.
+cat > /usr/local/bin/reconcile-sshpiper-anon-service.sh <<'RECONCILE_EOF'
+#!/bin/bash
+set -euo pipefail
+unit=/etc/systemd/system/sshpiper-anon.service
+code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || exit 0
+if [ "$code" = "404" ]; then
+    if [ -f "$unit" ]; then
+        systemctl disable --now sshpiper-anon >/dev/null 2>&1 || true
+        rm -f "$unit"
+        systemctl daemon-reload
+        logger -t sshpiper-reconcile "sshpiper-anon.service removed (door disabled)"
+    fi
+    exit 0
+fi
+[ "$code" = "200" ] || exit 0
+desired="$(cat /tmp/sshpiper-anon.unit)"
+if [ -f "$unit" ] && [ "$(cat "$unit")" = "$desired" ]; then
+    exit 0
+fi
+printf '%s' "$desired" > "$unit"
+systemctl daemon-reload
+systemctl enable --now sshpiper-anon >/dev/null 2>&1 || true
+if systemctl is-active --quiet sshpiper-anon; then
+    systemctl restart sshpiper-anon
+    logger -t sshpiper-reconcile "sshpiper-anon.service content changed; reloaded and restarted"
+fi
+RECONCILE_EOF
+chmod +x /usr/local/bin/reconcile-sshpiper-anon-service.sh
+
 cat > /etc/systemd/system/sshpiper-reconcile.service <<'EOF'
 [Unit]
 Description=Reconcile sshpiper.service against current instance metadata (issue #933)
@@ -263,6 +372,7 @@ Description=Reconcile sshpiper.service against current instance metadata (issue 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/reconcile-sshpiper-service.sh
+ExecStart=/usr/local/bin/reconcile-sshpiper-anon-service.sh
 EOF
 
 cat > /etc/systemd/system/sshpiper-reconcile.timer <<'EOF'

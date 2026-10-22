@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
+	"github.com/footprintai/containarium/pkg/core/taskgraph"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -124,6 +125,20 @@ func (s *CrewServer) GetCrew(ctx context.Context, req *pb.GetCrewRequest) (*pb.G
 	return &pb.GetCrewResponse{Crew: crew}, nil
 }
 
+// ValidateTaskGraph checks a task graph against this daemon's crew and skill
+// catalogs (#2803) — the same taskgraph.Validate `containarium crew plan
+// validate` runs locally against the embedded catalogs.
+func (s *CrewServer) ValidateTaskGraph(ctx context.Context, req *pb.ValidateTaskGraphRequest) (*pb.ValidateTaskGraphResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeCrewsRead); err != nil {
+		return nil, err
+	}
+	res, err := taskgraph.Validate(req.GetGraph(), s.skills, s.catalog)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &pb.ValidateTaskGraphResponse{Order: res.Order, Depth: uint32(res.Depth)}, nil // #nosec G115 -- Depth <= taskgraph.MaxDepth
+}
+
 // RunCrew validates a crew's topology, provisions each member's box under one
 // trace_id, and records the run. Gated on crews:run; box provisioning reuses
 // RunAgentSkill, so the caller also needs agents:run + containers:write.
@@ -197,12 +212,22 @@ type crewRunDeps struct {
 // hand-off between members is a commit on a branch, so two members never
 // write the same file at once.
 func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
-	containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID,
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
+	// #2228: a per-member override in the request (keyed by skill_id) wins
+	// over that member's own manifest `engine` field — same mechanism as
+	// RunAgentSkillRequest.engine, applied once per member. A member with no
+	// entry gets the map's zero value, AGENT_ENGINE_UNSPECIFIED, which
+	// agentengine.Override treats as "no override".
+	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id]}
+	containerName, _, lease, gitCommit, _, engineRes, err := s.agents.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, "", runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "", opts)
 	if err != nil {
 		return runlease.Lease{}, "", err
 	}
-	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id)
+	// #2222: each member resolves its OWN engine from its OWN manifest (or
+	// this request's override, #2228) — a crew whose members name two
+	// different engines gets two members on two engines, each with its own
+	// provider-bound gateway token.
+	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id, engineRes, skill.GetModel())
 	return lease, gitCommit, nil
 }
 

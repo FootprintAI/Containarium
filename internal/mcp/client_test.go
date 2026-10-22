@@ -696,3 +696,38 @@ func TestTriggerSecurityScan_WirePayloads(t *testing.T) {
 		})
 	}
 }
+
+// check_for_updates must surface what an upgrade would actually install (the
+// sentinel-served version) and flag a sentinel behind GitHub. #2171.
+func TestHandleCheckForUpdates_ShowsSentinelTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"latestRelease":"v0.91.1","currentVersion":"0.90.1","updateAvailable":true,"targetVersion":"0.90.1"}`))
+	}))
+	defer server.Close()
+
+	out, err := handleCheckForUpdates(NewClient(server.URL, "test-token"), nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Sentinel serves:  v0.90.1")
+	assert.Contains(t, out, "sentinel fetch-release --tag v0.91.1")
+}
+
+func TestHandleUpgradeBackend_ShowsTargetVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"upgradeId":"upg-1","status":"in_progress","currentVersion":"0.90.1","targetVersion":"0.91.1"}`))
+	}))
+	defer server.Close()
+
+	out, err := handleUpgradeBackend(NewClient(server.URL, "test-token"), map[string]interface{}{})
+	require.NoError(t, err)
+	assert.Contains(t, out, "to version:   0.91.1")
+}
+
+// #2759: the create request carries the auto-sleep opt-out only when set.
+func TestCreateContainerRequest_DisableAutoSleepWire(t *testing.T) {
+	off, err := json.Marshal(CreateContainerRequest{Username: "alice"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(off), "disableAutoSleep")
+	on, err := json.Marshal(CreateContainerRequest{Username: "alice", DisableAutoSleep: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(on), `"disableAutoSleep":true`)
+}

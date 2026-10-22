@@ -65,7 +65,11 @@ resource "google_compute_instance" "sentinel" {
     # change here (e.g. failtoban's --max-failures/--ban-duration) silently
     # never reached already-running sentinels (issue #933) — some sentinels
     # kept running months-stale, far more aggressive settings indefinitely.
-    sshpiper-service-unit = file("${path.module}/scripts/sshpiper.service.tmpl")
+    sshpiper-service-unit = local.sshpiper_service_unit
+    # The anonymous-box door's unit, same live-metadata reconcile as above
+    # (#2198). Present only when the door is configured; the startup script
+    # treats an absent key as "disable and remove the unit".
+    sshpiper-anon-service-unit = local.sshpiper_anon_service_unit
     startup-script = templatefile("${path.module}/scripts/startup-sentinel.sh", {
       admin_users             = keys(var.admin_ssh_keys)
       containarium_version    = var.containarium_version
@@ -77,6 +81,9 @@ resource "google_compute_instance" "sentinel" {
       sentinel_auth_secret    = var.sentinel_auth_secret
       sentinel_admin_secret   = var.sentinel_admin_secret
       enable_peer_mtls        = var.enable_peer_mtls
+
+      # Local SSH session sink retention (#2415); its own alignment group.
+      ssh_session_log_retention_days = var.ssh_session_log_retention_days
     })
   }
 

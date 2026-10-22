@@ -20,6 +20,10 @@ type MeterRow struct {
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	CachedTokens int64  `json:"cached_tokens"`
+	// BlockedCalls counts the calls above whose response the inbound scan
+	// blocked (#2452). Their tokens are included in the totals: the provider
+	// billed for them, so quota and spend must see them.
+	BlockedCalls int64 `json:"blocked_calls,omitempty"`
 }
 
 // Meter is the in-memory per-tenant model-token writer the metering plane lacks
@@ -34,6 +38,15 @@ type Meter struct {
 func NewMeter() *Meter { return &Meter{rows: map[meterKey]*MeterRow{}} }
 
 func (m *Meter) record(tenant, skill, provider string, u Usage) {
+	m.add(tenant, skill, provider, u, false)
+}
+
+// recordBlocked meters a call whose response the inbound scan blocked.
+func (m *Meter) recordBlocked(tenant, skill, provider string, u Usage) {
+	m.add(tenant, skill, provider, u, true)
+}
+
+func (m *Meter) add(tenant, skill, provider string, u Usage, blocked bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := meterKey{tenant, skill, provider, u.Model}
@@ -43,6 +56,9 @@ func (m *Meter) record(tenant, skill, provider string, u Usage) {
 		m.rows[k] = r
 	}
 	r.Calls++
+	if blocked {
+		r.BlockedCalls++
+	}
 	r.InputTokens += u.InputTokens
 	r.OutputTokens += u.OutputTokens
 	r.CachedTokens += u.CachedTokens

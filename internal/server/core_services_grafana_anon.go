@@ -17,7 +17,14 @@ const grafanaIniPath = "/etc/grafana/grafana.ini"
 // (see docs/security/multi-tenant-isolation.md), so an anonymous Viewer
 // role would let any tenant read platform dashboards with no credential at
 // all (#2079). Dashboards are reached through Caddy with a login.
-func renderGrafanaIni(postgresIP, dbUser, dbPassword string) string {
+func renderGrafanaIni(postgresIP, dbUser, dbPassword, adminPassword string) string {
+	// An empty adminPassword omits the key: Grafana then uses its own default
+	// login and prompts for a change at first login, rather than this template
+	// shipping a literal one (#2091).
+	adminLine := ""
+	if adminPassword != "" {
+		adminLine = "admin_password = " + grafanaIniValue(adminPassword) + "\n"
+	}
 	return fmt.Sprintf(`[database]
 type = postgres
 host = %s:5432
@@ -32,8 +39,7 @@ conn_max_lifetime = 14400
 [security]
 allow_embedding = true
 admin_user = admin
-admin_password = containarium
-
+%s
 [auth.anonymous]
 enabled = false
 
@@ -44,7 +50,7 @@ default_theme = light
 http_port = 3000
 root_url = %%(protocol)s://%%(domain)s/grafana/
 serve_from_sub_path = true
-`, postgresIP, dbUser, dbPassword)
+`, postgresIP, dbUser, grafanaIniValue(dbPassword), adminLine)
 }
 
 // grafanaAnonymousEnabled reports the value of [auth.anonymous] enabled in
@@ -144,5 +150,6 @@ func hardenDetectedGrafana(cs *CoreServices, be incus.Backend) *CoreServices {
 		cs = NewCoreServices(be, CoreServicesConfig{})
 	}
 	cs.backfillGrafanaAnonymous()
+	cs.backfillGrafanaDBPassword()
 	return cs
 }

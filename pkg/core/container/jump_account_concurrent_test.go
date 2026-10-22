@@ -81,10 +81,11 @@ func TestCreate_JumpAccountFailureStillFailsCreate(t *testing.T) {
 	if backend.deleteCalls == 0 {
 		t.Error("failed jump account did not clean up the container")
 	}
-	if _, ok := log.durations[StageJumpAccount]; !ok {
-		t.Errorf("jump_account stage not observed (observed: %v)", log.stages)
+	stages, durations := log.snapshot()
+	if _, ok := durations[StageJumpAccount]; !ok {
+		t.Errorf("jump_account stage not observed (observed: %v)", stages)
 	}
-	if _, ok := log.durations[StageTotal]; ok {
+	if _, ok := durations[StageTotal]; ok {
 		t.Error("total observed on a failed create")
 	}
 }

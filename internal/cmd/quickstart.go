@@ -2,16 +2,22 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/BurntSushi/toml"
+	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/spf13/cobra"
 )
@@ -56,6 +62,7 @@ var (
 	qsSkipMCP     bool
 	qsSkipInclude bool
 	qsNoLaunch    bool
+	qsKeyWait     string
 )
 
 var quickstartCmd = &cobra.Command{
@@ -119,6 +126,7 @@ func init() {
 	quickstartCmd.Flags().StringVar(&qsAgentName, "agent-name", "containarium-box", "Name of the MCP server entry written into agent configs")
 	quickstartCmd.Flags().BoolVar(&qsSkipMCP, "no-mcp", false, "Skip writing any agent MCP config")
 	quickstartCmd.Flags().BoolVar(&qsSkipInclude, "no-ssh-include", false, "Skip appending the Include line to ~/.ssh/config (still writes ~/.containarium/ssh_config)")
+	quickstartCmd.Flags().StringVar(&qsKeyWait, "key-wait", "", keyWaitFlagUsage)
 }
 
 // Seams: the side-effecting steps (daemon RPCs + the agent exec) are indirected
@@ -130,6 +138,7 @@ var (
 	qsStepSSHConfig   = runSSHConfigSync
 	qsStepExposePort  = runExposePort
 	qsStepLaunchAgent = launchAgent
+	qsStepWaitForKey  = waitQuickstartKey
 )
 
 func runQuickstart(cmd *cobra.Command, args []string) error {
@@ -193,10 +202,12 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	cpuLimit = qsCPU
 	memoryLimit = qsMemory
 	enablePodman = true
+	created := true
 	if err := qsStepCreate(cmd, args); err != nil {
 		if !isAlreadyExists(err) {
 			return fmt.Errorf("create: %w", err)
 		}
+		created = false
 		fmt.Printf("  box %q already exists — reusing\n", name)
 	}
 
@@ -262,6 +273,20 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 
 		instruction := buildInstruction(qsAgentName, qsPrompt, qsDomain, qsExposePort)
 		if launching {
+			// #2013: the agent's first act is `ssh <box> agent-box`. A box this
+			// invocation just created reaches sshpiper only on the sentinel's
+			// keysync, so wait that out here rather than have the agent's
+			// first call fail publickey-denied. Direct mode has no sentinel
+			// hop; a reused box fails once, as before.
+			if created && qsSentinel != "" {
+				ctx := cmd.Context()
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				if err := qsStepWaitForKey(ctx, name, sshConfigOutPath); err != nil {
+					return err
+				}
+			}
 			// Hand off: replace this process with the user's agent so they land
 			// straight in the session, already working. Never returns on success.
 			return qsStepLaunchAgent(qsAgent, instruction)
@@ -277,6 +302,23 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 }
 
 // ─── new helpers: the logic quickstart adds on top of existing commands ───
+
+// waitQuickstartKey probes `ssh -F <sshConfig> <box> true` until the sentinel
+// accepts the key (#2013). Only a key the sentinel never learned within the
+// window is an error; any other probe failure (host key, refused, timeout)
+// is reported and the launch proceeds exactly as it did before this wait.
+func waitQuickstartKey(ctx context.Context, name, sshConfig string) error {
+	kw, err := newKeyWait(qsKeyWait, true, os.Stdout)
+	if err != nil {
+		return err
+	}
+	err = waitForKeyByProbe(ctx, kw, probeSSHArgs([]string{"-F", sshConfig, name}))
+	if err == nil || errors.Is(err, connectcore.ErrKeyNotLearned) {
+		return err
+	}
+	fmt.Printf("  (could not pre-check SSH to %s: %v — launching anyway)\n", name, err)
+	return nil
+}
 
 // invokingUserHome returns the home dir + uid/gid of the human who ran the
 // command, unwrapping sudo (local Incus dev runs as root). SUDO_USER points
@@ -367,15 +409,18 @@ func ensureSSHInclude(sshConfigPath, includePath string, uid, gid int) (bool, er
 }
 
 // mcpServerEntry is the JSON shape claude/gemini expect: an ssh command that
-// runs `agent-box` inside the named host and speaks MCP over stdio (README
-// step 4).
+// runs `agent-box` inside the named host and speaks MCP over stdio.
 type mcpServerEntry struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 }
 
-// mergeMCPServerJSON inserts (or leaves untouched) the box's MCP server under
-// .<mcpKey>[name] in a JSON agent-config file, preserving every other key.
+type codexMCPConfig struct {
+	Servers map[string]mcpServerEntry `toml:"mcp_servers"`
+}
+
+// mergeMCPServerJSON inserts the box's MCP server or upgrades its legacy bare
+// agent-box command, preserving custom entries and every other key.
 // Round-trips through a generic map so unrelated settings survive verbatim —
 // the one legitimate map[string]any use (a foreign JSON doc we don't own).
 // Used for claude (~/.claude.json) and gemini (~/.gemini/settings.json), which
@@ -404,10 +449,17 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	if _, present := servers[name]; present {
-		return false, nil // don't clobber a user's existing entry
+	args := []string{sshHost, coderun.AgentBoxRemoteCommand}
+	if existing, present := servers[name]; present {
+		entry, ok := existing.(map[string]any)
+		oldArgs, argsOK := entry["args"].([]any)
+		if !ok || entry["command"] != "ssh" || !argsOK || len(oldArgs) != 2 || oldArgs[0] != sshHost || oldArgs[1] != "agent-box" {
+			return false, nil // don't clobber a user's custom entry
+		}
+		entry["args"] = args // retain optional settings on the legacy entry
+	} else {
+		servers[name] = mcpServerEntry{Command: "ssh", Args: args}
 	}
-	servers[name] = mcpServerEntry{Command: "ssh", Args: []string{sshHost, "agent-box"}}
 	root[mcpKey] = servers
 
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -422,22 +474,30 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 
 // codexAppendMCP wires the box server into codex's TOML config
 // (~/.codex/config.toml) under [mcp_servers.<name>]. codex uses TOML, not
-// JSON, so we append a table rather than merge a map. Idempotent: if a table
-// header for this name already exists we leave the file untouched (a full TOML
-// merge would need a parser dependency; appending a fresh table is safe and
-// dependency-free — TOML tables are order-independent).
+// JSON, so we append a table rather than merge a map. Existing custom entries
+// stay untouched; legacy ssh/host/agent-box entries are upgraded in place so
+// comments, formatting, and unrelated settings survive. Re-runs are no-ops
+// once the entry is current.
 //
 // name/sshHost are box identifiers (already validated by create's naming
 // rules), so they need no TOML escaping here.
 func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	header := fmt.Sprintf("[mcp_servers.%s]", name)
+	table := fmt.Sprintf("%s\ncommand = \"ssh\"\nargs = [%q, %q]\n", header, sshHost, coderun.AgentBoxRemoteCommand)
 	// #nosec G304 -- path is the caller's own ~/.codex/config.toml, not
 	// attacker-controlled.
 	existing, err := os.ReadFile(path)
 	switch {
 	case err == nil:
 		if strings.Contains(string(existing), header) {
-			return false, nil
+			updated, changed := upgradeCodexMCPTable(string(existing), name, sshHost)
+			if !changed {
+				return false, nil
+			}
+			if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 	case os.IsNotExist(err):
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -455,14 +515,44 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString(header + "\n")
-	b.WriteString("command = \"ssh\"\n")
-	fmt.Fprintf(&b, "args = [%q, \"agent-box\"]\n", sshHost)
+	b.WriteString(table)
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// upgradeCodexMCPTable recognizes the legacy entry by its parsed command/args,
+// regardless of optional settings or their order. Only replace a quoted token
+// when decoding the result confirms the target server's args were upgraded:
+// lookalikes in comments, other tables, or multiline strings cannot match.
+func upgradeCodexMCPTable(existing, name, sshHost string) (string, bool) {
+	var config codexMCPConfig
+	if _, err := toml.Decode(existing, &config); err != nil {
+		return existing, false
+	}
+	entry := config.Servers[name]
+	if entry.Command != "ssh" || !slices.Equal(entry.Args, []string{sshHost, "agent-box"}) {
+		return existing, false
+	}
+	args := []string{sshHost, coderun.AgentBoxRemoteCommand}
+	for _, token := range []string{`"agent-box"`, `'agent-box'`} {
+		for offset := 0; offset < len(existing); {
+			index := strings.Index(existing[offset:], token)
+			if index < 0 {
+				break
+			}
+			index += offset
+			offset = index + len(token)
+			updated := existing[:index] + strconv.Quote(coderun.AgentBoxRemoteCommand) + existing[offset:]
+			var decoded codexMCPConfig
+			if _, err := toml.Decode(updated, &decoded); err == nil && slices.Equal(decoded.Servers[name].Args, args) {
+				return updated, true
+			}
+		}
+	}
+	return existing, false
 }
 
 // ─── agent launch (BYOA: your agent, your key, your laptop) ───────────────

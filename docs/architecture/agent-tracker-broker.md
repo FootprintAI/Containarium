@@ -64,7 +64,23 @@ mints it into the run JWT as a typed claim. Tracker verbs called with a run
 token use the claim and reject a request that names a different connection;
 operator tokens (no `run_id`) may name any connection in their tenant. Same
 anti-forgery rule as the `act` claim: derived from the verified token, never
-from a request field.
+from a request field. From the shell, bind a run with
+`containarium agent run <skill-id> --tracker-connection <conn>`.
+
+The binding is a *(tenant, connection)* pair, and the run JWT carries both
+halves (#2268). Its subject is the **box** (`agent-<skill-id>`, no roles) —
+not the tenant — so the generic per-tenant check (`auth.AuthorizeTenant`)
+can never match it to the tenant the in-box `tracker_*` tools name in
+`username`. The tenant the run was started for travels as the `run_tenant`
+claim, minted from the dispatching caller's verified subject (the same
+identity the connection was validated under). The tracker read/write verbs
+authorize with `auth.AuthorizeTrackerTenant`: unchanged for operator and
+admin tokens, and for a run token (`run_id` present) it passes for exactly
+the tenant in `run_tenant` — a run started for tenant A is still refused on
+tenant B's connection, same-named or not. Nothing else honors the claim: a
+run token is not the tenant for containers, secrets or any non-tracker RPC,
+and connection CRUD / routes / dispatch stay `tracker:admin`, a scope a run
+token never holds.
 
 **D4 — why the platform MCP.** The engine mounts only the in-box `agent-box`
 MCP today (`agent-runtime/src/engines/claude.ts`); `seed.ts` already carries
@@ -230,6 +246,7 @@ from anything in the bundle or the box.
 | --- | --- |
 | Missing scope / revoked or expired JWT / lease ended | `PERMISSION_DENIED` / `UNAUTHENTICATED` before any upstream call |
 | Run token names a connection other than its claim | `PERMISSION_DENIED` |
+| Run token names a tenant other than its `run_tenant` claim | `PERMISSION_DENIED` |
 | No connection, or secret missing / not broker-mode | `FAILED_PRECONDITION`, names the connection, never the secret value |
 | Upstream 401/403 | `FAILED_PRECONDITION` "credential rejected by tracker" + audit event; surfaces in `tracker status` |
 | Upstream 429 / 5xx | `UNAVAILABLE` with retry-after when the provider supplies one. **No daemon-side retry of writes** — a duplicate comment is worse than a surfaced error |
@@ -270,7 +287,7 @@ is parsed and validated in `seed.ts`, not cast.
 | Any caller ↔ daemon | `TrackerService`: `Create/Get/List/DeleteTrackerConnection`, `GetTrackerStatus`, `GetTrackerIssue`, `ListTrackerIssues`, `GetTrackerChange`, `CommentOnTrackerIssue`, `ClaimTrackerIssue`, `SetTrackerIssueLabels`, `SubmitTrackerChange` | `proto/containarium/v1/tracker.proto` with `google.api.http` + OpenAPI annotations | `pkg/pb`, `.pb.gw.go`, swagger via `make proto` |
 | Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`) | same | same |
 | Secrets | `SECRET_DELIVERY_BROKER_ONLY = 4` | `secrets.proto` | same |
-| Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claim `tracker_conn` on `auth.Claims` | `agent.proto`; `internal/auth/token.go` | — |
+| Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claims `tracker_conn` + `run_tenant` on `auth.Claims` (minted together as `auth.RunBinding`) | `agent.proto`; `internal/auth/token.go` | — |
 | Scopes | `tracker:read`, `tracker:write`, `tracker:admin` (connection CRUD) | `internal/auth/scopes.go` | — |
 | Daemon ↔ in-box runtime | `platform_mcp.json` in the run's seed dir: `{command, args, server_url, token_file, tools}` | Go struct in `internal/server`, validated parse in `agent-runtime/src/seed.ts` | — (a fixture shared by both test suites pins it) |
 | Core ↔ adapters | `tracker.Provider` | `internal/tracker/provider.go` | — |
@@ -278,6 +295,20 @@ is parsed and validated in `seed.ts`, not cast.
 
 `make proto` rewrites the gateway shims with version-drift noise; keep only
 the files the change actually touches.
+
+**REST path shape (#2035).** Every `TrackerService` route lives under the
+connection resource: connection CRUD is `/v1/tracker/connections[/{username}[/{name}]]`
+(plus `/{name}/status`), and the per-connection verbs are
+`/v1/tracker/connections/{username}/{connection}/<verb>` (issues, changes,
+routes, dispatch, dispatches). A verb word only ever appears *after* the
+connection name, never in a wildcard position, so no connection name or
+username is reserved: a connection called `routes` is
+`/connections/alice/routes` and its routes list is
+`/connections/alice/routes/routes` — different lengths, no overlap. (Before
+this shape the verbs hung directly off `/v1/tracker/{username}/{connection}/`,
+which collided with `connections` and forced a reserved-word list.) The gateway
+test `internal/gateway/tracker_route_ambiguity_test.go` pins this against a
+real grpc-gateway mux, including the old paths returning 404.
 
 ## Test strategy
 

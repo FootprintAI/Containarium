@@ -522,6 +522,55 @@ func TestCodingAgentRecipe(t *testing.T) {
 	}
 }
 
+// TestCodingAgentRecipe_InstallsSDLCSkills (#2065): the recipe installs the
+// pinned SDLC role skills for the box user, with an opt-out, and a release that
+// predates the feature must not fail the whole deploy.
+func TestCodingAgentRecipe_InstallsSDLCSkills(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("coding-agent")
+	if err != nil {
+		t.Fatalf("coding-agent: %v", err)
+	}
+
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	if step == "" {
+		t.Fatal("coding-agent post_start does not run install-sdlc-skills.sh")
+	}
+	if !strings.Contains(step, "runuser -u") {
+		t.Errorf("SDLC skills must be installed AS the box user (they land in its ~/.claude/skills), not root: %q", step)
+	}
+	if !strings.Contains(step, "CONTAINARIUM_PARAM_SDLC_SKILLS") {
+		t.Error("the SDLC skills step does not honour the sdlc_skills opt-out parameter")
+	}
+	if !strings.Contains(step, "has no SDLC skills") {
+		t.Error("a release that predates the skills asset must skip with a message, not fail the deploy")
+	}
+
+	var param *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "sdlc_skills" {
+			param = p
+		}
+	}
+	if param == nil {
+		t.Fatal("coding-agent missing parameter sdlc_skills")
+	}
+	if param.Required {
+		t.Error("sdlc_skills must be optional")
+	}
+	if param.Default != "true" {
+		t.Errorf("sdlc_skills default = %q, want \"true\" (skills on first boot is the point of #2065)", param.Default)
+	}
+}
+
 // TestLibreChatRecipe_InferenceProviderParam (#1728): the recipe still opts
 // into Gemini by default (model_gateway_provider unchanged), and declares the
 // new inference_provider parameter as optional (no required flag, empty

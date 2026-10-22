@@ -1,12 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // These are hermetic orchestration tests: they drive the whole runQuickstart
@@ -29,6 +35,10 @@ type qsRecord struct {
 	launchCalled bool
 	launchAgent  string
 	launchInstr  string
+	// key wait (#2013)
+	waitCalled       bool
+	waitName         string
+	waitBeforeLaunch bool
 }
 
 // installQuickstartHarness resets the quickstart flag globals to their init
@@ -47,12 +57,14 @@ func installQuickstartHarness(t *testing.T) (*qsRecord, string) {
 	oExpose, oSkipMCP, oSkipInc, oNoLaunch := qsExposePort, qsSkipMCP, qsSkipInclude, qsNoLaunch
 	oServer := serverAddr
 	oCreate, oSync, oExposeFn, oLaunch := qsStepCreate, qsStepSSHConfig, qsStepExposePort, qsStepLaunchAgent
+	oWait := qsStepWaitForKey
 	t.Cleanup(func() {
 		qsSSHKeyPath, qsStack, qsCPU, qsMemory = oKey, oStack, oCPU, oMem
 		qsSentinel, qsPrompt, qsDomain, qsAgent, qsAgentName = oSent, oPrompt, oDom, oAgent, oName
 		qsExposePort, qsSkipMCP, qsSkipInclude, qsNoLaunch = oExpose, oSkipMCP, oSkipInc, oNoLaunch
 		serverAddr = oServer
 		qsStepCreate, qsStepSSHConfig, qsStepExposePort, qsStepLaunchAgent = oCreate, oSync, oExposeFn, oLaunch
+		qsStepWaitForKey = oWait
 	})
 
 	// Defaults mirror init().
@@ -75,6 +87,12 @@ func installQuickstartHarness(t *testing.T) (*qsRecord, string) {
 		rec.exposeName = args[0]
 		rec.exposePort = exposePortPort
 		rec.exposeDomain = exposePortDomain
+		return nil
+	}
+	qsStepWaitForKey = func(_ context.Context, name, _ string) error {
+		rec.waitCalled = true
+		rec.waitName = name
+		rec.waitBeforeLaunch = !rec.launchCalled
 		return nil
 	}
 	qsStepLaunchAgent = func(agent, instr string) error {
@@ -208,5 +226,75 @@ func TestQuickstartIntegration_NoMCPAndNoInclude(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
 		t.Fatalf("--no-mcp should not write ~/.claude.json (err=%v)", err)
+	}
+}
+
+// registerFakeAgent adds an agent whose binary ("true") is always on PATH.
+func registerFakeAgent(t *testing.T) {
+	t.Helper()
+	agentSpecs["fake"] = agentSpec{
+		bin:           "true",
+		launchArgs:    func(p string) []string { return []string{p} },
+		mcpConfigPath: func(h string) string { return filepath.Join(h, ".fake.json") },
+		wireMCP: func(path, name, host string) (bool, error) {
+			return mergeMCPServerJSON(path, "mcpServers", name, host)
+		},
+	}
+	t.Cleanup(func() { delete(agentSpecs, "fake") })
+}
+
+// #2013: quickstart that just created the box waits out key propagation
+// through the sentinel BEFORE handing off to the agent (whose first act is
+// `ssh <box> agent-box`); a reused box, direct mode, or no launch never waits.
+func TestQuickstartIntegration_KeyWaitBeforeLaunch(t *testing.T) {
+	tests := []struct {
+		name     string
+		sentinel string
+		existing bool
+		noLaunch bool
+		wantWait bool
+	}{
+		{name: "created via sentinel, launching: waits first", sentinel: "sentinel.example.com", wantWait: true},
+		{name: "box already existed: fails once as today", sentinel: "sentinel.example.com", existing: true},
+		{name: "direct mode: no sentinel, no keysync lag", sentinel: ""},
+		{name: "--no-launch: quickstart itself never sshes", sentinel: "sentinel.example.com", noLaunch: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, _ := installQuickstartHarness(t)
+			registerFakeAgent(t)
+			qsAgent, qsPrompt, qsExposePort = "fake", "a site", 0
+			qsSentinel, qsNoLaunch = tc.sentinel, tc.noLaunch
+			if tc.existing {
+				qsStepCreate = func(*cobra.Command, []string) error {
+					return status.Error(codes.AlreadyExists, "exists")
+				}
+			}
+			if err := runQuickstart(quickstartCmd, []string{"alice"}); err != nil {
+				t.Fatalf("runQuickstart: %v", err)
+			}
+			if rec.waitCalled != tc.wantWait {
+				t.Fatalf("waited = %v, want %v", rec.waitCalled, tc.wantWait)
+			}
+			if tc.wantWait && (!rec.waitBeforeLaunch || rec.waitName != "alice" || !rec.launchCalled) {
+				t.Fatalf("wait must precede the launch, for the box: %+v", rec)
+			}
+		})
+	}
+}
+
+func TestQuickstartIntegration_KeyNeverLearnedStopsBeforeLaunch(t *testing.T) {
+	rec, _ := installQuickstartHarness(t)
+	registerFakeAgent(t)
+	qsAgent, qsPrompt, qsExposePort, qsSentinel = "fake", "a site", 0, "sentinel.example.com"
+	qsStepWaitForKey = func(context.Context, string, string) error {
+		return fmt.Errorf("%w after waiting 2m30s", connectcore.ErrKeyNotLearned)
+	}
+	err := runQuickstart(quickstartCmd, []string{"alice"})
+	if !errors.Is(err, connectcore.ErrKeyNotLearned) {
+		t.Fatalf("err = %v, want ErrKeyNotLearned", err)
+	}
+	if rec.launchCalled {
+		t.Fatal("must not launch the agent onto a box it cannot reach")
 	}
 }

@@ -11,9 +11,11 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/coreguard"
 	"github.com/footprintai/containarium/internal/egressproxy"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -34,7 +36,10 @@ type NetworkServer struct {
 	proxyIP            string                   // e.g., "10.100.0.1"
 	baseDomain         string                   // e.g., "example.com"
 	emitter            *events.Emitter
-	egressMgr          *egressproxy.Manager // egress-via-client relays, keyed by box (#808)
+	egressMgr          *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
+	anonGuard          func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
+	coreGuard          *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
+	tenantGuard        *tenantguard.Reconciler          // #2347: same
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.
@@ -259,6 +264,10 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 				}
 			}
 		}
+	}
+
+	if err := s.guardAnon(containerName); err != nil {
+		return nil, err
 	}
 
 	// If RouteStore is available, save to PostgreSQL (source of truth)
@@ -593,6 +602,10 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 		protocol = "udp"
 	}
 
+	if err := s.guardAnon(s.containerNameForIP(req.ContainerName, req.TargetIp)); err != nil {
+		return nil, err
+	}
+
 	// If PassthroughStore is available, save to PostgreSQL (source of truth)
 	if s.passthroughStore != nil {
 		record := &network.PassthroughRecord{
@@ -887,54 +900,28 @@ func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateCo
 		return nil, fmt.Errorf("container not found: %w", err)
 	}
 
-	aclName := fmt.Sprintf("acl-%s", req.Username)
-
-	var config incus.ACLConfig
-
-	if req.Preset != pb.ACLPreset_ACL_PRESET_CUSTOM && req.Preset != pb.ACLPreset_ACL_PRESET_UNSPECIFIED {
-		// Use preset
-		preset := s.protoToPreset(req.Preset)
-		config = incus.GetPresetACL(preset, s.proxyIP, s.containerNetwork)
-		config.Name = aclName
-	} else {
-		// Custom rules
-		config = incus.ACLConfig{
-			Name:        aclName,
-			Description: "Custom firewall rules",
-		}
-
-		for _, rule := range req.IngressRules {
-			config.IngressRules = append(config.IngressRules, incus.ACLRule{
-				Action:          s.protoToAction(rule.Action),
-				Source:          rule.Source,
-				Destination:     rule.Destination,
-				DestinationPort: rule.DestinationPort,
-				Protocol:        rule.Protocol,
-				Description:     rule.Description,
-			})
-		}
-
-		for _, rule := range req.EgressRules {
-			config.EgressRules = append(config.EgressRules, incus.ACLRule{
-				Action:          s.protoToAction(rule.Action),
-				Source:          rule.Source,
-				Destination:     rule.Destination,
-				DestinationPort: rule.DestinationPort,
-				Protocol:        rule.Protocol,
-				Description:     rule.Description,
-			})
-		}
+	// The rule set is a pure function of the request (#2348): custom rules
+	// are written verbatim, a named preset expands, and an unspecified
+	// preset is an error rather than a silent full-isolation.
+	config, err := aclConfigFromRequest(req, s.proxyIP, s.containerNetwork)
+	if err != nil {
+		return nil, err
 	}
+	aclName := config.Name
 
-	// Create or update ACL using the container-focused method
-	_, err = s.incusClient.EnsureACLForContainer(req.Username, s.protoToPreset(req.Preset), s.proxyIP, s.containerNetwork)
+	// Create or update the ACL with exactly that rule set.
+	if _, getErr := s.incusClient.GetNetworkACL(aclName); getErr == nil {
+		err = s.incusClient.UpdateNetworkACL(aclName, config)
+	} else {
+		err = s.incusClient.CreateNetworkACL(config)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to update ACL: %w", err)
 	}
 
-	// Attach ACL to container
-	err = s.incusClient.AttachACLToContainer(containerName, aclName, "eth0")
-	if err != nil {
+	// Attach ACL to container (shadows a profile-inherited eth0, appends to
+	// any ACL already on the NIC, no-op when already attached).
+	if err := s.incusClient.AttachACLToContainer(containerName, aclName, "eth0"); err != nil {
 		return nil, fmt.Errorf("failed to attach ACL to container: %w", err)
 	}
 
@@ -1030,22 +1017,22 @@ func (s *NetworkServer) ListACLPresets(ctx context.Context, req *pb.ListACLPrese
 		{
 			Preset:      pb.ACLPreset_ACL_PRESET_FULL_ISOLATION,
 			Name:        "Full Isolation",
-			Description: "Maximum security: only allow HTTP from proxy, block all inter-container traffic",
+			Description: "Egress: DNS and HTTPS only, nothing to the bridge. Ingress is the tenant guard's (not part of any preset).",
 		},
 		{
 			Preset:      pb.ACLPreset_ACL_PRESET_HTTP_ONLY,
 			Name:        "HTTP Only",
-			Description: "Allow HTTP/HTTPS inbound, standard egress",
+			Description: "Egress: standard outbound. Ingress is the tenant guard's (not part of any preset).",
 		},
 		{
 			Preset:      pb.ACLPreset_ACL_PRESET_PERMISSIVE,
 			Name:        "Permissive",
-			Description: "Allow all traffic (for development only)",
+			Description: "Egress: allow all (development only). Ingress is the tenant guard's (not part of any preset).",
 		},
 		{
 			Preset:      pb.ACLPreset_ACL_PRESET_CUSTOM,
 			Name:        "Custom",
-			Description: "Define your own firewall rules",
+			Description: "Define your own egress rules. Ingress rules are refused; use network-policy allow_from_tenants.",
 		},
 	}
 
@@ -1055,9 +1042,15 @@ func (s *NetworkServer) ListACLPresets(ctx context.Context, req *pb.ListACLPrese
 			continue
 		}
 
-		preset := s.protoToPreset(p.Preset)
+		preset, ok := presetFromProto(p.Preset)
+		if !ok {
+			continue
+		}
 		config := incus.GetPresetACL(preset, s.proxyIP, s.containerNetwork)
 
+		// Presets apply their egress half only (#2359); the listing must
+		// show what a client will actually get.
+		config.IngressRules = nil
 		for _, rule := range config.IngressRules {
 			p.DefaultIngressRules = append(p.DefaultIngressRules, &pb.ACLRule{
 				Action:          s.actionToProto(rule.Action),
@@ -1101,7 +1094,8 @@ func (s *NetworkServer) actionToProto(action string) pb.ACLAction {
 	}
 }
 
-func (s *NetworkServer) protoToAction(action pb.ACLAction) string {
+// protoToAction maps the wire action to the Incus rule action.
+func protoToAction(action pb.ACLAction) string {
 	switch action {
 	case pb.ACLAction_ACL_ACTION_ALLOW:
 		return "allow"
@@ -1114,16 +1108,63 @@ func (s *NetworkServer) protoToAction(action pb.ACLAction) string {
 	}
 }
 
-func (s *NetworkServer) protoToPreset(preset pb.ACLPreset) incus.ACLPreset {
+// presetFromProto maps a named preset to its Incus rule set. CUSTOM and
+// UNSPECIFIED are not presets and return ok=false — there is deliberately no
+// default case, so a new enum value is mapped on purpose or not at all.
+func presetFromProto(preset pb.ACLPreset) (incus.ACLPreset, bool) {
 	switch preset {
 	case pb.ACLPreset_ACL_PRESET_FULL_ISOLATION:
-		return incus.ACLPresetFullIsolation
+		return incus.ACLPresetFullIsolation, true
 	case pb.ACLPreset_ACL_PRESET_HTTP_ONLY:
-		return incus.ACLPresetHTTPOnly
+		return incus.ACLPresetHTTPOnly, true
 	case pb.ACLPreset_ACL_PRESET_PERMISSIVE:
-		return incus.ACLPresetPermissive
-	default:
-		return incus.ACLPresetFullIsolation
+		return incus.ACLPresetPermissive, true
+	case pb.ACLPreset_ACL_PRESET_CUSTOM, pb.ACLPreset_ACL_PRESET_UNSPECIFIED:
+		return "", false
+	}
+	return "", false
+}
+
+// aclConfigFromRequest builds the ACL an UpdateContainerACL call writes.
+func aclConfigFromRequest(req *pb.UpdateContainerACLRequest, proxyIP, containerNetwork string) (incus.ACLConfig, error) {
+	aclName := fmt.Sprintf("acl-%s", req.Username)
+	// Ingress is owned by the tenant network guard (#2359): a per-container
+	// allow rule would be evaluated alongside the guard's ACL and could
+	// re-open what it closed. Cross-tenant ingress is a NetworkPolicy setting
+	// (allow_from_tenants). Refused for every preset, never silently dropped.
+	if len(req.IngressRules) > 0 {
+		return incus.ACLConfig{}, status.Error(codes.InvalidArgument, "ingress rules are not accepted on a per-container ACL: tenant ingress is owned by the tenant network guard; to admit another tenant use `containarium network-policy set <tenant> --allow-from-tenant <other>`")
+	}
+	switch req.Preset {
+	case pb.ACLPreset_ACL_PRESET_UNSPECIFIED:
+		return incus.ACLConfig{}, status.Error(codes.InvalidArgument, "preset is required: choose a named preset or ACL_PRESET_CUSTOM with rules")
+	case pb.ACLPreset_ACL_PRESET_CUSTOM:
+		config := incus.ACLConfig{Name: aclName, Description: "Custom firewall rules (egress only; ingress is the tenant guard's)"}
+		for _, rule := range req.EgressRules {
+			config.EgressRules = append(config.EgressRules, aclRuleFromProto(rule))
+		}
+		return config, nil
+	}
+	preset, ok := presetFromProto(req.Preset)
+	if !ok {
+		return incus.ACLConfig{}, status.Errorf(codes.InvalidArgument, "unknown ACL preset %v", req.Preset)
+	}
+	config := incus.GetPresetACL(preset, proxyIP, containerNetwork)
+	config.Name = aclName
+	// Presets keep only their egress half for the same reason as above; the
+	// tenant guard already provides what their ingress half tried to.
+	config.IngressRules = nil
+	return config, nil
+}
+
+func aclRuleFromProto(rule *pb.ACLRule) incus.ACLRule {
+	return incus.ACLRule{
+		Action:          protoToAction(rule.Action),
+		Source:          rule.Source,
+		Destination:     rule.Destination,
+		DestinationPort: rule.DestinationPort,
+		Protocol:        rule.Protocol,
+		Description:     rule.Description,
 	}
 }
 
@@ -1301,4 +1342,34 @@ func bridgeGatewayIP(cidr string) string {
 	copy(gw, ip)
 	gw[3]++ // network address + 1 = the bridge gateway
 	return gw.String()
+}
+
+// SetAnonGuard installs the unclaimed-anonymous-box check (#2200) — see
+// AnonRouteGuard.
+func (s *NetworkServer) SetAnonGuard(g func(containerName string) error) { s.anonGuard = g }
+
+func (s *NetworkServer) guardAnon(containerName string) error {
+	if s.anonGuard == nil {
+		return nil
+	}
+	return s.anonGuard(containerName)
+}
+
+// containerNameForIP resolves the box a route targets when the caller
+// named only an IP, so the anon guard sees the same box AddRoute's own
+// auto-detect does.
+func (s *NetworkServer) containerNameForIP(containerName, targetIP string) string {
+	if containerName != "" || s.incusClient == nil || targetIP == "" {
+		return containerName
+	}
+	containers, err := s.incusClient.ListContainers()
+	if err != nil {
+		return ""
+	}
+	for _, c := range containers {
+		if c.IPAddress == targetIP {
+			return c.Name
+		}
+	}
+	return ""
 }

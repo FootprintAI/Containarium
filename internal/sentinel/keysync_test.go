@@ -2,10 +2,12 @@ package sentinel
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -290,6 +292,158 @@ pipes:
 		toIdx := strings.Index(out, "    to:")
 		if fromIdx < 0 || toIdx < 0 || fromIdx > toIdx {
 			t.Error("trusted_user_ca_keys must appear within the from: block, before to:")
+		}
+	})
+}
+
+// syncTestServer starts an httptest server serving resp from /authorized-keys
+// and returns the (ip, port) to pass to KeyStore.Sync.
+func syncTestServer(t *testing.T, resp gateway.KeysResponse) (ip string, port int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/authorized-keys" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+	return host, p
+}
+
+// TestKeyStore_Sync_CachesTrustBundle is the core cloud#1928 regression
+// guard on the relay's pull side: a backend's /authorized-keys response
+// carrying a trust bundle must be cached on the KeyStore, and a second Sync
+// from the SAME version must be a cheap no-op (content untouched, so a
+// caller polling this in a tight loop isn't doing wasted work).
+func TestKeyStore_Sync_CachesTrustBundle(t *testing.T) {
+	resp := gateway.KeysResponse{
+		Keys:              []gateway.UserKeys{{Username: "alice", AuthorizedKeys: "ssh-ed25519 AAAA_alice"}},
+		TrustedUserCAKeys: "# kid=ca-1 (active)\nssh-ed25519 AAAA_ca\n",
+		SSHTrustVersion:   "v1",
+	}
+	ip, port := syncTestServer(t, resp)
+
+	ks := NewKeyStore()
+	if err := ks.Sync("backend-1", ip, port); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	ks.mu.RLock()
+	content, version := ks.caTrustContent, ks.caTrustVersion
+	ks.mu.RUnlock()
+	if version != "v1" {
+		t.Errorf("caTrustVersion = %q, want %q", version, "v1")
+	}
+	if !strings.Contains(content, "AAAA_ca") {
+		t.Errorf("caTrustContent = %q, want it to carry the relayed bundle", content)
+	}
+}
+
+// TestKeyStore_Sync_RefusesEmptyTrustBundle pins the safety refusal on the
+// pull side (mirrors internal/cloud's refusal on the fetch side): a backend
+// whose response omits the bundle — not yet cloud-enrolled, not yet
+// heartbeated, or an older daemon build — must never clear an already-cached
+// good bundle.
+func TestKeyStore_Sync_RefusesEmptyTrustBundle(t *testing.T) {
+	ks := NewKeyStore()
+	ks.caTrustContent = "# kid=ca-1 (active)\nssh-ed25519 AAAA_ca\n"
+	ks.caTrustVersion = "v1"
+
+	ip, port := syncTestServer(t, gateway.KeysResponse{
+		Keys: []gateway.UserKeys{{Username: "alice", AuthorizedKeys: "ssh-ed25519 AAAA_alice"}},
+		// TrustedUserCAKeys/SSHTrustVersion left zero-valued.
+	})
+	if err := ks.Sync("backend-1", ip, port); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	if ks.caTrustVersion != "v1" || !strings.Contains(ks.caTrustContent, "AAAA_ca") {
+		t.Errorf("cached bundle was cleared by an empty response: content=%q version=%q", ks.caTrustContent, ks.caTrustVersion)
+	}
+}
+
+// TestWriteCATrustBundleFile covers writeCATrustBundleFile directly (the
+// applyCATrustBundle helper this delegates to targets the real
+// /etc/sshpiper path, which a test can't write to).
+func TestWriteCATrustBundleFile(t *testing.T) {
+	t.Run("no-op with nothing cached", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "trusted_user_ca_keys")
+		if err := writeCATrustBundleFile(path, "", ""); err != nil {
+			t.Fatalf("writeCATrustBundleFile: %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("expected no file to be created, stat err = %v", err)
+		}
+	})
+
+	t.Run("writes a new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "trusted_user_ca_keys")
+		content := "# kid=ca-1 (active)\nssh-ed25519 AAAA_ca\n"
+		if err := writeCATrustBundleFile(path, content, "v1"); err != nil {
+			t.Fatalf("writeCATrustBundleFile: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read written file: %v", err)
+		}
+		if string(got) != content {
+			t.Errorf("file content = %q, want %q", got, content)
+		}
+	})
+
+	t.Run("skips rewrite when content already matches", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "trusted_user_ca_keys")
+		content := "# kid=ca-1 (active)\nssh-ed25519 AAAA_ca\n"
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeCATrustBundleFile(path, content, "v1"); err != nil {
+			t.Fatalf("writeCATrustBundleFile: %v", err)
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A real rewrite always goes through CreateTemp+Rename, which changes
+		// the inode (and, on most filesystems, mtime) even for identical
+		// bytes. Same mtime is the cheapest reliable "we did not touch it".
+		if !before.ModTime().Equal(after.ModTime()) {
+			t.Error("file was rewritten despite content already matching")
+		}
+	})
+
+	t.Run("overwrites stale content on a version change", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "trusted_user_ca_keys")
+		if err := os.WriteFile(path, []byte("# kid=ca-1 (active)\nssh-ed25519 AAAA_old\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		newContent := "# kid=ca-2 (active)\nssh-ed25519 AAAA_new\n"
+		if err := writeCATrustBundleFile(path, newContent, "v2"); err != nil {
+			t.Fatalf("writeCATrustBundleFile: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != newContent {
+			t.Errorf("file content = %q, want the new bundle %q", got, newContent)
 		}
 	})
 }

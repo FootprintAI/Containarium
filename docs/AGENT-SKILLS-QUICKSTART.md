@@ -72,10 +72,62 @@ The operator/agent token that drives the AgentSkillService needs:
 | --- | --- |
 | `agent list` / `agent get` (via `--server`) | `agents:read` |
 | `agent run` | `agents:run` (+ `containers:write`, since a run provisions a box) |
+| `agent provision-box` | `agents:run` (it still creates/starts a container) |
+| `agent credential-status` | `agents:read` |
 | `agent call` | `agents:call` |
 
 These gate the *caller*. They are separate from the skill's **own** in-box
 token, which carries only the skill's declared `allowed_scopes`.
+
+## Sign a human into a box's coding agent, before any inference credential exists
+
+`agent run`/a crew run both provision a skill's box as a side effect — but
+only on a run that already carries an inference credential. For an org that
+wants to use its **own Claude Code (or Codex) subscription** on a box instead
+of registering an API key with the daemon, that is a chicken-and-egg problem:
+the box a human would sign in on does not exist until a credentialed run
+creates it.
+
+`agent provision-box` breaks that: it does the same create-or-reuse step
+`run` does, but **never mints a token, seeds a task, or calls a model** — so
+it needs no credential at all.
+
+```bash
+containarium agent provision-box engineer-crew-member --server <host>
+
+# Provisioning box for skill "engineer-crew-member" (no credential needed, no model call)...
+#
+# ✓ box created: agent-engineer-crew-member-container (RUNNING)
+#
+# Next: `containarium connect agent-engineer-crew-member-container` and sign in
+# to the coding agent interactively (e.g. `claude`).
+```
+
+Then, on the box itself:
+
+```bash
+containarium connect agent-engineer-crew-member-container
+claude   # or codex, once that engine lands (#2273) — complete the device-code sign-in
+```
+
+That sign-in is a one-time step: the box is reused (not recreated) by every
+later run, so the session survives. To check — without ever reading or
+printing the credential itself, only **which source** the engine would use —
+run:
+
+```bash
+containarium agent credential-status engineer-crew-member --server <host>
+
+# Engine:            claude
+# Credential source: interactive
+# Checked at:        2026-10-04T12:00:00Z
+```
+
+`credential-status` reports exactly one of `interactive` (a human completed
+the engine's own sign-in), `api-key` (a user-placed key is visible to the
+engine's shell environment), or `none` — the same posture `containarium code
+install`'s own verify step uses: a presence check, never a value, at any
+layer from the box to this output.
 
 ## Talk to a peer (A2A) — Phase 1
 
@@ -106,6 +158,11 @@ at `http://<box-ip>:8674/tasks`, POSTs an `AgentTask`, and returns the
 discovery.
 
 Driving the call needs the `agents:call` scope.
+
+The hop goes through the daemon by design: a box's in-box A2A server only
+accepts tasks that carry the credential the daemon derived for that box, so one
+box cannot post a task to a peer itself (#2125). See
+`docs/architecture/execution-scoped-authorization.md`.
 
 > **Phase 1 seam.** The in-box A2A *server* (which receives `/tasks`) is the
 > `agent-runtime` image's job. Until it ships, `agent call` to a real box
@@ -225,6 +282,8 @@ External (no rebuild): drop `*.yaml` skill catalogs in `CONTAINARIUM_SKILLS_DIR`
 and crew catalogs in `CONTAINARIUM_CREWS_DIR`; the daemon merges them onto the
 built-ins at startup (skills first — crews reference them). Either way the
 loader validates:
+
+**Shared engineering standard (#2488).** A skill can declare `standard_from` + `standard_section` to append one section of a pinned [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) skill under its own prompt; the embedded `issue-implementer` does this with the `Engineering principles` section of `engineer-implement`, the same text a coding-agent box's Claude Code uses. It is opt-in: set `CONTAINARIUM_SDLC_SKILLS_BUNDLE` to the `sdlc-skills.tar.gz` release asset. The daemon refuses any file that is not the exact pinned asset (digest compiled into the binary), and on any failure the skill keeps its inline prompt. The skill's own contract (no GitHub access, never commit, `max_files`, exactly one JSON object) always comes first and wins on conflict. `containarium agent get <skill>` shows `Prompt source: inline` or `sdlc-pin (<pin>)`.
 
 - `recipe_id`, `system_prompt`, and **at least one** `allowed_scope` are required.
 - every `allowed_scope` must be a known scope (`internal/auth/scopes.go`) — a

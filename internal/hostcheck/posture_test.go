@@ -39,6 +39,10 @@ func tempPaths(t *testing.T) (posturePaths, string) {
 		// about the metadata check doesn't accidentally depend on the
 		// network of the machine running it.
 		metadataDialer: func() error { return errors.New("no route to host") },
+		imdsBlockUnit:  filepath.Join(dir, "containarium-imds-block.service"),
+		imdsBlockWants: filepath.Join(dir, "multi-user.target.wants", "containarium-imds-block.service"),
+		// No iptables to ask: unknown, which must not pass.
+		metadataBlockProbe: func() (bool, string, error) { return false, "", errors.New("iptables: command not found") },
 	}, dir
 }
 
@@ -576,6 +580,81 @@ func TestMetadataReachableCheck(t *testing.T) {
 			t.Errorf("detail should state the consequence, got %q", c.Detail)
 		}
 	})
+}
+
+// TestMetadataBlockCheck covers #2298: a host whose metadata-endpoint block
+// is missing — rule not in the kernel, or no enabled boot unit to re-apply
+// it — must fail the posture item and say how to fix it.
+func TestMetadataBlockCheck(t *testing.T) {
+	const rule = "iptables -A FORWARD -s 10.0.3.1/24 -d 169.254.169.254 -j DROP"
+	present := func() (bool, string, error) { return true, "present: " + rule, nil }
+	absent := func() (bool, string, error) { return false, "absent: " + rule, nil }
+	unknown := func() (bool, string, error) { return false, "", errors.New("exit status 4: Permission denied") }
+
+	cases := []struct {
+		name       string
+		probe      func() (bool, string, error)
+		unit       bool // unit file installed
+		enabled    bool // multi-user.target.wants symlink present
+		wantOK     bool
+		wantDetail []string
+	}{
+		{name: "rule present and boot unit enabled passes", probe: present, unit: true, enabled: true, wantOK: true},
+		{name: "rule absent fails with the remediation", probe: absent, unit: true, enabled: true,
+			wantDetail: []string{"not in the kernel", "containarium hostharden block-metadata --persist incusbr0"}},
+		{name: "boot unit missing fails: the rule will not survive a reboot", probe: present,
+			wantDetail: []string{"not installed", "reboot", "block-metadata --persist"}},
+		{name: "boot unit installed but not enabled fails", probe: present, unit: true,
+			wantDetail: []string{"not enabled", "reboot", "block-metadata --persist"}},
+		{name: "nothing in place reports both halves", probe: absent,
+			wantDetail: []string{"not in the kernel", "not installed"}},
+		{name: "probe cannot tell is unknown, never a pass", probe: unknown, unit: true, enabled: true,
+			wantDetail: []string{"could not determine", "Permission denied"}},
+		{name: "no probe is unknown", unit: true, enabled: true,
+			wantDetail: []string{"could not determine"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := tempPaths(t)
+			p.metadataBlockProbe = tc.probe
+			if tc.unit {
+				write(t, p.imdsBlockUnit, "[Unit]\n")
+			}
+			if tc.enabled {
+				if err := os.MkdirAll(filepath.Dir(p.imdsBlockWants), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(p.imdsBlockUnit, p.imdsBlockWants); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := metadataBlockCheck(p)
+			if c.OK != tc.wantOK {
+				t.Fatalf("OK = %v, want %v: %s", c.OK, tc.wantOK, c.Detail)
+			}
+			for _, want := range tc.wantDetail {
+				if !strings.Contains(c.Detail, want) {
+					t.Errorf("detail %q does not mention %q", c.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRunPosture_IncludesMetadataBlock: the item is wired into the posture
+// list, not only defined.
+func TestRunPosture_IncludesMetadataBlock(t *testing.T) {
+	p, _ := tempPaths(t)
+	p.metadataBlockProbe = func() (bool, string, error) { return false, "absent", nil }
+	for _, c := range runPosture(p) {
+		if c.Name == metadataBlockCheck(p).Name {
+			if c.OK {
+				t.Errorf("posture reports the missing block as OK: %s", c.Detail)
+			}
+			return
+		}
+	}
+	t.Error("runPosture does not include the metadata-endpoint block check")
 }
 
 func TestWireName(t *testing.T) {

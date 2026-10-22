@@ -84,7 +84,7 @@ done
 # Install sshpiper — SSH reverse proxy with built-in fail-to-ban
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
-SSHPIPER_VERSION="v1.5.3"
+SSHPIPER_VERSION="v1.6.1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
@@ -123,6 +123,10 @@ ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
+  /usr/local/bin/containarium sentinel ssh-authz-plugin \
+  --ssh-authz-grace 5m \
+  --ssh-authz-timeout 3s \
+  -- \
   /usr/local/bin/containarium sentinel ssh-session-plugin \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
@@ -139,6 +143,34 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# SSH session sink rotation + retention (#2415, ISO 27001 A.8.15). See the
+# module variant of this script for the full rationale: `create` + SIGHUP to the
+# plugin (never copytruncate), delaycompress so the shipper can finish the
+# rotated file's tail, and an ANCHORED pkill so sshpiperd itself is not signalled.
+# Retention is N days. This script is not rendered with a retention template
+# variable, so it reads the optional instance-metadata attribute
+# `ssh-session-log-retention-days` and defaults to 90.
+SSH_SESSION_LOG_RETENTION_DAYS="$(curl -fsS -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-session-log-retention-days' 2>/dev/null || echo 90)"
+case "$SSH_SESSION_LOG_RETENTION_DAYS" in
+    ''|*[!0-9]*|0) SSH_SESSION_LOG_RETENTION_DAYS=90 ;;
+esac
+cat > /etc/logrotate.d/containarium-ssh-sessions <<LOGROTATE_EOF
+/var/log/containarium/ssh-sessions.jsonl {
+    daily
+    rotate $SSH_SESSION_LOG_RETENTION_DAYS
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 root root
+    postrotate
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+    endscript
+}
+LOGROTATE_EOF
+chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
 
 systemctl daemon-reload
 systemctl enable sshpiper

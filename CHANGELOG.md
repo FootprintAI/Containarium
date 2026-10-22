@@ -7,6 +7,1441 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.113.0] - 2026-10-22
+
+### Added
+
+- **`containarium box delete <username> --yes [--force]`**, the noun-verb form of `delete`. It refuses without `--yes`, because deleting a box removes the container and its disk; the box must be stopped unless `--force`. It shares one code path with `containarium delete`, which is unchanged (it still has no `--yes`, so existing scripts keep working). The cloud side got the matching `cloud-cli box delete --yes`.
+- **Managed-cluster autoscaler scale-down timers can be overridden for test lanes, and the release-gating KVM e2e uses that to stop waiting ~12 minutes per tag.** Two daemon env vars, `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD` and `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME` (Go durations), are rendered into the cluster-autoscaler unit as `--scale-down-delay-after-add` / `--scale-down-unneeded-time`. Unset, the unit is byte-for-byte what it was: stock CA, 10m each, which is what production runs. A malformed or non-positive value is logged and ignored. The KVM lane sets `5m` / `1m` on tag runs only, which cut the lane from 22.2m to 14.1m in a rehearsal (the scale-down step from 11m43s to 3m43s). The lane script fails if timers were requested but the daemon never logged applying them, so a silent fall back to the stock timers cannot just make the gate slow again. Nightly runs keep the stock timers, so the default cadence is still exercised. Both values can be tuned through repository variables of the same names.
+
+### Changed
+
+- **The exec watcher no longer reads `/proc/<pid>/stat` for every exec** (#2893, follow-up to #2765). The kill's pid-reuse check needed the matched process's start time, so #2765 read it on the ring consumer for every decoded exec, although only an exec that is killed ever uses it. Under an exec flood that per-exec read slows the consumer, and a slow consumer loses events (`exec-events-lost`). The watcher now stamps each exec with the boot clock (`CLOCK_BOOTTIME`, in the same clock ticks as field 22) when it decodes it. The kill reads the pinned pid's start time once and refuses a process that started after the stamp as `pid reused`. The matched process forked before it exec'd, so it always passes. The residual exec-to-decode window (at most one 50 ms drain) is the same as before. No stamp, or a stat that cannot be read, is refused as `START_TIME_UNKNOWN` (fail closed); a failed clock read is counted and logged (first, then every 1,000th). An exec whose process exited before it was decoded used to be skipped as `START_TIME_UNKNOWN`; it is now stamped like any other and its kill is skipped as `PROCESS_GONE` (or `PID_REUSED` if a newer process holds the pid). `BenchmarkExecCapture` measures the per-exec cost on Linux, and the eBPF lane runs it. On the lane's 4-vCPU runner, the stat read cost ~14 µs per exec, about 4x the rest of the consumer's per-exec work (~3.6 µs). The stamp costs ~0.39 µs. At 20,000 execs/s that is ~28 % of one core for the read, against ~0.8 % for the stamp. Enum values and the audit format are unchanged; the `kill` row's `start_time` is now the exec's stamp.
+
+### Fixed
+
+- **Miner-signature argv markers match where a real argument begins, and `kill_process` refuses up front on a non-Incus runtime** (#2768, parts 4 and 1). The rule now gets the real NUL-separated argument vector instead of the space-joined line, so a marker that only appears inside an argument is not a match: `git commit -m "document stratum+tcp:// pool format"` no longer raises a HIGH finding (or, with `kill_process`, kills the git). A literal marker must begin an argument, or the value of an option argument `--opt=value` (so `--url=stratum+tcp://...` still matches), and a space in a marker is an argument boundary (`--coin ` is the argument `--coin` followed by another). Glob markers match consecutive whole arguments. An argument that begins with a marker still matches whatever the command: `grep -r --donate-level docs/` raises the finding, a documented limitation with no command allowlist. On a container whose init has no Incus payload cgroup, the kill used to fail its cgroup compare and was audited as a misleading `pid reused`; it is now refused before any pid is pinned, with the new `KillSkipReason` `RUNTIME_UNSUPPORTED` (7) and the audit reason `kill_process is Incus-only`. The sentry guide and the process-guardrail design doc say so. Finding evidence and the exec stream still show the joined command line.
+
+- **The miner-signature exec hasher pins the pid, caches hashes, and reports its drops** (#2768, parts 2 and 3). It used to read `/proc/<pid>/exe` with no check that the pid still belonged to the exec's process, so a pid reused while the request waited got another binary's hash attributed to the original exec's finding. It now opens `exe` first, then reads the pid's `/proc/<pid>/stat` start time and skips the event if that process started after the exec's decode stamp, the check the kill applies (#2765, #2893). An exec with no stamp is skipped too. Hashes are cached by the executable's (device, inode, size, mtime, ctime), at most 4096 entries, so a busy host no longer re-reads the same `/bin/sh` for every exec and fills the 64-deep queue. Drops on a full queue were a sparse log line; they are now the new `GetSentryStatus.exec_hashes_dropped` and `exec-hashes-dropped: N` in `containarium security sentry status`.
+
+- **Threat-detection cleanups from the #2759 review** (#2768, part 5). The process responder resolves a finding's effective policy once and uses that one read for both the kill and the policy action. It used to read it twice, so a policy store that failed between the two reads could leave a killed process without its throttle or freeze. `containarium security findings list` and `resolve` now decode the gateway response into the generated protobuf types instead of a hand-mirrored struct with string enums. `--json` prints that protojson, which leaves out empty fields where the old output printed them as `""` or `null`. `miner-signatures add/remove --kind` takes its allowed values from the `MinerSignatureKind` enum instead of a hand-kept map. The miner-signature RPCs validate a pattern once: every refusal from `NormalizeMinerSignature`, and so from `AddSignature` and `RemoveSignature`, wraps the new `threatdetect.ErrMinerSignatureInvalid`, which the server maps to `InvalidArgument`.
+
+- **Process guardrail: a shared finding is resolved when the last box holding it ends, and a deleted box no longer holds a finding open** (#2835, follow-ups to #2831). When an operator released box A of a shared miner-signature finding and box B still held it, the finding stayed open; if B's action then ended by its TTL, by the orphan sweep or by B being deleted, nothing resolved it. Now the write that records B's end also resolves the finding, as one post with finding `state: 2` carrying B's record, provided the operator's release is still the latest action on A (an A throttled again after its release no longer counts). With no standing operator release, an expiry or deletion leaves the finding open, as a single box's expiry always has. Every Incus delete the daemon makes (the delete RPC and TTL sweeper, the cloud actuator, sandboxes) now closes the deleted box's open action in the background, without undoing anything on the box and without failing the delete (the delete makes one extra Incus lookup first, to learn the instance id; the close's store and Incus work is limited to 10 s, not counting its wait for the responder's lock), with the new `released_by` value `container-deleted`. When the deleted instance's id or the action's id is unknown, the close looks the box up and closes the action only if no box by that name exists, so a new box that took the name keeps its action and its undo, so the finding no longer shows the deleted box's `APPLIED` record. Action rows now record the Incus instance id (`volatile.uuid`, new `security_actions.instance_id` column, added in place): before undoing, the TTL sweep, the orphan sweep and an operator release look the box up, and a box that is missing or was re-created under the same name has its action closed the same way, so the old box's saved CPU limits are never written onto a new box; a not-found from the undo alone is confirmed by a fresh lookup before the action is closed. An apply that was recorded but never confirmed on another box (the daemon died mid-apply) still holds the finding open until the orphan sweep ends it, at most about 6 minutes, but is no longer shown as `APPLIED`. A response stored by a daemon from before per-box records (no `container`) is no longer relabelled as the next killing box's: when an action stands, the kill rides on that box's `APPLIED` record. Webhook posts: a plain resolve (`findings resolve`, or the responder's cleanup after a kept-open release) now names the box of the response it carries in its top-level `container`, and the in-memory store's re-fire posts name the box that re-fired, as the Postgres store's already did. The sentry guide now says exactly which posts' `container` equals `response.container` (all that carry a response except those caused by a re-fire). The `ResolveWithResponse` interface doc no longer claims that an error means nothing was written. `released_by` is a string; the proto comment now lists its values.
+
+- Fix concurrent access to in-memory security findings and preserve concurrent updates when audit logging fails (#2767).
+
+### Documentation
+
+- **The sentry guide and process-guardrail design now describe the shipped `kill_process` and hasher checks** (follow-up to #2765, #2867, #2894, #2906). `docs/THREAT-DETECTION-SENTRY-GUIDE.md` no longer calls the same-box pid-reuse start-time check "a follow-up (#2765)": the kill pins the pid with a pidfd, re-checks its cgroup, then compares the pinned process's `/proc/<pid>/stat` start time with the exec's decode stamp (`startedAfterStamp`), and a reuse is skipped as `PID_REUSED`; only a reuse inside the exec-to-decode window (at most one 50 ms drain) is not excluded. The `argv` row of the matcher table now says markers match the real argument vector where an argument begins, not a substring of the joined line. `docs/architecture/process-exec-guardrail.md` gets the same kill-path wording (`PID_REUSED`, `START_TIME_UNKNOWN`, `RUNTIME_UNSUPPORTED`), the argv rule, and the hasher's pid pin, file-identity cache and drop counter.
+
+### Internal
+
+- **Every CI Go setup now saves its cache from `main` only, and the CLI lane no longer re-runs tests the full-tree job already runs.** The remaining 30 `actions/setup-go` uses (everything outside the five heavy jobs moved in 0.112.0) still used setup-go's built-in cache, which saves a PR-scoped entry on every PR. No other PR can read those entries, and they kept the repo's Actions cache over its 10 GB limit (12.74 GB on 2026-10-21), where eviction threatens `main`'s caches. They now use `.github/actions/setup-go-cached` with one shared `cache-name: shared`: saved from `main` once a day by the first job to finish, restored read-only everywhere else. `cli-split-gates` drops its default-tags `go test` step (~4 minutes per PR). `proxyproto-e2e`'s required "Unit + default e2e" job already runs those same seven packages, with the same default tags and `-race`, as part of the whole module. The client-tag run, which nothing else covers, stays.
+- **`go vet -tags containarium_client ./...` passes on `main`, and the Windows build is checked over the whole tree, not just the client** (#2864, #2886). 32 `internal/server` files (11 source, 21 test) used a `!containarium_client` symbol (the Postgres-backed stores in `internal/auth` and `internal/cluster`) without that constraint, directly or through a file that did, so the package and every test that imports it, including `internal/client`'s, failed to compile under the tag. They now carry `//go:build !containarium_client`. Nothing shipped changes: the client binary never imports `internal/server`, and the daemon's package and file lists are identical; its binary matches a build of `main` with the same two-line shift in those files. `GOOS=windows go build ./...` stays unsupported as written, because the daemon side imports `internal/agentbox` (Unix-only by design) or `internal/netbpf` (Linux eBPF); the new `scripts/test-build-constraint-sets.sh` builds every other package for Windows against an explicit exclusion list, and fails on a stale entry. `cli-split-gates` runs it; `docs/RELEASE-PROCESS.md` names the supported invocations.
+
+- **A release-cut PR no longer runs the full suite.** A cut changes only `CHANGELOG.md` and the `Version` constant, yet it ran every heavy job twice (PR, then push to `main`), ~10–14 minutes on the release's critical path. Now each heavy workflow (`golangci-lint`, `proxyproto-e2e`, `cli-split-gates`, gosec in `security`) first runs a `Release-only diff?` job, `.github/actions/release-only-diff`. It answers true only when three things hold: the event is a PR into `main` or a single-commit push to it; `scripts/ci/release-only-diff.sh` finds nothing but those two changes; and the base commit already passed the same workflow on `main`. When it does, the heavy jobs skip, which branch protection counts as passing. gosec instead re-uploads the base commit's stored analysis, because its required check only exists once a SARIF is uploaded. The answer is false on any doubt, and the jobs are gated with `!cancelled()`, so a failing detector runs the suite rather than skipping it. govulncheck and Trivy still run because their databases change independently of the code. The detector's `--self-test` runs in the `workflow-lint` lane.
+
+## [0.112.0] - 2026-10-21
+
+### Added
+
+- **`containarium info` and MCP `get_system_info` show each storage pool's fill** (#2823, part B2). The CLI prints a "Storage Pools" block that flags `WARNING` (85 % or more) and `CRITICAL` (95 % or more) pools, and the MCP tool lists each pool with its fill and level. Both read `SystemInfo.storage_pools` through the generated contract: gRPC directly, and the HTTP client and MCP through grpc-gateway JSON, decoded with protojson. `incus.ServerInfo` gains `StoragePools`, and the pool level type moves to `pkg/core/incus` (`StoragePoolLevel`) so the client side can carry it. `internal/poolcapacity` keeps aliases of the same names.
+
+### Fixed
+
+- **Process guardrail: a shared finding is resolved when the last box holding it ends, and a deleted box no longer holds a finding open** (#2835, follow-ups to #2831). When an operator released box A of a shared miner-signature finding and box B still held it, the finding stayed open; if B's action then ended by its TTL, by the orphan sweep or by B being deleted, nothing resolved it. Now the write that records B's end also resolves the finding, as one post with finding `state: 2` carrying B's record. With no operator release on any box, an expiry or deletion still leaves the finding open, as a single box's expiry always has. Deleting a box (`DeleteContainer`, including the TTL sweeper's deletes) closes its open action without calling Incus, with the new `released_by` value `container-deleted`, so the finding no longer shows the deleted box's `APPLIED` record. A box removed some other way is closed the same way by the next TTL or orphan sweep, which now treats Incus "not found" as gone instead of retrying the undo every minute. An apply that was recorded but never confirmed on another box (the daemon died mid-apply) still holds the finding open until the orphan sweep ends it, at most about 6 minutes, but is no longer shown as `APPLIED`. A response stored by a daemon from before per-box records (no `container`) is no longer relabelled as the next killing box's: when an action stands, the kill rides on that box's `APPLIED` record. Webhook posts: a plain resolve (`findings resolve`, or the responder's cleanup after a kept-open release) now names the box of the response it carries in its top-level `container`, and the in-memory store's re-fire posts name the box that re-fired, as the Postgres store's already did. The sentry guide now says exactly which posts' `container` equals `response.container` (all that carry a response except those caused by a re-fire). The `ResolveWithResponse` interface doc no longer claims that an error means nothing was written. No migration; `released_by` is a string, and the proto comment now lists its values.
+- **The in-box malware scan can now read root-only files** (#2888). `clamscan` pre-checks each file with `access(2)`, which the kernel evaluates with the real uid and, for a non-root real uid, without effective capabilities, so the scan (real uid `nobody`, holding `CAP_DAC_READ_SEARCH`) reported "Access denied" on `/root`, the logs and every other root-only file and always ended `incomplete (clamscan exit 2)`. The scanner now runs with real uid 0, effective uid and gid 65534, a bounding/inheritable/ambient set pruned to `dac_read_search` only, and `no_new_privs`. Residual risk (a compromised scanner can `setuid(0)` back, holding that one capability) is documented in `docs/security/TENANT-MALWARE-SCAN.md`. Found on the first real run on a real box.
+
+### Documentation
+
+- **Sentinel secret rotation and convergence runbook** (#1365): `docs/SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md` covers the AUTH and ADMIN secrets, what degrades during the mismatch window, a zero-sentinel-to-daemon-window path via the ed25519 dual-accept verifier, verification, rollback, and the Terraform boot-time rewrite hazard.
+
+### Internal
+
+- **Release builds no longer compile every binary twice, and the heavy CI jobs get a Go build cache that actually holds their own work.** `release.yml`'s `build-bundle` reran `make build-release` (plus buf and the eBPF compile) after `build-and-release` had already built the same binaries. That was ~8 minutes on the critical path of every tag. It now downloads the three `linux-amd64` binaries `build-and-release` attached to the Release, so the air-gapped bundle ships byte-identical copies of the checksummed files. A new composite action, `.github/actions/setup-go-cached`, replaces `actions/setup-go`'s built-in cache in the five heavy compile jobs: the release build, the release-artifact gate, the CLI build and test jobs, and the full-tree `-race` run. The built-in cache shared one key per `go.sum` across every job, so each job restored whichever job had saved first, and that cache never refreshed. It also saved PR-scoped entries no other PR can read, which kept the repo over its 10 GB cache limit and evicted main's. The new cache is scoped per job, saved only from `main`, refreshed daily, and restored read-only everywhere else. Cached test results are invalidated after restore, so only compilation is reused.
+
+## [0.111.0] - 2026-10-21
+
+### Added
+
+- **Per-pool storage capacity in `SystemInfo`, with the storage-pool alerts covering peer backends** (#2823, part B1). `SystemInfo` gains `storage_pools`, a list of `StoragePoolCapacity` entries (`pool`, the typed `driver`, `used_bytes`, `total_bytes`, a `StoragePoolCapacityLevel` enum of `OK`, `WARNING` (85 % or more) or `CRITICAL` (95 % or more), and `observed_at`). The daemon fills it from the pool capacity monitor's last snapshot, so `GetSystemInfo` makes no extra Incus call. The metrics host reads each peer's pools from the forwarded `GetSystemInfo` and records `storage_pool_used_bytes` and `storage_pool_total_bytes` under the peer's `backend_id`, so the `storage_pool_alerts` rules now fire for peer backends as well. Previously a peer reported only its summed disk. That forwarded response is now decoded with protojson against the contract instead of a hand-written struct. The `containarium info` block and the MCP `get_system_info` lines follow in part B2. Not verified: the 95 %-is-about-92 %-of-zpool reading (taken from the Incus ZFS driver), a run against a real Incus host, and the series names in a live VictoriaMetrics.
+
+### Security
+
+- **Every GitHub Action is pinned to a full commit SHA, and a `workflow-lint` lane keeps it that way** (#2793). All 157 floating `uses:` references (tags and the `@master` / `@release/v1` branches) now carry the commit they resolved to, with the old ref as a trailing comment so Dependabot still bumps them. Branch pins (`trivy-action`, `gosec`, `gh-action-pypi-publish`) are frozen at the branch head on the pinning day. The new workflow runs a checksum-verified `actionlint` and `scripts/ci/check-action-pins.sh`, which has a self-test proving it rejects tag and branch pins. Open Dependabot action PRs need a rebase.
+
+### Fixed
+
+- **The ClamAV install and scan no longer fail on a box that does not have ClamAV yet** (follow-up to #2658/#2659). The "is ClamAV installed?" check ran a bare `command -v clamscan`; on Debian and Ubuntu `sh` is dash, which exits 127 for a missing command, and Incus reports an exec exit status of 127 as an error, so `clamav install` answered `FAILED: could not reach the box` and a scan came back `incomplete` instead of `not_installed`. The probes now pin the exit status to 0 or 1 (`presenceProbe`), also for the Debian-family check, which had the same problem on non-Debian boxes. A new test runs the real `/bin/sh` on the probe strings. Found by the first run of the feature on a real box.
+- **Go toolchain 1.26.10** (GO-2026-6809, `crypto/x509`). `go.mod`, every CI workflow and the image builds moved from 1.26.9; the `govulncheck` gate had started failing on the standard library advisory, which blocked every PR. No code change.
+- **Process guardrail: the in-memory and Postgres finding stores now keep a kill on record the same way, and a stale kill no longer rolls the count back** (#2816, follow-ups to #2789). When a finding had a kill on record and a later write carried no kill but a skip reason, the in-memory store kept the stored skip reason (or none) and Postgres kept the writer's reason. Both now keep the stored kill whole: `process_killed`, the latest `killed_pid`, `kills` and the skip reason. A write that carries a kill with a lower `kills` count than the one on record now keeps the stored kill too, in both stores. Before, a release, TTL expiry or orphan sweep that could not read the finding fell back to its action row's first pid with a count of 1, and that overwrote the newer pid and count. One test runs the same write sequences against both stores and checks the stored, re-read and delivered kill facts. It covers the Postgres rule that keeps a write's own, newer kill, which no test covered before. The orphan sweep now has a test showing it keeps a refused kill's skip reason, as release and expiry already did. The webhook bound for a respawning miner is now tested with kills and skipped kills mixed. The measured result is 60 or 61 posts an hour for a miner that respawns every second, with or without an occasional skipped kill: the first kill and the first skip at once, then at most one a minute. This matches the "about one post a minute" in the 0.110.0 entries. The 117 to 119 an hour from the #2789 review came from the gate before its final fix and does not happen on main. The sentry guide now states this bound.
+- **`kill_process` no longer signals a pid reused by another process inside the same box** (#2765). The host-side miner kill pinned the pid with a pidfd and re-checked its cgroup, which stopped reuse on the host or in another box but not inside the same box between the exec and the pin. The exec watcher now reads the process's start time (`/proc/<pid>/stat` field 22, clock ticks since boot, parsed from the last `)` so a crafted comm cannot shift it) when it decodes the exec, and the kill compares it with the pinned process's start time right before the signal: a mismatch is skipped as `pid reused`, audited as `kill-skipped` with both start times. An exec whose process had already exited when it was decoded has no start time and is never signalled: new `KillSkipReason` `KILL_SKIP_REASON_START_TIME_UNKNOWN` (6). The `kill` audit row now also names the start time.
+
+## [0.110.0] - 2026-10-20
+
+### Upgrading
+
+- **Sentinel SSH enforce mode (`ssh-authz-plugin --ssh-authz-enforce`, Terraform `ssh_authz_enforce`) is still off by default; read this before turning it on** (#2815). Upgrade the sentinel binary to this release first: an older binary enforces without routing offers itself and keeps the multi-credential gap. Enforce mode now reads `--sshpiper-config` (default `/etc/sshpiper/config.yaml`, the file the yaml plugin reads; the plugin refuses every login if that file holds a field its router does not model). Right after a sentinel manager restart every login is "unknown" until each healthy backend has synced its keys, and enforce mode refuses unknown logins (logged as `routing not ready, keystore not yet synced`), so expect a short window of refused logins on restart. Run the `ssh-session-plugin` from this release too: it now skips connections the authz plugin routed, so an older one would record the same session twice. The audit-only default needs no action, with one exception: `ssh-authz-plugin` now offers `publickey` only in both modes and refuses password, keyboard-interactive and `none` attempts itself, so a sentinel that relied on another method reaching yaml will stop accepting it.
+- **`containarium ssh rotate` and the post-login key check need a server that implements the SSH key challenge endpoint** (#2536). The command calls `POST /v1/user/ssh-keys:challenge` and registers the new key with the signed proof; this repository's daemon does not serve `/v1/user/ssh-keys`, so against it `ssh rotate` stops with "SSH key rotation is not supported" and leaves the existing SSH config and key untouched, and the post-login check silently skips. Nothing else changes for clients that do not run `ssh rotate`.
+- **Existing skill boxes keep the old credential-expiry alert policy until their agent runtime is reinstalled** (#2833). Update the daemon first, then follow "Upgrading existing skill boxes" in `docs/ALERTING-SETUP.md` for each reused box. Skipping it causes no outage; the timestamp-based alert simply continues without authentication-failure evidence.
+- **Helm: no action for existing releases** (#2776). `gateway.createNamespace` defaults to `true`, so the chart renders the same gateway Namespace as earlier releases. Do not flip an existing release to `false`: Helm deletes the namespace and its Secrets on upgrade.
+
+### Added
+
+- **Published Helm charts get an install/upgrade test** (#2574). CI installs chart `0.108.0`, upgrades to the target release and clean-installs it from GHCR in a disposable Kubernetes 1.31.0 kind cluster, checking the daemon's pulled image and readiness. PRs also exercise their own packaged chart. The release workflow runs the same check after publishing each tagged chart; EKS/GKE provider coverage remains unverified.
+- **Release signatures are verified after upload** (#2561). The release job downloads its published Sigstore bundles and checks every asset's signature, required artifacts, SPDX SBOMs, checksums and chart metadata. A read-only workflow can repeat the verification for an existing RC. Consumer instructions preserve the exact case-sensitive repository identity.
+- **Proof Pack: a repository's tests, run by the platform in a box, with outcomes and logs recorded** (#2797, slice 1 of #2366). New message-only `proto/containarium/v1/proof_pack.proto` (`ProofPack`, `ProofStep`, `ProofKindCount`; enums `ProofPartKind`, `ProofCommandSource`, `ProofPackStatus`) and `internal/proofpack.Generate`. Generate reads the `test:` key of the repository's `.github/containarium.yml`: one command, or a list of `{name, kind, run}` steps with kind `unit|integration|e2e|static_analysis|security_scan|test`. It falls back to `make test` when the repository has a Makefile, and otherwise records `NO_COMMANDS`. It runs each step in the box through the Incus exec backend, under a per-step timeout. For each step it keeps the last 256 KiB of combined output (bounded in the box), the exit status, the duration and the SHA-256 of the stored log. The command lines and the environment are never recorded; a step is identified by its declared name and kind. `containariumd proof-pack generate <container> [--dir] [--step-timeout] [--out]` is a server-side command over the same function: it writes the pack as JSON and exits 1 unless the status is `PASSED`. The coding agent's `tests_run` is not an input. Sealing the pack and attaching it to a PR are #2798, and the crew's independent test-execution role is #2799. Format and rules: `docs/PROOF-PACK.md`.
+- **CI now checks the licences of the web UI and `agent-runtime` npm dependencies, and the web UI ships its packages' notices** (#2754). `scripts/ci/npm-licenses.sh check` installs each project's production dependencies in a scratch copy and applies the Go check's allow-list. The web UI's bundle carried none of its ~177 packages' copyright notices; `web-ui/THIRD-PARTY-LICENSES.txt` now supplies them and `build-webui.sh` embeds it. Three exceptions are recorded with reasons in `docs/security/DEPENDENCY-LICENSES.md`, including `@anthropic-ai/claude-agent-sdk` (Anthropic's commercial terms, installed by the customer's box, not redistributed by us).
+- **`NOTICE` carries the attribution notices Apache-2.0 §4(d) requires** (#2561). `scripts/ci/notice.sh generate` collects the NOTICE text of every Go module linked into a shipped program (13 today) plus the vendored Kubernetes protos, and the `licenses` workflow now fails when a new dependency brings a NOTICE the file lacks. Each release attaches `NOTICE` and `LICENSE`, so a binary downloaded alone has them beside it. The web UI's npm packages are attributed in `web-ui/THIRD-PARTY-LICENSES.txt`.
+- **Every release file is signed with keyless cosign** (#2561). A new `sign-release` job in `release.yml` runs after the binaries, the air-gapped bundle and the Helm chart are uploaded, signs every file on the Release through GitHub OIDC (no project key), verifies each signature against the workflow's own identity, and attaches `<file>.sigstore.json` beside it. `docs/security/VERIFYING-RELEASES.md` has the `cosign verify-blob` command. It runs on tag pushes only, so a rehearsal does not write to the public transparency log; the first release after this lands is its first real run.
+- **Host-side eBPF exec telemetry: the kernel program, build and loader** (#2637, part of #2711; design `docs/architecture/process-exec-guardrail.md` component 1). A second BPF object, `execwatch.bpf.o`, attaches one program to the `sched/sched_process_exec` tracepoint, filters in-kernel by walking the task's cgroup ancestors against a `watched_cgroups` map the daemon fills from each running container's cgroup id, and emits a fixed-layout record (`host_pid, ppid, uid, cgroup_id, comm, filename, argv[512], argv_truncated`) to a 1 MiB ring buffer; argv is read from `mm->arg_start..arg_end` with CO-RE, capped at 512 bytes, and the environment is never read; ring overflow is counted, never blocks an exec. `make build-bpf` now generates `vmlinux.h` from the build host's kernel BTF with `bpftool` (gitignored, never checked in) and compiles both objects, failing with a message naming the missing piece when `bpftool` or `/sys/kernel/btf/vmlinux` is absent; the `embed_bpf` tag embeds both. `internal/netbpf` gains `LoadExecWatch`/`ResolveExecWatch` (same `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` value: `embedded`, or the sibling `execwatch.bpf.o` of a netpolicy object path), `WatchCgroup`/`UnwatchCgroup`, `ConsumeExecEvents` and `ParseExecEvent` (wire layout pinned by test). The `ebpf-load.yml` lane proves the object on a real kernel: loads, one event for an exec in a watched cgroup and none for a host exec, a 10k-exec burst reports a lost count (10,000 undrained execs → 1,272 kept, 8,729 counted), and the per-exec overhead is measured: at 983 execs/s for 60 s, 0 events lost, kernel-side 1.21 % + ring consumer 1.74 % = 2.95 % of one core, i.e. 0.37 % of the 8-core runner's CPU — accepted against the bar "< 1 % of host CPU at 1,000 execs/s" (decided 2026-10-19; a follow-up tracks bringing the Go consumer under 1 % of a core). Kernel floor for this object only: 5.8 (ring buffer), 5.6 (`bpf_get_current_ancestor_cgroup_id`) and kernel BTF; the network object keeps 5.4. The daemon wiring, `StreamExecEvents` RPC, `containarium security exec-events` and the `exec-telemetry` status line follow in the second part of #2637.
+- **`containarium security exec-events` and the exec-telemetry wiring** (#2637 part B, part of #2711). The daemon's `ExecWatcher` loads `execwatch.bpf.o` when the network-policy enforcer starts, keeps the kernel's `watched_cgroups` map in step with the running tenant containers on the enforcer's 10 s reconcile (init pid → `/proc/<pid>/cgroup` → `/sys/fs/cgroup/<path>` inode; core-role containers are never watched; a restarted box swaps its id), attributes each ring event to its container and hands it to rules implementing the new optional `threatdetect.ExecConsumer` interface (same panic recovery as `CPUConsumer`; no rule consumes them yet — the miner-signature rule is #2638) and to a bounded fan-out for the new server-streaming `StreamExecEvents` RPC (`GET /v1/security/exec-events`; `since` replays a bounded in-memory ring of recent events, `follow` keeps the stream open; a subscriber that falls behind is dropped with RESOURCE_EXHAUSTED, the kernel ring consumer never waits). Events are not written to the audit log. `containarium security exec-events [--container] [--since] [--follow] [--json]` prints one line per exec. `GetSentryStatusResponse` gains `exec_telemetry` (`ok` or `unavailable (<reason>)`) and `exec_events_lost`; `security sentry status` prints `exec-telemetry: …` and `exec-events-lost: N`; `Evidence` gains `execs` (`ExecEvidence`). When the second object cannot be loaded or attached (no BTF, verifier rejection, object not built) the status says `exec-telemetry: unavailable (<reason>)`, the flow rules keep running, and the sentry-health loop raises the `SENTRY_UNAVAILABLE` finding with the stable subject `exec-telemetry unavailable`. `incus.ContainerInfo` gains `Pid`. Operator doc: `docs/THREAT-DETECTION-SENTRY-GUIDE.md` → "Exec telemetry".
+- **Threat detection flags known miners on exec, and can kill them** (#2638, part of #2711; design `docs/architecture/process-exec-guardrail.md` components 5 and 7). A new HIGH rule, `THREAT_RULE_ID_MINER_SIGNATURE` (7), matches every exec from the exec telemetry against a signature list: an embedded, versioned baseline of binary names (`xmrig`, `minerd`, `cpuminer*`, `nanominer`, `t-rex`, `lolminer`, `nbminer`, `gminer`; basename or comm, glob, case-insensitive) and argv markers (`--donate-level`, `stratum+tcp://`, `stratum+ssl://`, `--coin `, `-o <host>:<port>` for each default stratum port), plus operator entries. The baseline carries no SHA-256 entries (decided on #2711 Q2); the `sha256` kind is for operator-added hashes, computed off the exec path only when such entries exist and nothing cheaper matched (64 MiB cap, 200 ms budget). Subject is `<kind>:<pattern>`, evidence the exec with `matched`. New RPCs `ListMinerSignatures`, `AddMinerSignature`, `RemoveMinerSignature` (`/v1/security/miner-signatures`; remove takes `kind` and `pattern` as query parameters) and `containarium security miner-signatures list|add|remove`; mutations need `security:write` and admin. `ProcessPolicy` gains `optional bool kill_process = 4`, default false at every level and merged field by field: with it set, a signature match also SIGKILLs the process from the host after pinning it (pidfd) and re-checking `/proc/<pid>/cgroup` against the container's cgroup, never the container's init; the policy action (alert, throttle, freeze) still applies. Every attempt is audited (`security.action` `kill` with the pid, or `kill-skipped` with the reason), the finding's response sets `process_killed`, and an action row opened by the same finding records `killed_pid`. `process-policy set --kill-process=true|false`; `security findings` now prints exec evidence and the response. The kill and the throttle/freeze run on the responder's own bounded worker (256 jobs), never on the exec ring consumer; a full queue drops the response, logged and audited as `response-dropped`; before acting the worker re-reads the finding and skips (audited `response-skipped`) one resolved or released after it was queued, so a queued response never undoes an operator release. The no-pidfd fallback refuses rather than kill unpinned. A glob argv token without `=` never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444` is not a stratum hit; glob option tokens such as `-o` match case-sensitively (`-O` is another flag); the baseline also has `--coin=*` and, per stratum port, `-o<host>:<port>`, `--url <host>:<port>` and `--url=<host>:<port>`. Off on a degraded backend like the other responses. A renamed miner with a clean command line is caught only by the mining-behavior rule. MCP tools for the signature list are not part of this change.
+- **MCP tools for the miner-signature list and the `kill_process` policy field: `list_miner_signatures`, `add_miner_signature`, `remove_miner_signature`; `security_process_policy_set` takes an optional `kill_process`** (#2763, part of #2711). Thin wrappers over the same `/v1/security/miner-signatures` and `process-policy` routes the `containarium security miner-signatures` and `process-policy set --kill-process` CLI verbs call, using the generated protobuf types; `kind` is the `MinerSignatureKind` enum (`name`, `argv`, `sha256`) validated before any request is sent, and `kill_process` is sent only when given so omitting it inherits. List needs `security:read`; add, remove and set need `security:write` (the daemon still requires admin).
+- **Per-pool storage capacity signal: daemon log, gauges and built-in alerts** (#2823, part A). A ZFS pool backing Incus filled up and stopped every container on the host from writing, core Postgres included, and nothing alerted: the host disk series sums every pool and its reads sit behind the cached `/1.0/resources` call (#2325). Every daemon now reads each pool's used and total bytes every 60 s through `GET /1.0/storage-pools/<name>/resources` on a client with a 10 s timeout, and never through `/1.0/resources`. It logs a `WARN` (≥ 85 %) or `CRIT` (≥ 95 %) line at startup when a pool is already past a threshold, and again on every level change. A read that hangs or fails is logged once and the last snapshot is kept, so it never blocks. Where a metrics pipeline runs, the new gauges `storage_pool_used_bytes` and `storage_pool_total_bytes{pool, backend_id}` feed a `storage_pool_alerts` group: `StoragePoolFillWarning` (≥ 85 % for 10 m) and `StoragePoolNearlyFull` (critical, ≥ 95 % for 2 m). The thresholds are fixed; override them with custom alert rules. Read from the Incus ZFS driver and not verified on a live pool: Incus' ZFS numbers exclude slop space, so 95 % here is about 92 % of zpool capacity. Peer backends' pools in `SystemInfo`, the CLI and MCP follow in part B; ZFS fragmentation is #2853.
+- **Sentinel SSH enforce mode routes every offer itself, so a denied key can no longer log in behind an earlier credential** (#2741, #2629, #2815). sshpiperd v1.6.1 moves its plugin chain only forward within a connection, so after the enforcing plugin deferred a certificate or an allowed key, yaml's static `authorized_keys` judged every later offer, including a key the daemon denies. With `--ssh-authz-enforce` the plugin now routes every offer it does not refuse through the yaml plugin's own checker over `--sshpiper-config` and returns the upstream itself, so the chain never advances past it. It fails closed on an unknown login (`DENY UPSTREAM_UNAVAILABLE`, no grace, logged as `routing not ready, keystore not yet synced` or `no synced backend lists the login`), accepts `publickey` only, and, because sshpiperd copies no plugin metadata onto a routed connection, writes the session `open` and `close` records itself (including the `proxy_shutdown` close), with `enforced=true`, the routed target and the decision. The per-connection decision stash is bounded (10,000 connections, 10 minutes); an evicted decision still yields a record, without credential or decision. `ssh-session-plugin` skips connections whose credential it never saw, so each session is recorded once. Audit-only mode still defers and the static file decides there. Real-sshpiperd tests cover an untrusted certificate then a denied key, an allowed key then a denied key, and a password attempt first. Off by default; see Upgrading and `docs/SENTINEL-SSH-AUTHZ.md`.
+- **`containarium` records the stack a box was created with** (#2163, #2849). The requested stack is stamped as `user.containarium.stack` at create and returned in `ContainerInfo` and `BoxStatus` (it was always empty). Kubernetes boxes and boxes created before this release report an empty stack. `PodmanEnabled` stays `true` for every box, now documented: Podman is installed in every box image.
+- **SSH device key rotation: `containarium ssh rotate [--name] [--server]`** (#2536, #2523). Generates a fresh Ed25519 key beside the old one, asks the server for a challenge, signs it with an SSHSIG proof of possession, registers the key under the device name, confirms the returned fingerprint, and only then points the managed SSH config at the new key; the old key stays through the server's overlap window. `containarium login` now also removes locally the CLI-owned keys the server has retired (never a key another configured server still lists as active, never personal keys) and prints a notice when a key expires within 7 days. Needs a server that serves the challenge endpoint (see Upgrading).
+- **`containarium crew plan validate <file>` and `CrewService.ValidateTaskGraph`** (#2803, #2826; slice 1 of #2369). A TaskGraph (proto `TaskNode`, `TaskEdge`, `TaskGraphLimits`, `TaskGraph`) is a goal split into subtasks assigned to a crew or a skill and wired by depends-on edges. `pkg/core/taskgraph` rejects a cycle, an unknown crew or skill, and a graph over its node or depth limit (platform caps 32 nodes and depth 8; a graph may tighten them, never raise them) and returns a deterministic dependency order. The CLI reads YAML or JSON and validates against the embedded catalogs, or against the daemon's through `POST /v1/task-graphs:validate` with `--server`.
+- **`containarium guardrail status [--json]` and `GET /v1/guardrail/status` report which response policy is in effect** (#2737, #2852; slice B of #2575). The answer is `BASELINE` (no policy was ever set; built-in log-only rules), `ADMIN` (the stored policy has an inbound BLOCK rule; it decides and the baseline is off) or `NONE` (a policy exists without an inbound BLOCK rule, so responses are not scanned), with the policy revision, the blocked inbound kinds and the baseline rule ids. Any authenticated caller may read it; a policy-store read error is an error, never `NONE` or `BASELINE`.
+- **OpenSSF Scorecard is measured in CI, with a pinned baseline** (#2791, #2827). A new `scorecard.yml` workflow runs the pinned Scorecard action; `docs/security/SCORECARD.md` records the baseline and how to read it.
+
+### Changed
+
+- **The model gateway scans responses against a baseline rule table when no admin guardrail policy exists** (#2736, #2744; slice A of #2575). Before, with no policy set, responses were not scanned. Now PEM private-key headers, AWS access key ids, Google API keys and Azure storage account keys are detected log-only: the body is teed to the client as it arrives and the copy is scanned after the proxy has written it, so streamed responses are not held. Each detection is logged, counted on `/__gateway/status` and written to the audit log as `model_gateway.inbound_detection` with rule id, kind and action, never the matched text. Content-encoded responses pass through unscanned and are counted as `baseline_unscanned`. The admin-policy hold-and-block path is unchanged, and an admin policy with an inbound BLOCK rule switches the baseline off.
+- **The 80/443 Caddy DNAT now hairpins in the kernel** (#2732, #2263 slice A, #2743, #2757). The PREROUTING rule matches `-m addrtype --dst-type LOCAL` instead of excluding the bridge subnet by source, so a box that opens the host's own address reaches the proxy, and traffic merely forwarded through the host is no longer captured. On upgrade the new rule is added before the old `! -s <bridge-subnet>` rule is removed, so inbound 80/443 always has a DNAT; the old rule is matched as a network, so hosts whose bridge is reported in gateway form (`a.b.c.1/24`) are cleaned up too, and an unparsable subnet deletes nothing and logs a warning.
+- **The sentinel `ssh-authz-plugin` caps a cached `ALLOW` at `--ssh-authz-grace`, and offers `publickey` only** (#2740, #2742, #2815). A control plane's `cache_ttl` can no longer extend the outage-admit window past the grace (default 5m). Password, keyboard-interactive and `none` attempts are refused by the plugin in both modes. See Upgrading.
+
+### Fixed
+
+- **The daemon no longer blocks for minutes at start when core Postgres is down** (#2824). Every Postgres-backed store retried its own connection five times, 3 s apart, one store after another, with no deadline on the ping, before the daemon opened a listener: about 5 minutes of a dark API, long enough to fail a health-gated deploy and its rollback. One startup check now gates them all: it pings Postgres for up to `CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT` (default `20s`). If that fails, every database-backed store is skipped at once, the daemon serves, and it reports DEGRADED: one log line, readiness entry `containarium.core_postgres` `NOT_SERVING` at `GET /v1/health?service=containarium.core_postgres`, and a `core Postgres` line in `containarium doctor`. Each connection attempt (`connectToPostgres`, the app and traffic stores) now has a 5 s ping deadline. Degraded semantics are unchanged: skipped APIs stay unregistered, no audit store means no sentry and no unpersisted audit writes, and the secrets REQUIRE_ENVELOPE/KMS gate is untouched. Restart the daemon once Postgres is back to re-enable those stores. The operator runbook has the details.
+- **The finding webhook now delivers every box of a shared miner-signature finding, and the finding never reads `RELEASED` while a box is still throttled** (#2820, #2779). Two boxes of one tenant running the same miner share one finding. The webhook described only the first box: box B's throttle was suppressed (the response state was already `APPLIED`), B's release likewise, and the resolve fell inside the 30 s release+resolve coalescing window opened by A's release, so a consumer was told the incident was `RELEASED` while B was still throttled and never learned it resolved; `findings list` showed the same `THROTTLE RELEASED`. Now each box's apply, release, TTL expiry and failure is its own post naming the box, in the new `FindingResponse.container` (field 12) and in the post's top-level `container`; the delivery gate tracks the response state per (finding, box), while severity, the re-notify interval and the kill outcome stay per finding, so a miner respawning on several boxes is still about one post a minute. While any box holds an applied action the finding's stored and displayed response is that box's `APPLIED` record (`findings list` prints `response THROTTLE APPLIED on box-b`), not another box's release, expiry or failure. Releasing the last box records the release and resolves the finding in one write, delivered as one post with finding `state: 2` (resolved) carrying the `RELEASED` record; for a single box that is still one post on release, which now also says resolved. The time-window release+resolve coalescing is gone: every resolve is delivered. `ReleaseProcessActionResponse` gains `released = 3`, the released box's own record, which the CLI's `Released THROTTLE on <box>` line and the MCP tool use. A finding already held open by another box's applied action (not only a queued response) stays open on release; that part (#2779) already held since #2772 and now has a regression test. The response JSONB gains a `container` key; no migration (rows written before read with no box).
+- **The EKS/GKE and kind walkthroughs' `helm install` no longer fails on the hand-made gateway namespace** (#2776). The walkthroughs create `agent-gateway` by hand so the sshpiper Secrets exist before install, but the chart also renders it, and Helm 3 refuses to adopt a namespace without its ownership metadata (`invalid ownership metadata`). New `gateway.createNamespace` (default `true`, so the chart renders exactly what earlier releases did and upgrades are unchanged); the walkthroughs now pass `--set gateway.createNamespace=false`. Do not flip an existing release from `true` to `false`: Helm would delete the namespace and its Secrets on upgrade. Render tests pin the default, the walkthrough flags, and parity of the default Namespace with the previous chart.
+- **The store-integration lane no longer fails on the intentional opt-in test `TestCredentialDockerEndToEnd`** (#2847). The no-silent-skip guard counted its deliberate skip (it needs `CONTAINARIUM_CREDENTIAL_DOCKER_E2E=1` and a Docker fixture) as a quiet database. The guard now exempts an explicit allowlist of opt-in tests by exact name; every other `--- SKIP`, including subtests, still fails the job.
+- **A miner process killed by `kill_process` is now delivered by the finding webhook** (#2775). With the `ALERT` policy the kill leaves `response.state` at `NONE`, so the re-notify gate (#2718) saw no transition and the webhook never said a tenant's process was killed. The gate now also keys on the kill outcome: the first kill is a second delivery whose `response` carries `process_killed`, the host `killed_pid` and a `kills` count; later kills of a respawning miner are delivered at most once a minute with the latest pid; a skipped kill carries `kill_skip_reason` (enum `KillSkipReason`: PID_REUSED, PROCESS_GONE, CONTAINER_INIT, POLICY_UNREADABLE, OTHER; detail stays in the audit log). Under `THROTTLE`/`FREEZE` the `APPLIED` post carries the kill; a release, TTL expiry or orphan sweep on a box that killed names the finding's latest killed pid and count (a box that killed nothing writes no kill of its own and the stores keep the finding's kill whole, #2772), and a recorded skip reason is carried either way, so a refused kill keeps its reason on the `RELEASED` post. The first kill and the first skip of a finding are each immediate once; after that a changed outcome waits for the minute, so a miner that alternately dies and escapes the signal is one post a minute, not two. A re-fire that adds nothing (the same skip again, or `kill_process` turned off) neither rewrites the response nor reaches the webhook. `containarium security findings` prints the kill facts (`process killed (pid 25872, kills 3)`, `kill skipped: CONTAINER_INIT`) and `--json` carries `killedPid`, `kills` and `killSkipReason`. New `FindingResponse` fields `killed_pid = 9`, `kill_skip_reason = 10`, `kills = 11`.
+- **Exec telemetry no longer wakes the daemon once per exec** (#2774). On an 8-vCPU KVM guest at ~800 execs/s from a box, the kernel program plus the daemon's ring consumer cost ~7 % of host CPU against the < 1 % bar: every record was submitted with a wakeup (irq_work and, on a VM, an IPI), and the consumer woke in epoll for each one. `execwatch.bpf.c` now submits with `BPF_RB_NO_WAKEUP`, and `netbpf.ConsumeExecEvents` drains the ring on a Go ticker every `ExecDrainInterval` (50 ms) in one batch, reading with a deadline of now so it never sleeps in epoll, skipping the read when the ring is empty, reusing one record buffer, and re-draining at once after a drain of 256 or more records. A timer, not a blocking `epoll_wait` with a timeout: returning from a long blocking syscall wakes Go's sysmon into ~60 context switches per drain. The reader is closed only after the loop returns, because its `AvailableBytes` takes no lock. The added detection latency is at most 50 ms, inside the miner-signature rule's < 10 s budget. The exec ring grows from 1 MiB to 4 MiB (~5,090 records), so a host-wide burst has to exceed ~100,000 execs/s within one 50 ms interval before events are dropped; dropped events are counted in `exec-events-lost`, which operators should alert on (`docs/THREAT-DETECTION-SENTRY-GUIDE.md`). The record layout, cgroup filtering and the 5.8 kernel floor are unchanged. Pair the object with the daemon: an `execwatch.bpf.o` built before this change still loads and works on this daemon (the timer drain delivers its events; it just keeps the kernel-side wakeup cost), but an object built from this change on needs this daemon or newer — an older daemon blocks in an `epoll_wait` the kernel never wakes, so the ring fills and `exec-events-lost` climbs while `exec-telemetry` still reports `ok`. The `ebpf-load` lane's `TestExecWatch_OverheadMeasurement` now runs the exec load from a separate, steadily paced process, measures the program by `BPF_STATS_RUN_TIME` and the consumer by its process CPU, compares against the old per-record wakeup (an object loaded with `exec_wakeup_per_record` set, read by the old blocking loop), and fails above 1 % of host CPU. On the 4-CPU runner it measures ~0.1 % of host CPU at 1,000 execs/s, against ~0.7 % for the old shape. The old lane under-reported because its load generator shared the consumer's process.
+- **`containarium security exec-events` (and every other server-streaming REST call) no longer stops after the first event on a backend with an audit store** (#2773). The audit and metrics HTTP middleware response-writer wrappers had no `Unwrap()`, so grpc-gateway's per-chunk flush failed with `http.ErrNotSupported` and the stream ended with `unexpected type of web server`. The two byte-identical wrappers are now one shared `httpx.StatusWriter` with `Unwrap()`; the model gateway's status writer drops its own no-op `Flush()` (which shadowed `Unwrap` for `http.ResponseController`) and the events SSE handler flushes through `http.ResponseController` instead of a `w.(http.Flusher)` assertion, so it streams under the audited chain too (the 500 "SSE not supported" is kept only for `http.ErrNotSupported`). The REST chain (cors → auth → audit → `GuardSSHAuthzPath` → mux) is built by one `wrapHTTPHandler` that both the daemon and the streaming test call, so the test proves the production chain. `metrics.HTTPMetricsMiddleware` is not part of that chain (it is not wired in the daemon).
+- **A queued miner response is no longer cancelled by a release on another box** (#2766, follow-up to #2638). Miner-signature findings are keyed per tenant and pattern, so two boxes of one tenant running the same miner share one finding; the queued-response guard read the release from that shared finding, so releasing box A (or A's TTL expiring) silently skipped box B's queued throttle, freeze or kill. The worker now checks the release on the job's own box and for the job's own finding (that box's latest `security_actions` row for the finding; a release of another finding's action on the same box does not count); a release on that box, or a resolve of the finding, still skips the job and is audited `response-skipped`. A store read that fails no longer skips the job (the worker reads again under its lock and otherwise acts on the queued copy); only a definite release or resolve does. A queued job's time is truncated to the microsecond, the precision of the stored `released_at`, so a release in the same microsecond still skips it. An operator release leaves a shared finding open while another box still holds it — an action still open on that box, or a response queued for it — (`release` audit `finding_kept_open=true`; `ReleaseProcessActionResponse.finding_kept_open`, and the CLI and MCP tool say `Finding #N kept open: another box still has a response`), and it is resolved when the last box is released. If that last queued response ends without an action (an ALERT policy, a degraded backend, a policy read error, a failed apply, or a skip) the worker resolves the finding itself (audited `resolve`) rather than leave it open with nothing to release. The response always targets the box whose exec matched. `process_killed` is now sticky in the finding store (both Postgres and in-memory): once a kill is on record for a finding no later response clears it, including a release, TTL expiry or orphan sweep on a box that killed nothing, whose own record carries only that box's `killed_pid`; it is also recorded when the policy read fails after the kill. The sentry guide lists two remaining baseline false positives (`curl -ofile:3333`, a scheme-less `--url=localhost:4444`).
+- **The finding webhook now reports what the process responder did** (#2718, part of #2711). The webhook was queued when a finding was recorded, before the responder acted, and recording the response never notified, so the only delivery for a mining finding said `response: NONE` and an operator learned of the throttle, its release, expiry or failure only by polling. A response transition (`APPLIED`, `FAILED`, `RELEASED`, `EXPIRED`) is now delivered at once, inside the re-notify interval, the way a severity escalation is; a repeat with an unchanged response is still suppressed. An operator release, which also resolves the finding, is one delivery (the release), not two; a TTL expiry or orphan-sweep release leaves the finding open, so its later resolve is still delivered.
+- **`containarium security sentry status` no longer reports OK while the process responder is ALERT-only** (#2719). When findings were persisted but the `security_actions` store failed to initialise, or the responder could not be constructed, THROTTLE/FREEZE policies were silently inert. The status is now `DEGRADED (<cause>): responses disabled` (e.g. `DEGRADED (security_actions store unavailable): responses disabled`), and the sentry-health loop raises a MEDIUM sentry-unavailable finding for it, as it does for a missing CPU sampler.
+- **`agent-runtime-bundle.tar.gz` and the Helm chart `.tgz` are now listed in the release's `SHA256SUMS.txt`** (#2702). Both were on the Release page with no checksum in that file, as was `sdlc-skills.tar.gz`; the first two steps in `build-and-release` now append the bundles, and the chart job downloads, appends and re-uploads the file (before `sign-release` signs it). `release.yml` fails before publishing if a listed file does not match. Not listed by design: the air-gapped install bundle (covered by its `.sha256` sidecar), the `.sha256` sidecars, `SHA256SUMS.txt` itself and the `.sigstore.json` signatures. `docs/RELEASE-PROCESS.md` has the verification command.
+- **Backup dumps are streamed with bounded staging instead of being buffered whole** (#2303, #2838). Create streams the container dump through optional age encryption into a private staging file while hashing the stored bytes; Restore and Verify hash the whole stored archive first and decrypt straight into the target container's temporary file, and the complete age stream must authenticate through EOF before any `pg_restore` runs. Encrypted plaintext is never staged on the daemon host, and failed or partial target files are removed. Plaintext and stored ciphertext are each limited to 16 GiB by default (`WithMaxDumpBytes` sets another bound); an oversized source, downloaded object or archive fails with `backup dump exceeds size limit` and no partial backup is indexed. GCS downloads stream through the same bound even when recorded metadata understates the size, with unique temporary files removed on failure or close. The Incus client streams file uploads without buffering; a forward-only stream cannot replay after an HTTP redirect and fails explicitly. See `docs/DB-BACKUP-OPERATIONS.md`.
+- **SSH audit records are no longer lost at sentinel shutdown** (#2830; follows #2419). The ssh-ban plugin stops accepting callbacks and control RPCs, waits for in-flight ones, then sweeps and reports open failure windows and drains the queue before closing the sink. The whole shutdown is bounded at 5 seconds; on deadline it is logged ("queued or final audit records may be lost") and the sink stays open until the recorder returns instead of being closed under it.
+- **False credential-expiry alerts for refreshable sign-ins are gone** (#2790, #2833). For Claude, the daemon now alerts only when the access token has been expired for more than 24 hours or a run failed with a typed authentication error; one recently expired, refreshable token no longer alerts, even across sweeps. The agent runtime records OAuth-sourced failures as metadata-only episodes (`~/.local/state/containarium/claude-auth-state.json`, 0600, no credential values); the daemon consumes them through `agent-runtime-credential-state snapshot/ack` and persists them in `code_credential_watch_episodes`, so episodes survive restarts and a failure, recovery, failure sequence between sweeps still alerts twice. `containarium agent credential-status` still reports raw expiry. The in-box helper ships in the agent-runtime bundle; see Upgrading.
+- **A console-attach WebSocket upgrade follows the terminal route's `Origin` rule** (#2721, #2739). Both routes share one upgrader (origin policy, refusal body, `Sec-Websocket-Version: 13`), so console attach no longer carries its own separate origin check.
+- **A race in the in-memory threat-finding store is fixed** (#2748, #2758). `MemFindingStore.Upsert` read the stored finding after releasing its lock and returned the shared pointer; it now hands out a copy taken under the lock.
+
+### Documentation
+
+- **Contributor rules for dependency, build and CI changes** (#2796, part of #2649). `CONTRIBUTING.md` gains a "Dependencies, build and CI changes" section (the paths we review closely, how to propose a new dependency, the checks CI runs today, and the supply-chain gates that are still planned), `SECURITY.md`'s scanning section now lists the licence gate, release SBOMs and cosign signing beside gosec, govulncheck and Trivy, and a new pull request template carries a checklist for the repo's conventions.
+- **`docs/security/PROCESS-GUARDRAIL.md`: operator guide to the process guardrail** (#2639, part of #2711; reconciled with the second verification pass). One page on how to turn the guardrail on safely: the three rules (`mining-behavior`, `miner-signature`, `sentry-unavailable`), the policy ladder `ALERT`, `THROTTLE`, `FREEZE` and the optional `kill_process`, release and TTL semantics, exec telemetry (kernel floor, status lines, the measured overhead), the rollout order (sentry armed, about four weeks of `alert`, `throttle`, `freeze`), webhook response delivery, the evasion limits, and what a tenant with root can and cannot do. Command samples (`sentry status`, `process-policy get`, `exec-events`, `miner-signatures list`, `findings list`, release messages, webhook posts) follow the verification pass's real outputs; the measured overhead is 0.063 % of host CPU above idle at 1,000 execs/s. The known webhook limitation for a finding shared by several boxes is noted with #2820.
+- **`docs/EKS-GKE-DEPLOY.md` walkthrough fixes** (#2771, #2776). The gateway upstream key is created before the Helm install examples, the install commands pass `gateway.upstreamKeySecret` and `gateway.upstreamPublicKey`, the flow is clarified, and the `gateway.namespace` fail message now tells you to disable gateway routing with `--set gateway.enabled=false --set gateway.namespace=""`.
+- **`TRADEMARKS.md` and the SSH live-authorization design** (#2752, #2756, #2514). A trademark policy with no response-time promise, and a design note for live SSH authorization, device approval and key rotation (`docs/SSH-LIVE-AUTHORIZATION-DESIGN.md`).
+- **Sentry guide covers the process responder, the standalone CPU sampler and the new finding types** (#2717, #2723).
+
+## [0.109.0] - 2026-10-19
+
+### Added
+
+- **`containarium create --no-auto-sleep`, the `disable_auto_sleep` create field and the MCP `create_container` input `disable_auto_sleep`** (#2759, criterion 2). The opt-out for a hosted platform that defaults some orgs to a 30-minute idle-stop; a standalone daemon never enables auto-sleep unless `idle_stop_minutes > 0`, so it ignores the field. Combining it with `--idle-stop` is rejected (`InvalidArgument`). New proto field `CreateContainerRequest.disable_auto_sleep = 28`; the client `CreateContainer` helpers gain a `disableAutoSleep` argument.
+- **CI blocks dependencies with a non-allowed licence** (#2561). New `licenses` workflow runs `scripts/ci/check-licenses.sh` (go-licenses over the full transitive graph of the daemon, platform MCP, agent-box, model gateway and the client CLI) when `go.mod`/`go.sum` change and weekly. Allowed: Apache-2.0, MIT, BSD-2/3-Clause, ISC, Unlicense, MPL-2.0; GPL, AGPL, LGPL, SSPL, BUSL and unrecognised licences fail. Today's graph passes; the only exception beyond this repo is `rootless-containers/proto/go-proto` (no licence file in the module, Apache-2.0 upstream). Policy and exceptions: `docs/security/DEPENDENCY-LICENSES.md`.
+- **Each release attaches an SBOM for every Linux binary** (#2561). `release.yml` runs syft (pinned) over `containariumd`, `containarium`, `mcp-server` and `agent-box` for linux/amd64 and attaches `<binary>-linux-amd64.spdx.json` (SPDX 2.3, read from the shipped file's embedded module list) to the GitHub Release; each is listed in `SHA256SUMS.txt`, and the build fails if a document has no packages. The release notes gain an "SBOMs" section. Container images already carried their own SBOM and provenance. Not covered: the `agent-runtime` Node bundle, and the darwin/windows builds (same modules as the Linux builds). `scripts/release/generate-sboms.sh <dir>` reproduces it locally.
+- **Failed SSH authentications and bans reach the tamper-evident audit store** (#2419, ISO 27001 A.8.15). The sentinel's `ssh-ban-plugin` takes `--records-file` and writes what it already counts per source IP into the SSH session records file, so the existing shipper delivers it: `ssh_auth_failed` (one row per source IP when its ban window ends below the ban budget, with the failure count), `ssh_banned` (one row per ban, with the failure count and when it lapses) and, when the volume cap is hit, one overflow `ssh_auth_failed` row per minute carrying `suppressed_count`. They have no login, target or credential, and go to the sentinel's `--ssh-session-default-backend` (without one they are skipped like any unroutable record). Volume is bounded: one row per source per window, at most `--audit-max-records-per-minute` (default 600) summaries a minute, bans never capped, and the authentication path only enqueues. New wire phases `SSH_SESSION_PHASE_AUTH_FAILED` and `SSH_SESSION_PHASE_BANNED` with fields `failure_count`, `banned_until`, `ban_listener`, `suppressed_count`. Off by default (Terraform `ssh_ban_audit_records`). Upgrade backends first: an older backend rejects the new phases and the shipper stops shipping to it until upgraded. The journal line fail2ban reads is unchanged. See `docs/SENTINEL-SSH-SESSION-AUDIT.md`.
+- **A release now proves the tunnel client and sentinel work together before it is published** (#2469). `scripts/ci/tunnel-smoke.sh` runs the built `containariumd` as a sentinel and as a tunnel client (pin read with `sentinel tunnel-identity`, registration asserted over TLS, a request round-tripped through the tunnel), and a second step repeats it with the previous release's `containariumd` as the client. Both run in `release.yml` before the GitHub Release is created. Checked by hand: it passes on v0.101.2 and the current build and fails on v0.101.1, the release that shipped a client requiring a pin its sentinel could not supply. `docs/RELEASE-PROCESS.md` gains an upgrade-notes and paired-change checklist for the release PR.
+
+### Changed
+
+- **The terminal WebSocket's no-`Origin` exemption follows a validated bearer, not a present one** (#2696, follows #2698). Since #2698 the terminal route accepts an upgrade with no `Origin` from a non-browser client that sends a bearer in `Sec-WebSocket-Protocol` or `Authorization`. The upgrader now grants that only when the route wrapper has run `ValidateToken` on that bearer and recorded it on the request context, so a request that reaches the upgrader with an unvalidated bearer is refused with `origin required`. Allowed-origin handling, the 403 bodies, token validation and the tenant check are unchanged.
+- **`InstallClamav` is owner-only, like the scan trigger** (#2692, follows #2655). Installing ClamAV runs commands inside the customer's box, so only the box's owner may ask: an administrator no longer bypasses the check, and a system container is refused. A service credential carrying the literal `security:trigger-for-owner` scope (the managed control plane acting for an owner it already authorized) still passes, as for `TriggerClamavScan`. A box on a peer backend is checked again by the daemon that owns it.
+- **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
+
+### Fixed
+
+- **The Helm chart pins the sshpiper gateway image to the chart's appVersion, and the required gateway value is documented** (#2703, #2725).
+- **Each release publishes a `.sha256` for the Helm chart** (#2697, #2699). The `helm-chart` job attaches the chart after `SHA256SUMS.txt` is already written, so the chart had no checksum anywhere; it now uploads `containarium-k8s-<version>.tgz.sha256` beside the chart, matching the SDLC skills and air-gapped bundles. `docs/RELEASE-PROCESS.md` now describes the real asset set and the chart checks in verification.
+
+## [0.108.0] - 2026-10-19
+
+### Added
+
+- **The Kubernetes Helm chart is versioned and published with each release** (#2574). The release workflow stamps `containarium-k8s` with the release version (chart `version` = the tag without `v`, `appVersion` = the exact `vX.Y.Z` image tag), renders it to check the daemon image is that release's, pushes it to `oci://ghcr.io/footprintai/charts/containarium-k8s`, attaches the `.tgz` to the GitHub Release, and prints the chart version and an install command in the release notes. The in-repo `Chart.yaml` now carries development placeholders (`0.0.0-dev`, `latest`) instead of `0.1.0`; the `helm-lint` job proves a stamped chart renders its own release image. `docs/EKS-GKE-DEPLOY.md` documents installing a released chart and what CI actually exercises. Not done: signing the chart (waits on the release-signing work, #2561) and an install/upgrade test of the published chart against a cluster.
+
+- **`process-policy set` changes only the fields it carries** (#2675). A request used to replace the stored policy wholesale, so tuning the mining thresholds wiped the configured action, allowance and TTL (the result depended on the order of two `set` calls) and a lone `--action` dropped the allowance and TTL. An unset action, `throttle_allowance` or `ttl` now keeps its stored value, at the backend default and on a container override; a thresholds-only set on a fresh backend stores no policy.
+- **The mining-behavior window has a floor: 3 minutes** (#2674). At the 30 s CPU sample cadence a window under about 150 s can never meet the rule's coverage requirement, so it was accepted and then never fired (verified on a live guest: samples=4 coverage=1m30s against 96 s needed for a 2 m window). `process-policy set --rule mining-behavior --window` now rejects windows below `MinMiningWindow`, and a test drives every accepted window on the real cadence.
+- **THROTTLE is now a hard CPU cap** (#2676). The process responder wrote the policy's `10%` straight to Incus as `limits.cpu.allowance`, which Incus reads as a soft share: on a verified host the kernel `cpu.max` went from a 2-core quota to `max` and the "throttled" box still ran at 2.0 cores. `throttle_allowance` now means N percent of one core and is applied as the hard quota `Nms/100ms` (an explicit `Xms/Yms` is kept), never looser than the box's existing hard cap. Release still restores the recorded limits verbatim. The real-Incus e2e now reads the kernel's `cpu.max`.
+- **The sentry-unavailable finding now also fires when the CPU sampler cannot run** (#2660). An armed backend whose `cpu_sampler` status begins `unavailable` (for example no metrics collector and no usable Incus client, #2645) is blind to CPU, so the `mining-behavior` rule cannot fire; it now raises the same MEDIUM `SENTRY_UNAVAILABLE` finding with the stable subject `cpu-sampler unavailable` (the sampler's detail is in the evidence note), combined with any other sentry fault in one finding, and resolved when the sampler reports `metrics-collector` or `standalone (30s)`.
+- **`containarium security clamav install <box>` installs ClamAV and its signatures inside a box** (#2659, part of #2631). Needed for the tenant-run malware scan, which reports `not_installed` otherwise. Started by the box owner; the install runs in the box and the result is a typed `ClamavInstallOutcome` (installed, already present, unsupported OS family, unsupported size under 4 GB RAM, failed) with a fixed message, no package output kept. Idempotent. Also the `install_clamav` MCP tool and `POST /v1/security/clamav-install`. Debian/Ubuntu boxes only; boxes on a peer backend are not forwarded yet.
+- **Malware scans run inside the tenant's own box** (#2658, part of #2631). A requested ClamAV scan now executes in the box as the unprivileged `nobody` user holding only `CAP_DAC_READ_SEARCH` (read bypass, no write), bounded by a 30-minute `timeout`, instead of mounting the tenant's rootfs into a platform container. Only a clean `clamscan` exit with no findings is `clean`; error, timeout, out-of-memory kill, a stopped box and an unreadable result are `incomplete` with a reason, a box under 4 GB RAM is `unsupported_size`, and a box without ClamAV or signatures is `not_installed`. The stored report keeps signature names with counts, never file paths. `ClamavReport` gains `status_enum` (new `ClamavScanStatus`) and `reason`; the string `status` is unchanged. A second request while a scan is pending or running returns `AlreadyExists`. The verdict is self-reported by the box.
+- **MCP tools for the process policy: `security_process_policy_get`, `security_process_policy_set`, `security_process_policy_release`** (#2666, part of #2641). Thin wrappers over the same `/v1/security/process-policy` routes `containarium security process-policy get|set|release` calls, using the generated protobuf types; the action is the proto enum (`ALERT`, `THROTTLE`, `FREEZE`) validated before any request is sent. `get` needs `security:read`; `set` and `release` need `security:write` (the daemon still requires admin). The mining-behavior thresholds stay CLI-only.
+- **An armed backend whose threat sentry is not running raises a finding** (#2634). With `CONTAINARIUM_THREAT_SENTRY=1` set, a new sentry-health loop checks `GetSentryStatus` at daemon start and every 60 s; while the state is `UNAVAILABLE` or `DEGRADED`, or a rule is unhealthy, it upserts a MEDIUM `SENTRY_UNAVAILABLE` finding (new `ThreatRuleId` 8, no tenant or container) whose subject is the reason `containarium security sentry status` prints (an unhealthy rule's error text is dropped from the subject so a varying panic message still dedupes, and kept in the evidence note), delivered to the findings webhook like any other finding. A changed reason opens a new finding and resolves the old one; recovery resolves it, including a row left open by an earlier daemon process. The finding store and webhook notifier are now built whenever the sentry is armed and the audit store is up, not only when the eBPF object loaded. An unhealthy rule now also appears in the status `reason` (`rule <RULE> unhealthy: <error>`). A backend without the variable set runs no loop and raises nothing. Not covered: with no audit store (no Postgres) no finding can be recorded; the daemon logs a warning and the status still reports `UNAVAILABLE`.
+- **Threat detection flags cryptomining behaviour** (#2635). A new HIGH rule, `THREAT_RULE_ID_MINING_BEHAVIOR`, fires when a container's mean CPU over a 5-minute window reaches `min(1.5 cores, 0.75 × its limits.cpu)` while it holds a flow of at least 3 minutes to a stratum port (3333, 4444, 5555, 7777, 14444, 14433) or a listed bad destination; subject is the destination `ip:port` and the evidence carries a CPU summary (mean, peak, window, samples) plus the flow's 5-tuple, bytes, first/last seen and what matched it (`port:<n>` or `bad-destination:<cidr>`; new `FlowEvidence` fields `first_seen`, `last_seen`, `matched`). CPU comes from the metrics collector's existing per-container read (no new Incus polling). Thresholds are persisted under the daemon config key `threatdetect.mining_behavior.thresholds`; window is capped at 128 min; the CLI to set them follows in #2636.
+- **The mining-behavior rule works without a metrics collector** (#2645). When the threat sentry is armed and no metrics collector runs (no VictoriaMetrics URL, e.g. BYOC hosts), the CPU sampler polls Incus itself every 30 s — one `GetContainerMetrics` call per running container, stopped containers never queried — and feeds the same CPU-sample path; where the collector runs, it stays a hook on the collector and no second poller starts. `containarium security sentry status` prints the source as `cpu-sampler: metrics-collector`, `cpu-sampler: standalone (30s)` or `cpu-sampler: unavailable (<reason>)` (new `GetSentryStatusResponse.cpu_sampler` field, also in the MCP `security_sentry_status` output).
+- **The sentinel can enforce live SSH authorization: `ssh-authz-plugin --ssh-authz-enforce`** (#2520). Off by default; audit-only behavior is unchanged. When on, a key the backend's daemon denies is refused at the sentinel, and yaml's static `authorized_keys` is never consulted for it. Every deny reason counts, including `UPSTREAM_UNAVAILABLE` once the outage grace (`--ssh-authz-grace`, 5m) has passed, so a backend outage longer than the grace window refuses new raw-key logins. Each refusal appends a `denied` record with `enforced=true` to the session JSONL (`--records-file`), which is shipped as an `ssh_session_denied` audit row; open and close rows of enforced sessions carry `enforced=true`. The plugin reopens the file on SIGHUP, and the module's logrotate stanza also signals an `ssh-authz-plugin` running with `--ssh-authz-enforce` (never an audit-only one, so an older binary is not stopped by rotation). The Terraform module gains `ssh_authz_enforce` (default `false`). Known gap: sshpiperd v1.6.1 moves its plugin chain only forward, so a client that first offers a deferred credential, such as any certificate, can then log in with a denied key that is still in the static file. See `docs/SENTINEL-SSH-AUTHZ.md`.
+- **Process policy: what a HIGH mining finding does to its box — `ALERT` (default), `THROTTLE` or `FREEZE` — with one-command release and a TTL backstop** (#2636). `ProcessPolicy` is stored per backend with an optional per-container override (effective policy = override → backend default → built-in `ALERT`/`10%`/24h), through `GetProcessPolicy`/`SetProcessPolicy` (`/v1/security/process-policy`). A responder behind the finding store acts once per container: `THROTTLE` records the box's `limits.cpu`/`limits.cpu.allowance` in the new `security_actions` table and sets the allowance; `FREEZE` pauses the instance through Incus with memory and disk kept. `ReleaseProcessAction` (`POST /v1/security/process-policy/release`) restores exactly what was recorded and resolves the finding; an action nobody releases is undone after its TTL and a MEDIUM `PROCESS_ACTION_EXPIRED` finding says so. Every apply, release, expiry and failure is an audit entry (`security.action`) and the finding carries a `response` field. `process-policy set` with `mining_behavior` writes the mining-behavior thresholds (#2635) to the same config key the rule reads. On a backend without Postgres the responder applies `ALERT` only, whatever the policy says. The Incus client gains `FreezeContainer`/`UnfreezeContainer` and the raw `SetCPUConfig`. CLI: `containarium security process-policy get|set|release`; `security sentry status` reports `DEGRADED (no persistence): responses disabled` when findings are not persisted.
+- **`TERMINATE_USER_SESSIONS` orders are scoped to an org's boxes on shared hosts** (#2546). The order now honours the assignment's `org_id`: when set, sessions end only on boxes owned by that org (and a skipped box's host jump account is left alone); unset keeps the whole-host behaviour, and the operator-facing `TerminateUserSessions` RPC is unchanged. A box whose tenant cannot be matched to the org is skipped, not guessed, so an order must carry the same org id the platform stamps on that org's boxes; a mismatch ends nothing. No proto change.
+- **Bridge DNS drift raises gauges and built-in alerts** (#2194). After every finished pass the bridge DNS reconciler records `bridge_dns_in_sync`, `bridge_dns_drift_passes`, `bridge_dns_last_pass_timestamp` and `bridge_dns_last_applied_timestamp`, and the built-in vmalert rules gain a `bridge_dns_alerts` group: `BridgeDNSOutOfSync` (critical, 10 m), `BridgeDNSReconcilerStale` (warning, no finished pass for 5 m) and `BridgeDNSDriftRepeating` (warning, more than 3 drift passes in an hour). `bridge_dns_in_sync` is not recorded while the bridge has no record and the operator has not opted in to creating one, since that state is a choice and not a fault; the pass timestamp still is, so a stopped loop is still caught. A host without the reconciler emits no series. Not exercised against a live vmalert.
+- **The Gemini engine's run journal says how the model's turn ended** (#2513; the issue's items 2 and 3 are still open). When the model returns no final message, or finishes for a reason other than `STOP`, the journal gains a `status` row with the finish reason, the API's own finish message (capped at 200 characters) and any prompt-block reason; a normal `STOP` with a final message adds no row, and no model output is copied into it. Gemini engine only; the Claude and Codex engines are unchanged.
+
+### Changed
+
+- **Only the box owner can start a ClamAV scan; the admin role no longer bypasses** (#2655, part of #2631). `TriggerClamavScan` now requires the caller's subject to be the box's owner (new `auth.RequireContainerOwner`), so an operator's admin token gets `PermissionDenied` and system containers are always refused. A service credential that has already authorized the owner (the managed control plane's driver token) passes with the new literal scope `security:trigger-for-owner`; neither the wildcard scope nor an unscoped token carries it. Reads of reports are unchanged. `InstallClamav` is not switched in this change.
+- **Auto-quarantine no longer releases on a `clean` ClamAV verdict** (#2654, part of #2631). The scan is moving inside the tenant's own box (#2631), so its verdict is self-reported and a compromised box could otherwise lift its own quarantine. An `infected` verdict still blocks the tenant's egress (24h TTL, refreshed by each infected scan); release is now by an operator removing the `auto-quarantine: clamav malware` deny rule, or by the TTL. The ClamAV summary counts are documented as self-reported.
+
+### Fixed
+
+- **`InstallClamav` is forwarded to the backend that owns the box** (#2683, part of #2631). `containarium security clamav install <box>` and the `install_clamav` MCP tool ran only against the daemon you asked, so a box on a peer backend failed with a local lookup error. The install now goes to the owning peer exactly as `TriggerClamavScan` does: the caller's token is passed through, an owning peer that cannot be reached is reported as unreachable instead of falling through to the local lookup (which would call the box missing), and a peer older than the install route answers `Unimplemented` ("backend too old"). The forwarded call is not bound by the peer client's 30 s timeout (an install takes minutes; a 20-minute context bounds it), and its body is marshalled as JSON rather than formatted by hand. A test also pins that a per-box scan for a peer's box is queued on the owning peer, not locally.
+- **`containarium create --idle-stop` help states the real default** (#2673). It said "Empty = no auto-sleep", which is wrong on the hosted platform, where an org billed per seat defaults to a 30-minute idle-stop. The help and `docs/integrations/pi.md` now give both defaults. The matching opt-out needs a contract decision and is not part of this change.
+
+- **`process-policy get` shows the mining-behavior thresholds the rule is using** (#2675). It printed the stored message, whose fields are zero for anything never set (`min cores 0`, empty ports), instead of the effective values; it now prints the effective thresholds.
+
+- **Correction: v0.107.0 did not restore malware scans** (#2656, part of #2631). The v0.107.0 note that malware scans can read root-only files again was wrong. Running `clamd` as root inside the scanner container does not help, because the tenant rootfs is owned by host root and that user is unmapped in the scanner container's user namespace, so every scan was still recorded `incomplete`. Malware scanning is being rebuilt to run inside the tenant's own box, started by its owner (#2631). The ISO 27001 A.8.7 row is downgraded to Partial, the README no longer lists ClamAV as a platform-wide scan, and `docs/security/SECURITY-FAQ.md` states what the platform does and does not read.
+- **Persistent findings reach the webhook once per interval, not on every upsert** (#2643). A condition that stayed true re-posted every evaluation cycle (a bad-destination flow every 15 s, `SENTRY_UNAVAILABLE` once a minute) because only the stored row deduped, not the delivery. A finding is now delivered when it is new, when its severity escalates, when the re-notify interval has passed (default 1 h, `CONTAINARIUM_THREAT_WEBHOOK_RENOTIFY_MINUTES`), and once when it resolves. **Behaviour change:** resolutions were never delivered before, so a configured webhook now also receives one with `state: FINDING_STATE_RESOLVED`. The gate is in memory: after a daemon restart an open finding is delivered once more on its next write.
+- **The Cloud Monitoring host dashboard reads the series that v0.100.0+ hosts actually write** (#2608; not closed, the live import is still to be checked). All 15 widgets now select `resource.type = "prometheus_target"` with `prometheus.googleapis.com/containarium.<name>/gauge` or `/counter`, instead of `workload.googleapis.com/…` on `gce_instance`; hosts older than v0.100.0 need their own copy of the dashboard. A CI test now rejects the old series type named as current anywhere under `deploy/` or `docs/`. Not verified against live ingestion: someone with a project and a v0.106.0 host should import the JSON and check every tile.
+
+### Removed
+
+- **The platform no longer starts malware scans, and no longer mounts tenant rootfs into the security container** (#2657, part of #2631). Removed: the scan 5 minutes after daemon start, the 24-hour scan loop, the scan 2 minutes after a box is created, and scan-all (`TriggerClamavScan` with a blank `container_name` is now `InvalidArgument` for an admin; the web UI's "Scan All" button is gone). The disk-device mount of a tenant's rootfs and ClamAV provisioning in the security container (including v0.107.0's clamd-as-root change, which did not help) are removed; the security container stays for the ZAP scanner. A scan requested for one box now records an `incomplete` report (never `clean`) until the in-box scan runner lands. `--disable-security-scanner` now only skips the scan job queue and report store.
+
+### Internal
+
+- **The box-run start tests no longer race their own temp dir, and skip on non-Linux** (#2677). A run started by a test kept writing its log and exit sidecar after the test returned, so `t.TempDir`'s cleanup intermittently failed with `directory not empty` in CI (`TestStartBoxRun_RotatesAFinishedRunUnderTheSameName`). The shared `boxRunStartServer` helper now drains every run the test started before the directory is removed. The same tests failed on macOS because the spawn and stop scripts use `setsid` and `ps -eo`, which only exist in the Linux boxes they model; they now skip there with that reason.
+
+## [0.107.0] - 2026-10-18
+
+_Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._
+
+### Fixed
+
+- **Malware scans can read root-only files again** (#2631). The scanner container's `clamd` ran as the unprivileged `clamav` user, so scanning a tenant rootfs hit `Access denied` on `/etc/shadow`, `/etc/sudoers` and every other root-only file, `clamdscan` exited 2, and every scan was recorded `incomplete` (before #2496, falsely `clean`). `clamd` now runs as root inside the unprivileged, read-only-mount scanner container; new hosts are provisioned that way and existing hosts are converged on daemon start (clamd restarts once, reloading its signature database). Not covered: tenants created `security.privileged=true` keep host-uid-0 files the unprivileged scanner container cannot map, so their scans stay `incomplete` until that is addressed separately.
+- **The metrics-export docs and a code comment named the wrong Cloud Monitoring series after the OTLP migration (v0.100.0)** (#2609). Since the OTLP exporter the series are written in Google's Prometheus namespace on a `prometheus_target` resource (`prometheus.googleapis.com/<name>/gauge` for gauges, `.../counter` for monotonic counters), not as `workload.googleapis.com/<name>` on `gce_instance`. `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md` and the quickstart gave alert and Metrics Explorer filters for the old type, so a policy built from them is created without error and never selects any data; the filters in the heartbeat, provisioning-failure and backup-health examples now match a live v0.106.0 host. The sentinel and `platform.tunnel.state` examples follow from the instrument kinds in the code but have not been observed on a live host and are marked as such. The runbook also told operators to run `gcloud monitoring metrics-descriptors list`, which no current SDK has; it now uses the REST `metricDescriptors` call, and a new section explains the mapping and how to check that a filter selects data. The stale dashboard `deploy/monitoring/gcm-containarium-hosts.json` is tracked separately in #2608.
+- **Threat detection's deny-burst rule no longer fires on observation-only traffic** (#2612). The BPF program emits a deny event for a `log_only` would-deny exactly as for a real drop, and the rule counted both, so the documented "sentry without enforcement" setup raised MEDIUM fence-probing findings for traffic nothing blocked. The rule now counts enforced drops only; set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=true` to count would-denies as well. See `docs/THREAT-DETECTION-SENTRY-GUIDE.md` for a soak-first procedure.
+- **A managed `TERMINATE_USER_SESSIONS` order resolves the control plane's user id to a local login** (#2602). The decider now remembers `(credential, control-plane user id, local login)` for each managed SSH ALLOW (in memory; DENY decisions are never recorded), and the terminate handler walks those logins. An id that maps to nothing is reported as unmapped (`ssh_sessions.terminate_assignments{outcome="unmapped"}`, kept apart from `ended`) instead of counting as success. After a daemon restart a user is mappable again on their next login.
+- **`network-guard status` no longer reports a hand-made VM as managed because of the sshd posture marker** (#2619). `user.containarium.sshd_policy` is stamped on every box the posture reconciler brings under policy, including ones Containarium does not own, and any `user.containarium.*` key used to count as ownership. Posture markers are now excluded (a deny-list, so an unknown future `user.containarium.*` key still counts as ownership and never hides an unguarded tenant), and the status output states why each entry is unresolved.
+- **The startup base-script reconcile no longer runs a package-index update, and skips core containers** (#2617). On every daemon start the `ntp` base script (only `timedatectl set-timezone`) ran `apt-get update` first on every running container, generating mirror traffic and a warning per container where it failed. A base script with no packages now skips the update, core-role containers are excluded, and the per-container warnings collapse into one summary line. The root cause of the `Command not found` seen on some containers is not established.
+
+### Added
+
+- **`containarium.backup.health_read_failures`, an alertable signal when the backup-health read fails** (#2305). A persistent read fault (permissions, disk, corruption) used to drop every tenant from `containarium.backup.last_success_age_seconds` with only a log line, and a threshold alert on a series with no points never fires. The new cumulative counter (labels `backend_id`, `hostname`, `region`; no tenant label) is emitted on every tick including zero, so alert on `increase > 0`. It resets on daemon restart. See the backup runbook.
+
+### Removed
+
+- **The unused `pkg/core/coresys` package** (#2624). It had no importers and its constructor fell back to a hardcoded default PostgreSQL password; it never ran, but it read as a hardcoded credential in a public repo.
+
+## [0.106.0] - 2026-10-16
+
+_GCP metrics export works again, scheduled backups stop depending on a token that silently expires, live SSH authorization gets an audit stage and a kill switch, and CLI errors stop printing credentials._
+
+### Fixed
+
+- **GCP metrics export uploads were rejected on every tick since v0.100.0** (#2590). Google's OTLP ingestion reads the target project from the `gcp.project_id` resource attribute; the OTel GCP detector reports it as `cloud.account.id`, so every upload failed with `Resource is missing required attribute "gcp.project_id"` and no host, platform or backup-health series reached Cloud Monitoring. The exporter now maps `cloud.account.id` to `gcp.project_id`, falling back to the Application Default Credentials project, and keeps an existing `gcp.project_id` untouched. Hosts with export already enabled recover on the first daemon restart after upgrading; check `containarium monitoring export status` for an empty `last error`. The backup-health series (`containarium.backup.last_success_age_seconds`, #2294) belongs to the `platform` group, which is not enabled by default: `containarium monitoring export enable --provider gcp --groups host,platform`.
+- **CLI errors no longer print credentials** (#2595). A secret-valued flag whose default came from an environment variable (`--token` from `CONTAINARIUM_TOKEN`, `--tunnel-token`, `--sentinel-auth-secret`, and the four `sentinel` `--secret` flags) had its value rendered as the flag's default, so any command that made cobra print usage (bad arguments, a failed API call, `--help`) wrote the full secret to the terminal or CI log. The displayed default is now blank; the flag still takes its value from the environment, with unchanged precedence. A test walks the whole command tree and fails any secret-named flag that advertises a default.
+- **A failed `clamdscan` run is recorded as `incomplete`, never `clean`** (#2496). `clamdscan` exits 2 on a scan error with no `FOUND` lines, so a status derived from stdout alone read as clean and fed the auto-quarantine release path. Findings still classify as `infected` even when the scan also errors; an error without findings is `incomplete`, with the exec error and stderr kept in the report, and the auto-quarantine hook ignores it. The security summary RPC does not count `incomplete` yet. The clamd configuration investigation in the issue is operational and still open.
+- **`network-guard status` no longer reports DEGRADED because of an instance Containarium does not manage** (#2396). The tenant guard put every instance it could not attribute to a tenant in `unresolved`, which degrades the verdict, so a host with any hand-made instance or VM read DEGRADED permanently and `network-guard status` exited non-zero. An instance that carries no `user.containarium.*` config key is now listed under a new `unmanaged` list (`GuardStatus.unmanaged`, proto field 10, additive; printed as `unmanaged:` lines and carried in `--json`). It is shown, left unguarded, and never degrades the verdict. An instance that does carry Containarium keys but still resolves to no tenant stays `unresolved` and still degrades. The host-level `containarium doctor` posture check reads Incus directly and is unchanged.
+- **A dispatched agent run is told where its checkout is, and an empty run says why it failed** (#2512, #2513). The runtime does not read `workspace.json`, so file tools rooted at the home directory. The workspace seed now appends the checkout path and commit to the run's system prompt when the fetch succeeded. An empty final message is logged with the run id, and the dispatch failure reason names the broken contract. Binding the checkout in the runtime itself, and journalling the model's final message, remain open on the issues.
+
+### Changed
+
+- **`containarium token generate` fails loudly on an out-of-range `--expiry`** (#2592). `--expiry 0`, an empty value, a negative value, or anything above the cap (720h by default, `CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS`) now exits non-zero with a message naming the cap, where it previously produced a token capped at 30 days without saying so. Human output always prints the actual expiry. The `--help` text no longer promises non-expiring tokens or a one-year service token; there are none. **Upgrade note:** any script that passes `--expiry 0` or a value above the cap now fails; mint with `--expiry 720h` (or less) instead. The server-side clamp is unchanged.
+- **Scheduled backups can mint a short-lived token per run** (#2592). Set `CONTAINARIUM_JWT_SECRET_FILE` in `backup.env` and `scripts/backup-all-tenants.sh` mints a 2h `backup-scheduler` token at the start of every run, ignoring any static `CONTAINARIUM_AUTH_TOKEN`; if the mint fails the run exits 1 rather than falling back. There is then nothing to expire or rotate. This is for the host that runs the daemon: it is the host that holds the signing secret, which must never be copied to a remote runner. Remote runners keep the static-token path and, because tokens cap at 30 days, own re-minting it before it lapses; an expired token fails every run with `invalid token`. `docs/DB-BACKUP-OPERATIONS.md` no longer describes the static token as non-expiring. Operators on a static token: after upgrading, set the variable. The static `CONTAINARIUM_AUTH_TOKEN` line is then ignored, so leave it in place until any job of your own that rotates it (an operator-side timer, not shipped here) has been retired; such a job usually expects exactly one `CONTAINARIUM_AUTH_TOKEN` line and fails every run without it. Then delete the line.
+
+### Added
+
+- **`TerminateUserSessions` RPC and `containarium sessions terminate --user <name>`: end every live SSH session a user holds on a backend, deleting nothing** (#2522). `POST /v1/users/{username}/sessions:terminate`, a CLI command and an MCP tool share one function. It ends sessions in the owner's box and in every collaborator box (`loginctl terminate-user`, then `pkill -KILL -u`), and on the host jump account, and leaves accounts, homes, sudoers and `authorized_keys` alone. Requires `ssh:write`. If the collaborator lookup fails the owner box is still handled and the error is returned so the call can be retried.
+- **Managed SSH authorization is forwarded to the cloud control plane** (#2525). On an enrolled host the decider runs local hosted-account checks first, then forwards `AuthorizeSSHRequest` unchanged over the host-bearer channel with a 2 s deadline. Transport errors, timeouts and non-OK responses map to `DENY UPSTREAM_UNAVAILABLE`; cloud responses, including `cache_ttl` and approval data, are returned verbatim. The forwarder is only constructed when enrollment is present.
+- **The sentinel audits live SSH authorization, audit-only, with bounded outage grace** (#2518). A new `sentinel ssh-authz-plugin`, chained before the session observer, records `user_id`, `authz_decision`, `deny_reason` and `enforced=false` in the session records; every result still defers to the existing routing plugin, so it cannot change who gets in. Positive decisions are cached per backend, login and key fingerprint; a transport error or HTTP 5xx may reuse a positive younger than the default five-minute grace, grace reads never renew it, and an authoritative denial invalidates older positives. Verifying it against a deployed daemon needs the signed authorization endpoint from #2516 / #2517.
+- **The documented shape of a tenant-bound backup-verifier token, with a test that pins its reach** (#2401). `docs/DB-BACKUP-OPERATIONS.md` gives the `token generate` invocation for a non-admin token bound to one tenant with exactly `backups:read,backups:write`. `TestBackupScopedToken_AllowsOwnBackupsOnly` shows it can list and verify its own tenant's backups and is denied another tenant's backups, other tenants' containers, `ListContainers` and `GetSecret`. Note: `ListBackups` naming another tenant does not fail; it is rewritten to the caller's own tenant, so it returns the caller's records and leaks nothing. The criterion that the invocation works against a real daemon in the e2e lane is not met yet.
+
+### Internal
+
+- Legacy `buf lint` waivers moved from in-source comments to `buf.yaml` (#2549); generated comments change, the API does not.
+- A test pins `block-metadata --persist` and the idempotent install of its boot unit (#2300); no production change.
+- Tests pin the tracker completion hook's detached contexts and its `RunStarted` compare-and-swap guard, each verified red by reverting the fix it covers (#2051).
+
+## [0.105.0] - 2026-10-16
+
+_Stop a box's code run through the daemon API, per-caller rate limits on the guardrail deploy gate and policy calls, Postgres-backed policy stores that recover without a restart, and a fix that stops a gated deploy reading another tenant's staged dataset._
+
+### Fixed
+
+- **A guardrail-gated recipe deploy reads its dataset only from the caller's own staging directory** (#2414). The staging path was derived from the request's `name`, so a proxy holding an admin token that forwards a user-chosen `name` could make the gate read another tenant's staged dataset. It now uses the authenticated subject; `name` only names the box. Non-admin behaviour is unchanged, because a non-admin deploy already required `name` to equal the subject. A proxy that wants per-user datasets must stage them under its own subject. The `--guardrail-staging-root`, `recipe deploy --guardrail-staging-ref` and MCP `deploy_recipe` help text now says so.
+
+### Added
+
+- **`StopBoxRun` RPC: stop a box's code run with no SSH client** (#2603). `POST /v1/containers/{username}/code-runs/{run_name}:stop` sends SIGTERM (SIGKILL with `force`) to a running run's process group, the daemon-API counterpart to `containarium code stop`. Same access as `StartBoxRun` (ssh:write, box owner or collaborator). It is idempotent: a run that already exited is not signaled and the call succeeds. It refuses a run whose outcome is unknown (its PID may have been reassigned) and any PID the box user does not own, since the run record is writable by that user. A run it stops reads back as exited with status 143 (SIGTERM) or 137 (SIGKILL).
+- **Per-subject rate limits on the gated recipe deploy and the guardrail policy `Set`/`Get`** (#2404). A caller over its limit gets `RESOURCE_EXHAUSTED` (HTTP 429) with a retry hint, before the policy is read or anything is snapshotted; admins are not exempt, and ungated recipes are not limited. Defaults are 6 deploys, 10 `Set`s and 120 `Get`s per caller per minute (`--guardrail-deploy-rate-per-minute`, `--guardrail-policy-set-rate-per-minute`, `--guardrail-policy-get-rate-per-minute`, or the matching `CONTAINARIUM_GUARDRAIL_*_RATE_PER_MINUTE` variables); `0` disables a limit. See "Rate limits" in `docs/architecture/guardrail-inbound-and-server-policy.md`.
+
+### Changed
+
+- **Guardrail and coding-tool egress policy stores fail closed while Postgres is unreachable, and now recover without a restart** (#2483). Since #2394 and #2392 both stores start on a store that refuses every read and write, and switch to the Postgres store only once it is installed. Outside Kubernetes the daemon fills in a default Postgres address, so a host whose Postgres is down when the daemon starts answers `containarium guardrail policy` with an error (HTTP 500) and `containarium code egress-policy` with `UNAVAILABLE` (HTTP 503). Before #2394/#2392 it answered from an empty in-memory store, which reported "no policy" and "unrestricted". The daemon now retries the Postgres store install in the background, after 5 s and then doubling to every 60 s, with one log line per attempt. It swaps the store in atomically on the first attempt that succeeds, and the deploy gate and model gateway follow the swap. The retry never installs an in-memory store. Readiness is reported through the standard `grpc.health.v1` service, one status per policy service, served by the REST gateway at `GET /v1/health?service=<name>` (no token). `containarium doctor` prints it as an advisory "Daemon readiness" section that does not change the exit code (new `--daemon-url`, default `http://localhost:8080`). A cloud-enrolled daemon also reports it as advisory `readiness: <service>` checks in its status report. Recovery: start Postgres; the next retry installs the store. See "Guardrail and egress policy stores unavailable" in `docs/security/OPERATOR-SECURITY-RUNBOOK.md`.
+
+## [0.104.0] - 2026-10-15
+
+_The SSH authorization contract and a self-hosted decider with an `ssh_keys` registry, best-effort macOS 11 client builds, and a fix that lets the OpenVAS module drive a real scanner box._
+
+### Fixed
+
+- **OpenVAS module could not run `gvm-cli`, and reported a false critical on every box** (#2426). `gvm-cli` refuses to run as root and `incus exec` starts as root, so the module now runs it as the `_gvm` service user (HOME set to the openvas state directory, where `gvm-tools.conf` lives). Results from the "Report outdated / end-of-life Scan Engine" NVT are dropped: they score CVSS 10 but describe the scanner's own packaging, not the scanned box. `docs/OPENVAS-SCANNING.md` now lists the scanner box requirements.
+
+### Added
+
+- **SSH live authorization contract** (#2516). `proto/containarium/v1/ssh_authz.proto` defines `SSHAuthzService.Authorize` (`POST /v1/ssh/authorize`) with its request/response messages and the `SSHKeyType`, `SSHAuthzDecision` and `SSHDenyReason` enums from `docs/architecture/ssh-live-authorization.md`. The daemon serves it as a stub that returns `Unimplemented` (HTTP 501) until the decider lands. The REST route accepts only a valid sentinel request signature: unsigned or bad signatures get 401, a JWT is not accepted, and a verified call carries the new `ssh:authorize` scope. `SSHSessionRecord` gains `user_id`, `authz_decision`, `deny_reason` and `enforced` (fields 11-14), and `SSHSessionPhase` gains `SSH_SESSION_PHASE_DENIED`; ingest does not handle them yet. The vendored actuation contract gains `ActuationService.AuthorizeSSH` (same messages) and `Assignment.kind` / `Assignment.user_id` with an `AssignmentKind` enum (`UNSPECIFIED` is read as `CONTAINER`); the daemon does not act on `kind` yet, and the cloud repo's copy of `actuation_service.proto` must be synced.
+- **Self-host SSH authorization decider and `ssh_keys` registry** (#2517). On a daemon with Postgres and no cloud enrollment (LXC runtime), `SSHAuthzService.Authorize` now answers from local state instead of `Unimplemented`: the login must be a live jump account (box present, non-empty `authorized_keys`, and a collaborator row for `<owner>-container-<collab>` logins), else `DENY NO_ACCESS`; the offered key's fingerprint must be in the new `ssh_keys` table and not revoked, else `DENY UNKNOWN_KEY`; and with `--ssh-authz-max-key-age` (env `CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE`, default `0` = no limit) a key registered at least that long ago is `DENY KEY_EXPIRED`. An ALLOW carries `user_id` (the jump account, or the collaborator's name for a collaborator account) and a 30 s `cache_ttl`. The registry shares the collaborator store's Postgres pool and is keyed by fingerprint: the first registration of a key wins, `RemoveSSHKey` revokes the key for every account, and re-adding a revoked key registers it afresh. Box-creation keys (`box_create`), `AddSSHKey` (`api`) and `AddCollaborator` (`collaborator`) register keys; on start the daemon backfills keys already in `/home/*/.ssh/authorized_keys` (`backfill`, skipping the sentinel's marked key), which is idempotent and never re-activates a revoked key. `AddSSHKey` and `RemoveSSHKey` now fail if the registry write fails, so the caller can retry. New `sshkey.ParseType` classifies ed25519, RSA, ECDSA and the two FIDO2 `sk-` key types. A cloud-enrolled daemon still answers `Unimplemented`; managed-mode forwarding is #2525.
+- **Box runs: `run_name`, `structured_output` and a capability list** (cloud#2627, cloud#2633). `StartBoxRunRequest` gains `run_name` (field 5) and `structured_output` (field 6); `SystemInfo` gains `capabilities` (field 30). `run_name` names the run exactly (validated like `session_id`, `INVALID_ARGUMENT` otherwise; names ending in `.stderr` or `.<digits>` are refused because they alias derived files), so a caller can pick a unique name per run: the rotation and "already running" rules apply to that name, and it never collides with the default `code` run of a member's own `containarium code run`. `structured_output` runs Claude Code with `--output-format json`: the run's log is exactly the engine's JSON result object, stderr goes to `<run_name>.stderr.log`, and `ListBoxRuns` decodes the object as JSON once the run has exited and reports its top-level `session_id` as `BoxRun.session_id` (nested keys are ignored; invalid or truncated JSON yields no id); stderr is in `/tmp/agent-box/<run_name>.stderr.log` and is not served by `TailBoxRunLog`; other engines are `FAILED_PRECONDITION`, and `false` (the default) leaves plain-text runs unchanged. `GetSystemInfo` now lists `box_run_name` and `box_run_structured_output` in `capabilities`, so a caller can check before sending fields that an older daemon's REST gateway would reject. See `docs/BOX-RUN-API.md`.
+
+### Fixed
+
+- **A fresh run no longer adopts the previous conversation's session id** (cloud#2633). Session discovery took the newest file in the engine's session directory and polled immediately, before the new run had created its own, so `session_id` usually named the previous conversation and a later `--resume` would continue the wrong one. Discovery now lists the directory just before the engine starts, polls the whole budget (about 12 s, or until the run exits) rather than stopping at the first new entry, and adopts an entry only if exactly one was created afterwards; none, or several (for example a member's interactive session plus this run's, in either order), leaves the id empty; an older entry is never used. Plain-text ids are best effort: a caller that needs the id reliably must use `structured_output`. A `continue_session` run gets no discovered id. This applies to the daemon, `containarium code run` and the MCP `code_run` tool. `code run --session` now records the given id as the session sidecar directly.
+- **macOS 11 client builds (best effort).** Each release now also publishes `containarium-darwin-amd64-macos11` and
+  `containarium-darwin-arm64-macos11`. Stock Go 1.25+ only targets macOS 12, so these are built by
+  `scripts/build-macos11.sh` with a privately patched toolchain (Go 1.24's certificate verification and a macOS 11.0
+  minimum version). They are published beside, never instead of, the normal macOS assets. CI can only verify the build,
+  not run it on macOS 11.
+
+## [0.103.3] - 2026-10-13
+
+_A third patch for coding-agent boxes: the `containarium` MCP server now works with Claude Code and lists its tools for a box token. Boxes keep the `mcp-server` they were provisioned with, so existing boxes need it re-installed (`code install` with this release)._
+
+### Fixed
+
+- **`mcp-server` works with Claude Code, and lists its tools for a box token** (#2529). Two defects made a coding-agent box's `containarium` MCP server unusable. (1) It answered every line it read, including *notifications* (messages with no `id`): `notifications/initialized`, which every MCP client sends to close its handshake, got `{"id":null,"error":{"code":-32601,"message":"Method not found"}}`. JSON-RPC says a server must not reply to a notification, and Claude Code's client rejects `id: null` and drops the connection about a second after it opens, so the agent saw its tools as failed. Notifications are now consumed silently (and not executed); requests still get replies, an unknown method with an id is still -32601, a parse error keeps its `id: null` reply, and `ping` is answered. (2) `tools/list` filtered the catalog by the token's scopes, and a box principal token carries `git:credential` and `mcp:user`, which no tool requires, so it listed **no tools**. A token with the `mcp:user` scope now skips this advisory client-side filter (the control plane applies the person's role on every call); every other token narrows exactly as before. Existing boxes keep the `mcp-server` they were provisioned with and need it re-installed (`code install` with this release).
+
+## [0.103.2] - 2026-10-13
+
+_A second patch for hosted tracker dispatch: a dispatched run's agent can now call its tracker tools. Runs started on 0.103.1 provisioned their box but ended at the first tool call. A daemon upgrade is enough; existing skill boxes pick it up on their next run._
+
+### Fixed
+
+- **A tracker-dispatched run can call its tracker tools** (#2508). The daemon seeds the platform MCP with a plain-`http://` URL to itself over the box's bridge, and the MCP client has refused any `http://` base URL since the C-HIGH-1 hardening unless `CONTAINARIUM_MCP_ALLOW_INSECURE=true` — which nothing set. Every dispatched run therefore failed at its first tracker tool call with `MCP client refuses http:// baseURL`. The seed's command is now `env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server`, scoping the opt-in to that one process on the box's private bridge. The seed is rewritten on every run, so an existing skill box needs the daemon upgrade only.
+- **Platform build constraints for `hostcheck` and `agent-box` are corrected** (#2507): the agent-box sources are excluded from Windows builds, and CI now cross-compiles `hostcheck` for Windows and the client and `agent-box` for macOS and fails if `agent-box` becomes Windows-buildable. No change to Linux behaviour.
+
+## [0.103.1] - 2026-10-13
+
+_A patch release for hosted agent runs: a token that holds only `agents:run` or `crews:run` can now provision a skill's box the first time that skill runs on a daemon. Deployments that dispatch skills from the control plane (tracker dispatch) need this before the dispatch can work._
+
+### Fixed
+
+- **A token holding only `agents:run` (or `crews:run`) can now provision a skill's box** (#2504). The recipe path's inner create went through the public `CreateContainer` RPC, which checked the caller for `containers:write` a second time, so the first run of a skill on a daemon failed with `failed to provision container: … scope required: containers:write` — a hosted tracker dispatch always, `RunAgentSkill` and `RunCrew` whenever the box did not exist yet. The create now runs under the daemon's own authority once the entry point has authorised the caller for that box name (`DeployRecipe` still requires `containers:write`; a skill or crew run requires its own scope plus the tenant check on `agent-<skill>`), the public RPC is unchanged, and `deploy` refuses a context with no authenticated subject.
+- **`containarium create` run on the daemon host applies the privileged-Podman policy** (#2495). The local create path set privileged Podman whenever Podman was enabled, without consulting `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY`; it now asks the same policy check the daemon uses, as the system principal, so the setting is honoured there too.
+
+## [0.103.0] - 2026-10-12
+
+_Coding-agent boxes now come with the SDLC role skills, a box created without SSH keys is reachable again, and the
+sentinel drops the cleartext tunnel path for good. Read "Upgrade notes" before rolling a sentinel._
+
+### Upgrade notes
+- **The temporary cleartext opt-out is gone.** v0.102.0's notes suggested starting a sentinel with
+  `--tunnel-allow-cleartext=true` while some tunnel clients were not yet on TLS. From this release `true` makes the
+  sentinel exit at startup with an error; `false` is accepted and does nothing. Upgrade every tunnel client (with
+  `--sentinel-pin`) **before** upgrading the sentinel; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS
+  Transport". Hosts that run no sentinel are unaffected.
+- **Coding-agent boxes get the SDLC skills only from a `release` that carries them.** The recipe and `code install`
+  fetch the installer and the `sdlc-skills.tar.gz` asset from the release tag they are given; an older tag is skipped
+  with a message, and any other fetch failure fails the install.
+
+### Added
+- **The hosted `issue-implementer` shares its engineering principles with the box-side `engineer-implement` skill** (#2488). Set `CONTAINARIUM_SDLC_SKILLS_BUNDLE` to the pinned `sdlc-skills.tar.gz` and the daemon verifies it against the digest compiled into the binary, then appends the `Engineering principles` section of `engineer-implement` under the skill's own contract (which keeps precedence: no GitHub access, never commit, `max_files` is a hard ceiling, the final message is exactly the JSON object). Opt-in and fail-safe: no path, a bundle that fails verification, or a missing section leaves the inline prompt untouched and logs why. `containarium agent get` shows `Prompt source: inline | sdlc-pin (<pin>)`, and `AgentSkill` carries `prompt_source` / `prompt_pin`. Not yet validated with a real model; run `scripts/engineer-crew-e2e.sh` on a configured daemon before enabling it.
+- **Coding-agent boxes ship with the SDLC role skills** (#2065). The `coding-agent` recipe (new `sdlc_skills` parameter, default `true`) and `containarium code install` (for the Claude engine; `--no-sdlc-skills` skips) install the product, architect, engineer, QA, reviewer, DevOps, release and coordinator skills from [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) into the box user's `~/.claude/skills`. The set is pinned by commit SHA and digest in `pkg/core/sdlcskills/sdlc-skills.lock` (that repo has no tags), packaged deterministically as the `sdlc-skills.tar.gz` release asset, verified by sha256 before anything is written, and rejected if the archive holds an unsafe path. Updates remove only what the installer previously wrote; `SDLC_SKILLS_OVERLAY_DIR` layers a team's own skills on top. A `release` older than this asset is skipped with a message; any other fetch failure fails the install.
+- **The sentinel exports `containarium.sentinel.primary_preferred` to Cloud Monitoring** (#2485). The gauge (1 = on the best-priority backend, 0 = on a fallback) was only on `/metrics`, so `--metrics-export` could not back an alert for the stuck-on-a-fallback condition. It reuses the same computation as the `/metrics` series; the exporter's cost is now 8 fixed series per sentinel plus one per backend.
+
+### Changed
+
+- The sentinel no longer accepts the legacy cleartext tunnel handshake. The cleartext session path, its token-on-the-wire
+  validation and the `AllowCleartext` field on `sentinel.TunnelServer` are removed; a tunnel client that still opens in
+  the clear is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. `--tunnel-allow-cleartext` is deprecated but still accepted so existing
+  service units start: `false` does nothing and `true` makes the sentinel exit at startup with an error. The
+  `sentinel_tunnel_sessions_cleartext` gauge and the status page's cleartext row are removed. **Upgrade tunnel clients
+  (with `--sentinel-pin`) before the sentinel**; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport".
+
+### Fixed
+- **A box created with no SSH keys is reachable again** (#2489). `create_container` skipped the host-side jump-server account when no SSH key was supplied, so the box reached `RUNNING` but nothing could route SSH to it, and a later add-key failed with `host user ... does not exist`. Create now always makes the account (with no keys, failing and cleaning up like the keyed path does), and `AddSSHKey` creates a missing account for an existing, authorized box so boxes created before the fix can be repaired by registering a key.
+- **`SubjectDigest` can no longer hang on a swapped path** (#2487). A path replaced by a FIFO between the directory walk and the open blocked the open forever; files are now opened `O_NONBLOCK`, the handle is re-checked, and non-regular entries are skipped, matching the existing guardrail stage.
+
+## [0.102.0] - 2026-10-11
+
+_A sentinel release. Four things change what a sentinel does on upgrade, so read "Upgrade notes" before rolling it:
+tunnel sessions must be TLS, certificate sync is scoped per backend, the per-backend tunnel API ports bind to loopback,
+and the sentinel now fails back to its preferred primary. Hosts that run no sentinel are unaffected._
+
+### Upgrade notes
+
+- **Tunnel clients must already be on TLS with a pin.** A tunnel client still opening with the legacy cleartext
+  handshake is refused (`tls required; upgrade the tunnel client and set --sentinel-pin`). Start the sentinel with
+  `--tunnel-allow-cleartext=true` temporarily if some are not upgraded yet.
+- **A sentinel with an in-fleet backend (`--spot-vm`, `--backend-addr`, or `--provider none`) should declare that
+  backend's domains** with `--backend-hostname`, `--backend-alias` and `--backend-base-domain` before upgrading, or none
+  of that backend's certificates are served (a startup warning says so). A sentinel whose backends supply no
+  certificates sees no difference.
+- **Anything on another host that dials a sentinel's per-backend tunnel API port (`18000+N`)**, for example a daemon
+  listing it in `--peers`, needs `--tunnel-api-bind-addr=<internal IP>` on the sentinel; the default is now `127.0.0.1`.
+- **Failback is on by default.** The sentinel returns to its preferred primary on its own after it recovers;
+  `--failback-checks=-1` restores the old behaviour.
+
+### Changed
+
+- The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
+  `sentinel.NewTunnelServer` leaves `AllowCleartext` unset. A tunnel client that still opens with the legacy cleartext
+  handshake is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. Tunnel clients already connecting over TLS with `--sentinel-pin` are
+  unaffected. If some tunnel clients have not been upgraded yet, start the sentinel with
+  `--tunnel-allow-cleartext=true` until `sentinel_tunnel_sessions_cleartext` stays at zero, then remove the flag (see
+  `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport").
+
+- Per-backend tunnel API listeners bind to loopback by default (#2467). The listener the tunnel server opens for each
+  tunnel backend (`18000+N`, forwarding to the backend's port 8080) used to bind to every interface; it now binds to
+  `127.0.0.1`. New sentinel flag `--tunnel-api-bind-addr` (default `127.0.0.1`, a bare IP) for deployments where a
+  daemon on another host lists that port in `--peers`. Nothing in the repository dials these ports from another host:
+  the sentinel reaches each backend through its loopback alias for health checks, key and cert sync and the `/peer/`
+  proxy, and daemons discover tunnel backends through `--sentinel-url`. The `containarium daemon --peers` help now
+  shows a peer daemon's own address.
+- Certificate sync is scoped per backend (#2468). The sentinel used to keep one certificate map that every backend's
+  `/certs` sync replaced. Each backend now has its own set and the served map is a merge: a sync replaces only that
+  backend's set and keeps only certificates for the domains it is registered for (a tunnel backend's primary
+  declaration; for the in-fleet backend, the new `--backend-hostname`, `--backend-alias` (repeatable) and
+  `--backend-base-domain` (repeatable) flags, which must be lowercase DNS names with at least two labels and no
+  wildcards or the sentinel refuses to start). A hostname or alias covers exactly that name; a base domain covers
+  itself, `*.<base>` and every name under it. Out-of-scope entries are dropped and counted in
+  `sentinel_cert_sync_rejected_total{backend="<id>"}`. An empty `/certs` response never replaces the store; a response
+  that does not decode, or whose entries are all out of scope, is a sync error that keeps the previous set. When two
+  backends share the best match for a domain, neither's certificate is served for it until one stops supplying it. A
+  backend with no registered domains supplies no certificates, and a sentinel with an in-fleet backend and none of the
+  flags set logs a warning at startup (`docs/SENTINEL-DESIGN.md` has the precedence rules).
+
+### Fixed
+
+- The sentinel now fails back to its preferred primary after it recovers (#2476). It already failed over when the
+  primary's health check failed, but nothing ever moved traffic back: the active primary stayed on the fallback until
+  the sentinel was restarted. Where the fallback is a tunnel backend that cannot serve the primary's hostnames, a
+  short health blip on the primary became a long outage (the CDN returned 525 for about 35 minutes in one case). A
+  backend with a better (lower) priority than the active primary is now restored once it has been healthy for
+  `--failback-checks` consecutive checks (default 4; never below `--healthy-threshold`; negative disables), logged as
+  `failback: <from> → <to>`. Backends of equal priority never displace each other, so a flapping primary does not
+  oscillate. `/metrics` gains `sentinel_failback_total` and `sentinel_primary_preferred` (0 while the sentinel is on a
+  fallback). `docs/TUNNEL-REVERSE-PROXY.md` already described this behaviour; the code now does it.
+
+## [0.101.4] - 2026-10-11
+
+_Patch release for the tunnel **client** (`containarium-tunnel`, `hypervisor-agent`): it takes effect on each tunnel host
+only once that host's binary is upgraded and its tunnel client restarted. Hosts that run no tunnel client change nothing._
+
+### Fixed
+
+- The tunnel client's reconnect backoff now starts over after a session that stayed up (#2473). It used to double on
+  every disconnect up to 60 s and never reset, so a client that had reconnected a handful of times over its life waited
+  a full minute after every later sentinel restart (a long-lived client reconnected after about 60 s where a fresh one
+  took 4 s). The delay now escalates only across consecutive failed or short-lived sessions (a session of 30 s or more
+  resets it), carries up to ±20 % jitter so clients do not retry in lockstep, and the log shows the delay actually
+  waited.
+
+## [0.101.3] - 2026-10-11
+
+_Patch release for the sentinel. Only the `containarium sentinel` process is affected; hosts that do not run a sentinel
+change nothing observable. Upgrade the sentinel first. Until it is upgraded, restarting the primary backend's daemon can
+take the sentinel down (see the first entry)._
+
+### Fixed
+
+- The sentinel no longer loops its own HTTPS traffic back into itself after a failover to a tunnel backend (#2470).
+  In hybrid (ConnMux) mode the passthrough fallback for traffic matching no registered primary was a TCP dial to the
+  elected backend's loopback alias (`127.0.0.N:443`). Nothing listens on that address except the mux itself (it
+  listens on the wildcard `:443`), so the dial connected back to the sentinel, was routed again, fell back again, and a
+  single client connection became an unbounded chain of about 100 KB per hop: more than 8,000 connections in under a
+  second, enough to hit a 384M memory cap in a fraction of a second. It surfaced as the sentinel being OOM-killed (and
+  the public edge returning 520s) whenever the primary backend's daemon restarted. A tunnel backend's fallback now goes
+  through its tunnel, as a tunnel-promoted primary already did, and a TCP fallback or primary that resolves to loopback
+  on the sentinel's own HTTPS port is refused and logged (rate-limited).
+
+## [0.101.2] - 2026-10-10
+
+_Completes the sentinel tunnel TLS transport that v0.101.0 and v0.101.1 shipped half of. Those releases changed the
+tunnel **client** to require a sentinel pin and never fall back to cleartext, but the sentinel could not yet present a
+tunnel identity, so a tunnel host upgraded to either release could not reconnect. Do not run `containarium tunnel` or
+`hypervisor-agent` from v0.101.0 or v0.101.1; upgrade to v0.101.2 (see "Upgrading tunnel hosts" below)._
+
+### Added
+
+- The sentinel now presents a tunnel identity and prints its pin (#2457). When a tunnel server runs (`--provider=tunnel`
+  or hybrid mode) the sentinel loads its tunnel identity from `--tunnel-tls-identity` (default
+  `/etc/containarium/sentinel-tunnel-identity.pem`), or generates and saves it with mode `0600` on first start, and
+  installs it on the tunnel server. A restart reuses the same identity and pin. `containarium sentinel tunnel-identity`
+  prints the pin as `sha256:<64 hex>`, the form `--sentinel-pin` takes; it only reads the file and fails if it does not
+  exist yet. `--tunnel-allow-cleartext` (default `true`) keeps accepting the legacy cleartext handshake from older
+  clients, logging a deprecation line per session, so a fleet can be moved over one host at a time; set it to `false`
+  once every tunnel client sends a pin. `docs/TUNNEL-REVERSE-PROXY.md` is rewritten for the TLS transport, ALPN routing
+  and the session-bound token proof.
+- `containarium pool join` takes `--sentinel-pin` (#2458): repeatable, comma-separated values and the tunnel client's
+  `CONTAINARIUM_TUNNEL_SENTINEL_PIN` env fallback are accepted. The pins are validated and rendered into the tunnel
+  unit it writes, and `pool join` now fails with a clear error when none is supplied, matching the tunnel client.
+
+- `containarium code run` now says, once at start, whether the run's model responses are scanned by the inbound
+  guardrail (#2367): `SCANNED` (gateway credential and an inbound BLOCK rule in force), `NOT SCANNED` with the reason
+  (gateway credential but no inbound rule, or the box's own provider key, which never crosses the gateway), or
+  unknown when the server policy cannot be read. New `CodeModelTrafficScanning` enum in `guardrail.proto`. The
+  `code_run` MCP tool prints the same line.
+- The daemon's model gateway now enforces the server guardrail policy on model responses (#2367). It reads the
+  policy from the `GuardrailPolicyService` store, scans with the in-process reference engine whenever the policy
+  carries an inbound BLOCK rule, and audits each block as `model_gateway.inbound_block` (no response text). A policy
+  Set invalidates the gateway's cached read, and queued audit entries flush on shutdown. With no inbound BLOCK rule
+  nothing changes. Note that a daemon whose policy store is unreachable at start now refuses model calls until it
+  recovers (fail closed, as designed).
+
+### Fixed
+
+- The model gateway no longer reads the inbound policy on every call (#2454). A successful read is reused for
+  `InboundPolicyTTL` (default 5 s) and concurrent callers share one refresh; a read error is not cached and still
+  keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
+  `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
+  timeout ceilings a held response runs under.
+
+### Upgrading tunnel hosts
+
+Units that already exist are not rewritten by `pool join`. For each host that runs `containarium-tunnel.service` (and
+any `hypervisor-agent`): read the pin on the sentinel with `containarium sentinel tunnel-identity`, add it to the unit
+as `CONTAINARIUM_TUNNEL_SENTINEL_PIN` (a systemd drop-in is enough; a v0.100.x client ignores it), then upgrade the
+binary and restart the tunnel. A v0.100.x tunnel client keeps working against a v0.101.2 sentinel while
+`--tunnel-allow-cleartext` is `true`.
+
+## [0.101.1] - 2026-10-10
+
+_Patch release: the v0.101.0 sidecar images failed the release Trivy gate, so v0.101.0 was not a complete release.
+Use v0.101.1._
+
+### Fixed
+
+- Sidecar images carry fixes for the v0.101.0 release Trivy findings. The v0.101.0 `containarium-sshpiper` and
+  `containarium-otel-sidecar` images shipped Go 1.26.8 and `golang.org/x/net` 0.58.0/0.59.0, which carry
+  CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 (denial of service in `net/http`, HTTP/2 and `crypto/tls`).
+  The sshpiper image now builds on Go 1.26.9 with `x/net` v0.60.0 pinned. The OTel sidecar no longer downloads the
+  upstream `otelcol-contrib` v0.162.0 release binary, which embeds the vulnerable versions and has no fixed release;
+  it compiles a collector from `sidecars/otel-sidecar/builder-manifest.yaml` with the collector builder, containing
+  only the components `config.yaml` uses (OTLP receiver, resource and batch processors, OTLP/HTTP exporter, health
+  check) on Go 1.26.9 with `x/net` v0.60.0. Same binary path, config and entrypoint.
+
+- The model gateway's inbound scan no longer rewrites upstream errors as guardrail blocks (#2453). A non-2xx
+  response with an unrecognised content type (a 429 with a text body, a load-balancer page) is passed through with
+  its real status and `Retry-After`, so client backoff works, and is counted as `upstream_errors` in
+  `/__gateway/status` instead of `coverage_gap`. A 2xx with an unrecognised content type is still blocked.
+
+## [0.101.0] - 2026-10-10
+
+### Added
+
+- Egress allow-list preset and plan (#2440). `containarium network-policy set <tenant> --egress-preset
+  allow-list-only` makes the allow-list the tenant's whole egress policy and allows the box's DNS resolver
+  (the bridge gateway) implicitly, so a forgotten resolver cannot blackhole name resolution. The mode is
+  unchanged, so a tenant can soak in log-only first. New `NetworkPolicy.egress_preset` field and
+  `EgressPreset` enum, stored in a new `egress_preset` column. New `PlanNetworkPolicy` RPC
+  (`GET /v1/network-policies/{tenant}/plan`) and `containarium network-policy plan <tenant> --since 24h`
+  aggregate the tenant's deny audit rows by destination, subtract what the current egress CIDRs already
+  allow, and print ready-to-paste `--egress-cidr` flags. `audit.QueryParams` gains an exact-match
+  `ResourceID` filter. Runbook: "Allow-list-only preset and plan".
+
+- Rogue SSH listener detection (#2439). The box sshd posture pass now also probes each running box,
+  with one exec per box per pass, for listening sockets held by an SSH server (`sshd`, `dropbear`,
+  `tinysshd`) that is not the distro sshd on a port its `sshd_config` declares, and records a HIGH
+  `THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER` finding with new typed `ListenerEvidence` (port, bind
+  address, pid, binary, reason). Record-only: it never touches the tenant's process. It also catches
+  the stock sshd started with `-f`/`-o`, and works on boxes with no OpenSSH installed. Turn it off
+  with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
+- Per-container OpenVAS scan opt-in is now persisted (#2426). New `pentest_scan_opt_ins` table, `SetPentestScanOptIn`
+  and `ListPentestScanOptIns` RPCs (`PUT /v1/pentest/scan-opt-ins/{container_name}`, `GET /v1/pentest/scan-opt-ins`),
+  and `containarium security scan-opt-in allow|refuse|list`. The container's owner or an admin records the decision with
+  a reason; the latest decision is kept with who and when, and each change is written to the audit log as
+  `pentest.scan_opt_in.set`. A recorded decision wins over `CONTAINARIUM_OPENVAS_OPT_IN` in both directions (an
+  owner's refusal beats `*`), and an unreadable decision skips the container rather than assuming consent.
+
+- Guardrail deploy gate (#2368, slice C). A recipe can declare `guardrail_gate` (`dataset_path`, `require_kinds`).
+  `DeployRecipe` then requires `guardrail_input` (`staging_ref` and the attestation). Before any container exists it
+  refuses async, a missing server policy or trusted signer, a policy read error and a missing input. It snapshots the
+  staged dataset from `<--guardrail-staging-root>/<name>/<staging_ref>` and verifies the snapshot against the server
+  policy and its trusted signers. Every refusal is `FAILED_PRECONDITION` (a policy read error is `UNAVAILABLE`, a full
+  disk while copying the snapshot is `RESOURCE_EXHAUSTED`), no daemon-side path is echoed, and no box is created. On PASS it copies exactly the verified snapshot to `dataset_path`, then runs `post_start`.
+  `containarium recipe deploy` gains `--guardrail-staging-ref` and `--guardrail-attestation`; the daemon gains
+  `--guardrail-staging-root` and `--guardrail-snapshot-dir` (daemon-private, outside the staging root; default the OS
+  temp dir). A present but empty `guardrail_gate:` in a recipe, or an unknown key under it, is refused at load. Nothing on the platform
+  stages a dataset yet (the `ship` verb is a documented gap), and no built-in recipe is gated.
+
+- OpenVAS (Greenbone) pentest module (#2426, scanner side). `internal/pentest` gains an `openvas` module that drives
+  a dedicated scanner box through `gvm-cli` and imports results into the existing findings store, with CVSS mapped
+  to the pentest severity scale. Scanning is opt-in per container (`CONTAINARIUM_OPENVAS_OPT_IN`; empty scans
+  nothing), uses the "Full and fast" config that excludes dangerous NVTs, runs at most two tasks at once, and stops
+  a scan after two hours. Findings never feed auto-quarantine. Owner notification and the default-on policy are
+  tracked separately; the opt-in list is not yet persisted per box, and feed age and last-run status are not yet in
+  the API. See `docs/OPENVAS-SCANNING.md`.
+
+- Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
+  deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
+  engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe
+  code, `INSTRUCTION_OVERRIDE`, `ROLE_HIJACK` and `SYSTEM_PROMPT_EXFIL` for prompt injection. They match shapes, not
+  intent. `internal/guardrail` also gains a typed `InboundDecision` and `InboundReason` (clean, finding, coverage
+  gap, engine error, over limit, policy unavailable) with `DecideInbound`, so a caller gets a reason it can audit
+  rather than a bare allow or block. The `Scan` RPC is unchanged and the outbound CLI still asks only for PII and
+  SECRET. The reference engine's rules version changes, so new attestations name a new `rules@...` version.
+- **Managed backup key mode** (#2402). `backup create --key-mode managed|both|age-recipient`: in `managed` mode the
+  daemon generates a fresh age identity per backup, wraps it through the configured KMS client
+  (`CONTAINARIUM_BACKUP_KMS_KEY_NAME`; GCP, AWS, Vault or the in-process test backend), and records `wrapped_key`,
+  `kek_id` (the exact KMS key version that wrapped it) and `key_mode` on the backup record. `both` also encrypts to
+  the `--age-recipient`. The `.meta.json` sidecar is uploaded next to the dump on GCS and removed with it on prune, and
+  the plaintext identity never touches the host disk. Design: managed backup encryption (cloud-side design doc).
+- **Hook dumps with a declared format** (#2405). `backup create --hook-format pg_custom` (new `BackupRecord.hook_format`)
+  declares that a `--hook`'s output is a `pg_dump -Fc` archive, so `backup verify` runs the full check set on it
+  (restore into the throwaway target, relation count from `pg_restore --list`) instead of refusing the stream as opaque.
+  Undeclared hook output stays `OPAQUE` and is refused as before.
+- **Restore and verify with the managed key** (#2403). `backup restore --managed --latest --user <tenant> --database <db>
+  --target <tenant>-container` and `backup verify --managed`: the CLI and the `restore_backup` / `verify_backup` MCP
+  tools unwrap the record's wrapped key with the operator's own KMS credentials (`CONTAINARIUM_KMS_BACKEND=gcp` plus
+  `CONTAINARIUM_GCP_KMS_TOKEN` or `_TOKEN_FILE`; every unwrap is a KMS `Decrypt` audited under that principal), pick
+  the newest record for a tenant and database, and restore into a named target container (`RestoreBackupRequest.target_container`);
+  the server derives the target's tenant from the container name and authorizes it. New package `internal/backupkey`.
+  The client binary still links no Postgres driver.
+- **Coding-tool egress policy** (#2378): `CodingToolEgressPolicyService` (admin-only `GET`/`PUT`, a required `mode`),
+  `containarium code egress-policy get|set|delete` and the `code_egress_policy` MCP tool. The policy logic is the pure
+  package `internal/codeegress`.
+- **Server-side guardrail policy** (#2368, B1): `GuardrailPolicyService` (`GET`/`PUT /v1/guardrail/policy`; `Get` is
+  open to any authenticated caller, `Set` is admin-only; Postgres-backed, fails closed when the store is unavailable,
+  in-memory without a database), `containarium guardrail policy get|set`, and the read-only `guardrail_policy_get` MCP
+  tool. Design: `docs/architecture/guardrail-inbound-and-server-policy.md`.
+- **Guardrail staging area** (#2368, C2): `internal/guardrailstage` snapshots a `staging_ref` under the daemon's
+  staging root into a private `0700` directory before the gate verifies it, refusing any ref that could leave the root
+  (absolute, `..`, non-clean, or through a symlink) and skipping symlinks inside the dataset, so the bytes verified are
+  the bytes delivered.
+- **TTL-aware dual-stack domain resolver with rotation overlap** (#2379): network-policy domain rules refresh on the
+  record's TTL (capped at 60s), carry A and AAAA addresses, and keep the previous set for two refresh intervals after a
+  rotation; a failed lookup keeps the last good set. `internal/hostcheck` gains the egress prerequisite checks
+  (kernel >= 6.6, cgroup v2, `cgroup_skb` attach).
+
+### Changed
+
+- **Breaking:** a set-but-empty or whitespace-only `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` now refuses daemon
+  startup with an error naming the variable, instead of granting privileged Podman to every caller (#2345).
+  Env files or unit templates that use `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY=` to mean unset must omit the
+  assignment or specify `all`, `admin-only` or `disabled`. A truly unset variable still defaults to `all` with
+  a warning; case and whitespace variants of valid values keep working.
+
+- `containarium guardrail apply` and `guardrail verify` now read the server-side guardrail policy when a server is
+  named explicitly with `--server` or `CONTAINARIUM_SERVER` (#2368, slice C). A login's default server does not count:
+  logging in does not make these commands contact the platform. This reverses the old "every guardrail verb is
+  local" property for that one read, which carries the caller's credentials and no dataset content. `apply` runs
+  under the server's policy, refuses a `--policy` file that does not hash to it, and warns when `--sign-key` is
+  missing or not a trusted signer. `verify` requires the attestation's policy hash to equal the server's and its
+  signer to be one of the server's trusted signers. If the named server cannot be reached or answers with an error
+  (TLS, timeout, 5xx, unauthenticated, store error), both fail with a non-zero exit and never fall back to local
+  mode. With no named server, or a named server that has no policy, both keep the old local behaviour (`verify` then
+  needs `--public-key`) and say the result is NOT server-attested or NOT server-trusted.
+- `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
+  `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
+  kind it never looked at.
+- Release tooling: a tag with a pre-release suffix (`v0.101.0-rc.1`) is published as a GitHub pre-release, pushes
+  only its exact image tag (the `latest`, `latest-stable` and minor-series tags keep pointing at the newest full
+  release), and does not publish to PyPI. `releases/latest`, and so the daemon's update check and the host install
+  path, keep serving the newest full release; an rc is installed on the dev rung by exact tag only.
+- Toolchain: Go 1.26.9 and `golang.org/x/net` v0.60.0 (#2412), clearing the govulncheck advisories GO-2026-6604 to
+  GO-2026-6617 that had turned the lane red for every PR.
+
+### Fixed
+
+- Responses the model gateway's inbound scan blocks are now metered (#2452). The provider bills for the tokens
+  of a blocked response, but the block returned before the usage parse, so quota and spend never saw them. The
+  usage in the held bytes (JSON, or the final usage event of a stream) is recorded with the meter, the per-tenant
+  policy window and the usage sink, and `blocked_calls` on `/__gateway/usage` rows counts the blocked share. A
+  response that hit the hold limit is truncated, so nothing is recorded for it rather than a made-up number.
+
+- The model gateway's inbound-block audit write no longer runs on the request path (#2451). It was synchronous
+  under a 15 s timeout, so with the audit store down (also the likeliest reason for policy-unavailable refusals)
+  every refused request could wait that long before getting its 503. Entries now go through a bounded queue to one
+  worker with a 3 s write timeout; a full queue drops the newest entry and counts it. `/__gateway/status` gains
+  `audit_queued`, `audit_dropped` and `audit_failed`, `Config` gains `InboundAuditQueue` and
+  `InboundAuditTimeout`, and `Gateway.FlushInboundAudit` drains the queue for shutdown.
+
+- agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
+  server library cancels in-flight work on EOF before it drains its tool-call queue, so a
+  `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the
+  call, could be lost under load. agent-box now withholds EOF from the server
+  until every request it has read is answered (bounded by a 30 s grace period). This is what made
+  `TestSpawn_SurvivesParentExit/framed` flaky in CI; that test now also asserts the
+  `process_start` response itself, so a dropped call is reported as such. The sentinel tunnel
+  tests poll for their listeners instead of sleeping 100 ms, which produced "connection refused"
+  on loaded runners.
+
+- Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
+  (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
+  that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
+  reverse tunnel pointed. Provisioning now writes `/etc/ssh/sshd_config.d/00-containarium.conf`
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`) before
+  (re)starting sshd, into baked base images too. A new daemon-side posture reconciler re-reads every
+  running box's effective sshd configuration through the incus file API every 10 minutes
+  (`CONTAINARIUM_SSHD_POSTURE_INTERVAL_MINUTES`, `CONTAINARIUM_SSHD_POSTURE_DISABLE`), re-asserts the
+  drop-in when it is missing or altered, and records tampering as a `THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH`
+  security finding (MEDIUM when the pass closed it, HIGH when the box is still permissive) with
+  `ConfigEvidence` naming the directive and file. Existing boxes are backfilled silently on the first
+  pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
+  the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
+
+- `scripts/tenant-guard-legit-flows-e2e.sh` no longer reports a reachable box as a timeout on its `host -> box` row. The
+  probe piped the connect into `grep -q refused` under `set -o pipefail`, so the failing connect's status became the
+  pipeline's even when `grep` matched, and a box with nothing listening on the port (an RST, so reachable at L3) was
+  reported as a timeout. It failed on any fixture without an sshd. The output is now captured first and the captured
+  text is matched, as `core-guard-legit-flows-e2e.sh` does since #2323. No guard behaviour changed.
+
+### Removed
+
+- The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields
+  (#2424). Nothing read them: `config.proto` declares no service, so `SecurityConfig` was never
+  reachable over the API, the CLI or the MCP server, and the key-only guarantee they implied is now
+  enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
+  both names are reserved.
+
+- Inbound guardrail enforcement at the model gateway (#2367, slice B2). When the server guardrail policy carries a
+  BLOCK rule for an inbound kind (`UNSAFE_CODE`, `PROMPT_INJECTION`), the gateway holds each proxied model response
+  (JSON or event stream) inside the proxy until it is complete, scans its text parts and tool-call arguments through
+  the guardrail engine, and either replays the held bytes unchanged or answers a typed 502 error body
+  (`guardrail_inbound_block`) with no model output. Every failure to scan blocks: engine error or timeout, an
+  unsupported kind, a coverage gap, a compressed or unrecognised body, and a held message over the configurable byte
+  limit (default 8 MiB). A policy read error keeps the last known policy; on cold start with a provider wired the
+  gateway is not ready (`/__gateway/healthz` 503) and refuses model calls with a typed 503 until the first read. Each
+  block writes an audit entry through a new `InboundAuditSink` (kinds and counts, never the flagged text) and
+  increments a per-reason and per-kind counter on `/__gateway/status`. With no inbound BLOCK rule, no policy, or no
+  policy provider (the standalone binary, which says so at startup) the gateway behaves exactly as before. Holding a
+  stream costs time to first token for scanned tenants only.
+
+## [0.100.0] - 2026-10-08
+
+### Changed
+
+- **Breaking:** the per-container ACL (`UpdateContainerACL`) no longer carries ingress rules: a custom request with
+  ingress rules is refused with `INVALID_ARGUMENT` that names the replacement, and the named presets keep only
+  their egress half. Incus evaluates every attached ACL, so a per-container ingress allow could re-open what the
+  tenant guard closed (#2359). Egress rules are unchanged.
+
+- **Breaking: tenant containers on a shared backend can no longer reach each other, and both Incus NIC-ACL guards
+  are on by default** (#2347, design `docs/architecture/tenant-network-guard.md`). A new tenant network guard
+  attaches one Incus network ACL per tenant to every tenant container's NIC: ingress default-drop, allowing only
+  the host gateway, the core initiators (Caddy and a co-located control plane) and the tenant's own containers.
+  Egress is untouched (it stays the eBPF enforcer's). A box is guarded at birth, before its first start; a box that
+  cannot be guarded is removed and the create fails with `FAILED_PRECONDITION`. Pre-existing boxes are guarded on
+  the daemon's first pass; one that cannot be is left running and reported. The core-infra guard (#2084) changes
+  its default the same way. `CONTAINARIUM_TENANT_GUARD` and `CONTAINARIUM_CORE_GUARD` now treat unset as
+  `enforce`; only `off` disables, and anything else fails closed to `enforce`. Both guards need Incus's `nftables`
+  firewall driver and the `network_bridge_acl_devices` API extension (Incus 6.9+; the Zabbly 7.x builds have it, Ubuntu's
+  packaged Incus 6.0.0 does not). A host that cannot carry bridge NIC ACLs at all is **not** guarded: creates
+  still succeed, the daemon logs the gap once, and the guard's status reports it, so a missing capability never
+  turns into an outage. What changes for tenants: reaching a *co-tenant's*
+  box by bridge address is denied; reaching your own other boxes, Caddy, OTel, DNS, DHCP and the internet is not.
+  An operator who needs the old behaviour on a host sets `CONTAINARIUM_TENANT_GUARD=off`.
+
+### Added
+
+- `containarium guardrail scan|apply|verify|keygen`: run a detection engine over a directory, redact findings into stable placeholder tokens, re-scan the result as a token-aware gate, and sign an ed25519 `GuardrailAttestation` a consumer verifies before using the data. New proto contract `GuardrailEngineService` (engines plug in behind it; the in-tree reference engine is regex-only and says so) and `internal/guardrail`. Design: `docs/architecture/guardrail.md`.
+
+- `NetworkPolicy.allow_from_tenants` and `containarium network-policy set <tenant> --allow-from-tenant <other>`
+  (#2359): the one way to let another tenant's containers reach yours over the bridge. The tenant network guard
+  turns every box of a listed tenant into an allowed ingress source on the listing tenant's NIC ACLs;
+  one-directional, normalised on set, and the tenant itself is refused (same-tenant traffic is
+  `allow_intra_tenant`). Stored in a new `allow_from_tenants` column (added in place on upgrade).
+- `ListBackends` now reports a peer backend's spare-capacity advertisement (`headroom`) and capability profile
+  (`capability_profile`), not only the local backend's (#2135). Both ride the `GetSystemInfo` response the fan-out
+  already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises
+  or profiled nothing, could not be reached, is unhealthy, or runs a daemon that predates the fields.
+
+- `containarium doctor` (and the posture printed by `pool join` / `cloud enroll`, and the posture checks reported to
+  the cloud) gains the non-blocking posture check **container bridge blocked from cloud metadata endpoint (rule + boot
+  unit)**. It fails when the iptables FORWARD rule from `incusbr0`'s subnet to `169.254.169.254` is not in the kernel,
+  or when `containarium-imds-block.service` is not installed and enabled to re-apply it after a reboot, and names the
+  fix. The existing **cloud metadata endpoint blocked** check dials from the host, whose own traffic the block
+  deliberately leaves alone, so it could not tell a host that lost its block from one that has it. `containarium
+  hostharden block-metadata` gains `--persist`, which also installs the boot unit, and `pool join` / `cloud enroll`
+  now apply the block before printing posture so the printed result reflects it. Closes #2298.
+- `containarium network-guard status [--json]`, the `GetNetworkGuardStatus` RPC (`GET /v1/network/guard`) and the
+  `network_guard_status` MCP tool report the core-infra and tenant guards: mode, firewall driver, whether the host
+  can carry bridge NIC ACLs at all, and any box that could not be guarded. The command exits non-zero unless both
+  guards enforce cleanly. `containarium doctor` gains a matching posture check that reads Incus itself (firewall
+  driver, `network_bridge_acl_devices`, and each running tenant box's NIC ACLs), so an unguarded host goes red
+  (#2357).
+- An alert when a skill box's coding-agent sign-in expires (#2371). The daemon probes every running skill box every
+  15 minutes and sends one `CodeCredentialExpired` alert to the operator webhook (`alert_webhook_url` /
+  `alert_webhook_secret`, signed like the threat-detection alerts) each time a box flips to expired. The alert state
+  is persisted before sending, so an alert can be late but never duplicated. `CodeCredentialSource` gains
+  `CODE_CREDENTIAL_SOURCE_EXPIRED`, which `containarium agent credential-status` shows as `expired`. See
+  `docs/ALERTING-SETUP.md`.
+- `--runner-group` (CLI) and `runner_group` (MCP) place an organization-scope runner in a GitHub runner group.
+  Groups exist only at organization scope; one on an `owner/repo` target is refused up front. Runners installed
+  without a group are unchanged (#1217). The `--github-pat` help text now says an organization target needs
+  `admin:org`, not `repo`.
+- `containarium ssh-config sync|show` against a remote single-VM daemon whose boxes report no `ssh_host` now writes a
+  per-box `ProxyJump` block through the VM instead of an unroutable private address. `--jump-host <host>[:port]`
+  covers forwarded APIs and non-default SSH ports; ports outside 1-65535, ambiguous loopback endpoints and a missing
+  jump user are rejected before the config or its backup is touched (#2249).
+- A pool member profiles itself at daemon startup when `--pool` is set and it has no capability profile yet, so
+  `ListBackends` stops reporting pool members as unprofiled until an operator calls `ProfileBackend`. It never blocks
+  startup or the join, and the explicit RPC remains for retry or re-profiling. Profiling now rejects resource-read
+  errors and non-positive CPU or memory instead of recording a zero-capacity profile (#2136).
+
+### Fixed
+
+- `containarium guardrail apply` now asks the engine for exactly the kinds its policy covers instead of an empty list (which meant "whatever the engine has enabled"), so an engine that cannot scan a kind the policy names — SECRET against a PII-only detector — fails the run with `FAILED_PRECONDITION` before anything is written, rather than attesting a PASS that never looked (#2362). `GuardrailAttestation` gains `kinds_scanned`, `apply` prints it, and `guardrail verify --require-kind pii,secret` refuses an attestation that did not cover a required kind. `--kind` remains on `scan` only.
+
+- An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
+  still trimmed and lower-cased, so `ALL`, `Admin-Only` and `disabled ` keep working, and unset or empty still means
+  `all`. A value that matches none of `all`, `admin-only` or `disabled` after that (`none`, `off`, `admin_only`, a
+  typo) now stops the daemon at boot with an error naming the variable, instead of silently granting every caller
+  privileged Podman.
+
+- `scripts/core-guard-legit-flows-e2e.sh` no longer reports logged drops as unlogged (#2323). The "each drop
+  must be logged" check piped `journalctl -k` into `grep -q` under `set -o pipefail`: `grep -q` exits at the
+  first match, `journalctl` takes a SIGPIPE writing the rest of the window, and `pipefail` turned that into a
+  FAIL even though the line was there. It only happened once the log window exceeded the ~4 KB pipe buffer, so
+  it was intermittent (it depends on how long the script ran and how noisy the log was). The window is now
+  captured first and the captured text is searched; a genuinely missing log line still fails the check.
+
+- `containarium create --labels` now reaches the daemon in remote mode, over both gRPC and HTTP; before, only a
+  local create applied them and a remote create dropped them silently (#2358).
+- The per-container ACL attaches to the NIC a tenant box actually has: a profile-inherited `eth0` is shadowed by an
+  instance-local copy that keeps the profile's settings and adds `security.acls`, and an existing ACL list and custom
+  rules are kept. `GetContainerACL` now reports an ACL carried by a profile. `UpdateContainerACL` with
+  `ACL_PRESET_UNSPECIFIED` is refused with `INVALID_ARGUMENT` instead of silently falling back to full isolation
+  (#2348).
+- Core services get deterministic static addresses (last-octet offsets `.241` to `.246` of the bridge subnet for
+  Caddy, PostgreSQL, VictoriaMetrics, the OTel collector, the security container and Guacamole), pinned on the NIC when
+  the container is created (#2365).
+- Incus device updates prepare ZFS quota headroom first, so a container whose dataset is effectively full no longer
+  fails the metadata write and leaves the core-guard reconciler retrying valid NIC updates forever (#2104).
+- `containarium quickstart` wires the in-box MCP server with the PATH-prefixed command `code run` already uses, so a
+  user-level `agent-box` install is found over a non-interactive SSH shell (it was `exit status 127: agent-box: not
+  found`). Re-running quickstart upgrades a recognised legacy entry for the same host and leaves custom commands,
+  hosts, flags and explicit paths alone (#2250).
+
+## [0.99.3] - 2026-10-05
+
+### Fixed
+
+- A hung Incus hardware scan no longer blocks container creation, `GetSystemInfo` or `ListBackends` (#2325).
+  Incus' `/1.0/resources` can stop answering on a saturated host, and the daemon read it through a client with no
+  timeout from the CPU admission gate (on every create, before the gate logged anything), `GetSystemInfo`,
+  `ListBackends` and the metrics collectors, so each blocked for as long as Incus did: boxes stayed `PENDING`,
+  `list_backends` timed out and the control plane reported the region as not serving. The read is now shared (one
+  in-flight request), bounded to a few seconds, and cached: the hardware-static values (CPU count, CPU model, memory
+  and disk totals, GPUs) are kept and served stale when a refresh fails, used memory and disk refresh about every 10
+  seconds, and the load averages are always read fresh. If Incus has never answered, the admission gate falls back to
+  the OS's logical CPU count. See `docs/CPU-CAPACITY-ADMISSION.md`.
+
+### Changed
+
+- Dependency update: `sigs.k8s.io/agent-sandbox` 1.0.4 -> 1.0.5 (#2316).
+
+## [0.99.2] - 2026-10-05
+
+### Added
+
+- **Backup freshness is now alertable per tenant** (#2294, #2304). New platform-group metric series
+  `containarium.backup.last_success_age_seconds`: seconds since each tenant's most recent stored backup,
+  recomputed at every export tick from the daemon's durable on-disk backup index (not cached state), so it
+  is correct immediately after a daemon restart. It closes the gap the host-local `systemctl is-failed`
+  check and `containarium.export.heartbeat` cannot see: a backup *schedule* silently breaking (a disabled
+  timer, a wrong hook path, a bad conf line) while the host and daemon stay healthy. This is the first
+  series in the export to carry a tenant identifier (a `username` label), a reviewed and test-locked
+  exception to the "no org/tenant identifiers" rule (see `docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`). A
+  ready-to-use alert policy is in `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`.
+
+### Changed
+
+- Dependency updates: `sigs.k8s.io/controller-runtime`, `go.opentelemetry.io/proto/otlp`,
+  `cloud.google.com/go/compute`, `github.com/grpc-ecosystem/grpc-gateway/v2` and `google.golang.org/api`
+  (#2311, #2312, #2313, #2314, #2315).
+
+### Fixed
+
+- Tracker write audit rows now record the run id (#2043, #2168). The shared tracker-write audit helper
+  populates `AuditEntry.RunID` from the authenticated run claim, so `audit query --run-id <id>` finds the
+  comment, claim, label, issue-creation and submit-change rows a run produced. Operator calls carry no
+  run claim and leave the column empty rather than inheriting the username used for the visible stamp.
+- A busy host no longer becomes unplaceable because its health probe is slow (#2317). The local
+  backend's liveness probe listed every instance and then asked Incus for its server info under a
+  fixed 3s budget, failing closed, so on a host with many instances under CPU pressure a slow but
+  responsive incusd made every create into the pool fail with `no healthy backend found in pool`, and
+  each timed-out probe leaked a goroutine and an Incus connection. The probe now asks Incus for its
+  server info only (cost independent of the instance count), one probe is shared by concurrent callers,
+  and a failed or slow sample does not flip the verdict while Incus answered within the last 15s. A
+  daemon that stays unresponsive is still reported unhealthy. `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT`
+  (default `3s`, range `100ms`-`30s`) tunes the per-call budget, and the daemon logs transitions and
+  slow probes. See `docs/CPU-CAPACITY-ADMISSION.md`.
+- `ListBackends` (the fleet view / `list_backends`) is now bounded: the local `GetSystemInfo` probe
+  has its own 5s deadline and peers are probed in parallel (each with a 5s deadline) instead of one
+  after another, so a wedged local daemon or several unresponsive peers can no longer make the
+  listing outlast the caller's deadline. A backend that does not answer keeps its identity and
+  health fields and simply has no load block (unknown, not idle); (#2318).
+- The `mcp-server` image's runtime stage now runs `apt-get upgrade -y`, like the daemon, sshpiper,
+  otel-sidecar, model-gateway and agent-box images, so it no longer ships `debian:bookworm-slim`'s
+  stale `libpcre2-8-0` (HIGH, fixed in `deb12u2`). No workflow publishes this image today; the
+  change protects anyone who builds it.
+
+## [0.99.1] - 2026-10-05
+
+### Fixed
+
+- The daemon, sshpiper, otel-sidecar and model-gateway images now run `apt-get upgrade -y`
+  in their runtime stage, as agent-box already did. `debian:bookworm-slim` is unpinned and lags
+  Debian's security archive, so the v0.99.0 release image scan found `libpcre2-8-0`
+  `10.42-1+deb12u1` (HIGH, fixed in `deb12u2`) in all four and failed the Trivy gate. v0.99.0's
+  binaries and PyPI package are unaffected; its images carry the vulnerable library, so use
+  v0.99.1.
+
+## [0.99.0] - 2026-10-05
+
+### Changed
+
+- **BREAKING:** the tracker data-plane REST routes now live under the
+  connection resource. The 13 routes that began `/v1/tracker/{username}/{connection}/`
+  (scope routes, dispatch, issues, comments/claim/labels, changes) are now
+  `/v1/tracker/connections/{username}/{connection}/...`; the verb and the rest of
+  each path are unchanged (e.g. `GET /v1/tracker/connections/alice/work/issues/7`).
+  The old paths are removed outright, with no alias and no deprecation window.
+  Why: the old shape put a wildcard right after `/v1/tracker/`, so a username of
+  `connections` or a connection named `routes`, `issues`, `changes`, `dispatch`
+  or `dispatches` matched two routes at once. Nesting means a verb can only
+  appear after the connection name, so the ambiguity is gone structurally rather
+  than papered over with a reserved-word list. Connection CRUD and
+  `GetTrackerStatus` keep their paths. The CLI, the Go HTTP client and the MCP
+  tracker tools are updated here; any other REST caller must move with this
+  release. Pinned by `internal/gateway/tracker_route_ambiguity_test.go`, which
+  drives the real grpc-gateway mux with adversarial names and asserts the old
+  paths 404. Supersedes #2281.
+- `containarium backup verify` and `containarium backup restore` now refuse to
+  send an age identity (a private key, carried in the request body) over a
+  cleartext connection to a non-loopback host: gRPC `--insecure`, or `--http`
+  with an `http://` or scheme-less server (the HTTP client prepends `http://`).
+  Loopback stays allowed and runs with no identity are unchanged. **Anyone
+  restoring an encrypted backup through `--http` must use an `https://` server.**
+  Documented in `docs/DB-BACKUP-OPERATIONS.md` (#2295, #2302).
+
+### Added
+
+- `SystemInfo` reports the platform's own CPU commitment next to the tenant
+  one: new `core_committed_cpu_cores` (sum of core-role containers' `limits.cpu`),
+  the admission gate's posture as a `CPUAdmissionMode` enum (`DISABLED` /
+  `ADVISORY` / `ENFORCING`) and `cpu_overcommit_factor`; `committed_cpu_cores`
+  keeps its tenant-only meaning. `containarium info` prints a `CPU Budget:`
+  block (physical / tenant / core / gate) and the MCP `get_system_info` tool
+  prints the same. When the gate is advisory and tenant-committed cores already
+  exceed `total_cpus × factor`, the daemon logs one `[cpu-admission] WARNING:`
+  line at start and `containarium info` prints one, naming the ratio and that
+  the gate is not enforcing — advisory mode used to fail silently.
+  `docs/CPU-CAPACITY-ADMISSION.md` gains the headroom recipe
+  (`factor ≤ (total_cpus − core_committed) / total_cpus`) and the reserved
+  core-set option. Part of #2284.
+- `containariumd service install` (and so `hacks/install.sh`, `setup-peer.sh`
+  and `pool join`) now gives the platform's own daemons a CPU weight well above
+  the tenant default: `CPUWeight=1000` inline in `containarium.service`, the
+  same as a drop-in at `/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf`,
+  and `systemctl set-property --runtime incus.service CPUWeight=1000` so the
+  running `incusd` picks it up without a restart. `containarium doctor` gains
+  the non-blocking posture check **platform daemons CPU weight**, which reads
+  the effective `cpu.weight` of both units' cgroups. Closes #2284.
+- `containarium code install --engine codex` installs OpenAI's Codex CLI
+  (`@openai/codex`) on a box, parallel to the existing `claude`/`pi` engines
+  (#2273). `code run`/`attach`/`status`/`stop` work with it transparently,
+  same as the other engines. `--credential secret` is supported today;
+  `--credential gateway` is rejected, naming the fix, until the model
+  gateway's provider generalization lands (tracked separately). See
+  `docs/integrations/codex.md`.
+- `containarium backup verify` can now restore-test an **encrypted** backup:
+  pass `--age-identity-file` (the same flag `backup restore` takes; the MCP tool
+  takes `age_identity_file`). Previously an encrypted record was refused outright,
+  so verification could not catch a backup that reports success while encrypted to
+  a key nobody holds. With no identity, verification still refuses up front and
+  records nothing; with the wrong identity, decryption fails and that is recorded
+  as a FAILED verification, a durable result rather than an RPC error (#2295, #2302).
+- `containarium tracker dispatch --max-starts N` lets a caller with its own budget
+  cap how many runs one dispatch tick starts (`DispatchTrackerIssuesRequest.max_starts`;
+  `0` is unlimited, a negative value is `InvalidArgument`). Issues held back by the
+  limit get no dispatch row and no label, so a later tick picks them up, and are
+  counted in the new `left_undispatched` response field, which the CLI prints (#2270, #2306).
+- `containarium agent provision-box <skill-id>` (the `ProvisionSkillBox` RPC) creates
+  or reuses a skill's box without minting a token or calling a model, plus a presence-only
+  check of the box's coding-agent credential source (`interactive` / `api-key` / `none`,
+  new `CodeCredentialSource` enum). It never reads, stores or transmits a credential
+  value. This lets an org that wants to sign in with its own subscription get the box
+  provisioned ahead of time. Walkthrough in `docs/AGENT-SKILLS-QUICKSTART.md` (#2272, #2274).
+- A run's leftover fan-out reservations are released when its lease ends, and they are
+  listed so an operator can see why a run's `max_children_per_run` looks exhausted.
+  `tracker.Store.ReleaseRunReservations` is idempotent and is called from the existing
+  lease-end hook, which every kind of run already passes through. Reservations of a
+  live run are kept on purpose: the create may have succeeded upstream (#2062, #2291).
+
+### Fixed
+
+- A dispatched skill run could not call any tracker verb for its own tenant
+  (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
+  no roles), while every `tracker_*` verb authorized the tenant named in the
+  request against that subject — so `tracker_comment`, `tracker_create_issue`,
+  `tracker_submit_change` and the reads were refused from inside every real
+  run. The server tests never caught it because they built the run's context
+  with the tenant as the subject by hand. The run JWT now also carries the
+  tenant it was started for (`run_tenant`, derived from the dispatching
+  caller's verified subject — the same identity its `tracker_conn` was
+  validated under — and reserved against header injection), and the tracker
+  read/write verbs authorize a run token for exactly that tenant
+  (`auth.AuthorizeTrackerTenant`). Operator and admin tokens are unchanged;
+  a run token is still not the tenant anywhere else, and a run started for
+  tenant A is still refused on tenant B's connection. The new tests mint
+  through the real run-token path and present the token through the real
+  auth middleware, so a hand-built subject can no longer hide a mismatch.
+- A run token can no longer delegate its way out of its own run (#2069).
+  `ExchangeDelegatedToken` mints a token with no `run_id`, and every
+  run-token guard (the #2060 scope-label lineage binding, #2112's
+  `SendAgentTask` run check, `TailRunLog`'s claim check) applies only to a
+  token that carries one. `tokens:delegate` is now in `runForbiddenScopes`,
+  so it is stripped from every minted run token whatever the skill manifest
+  grants, and `ExchangeDelegatedToken` refuses any caller carrying a
+  `run_id` with `PermissionDenied`. No shipped skill grants
+  `tokens:delegate`; a custom skill loaded via `CONTAINARIUM_SKILLS_DIR`
+  could. Delegation from a token with no `run_id` (an operator or fronting
+  service) is unchanged.
+- `containarium code` credential-status checks now work for the Codex engine. The probe
+  was deferred when the status check landed and was never added with `code install --engine
+  codex`, so Codex fell through as "no probe" and callers refused it as `Unimplemented` even
+  after a successful `codex login`. Presence-only, like the other engines (#2277, #2289).
+- An upstream tracker create that times out after the forge accepted it is no longer
+  silently retried. The adapters' default 10s HTTP timeout shadowed the 30s detached create
+  budget, so a slow forge produced `Unavailable` with an issue upstream but no lineage or
+  audit row, and the freed fan-out slot let a retry file a duplicate. Both adapters now share
+  one timeout budget; an ambiguous failure keeps the reservation, writes a
+  `tracker.issue_create_outcome_unknown` audit row (never the credential) and returns
+  `codes.Unknown` with `UPSTREAM_CREATE_OUTCOME_UNKNOWN`, telling the caller to check the
+  tracker before retrying (#2045, #2297).
+- The dispatcher resolves the broker credential at each forge write instead of once per tick.
+  `RunStarted`, `RunEnded` and the sweep fire up to the run timeout (default 1h) after the tick
+  that started the run, by which time a rotated or short-lived credential (a GitHub App
+  installation token lasts about an hour) had gone stale, so the `agent:done` / `agent:failed`
+  write failed. An unresolvable credential now counts as a failed write and the next tick
+  retries it (#2269, #2296).
+- `SubmitTrackerChange`'s push now sends the form GitHub documents for App installation
+  tokens (`ghs_...`): Basic auth with the `x-access-token` username, instead of a bearer
+  header. Personal access tokens and GitLab tokens keep the bearer form (#2271, #2292).
+- Several replicas starting against a fresh database no longer race to create the tracker
+  schema. `CREATE TABLE IF NOT EXISTS` is not safe to run concurrently and the loser failed
+  with a catalog unique violation, so `NewStore` failed on every replica but one. First-run
+  schema creation is now serialized with an advisory lock (#2061, #2290).
+- A dispatch row that reaches a terminal state (FAILED or DONE) but whose `agent:*` label
+  never reached the forge no longer lets the next tick dispatch the issue again, which
+  posted a new failure comment or started a second run each time. The `labels_pending` retry
+  the design describes is now implemented, where before it was set and never read
+  (#2047, #2052, #2282).
+- The not-running hint in `containarium connect` and `containarium code` now points at
+  `containarium wake` instead of the non-existent `containarium start` (#2251, #2254).
+
+## [0.98.0] - 2026-10-03
+
+### Fixed
+
+- A skill box running on the `codex` engine had its gateway token exported
+  as `OPENAI_API_KEY` (#2256). OpenAI's own docs call a bare `OPENAI_API_KEY`
+  environment variable insufficient for a headless Codex CLI run with no
+  `codex login` step — `CODEX_API_KEY` is the documented variable that works
+  without one. The box-side variable is now `CODEX_API_KEY`; the daemon's
+  own `OPENAI_API_KEY` (the operator's real key, read once at startup) is
+  unaffected.
+- Core services now use the Postgres password the operator configured
+  (#2091). `NewCoreServices` resolves it the way the daemon's own connection
+  does (`CONTAINARIUM_POSTGRES_PASSWORD_FILE`, then
+  `CONTAINARIUM_POSTGRES_PASSWORD`, then the dev default). Before, no caller
+  set it, so the first-install `CREATE USER` and Grafana's `[database]`
+  password always used the compiled-in default, even on a host configured with
+  its own, and a host could not be provisioned with a non-default password at
+  all. The daemon's non-app-hosting Postgres auto-detect resolves it too.
+- Grafana's database password follows the daemon's. A new backfill, run on
+  every start against an existing metrics container, rewrites `[database]
+  password` and restarts Grafana when it differs from the daemon's, but only
+  when the daemon's password actually connects to Grafana's database, so a host
+  rotated by hand is never overwritten with a password that does not work.
+  Passwords Grafana would read as a comment (`#`, `;`) are triple-quoted.
+- A freshly provisioned Grafana no longer ships the literal login `admin` /
+  `containarium` (#2091). Each host gets a random admin password, saved to
+  `/etc/containarium/grafana-admin.password` (mode 0600, overridable with
+  `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`) and kept across a re-provision. If
+  it cannot be saved the key is omitted and the daemon warns, so there is never
+  a silently known default. Existing hosts keep their live account; the
+  operator runbook gives the reset command.
+- The daemon escapes the Postgres user and password when it builds its
+  connection URL (`PostgresDSN`, used by all four places that built it by hand).
+  A password containing `@`, `/`, `:` or `#` used to corrupt the URL. For
+  ordinary passwords the string is byte-identical to before.
+- `docs/security/OPERATOR-SECURITY-RUNBOOK.md`: "Rotating Postgres credentials"
+  said updating the file and restarting the daemon was enough. It never changed
+  the password inside Postgres, so following it locked the daemon out. The
+  section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
+  how to narrow `pg_hba.conf`.
+- A freshly installed core Postgres no longer lets every address on the
+  container bridge, tenants included, attempt to log in. `pg_hba.conf` now has
+  one `scram-sha-256` rule for the daemon and one for the metrics container's
+  Grafana database, each a single address, and `log_connections` is on. The
+  daemon's source address is read from the route to Postgres, not assumed. After
+  applying the rules the daemon logs in as it will in production; if that
+  fails, the scoped rules are removed and the previous subnet rule is written
+  with an `ERROR` in the log, so a wrong rule cannot leave a new install without
+  a working database (`pg_isready`, which the install used before, cannot see
+  that). Existing hosts are not changed; narrow them by hand or enable the
+  core-infra network guard (`CONTAINARIUM_CORE_GUARD=enforce`).
+- The core Postgres and metrics containers are now pinned to fixed addresses
+  (`.240` and `.239` of the bridge subnet, next to caddy's `.241`) when they are
+  created, so the rule above can name Grafana before it exists. An existing
+  container keeps the address it has.
+
+### Added
+
+- A named-engine skill's pinned `model` is now a real, enforced ceiling on
+  its run's gateway token (#2229): `allowed_models` carries exactly that
+  model, rejected at the gateway if the box ever asks for a different one.
+  When the resolved provider's model list is checkable, `RunAgentSkill`
+  refuses up front with `FailedPrecondition` if the pinned model isn't one
+  the provider actually serves — naming the model, the provider, and the
+  models it does list. The daemon-global `gatewayProvisioning.allowedModels`
+  field (dead code — no caller ever assigned it) is removed; the ceiling is
+  now always per-skill.
+- Per-invocation `--engine` override (#2228): `containarium agent run
+  <skill> --engine codex` and `containarium crew run <crew> --engine
+  <skill-id>=<engine>` (repeatable, one per member) resolve that run's
+  engine from the flag instead of the skill manifest's own `engine` field.
+  Refused with the same `FailedPrecondition` text a manifest-named engine
+  gets when its provider has no usable key — the override goes through the
+  identical `agentengine.Resolve` readiness check (#2222), so what a run
+  actually does and what `containarium agent engines` reports can't drift
+  apart. The MCP `run_agent_skill` tool gained the matching `engine`
+  argument.
+- A daemon `StartBoxRun` RPC, and `containarium code run --session <id>`
+  (#2193, #2260). The daemon can now start or resume a coding-agent run on a
+  box through the same on-disk run contract `code run` uses, so `code runs`,
+  `code attach` and `code status` see a daemon-started run exactly like a
+  CLI-started one. It runs as the box's own Linux user and takes its engine and
+  credentials from the box's `~/.containarium/code.json`, never from the
+  request. A run name that is still `RUNNING` is refused with
+  `FAILED_PRECONDITION`; a finished one is rotated aside, and only after every
+  other precondition has passed, so a refused request never moves a finished
+  run's files. `--session` resumes that specific session (`claude --resume`,
+  `pi --session`), is mutually exclusive with `--continue`, and its id becomes
+  the run's name when `--name` is omitted. `code runs` gains a `SESSION`
+  column, `BoxRun` gains `session_id`, and the MCP `code_run` tool gains
+  `session_id`.
+
+### Documentation
+
+- New [BYOC backend bring-up runbook](docs/BYOC-BACKEND-BRINGUP.md): the
+  invariants a tunnel-joined backend must hold (never set a base domain, no
+  bridge DNS wildcard, edge-terminated TLS), the checks to run after
+  bring-up and every upgrade, a symptom table, and the recovery procedure for a
+  host that claimed the wrong domain. It documents a silent trap: the daemon
+  persists `base_domain` in `daemon_config` and keeps using it when
+  `--base-domain` is later dropped, so removing the flag does not clear it.
+- `docs/APP-HOSTING-SUMMARY.md` no longer uses a real apex as its
+  `--base-domain` example, and warns that the value persists.
+- README: a "Choose your path" table up front sends a new reader to the hosted
+  cloud, a self-hosted VM, or a live end result (#2248).
+
+## [0.97.1] - 2026-10-02
+
+### Fixed
+
+- **v0.97.0's release build failed its own "release is described" gate and
+  never published a GitHub Release.** Its `## [Unreleased]` section had new
+  entries added under it but was never itself renamed to `## [0.97.0]` — a
+  release-cut step skipped, not a build or code defect. The gate caught it
+  before any binary asset was built, but the daemon/sidecar images and the
+  `containarium-telemetry` PyPI package had already published by the time it
+  failed (those three jobs run in parallel with the gated one, not after
+  it). v0.97.0 is left as a dead tag with no GitHub Release; this release
+  supersedes it, matching the `v0.48.0` precedent.
+
+### Added
+
+- `containarium agent engines` (`--json`), the `ListAgentEngines` RPC
+  (`GET /v1/agent-engines`) and the `list_agent_engines` MCP tool (#2223):
+  one read-only surface reporting which agent engines this deployment can
+  run right now, and why not, using the exact same readiness check a run's
+  own refusal enforces (#2222) — the reason text is never reworded between
+  the three readers. A tenant sees readiness for their own key owner; an
+  admin with no owner scope sees the daemon's global view.
+
+- Web UI Agents page (#2224): one row per engine — readiness, provider,
+  credential source, default badge, and the skills that name it — backed
+  directly by `ListAgentEngines`, so the UI and the CLI can never show two
+  different answers for the same daemon. A daemon with no provider keys
+  renders every engine as not-ready rather than a blank page.
+
+- `two-engine-crew` reference fixture (#2225): a two-member crew
+  (`hello-agent-claude`, `hello-agent-codex`) and
+  `scripts/two-engine-crew-e2e.sh`, proving a crew can run its members on
+  different engines on one daemon — each member's gateway token decodes to
+  its own engine's provider claim, and `containarium agent engines --json`
+  reports exactly the readiness the run itself used.
+
+### Fixed
+
+- `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not
+  only alongside `--identity` (#2089). Each key an agent offers before the
+  right one counts against an SSH front's failed-attempt budget, so a user
+  with several keys loaded could lock themselves out before their real key
+  was ever tried.
+
+## [0.96.0] - 2026-10-02
+
+### Added
+
+- Agent engine on the skill manifest (#2222): a skill can name its agent
+  engine (`engine: claude | codex | gemini` in the skill YAML, a typed
+  `AgentEngine` on the proto), honoured per run, so two skills or two crew
+  members on one daemon can run on different engines instead of every skill
+  box following the one primary engine. An unknown engine name fails at
+  catalog load rather than silently resolving to the default, and a skill
+  naming an engine whose provider has no resolvable key is refused before
+  anything is provisioned. The engine a run used is recorded on its lease and
+  audit event and shown by `containarium agent get`.
+
+### Fixed
+
+- `--server <host>` without a scheme now finds the credentials `containarium
+  login` stored under `https://<host>` (#2238). Before, the lookup missed, the
+  request went out with no token, and the server's 401 read as "invalid or
+  expired token". A scheme-less value now resolves to the stored URL (an
+  explicit `http://` never matches an `https://` credential), and a genuine
+  miss names the servers you are logged in to.
+
+- `containarium ssh-config sync` against a remote server writes the box's
+  daemon-reported `ssh_host` and SSH username instead of the private container
+  IP and a hard-coded `ubuntu` (#2239), matching what `containarium connect`
+  resolves. Local Incus listings, which report neither, are unchanged.
+
+## [0.95.0] - 2026-10-02
+
+### Added
+
+- Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
+  inside the box (`--clear` withdraws it) asks for one email about 30 minutes
+  before the box expires, carrying the sign-up link. The address is picked up
+  inside that window, posted once to `--anon-reminder-webhook` (the control
+  plane sends the mail — the daemon has no SMTP), and discarded; the funnel
+  counts it as `reminder_optin`. Nothing is collected without the command.
+
+- Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
+  minutes and 1 minute before the box's TTL, each at most once, recorded on
+  the box (`anon.warned`) so a daemon restart never repeats one; a wall that
+  cannot be delivered is logged and not retried.
+
+- Anonymous-box funnel (#2201): every step of the `ssh new.<domain>` journey
+  is an `EVENT_TYPE_ANON_*` event on the event stream (connect, shell_ready
+  with time-to-shell, reconnect, claim_link_issued, claim_completed, expired,
+  killed_abuse, rejected_capacity / _ratelimit / _door) keyed by the sha256 of
+  the key fingerprint, and a matching `containarium_anon_<step>_total` counter
+  plus the `containarium_anon_time_to_shell_seconds` histogram on the daemon's
+  OTel meter. Expired/killed are observed by a one-minute ticker.
+
+- Anonymous-box guardrails (#2200), the gate for putting the door on a
+  public IP: a kill switch with an operator message and per-key bans
+  (`containarium anon enable|disable|status|ban|unban|list`, persisted in
+  `/var/lib/containarium/anon-door.json`; a malformed file closes the door),
+  creation rate limits per key (1 / 10 min, burst 2) and per source IP
+  (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
+  with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
+  refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
+### Changed
+
+- **Bridge DNS reconciler no longer creates a record from nothing** (#2232).
+  v0.94.0's reconciler (#2188) wrote `address=/<base-domain>/<core-caddy IP>`
+  onto any bridge that had no `raw.dnsmasq` record, which on a backend host
+  started without `--ssh-host` / `--dns-passthrough-host` captured every name
+  under the base domain (the control plane, the SSH apex) into core-caddy and
+  broke TLS from inside every box. A pass now repairs an existing record only;
+  an absent record is reported as `ABSENT` by `containarium bridge-dns status`
+  and logged once. The record is still written on the run that installs
+  core-caddy, or when the operator opts in with `--bridge-dns-create`; a
+  creation logs a WARNING naming the base domain, the address and the
+  carve-outs, and the status shows `Last action: created` with the time.
+  `--bridge-dns-reconcile=false` turns the reconciler off without a rollback.
+  Note: rolling back the daemon does **not** remove a record v0.94.0 already
+  created; remove it with `incus network unset incusbr0 raw.dnsmasq` or pass
+  the carve-outs.
+
+- Terraform module: `ssh_host` and `dns_passthrough_hosts` variables render
+  `--ssh-host` / `--dns-passthrough-host` into the spot backend's daemon unit,
+  so a backend that shares its base domain with the control plane keeps those
+  names on the public resolver.
+
+### Fixed
+
+- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
+  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
+  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
+
+### Documentation
+
+- Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated
+  (and that the email-signup free tier is not), the Terraform module README
+  lists `anon_door_addr` / `anon_daemon_url`, and the deployment guide gains
+  the anon-pool backend prerequisites (KVM, nftables, disk), `--anon-*` flags
+  and operator verbs.
+
+- PRD + technical design for the agent router: several agent engines on one
+  runtime, routed per skill, with a single `Resolve` shared by every launch
+  path and the readiness RPC (`docs/product/agent-router.md`,
+  `docs/architecture/agent-router.md`).
+
+## [0.94.0] - 2026-10-01
+
+### Added
+
+- Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
+  token minted into every anonymous box (`/etc/containarium/claim-url`) and
+  binds the box to a tenant — TTL cleared, egress guard lifted, the tenant's
+  keys added, owner set; the box keeps its name and login and stays reachable
+  through the door. `containarium claim` (inside the box) prints the claim
+  URL or token (`--json`); `containarium anon claim <token> --tenant <u>`
+  redeems it as an admin; daemon flag `--anon-claim-url-base`. A second
+  redeem is AlreadyExists, an expired token FailedPrecondition, a bad one
+  PermissionDenied.
+
+- `containarium sentinel anon-door-plugin` (#2198) — the sshpiperd plugin
+  behind `ssh new.<domain>`: on public-key auth it asks the anon-pool daemon
+  for the key's box (`POST /v1/anon/boxes:ensure`, signed with the sentinel's
+  existing identity) and pipes the session there with the usual upstream key;
+  non-key auth is refused. Terraform: `anon_door_addr` + `anon_daemon_url`
+  install a second `sshpiper-anon.service` (chain: audit → door → failtoban)
+  through the same live-metadata reconcile as `sshpiper.service`; empty =
+  unit removed.
+
+- `AnonymousBoxService` (#2197) — the daemon side of the `ssh new.<domain>`
+  door: `EnsureAnonymousBox` resolves or creates an Incus **VM** per SSH-key
+  fingerprint (fixed 2 vCPU / 4 GB / 20 GB, 4 h TTL, egress limited to
+  DNS/HTTP/HTTPS by an Incus NIC ACL, login banner + claim-url in the guest),
+  reuses a live box on reconnect, and reports an expired one. Scopes
+  `anon:door` / `anon:admin`; typed gRPC + HTTP client methods; opt-in with
+  `CONTAINARIUM_ANON_DOOR=enable` on an LXC backend. `ClaimAnonymousBox` and
+  `SetAnonymousDoorConfig` are registered but land with #2199 / #2200.
+
+- `IsolationType` on `CreateContainerRequest` / `Container` and
+  `containarium create --isolation container|vm`: a Linux box can now be an
+  Incus VM (own kernel), not only Windows. Unspecified keeps today's rule
+  (Windows → VM, else container); Windows as a container is rejected. Linux
+  VMs boot the image's `/cloud` variant and skip the baked-image fast path.
+  `list` gains an ISO column (`lxc`/`vm`); the MCP `create_container` tool
+  takes `isolation`; the Kubernetes backend rejects `vm`. Groundwork for the
+  anonymous-box tier (#2196)
+
+- `--dns-passthrough-host` (repeatable): hostnames the bridge DNS record carves
+  out of the `*.<base-domain>` wildcard so boxes resolve them through the
+  upstream resolvers, the way `--ssh-host` already is. For an API host that sits
+  under the base domain but is not served by Caddy. Entries are validated at
+  boot; with none configured the generated `raw.dnsmasq` value is unchanged.
+  The record is rewritten only when the daemon writes it, which today is at
+  first install; the change that keeps it current on every start (#2188,
+  bridge DNS reconciler) is what makes a newly added host take effect on an
+  existing deployment. (#2188)
+- `containarium bridge-dns status` (`--json`), the `GetBridgeDNSStatus` RPC
+  (`GET /v1/system/bridge-dns`, admin-only) and the `bridge_dns_status` MCP
+  tool: whether the bridge DNS record for the app-hosting base domain matches
+  core-caddy's live address. State is a `BridgeDNSState` enum (not managed /
+  pending / in sync / degraded) with core-caddy's address, the desired and
+  current record, the last error, the drift count and the last pass / rewrite
+  times. (#2188)
+
+### Security
+
+- **A run token can no longer release an agent-filed follow-up unless the
+  connection enables `auto_chain`** (#2025). With `auto_chain` off (the
+  default), `SetTrackerIssueLabels` from a run-scoped token that removes
+  `agent:needs-approval` is refused with `PermissionDenied` before any
+  upstream call, on every issue, including the run's own follow-ups and its
+  dispatched issue. #2068 had bound that removal to the run's own lineage,
+  but inside it a run could still release its own gated follow-up. That let
+  a run chain itself for `max_depth` hops with no human involved, contrary
+  to the "a human releases every hop" default. With `auto_chain` on, a run
+  may still remove the gate within its own lineage. Adding the gate is
+  always allowed, and operator tokens are unchanged.
+
+### Fixed
+
+- The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
+  reconciled instead of written once, at first install. The write lives in the
+  core-services block that is skipped on every later start, because the daemon
+  has by then auto-detected the Caddy admin URL from the running core-caddy, so
+  a record left stale by a core-caddy address change stayed stale across daemon
+  restarts and upgrades; a failed first write (only a warning) was never
+  retried either. Boxes then resolved the whole base domain to an address
+  nothing answered on. A new reconciler, started on every start whenever app
+  hosting is on, a base domain is set and a core-caddy container exists,
+  compares `raw.dnsmasq` with what the daemon would render for core-caddy's
+  live address at start-up, on container events and every minute, and rewrites
+  it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
+  never writes when core-caddy's address cannot be established. (#2188)
+
+### Internal
+
+- `testdata/client_command_tree.golden`: add `claim` and `anon claim`, the
+  two client-safe command paths #2199 added, to the #1778 client/server-split
+  allow-list — the gate had been red on `main` since that merge. (#2217)
+
+## [0.93.1] - 2026-09-30
+
+### Fixed
+
+- MCP `connect` (exec and session modes) now presents the short-lived SSH
+  certificate it was issued. The pure-Go SSH client loaded only the throwaway
+  private key, never the `<key>-cert.pub` beside it (a name only OpenSSH picks
+  up by itself), so every certificate-auth connect offered a bare key and was
+  rejected at the sentinel with `no matching pipe`. A certificate file that is
+  present but unusable is now an error instead of a silent fallback. (#2179)
+- `otel-sidecar`/`core-otelcollector`: bump the pinned upstream `otelcol-contrib`
+  release from `0.110.0` to `0.162.0` (decision O1: kept in sync across
+  `sidecars/otel-sidecar/Dockerfile` and `internal/server/core_otel_collector.go`).
+  Clears ~50 HIGH/CRITICAL CVEs accumulated in the old build's embedded Go
+  toolchain and transitive dependencies (Go stdlib, grpc-go, x/crypto, x/net,
+  etc.) — none of them ever came from this repo's own code. Verified `v0.162.0`
+  scans clean under the same Trivy policy CI enforces (0 CRITICAL/HIGH,
+  unfixed-only). (#2164)
+
+## [0.93.0] - 2026-09-29
+
+### Added
+
+- `sentinel`: opt-in `--watch-spot-vm name:zone[:project]` flag (repeatable) so
+  a sentinel can watch an additional, independent GCP spot/preemptible VM for
+  preemption and auto-restart it, without adding it to the primary/failover
+  HTTP proxy pool. Each watch target gets its own recovery/backoff timeline,
+  independent of the primary backend's. (#2175)
+
+## [0.92.0] - 2026-09-29
+
+### Added
+
+- `sentinel`/`upgrade`: report the version a backend upgrade will install. The
+  sentinel serves `GET /containarium/version` (the served binary's own version,
+  cached per checksum), and `GetLatestRelease`, `TriggerUpgrade` and
+  `GetUpgradeStatus` gain a best-effort `target_version`. `backends versions`,
+  `backends upgrade` and the `check_for_updates` / `upgrade_backend` /
+  `get_upgrade_status` MCP tools show it, and flag a sentinel that is behind the
+  latest release. (#2171) (#2172)
+
+### Changed
+
+- `mcp`: the `list_routes` description now says inactive entries are claimed-but-unbound
+  subdomain reservations that still count against the caller's route quota (#2160)
+
+## [0.91.1] - 2026-09-29
+
+### Added
+
+- `integrity`: configurable heartbeat interval (#2138) (#2159)
+- `modelgateway`: durable Postgres owner-revocation store (#2111) (#2157)
+
+### Fixed
+
+- `cli`: `agent run --tracker-connection` binds a run from the shell (#2042) (#2158)
+- `release`: `verify-agent-runtime-bundle.sh` no longer misflags `*.test.ts` files
+  co-located with engine sources as missing engines — the false positive had
+  broken v0.91.0's release-asset build entirely (see [0.91.0] below; v0.91.0
+  shipped no CLI/MCP/agent-box release assets as a result). (#2165)
+
+## [0.91.0] - 2026-09-29
+
 ### Fixed
 
 - **`TailRunLog` resolves a finished skill run's journal after a daemon
@@ -146,6 +1581,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not start (no dispatch row) keeps `parent depth + 1`. Whether a run may
   remove `agent:needs-approval` from its own follow-up *at all* is still
   open on #2055 and is not decided here. (#2073)
+- **Sentinel SSH-CA trust anchor now self-syncs from the cloud instead of
+  requiring a manual file drop** (cloud#1928, cloud#1122). A sentinel has
+  no cloud credential of its own, so `/etc/sshpiper/trusted_user_ca_keys`
+  — the one place a container-SSH user's certificate is actually verified
+  — had been a one-time manual copy since it was first proved working; any
+  sentinel redeploy silently dropped CA trust with nothing to notice or
+  self-heal. The workhorse daemon's cloud client now notices a changed
+  `ssh_trust_version` on heartbeat, fetches the bundle via the (previously
+  unused) `GetSSHTrustBundle` RPC, and caches it; the sentinel relays it
+  home from whatever backend it already polls over the existing
+  `/authorized-keys` channel and writes the trust file atomically. Every
+  hop refuses to destroy trust rather than propagate a gap: a missing or
+  empty bundle anywhere in the chain leaves whatever's already on disk
+  untouched. Does not retroactively fix a sentinel already missing trust
+  today — that still needs this shipped plus a keysync cycle, or a manual
+  file drop as an interim unblock. (#2152)
 
 ## [0.90.1] - 2026-09-26
 

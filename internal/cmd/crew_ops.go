@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
@@ -17,6 +18,7 @@ var (
 	crewRunGitSource         string
 	crewRunGitRef            string
 	crewRunGitCredentialFile string
+	crewRunEngineOverrides   []string
 )
 
 var crewListCmd = &cobra.Command{
@@ -46,7 +48,8 @@ between crew members is git at a pinned SHA, not a shared filesystem.
 
 Examples:
   containarium crew run hello-crew --input '{"q":"hi"}' --server <host>
-  containarium crew run freeform-crew --git-source https://github.com/org/repo     --git-ref main --server <host>`,
+  containarium crew run freeform-crew --git-source https://github.com/org/repo     --git-ref main --server <host>
+  containarium crew run two-engine-crew --engine hello-agent-claude=claude --engine hello-agent-codex=codex --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCrewRun,
 }
@@ -69,6 +72,35 @@ func init() {
 		"Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
 	crewRunCmd.Flags().StringVar(&crewRunGitCredentialFile, "git-credential-file", "",
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for each member's fetch; never written to any box's .git/config.")
+	crewRunCmd.Flags().StringArrayVar(&crewRunEngineOverrides, "engine", nil,
+		"Override one member's engine: <skill-id>=<engine>, one of "+strings.Join(agentengine.Names(), ", ")+" (repeatable). A member with no entry keeps its manifest's own choice.")
+}
+
+// resolveCrewRunEngineOverrides parses --engine <skill-id>=<engine> pairs
+// into the per-member map RunCrewRequest.engine_overrides carries. A member
+// named more than once is an error — a silent "last one wins" would let a
+// typo in one flag quietly undo another.
+func resolveCrewRunEngineOverrides() (map[string]pb.AgentEngine, error) {
+	if len(crewRunEngineOverrides) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]pb.AgentEngine, len(crewRunEngineOverrides))
+	for _, kv := range crewRunEngineOverrides {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, fmt.Errorf("invalid --engine %q (want <skill-id>=<engine>)", kv)
+		}
+		skillID, engineName := parts[0], parts[1]
+		if _, exists := out[skillID]; exists {
+			return nil, fmt.Errorf("--engine %s given more than once", skillID)
+		}
+		engine, err := agentengine.Parse(engineName)
+		if err != nil {
+			return nil, fmt.Errorf("--engine %s: %w", skillID, err)
+		}
+		out[skillID] = engine
+	}
+	return out, nil
 }
 
 // resolveCrewRunGitCredential reads --git-credential-file if one was
@@ -142,6 +174,10 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	engineOverrides, err := resolveCrewRunEngineOverrides()
+	if err != nil {
+		return err
+	}
 
 	c, err := newCrewClient()
 	if err != nil {
@@ -151,7 +187,7 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Running crew %q...\n", args[0])
 	run, err := c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput,
-		crewRunGitSource, crewRunGitRef, gitCredential)
+		crewRunGitSource, crewRunGitRef, gitCredential, engineOverrides)
 	if err != nil {
 		return err
 	}

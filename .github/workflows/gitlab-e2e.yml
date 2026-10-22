@@ -56,10 +56,11 @@ jobs:
     name: build + vet + untagged unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
       - name: Vet the gitlab_e2e-tagged build (compiles the e2e file without running it)
         run: go vet -tags gitlab_e2e ./internal/tracker/gitlab/...
       - name: Untagged unit tests (fixtures, no network)
@@ -76,10 +77,11 @@ jobs:
       GITLAB_E2E_URL: http://localhost:8929
       GITLAB_E2E_TOKEN: ${{ github.run_id }}-e2e-token
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
 
       - name: Start GitLab CE
         # Trimmed down (no Prometheus, single Puma worker, low Sidekiq

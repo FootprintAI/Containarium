@@ -24,6 +24,7 @@ const (
 	NetworkPolicyService_ListNetworkPolicies_FullMethodName          = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
 	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName          = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
 	NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName  = "/containarium.v1.NetworkPolicyService/PatchNetworkPolicyDenyRules"
+	NetworkPolicyService_PlanNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/PlanNetworkPolicy"
 	NetworkPolicyService_SetNetworkPolicySignature_FullMethodName    = "/containarium.v1.NetworkPolicyService/SetNetworkPolicySignature"
 	NetworkPolicyService_ListNetworkPolicySignatures_FullMethodName  = "/containarium.v1.NetworkPolicyService/ListNetworkPolicySignatures"
 	NetworkPolicyService_DeleteNetworkPolicySignature_FullMethodName = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicySignature"
@@ -56,6 +57,12 @@ type NetworkPolicyServiceClient interface {
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
 	PatchNetworkPolicyDenyRules(ctx context.Context, in *PatchNetworkPolicyDenyRulesRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
+	// PlanNetworkPolicy reports which destinations a tenant's boxes reached
+	// that the tenant's policy denied (log-only) or dropped (enforce) in a recent
+	// window, aggregated by destination, so an allow-list can be written from
+	// what the tenant actually does and checked before it is armed (#2440).
+	// Read-only; it changes nothing.
+	PlanNetworkPolicy(ctx context.Context, in *PlanNetworkPolicyRequest, opts ...grpc.CallOption) (*PlanNetworkPolicyResponse, error)
 	// SetNetworkPolicySignature creates or replaces a global operator exploit
 	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
 	// form (with its assigned id) is echoed back.
@@ -126,6 +133,16 @@ func (c *networkPolicyServiceClient) PatchNetworkPolicyDenyRules(ctx context.Con
 	return out, nil
 }
 
+func (c *networkPolicyServiceClient) PlanNetworkPolicy(ctx context.Context, in *PlanNetworkPolicyRequest, opts ...grpc.CallOption) (*PlanNetworkPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanNetworkPolicyResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_PlanNetworkPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *networkPolicyServiceClient) SetNetworkPolicySignature(ctx context.Context, in *SetNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*SetNetworkPolicySignatureResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetNetworkPolicySignatureResponse)
@@ -183,6 +200,12 @@ type NetworkPolicyServiceServer interface {
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
 	PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error)
+	// PlanNetworkPolicy reports which destinations a tenant's boxes reached
+	// that the tenant's policy denied (log-only) or dropped (enforce) in a recent
+	// window, aggregated by destination, so an allow-list can be written from
+	// what the tenant actually does and checked before it is armed (#2440).
+	// Read-only; it changes nothing.
+	PlanNetworkPolicy(context.Context, *PlanNetworkPolicyRequest) (*PlanNetworkPolicyResponse, error)
 	// SetNetworkPolicySignature creates or replaces a global operator exploit
 	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
 	// form (with its assigned id) is echoed back.
@@ -217,6 +240,9 @@ func (UnimplementedNetworkPolicyServiceServer) DeleteNetworkPolicy(context.Conte
 }
 func (UnimplementedNetworkPolicyServiceServer) PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PatchNetworkPolicyDenyRules not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) PlanNetworkPolicy(context.Context, *PlanNetworkPolicyRequest) (*PlanNetworkPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanNetworkPolicy not implemented")
 }
 func (UnimplementedNetworkPolicyServiceServer) SetNetworkPolicySignature(context.Context, *SetNetworkPolicySignatureRequest) (*SetNetworkPolicySignatureResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetNetworkPolicySignature not implemented")
@@ -338,6 +364,24 @@ func _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkPolicyService_PlanNetworkPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanNetworkPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).PlanNetworkPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_PlanNetworkPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).PlanNetworkPolicy(ctx, req.(*PlanNetworkPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NetworkPolicyService_SetNetworkPolicySignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetNetworkPolicySignatureRequest)
 	if err := dec(in); err != nil {
@@ -418,6 +462,10 @@ var NetworkPolicyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PatchNetworkPolicyDenyRules",
 			Handler:    _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler,
+		},
+		{
+			MethodName: "PlanNetworkPolicy",
+			Handler:    _NetworkPolicyService_PlanNetworkPolicy_Handler,
 		},
 		{
 			MethodName: "SetNetworkPolicySignature",

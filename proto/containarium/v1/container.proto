@@ -30,6 +30,22 @@ enum OSType {
   OS_TYPE_WINDOWS_2022 = 4;
 }
 
+// IsolationType selects the Incus instance type a box runs as — the
+// kernel boundary between the box and the host. Independent of OSType:
+// a Linux box can be a VM, and until this enum existed only Windows could
+// (#2196, the anonymous-box tier in docs/architecture/ssh-new-anonymous-box.md).
+enum IsolationType {
+  // Backend default: Windows runs as a VM, every other OS as a container.
+  ISOLATION_TYPE_UNSPECIFIED = 0;
+
+  // LXC container — shares the host kernel.
+  ISOLATION_TYPE_CONTAINER = 1;
+
+  // QEMU/KVM virtual machine — its own kernel. Requires a KVM-capable
+  // backend. Windows cannot be anything else.
+  ISOLATION_TYPE_VM = 2;
+}
+
 // AccessType indicates how to connect to an instance
 enum AccessType {
   // SSH access (default for Linux containers)
@@ -308,6 +324,11 @@ message Container {
   // reachable. It is surfaced on status rather than only at the point of
   // failure so the condition is visible before someone trips over it.
   EncryptionState encryption_state = 28;
+
+  // How the box is isolated from the host: CONTAINER (LXC) or VM
+  // (QEMU/KVM), read back from the instance itself. UNSPECIFIED when the
+  // backend does not report it.
+  IsolationType isolation = 29;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -528,6 +549,21 @@ message CreateContainerRequest {
   // against such a control plane with no configured default region has no
   // way to express one at all. Empty = daemon/control-plane default.
   string region = 26;
+
+  // Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps
+  // today's behavior: Windows → VM, everything else → container.
+  // CONTAINER with a Windows os_type is rejected with InvalidArgument.
+  // Only the LXC backend honors VM; the Kubernetes backend rejects it.
+  IsolationType isolation = 27;
+
+  // Opt out of auto-sleep at create (#2759). Meaningful only on a hosted
+  // control plane that turns auto-sleep on by default for some orgs (for
+  // example a seat-billed org defaulting to 30 minutes): true asks for a box
+  // with NO idle-stop timer. A standalone daemon never enables auto-sleep
+  // unless idle_stop_minutes > 0, so it ignores this field. Setting it
+  // together with idle_stop_minutes > 0 is contradictory and rejected with
+  // InvalidArgument.
+  bool disable_auto_sleep = 28;
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -1059,6 +1095,24 @@ message RemoveCollaboratorRequest {
 message RemoveCollaboratorResponse {
   // Success message
   string message = 1;
+}
+
+// TerminateUserSessionsRequest names the user whose sessions to end.
+message TerminateUserSessionsRequest {
+  // The user: the owner of "<username>-container" and the collaborator of
+  // any "<owner>-container-<username>" jump account. Same value as the
+  // self-host user id (sshauthz.UserIDForLogin).
+  string username = 1;
+}
+
+// TerminateUserSessionsResponse reports what was ended.
+message TerminateUserSessionsResponse {
+  // Accounts (in a box, or the host jump account) that had live processes,
+  // all of which were killed.
+  int32 terminated_sessions = 1;
+  // Boxes on this backend the user reaches (owner box plus collaborator
+  // boxes) that were walked.
+  int32 boxes_touched = 2;
 }
 
 // ListCollaboratorsRequest is the request to list collaborators for a container

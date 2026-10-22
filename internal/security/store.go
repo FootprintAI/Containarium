@@ -2,10 +2,12 @@ package security
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -74,7 +76,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 type Report struct {
 	ContainerName string
 	Username      string
-	Status        string // "clean" or "infected"
+	Status        string // ScanStatusClean | ScanStatusInfected | ScanStatusIncomplete
 	FindingsCount int
 	Findings      string
 	ScannedAt     time.Time
@@ -207,6 +209,8 @@ func (s *Store) ListReports(ctx context.Context, params ListParams) ([]*pb.Clama
 			Findings:      findings,
 			ScannedAt:     scannedAt.Format(time.RFC3339),
 			CreatedAt:     createdAt.Format(time.RFC3339),
+			StatusEnum:    StatusEnum(status),
+			Reason:        ReasonFor(status, findings),
 		}
 		if scanDuration != nil {
 			report.ScanDuration = *scanDuration
@@ -277,6 +281,8 @@ func (s *Store) ListReportsForExport(ctx context.Context, from, to, containerNam
 			Findings:      findings,
 			ScannedAt:     scannedAt.Format(time.RFC3339),
 			CreatedAt:     createdAt.Format(time.RFC3339),
+			StatusEnum:    StatusEnum(st),
+			Reason:        ReasonFor(st, findings),
 		}
 		if scanDuration != nil {
 			report.ScanDuration = *scanDuration
@@ -356,6 +362,22 @@ type ScanJob struct {
 	CreatedAt     time.Time
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
+}
+
+// ActiveScanJob reports whether the container already has a pending or running
+// scan job, and its id.
+func (s *Store) ActiveScanJob(ctx context.Context, containerName string) (id int64, found bool, err error) {
+	err = s.pool.QueryRow(ctx,
+		`SELECT id FROM scan_jobs WHERE container_name = $1 AND status IN ('pending', 'running') LIMIT 1`,
+		containerName,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to look up active scan job: %w", err)
+	}
+	return id, true, nil
 }
 
 // EnqueueScanJob inserts a new pending scan job and returns its ID.
@@ -492,6 +514,43 @@ func (s *Store) CleanupOldJobs(ctx context.Context, retentionDays int) error {
 	return err
 }
 
+// Scan report statuses. "incomplete" means clamdscan errored or never ran to
+// the end, so nothing may be concluded about the box — in particular it must
+// never be treated as clean (#2496).
+const (
+	ScanStatusClean      = "clean"
+	ScanStatusInfected   = "infected"
+	ScanStatusIncomplete = "incomplete"
+	// ScanStatusUnsupportedSize: the box has less memory than ClamAV needs
+	// (MinBoxMemoryBytes), so no scan was attempted (#2631).
+	ScanStatusUnsupportedSize = "unsupported_size"
+	// ScanStatusNotInstalled: ClamAV or its signatures are absent from the box,
+	// so no scan was attempted (#2631).
+	ScanStatusNotInstalled = "not_installed"
+)
+
+// ClassifyClamScan turns a clamdscan run into a report status. FOUND lines
+// win (an infection is real even if another path errored); otherwise any exec
+// error — exit 2, a failed exec, a non-zero exit with no findings — is
+// "incomplete" and the stderr/exit error is kept in findings so an operator
+// can see why. Only a clean exit with no findings is "clean".
+func ClassifyClamScan(stdout, stderr string, scanErr error) (status string, findingsCount int, findings string) {
+	status, findingsCount, findings = ParseClamScanOutput(stdout)
+	if scanErr == nil {
+		return status, findingsCount, findings
+	}
+	detail := scanErr.Error()
+	if msg := strings.TrimSpace(stderr); msg != "" {
+		detail += "\n" + msg
+	}
+	if status == ScanStatusInfected {
+		// Keep the verdict and count, but record that the run also errored
+		// so an operator can tell the scan was partial.
+		return status, findingsCount, findings + "\n" + detail
+	}
+	return ScanStatusIncomplete, 0, detail
+}
+
 // ParseClamScanOutput parses clamscan output and returns status, findings count, and findings text
 func ParseClamScanOutput(output string) (status string, findingsCount int, findings string) {
 	lines := strings.Split(output, "\n")
@@ -505,7 +564,37 @@ func ParseClamScanOutput(output string) (status string, findingsCount int, findi
 	}
 
 	if len(foundLines) > 0 {
-		return "infected", len(foundLines), strings.Join(foundLines, "\n")
+		return ScanStatusInfected, len(foundLines), strings.Join(foundLines, "\n")
 	}
-	return "clean", 0, ""
+	return ScanStatusClean, 0, ""
+}
+
+// StatusEnum maps a stored status string to the typed enum (#2631).
+func StatusEnum(status string) pb.ClamavScanStatus {
+	switch status {
+	case ScanStatusClean:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_CLEAN
+	case ScanStatusInfected:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_INFECTED
+	case ScanStatusIncomplete:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_INCOMPLETE
+	case ScanStatusUnsupportedSize:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE
+	case ScanStatusNotInstalled:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_NOT_INSTALLED
+	case "never":
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_NEVER_SCANNED
+	default:
+		return pb.ClamavScanStatus_CLAMAV_SCAN_STATUS_UNSPECIFIED
+	}
+}
+
+// ReasonFor is the reason a scan produced no verdict: the stored findings text
+// for every status other than clean/infected, empty for those two.
+func ReasonFor(status, findings string) string {
+	switch status {
+	case ScanStatusClean, ScanStatusInfected:
+		return ""
+	}
+	return findings
 }

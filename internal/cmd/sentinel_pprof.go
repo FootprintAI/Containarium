@@ -75,7 +75,7 @@ func init() {
 	sentinelPprofCmd.Flags().IntVar(&sentinelPprofDebug, "debug", 0, "0 = binary profile for go tool pprof; 1 or 2 = human-readable text")
 	sentinelPprofCmd.Flags().BoolVar(&sentinelPprofGC, "gc", false, "Force a GC before a heap snapshot so inuse_space reflects live memory, not uncollected garbage")
 	sentinelPprofCmd.Flags().BoolVar(&sentinelPprofList, "list", false, "List the profiles this sentinel offers, with current object counts")
-	sentinelPprofCmd.Flags().StringVar(&sentinelPprofSecret, "secret", os.Getenv(config.EnvSentinelAdminSecret), "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
+	secretEnvFlag(sentinelPprofCmd.Flags(), &sentinelPprofSecret, "secret", config.EnvSentinelAdminSecret, "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
 
 	_ = sentinelPprofCmd.MarkFlagRequired("url")
 }

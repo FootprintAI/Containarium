@@ -2,10 +2,13 @@ package sentinel
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -15,6 +18,10 @@ import (
 // and serves port-forwarding requests over a yamux session.
 type TunnelClient struct {
 	SentinelAddr string
+	// SentinelPins are the accepted SPKI pins of the sentinel's tunnel
+	// identity (more than one during key rotation). Required: the client
+	// connects only over TLS and only to a sentinel presenting one of them.
+	SentinelPins []TunnelPin
 	Token        string
 	SpotID       string
 	Ports        []int
@@ -35,13 +42,29 @@ type TunnelClient struct {
 	// LoadBalancer ingress or <nodeIP>:<NodePort>), since NodePorts are
 	// not reliably reachable on 127.0.0.1.
 	Forward map[int]string
+
+	// sessionUpAt is when the current session was established (unix nanos), or
+	// 0 when no session is up. Run uses it to tell a session that stayed up
+	// from a connection attempt that never got anywhere.
+	sessionUpAt atomic.Int64
+}
+
+// sessionLasted is how long the current (or just-ended) session has been up,
+// or 0 if the last connection attempt never established one.
+func (tc *TunnelClient) sessionLasted() time.Duration {
+	up := tc.sessionUpAt.Load()
+	if up == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, up))
 }
 
 // Run connects to the sentinel and serves tunnel traffic.
-// It reconnects with exponential backoff on failure. Blocks until ctx is cancelled.
+// It reconnects with exponential backoff across consecutive failures, starting
+// over after a session that stayed up (see reconnectBackoff). Blocks until ctx
+// is cancelled.
 func (tc *TunnelClient) Run(ctx context.Context) error {
-	backoff := time.Second
-	maxBackoff := 60 * time.Second
+	backoff := newReconnectBackoff()
 
 	for {
 		select {
@@ -50,48 +73,42 @@ func (tc *TunnelClient) Run(ctx context.Context) error {
 		default:
 		}
 
+		tc.sessionUpAt.Store(0)
 		err := tc.connectAndServe(ctx)
 		if err != nil {
 			log.Printf("[tunnel-client] connection lost: %v", err)
 		}
 
+		// Measured from when the session came up, not from when the attempt
+		// began: an attempt that hung and then failed never had a session.
+		delay := jitterDelay(backoff.next(tc.sessionLasted()))
+		log.Printf("[tunnel-client] reconnecting to %s in %s...", tc.SentinelAddr, delay.Round(100*time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
-
-		backoff = backoff * 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-		log.Printf("[tunnel-client] reconnecting to %s (backoff: %s)...", tc.SentinelAddr, backoff)
 	}
 }
 
 func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
-	// Connect to sentinel
-	dialer := net.Dialer{Timeout: 15 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", tc.SentinelAddr)
+	// Connect to sentinel over TLS. The handshake and the yamux session
+	// below run unchanged inside the TLS connection.
+	conn, err := tc.dialTLS(ctx)
 	if err != nil {
-		return fmt.Errorf("dial sentinel %s: %w", tc.SentinelAddr, err)
+		return err
 	}
 	defer func() { _ = conn.Close() }()
 
 	log.Printf("[tunnel-client] connected to sentinel %s", tc.SentinelAddr)
 
-	// Send handshake
-	hs := &TunnelHandshake{
-		Token:             tc.Token,
-		SpotID:            tc.SpotID,
-		Ports:             tc.Ports,
-		Pool:              tc.Pool,
-		PublicHostname:    tc.PublicHostname,
-		PublicAliases:     tc.PublicAliases,
-		PublicBaseDomains: tc.PublicBaseDomains,
-		PublicPort:        tc.PublicPort,
+	// Send the v2 handshake: the token stays here; the sentinel gets its
+	// id and a proof bound to this TLS session.
+	ekm, err := tunnelTokenEKM(conn.ConnectionState())
+	if err != nil {
+		return err
 	}
-	if err := writeHandshake(conn, hs); err != nil {
+	if err := writeHandshake(conn, tc.handshakeV2(ekm)); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
 
@@ -129,9 +146,27 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	defer func() { _ = session.Close() }()
 
 	log.Printf("[tunnel-client] yamux session established, serving port forwards")
+	tc.sessionUpAt.Store(time.Now().UnixNano())
 
 	// Accept streams from sentinel and proxy to local ports
 	return tc.serveStreams(ctx, session)
+}
+
+// handshakeV2 builds the handshake sent inside a TLS session whose
+// exported keying material is ekm. It never carries the token itself.
+func (tc *TunnelClient) handshakeV2(ekm []byte) *TunnelHandshake {
+	return &TunnelHandshake{
+		V:                 tunnelHandshakeV2,
+		TokenID:           tunnelTokenID(tc.Token),
+		Proof:             tunnelTokenProof(tc.Token, ekm),
+		SpotID:            tc.SpotID,
+		Ports:             tc.Ports,
+		Pool:              tc.Pool,
+		PublicHostname:    tc.PublicHostname,
+		PublicAliases:     tc.PublicAliases,
+		PublicBaseDomains: tc.PublicBaseDomains,
+		PublicPort:        tc.PublicPort,
+	}
 }
 
 // serveStreams accepts yamux streams from the sentinel and proxies each one
@@ -198,4 +233,69 @@ func (tc *TunnelClient) handleStream(stream net.Conn) {
 	}()
 	// Wait for first direction to finish, then close both
 	<-done
+}
+
+// TunnelALPN is the ALPN protocol a tunnel client offers. The sentinel's
+// shared listener uses it to tell tunnel sessions apart from HTTPS.
+const TunnelALPN = "containarium-tunnel/1"
+
+// tunnelHandshakeTimeout bounds the TCP dial and the TLS handshake.
+const tunnelHandshakeTimeout = 15 * time.Second
+
+// ErrNoSentinelPins is returned when a TunnelClient has no sentinel pin to
+// authenticate the sentinel with. The client never connects without one.
+var ErrNoSentinelPins = errors.New("no sentinel pin configured")
+
+// tlsConfig builds the client TLS configuration: TLS 1.3 only, the tunnel
+// ALPN protocol, SNI set to the host part of SentinelAddr, and the
+// sentinel's certificate accepted only if its public key matches one of
+// SentinelPins.
+func (tc *TunnelClient) tlsConfig() (*tls.Config, error) {
+	if len(tc.SentinelPins) == 0 {
+		return nil, ErrNoSentinelPins
+	}
+	host, _, err := net.SplitHostPort(tc.SentinelAddr)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel address %q: %w", tc.SentinelAddr, err)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{TunnelALPN},
+		ServerName: host,
+		// The sentinel presents a self-signed tunnel identity, so WebPKI
+		// chain and hostname verification do not apply. Authentication is
+		// done entirely by VerifyPeerCertificate, which accepts the peer
+		// only when its public key matches a configured SPKI pin; with no
+		// pins configured tlsConfig fails before any connection is made.
+		InsecureSkipVerify:    true, // #nosec G402 -- peer is authenticated by SPKI pin in VerifyPeerCertificate
+		VerifyPeerCertificate: VerifyPinned(tc.SentinelPins),
+	}, nil
+}
+
+// dialTLS opens the TCP connection to the sentinel and completes the TLS
+// handshake, including pin verification and ALPN agreement. On any failure
+// the connection is closed before a single application byte is written:
+// there is no fallback to an unwrapped connection.
+func (tc *TunnelClient) dialTLS(ctx context.Context) (*tls.Conn, error) {
+	cfg, err := tc.tlsConfig()
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{Timeout: tunnelHandshakeTimeout}
+	raw, err := dialer.DialContext(ctx, "tcp", tc.SentinelAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial sentinel %s: %w", tc.SentinelAddr, err)
+	}
+	conn := tls.Client(raw, cfg)
+	hsCtx, cancel := context.WithTimeout(ctx, tunnelHandshakeTimeout)
+	defer cancel()
+	if err := conn.HandshakeContext(hsCtx); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("tls handshake with sentinel %s: %w", tc.SentinelAddr, err)
+	}
+	if proto := conn.ConnectionState().NegotiatedProtocol; proto != TunnelALPN {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sentinel %s did not negotiate ALPN %q (got %q)", tc.SentinelAddr, TunnelALPN, proto)
+	}
+	return conn, nil
 }

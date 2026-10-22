@@ -3,7 +3,7 @@
 > **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
 
 **The open-source, self-hostable agent runtime for AI agents.**
-Each agent gets a persistent, SSH-reachable box with per-tenant network isolation — no kube-apiserver token, no host access, no cross-tenant leakage.
+Each agent gets a persistent, SSH-reachable box in an unprivileged container, with an opt-in per-tenant eBPF egress policy, audit-logged denials, and a model gateway that keeps provider API keys out of the box. What is on by default, and what each claim rests on, is in [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).
 
 Bring your own agent — Cursor, Claude Code, OpenCode, your own MCP client.
 We run the box.
@@ -18,14 +18,27 @@ curl https://blog.example.com → hello world
 ```
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
+[![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/FootprintAI/Containarium/badge)](https://scorecard.dev/viewer/?uri=github.com/FootprintAI/Containarium)
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/score.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
+[![Stack Fingerprint](https://stackfingerprint.vercel.app/api/card?repo=FootprintAI/Containarium&theme=midnight&layout=classic)](https://stackfingerprint.vercel.app/?repo=FootprintAI/Containarium)
+
 [![Containarium quickstart: one command turns a fresh box into SSH + a wired agent + a live HTTPS app](docs/images/quickstart.gif)](https://youtu.be/IBDDD_tb8FY)
 
 🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
+
+---
+
+## Choose your path
+
+| Path | You end up with | Go to |
+|------|-----------------|-------|
+| **Hosted cloud** | a box you can `ssh` into with your agent wired to it, no server to run | [Sign up at cloud.containarium.dev](https://cloud.containarium.dev) |
+| **Self-host on a VM** | the same, on your own Ubuntu VM (about 5 minutes) | [Quick start](#quick-start) |
+| **See the end result** | a live app served from a box, which is what you end up with | [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev) |
 
 ---
 
@@ -57,95 +70,184 @@ You bring the agent. We run the box.
 
 ## Quick start
 
-### One command (requires containarium ≥ v0.62)
+One path, three steps, with a check at the end of each. You're done when a
+box exists, `ssh alice` gets you a shell in it, and your agent can run
+commands inside it.
 
-`quickstart` collapses the five steps below into a single idempotent command —
-create the box, wire SSH and your agent (`claude` / `gemini` / `codex`), and,
-with `--prompt`, build and serve a site:
+**Before you start:** a fresh Ubuntu 24.04 VM you can `sudo` on (see
+[System requirements](#system-requirements)). You need Containarium
+**v0.96.0 or later**; the installer fetches the latest release. `sudo` is
+only needed to run the installer and to read the admin token. Every other
+command runs as your normal user and goes through the daemon's API.
 
-```bash
-containarium quickstart alice --server <your-vm> \
-  --prompt "a coffee-shop landing page" --domain coffee.example.com
-```
+### 1. Install, then create your first box
 
-No `--ssh-key`? It reuses your `~/.ssh` key or generates a managed one. On a
-fresh VM the installer can bootstrap it too:
-`curl -fsSL https://containarium.dev/install.sh | sudo bash -s -- --quickstart alice`.
-
-Prefer to see each piece, or drive it by hand? The same five steps, explicitly:
-
-### 1. Self-host on a fresh Ubuntu VM (5 minutes)
+On the VM:
 
 ```bash
 curl -fsSL https://containarium.dev/install.sh | sudo bash
 ```
 
-That installs Containarium + Incus + dependencies, starts the daemon,
-and gives you a working API at `http://localhost:8080`.
-
-### 2. Create your first box
+✅ **Check:** the daemon is running and the CLI is on your `PATH`.
 
 ```bash
-sudo containarium create alice --ssh-key ~/.ssh/id_ed25519.pub
-sudo containarium list
+systemctl is-active containarium   # → active
+containarium version               # → v0.96.0 or later
 ```
 
-### 3. Wire up SSH so `ssh alice` just works
+Point the CLI at the local daemon, using the admin token the installer
+saved, and create a box called `alice`:
+
+<!-- The published installer (https://containarium.dev/install.sh) now carries
+     `--quickstart <name>` (checked 2026-10-15; #2244 is closed). Flip this
+     block to the one-liner (`… | sudo bash -s -- --quickstart alice`) once a
+     fresh-VM run of it has been recorded — not before. -->
 
 ```bash
-containarium ssh-config sync
-# Adds entries to ~/.containarium/ssh_config.
-# Then add ONE line to ~/.ssh/config:
-#     Include ~/.containarium/ssh_config
-ssh alice  # connects through the sentinel
+export CONTAINARIUM_HTTP=true
+export CONTAINARIUM_SERVER=http://localhost:8080
+export CONTAINARIUM_TOKEN="$(sudo cat /etc/containarium/admin.token)"
+
+containarium quickstart alice
 ```
 
-Running this from your own laptop against a remote server, rather than on
-the box itself? The bare form above only reaches a local Incus socket —
-add `--http --server <host:port>`:
+`quickstart` creates the box, reuses your `~/.ssh` key or generates a
+managed one (`~/.ssh/containarium_ed25519`), writes
+`~/.containarium/ssh_config`, adds the single
+`Include ~/.containarium/ssh_config` line to `~/.ssh/config`, and wires
+the box into your agent's MCP config (Claude Code by default). It's safe
+to run again, including to repair an older quickstart's MCP command.
+
+✅ **Check:** `quickstart` ends with `✓ quickstart complete`, and the box is
+listed as running.
 
 ```bash
-containarium ssh-config sync --http --server <host:port>
+containarium list   # → a row for alice-container, STATUS running
 ```
 
-### 4. Point your agent at the box
+### 2. Connect to the box
 
-In `~/.cursor/mcp.json` or `~/.claude.json`:
+Choose the variant that matches where you're typing.
+
+**Variant A: on the VM.** This works on a fresh install. Step 1 already
+wrote the config. Re-sync whenever your boxes change:
+
+```bash
+containarium ssh-config sync --identity ~/.ssh/containarium_ed25519
+# leave out --identity if quickstart reused your own ~/.ssh key
+```
+
+✅ **Check:**
+
+```bash
+ssh alice hostname   # → alice-container
+```
+
+**Variant B: from your laptop.** On a single VM, `ssh-config sync` adds a
+`ProxyJump` through the VM's per-user jump account when the daemon doesn't
+advertise `ssh_host`. If the API is reached directly, the jump host defaults
+to the API hostname, on SSH port 22. With the API tunnel below, name the
+actual VM with `--jump-host` (use `<vm-host>:<ssh-port>` for a custom SSH port).
+Deployments with a [sentinel](#sentinel--sshpiper--caddy--proxy-protocol) can
+use `--sentinel <sentinel-host>` instead; a daemon's `--ssh-host` still takes
+precedence over the jump route.
+
+```bash
+# On your laptop: install the client only.
+curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install-cli.sh | sudo bash
+
+# Reach the daemon's API through an SSH tunnel to the VM.
+ssh -fN -L 8080:localhost:8080 <you>@<vm-host>
+export CONTAINARIUM_HTTP=true
+export CONTAINARIUM_SERVER=http://localhost:8080
+export CONTAINARIUM_TOKEN="$(ssh <you>@<vm-host> sudo cat /etc/containarium/admin.token)"
+
+containarium ssh-config sync --jump-host <vm-host>
+```
+
+Then make `Include ~/.containarium/ssh_config` the first line of your
+laptop's `~/.ssh/config`. Use the key whose public half was supplied when
+creating the box: that key is authorized on both the box and its VM jump
+account. Add `--identity ~/.ssh/<your-private-key>` to sync if needed; it
+applies to both SSH connections.
+
+✅ **Check:**
+
+```bash
+ssh alice-container hostname   # → alice-container
+```
+
+### 3. Wire your agent to the box
+
+Your agent reaches the box through `agent-box`, an MCP server that runs
+inside it. `code install` puts it there, along with Claude Code. Run it on
+the VM, in the same shell as step 1:
+
+```bash
+containarium code install alice
+```
+
+✅ **Check:** the install prints `agent-box installed at …/.local/bin/agent-box`,
+and the binary is there:
+
+```bash
+ssh alice 'test -x ~/.local/bin/agent-box && echo agent-box ready'   # → agent-box ready
+```
+
+On the machine where your agent runs, `quickstart` wires the MCP config
+automatically. Step 1 already did this for Claude Code on the VM. If your
+agent runs on your laptop, run this there using the API connection from
+step 2; it reuses the existing box:
+
+```bash
+containarium quickstart alice --agent claude
+# For Gemini or Codex, use --agent gemini or --agent codex instead.
+```
+
+For Cursor, add the server to `~/.cursor/mcp.json` manually:
 
 ```jsonc
 {
   "mcpServers": {
     "containarium-box": {
       "command": "ssh",
-      "args": ["alice", "agent-box"]
+      "args": ["alice", "sh -c 'PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\" exec agent-box'"]
     }
   }
 }
 ```
 
-Now Claude Code, Cursor, or any MCP-speaking agent can call
-`shell_exec`, `read_file`, `write_file`, `list_directory`,
-`move_file`, `delete_file` directly inside Alice's container.
+This command sets the box's `PATH` for non-interactive SSH and supports
+both user-level and system-wide installs of `agent-box`.
 
-Agent has no MCP client? Run it *inside* the box instead — see
-[docs/integrations/pi.md](docs/integrations/pi.md) for the
-[pi](https://pi.dev) walkthrough (installs, keys, code sync, sessions).
+✅ **Check:** your agent lists `containarium-box` as a connected MCP server
+(in Claude Code, `claude mcp list`). Asking it to *"run `uname -a` in the
+box"* returns a Linux kernel line from `alice-container`. It now has
+`shell_exec`, `read_file`, `write_file`, `list_directory`, `move_file` and
+`delete_file` inside the box.
 
-Or let the box run the agent itself:
+**That's your first box.** Next:
+[run the agent on the box](#run-the-agent-on-the-box) ·
+[run pi inside the box](#run-pi-inside-the-box) ·
+[put the box on a public hostname](#put-the-box-on-a-public-hostname) ·
+[build a site in one command](#build-a-site-in-one-command).
 
-```bash
-containarium code install alice          # Claude Code + agent-box onto a box you already use
-```
+---
 
-`code install` lands the toolchain and **no credential** — sign-in completes
-through Anthropic's own flow, never through us. Pick either path once:
+## After your first box
+
+### Run the agent on the box
+
+`code install` (step 3) already put Claude Code on the box. It installs
+**no credential**: sign-in goes through Anthropic's own flow, never through
+us. Choose one of these, once:
 
 ```bash
 # interactive: sign in inside the box (device code)
-containarium connect alice
+ssh alice
 claude
 
-# or headless: your own key in the "env" block of ~/.claude/settings.json
+# or headless: your own key in the "env" block of ~/.claude/settings.json on the box
 #   {"env": {"ANTHROPIC_API_KEY": "<your key>"}}
 ```
 
@@ -155,11 +257,12 @@ Then:
 containarium code run alice --prompt "add a health endpoint and run the tests"
 ```
 
-`code run` streams output to your terminal as it is produced — but it is not a
-pipe. The run is detached on the box, its output captured to a log, and your
-terminal is a *resumable reader* over that log. Close your laptop, lose wifi,
-Ctrl-C: the run keeps going, and `containarium code attach alice` picks the
-stream back up **byte-exact** — nothing missing, nothing repeated.
+`code run` streams output to your terminal as it's produced, but it isn't a
+pipe. The run is detached on the box and its output is captured to a log;
+your terminal is a *resumable reader* over that log. Close your laptop, lose
+wifi, press Ctrl-C: the run keeps going, and `containarium code attach alice`
+picks the stream back up **byte-exact**, with nothing missing and nothing
+repeated.
 
 ```bash
 containarium code attach alice   # reconnect; replays what you missed
@@ -167,12 +270,18 @@ containarium code status alice   # liveness, and the exit code once it finishes
 containarium code stop alice     # reap it; the log stays readable
 ```
 
-The difference from the MCP wiring above is where the agent runs. There, the
-agent is on your laptop and reaches into the box; here, the agent *is* on the
-box — so the work survives your machine sleeping, and the tests run next to the
-code instead of over a network hop.
+The difference from the MCP wiring in step 3 is where the agent runs. There,
+the agent is on your machine and reaches into the box. Here, the agent *is*
+on the box, so the work survives your machine sleeping, and the tests run
+next to the code instead of over a network hop.
 
-### 5. Make it reachable on a public hostname
+### Run pi inside the box
+
+If your agent has no MCP client, run it *inside* the box instead. See
+[docs/integrations/pi.md](docs/integrations/pi.md) for the
+[pi](https://pi.dev) walkthrough (installs, keys, code sync, sessions).
+
+### Put the box on a public hostname
 
 ```bash
 containarium expose-port alice \
@@ -180,9 +289,23 @@ containarium expose-port alice \
   --domain blog.example.com
 ```
 
-Caddy on the sentinel terminates TLS for `blog.example.com` and
-forwards to `alice-container:8080`. `curl https://blog.example.com`
-hits whatever Alice has serving on port 8080.
+Caddy on the sentinel terminates TLS for `blog.example.com` and forwards to
+`alice-container:8080`. `curl https://blog.example.com` then hits whatever
+`alice` is serving on port 8080.
+
+### Build a site in one command
+
+Run from your laptop against a server you can reach (see step 2, variant B),
+`quickstart` does steps 1–3 in one go: it creates the box and wires SSH and
+your agent (`claude`, `gemini` or `codex`). With `--prompt` it also exposes
+`--domain` and launches your local agent on the build:
+
+```bash
+containarium quickstart alice --server <your-server> \
+  --prompt "a coffee-shop landing page" --domain coffee.example.com
+```
+
+`containarium quickstart --help` lists every option.
 
 ---
 
@@ -220,31 +343,42 @@ unset = no constraint. See
 
 ### `mcp-server` — platform MCP server
 
-Runs on the host. Exposes outside-the-box admin operations:
-`create_container`, `list_containers`, `delete_container`,
-`start_container`, `stop_container`, `expose_port`, `get_metrics`,
-`get_system_info`. See [`cmd/mcp-server/`](cmd/mcp-server/).
+Runs on the host. Exposes the platform's outside-the-box operations as
+MCP tools — about a hundred of them, one per CLI verb: container lifecycle
+(`create_container`, `list_containers`, `start_container`,
+`stop_container`, `delete_container`, `resize_container`), networking
+(`expose_port`, `sync_ssh_config`, passthrough routes), coding-agent runs
+(`code_run`, `code_attach`, `code_status`, `code_stop`), secrets, backups,
+recipes, security scans, tracker connections, and `get_metrics` /
+`get_system_info`. A token's scopes decide which ones a client sees. See
+[`cmd/mcp-server/`](cmd/mcp-server/) and
+[`internal/mcp/`](internal/mcp/) for the catalog.
 
 ### `containarium` CLI
 
-Same surface as the platform MCP, plus deeper administration. Top-level
-verbs:
+Same surface as the platform MCP, plus deeper administration. The verbs
+this README uses (the CLI has about ninety — `containarium --help` lists
+them all):
 
 ```
+containarium quickstart         Create a box, wire SSH + your agent, optionally build a site
 containarium create             Create a new container
-containarium code               Run a coding agent ON a box (install / run / attach / status / stop)
 containarium list               List all containers
+containarium wake / sleep       Start a stopped box / stop a running one
 containarium delete             Delete a container
+containarium code               Run a coding agent ON a box (install / run / attach / logs / runs / status / stop / egress-policy)
 containarium expose-port        Expose container:port on a public hostname
-containarium ssh-config         Generate self-contained ssh_config
+containarium ssh-config         Generate self-contained ssh_config (show / sync)
 containarium route              Manage proxy routes (low-level)
-containarium passthrough        Manage TCP/UDP passthrough rules (local iptables)
 containarium passthrough-route  Manage TCP/UDP passthrough routes (daemon API)
-containarium token              Issue JWT tokens for the API
-containarium info               System info
+containarium token              Issue, inspect, refresh and revoke JWT tokens
+containarium login / connect    Device-flow sign-in to a server; open a shell on a box with that token
+containarium info               Container or system info
 containarium version            Print version
 ```
 
+Host-side verbs (`daemon`, `sentinel`, `passthrough`, `audit`, `doctor`,
+…) live in `containariumd` — see [Two binaries](#two-binaries-containarium-vs-containariumd).
 Run `containarium <verb> --help` for full options.
 
 ### Sentinel — sshpiper + Caddy + PROXY-protocol
@@ -321,7 +455,7 @@ upgrade safety; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security
 | `CONTAINARIUM_REQUIRE_ENVELOPE=true` | Secrets | refuse legacy master-key-only rows (Phase E retirement gate) |
 | `CONTAINARIUM_POSTGRES_URL_FILE` / `_PASSWORD_FILE` | Secrets | DB creds from disk rather than env |
 | `CONTAINARIUM_WAKE_TRUSTED_PROXIES` | Sentinel | source-IP allowlist for `/wake/` |
-| `OTEL_BEARER_REQUIRED=true` | Telemetry | collector rejects un-bearered OTLP submissions |
+| `OTEL_BEARER_REQUIRED=true` | Telemetry (collector-side; set on the OTel collector, not the daemon) | collector rejects un-bearered OTLP submissions |
 
 ---
 
@@ -528,11 +662,11 @@ audit but not in-box SSH sessions — see #1189).
   users can only proxy through to their container.
 - **fail2ban per-user**: an attack on Alice's account doesn't ban
   Bob.
-- **ClamAV + Trivy** scanning across all backends.
+- **Trivy** image/dependency scanning across backends. **ClamAV** malware scanning is a tenant-run capability (the scan runs inside a box, started by its owner, and the verdict is self-reported); it is being rebuilt in #2631 and is not a platform-wide control today.
 - **AppArmor profiles** per container.
 - **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
 
-**Zero-trust controls** (rolled out across the v0.17 → unreleased line; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)):
+**Zero-trust controls** (see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md); several are opt-in, see [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md) for what is on by default):
 
 - **JWT with `iss` / `aud` / `jti` / `tt` / `scopes`**: 32-byte minimum
   secret enforced at startup; refresh tokens are single-use; jti-based
@@ -543,8 +677,12 @@ audit but not in-box SSH sessions — see #1189).
   Cloud KMS), with a migration tool and master-key retirement gate.
 - **tmpfs `--delivery=file`** for secrets that shouldn't be visible in
   `/proc/<pid>/environ`.
-- **Audit log with SHA-256 hash chain** + `containarium audit verify`
-  to detect tampering.
+- **Audit log with SHA-256 hash chain** + `containariumd audit verify`
+  (on the host): tamper-evident against an application- or database-level
+  attacker. An attacker who can write the database can rewrite the chain
+  consistently; the chain root can be anchored to a file outside the database
+  (`internal/audit/anchor.go`), which a database credential does not reach, but
+  a host-root attacker could still edit both.
 - **Image-registry allowlist + pre-pull simplestreams digest
   verification + post-pull `volatile.base_image` defense-in-depth**
   for supply-chain hardening.
@@ -572,8 +710,8 @@ containarium create ml-dev \
 # Lifecycle
 containarium list
 containarium info
-containarium start alice
-containarium stop alice
+containarium wake alice     # start a stopped box
+containarium sleep alice    # stop it
 containarium delete alice
 ```
 
@@ -590,8 +728,9 @@ containarium route add api.example.com --target 10.0.3.42:3000
 containarium route list
 containarium route delete api.example.com
 
-# Raw TCP/UDP passthrough via local iptables (host running the CLI only)
-containarium passthrough add --port 50051 \
+# Raw TCP/UDP passthrough via local iptables (on the host, so it's a
+# containariumd verb)
+containariumd passthrough add --port 50051 \
   --target-ip 10.0.3.150 --target-port 50051
 
 # Raw TCP/UDP passthrough via the daemon API (works against a remote box)
@@ -631,6 +770,10 @@ containarium token generate \
 
 # Use the access token
 curl -H "Authorization: Bearer <access-token>" http://localhost:8080/v1/containers
+
+# Exchange the refresh token for a new pair (same as POST /v1/tokens/refresh;
+# the refresh token is the credential, so no --token)
+containarium token refresh --refresh-token "$REFRESH" --server <host:port>
 
 # Inspect a token's claims (jti, scopes, expiry, validation)
 containarium token inspect <token> --secret-file /etc/containarium/jwt.secret
@@ -878,8 +1021,9 @@ Demoed Containarium somewhere? Open a PR and add it here.
   recompile). End-to-end validated on `kind`; 5-minute local bring-up in
   [docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md). See also
   [docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md](docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md).
-- **Q2 2026 (in flight)**: `agent-box` MCP, `ssh-config` CLI,
-  `expose-port` CLI, demo recording.
+- **Shipped**: `agent-box` MCP, `ssh-config` CLI, `expose-port` CLI, and
+  the demo recording — the [Quick start](#quick-start) above is built on
+  them.
 - **Q3 2026**: `agent-box` tier-2 (MCP Roots, background process
   management), demo-driven docs and examples.
 - **Q4 2026**: OSS v1.0 cut — stable API surface, contribution

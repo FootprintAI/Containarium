@@ -1,9 +1,12 @@
 package backup
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
+
+	"filippo.io/age"
 )
 
 // writeFileForTest overwrites a staged dump so a test can simulate
@@ -444,5 +447,176 @@ func TestVerifyValidation(t *testing.T) {
 				t.Errorf("err = %v, want one containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// OSS #2295: a restore test must be able to tell the difference between
+// "backup succeeded and is restorable" and "backup succeeded but nobody
+// holds the decryption key" — the failure mode that let a week of real
+// nightly backups go silently unrecoverable (dead age key, never
+// detected because nothing ever attempted a decrypt). Given the right
+// identity, Verify decrypts and runs the exact same restore test as a
+// plaintext dump.
+func TestVerify_Encrypted_WithIdentity_DecryptsAndRestores(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("PGDMP\x00plaintext-archive-bytes")
+	ops := newVerifyOps(payload)
+	m := newTestManager(t, ops)
+
+	rec, err := m.Create(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Conn:          PgConn{Database: "app"},
+		Destination:   DestLocal,
+		AgeRecipient:  id.Recipient().String(),
+	})
+	if err != nil {
+		t.Fatalf("seed Create (encrypted): %v", err)
+	}
+	if !rec.Encrypted {
+		t.Fatal("seed record should be encrypted")
+	}
+
+	v, err := m.Verify(VerifyOptions{
+		ID:              rec.ID,
+		TargetContainer: "scratch-container",
+		SourceContainer: "alice-container",
+		AgeIdentity:     id.String(),
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if v.Result != VerificationPassed {
+		t.Fatalf("result = %q (error %q), want passed; checks=%+v", v.Result, v.Error, v.Checks)
+	}
+
+	var decryptCheck *Check
+	for i := range v.Checks {
+		if v.Checks[i].Name == "decrypt" {
+			decryptCheck = &v.Checks[i]
+		}
+	}
+	if decryptCheck == nil {
+		t.Fatalf("no 'decrypt' check recorded; checks=%+v", v.Checks)
+	}
+	if !decryptCheck.Passed {
+		t.Errorf("decrypt check reported failed on a correct identity: %s", decryptCheck.Detail)
+	}
+
+	// The scratch database received the DECRYPTED plaintext, never the
+	// ciphertext that was actually stored.
+	var pushed []byte
+	for p, b := range ops.written {
+		if strings.Contains(p, "containarium-verify-") {
+			pushed = b
+		}
+	}
+	if !bytes.Equal(pushed, payload) {
+		t.Errorf("target container received %q, want decrypted plaintext %q", pushed, payload)
+	}
+}
+
+// The wrong identity must produce a FAILED verification result that is
+// persisted on the backup record — not a Go error that evaporates. An
+// error here would mean a scheduled key-verification job can't tell "key
+// doesn't work" apart from "test could not run at all", and the whole
+// point is a durable, queryable audit trail of which backups are
+// actually recoverable.
+func TestVerify_Encrypted_WrongIdentity_RecordsFailedResult(t *testing.T) {
+	right, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := newVerifyOps([]byte("PGDMP\x00plaintext-archive-bytes"))
+	m := newTestManager(t, ops)
+
+	rec, err := m.Create(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Conn:          PgConn{Database: "app"},
+		Destination:   DestLocal,
+		AgeRecipient:  right.Recipient().String(),
+	})
+	if err != nil {
+		t.Fatalf("seed Create (encrypted): %v", err)
+	}
+	ops.execByContainer = map[string][]string{}
+
+	v, err := m.Verify(VerifyOptions{
+		ID:              rec.ID,
+		TargetContainer: "scratch-container",
+		SourceContainer: "alice-container",
+		AgeIdentity:     wrong.String(),
+	})
+	if err != nil {
+		t.Fatalf("a decrypt failure must be a recorded FAILED result, not a Go error: %v", err)
+	}
+	if v.Result != VerificationFailed {
+		t.Fatalf("result = %q, want failed", v.Result)
+	}
+	if !strings.Contains(v.Error, "decrypt") {
+		t.Errorf("Error = %q, want it to mention decrypt", v.Error)
+	}
+	if len(ops.execByContainer["scratch-container"]) != 0 {
+		t.Errorf("a decrypt failure must stop before any scratch database is touched: %v", ops.execByContainer["scratch-container"])
+	}
+
+	// The failure must be durable evidence on the record, same as any
+	// other failed check — not lost the moment the call returns.
+	got, err := m.Get(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastVerification == nil || got.LastVerification.Result != VerificationFailed {
+		t.Error("a decrypt failure must be persisted as the backup's last verification")
+	}
+}
+
+// Supplying no identity at all for an encrypted record is a usage error,
+// not a test outcome — there's nothing to even attempt, same as pointing
+// verify at a hook (opaque) record. This must be refused before a scratch
+// database is ever created, exactly like the existing hook-record and
+// missing-target refusals.
+func TestVerify_Encrypted_NoIdentity_RefusedBeforeTouchingTarget(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := newVerifyOps([]byte("PGDMP\x00plaintext-archive-bytes"))
+	m := newTestManager(t, ops)
+
+	rec, err := m.Create(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Conn:          PgConn{Database: "app"},
+		Destination:   DestLocal,
+		AgeRecipient:  id.Recipient().String(),
+	})
+	if err != nil {
+		t.Fatalf("seed Create (encrypted): %v", err)
+	}
+	ops.execByContainer = map[string][]string{}
+
+	_, err = m.Verify(VerifyOptions{
+		ID:              rec.ID,
+		TargetContainer: "scratch-container",
+		SourceContainer: "alice-container",
+	})
+	if err == nil || !strings.Contains(err.Error(), "encrypted") {
+		t.Fatalf("expected a refusal naming 'encrypted', got %v", err)
+	}
+	if len(ops.execByContainer) != 0 {
+		t.Errorf("refusal must happen before any command runs, got %v", ops.execByContainer)
+	}
+	got, _ := m.Get(rec.ID)
+	if got.LastVerification != nil {
+		t.Error("a refused verification must not be recorded as an outcome on the backup")
 	}
 }

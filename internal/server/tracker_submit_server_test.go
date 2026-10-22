@@ -10,10 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -370,7 +372,7 @@ func TestSubmitTrackerChange_OpenChangeFails(t *testing.T) {
 // "open" the change (fakeWriterProvider records the OpenChangeRequest),
 // and check the response and what each fake was actually called with.
 func TestSubmitTrackerChange_HappyPath(t *testing.T) {
-	const user = "tracker-rpc-submit-happy"
+	user := "tracker-rpc-submit-happy-" + uuid.NewString()
 	bundleBytes, headSHA := realBundleBytes(t)
 	wantBranch := "agent/run-abc123de/1-conformance-change"
 	provider := &fakeWriterProvider{
@@ -380,6 +382,7 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	box := &fakeSubmitBox{bundleBytes: bundleBytes, headSHA: headSHA}
 	pusher := &fakeSubmitPusher{result: submit.PushResult{Branch: wantBranch, SHA: headSHA}}
 	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
+	s.auditStore = mustTestAuditStore(t)
 
 	resp, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: user, Connection: "default", Issue: 1, Title: "My change", Description: "does the thing",
@@ -428,6 +431,16 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(provider.openChangeReq.Description, "via Containarium") {
 		t.Errorf("OpenChangeRequest.Description = %q, want the platform stamp", provider.openChangeReq.Description)
+	}
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.submit_change", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows for tracker.submit_change = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != "run-abc123" {
+		t.Errorf("audit RunID = %q, want run-abc123", rows[0].RunID)
 	}
 }
 

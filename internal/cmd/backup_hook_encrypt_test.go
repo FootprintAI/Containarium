@@ -51,9 +51,13 @@ func resetBackupCreateFlags(t *testing.T) {
 	t.Helper()
 	backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 	backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
+	backupCreateKeyMode = ""
+	backupCreateHookFormat = ""
 	t.Cleanup(func() {
 		backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 		backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
+		backupCreateKeyMode = ""
+		backupCreateHookFormat = ""
 	})
 }
 
@@ -112,6 +116,52 @@ func TestBackupRestore_MissingIdentityFileIsAnErrorBeforeAnyCall(t *testing.T) {
 	}
 	if f.gotRestore != nil {
 		t.Error("restore must not be attempted when the identity file cannot be read")
+	}
+}
+
+// OSS #2295: `backup verify` gets the same --age-identity-file treatment
+// as `backup restore` — read from a file the operator names, never on
+// argv, handed to the daemon for exactly this one call.
+func TestBackupVerify_AgeIdentityReadFromFile(t *testing.T) {
+	f := &fakeBackupAPI{resp: &pb.VerifyBackupResponse{
+		Message:      "ok",
+		Verification: &pb.BackupVerification{Result: pb.VerificationResult_VERIFICATION_RESULT_PASSED},
+	}}
+	withFakeBackupClient(t, f)
+	backupVerifyTarget = "scratch-tenant"
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "backup.key")
+	const secret = "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE"
+	if err := os.WriteFile(keyFile, []byte("# created: 2026-10-04\n# public key: age1example\n"+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupVerifyAgeIdentityFile = keyFile
+	t.Cleanup(func() { backupVerifyAgeIdentityFile = "" })
+
+	if err := runBackupVerify(backupVerifyCmd, []string{"alice-app-20260605T130405Z"}); err != nil {
+		t.Fatalf("runBackupVerify: %v", err)
+	}
+	if f.gotReq == nil {
+		t.Fatal("VerifyBackup was not called")
+	}
+	if f.gotReq.AgeIdentity != secret {
+		t.Errorf("AgeIdentity = %q, want the AGE-SECRET-KEY line from the file (comments stripped)", f.gotReq.AgeIdentity)
+	}
+}
+
+func TestBackupVerify_MissingIdentityFileIsAnErrorBeforeAnyCall(t *testing.T) {
+	f := &fakeBackupAPI{}
+	withFakeBackupClient(t, f)
+	backupVerifyTarget = "scratch-tenant"
+	backupVerifyAgeIdentityFile = filepath.Join(t.TempDir(), "nope.key")
+	t.Cleanup(func() { backupVerifyAgeIdentityFile = "" })
+
+	err := runBackupVerify(backupVerifyCmd, []string{"alice-app-x"})
+	if err == nil || !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("expected a read error naming the identity file, got %v", err)
+	}
+	if f.callCnt != 0 {
+		t.Error("verify must not be attempted when the identity file cannot be read")
 	}
 }
 

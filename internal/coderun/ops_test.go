@@ -1,6 +1,9 @@
 package coderun
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // These helpers are the seam the CLI and the platform MCP both go through
 // (#1698), so a change here moves both surfaces at once — which is the point,
@@ -56,7 +59,7 @@ func TestCaptureModeFor(t *testing.T) {
 	}
 }
 
-const sampleListing = `Found 2 process(es):
+const sampleListing = `Found 3 process(es):
 
 🟢 code  (pid 101, running)
    Command:    claude -p 'x'
@@ -68,6 +71,12 @@ const sampleListing = `Found 2 process(es):
    Started at: 2026-09-03T09:00:00Z
    Exit code:  0
    Log path:   /tmp/agent-box/other.log
+
+⚪ broken  (pid 303, exited)
+   Command:    false
+   Started at: 2026-09-03T09:05:00Z
+   Exit code:  1
+   Log path:   /tmp/agent-box/broken.log
 `
 
 func TestRunOutcomeLine(t *testing.T) {
@@ -116,6 +125,48 @@ func TestLogPathFromListing(t *testing.T) {
 	// An absent run is an error, not an empty string a caller might tail.
 	if _, err := LogPathFromListing(sampleListing, "nope"); err == nil {
 		t.Error("absent run should error rather than return an empty path")
+	}
+}
+
+// TestExitCodeFromListing is the #2011 acceptance test: a listing carrying
+// both an exited-0 and an exited-1 run must report each run's OWN code, never
+// the other's, and a still-running or absent run must report none at all.
+func TestExitCodeFromListing(t *testing.T) {
+	tests := []struct {
+		name      string
+		run       string
+		wantCode  int
+		wantFound bool
+	}{
+		{"exited zero", "other", 0, true},
+		{"exited non-zero", "broken", 1, true},
+		{"still running has no exit code", "code", 0, false},
+		{"absent run has no exit code", "nope", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, found := ExitCodeFromListing(sampleListing, tt.run)
+			if found != tt.wantFound {
+				t.Errorf("found = %v, want %v", found, tt.wantFound)
+			}
+			if found && code != tt.wantCode {
+				t.Errorf("code = %d, want %d", code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// TestExitCodeLine pins the exact string both `code status` and its MCP
+// wrapper print, so the two surfaces render the same wording (#2011).
+func TestExitCodeLine(t *testing.T) {
+	if got := ExitCodeLine(sampleListing, "other"); got != "exit_code: 0" {
+		t.Errorf("ExitCodeLine(other) = %q", got)
+	}
+	if got := ExitCodeLine(sampleListing, "broken"); got != "exit_code: 1" {
+		t.Errorf("ExitCodeLine(broken) = %q", got)
+	}
+	if got := ExitCodeLine(sampleListing, "code"); !strings.Contains(got, "unknown") {
+		t.Errorf("ExitCodeLine(code, still running) = %q, want it to say unknown", got)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -89,9 +88,11 @@ var (
 	codeHost      string
 	codePort      int
 	codeName      string
+	codeKeyWait   string
 
 	// `code install` only (#2030).
 	codeBootstrapURL      string
+	codeNoSDLCSkills      bool
 	codeRelease           string
 	codeClaudeCodeVersion string
 
@@ -103,6 +104,7 @@ var (
 	codeProviderBaseURL string
 	codeModel           string
 	codePiVersion       string
+	codeCodexVersion    string
 )
 
 // Test seams. Production never reassigns these; they exist so the install
@@ -137,6 +139,10 @@ before this flag existed behaves exactly as it did.
   --engine claude   Claude Code (the default)
   --engine pi       pi (https://pi.dev), which runs inside the box — see
                     docs/integrations/pi.md
+  --engine codex    OpenAI's Codex CLI (https://developers.openai.com/codex/cli),
+                    which also runs inside the box — see docs/integrations/codex.md.
+                    --credential gateway is not supported for codex yet; use
+                    --credential secret.
 
 --credential picks where the engine's model credential comes from; it defaults
 to secret, again the pre-existing behaviour.
@@ -182,7 +188,9 @@ Examples:
       --provider kafeido --model kafeido-coder
   containarium code install alice --engine pi --credential secret \
       --secret-name OPENAI_API_KEY --provider-base-url https://api.openai.com/v1 \
-      --model gpt-5`,
+      --model gpt-5
+  containarium code install alice --engine codex --credential secret \
+      --secret-name CODEX_API_KEY`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeInstall,
 }
@@ -199,6 +207,7 @@ func init() {
 	codeCmd.PersistentFlags().StringVar(&codeUser, "user", "", "override the SSH username (default: the box's own user)")
 	codeCmd.PersistentFlags().StringVar(&codeHost, "host", "", "override the SSH host (default: the box's sentinel host)")
 	codeCmd.PersistentFlags().IntVar(&codePort, "port", 0, "override the SSH port")
+	codeCmd.PersistentFlags().StringVar(&codeKeyWait, "key-wait", "", keyWaitFlagUsage)
 
 	codeCmd.AddCommand(codeInstallCmd)
 	codeCmd.AddCommand(codeRunCmd)
@@ -214,6 +223,8 @@ func init() {
 
 	codeInstallCmd.Flags().StringVar(&codeBootstrapURL, "bootstrap-url", "",
 		"URL of a .tar.gz bundle to apply after the toolchain lands — unpacked into a temp dir on the box and its apply.sh run as the box user (skipped when empty)")
+	codeInstallCmd.Flags().BoolVar(&codeNoSDLCSkills, "no-sdlc-skills", false,
+		"skip installing the pinned SDLC role skills (product, architect, engineer, QA, reviewer, release, ...) into ~/.claude/skills")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -238,10 +249,14 @@ func init() {
 		"model id to pin runs to; also the gateway token's allowed_models ceiling")
 	codeInstallCmd.Flags().StringVar(&codePiVersion, "pi-version", engine.PiVersion,
 		"pin the pi version installed with --engine pi")
+	codeInstallCmd.Flags().StringVar(&codeCodexVersion, "codex-version", "",
+		"pin the Codex CLI version installed with --engine codex (default: whatever npm considers current)")
 
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
+	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",
+		"resume this specific session id instead of starting a fresh one (`claude --resume <id>`, `pi --session <id>`) — mutually exclusive with --continue; also becomes this run's --name unless --name is given explicitly")
 	codeRunCmd.Flags().StringVar(&codeRunTokenTTL, "token-ttl", "",
 		"lifetime of the gateway token minted for this run (e.g. 2h); capped server-side. Default 24h")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
@@ -254,6 +269,14 @@ func init() {
 func codeRunName() string {
 	if codeName != "" {
 		return codeName
+	}
+	// #2193: resuming a specific session with no explicit --name uses the
+	// session id as the run name too — the same name attach/status/stop
+	// already need to find this run by, and what the daemon's StartBoxRun
+	// does for the same reason (a resumed session's collision check is keyed
+	// on its own id, not on the shared "code" default every fresh run uses).
+	if codeRunSession != "" {
+		return codeRunSession
 	}
 	return defaultCodeRunName
 }
@@ -283,7 +306,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 	if !connectcore.IsRunning(c.State) {
-		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium start %s`)",
+		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium wake %s`)",
 			box, connectcore.PrettyState(c.State), box)
 	}
 	target, err := connectcore.BuildTarget(c, codeUser, codeHost, codePort)
@@ -313,15 +336,53 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	if err != nil {
 		return nil, err
 	}
-	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
-	sess, err := coderun.Connect(ctx, sshArgs)
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
 	if err != nil {
+		return nil, err
+	}
+	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
+	sess, err := connectCodeSession(ctx, kw, probeSSHArgs(sshArgs), func(ctx context.Context) (*coderun.Session, error) {
+		return coderun.Connect(ctx, sshArgs)
+	})
+	if err != nil {
+		if errors.Is(err, connectcore.ErrKeyNotLearned) {
+			return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
+		}
 		if errors.Is(err, coderun.ErrAgentBoxMissing) {
 			return nil, coderun.AgentBoxMissingError(box)
 		}
 		return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
 	}
 	return sess, nil
+}
+
+// connectCodeSession opens the agent-box session under kw. A failed MCP
+// dial doesn't say WHY ssh failed (and a publickey denial otherwise looks
+// like "agent-box missing"), so on failure one silent probe classifies it:
+// publickey-denied is retried while the sentinel learns the key; anything
+// else returns the dial's own error unchanged.
+func connectCodeSession(ctx context.Context, kw connectcore.KeyWait, probe []string, dial func(context.Context) (*coderun.Session, error)) (*coderun.Session, error) {
+	var sess *coderun.Session
+	err := kw.Do(ctx, func(ctx context.Context, attempt int) error {
+		if attempt > 1 {
+			if perr := sshProbeFn(ctx, probe); perr != nil {
+				return perr
+			}
+		}
+		s, err := dial(ctx)
+		if err == nil {
+			sess = s
+			return nil
+		}
+		if kw.Armed && kw.Window > 0 {
+			if perr := sshProbeFn(ctx, probe); connectcore.IsPublickeyDenied(perr) {
+				return perr
+			}
+		}
+		return err
+	})
+	return sess, err
 }
 
 // streamAndWait streams path's output to stdout (demultiplexed to
@@ -332,6 +393,13 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 // stopping — tail_log has no "you've caught up, nothing more is coming"
 // signal of its own, so watching liveness is the only way to know when to
 // stop asking.
+//
+// #2011: the return value now carries the run's own exit status — nil for a
+// zero exit code, non-nil for a non-zero one — instead of always nil once the
+// run stopped. That is what lets `code run`/`code attach`'s process exit
+// status (main.go maps a non-nil RunE error to os.Exit(1)) reflect whether the
+// AGENT succeeded, so CI and shell scripts can gate on `$?` instead of having
+// to separately parse `code status`.
 func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath string, stdout, stderr io.Writer, streamJSON bool) error {
 	w := stdout
 	if streamJSON {
@@ -367,10 +435,28 @@ func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath str
 				}
 				cancelStream()
 				<-streamDone
-				return nil
+				return codeRunExitErr(listing, name)
 			}
 		}
 	}
+}
+
+// codeRunExitErr turns name's recorded exit code — read from listing, captured
+// the moment streamAndWait noticed the run had stopped — into the process
+// status `code run`/`code attach` return (#2011).
+//
+// A zero exit code, and a finished run that recorded none at all (agent-box's
+// RunOutcomeUnknown: the box died mid-run before it could record one — see
+// ExitCodeFromListing's doc comment), both return nil: there is nothing solid
+// to gate a failure on either way, and reporting the second as a failure would
+// be a stronger claim than the record supports. Only a genuinely non-zero code
+// becomes a non-nil error, which main.go turns into os.Exit(1).
+func codeRunExitErr(listing, name string) error {
+	code, ok := coderun.ExitCodeFromListing(listing, name)
+	if !ok || code == 0 {
+		return nil
+	}
+	return fmt.Errorf("run %q exited with code %d", name, code)
 }
 
 // defaultAgentBoxRelease is the release the agent-box / mcp-server assets are
@@ -454,6 +540,27 @@ fi
 echo "agent-box installed at $HOME/.local/bin/agent-box"`
 }
 
+// sdlcSkillsInstallScript fetches the release's install-sdlc-skills.sh and runs
+// it as the box user (#2065), landing the pinned open-sdlc-skills role skills in
+// ~/.claude/skills. The release tag was already validated against
+// releaseTagPattern, so it is safe inside the double-quoted URL.
+//
+// Only a 404 means "this release predates the skills asset" and is skipped with
+// a message; any other fetch failure fails the install, so a network blip never
+// silently ships a box with no skills. A hash mismatch or unsafe archive is the
+// installer's own failure and propagates.
+func sdlcSkillsInstallScript(release string) string {
+	return `set -e
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
+case "$code" in
+  200) RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
+  404) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+  *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
+esac`
+}
+
 // releaseTagPattern is what may be interpolated into the asset URL above.
 // The tag is a flag value and lands inside a double-quoted shell string, so
 // it is validated rather than quoted — a charset with no $, backtick, quote,
@@ -523,8 +630,20 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
+	if err != nil {
+		return err
+	}
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
 	run := func(script string) (string, error) {
-		return sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+		var out string
+		err := sshWithKeyWait(ctx, kw, probe, func() error {
+			var e error
+			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+			return e
+		})
+		return out, err
 	}
 
 	// #1727: resolve the engine and its credential source from the flags, and
@@ -556,6 +675,15 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("install agent-box (%s) on %q: %w", release, box, err)
 	}
 	fmt.Fprintf(diag, "✓ agent-box installed on %s (from %s)\n", box, release)
+
+	// The role skills are Claude Code skills (~/.claude/skills), so only the
+	// Claude engine gets them (#2065).
+	if plan.engine.Name() == engine.NameClaude && !codeNoSDLCSkills {
+		if _, err := run(sdlcSkillsInstallScript(release)); err != nil {
+			return fmt.Errorf("install SDLC skills (%s) on %q: %w", release, box, err)
+		}
+		fmt.Fprintf(diag, "✓ SDLC skills installed on %s (from %s)\n", box, release)
+	}
 
 	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
 		if _, err := run(bootstrapScript(url)); err != nil {
@@ -618,19 +746,10 @@ Then: containarium code run %s --prompt "..."
 // result gets only the remote command's own bytes — same convention as
 // `connect --exec`.
 func runSSHCaptured(diag io.Writer, args []string) (string, error) {
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return "", fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built
-	// from a validated box name, a daemon-resolved target, and a
-	// package-controlled script (claudeInstallScript / claudeVerifyScript)
-	// — no caller-supplied command reaches this path.
-	c := exec.Command(sshBin, args...)
 	var stdout bytes.Buffer
-	c.Stdout = &stdout
-	c.Stderr = diag
-	if err := c.Run(); err != nil {
+	// runSSHTee classifies an exit-255 publickey denial so `code install`
+	// can wait out key propagation (#2013); the error text is unchanged.
+	if err := runSSHTee(context.Background(), nil, &stdout, diag, args); err != nil {
 		return stdout.String(), fmt.Errorf("ssh: %w", err)
 	}
 	return stdout.String(), nil

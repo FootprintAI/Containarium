@@ -35,6 +35,11 @@
 # first one on the same binary + unit: a torn write, a failed `exec`, and a
 # ~16 minute outage. This script now refuses a second concurrent invocation
 # outright (see acquire_lock) instead of racing.
+#
+# SCOPE: this script swaps and supervises the daemon binary and unit only; it
+# does not change the daemon's persisted configuration (`daemon_config`,
+# including `base_domain`). For bringing up a BYOC backend and the post-upgrade
+# checks, see docs/BYOC-BACKEND-BRINGUP.md.
 set -euo pipefail
 
 # ---- config (override via env) ---------------------------------------------

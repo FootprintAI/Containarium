@@ -28,6 +28,13 @@ agentBox:
 gateway:
   # -- Kubernetes namespace where the sshpiper Deployment lives and Pipes are created
   namespace: agent-gateway
+  # -- Render the gateway Namespace from this chart (the default, as in every
+  # earlier release). Set false only when you pre-create the namespace
+  # yourself, e.g. because the sshpiper Secrets must exist before the pod
+  # starts; Helm will not adopt a namespace it did not create. Flipping an
+  # EXISTING release from true to false deletes the namespace (and its Secrets
+  # and Deployment) on upgrade, so do not do that on a live install.
+  createNamespace: true
   # -- Deploy sshpiper as part of this chart. Set false to bring your own.
   enabled: true
   service:
@@ -46,7 +53,13 @@ gateway:
     # kubernetes-plugin entrypoint), published per Containarium release by
     # sidecars.yml. The previously pinned ghcr.io/tg123/... path was never
     # published upstream and 403s on pull (#976).
-    image: ghcr.io/footprintai/containarium-sshpiper:latest-stable
+    repository: ghcr.io/footprintai/containarium-sshpiper
+    # -- Defaults to the chart appVersion when empty, so a released chart pins
+    # the gateway to its own release (#2703). The unstamped development chart
+    # falls back to the moving latest-stable tag.
+    tag: ""
+    # -- Full image reference override (repository and tag ignored when set).
+    image: ""
     # -- Secret holding sshpiperd's host key under the `server_key` field.
     # Create before enabling the gateway:
     #   ssh-keygen -t ed25519 -f host_key -N ""
@@ -67,7 +80,7 @@ gateway:
   #     --from-file=ssh-privatekey=./sshpiper_upstream
   # Then set upstreamPublicKey to the contents of ./sshpiper_upstream.pub and
   # upstreamKeySecret to the Secret name above. Leave both empty only if you
-  # have also cleared `namespace` to disable gateway routing entirely.
+  # disable the gateway with `enabled: false` and `namespace: ""`.
   upstreamPublicKey: ""
   upstreamKeySecret: ""
 

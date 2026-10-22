@@ -28,14 +28,27 @@ tar -xzf "$BUNDLE" -C "$tmp"
 
 fail=0
 
-# 1. Every source engine has a compiled engine in the bundle.
+# 1. Every source engine has a compiled engine in the bundle. Test files
+#    (*.test.ts) are co-located with engine sources but aren't engines
+#    themselves — tsc/tsconfig excludes them from dist entirely, so they
+#    have no compiled counterpart to check for by design.
 for ts in "$SRC_ENGINES_DIR"/*.ts; do
   name="$(basename "$ts" .ts)"
+  case "$name" in
+    *.test) continue ;;
+  esac
   if [ ! -f "$tmp/dist/engines/$name.js" ]; then
     echo "MISSING ENGINE: src has $name.ts but the bundle has no dist/engines/$name.js" >&2
     fail=1
   fi
 done
+
+# The private state helper is required by both runtime outcomes and the daemon
+# observer. Catch partial bundles even when the engine files themselves exist.
+if [ ! -f "$tmp/dist/credential-state-cli.js" ] || [ ! -f "$tmp/dist/credential-state.js" ]; then
+  echo "MISSING CREDENTIAL STATE: bundle needs both credential-state modules" >&2
+  fail=1
+fi
 
 # 2. Every runtime SDK is a (non-dev) dependency, so `npm ci --omit=dev` keeps it.
 for dep in "${REQUIRED_DEPS[@]}"; do

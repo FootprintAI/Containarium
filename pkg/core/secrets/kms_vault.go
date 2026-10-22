@@ -130,8 +130,8 @@ func NewVaultKMS(cfg VaultConfig) (*VaultKMS, error) {
 // kek_id reflects the deployment + key for cross-cluster
 // safety.
 func (v *VaultKMS) Wrap(ctx context.Context, plaintextDEK []byte) ([]byte, string, error) {
-	if len(plaintextDEK) != DEKSize {
-		return nil, "", fmt.Errorf("DEK must be %d bytes; got %d", DEKSize, len(plaintextDEK))
+	if err := checkWrapPlaintext(plaintextDEK); err != nil {
+		return nil, "", err
 	}
 	body := map[string]string{
 		"plaintext": base64.StdEncoding.EncodeToString(plaintextDEK),
@@ -177,8 +177,8 @@ func (v *VaultKMS) Unwrap(ctx context.Context, wrappedDEK []byte, kekID string) 
 	if err != nil {
 		return nil, fmt.Errorf("vault decrypt: base64: %w", err)
 	}
-	if len(dek) != DEKSize {
-		return nil, fmt.Errorf("vault decrypt: DEK has %d bytes; want %d", len(dek), DEKSize)
+	if len(dek) == 0 {
+		return nil, errors.New("vault decrypt: empty plaintext in response")
 	}
 	return dek, nil
 }

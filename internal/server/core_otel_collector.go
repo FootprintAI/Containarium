@@ -26,8 +26,12 @@ const (
 	// DefaultOTelOTLPGRPCPort is the OTLP/gRPC receiver port.
 	DefaultOTelOTLPGRPCPort = 4317
 
-	// otelCollectorVersion pins the upstream contrib release.
-	otelCollectorVersion = "0.110.0"
+	// otelCollectorVersion pins the upstream contrib release. Keep in
+	// sync with sidecars/otel-sidecar/Dockerfile's OTELCOL_VERSION
+	// (decision O1) — see OSS #2164 for why this matters: an old pin
+	// silently accumulates CVEs in the embedded Go toolchain/deps even
+	// though nothing in this repo changed.
+	otelCollectorVersion = "0.162.0"
 
 	// containerIPsFile is the path inside the collector LXC where
 	// the daemon pushes the source-IP → container-name map. The
@@ -113,6 +117,8 @@ func (cs *CoreServices) EnsureOTelCollector(ctx context.Context, victoriaMetrics
 			Size: "3GB",
 		},
 	}
+	cs.pinCoreIP(&config, CoreOTelCollectorContainer)
+
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create otel collector container: %w", err)
 	}

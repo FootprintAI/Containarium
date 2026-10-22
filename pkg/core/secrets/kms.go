@@ -52,9 +52,16 @@ type KMSClient interface {
 	// under the KMS-resident Key Encryption Key (KEK).
 	// Returns the wrapped DEK and the KEK identifier
 	// (provider-specific — for GCP KMS it's the full
-	// resource name; for the inproc impl it's a sentinel).
-	// The wrapped DEK lands in the secrets row alongside
-	// the ciphertext.
+	// CryptoKeyVersion resource name the Encrypt response
+	// named, so a key version with wrapped values still
+	// under it can be guarded against destruction (#2402);
+	// for the inproc impl it's a sentinel). The wrapped DEK
+	// lands in the secrets row alongside the ciphertext.
+	//
+	// The plaintext is a small secret: a 32-byte DEK for the
+	// secrets store, or a backup key identity string for the
+	// managed-backup wrapper (#2402). Implementations accept
+	// 1..MaxWrapPlaintext bytes.
 	Wrap(ctx context.Context, plaintextDEK []byte) (wrappedDEK []byte, kekID string, err error)
 
 	// Unwrap reverses Wrap. The kekID is the value returned
@@ -67,6 +74,24 @@ type KMSClient interface {
 // DEKSize is the size of a Data Encryption Key. AES-256
 // matches the existing master-key path.
 const DEKSize = 32
+
+// MaxWrapPlaintext bounds what Wrap accepts: the smallest
+// per-call limit among the backends (AWS KMS Encrypt takes
+// at most 4 KiB), applied uniformly so a value wrapped
+// under one backend is never too large for another.
+const MaxWrapPlaintext = 4096
+
+// checkWrapPlaintext is the guard every backend's Wrap
+// applies: non-empty, and no larger than MaxWrapPlaintext.
+func checkWrapPlaintext(plaintext []byte) error {
+	if len(plaintext) == 0 {
+		return errors.New("wrap: plaintext is empty")
+	}
+	if len(plaintext) > MaxWrapPlaintext {
+		return fmt.Errorf("wrap: plaintext is %d bytes; max %d", len(plaintext), MaxWrapPlaintext)
+	}
+	return nil
+}
 
 // inprocKEKID is the sentinel kek_id stored by the in-
 // process KMS. Future per-row reads use this to route to
@@ -112,8 +137,8 @@ func NewInProcKMS(masterKey []byte) (*InProcKMS, error) {
 // separately. Phase-A simplicity; Phase-B+ may attach
 // versioning bytes via a TLV envelope.
 func (k *InProcKMS) Wrap(_ context.Context, plaintextDEK []byte) ([]byte, string, error) {
-	if len(plaintextDEK) != DEKSize {
-		return nil, "", fmt.Errorf("DEK must be %d bytes; got %d", DEKSize, len(plaintextDEK))
+	if err := checkWrapPlaintext(plaintextDEK); err != nil {
+		return nil, "", err
 	}
 	nonce := make([]byte, NonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -147,11 +172,10 @@ func (k *InProcKMS) Unwrap(_ context.Context, wrappedDEK []byte, kekID string) (
 	if err != nil {
 		return nil, ErrAuthentication
 	}
-	if len(pt) != DEKSize {
-		// Shouldn't happen — every Wrap input is DEKSize —
-		// but a malformed row from a future bug shouldn't
-		// quietly truncate.
-		return nil, fmt.Errorf("InProcKMS: unwrapped DEK has %d bytes; want %d", len(pt), DEKSize)
+	if len(pt) == 0 {
+		// Wrap never accepts an empty plaintext, so an empty
+		// result is a malformed row, not a value.
+		return nil, errors.New("InProcKMS: unwrapped plaintext is empty")
 	}
 	return pt, nil
 }

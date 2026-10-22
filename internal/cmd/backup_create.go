@@ -20,6 +20,11 @@ var (
 	backupCreateHook         string
 	backupCreateLabel        string
 	backupCreateAgeRecipient string
+
+	// #2402
+	backupCreateKeyMode string
+	// #2405
+	backupCreateHookFormat string
 )
 
 var backupCreateCmd = &cobra.Command{
@@ -42,7 +47,13 @@ own program inside the container and capture its stdout as the dump. No
 DB credential crosses to the platform, and databases the platform can't
 reach directly (e.g. nested inside an in-container Docker stack) become
 backup-able. The path must be absolute with no arguments. Hook dumps are
-opaque: stored, listed and fetched, but never auto-restored.
+opaque by default: stored, listed and fetched, but never auto-restored.
+
+If the hook emits a 'pg_dump -Fc' custom-format archive, say so with
+--hook-format pg_custom. The backup can then be restore-tested with
+'backup verify', and restored into a named target container other than
+its source (never in place). This is a promise about the hook's output;
+the daemon does not check it when the backup is taken.
 
 User-held encryption (--age-recipient): encrypt the dump to an age public
 key before it is staged or uploaded, so the daemon's disk, the object
@@ -57,12 +68,25 @@ key automatically; an explicit --age-recipient still overrides it for a
 one-off call. Neither a tenant with no key registered nor a standalone
 daemon (no secrets store) is an error — both mean plaintext, as today.
 
+Managed keys (--key-mode): on a daemon configured with a backup KMS key
+(CONTAINARIUM_BACKUP_KMS_KEY_NAME), each backup is encrypted to a fresh
+per-backup identity whose secret is wrapped by the KMS and stored on the
+record ('managed'); with a recipient as well, the same file also opens
+with the tenant's own identity ('both'). The daemon can wrap but never
+unwrap: restore and verify still take the identity from you, after you
+unwrap it under your own KMS credentials. Omit the flag for the daemon
+default (managed/both when a key is configured, otherwise as above);
+'age-recipient' opts a single backup out of wrapping. A mode the daemon
+cannot provide is refused, never silently downgraded.
+
 Examples:
   containarium backup create alice --dest local --server <host>
   containarium backup create alice --database app --dest gcs \
       --gcs-bucket gs://my-backups/pg --db-password "$PGPW" --server <host>
   containarium backup create alice --hook /opt/backup/db-dump.sh --dest gcs \
       --gcs-bucket gs://my-backups/pg --server <host>
+  containarium backup create alice --hook /opt/backup/pg-dump-fc.sh \
+      --hook-format pg_custom --dest local --server <host>
   containarium backup create alice --database app --age-recipient age1... \
       --dest gcs --gcs-bucket gs://my-backups/pg --server <host>`,
 	Args: cobra.ExactArgs(1),
@@ -81,7 +105,9 @@ func init() {
 	f.Int32Var(&backupCreateDBPort, "db-port", 0, "DB port (default: 5432)")
 	f.StringVar(&backupCreateHook, "hook", "", "absolute path of an in-container program whose stdout is the dump; bypasses pg_dump and --db-* (#1831)")
 	f.StringVar(&backupCreateLabel, "label", "", "label for a --hook backup, used in the backup id (default: the hook's basename)")
+	f.StringVar(&backupCreateHookFormat, "hook-format", "", "declared format of the --hook output: 'opaque' (default) or 'pg_custom' (a pg_dump -Fc archive, restore-testable)")
 	f.StringVar(&backupCreateAgeRecipient, "age-recipient", "", "age public key (age1...) to encrypt the dump to before it is stored; restore needs the matching identity")
+	f.StringVar(&backupCreateKeyMode, "key-mode", "", "who holds the key: 'managed' (KMS-wrapped per-backup key), 'both' (managed plus --age-recipient), 'age-recipient' (no wrapping); omit for the daemon default (#2402)")
 }
 
 func runBackupCreate(cmd *cobra.Command, args []string) error {
@@ -92,6 +118,14 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	}
 	if dest == pb.BackupDestination_BACKUP_DESTINATION_GCS && backupCreateBucket == "" {
 		return fmt.Errorf("--gcs-bucket is required when --dest gcs")
+	}
+	keyMode, err := parseKeyMode(backupCreateKeyMode)
+	if err != nil {
+		return err
+	}
+	hookFormat, err := parseHookFormat(backupCreateHookFormat)
+	if err != nil {
+		return err
 	}
 
 	c, err := newBackupClientFn()
@@ -117,7 +151,9 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		GcsBucket:    backupCreateBucket,
 		Hook:         backupCreateHook,
 		Label:        backupCreateLabel,
+		HookFormat:   hookFormat,
 		AgeRecipient: backupCreateAgeRecipient,
+		KeyMode:      keyMode,
 		Connection: &pb.PgConnection{
 			Database: backupCreateDatabase,
 			User:     backupCreateDBUser,
@@ -138,6 +174,9 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("      Location: %s\n", r.Location)
 		if r.Encrypted {
 			fmt.Printf("      Encrypted: yes (to %s)\n", r.AgeRecipient)
+		}
+		if r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED || r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
+			fmt.Printf("      Key mode: %s (key version %s)\n", keyModeLabel(r.KeyMode), r.KekId)
 		}
 	}
 	for _, f := range resp.Failures {

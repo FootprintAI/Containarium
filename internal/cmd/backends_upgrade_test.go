@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +74,31 @@ func TestRunBackendsUpgrade_OmitsGithubTagWhenUnset(t *testing.T) {
 
 	if _, present := gotRaw["github_tag"]; present {
 		t.Errorf("github_tag should be omitted from the wire when unset, got %v", gotRaw["github_tag"])
+	}
+}
+
+// TestRunBackendsUpgrade_PrintsTargetVersion proves the daemon's target_version
+// reaches the operator (#2171).
+func TestRunBackendsUpgrade_PrintsTargetVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"upgradeId":"upg-3","status":"in_progress","currentVersion":"0.90.1","targetVersion":"0.91.1"}`))
+	}))
+	defer srv.Close()
+
+	origServer, origToken, origForce, origTag := serverAddr, authToken, upgradeForce, upgradeGithubTag
+	t.Cleanup(func() {
+		serverAddr, authToken, upgradeForce, upgradeGithubTag = origServer, origToken, origForce, origTag
+		backendsUpgradeCmd.SetOut(nil)
+	})
+	serverAddr, authToken, upgradeForce, upgradeGithubTag = srv.URL, "", false, ""
+
+	var buf bytes.Buffer
+	backendsUpgradeCmd.SetOut(&buf)
+	if err := runBackendsUpgrade(backendsUpgradeCmd, nil); err != nil {
+		t.Fatalf("runBackendsUpgrade: %v", err)
+	}
+	if !strings.Contains(buf.String(), "to version:   0.91.1") {
+		t.Errorf("output missing target version:\n%s", buf.String())
 	}
 }

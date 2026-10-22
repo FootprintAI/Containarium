@@ -12,10 +12,15 @@ import (
 // Auto-quarantine (#659): the honest realization of the "scanner → virtual-patch"
 // capstone. When the ClamAV scanner finds malware in a container, block that
 // tenant's egress (a deny-all virtual-patch rule) so a compromised container
-// can't exfiltrate or call out; release it when the container scans clean again.
+// can't exfiltrate or call out.
+//
+// A "clean" verdict never releases it (#2631): the verdict is produced by the
+// scan running inside the tenant's own box, so it is self-reported, and a
+// compromised box could otherwise lift its own quarantine. Release is by an
+// operator removing the rule (note quarantineNote) or by the TTL below.
 //
 // This is the one scanner finding that maps CLEANLY onto the Tier 1 deny rules:
-// a malware verdict ("infected"/"clean") ↔ a network-quarantine action. (Trivy
+// an "infected" malware verdict ↔ a network-quarantine action. (Trivy
 // package CVEs, by contrast, describe a vulnerability INSIDE the container with
 // no network endpoint to block, so they are deliberately NOT wired here — see
 // docs/security/AUTO-QUARANTINE.md.)
@@ -31,13 +36,14 @@ import (
 // outbound). Deny beats allow, so this blackholes the tenant's egress.
 const quarantineCIDR = "0.0.0.0/0"
 
-// quarantineNote marks a deny rule as auto-added by quarantine, so release only
-// removes OUR rule and never clobbers an operator's own 0.0.0.0/0 deny.
+// quarantineNote marks a deny rule as auto-added by quarantine, so an operator can
+// tell it from their own, and quarantine never clobbers an operator's own
+// 0.0.0.0/0 deny.
 const quarantineNote = "auto-quarantine: clamav malware"
 
 // defaultQuarantineTTL is a safety backstop: if scans stop entirely, an
 // abandoned quarantine self-expires rather than blackholing a tenant forever.
-// Refreshed on every infected scan; release on a clean scan is immediate.
+// Refreshed on every infected scan; a clean scan does not release it.
 const defaultQuarantineTTL = 24 * time.Hour
 
 // denyRuleMutator is the slice of NetworkPolicyStore the hook needs — its atomic
@@ -59,37 +65,30 @@ func NewAutoQuarantine(store denyRuleMutator) *AutoQuarantine {
 	return &AutoQuarantine{store: store, ttl: defaultQuarantineTTL, now: time.Now}
 }
 
-// OnScanResult is the scanner callback: quarantine on "infected", release on
-// "clean", ignore anything else. tenant is the container's owning username.
+// OnScanResult is the scanner callback: quarantine on "infected", ignore
+// anything else. "clean" is deliberately ignored for release (self-reported
+// verdict, see the file header); it is logged when a quarantine is in place. tenant is the container's owning username.
 func (q *AutoQuarantine) OnScanResult(containerName, tenant, status string) {
 	tenant = strings.TrimSpace(tenant)
 	if tenant == "" {
 		return
 	}
-	var mutate func([]*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error)
-	switch status {
-	case "infected":
-		expiry := q.now().Add(q.ttl)
-		mutate = func(existing []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
-			return applyQuarantine(existing, expiry), nil
-		}
-	case "clean":
-		mutate = func(existing []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
-			return releaseQuarantine(existing), nil
-		}
-	default:
+	if status == "clean" {
+		log.Printf("[auto-quarantine] clean verdict for %s (tenant %q) not used to release any quarantine (self-reported; release is operator/TTL)", containerName, tenant)
 		return
+	}
+	if status != "infected" {
+		return
+	}
+	expiry := q.now().Add(q.ttl)
+	mutate := func(existing []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
+		return applyQuarantine(existing, expiry), nil
 	}
 	if _, err := q.store.MutateDenyRules(context.Background(), tenant, mutate); err != nil {
-		log.Printf("[auto-quarantine] %s tenant=%q: %v", status, tenant, err)
+		log.Printf("[auto-quarantine] infected tenant=%q: %v", tenant, err)
 		return
 	}
-	switch status {
-	case "infected":
-		log.Printf("[auto-quarantine] QUARANTINED tenant %q (egress blocked) — malware in %s", tenant, containerName)
-	case "clean":
-		log.Printf("[auto-quarantine] released tenant %q — %s scanned clean", tenant, containerName)
-	}
+	log.Printf("[auto-quarantine] QUARANTINED tenant %q (egress blocked) — malware in %s", tenant, containerName)
 }
 
 // applyQuarantine ensures a quarantine deny rule is present, refreshing its
@@ -112,19 +111,6 @@ func applyQuarantine(rules []*pb.NetworkPolicyDenyRule, expiry time.Time) []*pb.
 		Note:      quarantineNote,
 		ExpiresAt: exp,
 	})
-}
-
-// releaseQuarantine drops only the auto-added quarantine rule, preserving any
-// operator-authored deny rules (including a differently-noted 0.0.0.0/0).
-func releaseQuarantine(rules []*pb.NetworkPolicyDenyRule) []*pb.NetworkPolicyDenyRule {
-	out := rules[:0:0]
-	for _, r := range rules {
-		if isQuarantineCIDR(r) && r.GetNote() == quarantineNote {
-			continue // our rule — remove
-		}
-		out = append(out, r)
-	}
-	return out
 }
 
 func isQuarantineCIDR(r *pb.NetworkPolicyDenyRule) bool {

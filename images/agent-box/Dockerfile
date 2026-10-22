@@ -31,7 +31,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent-b
 
 # --- runtime: rootless dropbear + agent-box --------------------------------
 FROM debian:bookworm-slim
+# apt-get upgrade: picks up security patches (e.g. DLA-4792-1/tzdata) that
+# have shipped since debian:bookworm-slim's last rebuild but aren't pulled in
+# by installing dropbear-bin/ca-certificates alone — caught by the
+# agent-box-image.yml Trivy scan (ignore-unfixed still failed on this one
+# because a fix was actually available).
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends dropbear-bin ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash agent \

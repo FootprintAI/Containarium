@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +21,10 @@ var (
 	// --token-ttl bounds the gateway token minted for this one run.
 	codeRunContinue bool
 	codeRunTokenTTL string
+
+	// #2193: --session resumes one SPECIFIC session id instead of --continue's
+	// "most recent" — mutually exclusive with it (validated in runCodeRun).
+	codeRunSession string
 )
 
 var codeRunCmd = &cobra.Command{
@@ -48,6 +54,13 @@ byte offset seen — nothing is re-issued, nothing is lost or duplicated.
 Killing this command (Ctrl-C, closing the laptop) does NOT kill the run;
 reconnect with 'containarium code attach <box>'.
 
+This command's own process exit status reflects the AGENT's exit code once
+the run finishes: zero when the agent exited zero, non-zero when it didn't —
+so CI and shell scripts can gate on '$?' directly, without separately parsing
+'containarium code status'. A run that finishes with no exit code recorded
+(the box died mid-run) is not treated as a failure here; check 'code status'
+for "unknown" in that case.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -60,7 +73,10 @@ var codeAttachCmd = &cobra.Command{
 	Long: `Reconnects to the run 'containarium code run' started (or one dispatched
 another way with the same --name) and replays everything it has produced
 since it started, byte-exact, then keeps streaming until it exits or you
-disconnect again.`,
+disconnect again.
+
+Like 'code run', this command's own process exit status reflects the agent's
+exit code once the run finishes: non-zero if the agent exited non-zero.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeAttach,
 }
@@ -91,6 +107,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(codeRunPrompt) == "" {
 		return fmt.Errorf("--prompt is required")
 	}
+	if codeRunSession != "" && codeRunContinue {
+		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -108,10 +127,16 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// this run uses. A box installed before #1727 has no record, and
 	// prepareCodeRun falls back to the Claude + tenant-secret path it was
 	// installed with — so an existing box keeps working untouched.
-	command, err := prepareCodeRun(ctx, sess, box, name, diag)
+	command, eng, err := prepareCodeRun(ctx, sess, box, name, diag)
 	if err != nil {
 		return err
 	}
+
+	// A fresh run's session id is found by comparing the engine's session
+	// directory against a snapshot taken BEFORE the engine starts (see
+	// engine/session_discovery.go). A resumed run's id is the literal
+	// --session value and needs no discovery.
+	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
 
 	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
@@ -119,7 +144,82 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 
+	switch {
+	case discover:
+		startSessionDiscovery(ctx, sess, eng, name, diag)
+	case codeRunSession != "":
+		// Known from the flag: record it so `code runs` reports it at once.
+		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(name))
+		write := "printf '%s' " + coderun.ShellQuoteSingle(codeRunSession) + " > " + sidecar + ".tmp 2>/dev/null && mv -f " + sidecar + ".tmp " + sidecar
+		if _, err := sess.ShellExec(ctx, write); err != nil {
+			fmt.Fprintf(diag, "note: could not record this run's session id (non-fatal): %v\n", err)
+		}
+	}
+
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// sessionSidecarFor is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func sessionSidecarFor(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// snapshotSessionDirectory best-effort records the engine's existing session
+// entries before the run starts, so discovery can tell this run's own entry
+// from older conversations. It reports whether a snapshot was taken; without
+// one discovery is skipped (an absent session id, never a wrong one).
+func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) bool {
+	if eng == nil {
+		return false
+	}
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sessionSidecarFor(name))
+	if !ok {
+		return false
+	}
+	if _, err := sess.ShellExec(ctx, cmd); err != nil {
+		fmt.Fprintf(diag, "note: could not prepare looking for this run's session id (non-fatal): %v\n", err)
+		return false
+	}
+	return true
+}
+
+// startSessionDiscovery best-effort backgrounds the lookup of this run's own
+// session id on the box (#2193), so a later `code run --session <id>` or
+// `code runs`/BoxRun.session_id can name this exact conversation. It is
+// launched via ONE non-blocking shell_exec call — the poll loop itself runs
+// detached ON THE BOX (engine.SessionDiscoveryBackgroundCommand setsid's it),
+// so this never delays streaming the run's own output. A failure here is
+// never fatal to the run: it only means `code runs` won't show a session id
+// for it, which the AC already allows ("absent for engines that don't expose
+// one").
+func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) {
+	if eng == nil {
+		return
+	}
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
+		return
+	}
+	// process_start was given no --cwd, so the run inherited agent-box's own
+	// cwd — which over an interactive SSH login is $HOME. Best-effort: if the
+	// box's actual login shell lands somewhere else, discovery simply won't
+	// find a match and session_id stays absent, same as any other engine
+	// that exposes none.
+	cwd := home
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sessionSidecarFor(name))
+	if !ok {
+		return
+	}
+	if _, err := sess.ShellExec(ctx, cmd); err != nil {
+		fmt.Fprintf(diag, "note: could not start looking for this run's session id (non-fatal): %v\n", err)
+	}
 }
 
 func runCodeAttach(cmd *cobra.Command, args []string) error {
@@ -180,20 +280,14 @@ func runCodeStatus(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, line)
 
-	// #1727: report the exit code of a run that finished — including one that
-	// finished while the user was disconnected, which is the whole point of the
-	// durable run record. `--help` has promised this since #1674 and the header
-	// line alone never carried it.
-	//
-	// A finished run with no recorded code prints "unknown", never 0: agent-box's
-	// RunOutcomeUnknown ("PID dead, no recorded exit code") is a real state, and
-	// reporting it as success would be a lie about someone's build.
+	// #1727/#2011: report the exit code of a run that finished — including one
+	// that finished while the user was disconnected, which is the whole point
+	// of the durable run record. `--help` has promised this since #1674 and the
+	// header line alone never carried it. coderun.ExitCodeLine is the one place
+	// that renders this line, shared with the MCP wrapper (handleCodeStatus in
+	// internal/mcp/code_tools.go) so the two surfaces cannot drift.
 	if !running {
-		if code, ok := coderun.ExitCodeFromListing(listing, name); ok {
-			fmt.Fprintf(out, "exit_code: %d\n", code)
-		} else {
-			fmt.Fprintln(out, "exit_code: unknown (the run ended without recording one — the box may have died mid-run)")
-		}
+		fmt.Fprintln(out, coderun.ExitCodeLine(listing, name))
 	}
 	return nil
 }

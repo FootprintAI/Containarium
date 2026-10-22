@@ -1,0 +1,86 @@
+name: licenses
+
+# Dependency licence gate (#2561). Fails when any Go module linked into a binary
+# we ship carries a licence outside the allow-list in scripts/ci/check-licenses.sh
+# (policy: docs/security/DEPENDENCY-LICENSES.md). Scoped to what can change the
+# answer: the module files, the script and this workflow, plus a weekly run so a
+# licence change in an unchanged version's metadata still surfaces.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'scripts/ci/check-licenses.sh'
+      - 'scripts/ci/notice.sh'
+      - 'scripts/ci/npm-licenses.sh'
+      - 'web-ui/package.json'
+      - 'web-ui/package-lock.json'
+      - 'web-ui/THIRD-PARTY-LICENSES.txt'
+      - 'web-ui/next.config.ts'
+      - 'agent-runtime/package.json'
+      - 'agent-runtime/package-lock.json'
+      - 'NOTICE'
+      - '.github/workflows/licenses.yml'
+  # No `branches:` filter, deliberately (#1215): a base filter leaves stacked
+  # PRs with no checks at all. The `paths` filter stays.
+  pull_request:
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'scripts/ci/check-licenses.sh'
+      - 'scripts/ci/notice.sh'
+      - 'scripts/ci/npm-licenses.sh'
+      - 'web-ui/package.json'
+      - 'web-ui/package-lock.json'
+      - 'web-ui/THIRD-PARTY-LICENSES.txt'
+      - 'web-ui/next.config.ts'
+      - 'agent-runtime/package.json'
+      - 'agent-runtime/package-lock.json'
+      - 'NOTICE'
+      - '.github/workflows/licenses.yml'
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  licenses:
+    name: dependency licences
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.10'
+          cache-name: shared
+
+      - name: Install go-licenses
+        # Pinned: the report format and its handling of the standard library
+        # have changed between releases. The script sets GOROOT, which this
+        # version needs to resolve stdlib packages.
+        run: go install github.com/google/go-licenses@v1.6.0
+
+      - name: Check licences of every shipped binary's dependency graph
+        run: scripts/ci/check-licenses.sh
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+
+      - name: Check npm licences and the web UI attribution file (#2754)
+        run: scripts/ci/npm-licenses.sh check
+
+      - name: Check NOTICE carries every dependency notice (#2561)
+        run: scripts/ci/notice.sh check

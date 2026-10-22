@@ -6,20 +6,31 @@
 // auth-failure line exists. This package plugs into sshpiperd's own
 // plugin chain (see plugin.go) to emit an "open" record when a pipe is
 // established and a "close" record when it ends, correlated by
-// session_id, without touching the failure-path logging failtoban's
-// fail2ban regex depends on.
+// session_id. Authorization decisions can also be carried on a "denied"
+// record without changing failtoban's separate failure-path logging.
 package sshsession
 
-import "time"
+import (
+	"time"
 
-// SessionPhase distinguishes the two records emitted per accepted SSH
-// session. Typed per this repo's strong-typing convention (CLAUDE.md) —
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
+
+// SessionPhase distinguishes accepted-session lifecycle and authorization
+// denial records. Typed per this repo's strong-typing convention (CLAUDE.md) —
 // not a bare string with a comment listing the allowed values.
 type SessionPhase string
 
 const (
-	SessionPhaseOpen  SessionPhase = "open"
-	SessionPhaseClose SessionPhase = "close"
+	SessionPhaseOpen   SessionPhase = "open"
+	SessionPhaseClose  SessionPhase = "close"
+	SessionPhaseDenied SessionPhase = "denied"
+	// SessionPhaseAuthFailed summarises the failed authentications from one
+	// source IP in one ban window; SessionPhaseBanned records a ban (#2419).
+	// Neither belongs to a session: the ban plugin writes them, with no
+	// login, target or credential.
+	SessionPhaseAuthFailed SessionPhase = "auth_failed"
+	SessionPhaseBanned     SessionPhase = "banned"
 )
 
 // AuthMethod is how the client's credential was presented.
@@ -58,6 +69,13 @@ const (
 	// CloseReasonNormal, which is the property acceptance criterion 5
 	// actually requires.
 	CloseReasonError CloseReason = "error"
+	// CloseReasonUnknownOrphan is never written by the plugin. The shipper's
+	// --reconcile emits it (#2415) for an "open" record that never got a
+	// "close" and is older than the orphan threshold — a plugin hard-kill
+	// (kill -9, OOM) is the only way to get there, since clean stops flush
+	// CloseReasonProxyShutdown. It is shipped to the audit store only; the
+	// source JSONL file is never rewritten.
+	CloseReasonUnknownOrphan CloseReason = "unknown_orphan"
 )
 
 // Credential is the non-secret handle that identifies the credential used
@@ -80,7 +98,9 @@ type Credential struct {
 // Record is one session lifecycle event. Exactly one SessionPhaseOpen and
 // exactly one SessionPhaseClose record are emitted per accepted SSH
 // connection (barring CloseReasonProxyShutdown's own best-effort
-// flush — see plugin.go), correlated by SessionID.
+// flush — see plugin.go), correlated by SessionID. A denied authorization
+// attempt has its own SessionPhaseDenied record, distinct from OPEN even
+// when the same attempt subsequently opens in audit-only mode.
 //
 // This is connection metadata only: it never carries a private key,
 // token, or session content (see Credential's doc comment).
@@ -112,4 +132,26 @@ type Record struct {
 
 	// CloseReason is set only on a SessionPhaseClose record.
 	CloseReason CloseReason `json:"close_reason,omitempty"`
+
+	// Authorization metadata is absent on pre-upgrade records. A DENY
+	// decision may accompany OPEN in audit-only mode; Enforced distinguishes
+	// that observation from the decision being enforced. Never infer the
+	// decision from the phase or replace an unknown user with the login.
+	UserID        string              `json:"user_id,omitempty"`
+	AuthzDecision pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason    pb.SSHDenyReason    `json:"deny_reason,omitempty"`
+	Enforced      bool                `json:"enforced,omitempty"`
+
+	// The fields below are set only on SessionPhaseAuthFailed and
+	// SessionPhaseBanned records (#2419).
+	//
+	// FailureCount is the failed authentications counted; BannedUntil, set
+	// only when banned, is when the ban lapses; BanListener is the sentinel
+	// SSH listener that saw them. SuppressedCount, on an AuthFailed record
+	// with no ClientIP, is the failures from other sources not written one by
+	// one because the plugin's record rate cap was reached.
+	FailureCount    uint64            `json:"failure_count,omitempty"`
+	BannedUntil     *time.Time        `json:"banned_until,omitempty"`
+	BanListener     pb.SSHBanListener `json:"ban_listener,omitempty"`
+	SuppressedCount uint64            `json:"suppressed_count,omitempty"`
 }

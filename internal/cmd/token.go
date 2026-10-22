@@ -66,11 +66,13 @@ The generated token can be used in the Authorization header:
 
 Token Expiry:
   - Use standard duration format: 24h, 168h, 720h, etc.
-  - Use 0 or empty string for non-expiring tokens
+  - Non-expiring tokens are not supported: 0, empty, or a value above the
+    daemon's cap (default 720h / 30 days) is an error, not a silent clamp
   - Recommended expiry times:
     - Admin tokens: 720h (30 days)
     - User tokens: 168h (7 days)
-    - Service tokens: 8760h (1 year)
+    - Unattended jobs: mint a short-lived token per run from the signing
+      secret on the daemon host (see docs/DB-BACKUP-OPERATIONS.md)
     - Development tokens: 24h
 
 Security:
@@ -84,8 +86,8 @@ Security:
   # Generate token from secret file
   containarium token generate --username alice --secret-file /etc/containarium/jwt.secret
 
-  # Generate non-expiring service token
-  containarium token generate --username service-account --roles admin,service --expiry 0 --secret <SECRET>
+  # Generate a short-lived token for a scheduled job (mint per run)
+  containarium token generate --username backup-scheduler --roles admin --expiry 2h --secret-file /etc/containarium/jwt.secret --raw
 
   # Generate development token (24h expiry)
   containarium token generate --username dev --roles user,developer --expiry 24h --secret dev-secret`,
@@ -282,8 +284,28 @@ func init() {
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenRoles, "roles", []string{"user"}, "Roles for the token (comma-separated)")
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenScopes, "scopes", nil, "Phase 1.7: least-privilege scopes (comma-separated; e.g. containers:read,secrets:read). Omit for an unrestricted token; pass '*' for the wildcard.")
 	tokenGenerateCmd.Flags().StringVar(&tokenType, "token-type", "", "Phase 1.6: 'access' (short-lived API token) or 'refresh' (long-lived token for exchange). Empty = legacy issuance (still acts as access on the API surface).")
-	tokenGenerateCmd.Flags().StringVar(&tokenExpiry, "expiry", "24h", "Token expiry duration (e.g., 24h, 168h, 720h, 0 for no expiry)")
+	tokenGenerateCmd.Flags().StringVar(&tokenExpiry, "expiry", "24h", "Token expiry duration (e.g., 24h, 168h, 720h). Must be positive and not exceed the daemon cap (default 720h); non-expiring tokens are not supported")
 	tokenGenerateCmd.Flags().BoolVar(&tokenRaw, "raw", false, "Output only the raw token (for scripting)")
+}
+
+// resolveTokenExpiry parses --expiry and rejects anything the token manager
+// would otherwise silently clamp: zero/empty ("no expiry"), negative, or
+// above max. Non-expiring tokens do not exist (#2592).
+func resolveTokenExpiry(raw string, max time.Duration) (time.Duration, error) {
+	if raw == "" || raw == "0" {
+		return 0, fmt.Errorf("non-expiring tokens are not supported; maximum is %gh", max.Hours())
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid expiry duration '%s': %w\nExamples: 24h, 168h, 720h", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("--expiry must be positive; maximum is %gh", max.Hours())
+	}
+	if d > max {
+		return 0, fmt.Errorf("--expiry %s is too long; maximum is %gh", raw, max.Hours())
+	}
+	return d, nil
 }
 
 func runTokenGenerate(cmd *cobra.Command, args []string) error {
@@ -301,20 +323,17 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("JWT secret is required. Use --secret or --secret-file")
 	}
 
-	// Parse expiry duration
-	var expiresIn time.Duration
-	var err error
-	if tokenExpiry != "0" && tokenExpiry != "" {
-		expiresIn, err = time.ParseDuration(tokenExpiry)
-		if err != nil {
-			return fmt.Errorf("invalid expiry duration '%s': %w\nExamples: 24h, 168h, 720h, 0", tokenExpiry, err)
-		}
-	}
-
 	// Create token manager
 	tm, err := auth.NewTokenManager(secret, "containarium")
 	if err != nil {
 		return fmt.Errorf("token manager: %w", err)
+	}
+
+	// Fail loud on an out-of-range lifetime (#2592): the auth layer would
+	// otherwise silently clamp it to the cap.
+	expiresIn, err := resolveTokenExpiry(tokenExpiry, tm.MaxTokenExpiry())
+	if err != nil {
+		return err
 	}
 
 	// Generate token. Phase 1.7 — scopes pass through as a
@@ -362,12 +381,8 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	if tokenType != "" {
 		fmt.Printf("  Type:     %s\n", tokenType)
 	}
-	if expiresIn > 0 {
-		expiryTime := time.Now().Add(expiresIn)
-		fmt.Printf("  Expires:  %s (%s from now)\n", expiryTime.Format(time.RFC3339), expiresIn)
-	} else {
-		fmt.Printf("  Expires:  Never\n")
-	}
+	expiryTime := time.Now().Add(expiresIn)
+	fmt.Printf("  Expires:  %s (%s from now)\n", expiryTime.Format(time.RFC3339), expiresIn)
 	fmt.Printf("\n")
 	fmt.Printf("Usage Examples:\n")
 	fmt.Printf("\n")

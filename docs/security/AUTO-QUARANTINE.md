@@ -8,12 +8,19 @@
 
 When the ClamAV scanner finds malware in a container, the daemon adds a
 **deny-all-egress** rule to that container's tenant — a network quarantine that
-stops a compromised container exfiltrating or calling out — and **releases it
-automatically** when the container next scans clean.
+stops a compromised container exfiltrating or calling out. It is **not**
+released by a later `clean` scan: the verdict is produced by a scan running
+inside the tenant's own box (#2631), so it is self-reported, and a compromised
+box could otherwise lift its own quarantine. An operator releases it by removing
+the rule (note `auto-quarantine: clamav malware`), or it expires on its own (24h
+TTL, refreshed by every infected scan).
 
 ```
 ClamAV scan → "infected"  →  deny 0.0.0.0/0 for the tenant (note: auto-quarantine)
-ClamAV scan → "clean"     →  remove that rule
+ClamAV scan → "clean"     →  nothing (never releases; operator or TTL does)
+other statuses (incomplete, unsupported_size, not_installed) →  nothing
+
+The scan runs inside the tenant's own box, see [`TENANT-MALWARE-SCAN.md`](TENANT-MALWARE-SCAN.md).
 ```
 
 Enable with `CONTAINARIUM_SECURITY_AUTO_QUARANTINE=1`. Off by default.
@@ -24,16 +31,16 @@ The epic's design docs framed a generic "a CVE finding emits a virtual-patch
 rule." Wiring it for real surfaced an **impedance mismatch** worth stating
 plainly:
 
-- **Trivy / pentest findings** describe a vulnerable *package inside* a container
+- **Trivy / OpenVAS / pentest findings** describe a vulnerable *package inside* a container
   (e.g. an outdated `libxml2`). There is **no network endpoint to block** — a
   deny rule (which blocks the tenant's *egress to a CIDR/port*) can't "patch" an
   internal package vuln. Forcing that mapping would ship a rule that looks like a
   fix but isn't. So Trivy CVEs are **deliberately not wired** to deny rules.
 - **ClamAV findings** carry a clean verdict — `infected` / `clean` on a named
   container — that maps *correctly* onto the one action the merged
-  infrastructure supports: **network-quarantine the tenant, release on clean.**
-  That is a real virtual patch (contain the threat at the network until
-  remediated), so it's what this ships.
+  infrastructure supports: **network-quarantine the tenant.** That is a real
+  virtual patch (contain the threat at the network until an operator or the TTL
+  releases it), so it's what this ships.
 
 Where Trivy/ZAP findings *do* have a sound virtual-patch path is the WAF (Tier 3,
 #662) — a detected web exploit → a Coraza rule — and Tier 2 signatures for CVEs
@@ -48,12 +55,12 @@ CVE→signature/rule source; they are not this PR.
   network-policy deny-rule **store** directly (`MutateDenyRules`) — an in-process,
   atomic mutation, no RPC/auth round-trip.
 - **Safe against operator rules.** The quarantine rule is marked with a
-  reserved note. Release removes *only* that rule — an operator's own `0.0.0.0/0`
-  deny (different note) is never clobbered, and if one already exists, quarantine
-  relies on it rather than overwriting it.
+  reserved note. If an operator's own `0.0.0.0/0` deny (different note) already
+  exists, quarantine relies on it rather than overwriting it, and never touches
+  it.
 - **Self-healing backstop.** Each infected scan refreshes a 24h expiry on the
   rule, so if scanning stops entirely a stale quarantine self-expires rather than
-  blackholing a tenant forever. A clean scan releases immediately.
+  blackholing a tenant forever. A clean scan does not release it.
 
 ## Caveats (documented, not hidden)
 
@@ -71,9 +78,9 @@ CVE→signature/rule source; they are not this PR.
 
 ## Validation
 
-Pure logic (`applyQuarantine` / `releaseQuarantine` / `OnScanResult`) is
-unit-tested, including the don't-clobber-operator-rules and no-duplicate-on-
-reinfection cases. End to end needs a backend with ClamAV scanning + the network
+Pure logic (`applyQuarantine` / `OnScanResult`) is unit-tested, including the
+don't-clobber-operator-rules, no-duplicate-on-reinfection and
+clean-never-releases cases. End to end needs a backend with ClamAV scanning + the network
 enforcer armed: drop EICAR into a container, trigger a scan, confirm the tenant
 gets a `0.0.0.0/0` deny (note `auto-quarantine`) and that egress is blocked under
-enforce; remove EICAR, re-scan, confirm release.
+enforce; remove EICAR, re-scan clean, confirm the quarantine is **still** in place, then remove the rule to release.

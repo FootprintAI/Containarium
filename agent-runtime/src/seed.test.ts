@@ -18,8 +18,8 @@ function seedDirWith(files: Record<string, string>): string {
 describe("parsePlatformMcp", () => {
   it("parses the shared fixture into camelCase fields", () => {
     expect(parsePlatformMcp(fixture)).toEqual({
-      command: "mcp-server",
-      args: [],
+      command: "env",
+      args: ["CONTAINARIUM_MCP_ALLOW_INSECURE=true", "mcp-server"],
       serverUrl: "http://10.9.8.1:8080",
       tokenFile: "/etc/containarium/agent/runs/run-1/token",
       tools: "tracker_*",
@@ -46,6 +46,32 @@ describe("parsePlatformMcp", () => {
   it("rejects an empty tools allow-list", () => {
     const obj = { ...(JSON.parse(fixture) as object), tools: "  " };
     expect(() => parsePlatformMcp(JSON.stringify(obj))).toThrow(/tools/);
+  });
+});
+
+// agent_card.output_schema_json is the contract the artifact must satisfy
+// (#2002). It is parsed once here so the engines receive a schema object, and
+// a malformed one fails the load — a schema the catalog declared but the
+// runtime silently dropped would leave the run unenforced with no signal why.
+describe("loadSeed outputSchema", () => {
+  const card = (fields: Record<string, unknown>) => JSON.stringify({ id: "diff-drafter", ...fields });
+
+  it("is null when the seed carries no agent card", () => {
+    expect(loadSeed(seedDirWith({ "system_prompt.txt": "hi" })).outputSchema).toBeNull();
+  });
+
+  it.each([card({}), card({ outputSchemaJson: "" }), card({ outputSchemaJson: "   " })])("is null when the card declares no schema: %s", (body) => {
+    expect(loadSeed(seedDirWith({ "agent-card.json": body })).outputSchema).toBeNull();
+  });
+
+  it("is the parsed JSON Schema object when the card declares one", () => {
+    const schema = { type: "object", properties: { files: { type: "array" } }, required: ["files"] };
+    const seed = loadSeed(seedDirWith({ "agent-card.json": card({ outputSchemaJson: JSON.stringify(schema) }) }));
+    expect(seed.outputSchema).toEqual(schema);
+  });
+
+  it.each(["{not json", "[]", '"a string"', "42", "null"])("throws instead of running unenforced when the schema is %s", (raw) => {
+    expect(() => loadSeed(seedDirWith({ "agent-card.json": card({ outputSchemaJson: raw }) }))).toThrow(/output_schema_json/);
   });
 });
 

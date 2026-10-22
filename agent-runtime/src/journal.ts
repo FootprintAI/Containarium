@@ -159,9 +159,12 @@ export function openJournal(opts: FileJournalOptions, warn: (msg: string) => voi
 }
 
 // The env vars that carry a credential into the box: the model-gateway token
-// under each provider's name (the daemon's gatewayProviderEnvs), and the
-// provider keys a direct-mode box is seeded with.
+// under each provider's name (the daemon's gatewayProviderEnvs), the provider
+// keys a direct-mode box is seeded with, and the per-box A2A credential the
+// daemon authenticates to this box's /tasks with (#2125) — which a journal
+// served back by TailRunLog must not carry out of the box.
 const SECRET_ENV_VARS = [
+  "CONTAINARIUM_A2A_TOKEN",
   "CONTAINARIUM_GATEWAY_TOKEN",
   "ANTHROPIC_AUTH_TOKEN",
   "OPENAI_API_KEY",

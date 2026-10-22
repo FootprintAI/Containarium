@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 	"golang.org/x/sync/errgroup"
@@ -34,6 +35,11 @@ func detectZFSContainersDataset() bool {
 // Client wraps the Incus API client
 type Client struct {
 	server incus.InstanceServer
+
+	// zfsGetPropertyFn and zfsSetPropertyFn replace host ZFS commands in unit
+	// tests. Nil uses zfs get and zfs set respectively.
+	zfsGetPropertyFn func(dataset, property string) (string, error)
+	zfsSetPropertyFn func(dataset, property, value string) error
 
 	// storagePolicy decides what EnsureStorage does when a pool does not
 	// isolate tenant volumes (#1206). Zero value warns, which preserves the
@@ -51,6 +57,10 @@ type Client struct {
 	// the sentinel. These are unrelated concepts that share a word; see
 	// docs/MULTI-POOL.md.
 	storagePool string
+
+	// socketPath is the Incus unix socket this client was connected to. Empty for clients built around a test
+	// double. GetSystemResources uses it to share one bounded, cached read per socket (#2325).
+	socketPath string
 }
 
 // DefaultStoragePool is the incus storage pool used when none is configured.
@@ -152,10 +162,25 @@ type Backend interface {
 	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
 	WriteFile(containerName, path string, content []byte, mode string) error
 	ReadFile(containerName, path string) ([]byte, error)
+	// ListDir returns the entry names of a directory inside the container,
+	// via the incus file API — no exec, so nothing inside the box (a
+	// tenant-controlled shell, say) is on the path. A missing directory is
+	// an error; the caller decides whether that is "empty".
+	ListDir(containerName, path string) ([]string, error)
 
 	// Config & devices
 	SetConfig(containerName, key, value string) error
 	SetCPULimit(containerName, cpu string) error
+	// SetCPUConfig writes limits.cpu and limits.cpu.allowance exactly as
+	// given (empty unsets the key) — the raw setter the process responder
+	// (#2636) uses to apply a throttle allowance while keeping the core
+	// count, and to restore exactly what it recorded. SetCPULimit is the
+	// translating resize path; this does no translation.
+	SetCPUConfig(containerName, count, allowance string) error
+	// FreezeContainer pauses a running instance (cgroup freezer): memory
+	// and disk kept, no process scheduled until UnfreezeContainer.
+	FreezeContainer(name string) error
+	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
 	UpdateContainerConfig(name, key, value string) error
@@ -172,7 +197,10 @@ type Backend interface {
 	GetNetworkACL(name string) (*api.NetworkACL, error)
 	CreateNetworkACL(config ACLConfig) error
 	UpdateNetworkACL(name string, config ACLConfig) error
+	ListNetworkACLs() ([]api.NetworkACL, error)
+	DeleteNetworkACL(name string) error
 	AttachACLToContainer(containerName, aclName, deviceName string) error
+	SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error
 	EnsureNICDevice(containerName string, want NICDevice) error
 	SetDeviceConfig(containerName, deviceName string, keys map[string]string) error
 
@@ -437,6 +465,34 @@ const RoleKey = "user.containarium.role"
 // "Cloud extension".
 const TenantLabelKey = "user.containarium.tenant"
 
+// CloudOrgIDLabel is the attribution label (under LabelPrefix) the hosted
+// control plane stamps on every container it creates via the OSS-primary
+// driver — the owning org UUID. ResolveTenant reads it as the second
+// source of tenant identity.
+const CloudOrgIDLabel = "cloud_org_id"
+
+// ContainerNameSuffix is the <tenant>-container naming convention's suffix.
+const ContainerNameSuffix = "-container"
+
+// ResolveTenant determines a container's owning tenant, in the precedence
+// every tenant-scoped control shares (the eBPF enforcer, the tenant guard):
+// the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
+// attribution label; then the <tenant>-container naming convention. ""
+// when none yields a tenant — the container is then left unmanaged and
+// reported, never guessed.
+func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
+	if t := strings.TrimSpace(tenantLabel); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(cloudOrgID); t != "" {
+		return t
+	}
+	if !strings.HasSuffix(containerName, ContainerNameSuffix) {
+		return ""
+	}
+	return strings.TrimSuffix(containerName, ContainerNameSuffix)
+}
+
 // Role is a typed string for core container roles.
 type Role string
 
@@ -472,9 +528,15 @@ type ContainerInfo struct {
 	// generated username at create time), and it's what the daemon's SSH
 	// front routes by — so callers doing SSH/install must use this, not the
 	// requested name. Empty when the daemon doesn't report it.
-	Username     string
-	State        string
-	IPAddress    string
+	Username  string
+	State     string
+	IPAddress string
+	// SSHHost is the host a client should SSH to, as computed by the
+	// daemon from its own routing config (proto Container.ssh_host): the
+	// container IP in direct mode, the sentinel's public host when routed
+	// through one. Empty when the daemon doesn't report it (local Incus,
+	// older daemons) — callers then fall back to IPAddress.
+	SSHHost      string
 	CPU          string
 	Memory       string
 	Disk         string
@@ -484,8 +546,17 @@ type ContainerInfo struct {
 	Labels       map[string]string
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
-	CreatedAt    time.Time
-	BackendID    string // Backend this container runs on (populated by PeerPool fan-out)
+	// Managed is true when the instance carries any user.containarium.* config
+	// key, i.e. Containarium created or adopted it. An instance made directly
+	// with `incus launch` has none.
+	Managed   bool
+	CreatedAt time.Time
+	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
+	// Pid is the container's init process id in the HOST pid namespace, from
+	// the same InstanceState read that supplies IPAddress; 0 when the
+	// container is not running or the state read failed. The exec-telemetry
+	// watcher (#2637) resolves /proc/<Pid>/cgroup from it.
+	Pid int64
 
 	// MonitoringEnabled is true when the container has OTel
 	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
@@ -493,6 +564,10 @@ type ContainerInfo struct {
 	// the Incus config map rather than tracked as a separate
 	// flag — single source of truth.
 	MonitoringEnabled bool
+
+	// Stack mirrors user.containarium.stack: the stack requested at create.
+	// Empty when none was requested or the box predates the key.
+	Stack string
 
 	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
 	// on the Incus config — opt-in flag for the serverless feature.
@@ -579,6 +654,11 @@ const StoppedAtKey = "user.containarium.stopped_at"
 // explicitly asked for stopped→delete gets reaped. Absent/0 = never delete on
 // stop (today's behavior).
 const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_seconds"
+
+// StackKey is the Incus config key recording the software stack a box was
+// created with (--stack), so list/get can report it after creation (#2163).
+// Absent = no stack requested, or a box created before this key existed.
+const StackKey = "user.containarium.stack"
 
 // DeletePolicyKey is the Incus config key carrying a box's delete policy
 // (#284). A box set to DeletePolicyProtected is skipped by every automated /
@@ -697,6 +777,13 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
+	// admission-gate posture (#2284). Nil when the source did not report
+	// one — local Incus mode, or a daemon that predates the field.
+	CPUBudget *CPUBudget
+	// StoragePools is each storage pool's fill as the daemon's capacity
+	// monitor last read it (#2823). Nil in local mode or from an older daemon.
+	StoragePools []StoragePoolCapacity
 }
 
 // DefaultSocketPath is the Incus unix socket path used by New() and by any
@@ -724,7 +811,7 @@ func NewWithSocket(socketPath string) (*Client, error) {
 		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
 	}
 
-	return &Client{server: server}, nil
+	return &Client{server: server, socketPath: socketPath}, nil
 }
 
 // NewWithSocketAndTimeout creates a new Incus client whose every HTTP call
@@ -754,7 +841,7 @@ func NewWithSocketAndTimeout(socketPath string, timeout time.Duration) (*Client,
 		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
 	}
 
-	return &Client{server: server}, nil
+	return &Client{server: server, socketPath: socketPath}, nil
 }
 
 // parseImageSource parses an image string and returns the appropriate InstanceSource
@@ -977,8 +1064,39 @@ func (c *Client) StopContainer(name string, force bool) error {
 	return nil
 }
 
+// FreezeContainer pauses a running instance through the cgroup freezer.
+// Memory and disk are kept; the instance reports status "Frozen" until
+// UnfreezeContainer. This is the process responder's FREEZE action (#2636).
+func (c *Client) FreezeContainer(name string) error {
+	return c.updateState(name, "freeze")
+}
+
+// UnfreezeContainer resumes a frozen instance.
+func (c *Client) UnfreezeContainer(name string) error {
+	return c.updateState(name, "unfreeze")
+}
+
+func (c *Client) updateState(name, action string) error {
+	op, err := c.server.UpdateInstanceState(name, api.InstanceStatePut{Action: action, Timeout: 30}, "")
+	if err != nil {
+		return fmt.Errorf("failed to %s container: %w", action, err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to %s container (operation failed): %w", action, err)
+	}
+	return nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(name string) error {
+	// The instance id goes to the delete observers (#2835), so they can tell
+	// this instance from a later one created under the same name.
+	var instanceID string
+	if inst, _, err := c.server.GetInstance(name); err == nil {
+		instanceID = inst.Config[InstanceIDKey]
+	} else {
+		log.Printf("[incus] delete %s: read its instance id first: %v (delete observers get none)", name, err)
+	}
 	op, err := c.server.DeleteInstance(name)
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %w", err)
@@ -988,6 +1106,7 @@ func (c *Client) DeleteContainer(name string) error {
 		return fmt.Errorf("failed to delete container (operation failed): %w", err)
 	}
 
+	notifyContainerDeleted(name, instanceID)
 	return nil
 }
 
@@ -1094,6 +1213,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			Labels:                    extractLabelsFromConfig(inst.Config),
 			Role:                      Role(inst.Config[RoleKey]),
 			Tenant:                    inst.Config[TenantLabelKey],
+			Managed:                   hasContainariumConfig(inst.Config),
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
@@ -1102,6 +1222,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
+			Stack:                     inst.Config[StackKey],
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1152,8 +1273,11 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 
 		// Get IP address - need to get state separately
 		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
-		if err == nil && state.Network != nil {
-			info.IPAddress = primaryNetworkInterface(state.Network)
+		if err == nil {
+			info.Pid = state.Pid
+			if state.Network != nil {
+				info.IPAddress = primaryNetworkInterface(state.Network)
+			}
 		}
 
 		return info, true
@@ -1174,12 +1298,14 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		Labels:               extractLabelsFromConfig(inst.Config),
 		Role:                 Role(inst.Config[RoleKey]),
 		Tenant:               inst.Config[TenantLabelKey],
+		Managed:              hasContainariumConfig(inst.Config),
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
+		Stack:                inst.Config[StackKey],
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 
@@ -1310,6 +1436,17 @@ func (c *Client) getInstanceStateWithRetry(what, name string) (*api.InstanceStat
 	return stateWithRetry(what, func() (*api.InstanceState, string, error) {
 		return c.server.GetInstanceState(name)
 	})
+}
+
+// InitPID returns the host pid of the instance's init process (0 when it is
+// not running). The process responder's kill path (#2638) uses it to
+// re-check that a pid still belongs to the container before signalling it.
+func (c *Client) InitPID(name string) (int64, error) {
+	state, _, err := c.getInstanceStateWithRetry("init pid "+name, name)
+	if err != nil {
+		return 0, fmt.Errorf("get instance state %s: %w", name, err)
+	}
+	return state.Pid, nil
 }
 
 // stateWithRetry is the generic retry loop behind getInstanceStateWithRetry,
@@ -1670,6 +1807,16 @@ type SystemResources struct {
 
 // GetSystemResources gets system resource information from Incus
 func (c *Client) GetSystemResources() (*SystemResources, error) {
+	if c.socketPath == "" {
+		return c.fetchSystemResources() // test doubles: no socket, no shared cache
+	}
+	return resourcesCacheFor(c.socketPath).get()
+}
+
+// fetchSystemResources performs the actual Incus reads (hardware discovery, pool list, each pool's usage). It has no
+// deadline of its own: GetSystemResources runs it on a short-timeout client behind the cache, because
+// GetServerResources can hang on a saturated host (#2325).
+func (c *Client) fetchSystemResources() (*SystemResources, error) {
 	resources, err := c.server.GetServerResources()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server resources: %w", err)
@@ -1942,6 +2089,30 @@ func (c *Client) SetCPULimit(containerName, cpu string) error {
 	return nil
 }
 
+// SetCPUConfig writes limits.cpu and limits.cpu.allowance verbatim; an
+// empty value unsets that key. See Backend.SetCPUConfig.
+func (c *Client) SetCPUConfig(containerName, count, allowance string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+	for key, value := range map[string]string{"limits.cpu": count, "limits.cpu.allowance": allowance} {
+		if value == "" {
+			delete(inst.Config, key)
+		} else {
+			inst.Config[key] = value
+		}
+	}
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) SetConfig(containerName, key, value string) error {
 	// Get current container configuration
 	inst, etag, err := c.server.GetInstance(containerName)
@@ -2008,7 +2179,8 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	}
 
 	// If the disk is full, Incus cannot write backup.yaml during UpdateInstance.
-	// Detect this case and temporarily expand the ZFS quota to unblock the operation.
+	// Detect this case and expand the ZFS quota to the requested size to unblock
+	// the operation.
 	if deviceName == "root" {
 		if err := c.ensureZFSQuotaHeadroom(containerName, device["pool"], size); err != nil {
 			fmt.Printf("Warning: ZFS quota pre-expand failed (non-fatal): %v\n", err)
@@ -2083,11 +2255,23 @@ func buildContainerDataset(poolSource, poolName, containerName string) string {
 	return fmt.Sprintf("%s/containers/%s", zfsPool, containerName)
 }
 
-// ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
-// temporarily expands it to the target size so Incus can write its backup.yaml.
+// ensureZFSQuotaHeadroom sets the property Incus uses for this instance volume
+// to targetSize. SetDeviceSize uses this before changing a root disk size, so
+// it is a persistent resize rather than the temporary device-update path.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
 	if pool == "" {
 		pool = c.StoragePool()
+	}
+	storagePool, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return fmt.Errorf("get storage pool %s: %w", pool, err)
+	}
+	if storagePool == nil || storagePool.Driver != "zfs" {
+		return nil
+	}
+	quotaProperty, _, err := c.zfsQuotaProperties(containerName, pool, storagePool)
+	if err != nil {
+		return err
 	}
 
 	dataset, err := c.ContainerDataset(containerName, pool)
@@ -2095,12 +2279,29 @@ func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) 
 		return err
 	}
 
-	// Set the ZFS quota to the target size directly
-	cmd := exec.Command("zfs", "set", fmt.Sprintf("quota=%s", targetSize), dataset)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("zfs set quota failed on %s: %w (output: %s)", dataset, err, string(output))
-	}
+	return c.setZFSProperty(dataset, quotaProperty, targetSize)
+}
 
+func (c *Client) getZFSProperty(dataset, property string) (string, error) {
+	if c.zfsGetPropertyFn != nil {
+		return c.zfsGetPropertyFn(dataset, property)
+	}
+	cmd := exec.Command("zfs", "get", "-Hp", "-o", "value", property, dataset) // #nosec G204 -- dataset is resolved by Incus
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("zfs get %s failed on %s: %w (output: %s)", property, dataset, err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (c *Client) setZFSProperty(dataset, property, value string) error {
+	if c.zfsSetPropertyFn != nil {
+		return c.zfsSetPropertyFn(dataset, property, value)
+	}
+	cmd := exec.Command("zfs", "set", fmt.Sprintf("%s=%s", property, value), dataset) // #nosec G204 -- dataset is resolved by Incus
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs set %s failed on %s: %w (output: %s)", property, dataset, err, string(output))
+	}
 	return nil
 }
 
@@ -2477,9 +2678,28 @@ func (c *Client) GetNetworkSubnet(networkName string) (string, error) {
 
 // WriteFile writes content to a file inside a container
 func (c *Client) WriteFile(containerName, path string, content []byte, mode string) error {
+	return c.PushFile(containerName, path, bytes.NewReader(content), mode)
+}
+
+// PushFile streams content to a file inside a container, so a caller with a
+// large file never has to hold it in memory.
+func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
+	return c.WriteFileStream(containerName, path, content, mode)
+}
+
+// WriteFileStream pushes content without accumulating it in memory.
+func (c *Client) WriteFileStream(containerName, path string, content io.Reader, mode string) error {
+	// Incus only seeks when replaying a request after a redirect. A decrypt
+	// stream cannot be replayed; fail that replay instead of buffering it or
+	// sending an incomplete file. Existing seekable PushFile callers retain
+	// their normal redirect support.
+	seeker, ok := content.(io.ReadSeeker)
+	if !ok {
+		seeker = forwardOnlyFile{Reader: content}
+	}
 	// Use incus file push functionality via the API
 	args := incus.InstanceFileArgs{
-		Content:   bytes.NewReader(content),
+		Content:   seeker,
 		WriteMode: "overwrite",
 	}
 
@@ -2501,6 +2721,28 @@ func (c *Client) WriteFile(containerName, path string, content []byte, mode stri
 	return nil
 }
 
+type forwardOnlyFile struct{ io.Reader }
+
+func (forwardOnlyFile) Seek(int64, int) (int64, error) {
+	return 0, fmt.Errorf("cannot replay a streaming container file upload")
+}
+
+// ListDir returns the entry names of a directory inside the container. See
+// Backend.ListDir.
+func (c *Client) ListDir(containerName, path string) ([]string, error) {
+	reader, resp, err := c.server.GetInstanceFile(containerName, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list %s: %w", path, err)
+	}
+	if reader != nil {
+		_ = reader.Close()
+	}
+	if resp == nil || resp.Type != "directory" {
+		return nil, fmt.Errorf("failed to list %s: not a directory", path)
+	}
+	return resp.Entries, nil
+}
+
 // maxSymlinkHops bounds how many links ReadFile follows before
 // declaring a loop. Deep legitimate chains are 1-2 hops; anything
 // near this bound is a cycle.
@@ -2516,6 +2758,17 @@ const maxSymlinkHops = 10
 // at server/node-token is exactly such a symlink, which is how
 // workers were pushed a "token" with no CA hash (#1446).
 func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
+	r, err := c.ReadFileStream(containerName, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// ReadFileStream follows bounded symlink targets and transfers ownership
+// of the regular file response to the caller, who must close it.
+func (c *Client) ReadFileStream(containerName, filePath string) (io.ReadCloser, error) {
 	current := filePath
 	for hop := 0; ; hop++ {
 		reader, resp, err := c.server.GetInstanceFile(containerName, current)
@@ -2523,16 +2776,25 @@ func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
 			return nil, fmt.Errorf("failed to read file %s: %w", current, err)
 		}
 		if resp != nil && resp.Type == "directory" {
-			// Incus returns a nil reader for directories.
+			// Incus normally returns a nil reader for directories.
+			if reader != nil {
+				_ = reader.Close()
+			}
 			return nil, fmt.Errorf("failed to read file %s: it is a directory", current)
 		}
-		content, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file content of %s: %w", current, err)
+		if reader == nil {
+			return nil, fmt.Errorf("failed to read file %s: missing response body", current)
 		}
 		if resp == nil || resp.Type != "symlink" {
-			return content, nil
+			return reader, nil
+		}
+		content, err := io.ReadAll(io.LimitReader(reader, 4097))
+		_ = reader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read symlink %s: %w", current, err)
+		}
+		if len(content) > 4096 {
+			return nil, fmt.Errorf("failed to read symlink %s: target exceeds 4096 bytes", current)
 		}
 		if hop >= maxSymlinkHops {
 			return nil, fmt.Errorf("failed to read file %s: too many symlink hops (loop?)", filePath)
@@ -2697,6 +2959,29 @@ func formatBytesHuman(b int64) string {
 	}
 	units := []string{"KB", "MB", "GB", "TB"}
 	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
+}
+
+// postureMarkerKeys are host-side posture markers the daemon stamps on any
+// instance it brings under a policy, INCLUDING instances it does not own (a
+// VM or container made directly in Incus). They record "this check ran", not
+// "a tenant owns this", so they must not make an instance count as managed
+// (#2619). Add any new such marker here; an unknown user.containarium.* key is
+// deliberately treated as ownership, because mistaking an owned tenant box for
+// an unmanaged one would hide an unguarded tenant.
+var postureMarkerKeys = map[string]bool{
+	sshdpolicy.MarkerKey: true,
+}
+
+// hasContainariumConfig reports whether config carries an ownership-bearing
+// user.containarium.* key: the signal that separates an instance Containarium
+// manages from one created directly in Incus. Posture markers do not count.
+func hasContainariumConfig(config map[string]string) bool {
+	for k := range config {
+		if strings.HasPrefix(k, "user.containarium.") && !postureMarkerKeys[k] {
+			return true
+		}
+	}
+	return false
 }
 
 // extractLabelsFromConfig extracts labels from container config

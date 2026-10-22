@@ -15,17 +15,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Release-PR fast path (.github/actions/release-only-diff): on a diff that
+  # only cuts a release on top of a main commit that already passed this
+  # workflow, the heavy jobs below skip. Any doubt runs them.
+  changes:
+    name: Release-only diff?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release-only: ${{ steps.diff.outputs.release-only }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide
+        id: diff
+        uses: ./.github/actions/release-only-diff
+
   unit-and-default-e2e:
     name: Unit + default e2e
+    needs: changes
+    # !cancelled(): a failed detector leaves the output empty and this job
+    # RUNS. Without it the job would skip, and a skipped required check passes.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: unit-race
 
       - name: Windows client cross-compile guard
         # The release builds a client-only Windows binary (cmd/containarium for
@@ -42,7 +68,7 @@ jobs:
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium/
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
 
@@ -54,9 +80,15 @@ jobs:
         # client calls broke v0.48.0's release build (webui compiled fine in
         # `next dev`/lint, only `next build`'s full type-check caught it).
         # Same fix shape as #884/#885: run the real release build at PR time.
+        #
+        # #2224: `npm run test` (Vitest) runs alongside the build so the
+        # zod schema / swagger-contract tests and component tests gate PRs
+        # too, not just the type-check `next build` happens to do.
         working-directory: web-ui
         run: |
           npm ci
+          npm run typecheck
+          npm run test
           npm run build
 
       - name: Run unit tests (full tree, minus infra integration)
@@ -82,19 +114,24 @@ jobs:
 
   real-caddy-e2e:
     name: Real Caddy wire-compat e2e
+    needs: changes
+    # !cancelled(): a failed detector leaves the output empty and this job
+    # RUNS. Without it the job would skip, and a skipped required check passes.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version: '1.26.10'
+          cache-name: shared
 
       - name: Cache built caddy binary
         id: cache-caddy
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./bin/caddy
           # Bump the suffix to invalidate the cache when bumping Caddy.

@@ -70,6 +70,10 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprint(w, hex.EncodeToString(h.Sum(nil)))
 	})
+	// Served-binary version (#2171) — what a daemon's sentinel-path upgrade
+	// would install. Unauthenticated like /containarium/checksum: the binary
+	// itself is public at /containarium, so its version string is too.
+	mux.HandleFunc("/containarium/version", newServedVersionCache().handler(binaryPath))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -128,6 +132,12 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// handler's own method check above. See TunnelTokenDeregisterHandler.
 	mux.Handle("DELETE /sentinel/tunnel-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.TunnelTokenDeregisterHandler()))
 
+	// Per-backend audit-ingest tokens for the SSH session shipper (#2415).
+	// Admin-secret gated like tunnel-token registration: letting the
+	// sentinel append to a backend's audit chain is an authority decision.
+	mux.Handle("/sentinel/audit-ingest-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.AuditIngestTokenRegisterHandler()))
+	mux.Handle("DELETE /sentinel/audit-ingest-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.AuditIngestTokenDeregisterHandler()))
+
 	// Cloud pushes the authoritative BYOC public-ingress bindings
 	// (subdomain → tunnel host) here. Gated by the admin secret (an
 	// authority decision, like tunnel-token registration) — never the
@@ -143,6 +153,8 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// HMAC secret should unlock.
 	mux.Handle("/sentinel/fail2ban/bans", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanBansHandler()))
 	mux.Handle("/sentinel/fail2ban/unban", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanUnbanHandler()))
+	// This controls the enforcing SSH plugin; system fail2ban above is separate.
+	mux.Handle("/sentinel/ssh-bans/", auth.SentinelHMACMiddleware(manager.adminSecret, manager.sshBanHandler()))
 
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// so the control plane can reach tunnel backends through the sentinel without

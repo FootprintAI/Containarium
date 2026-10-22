@@ -36,7 +36,7 @@ func TestSendA2ATask(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	art, err := sendA2ATask(context.Background(), srv.URL, &pb.AgentTask{Id: "task-1", InputJson: `{"q":"hi"}`})
+	art, err := sendA2ATask(context.Background(), srv.URL, &pb.AgentTask{Id: "task-1", InputJson: `{"q":"hi"}`}, "box-secret")
 	if err != nil {
 		t.Fatalf("sendA2ATask: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestSendA2ATaskPeerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := sendA2ATask(context.Background(), srv.URL, &pb.AgentTask{Id: "t"})
+	_, err := sendA2ATask(context.Background(), srv.URL, &pb.AgentTask{Id: "t"}, "box-secret")
 	if err == nil {
 		t.Fatal("expected error for 502 peer response, got nil")
 	}

@@ -6,10 +6,11 @@ import { CodexEngine } from "./codex.js";
 
 const cfg: EngineConfig = { model: "", systemPrompt: "persona", agentBoxCommand: "agent-box", agentBoxArgs: [], maxTurns: 3 };
 
-function fakeThread(events: ThreadEvent[], seen?: string[]) {
+function fakeThread(events: ThreadEvent[], seen?: string[], seenOptions?: unknown[]) {
   return () => ({
-    async runStreamed(input: string) {
+    async runStreamed(input: string, turnOptions?: unknown) {
       seen?.push(input);
+      seenOptions?.push(turnOptions);
       return {
         events: (async function* () {
           for (const e of events) yield e;
@@ -77,5 +78,31 @@ describe("CodexEngine journal", () => {
   it("throws on turn.failed, like thread.run()", async () => {
     const engine = new CodexEngine(fakeThread([{ type: "turn.failed", error: { message: "quota" } }]));
     await expect(engine.run("task", cfg, new CaptureJournal())).rejects.toThrow("quota");
+  });
+});
+
+// #2002: the Codex SDK's native schema mechanism is the turn's outputSchema
+// (codex exec --output-schema); the skill's agent_card.output_schema_json is
+// handed to it so the final agent message is shaped by the provider, not by
+// prose.
+describe("CodexEngine output schema", () => {
+  const schema = { type: "object", properties: { files: { type: "array" } }, required: ["files"] };
+  const done: ThreadEvent[] = [
+    { type: "item.completed", item: { id: "1", type: "agent_message", text: '{"files":[]}' } },
+    { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } },
+  ];
+
+  it("passes the schema to the turn as outputSchema", async () => {
+    const seenOptions: unknown[] = [];
+    const engine = new CodexEngine(fakeThread(done, undefined, seenOptions));
+    const res = await engine.run("task", { ...cfg, outputSchema: schema }, new CaptureJournal());
+    expect(seenOptions).toEqual([{ outputSchema: schema }]);
+    expect(res.outputJson).toBe('{"files":[]}');
+  });
+
+  it("passes no turn options when the skill declares no schema", async () => {
+    const seenOptions: unknown[] = [];
+    await new CodexEngine(fakeThread(done, undefined, seenOptions)).run("task", cfg, new CaptureJournal());
+    expect(seenOptions).toEqual([undefined]);
   });
 });

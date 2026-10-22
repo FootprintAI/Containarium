@@ -6,6 +6,7 @@ import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/network.proto";
+import "containarium/v1/guardrail.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -130,6 +131,38 @@ message Recipe {
   // user supplies. Inert when the daemon holds no key for the provider — the
   // box then comes up unconfigured (self-hosted default).
   string model_gateway_provider = 12;
+
+  // When set, every deploy of this recipe is gated on a guardrail
+  // attestation (#2368): DeployRecipe verifies the dataset the request
+  // stages against the server guardrail policy and its trusted signers
+  // BEFORE the container is created, copies exactly the verified bytes to
+  // dataset_path, and only then runs post_start. The recipe decides whether
+  // a gate applies; a caller cannot opt out by leaving guardrail_input out.
+  GuardrailGate guardrail_gate = 13;
+}
+
+// GuardrailGate is a recipe's guardrail precondition
+// (docs/architecture/guardrail-inbound-and-server-policy.md, "The gate").
+message GuardrailGate {
+  // Absolute path in the new box where the verified bytes are placed before
+  // post_start.
+  string dataset_path = 1;
+
+  // Kinds the attestation must have covered, in addition to the server
+  // policy's own.
+  repeated GuardrailKind require_kinds = 2;
+}
+
+// GuardrailGateInput is the dataset a gated deploy checks.
+message GuardrailGateInput {
+  // A directory under the daemon's guardrail staging root (the daemon flag
+  // --guardrail-staging-root), as a clean relative path. Nothing on the
+  // platform stages a dataset there yet: an operator or an out-of-band copy
+  // does (the `ship` verb is a documented gap).
+  string staging_ref = 1;
+
+  // The attestation `containarium guardrail apply` wrote for that directory.
+  GuardrailAttestation attestation = 2;
 }
 
 // ListRecipesRequest is the request to list available recipes.
@@ -193,6 +226,11 @@ message DeployRecipeRequest {
   // post_start completes; poll the container / its workspace access to detect
   // readiness.
   bool async = 9;
+
+  // The dataset and attestation for a recipe with guardrail_gate set.
+  // Required for such a recipe (absent is FAILED_PRECONDITION); ignored for
+  // an ungated one. A gated recipe cannot be deployed async.
+  GuardrailGateInput guardrail_input = 10;
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	SecurityService_ListClamavReports_FullMethodName = "/containarium.v1.SecurityService/ListClamavReports"
 	SecurityService_TriggerClamavScan_FullMethodName = "/containarium.v1.SecurityService/TriggerClamavScan"
+	SecurityService_InstallClamav_FullMethodName     = "/containarium.v1.SecurityService/InstallClamav"
 	SecurityService_GetClamavSummary_FullMethodName  = "/containarium.v1.SecurityService/GetClamavSummary"
 	SecurityService_GetScanStatus_FullMethodName     = "/containarium.v1.SecurityService/GetScanStatus"
 )
@@ -35,6 +36,10 @@ type SecurityServiceClient interface {
 	ListClamavReports(ctx context.Context, in *ListClamavReportsRequest, opts ...grpc.CallOption) (*ListClamavReportsResponse, error)
 	// TriggerClamavScan triggers an on-demand ClamAV scan
 	TriggerClamavScan(ctx context.Context, in *TriggerClamavScanRequest, opts ...grpc.CallOption) (*TriggerClamavScanResponse, error)
+	// InstallClamav installs ClamAV and its signatures inside one box, started by
+	// the box's owner. The platform does not read the box's files; it runs the
+	// package install in the box and reports the outcome (#2631).
+	InstallClamav(ctx context.Context, in *InstallClamavRequest, opts ...grpc.CallOption) (*InstallClamavResponse, error)
 	// GetClamavSummary returns a summary of ClamAV scan status across all containers
 	GetClamavSummary(ctx context.Context, in *GetClamavSummaryRequest, opts ...grpc.CallOption) (*GetClamavSummaryResponse, error)
 	// GetScanStatus returns the current state of the scan job queue
@@ -63,6 +68,16 @@ func (c *securityServiceClient) TriggerClamavScan(ctx context.Context, in *Trigg
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TriggerClamavScanResponse)
 	err := c.cc.Invoke(ctx, SecurityService_TriggerClamavScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *securityServiceClient) InstallClamav(ctx context.Context, in *InstallClamavRequest, opts ...grpc.CallOption) (*InstallClamavResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InstallClamavResponse)
+	err := c.cc.Invoke(ctx, SecurityService_InstallClamav_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +114,10 @@ type SecurityServiceServer interface {
 	ListClamavReports(context.Context, *ListClamavReportsRequest) (*ListClamavReportsResponse, error)
 	// TriggerClamavScan triggers an on-demand ClamAV scan
 	TriggerClamavScan(context.Context, *TriggerClamavScanRequest) (*TriggerClamavScanResponse, error)
+	// InstallClamav installs ClamAV and its signatures inside one box, started by
+	// the box's owner. The platform does not read the box's files; it runs the
+	// package install in the box and reports the outcome (#2631).
+	InstallClamav(context.Context, *InstallClamavRequest) (*InstallClamavResponse, error)
 	// GetClamavSummary returns a summary of ClamAV scan status across all containers
 	GetClamavSummary(context.Context, *GetClamavSummaryRequest) (*GetClamavSummaryResponse, error)
 	// GetScanStatus returns the current state of the scan job queue
@@ -118,6 +137,9 @@ func (UnimplementedSecurityServiceServer) ListClamavReports(context.Context, *Li
 }
 func (UnimplementedSecurityServiceServer) TriggerClamavScan(context.Context, *TriggerClamavScanRequest) (*TriggerClamavScanResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TriggerClamavScan not implemented")
+}
+func (UnimplementedSecurityServiceServer) InstallClamav(context.Context, *InstallClamavRequest) (*InstallClamavResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InstallClamav not implemented")
 }
 func (UnimplementedSecurityServiceServer) GetClamavSummary(context.Context, *GetClamavSummaryRequest) (*GetClamavSummaryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetClamavSummary not implemented")
@@ -182,6 +204,24 @@ func _SecurityService_TriggerClamavScan_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SecurityService_InstallClamav_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallClamavRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecurityServiceServer).InstallClamav(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecurityService_InstallClamav_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecurityServiceServer).InstallClamav(ctx, req.(*InstallClamavRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SecurityService_GetClamavSummary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetClamavSummaryRequest)
 	if err := dec(in); err != nil {
@@ -232,6 +272,10 @@ var SecurityService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TriggerClamavScan",
 			Handler:    _SecurityService_TriggerClamavScan_Handler,
+		},
+		{
+			MethodName: "InstallClamav",
+			Handler:    _SecurityService_InstallClamav_Handler,
 		},
 		{
 			MethodName: "GetClamavSummary",
