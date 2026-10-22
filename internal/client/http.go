@@ -2373,6 +2373,50 @@ func (c *HTTPClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*p
 	return out, nil
 }
 
+// retentionHTTPCall runs one RetentionService call through the gateway (#2875).
+func retentionHTTPCall[T proto.Message](c *HTTPClient, method, path string, req proto.Message, out T, op string) (T, error) {
+	var body []byte
+	if req != nil {
+		var err error
+		if body, err = protojson.Marshal(req); err != nil {
+			var zero T
+			return zero, fmt.Errorf("encode request: %w", err)
+		}
+	}
+	if err := c.guardrailPolicyCall(method, path, body, out, op); err != nil {
+		var zero T
+		return zero, err
+	}
+	return out, nil
+}
+
+// GetRetentionPolicy reads the retention windows via HTTP (admin only).
+func (c *HTTPClient) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/policy", nil, &pb.GetRetentionPolicyResponse{}, "get retention policy")
+}
+
+// SetRetentionPolicy changes retention windows via HTTP (admin only).
+func (c *HTTPClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/policy", req, &pb.SetRetentionPolicyResponse{}, "set retention policy")
+}
+
+// ListLegalHolds lists the active legal holds via HTTP (admin only).
+func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
+}
+
+// SetLegalHold places a legal hold on an org via HTTP (admin only). The org
+// travels in the path.
+func (c *HTTPClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/holds/"+url.PathEscape(req.GetOrgId()),
+		&pb.SetLegalHoldRequest{Reason: req.GetReason()}, &pb.SetLegalHoldResponse{}, "set legal hold")
+}
+
+// ReleaseLegalHold releases an org's legal hold via HTTP (admin only).
+func (c *HTTPClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error) {
+	return retentionHTTPCall(c, http.MethodDelete, "/v1/retention/holds/"+url.PathEscape(orgID), nil, &pb.ReleaseLegalHoldResponse{}, "release legal hold")
+}
+
 func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out proto.Message, op string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

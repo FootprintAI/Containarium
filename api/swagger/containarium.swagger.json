@@ -117,6 +117,10 @@
       "description": "PentestService provides automated penetration testing and vulnerability scanning"
     },
     {
+      "name": "RetentionService",
+      "description": "RetentionService stores the retention policy and legal holds. Every RPC is\nadmin-only. A set, a hold and a release write an audit entry naming the\ncaller when the daemon has an audit store; a failed audit write fails the\nchange and leaves the store unchanged."
+    },
+    {
       "name": "SecurityService",
       "description": "SecurityService provides container security scanning and reporting"
     },
@@ -6321,6 +6325,157 @@
         },
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/v1/retention/holds": {
+      "get": {
+        "summary": "List legal holds",
+        "description": "Return every active legal hold, ordered by org id. Admin role only.",
+        "operationId": "RetentionService_ListLegalHolds",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListLegalHoldsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Retention"
+        ]
+      }
+    },
+    "/v1/retention/holds/{orgId}": {
+      "delete": {
+        "summary": "Release an org's legal hold",
+        "description": "Remove the org's hold. Its records past their window become eligible on the next sweep, with no grace period. An org with no hold is NOT_FOUND. Audited like a policy set. Admin role only.",
+        "operationId": "RetentionService_ReleaseLegalHold",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReleaseLegalHoldResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "orgId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Retention"
+        ]
+      },
+      "put": {
+        "summary": "Place a legal hold on an org",
+        "description": "Hold every record of the org until the hold is released; a hold has no expiry. An empty org_id or reason, or an org_id containing '/', is INVALID_ARGUMENT; an org already on hold is ALREADY_EXISTS. Audited like a policy set. Admin role only.",
+        "operationId": "RetentionService_SetLegalHold",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetLegalHoldResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "orgId",
+            "description": "Required; must not contain '/' (it travels in one REST path segment).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetLegalHoldBody"
+            }
+          }
+        ],
+        "tags": [
+          "Retention"
+        ]
+      }
+    },
+    "/v1/retention/policy": {
+      "get": {
+        "summary": "Get the retention policy",
+        "description": "Return the window for every data class: the stored value, or the built-in default (30 days prompts and responses, 90 days gateway logs and session transcripts, 365 days evidence bundles) with is_default=true. Nothing is swept by this service. Admin role only.",
+        "operationId": "RetentionService_GetRetentionPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetRetentionPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Retention"
+        ]
+      },
+      "put": {
+        "summary": "Set retention windows",
+        "description": "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days \u003c 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.",
+        "operationId": "RetentionService_SetRetentionPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetRetentionPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetRetentionPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Retention"
         ]
       }
     },
@@ -14597,6 +14752,14 @@
       },
       "description": "GetRecipeResponse returns a single recipe definition."
     },
+    "GetRetentionPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/RetentionPolicy"
+        }
+      }
+    },
     "GetRoutesResponse": {
       "type": "object",
       "properties": {
@@ -15667,6 +15830,25 @@
         }
       }
     },
+    "LegalHold": {
+      "type": "object",
+      "properties": {
+        "orgId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "setBy": {
+          "type": "string"
+        },
+        "setAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "LegalHold stops deletion of an org's records, in every class, until an\nadmin releases it. A hold has no expiry."
+    },
     "ListACLPresetsResponse": {
       "type": "object",
       "properties": {
@@ -15963,6 +16145,19 @@
         "keyOwner": {
           "type": "string",
           "description": "key_owner is the owner whose key was spent listing them."
+        }
+      }
+    },
+    "ListLegalHoldsResponse": {
+      "type": "object",
+      "properties": {
+        "holds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/LegalHold"
+          },
+          "description": "Active holds, ordered by org id."
         }
       }
     },
@@ -17759,6 +17954,15 @@
         }
       }
     },
+    "ReleaseLegalHoldResponse": {
+      "type": "object",
+      "properties": {
+        "hold": {
+          "$ref": "#/definitions/LegalHold",
+          "description": "The hold that was released."
+        }
+      }
+    },
     "ReleaseProcessActionRequest": {
       "type": "object",
       "properties": {
@@ -18097,6 +18301,63 @@
           "type": "string"
         }
       }
+    },
+    "RetentionClass": {
+      "type": "string",
+      "enum": [
+        "RETENTION_CLASS_UNSPECIFIED",
+        "RETENTION_CLASS_PROMPTS",
+        "RETENTION_CLASS_RESPONSES",
+        "RETENTION_CLASS_GATEWAY_LOGS",
+        "RETENTION_CLASS_SESSION_TRANSCRIPTS",
+        "RETENTION_CLASS_EVIDENCE_BUNDLES"
+      ],
+      "default": "RETENTION_CLASS_UNSPECIFIED",
+      "description": "RetentionClass is a kind of customer data with its own retention window.\n\n - RETENTION_CLASS_PROMPTS: Prompts sent to a model or an agent (default 30 days).\n - RETENTION_CLASS_RESPONSES: Model and agent responses (default 30 days).\n - RETENTION_CLASS_GATEWAY_LOGS: Gateway and API access logs (default 90 days).\n - RETENTION_CLASS_SESSION_TRANSCRIPTS: Session transcripts and session records (default 90 days).\n - RETENTION_CLASS_EVIDENCE_BUNDLES: Evidence bundles such as Proof Packs (default 365 days)."
+    },
+    "RetentionPolicy": {
+      "type": "object",
+      "properties": {
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RetentionWindow"
+          },
+          "description": "Every class, in enum order, set or default."
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "0 until the first set; every set adds 1."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string"
+        }
+      },
+      "description": "RetentionPolicy is the daemon-wide policy: one window for every class."
+    },
+    "RetentionWindow": {
+      "type": "object",
+      "properties": {
+        "class": {
+          "$ref": "#/definitions/RetentionClass"
+        },
+        "days": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Days a record of this class is kept, at most. Must be 1 or more."
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "True when no admin has set this class and days is the built-in default.\nIgnored on a set."
+        }
+      },
+      "description": "RetentionWindow is how long one class is kept, at most."
     },
     "Revocation": {
       "type": "object",
@@ -19136,6 +19397,23 @@
         }
       }
     },
+    "SetLegalHoldBody": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Why the hold exists (a case or ticket reference). Required."
+        }
+      }
+    },
+    "SetLegalHoldResponse": {
+      "type": "object",
+      "properties": {
+        "hold": {
+          "$ref": "#/definitions/LegalHold"
+        }
+      }
+    },
     "SetMetricsExportRequest": {
       "type": "object",
       "properties": {
@@ -19262,6 +19540,27 @@
       "properties": {
         "effective": {
           "$ref": "#/definitions/ProcessPolicy"
+        }
+      }
+    },
+    "SetRetentionPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RetentionWindow"
+          },
+          "description": "The classes to change. Classes not listed keep their window. A class may\nappear once; UNSPECIFIED, an unknown class or days \u003c 1 is\nINVALID_ARGUMENT."
+        }
+      }
+    },
+    "SetRetentionPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/RetentionPolicy"
         }
       }
     },
