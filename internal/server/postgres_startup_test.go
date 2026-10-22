@@ -167,3 +167,145 @@ func TestStartupPostgresTimeoutFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// --- self-restart watcher (option B) ---
+
+type pgFakeClock struct{ t time.Time }
+
+func (c *pgFakeClock) now() time.Time { return c.t }
+func (c *pgFakeClock) sleep(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	c.t = c.t.Add(d)
+	return true
+}
+
+// pgScriptedPinger answers from a script; after the script it keeps the last answer.
+type pgScriptedPinger struct {
+	script []error
+	calls  int
+}
+
+func (p *pgScriptedPinger) ping(context.Context) error {
+	i := p.calls
+	p.calls++
+	if i >= len(p.script) {
+		i = len(p.script) - 1
+	}
+	return p.script[i]
+}
+
+func newTestPGWatcher(clk *pgFakeClock, p *pgScriptedPinger, minUptime time.Duration) *postgresRecoveryWatcher {
+	w := &postgresRecoveryWatcher{
+		ping:      p.ping,
+		started:   clk.now(),
+		now:       clk.now,
+		sleep:     clk.sleep,
+		minUptime: minUptime,
+		required:  3,
+		interval:  5 * time.Second,
+		maxDelay:  60 * time.Second,
+	}
+	return w
+}
+
+var errDown = errors.New("connection refused")
+
+func TestRecoveryWatcher_ExitsAfterNConsecutiveSuccesses(t *testing.T) {
+	clk := &pgFakeClock{t: time.Unix(0, 0)}
+	p := &pgScriptedPinger{script: []error{errDown, nil}}
+	w := newTestPGWatcher(clk, p, 0)
+	if !w.run(context.Background()) {
+		t.Fatal("run returned false; want a restart decision")
+	}
+	if p.calls != 4 { // one failure, then exactly 3 successes
+		t.Errorf("pinged %d times, want 4 (1 failure + 3 successes)", p.calls)
+	}
+}
+
+func TestRecoveryWatcher_SingleSuccessDoesNotExit(t *testing.T) {
+	clk := &pgFakeClock{t: time.Unix(0, 0)}
+	p := &pgScriptedPinger{script: []error{nil, errDown, nil, nil, errDown, nil, nil, nil}}
+	w := newTestPGWatcher(clk, p, 0)
+	if !w.run(context.Background()) {
+		t.Fatal("run returned false")
+	}
+	// Each failure resets the count: only the final 3-in-a-row exits.
+	if p.calls != 8 {
+		t.Errorf("pinged %d times, want 8 (a failure must reset the count)", p.calls)
+	}
+}
+
+func TestRecoveryWatcher_WaitsForMinimumUptime(t *testing.T) {
+	clk := &pgFakeClock{t: time.Unix(0, 0)}
+	p := &pgScriptedPinger{script: []error{nil}}
+	w := newTestPGWatcher(clk, p, 2*time.Minute)
+	if !w.run(context.Background()) {
+		t.Fatal("run returned false")
+	}
+	if up := clk.now().Sub(w.started); up < 2*time.Minute {
+		t.Errorf("exited after %s of uptime, want >= 2m", up)
+	}
+}
+
+func TestRecoveryWatcher_StopsOnContextCancel(t *testing.T) {
+	clk := &pgFakeClock{t: time.Unix(0, 0)}
+	p := &pgScriptedPinger{script: []error{errDown}}
+	w := newTestPGWatcher(clk, p, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if w.run(ctx) {
+		t.Fatal("run returned true after cancel")
+	}
+}
+
+func TestNewPostgresRecoveryWatcher_OnlyWhenFlagOnAndStartupFailed(t *testing.T) {
+	cases := []struct {
+		name      string
+		flag      bool
+		failedDSN string
+		want      bool
+	}{
+		{"flag off, startup failed", false, "postgres://x", false},
+		{"flag on, startup ok", true, "", false},
+		{"flag off, startup ok", false, "", false},
+		{"flag on, startup failed", true, "postgres://x", true},
+	}
+	for _, c := range cases {
+		if v := "0"; c.flag {
+			t.Setenv(envRestartOnPostgresRecovery, "1")
+		} else {
+			t.Setenv(envRestartOnPostgresRecovery, v)
+		}
+		got := newPostgresRecoveryWatcher(c.failedDSN) != nil
+		if got != c.want {
+			t.Errorf("%s: watcher created = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDualServer_RecoveryWatcherShutsDownWithRestartError(t *testing.T) {
+	clk := &pgFakeClock{t: time.Unix(0, 0)}
+	p := &pgScriptedPinger{script: []error{nil}}
+	ds := &DualServer{postgresRecovery: newTestPGWatcher(clk, p, 0)}
+	ctx, restart := ds.watchPostgresRecovery(context.Background())
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("serving context not cancelled after recovery")
+	}
+	if err := restart(nil); !errors.Is(err, ErrRestartForPostgresRecovery) {
+		t.Errorf("Start's result = %v, want ErrRestartForPostgresRecovery", err)
+	}
+
+	// No watcher: ctx is not cancelled and the result passes through.
+	ds2 := &DualServer{}
+	ctx2, restart2 := ds2.watchPostgresRecovery(context.Background())
+	if ctx2.Err() != nil {
+		t.Error("ctx cancelled with no watcher")
+	}
+	if err := restart2(nil); err != nil {
+		t.Errorf("result = %v, want nil with no watcher", err)
+	}
+}
