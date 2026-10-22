@@ -239,9 +239,6 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
-	// Record whether podman was requested, always, so a box created with it
-	// off is distinguishable from a legacy box with no key (#2858).
-	labelConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
 	// Record the requested stack so list/get can report it later (#2163), but
 	// only a stack that resolves: installPackages silently skips an unknown
 	// ID, so recording it would report a stack that was never installed.
@@ -260,6 +257,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Env:                    otelEnvVars(opts, containerName),
 		ExtraConfig:            labelConfig,
 	}
+	// Record whether podman was requested, always, so a box created with it
+	// off is distinguishable from a legacy box with no key (#2858).
+	config.ExtraConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
 
 	// VMs: nesting and privileged podman are LXC concepts (the guest has its
 	// own kernel; Docker inside it needs nothing from the host). Windows
