@@ -56,28 +56,53 @@ func TestWithTempHome_ResetsGlobalsAtStart(t *testing.T) {
 	}
 }
 
+// cliConnectionEnv are the variables the CLI reads to choose a server or
+// reach it. Test-harness variables (CONTAINARIUM_TEST_DSN, the lane image,
+// ...) must survive, so this is a list and not a CONTAINARIUM_* wildcard.
+var cliConnectionEnv = []string{
+	"CONTAINARIUM_SERVER",
+	"CONTAINARIUM_SERVER_URL",
+	"CONTAINARIUM_CERTS_DIR",
+	"CONTAINARIUM_INSECURE",
+	"CONTAINARIUM_HTTP",
+}
+
 // isolateCredentialStore points every home-derived path at a throwaway
-// directory for the whole test binary and clears the CONTAINARIUM_* env, so
-// no test can resolve the developer's real credential store, server or token
-// whether or not it remembers to call withTempHome (#2922). The returned
-// func removes the directory.
+// directory for the whole test binary and clears the CLI's connection and
+// token environment, so no test can resolve the developer's real credential
+// store, server or token whether or not it remembers to call withTempHome
+// (#2922). The returned func removes the directory.
 func isolateCredentialStore() func() {
 	home, err := os.MkdirTemp("", "cmd-test-home-")
 	if err != nil {
 		panic(err)
 	}
-	for _, kv := range os.Environ() {
-		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "CONTAINARIUM_") {
-			os.Unsetenv(k)
+	clear := func(k string) {
+		if err := os.Unsetenv(k); err != nil {
+			panic(err)
 		}
 	}
-	os.Setenv("HOME", home)
-	os.Setenv("USERPROFILE", home)
-	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	for _, k := range cliConnectionEnv {
+		clear(k)
+	}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "CONTAINARIUM_") && strings.Contains(k, "TOKEN") {
+			clear(k)
+		}
+	}
+	for k, v := range map[string]string{
+		"HOME":            home,
+		"USERPROFILE":     home,
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			panic(err)
+		}
+	}
 	// The root command's flag defaults were read from the environment in
 	// init(), before this ran.
 	authToken, serverAddr = "", ""
-	return func() { os.RemoveAll(home) }
+	return func() { _ = os.RemoveAll(home) }
 }
 
 // tokenFingerprint is what a failing assertion prints in place of a token:
@@ -88,4 +113,18 @@ func tokenFingerprint(tok string) string {
 	}
 	sum := sha256.Sum256([]byte(tok))
 	return "sha256:" + hex.EncodeToString(sum[:4])
+}
+
+// The isolation must not swallow the harness's own variables: clearing every
+// CONTAINARIUM_* once took CONTAINARIUM_TEST_DSN with it and the Postgres
+// lane failed (#2922).
+func TestIsolation_ClearsCLIEnvButNotHarnessEnv(t *testing.T) {
+	for _, k := range cliConnectionEnv {
+		if strings.HasPrefix(k, "CONTAINARIUM_TEST_") {
+			t.Errorf("%s is a harness variable and must not be cleared", k)
+		}
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s still set (len %d) after isolation", k, len(v))
+		}
+	}
 }
