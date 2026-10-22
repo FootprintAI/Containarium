@@ -36,6 +36,8 @@ type GRPCClient struct {
 	modelGatewayClient pb.ModelGatewayServiceClient
 	// guardrailPolicyClient is the server-side guardrail policy (#2368).
 	guardrailPolicyClient pb.GuardrailPolicyServiceClient
+	// retentionClient is the retention policy and legal holds (#2875).
+	retentionClient pb.RetentionServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -122,6 +124,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		modelGatewayClient: modelGatewayClient,
 
 		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
+		retentionClient:       pb.NewRetentionServiceClient(conn),
 	}, nil
 }
 
@@ -1282,6 +1285,53 @@ func (c *GRPCClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*p
 		return nil, fmt.Errorf("set guardrail baseline mode: %w", err)
 	}
 	return resp, nil
+}
+
+// retentionCall runs one RetentionService call with the usual timeout (#2875).
+func retentionCall[T any](op string, call func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := call(ctx)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", op, err)
+	}
+	return resp, nil
+}
+
+// GetRetentionPolicy reads the retention windows via gRPC (admin only).
+func (c *GRPCClient) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
+	return retentionCall("get retention policy", func(ctx context.Context) (*pb.GetRetentionPolicyResponse, error) {
+		return c.retentionClient.GetRetentionPolicy(ctx, &pb.GetRetentionPolicyRequest{})
+	})
+}
+
+// SetRetentionPolicy changes retention windows via gRPC (admin only).
+func (c *GRPCClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	return retentionCall("set retention policy", func(ctx context.Context) (*pb.SetRetentionPolicyResponse, error) {
+		return c.retentionClient.SetRetentionPolicy(ctx, req)
+	})
+}
+
+// ListLegalHolds lists the active legal holds via gRPC (admin only).
+func (c *GRPCClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
+	return retentionCall("list legal holds", func(ctx context.Context) (*pb.ListLegalHoldsResponse, error) {
+		return c.retentionClient.ListLegalHolds(ctx, &pb.ListLegalHoldsRequest{})
+	})
+}
+
+// SetLegalHold places a legal hold on an org via gRPC (admin only).
+func (c *GRPCClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	return retentionCall("set legal hold", func(ctx context.Context) (*pb.SetLegalHoldResponse, error) {
+		return c.retentionClient.SetLegalHold(ctx, req)
+	})
+}
+
+// ReleaseLegalHold releases an org's legal hold via gRPC (admin only).
+func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error) {
+	return retentionCall("release legal hold", func(ctx context.Context) (*pb.ReleaseLegalHoldResponse, error) {
+		return c.retentionClient.ReleaseLegalHold(ctx, &pb.ReleaseLegalHoldRequest{OrgId: orgID})
+	})
 }
 
 // ListApps lists all applications via gRPC
