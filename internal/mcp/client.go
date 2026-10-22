@@ -392,7 +392,12 @@ type RunAgentSkillRequest struct {
 
 // RunAgentSkillResponse is the result of an agent-skill run.
 type RunAgentSkillResponse struct {
-	ArtifactJSON  string `json:"artifactJson"`
+	ArtifactJSON string `json:"artifactJson"`
+	// RunID is the run's handle; follow it with crew_logs.
+	RunID string `json:"runId,omitempty"`
+	// Message is free-form status from the server, e.g. how to follow a run
+	// still in flight on a server that runs skills asynchronously.
+	Message       string `json:"message,omitempty"`
 	GitCommit     string `json:"gitCommit,omitempty"`
 	WorkspacePath string `json:"workspacePath,omitempty"`
 	Container     *struct {

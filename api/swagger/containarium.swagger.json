@@ -6448,7 +6448,7 @@
       },
       "put": {
         "summary": "Set retention windows",
-        "description": "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days \u003c 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.",
+        "description": "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days outside 1..36500 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller while the change is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes (if the commit itself fails after the entry was written, the log keeps an entry for a change that never happened); with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.",
         "operationId": "RetentionService_SetRetentionPolicy",
         "responses": {
           "200": {
@@ -18350,7 +18350,7 @@
         "days": {
           "type": "integer",
           "format": "int32",
-          "description": "Days a record of this class is kept, at most. Must be 1 or more."
+          "description": "Days a record of this class is kept, at most. Must be between 1 and\n36500 (100 years); the cap keeps a sweeper's cutoff arithmetic in range."
         },
         "isDefault": {
           "type": "boolean",
@@ -18557,6 +18557,10 @@
         "engine": {
           "$ref": "#/definitions/AgentEngine",
           "description": "Per-invocation engine override (#2228): when set, this run's engine is\nresolved from THIS value instead of the skill manifest's own `engine`\nfield — the same agentengine.Resolve readiness check applies either way,\nso an override naming an engine with no usable key is refused the same\nway an unready manifest engine is. UNSPECIFIED (the default) means \"use\nthe manifest\", unchanged pre-#2228 behavior."
+        },
+        "onBehalfOfOrgId": {
+          "type": "string",
+          "description": "The organization this run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -18583,6 +18587,10 @@
         "workspacePath": {
           "type": "string",
           "description": "Absolute path of the fetched workspace inside the box. Empty when the\nrequest carried no git_source."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable status from the server, e.g. how to follow a run that is\nstill in flight on a server that runs skills asynchronously. Empty when\nthe server has nothing to add; clients print it as-is when present."
         }
       }
     },
@@ -18621,6 +18629,10 @@
             "$ref": "#/definitions/AgentEngine"
           },
           "description": "Per-member engine override (#2228), keyed by skill_id: when a member's\nid has an entry here, THIS value resolves that member's engine instead\nof its own manifest `engine` field — same agentengine.Resolve readiness\ncheck, same refusal text, as RunAgentSkillRequest.engine. A member with\nno entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,\nunchanged pre-#2228 behavior."
+        },
+        "onBehalfOfOrgId": {
+          "type": "string",
+          "description": "The organization every member run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       }
     },
@@ -19552,7 +19564,7 @@
             "type": "object",
             "$ref": "#/definitions/RetentionWindow"
           },
-          "description": "The classes to change. Classes not listed keep their window. A class may\nappear once; UNSPECIFIED, an unknown class or days \u003c 1 is\nINVALID_ARGUMENT."
+          "description": "The classes to change. Classes not listed keep their window. A class may\nappear once; UNSPECIFIED, an unknown class, or days outside 1..36500 is\nINVALID_ARGUMENT."
         }
       }
     },
