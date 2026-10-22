@@ -365,8 +365,8 @@ type KillSkipReason int32
 const (
 	KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED KillSkipReason = 0
 	// The pid now belongs to a different cgroup than the container's, or to a
-	// different process of the same container: its start time no longer
-	// matches the matched exec's (#2765).
+	// different process of the same container: it started after the matched
+	// exec was seen (#2765).
 	KillSkipReason_KILL_SKIP_REASON_PID_REUSED KillSkipReason = 1
 	// The process exited before the signal.
 	KillSkipReason_KILL_SKIP_REASON_PROCESS_GONE KillSkipReason = 2
@@ -376,10 +376,15 @@ const (
 	KillSkipReason_KILL_SKIP_REASON_POLICY_UNREADABLE KillSkipReason = 4
 	// Any other refusal (host or Incus error).
 	KillSkipReason_KILL_SKIP_REASON_OTHER KillSkipReason = 5
-	// The matched exec carries no process start time (the process had already
-	// exited when the exec watcher decoded it), so the pid cannot be confirmed
-	// as the matched process and is never signalled (#2765).
+	// The pid cannot be confirmed as the matched process: the matched exec has
+	// no boot-clock stamp, or the pid's start time could not be read. It is
+	// never signalled (#2765).
 	KillSkipReason_KILL_SKIP_REASON_START_TIME_UNKNOWN KillSkipReason = 6
+	// The container does not run under Incus: its init has no Incus payload
+	// cgroup ("lxc.payload.<name>"), so the pid cannot be confirmed as one of
+	// the container's processes. kill_process is Incus-only and is refused up
+	// front on any other runtime (#2768); the finding is still raised.
+	KillSkipReason_KILL_SKIP_REASON_RUNTIME_UNSUPPORTED KillSkipReason = 7
 )
 
 // Enum value maps for KillSkipReason.
@@ -392,15 +397,17 @@ var (
 		4: "KILL_SKIP_REASON_POLICY_UNREADABLE",
 		5: "KILL_SKIP_REASON_OTHER",
 		6: "KILL_SKIP_REASON_START_TIME_UNKNOWN",
+		7: "KILL_SKIP_REASON_RUNTIME_UNSUPPORTED",
 	}
 	KillSkipReason_value = map[string]int32{
-		"KILL_SKIP_REASON_UNSPECIFIED":        0,
-		"KILL_SKIP_REASON_PID_REUSED":         1,
-		"KILL_SKIP_REASON_PROCESS_GONE":       2,
-		"KILL_SKIP_REASON_CONTAINER_INIT":     3,
-		"KILL_SKIP_REASON_POLICY_UNREADABLE":  4,
-		"KILL_SKIP_REASON_OTHER":              5,
-		"KILL_SKIP_REASON_START_TIME_UNKNOWN": 6,
+		"KILL_SKIP_REASON_UNSPECIFIED":         0,
+		"KILL_SKIP_REASON_PID_REUSED":          1,
+		"KILL_SKIP_REASON_PROCESS_GONE":        2,
+		"KILL_SKIP_REASON_CONTAINER_INIT":      3,
+		"KILL_SKIP_REASON_POLICY_UNREADABLE":   4,
+		"KILL_SKIP_REASON_OTHER":               5,
+		"KILL_SKIP_REASON_START_TIME_UNKNOWN":  6,
+		"KILL_SKIP_REASON_RUNTIME_UNSUPPORTED": 7,
 	}
 )
 
@@ -2174,8 +2181,17 @@ type GetSentryStatusResponse struct {
 	// full, cumulative since the object loaded. Non-zero means a burst
 	// outran the consumer; the events are gone, never blocked the exec.
 	ExecEventsLost int64 `protobuf:"varint,6,opt,name=exec_events_lost,json=execEventsLost,proto3" json:"exec_events_lost,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Exec hash requests the miner-signature hasher dropped because its queue
+	// was full, cumulative since the daemon started (#2768). Requests are made
+	// only while sha256 entries exist; a dropped exec is never hashed, so a
+	// sha256 entry can miss it (name and argv entries still matched it).
+	// An executable already hashed is served from a cache by (device, inode,
+	// size, mtime, ctime) without being read again, so the queue drains fast
+	// and a non-zero count means a burst of execs the worker could not keep
+	// up with.
+	ExecHashesDropped int64 `protobuf:"varint,7,opt,name=exec_hashes_dropped,json=execHashesDropped,proto3" json:"exec_hashes_dropped,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetSentryStatusResponse) Reset() {
@@ -2246,6 +2262,13 @@ func (x *GetSentryStatusResponse) GetExecTelemetry() string {
 func (x *GetSentryStatusResponse) GetExecEventsLost() int64 {
 	if x != nil {
 		return x.ExecEventsLost
+	}
+	return 0
+}
+
+func (x *GetSentryStatusResponse) GetExecHashesDropped() int64 {
+	if x != nil {
+		return x.ExecHashesDropped
 	}
 	return 0
 }
@@ -3449,7 +3472,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x03 \x01(\tR\tlastError\x12>\n" +
 	"\rlast_error_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vlastErrorAt\"\x18\n" +
-	"\x16GetSentryStatusRequest\"\x8a\x02\n" +
+	"\x16GetSentryStatusRequest\"\xba\x02\n" +
 	"\x17GetSentryStatusResponse\x122\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1c.containarium.v1.SentryStateR\x05state\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
@@ -3457,7 +3480,8 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\vcpu_sampler\x18\x04 \x01(\tR\n" +
 	"cpuSampler\x12%\n" +
 	"\x0eexec_telemetry\x18\x05 \x01(\tR\rexecTelemetry\x12(\n" +
-	"\x10exec_events_lost\x18\x06 \x01(\x03R\x0eexecEventsLost\"\xa5\x01\n" +
+	"\x10exec_events_lost\x18\x06 \x01(\x03R\x0eexecEventsLost\x12.\n" +
+	"\x13exec_hashes_dropped\x18\a \x01(\x03R\x11execHashesDropped\"\xa5\x01\n" +
 	"\tExecEvent\x12\x1c\n" +
 	"\tcontainer\x18\x01 \x01(\tR\tcontainer\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12*\n" +
@@ -3547,7 +3571,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x16RESPONSE_STATE_APPLIED\x10\x02\x12\x19\n" +
 	"\x15RESPONSE_STATE_FAILED\x10\x03\x12\x1b\n" +
 	"\x17RESPONSE_STATE_RELEASED\x10\x04\x12\x1a\n" +
-	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\x88\x02\n" +
+	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\xb2\x02\n" +
 	"\x0eKillSkipReason\x12 \n" +
 	"\x1cKILL_SKIP_REASON_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bKILL_SKIP_REASON_PID_REUSED\x10\x01\x12!\n" +
@@ -3555,7 +3579,8 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x1fKILL_SKIP_REASON_CONTAINER_INIT\x10\x03\x12&\n" +
 	"\"KILL_SKIP_REASON_POLICY_UNREADABLE\x10\x04\x12\x1a\n" +
 	"\x16KILL_SKIP_REASON_OTHER\x10\x05\x12'\n" +
-	"#KILL_SKIP_REASON_START_TIME_UNKNOWN\x10\x06*\x94\x01\n" +
+	"#KILL_SKIP_REASON_START_TIME_UNKNOWN\x10\x06\x12(\n" +
+	"$KILL_SKIP_REASON_RUNTIME_UNSUPPORTED\x10\a*\x94\x01\n" +
 	"\vSentryState\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +

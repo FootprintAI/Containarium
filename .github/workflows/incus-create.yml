@@ -310,7 +310,7 @@ jobs:
           # turning "the client cannot authenticate" into "the daemon is
           # broken". Those lead to opposite investigations.
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if /tmp/containarium --server "$SERVER" list >/tmp/probe.log 2>&1; then
               ready=yes; break
             fi
@@ -379,7 +379,7 @@ jobs:
           SERVER="http://localhost:8080"
 
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if /tmp/containarium --server "$SERVER" list >/tmp/probe2.log 2>&1; then
               ready=yes; break
             fi

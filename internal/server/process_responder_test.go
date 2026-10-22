@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/lxc/incus/v7/shared/api"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/footprintai/containarium/internal/audit"
@@ -23,12 +25,29 @@ type fakeActuator struct {
 	count  map[string]string
 	allow  map[string]string
 	frozen map[string]bool
-	fail   error
-	calls  []string
+	// ids is each box's Incus instance id (volatile.uuid); a box with none
+	// set reads as "id-<name>". A box listed in missing answers not found.
+	ids     map[string]string
+	missing map[string]bool
+	fail    error
+	calls   []string
+}
+
+func (a *fakeActuator) InstanceID(name string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.missing[name] {
+		return "", api.StatusErrorf(http.StatusNotFound, "Instance not found")
+	}
+	if id, ok := a.ids[name]; ok {
+		return id, nil
+	}
+	return "id-" + name, nil
 }
 
 func newFakeActuator() *fakeActuator {
-	return &fakeActuator{count: map[string]string{}, allow: map[string]string{}, frozen: map[string]bool{}}
+	return &fakeActuator{count: map[string]string{}, allow: map[string]string{}, frozen: map[string]bool{},
+		ids: map[string]string{}, missing: map[string]bool{}}
 }
 
 func (a *fakeActuator) CPULimit(name string) (string, string, error) {

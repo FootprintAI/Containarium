@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import (
@@ -48,6 +50,8 @@ import (
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/internal/retention"
+	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
@@ -695,6 +699,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// guardrailPolicyStartupStore once postgresConnString is final (below).
 	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
 	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
+	// RetentionService (#2875): per-class retention windows and per-org legal
+	// holds. The store is chosen by retentionStartupStore below.
+	retentionServer := NewRetentionServer(unavailableRetentionStore{})
+	pb.RegisterRetentionServiceServer(grpcServer, retentionServer)
 
 	// Policy-store readiness (#2483): grpc.health.v1, one status per policy
 	// service, NOT_SERVING while its store is on the fail-closed stand-in.
@@ -1632,6 +1640,7 @@ skipAppHosting:
 	// The Postgres guardrail policy store (#2368), or nil if it is not
 	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
 	var guardrailPGStore guardrailpolicy.Store
+	var retentionPGStore retention.Store
 	// The startup pool, handed to the policy-store recovery retry (#2483)
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
@@ -1669,6 +1678,12 @@ skipAppHosting:
 			} else {
 				guardrailPGStore = gpStore
 				log.Printf("Guardrail policy persistence enabled (Postgres store)")
+			}
+			// Retention policy and legal holds (#2875), independent of the rest.
+			if rStore, rErr := retentionpg.New(context.Background(), pool); rErr != nil {
+				log.Printf("Warning: Failed to create Postgres retention store: %v", rErr)
+			} else {
+				retentionPGStore = rStore
 			}
 
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
@@ -1717,6 +1732,7 @@ skipAppHosting:
 		}
 	}
 	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
+	retentionServer.SetStore(retentionStartupStore(postgresConnString != "", retentionPGStore))
 	// Either policy store still on its fail-closed stand-in is retried in the
 	// background (5 s doubling to 60 s) until Postgres answers; the install
 	// is an atomic swap, and Provider() below follows it (#2483).
@@ -1797,6 +1813,15 @@ skipAppHosting:
 							return clustercore.CACredentials{ClientCertPEM: cert, ClientKeyPEM: key, CACertPEM: pki.CAPEM()}, nil
 						})
 						log.Printf("Managed-cluster autoscaler enabled (provider %s)", caAdvertise)
+						// Opt-in scale-down timer overrides (test lanes); unset = stock.
+						// A malformed value is logged and ignored rather than
+						// fatal: it only ever shortens a wait.
+						if delay, unneeded, sdErr := parseCAScaleDownEnv(os.Getenv); sdErr != nil {
+							log.Printf("[cluster] ignoring autoscaler scale-down override: %v", sdErr)
+						} else if delay > 0 || unneeded > 0 {
+							clusterReconciler.SetCAScaleDown(delay, unneeded)
+							log.Printf("[cluster] autoscaler scale-down timers overridden: delay-after-add=%v unneeded-time=%v (0 = stock)", delay, unneeded)
+						}
 					}
 				}
 			} else {
@@ -2447,9 +2472,6 @@ skipAppHosting:
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
-	if processResponder != nil {
-		containerServer.SetProcessActionReleaser(processResponder)
-	}
 	threatDetectServer.SetResponderDegraded(responderStatusReason)
 	if threatCfg.SentryEnabled && healthStore == nil {
 		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
@@ -2527,6 +2549,7 @@ skipAppHosting:
 					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
 				})
 				threatDetectEngine.SetExecHasher(execHash.Request)
+				threatDetectServer.SetExecHashSource(execHash)
 			}
 		}
 	}
@@ -2909,6 +2932,8 @@ skipAppHosting:
 			containerServer.SetAuditStore(auditStore)
 			// guardrail.policy.set entries (#2368).
 			guardrailPolicyServer.SetAuditStore(auditStore)
+			// retention.policy.set / retention.hold.* entries (#2875).
+			retentionServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured

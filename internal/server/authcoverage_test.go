@@ -110,6 +110,8 @@ var registeredServices = []rpcSurface{
 	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
+	// #2875 — every RPC is RequireRole(admin) (through requireRetentionAdmin).
+	{pb.RetentionService_ServiceDesc, "RetentionServer"},
 	{pb.AuditService_ServiceDesc, "AuditServer"}, // #2415
 	// #2516 — Authorize is RequireExplicitScope(ssh:authorize), stamped by
 	// the gateway only on a verified sentinel signature.

@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import "github.com/footprintai/containarium/internal/bridgedns"

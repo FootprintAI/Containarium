@@ -245,7 +245,12 @@ cause this deliberately, flooding execs to hide one exec among the dropped
 ones, so **alert on `exec-events-lost` increasing**: a non-zero delta means
 the exec rules did not see every exec in that window. In the lane, 10,000
 undrained execs keep exactly the ring's capacity and count the rest lost,
-with no crash.
+with no crash. The consumer does no `/proc` read per exec (the kill-safety
+identity is a boot-clock stamp, see below), so its per-exec cost does not
+grow with a flood; `BenchmarkExecCapture` in `internal/server` measures it
+on Linux and the eBPF lane logs it. On a 4-vCPU runner, the stamp costs
+~0.4 µs per exec. The stat read it replaced cost ~14 µs, which at 20,000
+execs/s is ~28 % of one core on the consumer alone.
 
 ## Miner signatures and kill-process
 
@@ -256,7 +261,7 @@ with operator entries. Three matcher kinds:
 | Kind | Matches | Example |
 |------|---------|---------|
 | `name` | basename of the exec'd file, and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
-| `argv` | the joined command line: a literal substring (case-insensitive), or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
+| `argv` | the real argument vector: a literal marker (case-insensitive) must begin an argument or an `--opt=value` value; with a glob character, space-separated globs over consecutive whole arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
 | `sha256` | hex SHA-256 of the executable (`/proc/<pid>/exe`) | operator-added only |
 
 The baseline ships `name` and `argv` entries only (xmrig, minerd,
@@ -267,7 +272,20 @@ and `--url=<host>:<port>`). It carries **no hashes**: a hash list goes stale wit
 every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
 argv entry matched, off the exec path (64 MiB cap, 200 ms budget, best
-effort: a process that exited first is not hashed).
+effort: a process that exited first is not hashed). The hash is attributed
+to the exec only if, after `/proc/<pid>/exe` is opened, the process holding
+the pid did not start after the exec was seen (its `/proc/<pid>/stat`
+start time against the exec's decode stamp, the check the kill uses); a
+pid reused while the request waited is skipped, never hashed in the
+original's name. A binary already hashed is not read again: the daemon
+caches hashes by the file's device, inode, size, mtime and ctime, so the
+same `/bin/sh` costs only an open and two stats. The hash queue holds 64
+requests; when a burst overflows it, the dropped requests are counted, and
+`containarium security sentry status` prints `exec-hashes-dropped: N`
+(`exec_hashes_dropped` in the status JSON). A dropped exec is never hashed,
+so a sha256 entry can miss it, while name and argv entries still match it.
+A process that exec's a second binary under the same pid keeps its start
+time, so its newer image is the one hashed.
 
 ```bash
 containarium security miner-signatures list
@@ -293,19 +311,37 @@ containarium security process-policy set --container box-a --kill-process=false 
 ```
 
 `kill_process` defaults to **false** at every level and is never turned on
-for you; unset inherits from the backend default. Before the kill the
+for you; unset inherits from the backend default. **`kill_process` is
+Incus-only.** On any other container runtime (the box's init has no Incus
+payload cgroup, `lxc.payload.<name>`) the daemon cannot confirm a pid
+belongs to the box, so it refuses every kill up front: the finding is still
+raised and the policy action still applies, and the response reads `kill
+skipped: RUNTIME_UNSUPPORTED` (audit `kill-skipped`, reason
+`kill_process is Incus-only`). Before the kill the
 daemon pins the process with a pidfd (no pidfd, no kill), re-reads
 `/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
 so a pid reused by another process, on the host or in another box, is never
-signalled. It then compares the pinned process's start time
-(`/proc/<pid>/stat` field 22) with the one the exec watcher read when it
-decoded the matched exec, so a pid reused by another process inside the
-same box is not signalled either; an exec whose process had already exited
-when it was decoded has no start time and is never killed. The container's
+signalled. It then reads the pinned process's start time
+(`/proc/<pid>/stat` field 22, clock ticks since boot) and refuses a process
+that started after the exec watcher saw the matched exec, so a pid reused by
+another process inside the same box is not signalled either. The watcher
+does not read `/proc` per exec: it stamps each exec with the boot clock
+(`CLOCK_BOOTTIME`, in the same ticks) when it decodes it, and the stat is
+read once, for the process about to be killed. The matched process forked
+before it exec'd, so its start time is never later than the stamp (one tick
+of slack covers clock skew). The only reuse this cannot see is one inside
+the exec-to-decode window, at most one 50 ms drain: the matched process
+would have to exit and the kernel hand its pid to a new process of the same
+box within it, which takes a full wrap of the pid space (`kernel.pid_max`
+minus the pids in use) in 50 ms. If the stamp is missing or the stat cannot
+be read, the kill is refused (`start time unknown`); a failed clock read is
+logged as `boot-clock stamp failed` (the first, then every 1,000th). The container's
 init is never killed. Every attempt is audited
-under `security.action`: `kill` names the pid and start time, `kill-skipped`
+under `security.action`: `kill` names the pid and, as `start_time=`, the
+matched exec's boot-clock stamp (ticks since boot; an upper bound for the
+process's start time, not the start time itself), `kill-skipped`
 gives the reason (`pid reused`, `start time unknown`, `process already
-exited`, …). The finding's response
+exited`, `kill_process is Incus-only`, …). The finding's response
 shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
 <reason>` when the last attempt did not happen, and an action row opened by
 the same finding records `killed_pid`. The kill and the throttle/freeze run on the responder's own
@@ -337,14 +373,21 @@ the last response. The same holds when B's action ends without a release:
 if B's TTL expires, the orphan sweep undoes B's never-confirmed apply, or B
 is deleted, the write that records B's end also resolves the finding
 (audited `resolve`, one post carrying B's record with finding `state: 2`).
-That only finishes an operator's release on another box: when no box of
-the finding was released by an operator, an expiry or deletion leaves the
-finding open for you, as a single box's expiry always has. Deleting a box
-(`containarium delete`, or the TTL sweeper) closes its open action without
-touching Incus, `released_by: container-deleted`, so the deleted box no
-longer holds the finding or shows as `APPLIED`; a box deleted some other
-way is closed the same way by the next TTL or orphan sweep, which finds it
-missing instead of retrying the undo. An apply that was recorded but never
+That only finishes an operator's release on another box, and only while
+that release is still the latest action on its box: if A was throttled
+again after its release, A's release no longer counts, and when the
+finding then ends by TTL or deletion with no operator involved it stays
+open for you, as a single box's expiry always has. Every delete the daemon
+makes (`containarium delete` and the TTL sweeper, cloud-managed boxes,
+sandboxes) closes the deleted box's open action in the background, without
+undoing anything on the box and without failing the delete (the delete
+makes one extra Incus lookup), `released_by: container-deleted`, so the deleted box no longer holds the finding or shows
+as `APPLIED`. A box removed outside the daemon (for example with `incus
+delete`) keeps its action open until the action's TTL, the orphan sweep or
+an operator release, which then finds the box missing, or replaced by a
+new box with the same name, and closes the action without touching the new
+box's limits. Until then a new box with that name gets no action of its
+own; `process-policy release <box>` clears it at once. An apply that was recorded but never
 confirmed (the daemon died between the two) on box B also holds the
 finding open, since the throttle may have taken effect, but it is never
 shown as `APPLIED`: releasing A then records A's `RELEASED`. The orphan
@@ -367,10 +410,19 @@ a degraded backend (no Postgres) responses are off, the kill included.
 name or argv entry, and a fresh build matches no hash: only the
 mining-behavior rule (sustained CPU plus a stratum flow) catches it. The
 rule sees the exec, not later renames inside the process.
-Literal argv markers match any command line that merely mentions them:
-`grep -r -- --donate-level .` raises the finding too, and with
-`kill_process` it is killed. Keep that in mind before turning the kill on
-for boxes where people inspect miner configs. A glob token without `=`
+Argv markers are matched against the real argument vector (the
+NUL-separated argv the kernel records), not the space-joined line. A
+literal marker must begin an argument, or the value of an option argument
+`--opt=value`; a space in a marker is an argument boundary (`--coin ` is the
+argument `--coin` followed by another). A marker that only appears inside an
+argument is not a match: `git commit -m "document stratum+tcp:// pool
+format"` raises nothing. An argument that *begins* with a marker matches
+whatever the command, and there is no command allowlist: `grep -r
+--donate-level docs/` (the argument `--donate-level`) and `grep
+--regexp=stratum+tcp:// .` raise the finding, and with `kill_process` the
+grep is killed. Keep that in mind before turning the kill on for boxes where
+people inspect miner configs. A glob marker matches consecutive whole
+arguments the same way. A glob token without `=`
 never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444`
 does not hit the `-o <host>:<port>` markers, and `-o` is case-sensitive, so
 `cc -O ...` is not a match. Pool addresses in other spellings (a config file,
@@ -391,9 +443,10 @@ a box legitimately runs such a command, leave `kill_process` off for it
 
 The kill and policy action run on the responder's queue, so a little time
 can pass between the exec and the kill. The cgroup re-check stops a pid
-reused by another box or the host, but a pid reused by another process in
-the *same* box within that window would be killed; a process start-time
-check to close it is a follow-up (#2765).
+reused by another box or the host, and the start-time check against the
+exec's decode stamp (see *What a match does*) stops one reused by another
+process in the *same* box (skipped as `PID_REUSED`). Only a reuse inside
+the exec-to-decode window, at most one 50 ms ring drain, is not excluded.
 
 ## Triaging findings
 
@@ -498,11 +551,13 @@ the resolve are delivered on top of that.
 
 If a kill was attempted and did not happen, `response.kill_skip_reason`
 says why, as a number: `1` PID_REUSED (the pid now belongs to another
-cgroup, or to another process of the same box: its start time differs),
-`2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's init,
-never signalled), `4` POLICY_UNREADABLE, `5` OTHER, `6` START_TIME_UNKNOWN
-(the process had exited before its exec was decoded, so the pid could not
-be confirmed). The first skip is
+cgroup, or to another process of the same box: it started after the
+matched exec was seen), `2` PROCESS_GONE (it exited first), `3`
+CONTAINER_INIT (the box's init, never signalled), `4` POLICY_UNREADABLE, `5`
+OTHER, `6` START_TIME_UNKNOWN (the exec has no boot-clock stamp or the pid's
+start time could not be read, so the pid could not be confirmed), `7`
+RUNTIME_UNSUPPORTED (the box does not run under Incus; `kill_process` is
+Incus-only). The first skip is
 delivered at once and a different reason at most once a minute; the pid
 and error detail stay in the audit log (`kill-skipped`), not the webhook.
 `response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`

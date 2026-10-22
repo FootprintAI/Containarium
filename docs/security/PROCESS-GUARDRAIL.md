@@ -145,7 +145,7 @@ kinds:
 | Kind | Matches | Example |
 |---|---|---|
 | `name` | basename of the exec'd file and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
-| `argv` | the joined command line: a literal substring, or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` are case-sensitive) | `--donate-level`, `-o *:3333` |
+| `argv` | the real argument vector: a literal that begins an argument (or the value of `--opt=value`; a space in it is an argument boundary, and a marker inside a quoted argument does not match), or, with a glob character, space-separated globs over consecutive whole arguments (option tokens such as `-o` are case-sensitive) | `--donate-level`, `-o *:3333` |
 | `sha256` | hex SHA-256 of the executable | operator entries only |
 
 The embedded baseline ships `name` and `argv` entries only (well-known
@@ -154,7 +154,11 @@ miner binaries; `--donate-level`, `stratum+tcp://`, `stratum+ssl://`,
 **no SHA-256 entries**: a hash list goes stale with every upstream release.
 Add hashes for builds you have seen; the daemon hashes an executable only
 when such entries exist and no name or argv entry matched, off the exec
-path (64 MiB cap, 200 ms budget, best effort).
+path (64 MiB cap, 200 ms budget, best effort). After `/proc/<pid>/exe` is
+opened, a pid whose process started after the exec's decode stamp is
+skipped (the kill's check), hashes are cached by (device,
+inode, size, mtime, ctime), and queue-full drops show as
+`exec_hashes_dropped` in the sentry status (#2768).
 
 ```bash
 containarium security miner-signatures list [--json]
@@ -276,9 +280,10 @@ MEDIUM `PROCESS_ACTION_EXPIRED` finding on the box saying so, so an
 unattended throttle never silently becomes permanent. The original
 mining finding stays open. If the box keeps mining, the rule fires again
 once its window re-fills and the policy applies again. One exception, on a
-finding shared by several boxes (#2835): when an operator already released
-another box and the finding stayed open only because this box still held
-it, the expiry resolves the finding in the same write. The orphan sweep and
+finding shared by several boxes (#2835): when an operator released another
+box (and that release is still the latest action on that box) and the
+finding stayed open only because this box still held it, the expiry
+resolves the finding in the same write. The orphan sweep and
 a box's deletion (below) follow the same rule.
 
 **Pending and orphaned actions.** If the daemon dies between recording an
@@ -291,15 +296,24 @@ taken effect, but it is never shown as `APPLIED`: nothing confirmed it.
 So a pending row holds a finding open for at most about 6 minutes (5
 minutes plus one sweep).
 
-**Deleted boxes.** Deleting a box through the daemon closes its open
-action without calling Incus (there is nothing left to restore), with
-`released_by` `container-deleted`. The finding records the box's
-`RELEASED` instead of its `APPLIED`, and a finding the deleted box was the
-last to hold is resolved when an operator already released another box of
-it. A box removed some other way is closed the same way by the next TTL or
-orphan sweep, which finds it missing (Incus answers not found) instead of
-retrying the undo every minute; no `PROCESS_ACTION_EXPIRED` finding is
-raised for it.
+**Deleted boxes.** Every delete the daemon makes (the delete RPC and TTL
+sweeper, cloud-managed boxes, sandboxes) closes the deleted box's open
+action in the background, without undoing anything (there is nothing left
+to restore) and without failing the delete, with `released_by`
+`container-deleted`. When the deleted instance's id is unknown (or the
+action predates recording it), the close first looks the box up and only
+closes the action if no box by that name exists. The finding records the box's `RELEASED` instead of
+its `APPLIED`, and a finding the deleted box was the last to hold is
+resolved when an operator's release is still the latest action on another
+box of it. Each action row records the Incus instance it was applied to
+(`volatile.uuid`). A box removed outside the daemon keeps its action open
+until the TTL sweep, the orphan sweep or an operator release, which first
+looks the box up: if it is missing, or a new box with the same name (a
+different instance), the action is closed the same way and the old box's
+saved limits are never written onto the new one; no
+`PROCESS_ACTION_EXPIRED` finding is raised for it. Until then a new box
+with that name gets no action of its own. Rows recorded before this have
+no instance id and are only recognised as gone when the box is missing.
 
 **Failures.** If an Incus call fails, the row records the error, the
 finding's response says `FAILED` with the error, and an audit entry is
@@ -355,18 +369,35 @@ or `FREEZE`) and also SIGKILLs the matched process from the host.
 - The daemon pins the process with a pidfd (no pidfd, no kill), then
   re-reads `/proc/<pid>/cgroup` and confirms it is still in that box's
   cgroup, so a reused pid on the host or in another box is never signalled.
-- It then compares the pinned process's start time (`/proc/<pid>/stat`
-  field 22, clock ticks since boot) with the start time the exec watcher
-  read when it decoded the matched exec (#2765). A mismatch is a pid reused
-  inside the same box: skipped as `pid reused`. An exec whose process had
-  already exited when it was decoded carries no start time and is never
-  signalled: skipped as `start time unknown` (`START_TIME_UNKNOWN`).
+- It then reads the pinned process's start time (`/proc/<pid>/stat`
+  field 22, clock ticks since boot) and compares it with the stamp the exec
+  watcher put on the matched exec when it decoded it: the boot clock
+  (`CLOCK_BOOTTIME`) in the same ticks (#2765). A process that started after
+  the stamp (one tick of slack) is a pid reused inside the same box: skipped
+  as `pid reused`. The matched process forked before it exec'd, so it always
+  passes. The watcher reads no `/proc` file per exec; the stat is read once,
+  for the process about to be killed, so an exec flood does not slow the
+  ring consumer. No stamp, or a stat that cannot be read, is never signalled:
+  skipped as `start time unknown` (`START_TIME_UNKNOWN`).
+- The one reuse not excluded is inside the exec-to-decode window (at most
+  one 50 ms ring drain): the matched process exits and its pid goes to a
+  new process of the same box within it. Linux hands out pids cyclically up
+  to `kernel.pid_max`, so that takes a full wrap of the pid space in 50 ms:
+  `pid_max` (32,768 to 4,194,304) minus the pids in use, forks host-wide,
+  far beyond what a host sustains unless it is near pid exhaustion. A
+  failed boot-clock read leaves the exec unstamped (its kill is skipped as
+  `start time unknown`); the daemon logs it as `boot-clock stamp failed`.
 - A box's init is never killed.
-- Every attempt is audited under `security.action`: `kill` (names the pid)
+- The kill is Incus-only (#2768): on any other runtime (the box's init has
+  no `lxc.payload.<name>` cgroup) it is refused up front as
+  `RUNTIME_UNSUPPORTED`, before any pid is pinned or compared.
+- Every attempt is audited under `security.action`: `kill` (names the pid,
+  and as `start_time=` the matched exec's boot-clock stamp, not the
+  process's own start time)
   or `kill-skipped` (with the pid and the reason, for example
   `kill_skipped="pid 211757: process already exited"` or
-  `kill_skipped="pid 211757 started at 4400 ticks, matched exec at 4100:
-  pid reused"`).
+  `kill_skipped="pid 211757 started at 4400 ticks since boot, after its
+  matched exec was seen at 4100: pid reused"`).
 - `findings list` shows the result under the finding:
 
   ```text
@@ -558,7 +589,7 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   `response.state: 4`; before it, it had `state: 1` and the resolve was
   dropped. A TTL expiry or orphan-sweep release leaves the finding open, so
   its later resolve is posted, unless it ends the last box holding a
-  shared finding an operator already released elsewhere: then it is one
+  shared finding an operator released elsewhere: then it is one
   post with `state: 2` carrying that box's record (#2835).
 - **Shared findings** (next release, #2820): `response.container` and the
   post's `container` name the box, except on a post caused by a re-fire
@@ -574,7 +605,7 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   the webhook can be short of the true count; `findings list` is exact. A
   skipped kill carries a numeric `kill_skip_reason` (`PID_REUSED`=1,
   `PROCESS_GONE`=2, `CONTAINER_INIT`=3, `POLICY_UNREADABLE`=4, `OTHER`=5,
-  `START_TIME_UNKNOWN`=6).
+  `START_TIME_UNKNOWN`=6, `RUNTIME_UNSUPPORTED`=7).
 
 Abridged kill post:
 

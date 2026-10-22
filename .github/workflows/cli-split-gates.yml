@@ -24,6 +24,9 @@ name: CLI client/server split gates
 #   7. daemon-artifact-name gate (#1784) — no host-side installer,
 #      provisioner or bundle fetches containarium-<os>-<arch> as the daemon
 #      (scripts/test-daemon-artifact-name-gate.sh)
+#   8. whole-tree constraint gate (#2864, #2886) — `go vet -tags
+#      containarium_client ./...` and a Windows build of every package
+#      outside the Linux-only daemon set (scripts/test-build-constraint-sets.sh)
 #
 # Regression guard on MCP: build-mcp/build-agent-box already exist as
 # their own CI concerns elsewhere (release.yml's build-release covers
@@ -195,6 +198,13 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Whole-tree client-tag vet and Windows build (#2864, #2886)
+        # The steps above check ./cmd/containarium's graph only. This runs
+        # `go vet -tags containarium_client ./...` (tests included) and a
+        # Windows build of every package outside the Linux-only daemon set
+        # the script lists, so a broad local run stays green on main.
+        run: ./scripts/test-build-constraint-sets.sh
 
   test-both-tag-sets:
     name: go test ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... (both tag sets)

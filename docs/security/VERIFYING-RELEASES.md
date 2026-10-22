@@ -12,8 +12,8 @@ release without `.sigstore.json` assets cannot pass this signature procedure.
 
 This covers the binaries, the SPDX SBOMs, the agent-runtime and SDLC skills
 bundles, the air-gapped install bundle, the Helm chart, `SHA256SUMS.txt`, and
-the `.sha256` files. Container images carry their own provenance and SBOM
-attestations and are not covered here.
+the `.sha256` files. The container images are signed too, by digest; see
+[Verify a container image](#verify-a-container-image).
 
 ## Verify one file
 
@@ -87,6 +87,53 @@ bundles again rather than trusting the local signing output. The read-only
 tag. Neither command signs or publishes anything. These checks do not replace
 the kind install/upgrade test or the licence gate.
 
+## Verify a container image
+
+Each release image is signed by digest, keylessly, by the workflow that
+pushed it, at the release tag. Images from releases before this change
+have no signature.
+
+| Image | Signing workflow |
+| --- | --- |
+| `ghcr.io/footprintai/containarium` | `containarium-daemon.yml` |
+| `ghcr.io/footprintai/containarium-otel-sidecar` | `sidecars.yml` |
+| `ghcr.io/footprintai/containarium-sshpiper` | `sidecars.yml` |
+| `ghcr.io/footprintai/containarium-agent-box` | `sidecars.yml` |
+| `ghcr.io/footprintai/containarium-model-gateway` | `release.yml` |
+
+Verify the digest, not a tag: a tag can be moved to another image after it
+was signed, a digest cannot. Resolve the release tag to its digest once (the
+top-level `Digest:` line, which is the image index), then verify and deploy
+that digest:
+
+```bash
+TAG=v0.0.0   # the release
+docker buildx imagetools inspect "ghcr.io/footprintai/containarium:${TAG}"   # note the top-level Digest:
+DIGEST=sha256:<digest>
+cosign verify \
+  --certificate-identity "https://github.com/FootprintAI/Containarium/.github/workflows/containarium-daemon.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "ghcr.io/footprintai/containarium@${DIGEST}"
+```
+
+For another image, change the image name and the workflow file in the
+identity to the row in the table above. Use cosign v3 (the release workflow
+uses v3.1.3). Exit status 0 and a JSON list of verified signatures mean the
+signature is valid, logged in Rekor, and was made by that workflow at that
+tag; anything else is a failure: do not run the image. The same identity rules
+as for files apply: case-sensitive, exact workflow, exact tag; for any release
+use `--certificate-identity-regexp` with the image's workflow file in place
+of `release.yml`.
+
+What is signed is the image index the release pushed (the build adds
+provenance and SBOM attestations, so even a single-platform image is an
+index). A pull by tag or by that index digest is covered. A platform
+manifest digest inside the index (for example the `linux/amd64` entry) is
+not signed on its own: verify the index digest it came from.
+
+Each release run also keeps the signed digests and the `cosign verify`
+output as workflow artifacts named `image-signature-<image>`.
+
 ## Air-gapped hosts
 
 Verification needs the `.sigstore.json` bundle and the Sigstore trust root,
@@ -104,6 +151,13 @@ bundles. If any job it depends on fails, nothing is signed and the Release has
 no `.sigstore.json` files, which is a visible failure. Signing runs on tag
 pushes only: a `workflow_dispatch` rehearsal builds everything but signs
 nothing, because a signature is a permanent entry in a public log.
+
+The images are signed in the job that pushes them (`containarium-daemon.yml`,
+`sidecars.yml`, and `release.yml`'s `model-gateway-image`), right after the
+push, by the digest the push returned, through
+`.github/actions/sign-image` and `scripts/release/sign-image.sh`. The step
+verifies the signature against the identity above and fails the job if it
+does not match. Tag pushes only, for the same reason.
 
 ## What a signature does not prove
 

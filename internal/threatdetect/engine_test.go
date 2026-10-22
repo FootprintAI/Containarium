@@ -335,14 +335,14 @@ func TestEngine_OnExec_FansOutToExecConsumersOnly(t *testing.T) {
 	var got []ExecEvent
 	consumer := &execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR}, onExec: func(_ RuleContext, ev ExecEvent) []RawFinding {
 		got = append(got, ev)
-		return []RawFinding{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, Subject: "name:xmrig", Evidence: Evidence{Execs: []ExecEvidence{{PID: ev.PID, Argv: ev.Argv}}}}}
+		return []RawFinding{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, Subject: "name:xmrig", Evidence: Evidence{Execs: []ExecEvidence{{PID: ev.PID, Argv: ev.ArgvString()}}}}}
 	}}
 	panicky := &execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST}, onExec: func(RuleContext, ExecEvent) []RawFinding { panic("boom") }}
 	e.Register(plain)
 	e.Register(panicky)
 	e.Register(consumer)
 
-	e.OnExec(ExecEvent{Container: "box", TenantID: "t1", PID: 4242, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: "./xmrig -o pool:3333"})
+	e.OnExec(ExecEvent{Container: "box", TenantID: "t1", PID: 4242, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: []string{"./xmrig", "-o", "pool:3333"}})
 
 	if len(got) != 1 || got[0].Container != "box" || got[0].PID != 4242 {
 		t.Fatalf("consumer got %+v, want the one event", got)
