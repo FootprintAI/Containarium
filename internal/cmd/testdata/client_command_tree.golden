@@ -75,6 +75,7 @@ create
 crew get
 crew list
 crew logs
+crew plan
 crew plan validate
 crew run
 crew status

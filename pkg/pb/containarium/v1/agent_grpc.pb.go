@@ -623,6 +623,7 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	CrewService_PlanTaskGraph_FullMethodName     = "/containarium.v1.CrewService/PlanTaskGraph"
 	CrewService_ListCrews_FullMethodName         = "/containarium.v1.CrewService/ListCrews"
 	CrewService_GetCrew_FullMethodName           = "/containarium.v1.CrewService/GetCrew"
 	CrewService_RunCrew_FullMethodName           = "/containarium.v1.CrewService/RunCrew"
@@ -636,6 +637,9 @@ const (
 //
 // CrewService runs collaborating sets of skills bound to a task purpose.
 type CrewServiceClient interface {
+	// PlanTaskGraph reads a repository in a planner box and validates its output
+	// against this daemon's catalogs. It never runs the resulting graph.
+	PlanTaskGraph(ctx context.Context, in *PlanTaskGraphRequest, opts ...grpc.CallOption) (*PlanTaskGraphResponse, error)
 	// ListCrews returns all available crews.
 	ListCrews(ctx context.Context, in *ListCrewsRequest, opts ...grpc.CallOption) (*ListCrewsResponse, error)
 	// GetCrew returns a single crew definition by id.
@@ -659,6 +663,16 @@ type crewServiceClient struct {
 
 func NewCrewServiceClient(cc grpc.ClientConnInterface) CrewServiceClient {
 	return &crewServiceClient{cc}
+}
+
+func (c *crewServiceClient) PlanTaskGraph(ctx context.Context, in *PlanTaskGraphRequest, opts ...grpc.CallOption) (*PlanTaskGraphResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanTaskGraphResponse)
+	err := c.cc.Invoke(ctx, CrewService_PlanTaskGraph_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *crewServiceClient) ListCrews(ctx context.Context, in *ListCrewsRequest, opts ...grpc.CallOption) (*ListCrewsResponse, error) {
@@ -717,6 +731,9 @@ func (c *crewServiceClient) ValidateTaskGraph(ctx context.Context, in *ValidateT
 //
 // CrewService runs collaborating sets of skills bound to a task purpose.
 type CrewServiceServer interface {
+	// PlanTaskGraph reads a repository in a planner box and validates its output
+	// against this daemon's catalogs. It never runs the resulting graph.
+	PlanTaskGraph(context.Context, *PlanTaskGraphRequest) (*PlanTaskGraphResponse, error)
 	// ListCrews returns all available crews.
 	ListCrews(context.Context, *ListCrewsRequest) (*ListCrewsResponse, error)
 	// GetCrew returns a single crew definition by id.
@@ -742,6 +759,9 @@ type CrewServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedCrewServiceServer struct{}
 
+func (UnimplementedCrewServiceServer) PlanTaskGraph(context.Context, *PlanTaskGraphRequest) (*PlanTaskGraphResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanTaskGraph not implemented")
+}
 func (UnimplementedCrewServiceServer) ListCrews(context.Context, *ListCrewsRequest) (*ListCrewsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCrews not implemented")
 }
@@ -776,6 +796,24 @@ func RegisterCrewServiceServer(s grpc.ServiceRegistrar, srv CrewServiceServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&CrewService_ServiceDesc, srv)
+}
+
+func _CrewService_PlanTaskGraph_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanTaskGraphRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).PlanTaskGraph(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_PlanTaskGraph_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).PlanTaskGraph(ctx, req.(*PlanTaskGraphRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _CrewService_ListCrews_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -875,6 +913,10 @@ var CrewService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.CrewService",
 	HandlerType: (*CrewServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PlanTaskGraph",
+			Handler:    _CrewService_PlanTaskGraph_Handler,
+		},
 		{
 			MethodName: "ListCrews",
 			Handler:    _CrewService_ListCrews_Handler,

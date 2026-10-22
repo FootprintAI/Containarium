@@ -1058,8 +1058,39 @@ message ValidateTaskGraphResponse {
   uint32 depth = 2;
 }
 
+// PlanTaskGraph runs only the planner skill; graph nodes are never executed.
+message PlanTaskGraphRequest {
+  string goal = 1;
+  // Remote git source fetched into the planner's workspace.
+  string repo = 2;
+  string git_ref = 3;
+  // Ephemeral fetch credential, handled like RunAgentSkillRequest.git_credential.
+  string git_credential = 4;
+  string backend_id = 5;
+  string pool = 6;
+}
+message PlanTaskGraphResponse {
+  TaskGraph graph = 1;
+  // Planner run; its terminal state/error is available through GetCrewRun.
+  string run_id = 2;
+  string git_commit = 3;
+}
+
 // CrewService runs collaborating sets of skills bound to a task purpose.
 service CrewService {
+  // PlanTaskGraph reads a repository in a planner box and validates its output
+  // against this daemon's catalogs. It never runs the resulting graph.
+  rpc PlanTaskGraph(PlanTaskGraphRequest) returns (PlanTaskGraphResponse) {
+    option (google.api.http) = {
+      post: "/v1/task-graphs:plan"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Plan a task graph";
+      description: "Run the planner skill against a goal and repository, validate the resulting TaskGraph, and return it without executing its nodes.";
+      tags: "Agents";
+    };
+  }
   // ListCrews returns all available crews.
   rpc ListCrews(ListCrewsRequest) returns (ListCrewsResponse) {
     option (google.api.http) = {
