@@ -2732,14 +2732,17 @@ skipAppHosting:
 			// gwRevocations above.
 			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
 			gw := modelgateway.New(modelgateway.Config{
-				Secret:           []byte(config.JWTSecret),
-				Providers:        gwProviders,
-				ProviderKeys:     keys,
-				KeyResolver:      gwKeyResolver,
-				Sink:             gwSink,
-				Revocations:      gwRevocations,
-				OwnerRevocations: gwOwnerRevocations,
-				Policy:           gwPolicy,
+				Secret:       []byte(config.JWTSecret),
+				Providers:    gwProviders,
+				ProviderKeys: keys,
+				KeyResolver:  gwKeyResolver,
+				// Hosted multi-tenant daemons refuse an owner with no key rather
+				// than bill the operator's global key. Default off.
+				DisableGlobalKeyFallback: os.Getenv(appconfig.EnvGatewayNoGlobalKeyFallback) == "1",
+				Sink:                     gwSink,
+				Revocations:              gwRevocations,
+				OwnerRevocations:         gwOwnerRevocations,
+				Policy:                   gwPolicy,
 				// Redact system-prompt (skill persona) leakage on the streaming
 				// chat path (#670 layer 2). Default on; set
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token

@@ -111,10 +111,20 @@ func (f KeyResolverFunc) KeyFor(ctx context.Context, keyOwner, provider string) 
 //     because an owner whose key was removed would otherwise silently spend
 //     the platform's. The mint path refusing to issue a key_owner token
 //     without a key (FootprintAI/Containarium#1726) is what keeps case 3 from
-//     happening in normal operation.
+//     happening in normal operation. With Config.DisableGlobalKeyFallback the
+//     fallback does not exist: a key_owner token resolves through its owner or
+//     not at all, whether or not a resolver is wired.
 //  4. neither -> ("", false), and handleModel refuses the call without ever
 //     touching an upstream.
 func (g *Gateway) resolveKey(ctx context.Context, claims *GatewayClaims, provider string) (string, bool) {
+	if claims.KeyOwner != "" && g.cfg.DisableGlobalKeyFallback {
+		if g.cfg.KeyResolver != nil {
+			if key, ok := g.cfg.KeyResolver.KeyFor(ctx, claims.KeyOwner, provider); ok && key != "" {
+				return key, true
+			}
+		}
+		return "", false
+	}
 	if claims.KeyOwner != "" && g.cfg.KeyResolver != nil {
 		if key, ok := g.cfg.KeyResolver.KeyFor(ctx, claims.KeyOwner, provider); ok && key != "" {
 			return key, true
