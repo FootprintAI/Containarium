@@ -1246,7 +1246,6 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
 			Stack:                     inst.Config[StackKey],
-			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1330,7 +1329,6 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
 		Stack:                inst.Config[StackKey],
-		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 
