@@ -246,9 +246,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
-	// Record the requested stack so list/get can report it later (#2163), but
-	// only a stack that resolves: installPackages silently skips an unknown
-	// ID, so recording it would report a stack that was never installed.
+	// Record the requested stack so list/get can report it later (#2163).
+	// Create refuses an unknown stack above, so this is always a resolvable
+	// ID; the check stays as defence in depth so a stack that was never
+	// installed can never be recorded.
 	if opts.Stack != "" && stacks.GetDefault().ValidateStackID(opts.Stack) {
 		labelConfig[incus.StackKey] = opts.Stack
 	}

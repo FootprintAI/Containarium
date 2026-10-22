@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`create` rejects an unknown `--stack` before creating anything** (#2860). `CreateContainer` returns `INVALID_ARGUMENT` naming the unknown id and listing the valid ones, instead of silently creating a box with nothing installed. A create routed to a peer backend is validated by that backend against its own catalog. In local mode the CLI checks the stack before `--force` deletes the existing box; against a daemon, `--force` still deletes before the daemon validates (tracked in a follow-up).
+
 ### Added
 
 - **`CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK=1` stops the model gateway billing a tenant's calls to a daemon-global provider key** (#3028). A token carrying a `key_owner` normally falls back to `<PROVIDER>_API_KEY` when its owner has no key of its own. With the option set it resolves through its owner or is refused up front, with or without a key resolver wired. Unset keeps today's behaviour, which a self-hosted daemon running on one global key relies on. Tokens without a `key_owner` are unaffected. Engine readiness follows the same rule, so a skill run whose owner has no key is refused up front (`FailedPrecondition`, `ListAgentEngines` shows the engine not ready) instead of being admitted on a global key the gateway will not spend.

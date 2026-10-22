@@ -506,6 +506,12 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
+// createTargetsPeer reports whether the create is routed to a remote backend,
+// by the same rule as the forwarding block in createContainerAuthorized.
+func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
+	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
+}
+
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -542,9 +548,13 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
-	// Unknown stack (#2860): refuse before any allocation or placement.
-	if err := validateStackID(req.Stack); err != nil {
-		return nil, err
+	// Unknown stack (#2860): refuse before any allocation or placement. A
+	// create bound for a peer is forwarded as is: the peer validates it against
+	// its own catalog, which may define stacks this daemon does not.
+	if !s.createTargetsPeer(req) {
+		if err := validateStackID(req.Stack); err != nil {
+			return nil, err
+		}
 	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
 	// create path did not provision an encrypted dataset. It now does
