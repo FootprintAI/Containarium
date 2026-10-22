@@ -74,3 +74,33 @@ func TestStackKeyStable(t *testing.T) {
 		t.Errorf("StackKey = %q, must remain stable across releases", StackKey)
 	}
 }
+
+// TestPodmanEnabledKeyStable locks the config key (#2858).
+func TestPodmanEnabledKeyStable(t *testing.T) {
+	if PodmanEnabledKey != "user.containarium.podman_enabled" {
+		t.Errorf("PodmanEnabledKey = %q, must remain stable across releases", PodmanEnabledKey)
+	}
+}
+
+// TestPodmanEnabledFromConfig (#2858): a box created before the key existed
+// has no stored value and keeps reporting true (what status always said); an
+// explicit value wins.
+func TestPodmanEnabledFromConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  map[string]string
+		want bool
+	}{
+		{"absent (created before the key)", map[string]string{}, true},
+		{"nil config", nil, true},
+		{"true", map[string]string{PodmanEnabledKey: "true"}, true},
+		{"false", map[string]string{PodmanEnabledKey: "false"}, false},
+		{"garbage falls back to legacy value", map[string]string{PodmanEnabledKey: "maybe"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podmanEnabledFromConfig(tc.cfg); got != tc.want {
+				t.Errorf("podmanEnabledFromConfig = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

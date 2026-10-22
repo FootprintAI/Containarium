@@ -137,6 +137,16 @@ func TestInfoToStatus_Stack(t *testing.T) {
 	}
 }
 
+// TestInfoToStatus_PodmanEnabled (#2858): the flag rides ContainerInfo onto
+// BoxStatus unchanged in both directions.
+func TestInfoToStatus_PodmanEnabled(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		if got := StatusFromInfo(&incus.ContainerInfo{Name: "a-container", PodmanEnabled: want}).PodmanEnabled; got != want {
+			t.Errorf("PodmanEnabled = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestLifecycleDelegation(t *testing.T) {
 	mock := incustest.NewMockBackend()
 	mock.Containers["alice-container"] = &incus.ContainerInfo{

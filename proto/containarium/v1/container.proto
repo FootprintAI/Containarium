@@ -217,7 +217,10 @@ message Container {
   // Image used to create the container (e.g., "images:ubuntu/24.04")
   string image = 10;
 
-  // Whether Podman support is enabled (nesting)
+  // Whether the box was created with Podman support (enable_podman), read back
+  // from the box. Boxes created before this was recorded have no stored value
+  // and report true, as every box did previously; the K8s backend has no
+  // podman toggle and reports true.
   bool podman_enabled = 11;
 
   // Software stack installed in the container (e.g., "nodejs", "python")
