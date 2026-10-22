@@ -687,6 +687,10 @@ type provisionOptions struct {
 	// value) means "no override, use the manifest", unchanged pre-#2228
 	// behavior for every caller that doesn't set this.
 	engineOverride pb.AgentEngine
+	// orgID is the validated on_behalf_of_org_id of the request: the
+	// org whose provider key the run spends. Empty = derive the owner from the
+	// box label or the caller, as before.
+	orgID string
 }
 
 // beginSkillRunWith is beginSkillRun with internal provisioning options.
@@ -724,6 +728,9 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	// by value), so this only affects this call — a caller's own
 	// gitSourceBestEffort (set above us) is preserved alongside it.
 	opts.engineOverride = req.GetEngine()
+	if opts.orgID, err = authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
+		return nil, err
+	}
 	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
@@ -1170,7 +1177,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	if s.gateway != nil {
 		gwView = &s.gateway.engines
 	}
-	keyOwner := runKeyOwner(ctx, box)
+	keyOwner := runKeyOwner(ctx, box, opts.orgID)
 	want := agentengine.Override(skill.GetEngine(), opts.engineOverride)
 	engineRes, resolveErr := agentengine.Resolve(ctx, want, keyOwner, gwView)
 	if resolveErr != nil {
@@ -1249,7 +1256,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// provisioning — engineRes itself was already confirmed ready above, so
 	// a failure here is an operational one (mint/script), not a readiness one.
 	if s.gateway != nil {
-		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, modelCeiling, box); gerr != nil {
+		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, modelCeiling, box, opts.orgID); gerr != nil {
 			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
 		} else if envScript, eerr := gatewayEnvScript(engineRes.Provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
 			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)

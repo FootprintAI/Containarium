@@ -18557,6 +18557,10 @@
         "engine": {
           "$ref": "#/definitions/AgentEngine",
           "description": "Per-invocation engine override (#2228): when set, this run's engine is\nresolved from THIS value instead of the skill manifest's own `engine`\nfield — the same agentengine.Resolve readiness check applies either way,\nso an override naming an engine with no usable key is refused the same\nway an unready manifest engine is. UNSPECIFIED (the default) means \"use\nthe manifest\", unchanged pre-#2228 behavior."
+        },
+        "onBehalfOfOrgId": {
+          "type": "string",
+          "description": "The organization this run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -18625,6 +18629,10 @@
             "$ref": "#/definitions/AgentEngine"
           },
           "description": "Per-member engine override (#2228), keyed by skill_id: when a member's\nid has an entry here, THIS value resolves that member's engine instead\nof its own manifest `engine` field — same agentengine.Resolve readiness\ncheck, same refusal text, as RunAgentSkillRequest.engine. A member with\nno entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,\nunchanged pre-#2228 behavior."
+        },
+        "onBehalfOfOrgId": {
+          "type": "string",
+          "description": "The organization every member run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
         }
       }
     },
