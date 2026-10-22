@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed agent skill run is reported as failed, with the engine's own reason** (#2931). When the in-box `agent-runtime` exited non-zero, the daemon returned `in-box runtime did not run on <box>: command exited with code 1` without reading `artifact.json`, where the runtime had already written the real error (for example an engine whose provider rejects the credential: `upstream 401: API key not valid`). `RunAgentSkill` then logged that and returned OK with an empty `artifact_json`. The daemon now reads `artifact.json` on a non-zero exit and puts its `error` in the returned error, redacted (JWTs, bearer tokens, provider API keys, `key=value` secrets) and capped at 1 KiB. `RunAgentSkill` returns `INTERNAL` for a failed run and `FAILED_PRECONDITION` when the box has no `agent-runtime` (exit 127), naming the run id in both. It no longer reports a failed run as a success. The "image may not ship it yet" log hint now shows only for that missing-runtime case. A tracker-dispatched run records the same reason as its failure.
+
 ## [0.114.0] - 2026-10-22
 
 ### Added
