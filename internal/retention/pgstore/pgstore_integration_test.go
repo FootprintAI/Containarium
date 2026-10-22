@@ -82,12 +82,43 @@ func TestRetentionPGStore_SurvivesRestart(t *testing.T) {
 func TestRetentionPGStore_DaysCapIsADatabaseCheck(t *testing.T) {
 	ctx := context.Background()
 	pool := retentionPool(t)
-	// The table as the first version of this store created it: no upper bound.
-	if _, err := pool.Exec(ctx, `CREATE TABLE retention_windows (class INTEGER PRIMARY KEY, days INTEGER NOT NULL CHECK (days > 0))`); err != nil {
-		t.Fatalf("create old table: %v", err)
+	// The schema exactly as the store merged in #2917 created it (no upper
+	// bound), with a policy already stored, as on a deployed daemon.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE retention_policy (
+			id         SMALLINT PRIMARY KEY CHECK (id = 1),
+			revision   BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ,
+			updated_by TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO retention_policy (id, revision, updated_at, updated_by) VALUES (1, 1, NOW(), 'admin-a');
+		CREATE TABLE retention_windows (
+			class INTEGER PRIMARY KEY,
+			days  INTEGER NOT NULL CHECK (days > 0)
+		);
+		INSERT INTO retention_windows (class, days) VALUES (2, 45);
+		CREATE TABLE retention_legal_holds (
+			org_id TEXT PRIMARY KEY,
+			reason TEXT NOT NULL,
+			set_by TEXT NOT NULL,
+			set_at TIMESTAMPTZ NOT NULL
+		);
+		INSERT INTO retention_legal_holds VALUES ('org-a', 'case 1', 'admin-a', NOW());
+	`); err != nil {
+		t.Fatalf("create the merged schema: %v", err)
 	}
 	pgStore(t, pool)
-	pgStore(t, pool) // a second bootstrap is a no-op, not a duplicate-constraint error
+	s := pgStore(t, pool) // a second bootstrap is a no-op, not a duplicate-constraint error
+	p, err := s.GetPolicy(ctx)
+	if err != nil {
+		t.Fatalf("GetPolicy after the migration: %v", err)
+	}
+	if p.GetRevision() != 1 || p.GetWindows()[1].GetDays() != 45 || p.GetWindows()[1].GetIsDefault() {
+		t.Fatalf("policy after the migration = %v, want revision 1 with responses 45 kept", p)
+	}
+	if hs, err := s.ListHolds(ctx); err != nil || len(hs) != 1 || hs[0].GetOrgId() != "org-a" {
+		t.Fatalf("holds after the migration = (%v, %v), want org-a kept", hs, err)
+	}
 	insert := func(days int32) error {
 		_, err := pool.Exec(ctx, `INSERT INTO retention_windows (class, days) VALUES (1, $1)
 			ON CONFLICT (class) DO UPDATE SET days = EXCLUDED.days`, days)
