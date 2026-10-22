@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`internal/cmd` tests no longer read the developer's real credential store** (#2922). `TestCanonicalServerAddr_SchemelessResolvesToStoredURL` failed in package order on a machine with real credentials, and its failure output printed the real token. The test binary now runs with `HOME` and the `CONTAINARIUM_*` environment replaced by a throwaway directory, `withTempHome` resets the flag globals on the way in as well as out, a guard test fails if the credential store resolves outside the temp dir, and no assertion in the package prints a token (a short hash is printed instead).
+
 ## [0.114.3] - 2026-10-22
 
 ### Fixed

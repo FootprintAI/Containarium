@@ -8,5 +8,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	os.Exit(postgres.Run(m.Run))
+	cleanup := isolateCredentialStore()
+	code := postgres.Run(m.Run)
+	cleanup()
+	os.Exit(code)
 }
