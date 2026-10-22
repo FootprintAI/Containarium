@@ -1,7 +1,10 @@
 package container
 
 import (
+	"bytes"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 
@@ -16,9 +19,20 @@ type installStackBackend struct {
 	// installErr, when set, fails the package-install Exec (apt-get install).
 	installErr error
 	config     map[string]string // SetConfig writes, by key
+	// setConfigErrs are returned by successive SetConfig calls (nil = succeed).
+	setConfigErrs  []error
+	setConfigCalls int
 }
 
 func (b *installStackBackend) SetConfig(_, key, value string) error {
+	b.setConfigCalls++
+	if len(b.setConfigErrs) > 0 {
+		err := b.setConfigErrs[0]
+		b.setConfigErrs = b.setConfigErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	if b.config == nil {
 		b.config = map[string]string{}
 	}
@@ -123,6 +137,41 @@ func TestInstallStack_RecordsStoredStack(t *testing.T) {
 		}
 		if v, ok := b.config[incus.StackKey]; ok {
 			t.Errorf("%s was written (%q) despite the failure", incus.StackKey, v)
+		}
+	})
+}
+
+// A failure to record the stack must not fail an install that succeeded: it is
+// logged. A single conflicting write (Incus ETag conflict while something else
+// updates the instance) is retried once so the stack is not silently left
+// unrecorded.
+func TestInstallStack_RecordFailureIsLoggedNotReturned(t *testing.T) {
+	t.Run("persistent failure is logged, install still succeeds", func(t *testing.T) {
+		var logs bytes.Buffer
+		log.SetOutput(&logs)
+		defer log.SetOutput(os.Stderr)
+
+		b := &installStackBackend{setConfigErrs: []error{errors.New("etag mismatch"), errors.New("etag mismatch")}}
+		if err := NewWithBackend(b).InstallStack("alice", "nodejs"); err != nil {
+			t.Fatalf("InstallStack returned %v; a record failure must not fail a successful install", err)
+		}
+		if !strings.Contains(logs.String(), "could not record it") {
+			t.Errorf("record failure was not logged; log = %q", logs.String())
+		}
+		if _, ok := b.config[incus.StackKey]; ok {
+			t.Error("the key was written despite both attempts failing")
+		}
+	})
+	t.Run("one conflicting write is retried", func(t *testing.T) {
+		b := &installStackBackend{setConfigErrs: []error{errors.New("etag mismatch")}}
+		if err := NewWithBackend(b).InstallStack("alice", "nodejs"); err != nil {
+			t.Fatalf("InstallStack: %v", err)
+		}
+		if got := b.config[incus.StackKey]; got != "nodejs" {
+			t.Errorf("%s = %q after one retry, want nodejs", incus.StackKey, got)
+		}
+		if b.setConfigCalls != 2 {
+			t.Errorf("SetConfig calls = %d, want 2", b.setConfigCalls)
 		}
 	})
 }
