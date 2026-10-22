@@ -34,6 +34,11 @@ These defaults were accepted on the sprint umbrella (#2727, Q6). Defaults
 are not written to the database: `containarium retention policy get` marks
 a class `(default)` until an admin sets it.
 
+A window must be between 1 and 36500 days (100 years). The upper bound
+keeps the cutoff a sweeper computes from it far inside the range of a Go
+`time.Duration`, which overflows past about 106,751 days. The Postgres
+store enforces the same bound with a `CHECK` constraint.
+
 ```bash
 containarium retention policy get --server <host>:50051
 containarium retention policy set --prompts 14 --server <host>:50051
@@ -67,10 +72,18 @@ Changes are audited:
 
 - **What is logged.** A policy set, a hold and a release each write an
   audit entry naming the caller. The actions are `retention.policy.set`,
-  `retention.hold.set` and `retention.hold.release`. The entry is written
-  inside the same store transaction as the change.
+  `retention.hold.set` and `retention.hold.release`. A release entry names
+  the admin who released the hold; its detail also keeps who set it.
+- **The entry is written while the change is uncommitted.** The audit
+  store writes the entry through its own connection, while the retention
+  store holds the change in an open transaction (on Postgres) or under its
+  lock (in memory).
 - **A failed audit write fails the change.** The change is rolled back and
-  the call returns `INTERNAL`.
+  the call returns `INTERNAL`, so a change never lands without its entry.
+- **The reverse can happen in one rare case.** If the commit fails after
+  the entry was written, the audit log keeps an entry for a change that
+  never happened. `containarium retention policy get` then shows the lower
+  revision, and `retention hold list` shows the hold state before the call.
 - **With no audit store, changes go unrecorded.** On a daemon without one,
   a change succeeds and **no audit entry is kept**. That is the case when
   the daemon has no Postgres, REST is disabled, or the audit store failed
@@ -85,6 +98,17 @@ Where the policy and holds are stored:
 - **If Postgres is configured but the store cannot be created at startup**,
   every retention call fails `UNAVAILABLE` until the daemon is restarted
   with Postgres reachable.
+
+## Known limits
+
+- **Any admin can hold or release any org.** Retention is per daemon (Q24
+  on #2727), so a daemon-wide admin can place or release a hold on any
+  org. There is no org-scoped role for holds.
+- **Org ids are not checked against known orgs.** An org id is stored as
+  given, after trimming whitespace. A mistyped id places a hold that
+  protects nothing, and `hold list` shows it like any other. An id
+  containing `/` is rejected, because the REST routes carry the org in one
+  path segment.
 
 ## Inventory
 
@@ -121,9 +145,12 @@ slice #2878, which also closes #2420.
 
 These stores are not covered by the retention classes:
 
-- **Stores inside a box.** Code-run records under `/tmp/agent-box/` (their
-  `command` field holds the prompt) and a coding tool's own session files
-  live and die with the box.
+- **Stores inside a box.** These include code-run records under
+  `/tmp/agent-box/` (their `command` field holds the prompt) and a coding
+  tool's own session files. They live and die with the box.
+  - The agent run journals in the inventory are also inside the box. They
+    are listed because the daemon already removes them after 7 days, but
+    the session-transcripts window never sweeps them (Q25 on #2727).
 - **Backups.**
   - Disk snapshots of a backend's data disk are opt-in and kept 30 days.
     They hold every Postgres table above and every box filesystem.
