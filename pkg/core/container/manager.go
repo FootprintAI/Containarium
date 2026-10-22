@@ -241,7 +241,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 	// Record whether podman was requested, always, so a box created with it
 	// off is distinguishable from a legacy box with no key (#2858).
-	labelConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
+	_ = strconv.FormatBool(opts.EnablePodman)
 	// Record the requested stack so list/get can report it later (#2163), but
 	// only a stack that resolves: installPackages silently skips an unknown
 	// ID, so recording it would report a stack that was never installed.
