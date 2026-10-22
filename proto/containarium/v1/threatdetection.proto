@@ -313,8 +313,8 @@ message FindingResponse {
 enum KillSkipReason {
   KILL_SKIP_REASON_UNSPECIFIED = 0;
   // The pid now belongs to a different cgroup than the container's, or to a
-  // different process of the same container: its start time no longer
-  // matches the matched exec's (#2765).
+  // different process of the same container: it started after the matched
+  // exec was seen (#2765).
   KILL_SKIP_REASON_PID_REUSED = 1;
   // The process exited before the signal.
   KILL_SKIP_REASON_PROCESS_GONE = 2;
@@ -324,10 +324,15 @@ enum KillSkipReason {
   KILL_SKIP_REASON_POLICY_UNREADABLE = 4;
   // Any other refusal (host or Incus error).
   KILL_SKIP_REASON_OTHER = 5;
-  // The matched exec carries no process start time (the process had already
-  // exited when the exec watcher decoded it), so the pid cannot be confirmed
-  // as the matched process and is never signalled (#2765).
+  // The pid cannot be confirmed as the matched process: the matched exec has
+  // no boot-clock stamp, or the pid's start time could not be read. It is
+  // never signalled (#2765).
   KILL_SKIP_REASON_START_TIME_UNKNOWN = 6;
+  // The container does not run under Incus: its init has no Incus payload
+  // cgroup ("lxc.payload.<name>"), so the pid cannot be confirmed as one of
+  // the container's processes. kill_process is Incus-only and is refused up
+  // front on any other runtime (#2768); the finding is still raised.
+  KILL_SKIP_REASON_RUNTIME_UNSUPPORTED = 7;
 }
 
 // ProcessPolicy says what a HIGH mining finding does to its container
@@ -462,6 +467,15 @@ message GetSentryStatusResponse {
   // full, cumulative since the object loaded. Non-zero means a burst
   // outran the consumer; the events are gone, never blocked the exec.
   int64 exec_events_lost = 6;
+  // Exec hash requests the miner-signature hasher dropped because its queue
+  // was full, cumulative since the daemon started (#2768). Requests are made
+  // only while sha256 entries exist; a dropped exec is never hashed, so a
+  // sha256 entry can miss it (name and argv entries still matched it).
+  // An executable already hashed is served from a cache by (device, inode,
+  // size, mtime, ctime) without being read again, so the queue drains fast
+  // and a non-zero count means a burst of execs the worker could not keep
+  // up with.
+  int64 exec_hashes_dropped = 7;
 }
 
 // ExecEvent is one live exec in a tenant container, as streamed by
