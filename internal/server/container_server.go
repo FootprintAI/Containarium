@@ -4256,14 +4256,9 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		},
 		Labels:    st.Labels,
 		CreatedAt: st.CreatedAt.Unix(),
-		// Known inaccurate (#2858): reported as true for every box
-		// regardless of the create-time enable_podman flag. On LXC that flag
-		// decides whether podman is installed, whether nesting is enabled and
-		// whether the baked image is used (pkg/core/container/manager.go), so a
-		// box created with enable_podman=false still reports true here. Kept
-		// as-is pending the decision on the follow-up, which would persist and
-		// read the flag back the way Stack is.
-		PodmanEnabled: true,
+		// Read back from the box (user.containarium.podman_enabled); boxes
+		// created before that key existed report true. See #2858.
+		PodmanEnabled: st.PodmanEnabled,
 		// Empty when no stack is recorded: K8s does not persist it, and LXC
 		// boxes created before user.containarium.stack existed have none.
 		Stack:                st.Stack,

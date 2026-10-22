@@ -413,6 +413,8 @@ func (b *Backend) statusOf(tenant string, sb *sandboxv1beta1.Sandbox) *box.BoxSt
 		Resources: resourcesOf(sb),
 		Labels:    metaFromAnnotations(sb.Annotations),
 		BackendID: "k8s",
+		// No podman toggle on K8s; keep reporting the long-standing true.
+		PodmanEnabled: true,
 	}
 	// Pod IP, populated by the controller once the pod is scheduled.
 	if len(sb.Status.PodIPs) > 0 {
