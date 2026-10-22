@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The daemon image workflow is valid again, so a release tag builds and signs `ghcr.io/footprintai/containarium`.** `containarium-daemon.yml` had two job-level `permissions:` blocks after #2909 and #2866 each added one, which GitHub rejects as a whole: the workflow did not run at all on the `v0.114.0` tag, so that release has no daemon image. The two blocks are merged into one (`contents: read`, `packages: write`, `security-events: write`, `id-token: write`). actionlint reports the duplicate (`key "permissions" is duplicated in "daemon" job`) and passes on the fixed file.
+
 ### Internal
 
 - **The agent-skill run-lease e2e lane works with failed runs reported as failed** (#2931). Its warm-up run accepts the 500 that names an in-box agent failure (the lane runs with a dummy provider key, so the real agent always fails upstream), and its stub `agent-runtime` writes a minimal `artifact.json` before exiting so the measured runs are real successes. Without this, the release-blocking lane failed at warm-up on v0.114.1.
