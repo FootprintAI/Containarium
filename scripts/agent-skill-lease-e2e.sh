@@ -498,7 +498,9 @@ assert_revoked_within_budget() {
 # the dummy provider key, so it fails upstream; since #2931 RunAgentSkill
 # reports that as a 500 naming the in-box failure instead of a 200. That 500
 # still means the box was provisioned and the run started and ended, so it is
-# accepted. Any other non-200 (provisioning, auth, a crash) still fails here.
+# accepted. So is the 400 for a box with no agent-runtime yet (the recipe's
+# install is best-effort; incus reports bash's 127 as "Command not found").
+# Any other non-200 (provisioning, auth, a crash) still fails here.
 log "warm-up run (provisions the box; the agent-runtime recipe installs Node, this is the slow part)"
 WARM_RUN_ID="lease-e2e-warmup-$$"
 run_skill "$WARM_RUN_ID" "$WORKDIR/warm"
@@ -506,9 +508,11 @@ warm_code="$(read_code "$WORKDIR/warm.code")"
 if [ "$warm_code" != "200" ]; then
   if [ "$warm_code" = "500" ] && grep -q "agent run $WARM_RUN_ID failed: in-box agent on " "$WORKDIR/warm.body" 2>/dev/null; then
     ok "warm-up's in-box agent failed upstream as expected with the dummy key (500 names the in-box failure)"
+  elif [ "$warm_code" = "400" ] && grep -q "agent run $WARM_RUN_ID failed: .*agent-runtime is not installed in the box" "$WORKDIR/warm.body" 2>/dev/null; then
+    ok "warm-up found no agent-runtime in the box yet (400 FailedPrecondition): the recipe's best-effort install did not land, which the stub below replaces anyway"
   else
     echo "---- warm-up response ----"; read_out "$WORKDIR/warm.body"; echo
-    fail "warm-up RunAgentSkill returned $warm_code (want 200, or a 500 naming an in-box agent failure); the box never came up, so there is nothing to measure"
+    fail "warm-up RunAgentSkill returned $warm_code (want 200, a 500 naming an in-box agent failure, or a 400 saying agent-runtime is not installed); the box never came up, so there is nothing to measure"
   fi
 fi
 sudo incus info "$BOX" >/dev/null 2>&1 || fail "skill box $BOX does not exist after a successful run"

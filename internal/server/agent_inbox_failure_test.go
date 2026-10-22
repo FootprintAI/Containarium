@@ -86,6 +86,22 @@ func TestRunInBoxAgentResult_NonZeroExit(t *testing.T) {
 			wantMissing:  true,
 		},
 		{
+			// A real incus host never reports 127 as an exit code: its exec
+			// driver converts it into an op error (ErrExecCommandNotFound),
+			// which the incus client wraps as "command execution failed: ...".
+			name:         "incus 'Command not found' op error means the runtime is missing",
+			box:          &fakeInBox{exitCode: 127, execErr: errors.New("command execution failed: Command not found")},
+			wantContains: []string{"agent-runtime"},
+			wantMissing:  true,
+		},
+		{
+			// Same conversion for 126.
+			name:         "incus 'Command not executable' op error means the runtime is missing",
+			box:          &fakeInBox{exitCode: 126, execErr: errors.New("command execution failed: Command not executable")},
+			wantContains: []string{"agent-runtime"},
+			wantMissing:  true,
+		},
+		{
 			name:         "exec transport failure errors",
 			box:          &fakeInBox{execErr: errors.New("websocket closed")},
 			wantContains: []string{"websocket closed"},

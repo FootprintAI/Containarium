@@ -1484,6 +1484,17 @@ var errInBoxRuntimeMissing = errors.New("agent-runtime is not installed in the b
 // exitCommandNotFound is bash's exit status for a command it cannot find.
 const exitCommandNotFound = 127
 
+// incusExecCommandMissing matches the op errors a real incus host returns in
+// place of exit statuses 127 and 126: its exec driver converts them into
+// ErrExecCommandNotFound ("Command not found") and
+// ErrExecCommandNotExecutable ("Command not executable"), so the exit code
+// never reaches the caller as data. Both mean the same thing here as a bare
+// 127: agent-runtime is not there to run.
+func incusExecCommandMissing(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Command not found") || strings.Contains(msg, "Command not executable")
+}
+
 // maxInBoxErrorBytes caps how much of the in-box agent's own error text
 // (artifact.json's `error`, stderr) is carried into a returned error or a
 // log line. The text comes from inside the box and is untrusted.
@@ -1556,10 +1567,10 @@ func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, sk
 
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID, engineRes, model)})
-	if err != nil {
+	if err != nil && !incusExecCommandMissing(err) {
 		return "", fmt.Errorf("could not exec the in-box agent on %s: %w", containerName, err)
 	}
-	if exitCode == exitCommandNotFound {
+	if err != nil || exitCode == exitCommandNotFound {
 		log.Printf("[agent-skill] agent-runtime not found on %s (image may not ship it yet); stderr=%s",
 			containerName, scrubInBoxText(stderr))
 		return "", fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
