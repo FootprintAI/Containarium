@@ -828,6 +828,7 @@ jobs:
       contents: read
       packages: write
       security-events: write   # for the Trivy SARIF upload below
+      id-token: write   # cosign keyless signature of the pushed image only
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -856,6 +857,7 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-model-gateway"
           {
+            echo "image=${base}"
             # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
             # the moving tags keep pointing at the newest full release.
             case "$version" in
@@ -867,6 +869,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push model-gateway image
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           # Repo root context: the Dockerfile builds ./cmd/model-gateway.
@@ -883,6 +886,19 @@ jobs:
           # and provenance/sbom force one even for a single-platform build.
           provenance: true
           sbom: true
+
+      # Keyless signature of the pushed digest (never a tag), verified in
+      # the same step against this workflow at this tag; the job fails if
+      # verification does. Tag pushes only, like release.yml's sign-release:
+      # a signature is a permanent public Rekor entry, and a rehearsal
+      # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
+      - name: Sign and verify the image (cosign keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/sign-image
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          digest: ${{ steps.build.outputs.digest }}
+          workflow-file: release.yml
 
       # This image has no separate PR-validation build, so this only scans
       # on a real release tag — a workflow_dispatch rehearsal doesn't push,
