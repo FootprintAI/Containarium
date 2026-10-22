@@ -109,6 +109,13 @@ const (
 	// AgentSkillService, not the skill's in-box token.
 	ScopeAgentsRead = "agents:read"
 	ScopeAgentsRun  = "agents:run"
+	// agents:run-for-org — carried by a service credential (the managed
+	// control plane's driver token) that has ALREADY authorized the end user
+	// and starts a skill/crew run attributed to an organization, so the run
+	// spends that org's registered provider key (#3028). Matched literally:
+	// neither the wildcard nor an unscoped admin token carries it, so an
+	// operator token cannot spend another org's key.
+	ScopeAgentsRunForOrg = "agents:run-for-org"
 	// agents:call delegates a task to a running peer agent over A2A
 	// (SendAgentTask). Separate from agents:run: running a skill provisions a
 	// box, calling a peer only sends it work.
@@ -220,7 +227,7 @@ var AllScopes = []string{
 	ScopeTrafficRead,
 	ScopeCodeWrite, ScopeSSHWrite,
 	ScopeTokensWrite, ScopeTokensDelegate,
-	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
+	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsRunForOrg, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeSSHAuthorize,

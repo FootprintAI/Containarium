@@ -1474,9 +1474,19 @@ type RunAgentSkillRequest struct {
 	// so an override naming an engine with no usable key is refused the same
 	// way an unready manifest engine is. UNSPECIFIED (the default) means "use
 	// the manifest", unchanged pre-#2228 behavior.
-	Engine        AgentEngine `protobuf:"varint,10,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Engine AgentEngine `protobuf:"varint,10,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
+	// The organization this run is attributed to for MODEL KEY RESOLUTION
+	// (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+	// and spends that org's registered provider key, instead of the owner
+	// derived from the shared skill box's cloud_org_id label or the calling
+	// identity. The skill box is shared across runs, so the org has to travel
+	// with the request. Honoured ONLY for a service credential carrying the
+	// literal agents:run-for-org scope (a managed control plane that has already
+	// authorized the end user); any other caller setting it is PermissionDenied.
+	// Empty = unchanged behaviour.
+	OnBehalfOfOrgId string `protobuf:"bytes,11,opt,name=on_behalf_of_org_id,json=onBehalfOfOrgId,proto3" json:"on_behalf_of_org_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RunAgentSkillRequest) Reset() {
@@ -1577,6 +1587,13 @@ func (x *RunAgentSkillRequest) GetEngine() AgentEngine {
 		return x.Engine
 	}
 	return AgentEngine_AGENT_ENGINE_UNSPECIFIED
+}
+
+func (x *RunAgentSkillRequest) GetOnBehalfOfOrgId() string {
+	if x != nil {
+		return x.OnBehalfOfOrgId
+	}
+	return ""
 }
 
 type RunAgentSkillResponse struct {
@@ -3078,6 +3095,16 @@ type RunCrewRequest struct {
 	// no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
 	// unchanged pre-#2228 behavior.
 	EngineOverrides map[string]AgentEngine `protobuf:"bytes,9,rep,name=engine_overrides,json=engineOverrides,proto3" json:"engine_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value,enum=containarium.v1.AgentEngine"`
+	// The organization every member run is attributed to for MODEL KEY RESOLUTION
+	// (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+	// and spends that org's registered provider key, instead of the owner
+	// derived from the shared skill box's cloud_org_id label or the calling
+	// identity. The skill box is shared across runs, so the org has to travel
+	// with the request. Honoured ONLY for a service credential carrying the
+	// literal agents:run-for-org scope (a managed control plane that has already
+	// authorized the end user); any other caller setting it is PermissionDenied.
+	// Empty = unchanged behaviour.
+	OnBehalfOfOrgId string `protobuf:"bytes,10,opt,name=on_behalf_of_org_id,json=onBehalfOfOrgId,proto3" json:"on_behalf_of_org_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -3173,6 +3200,13 @@ func (x *RunCrewRequest) GetEngineOverrides() map[string]AgentEngine {
 		return x.EngineOverrides
 	}
 	return nil
+}
+
+func (x *RunCrewRequest) GetOnBehalfOfOrgId() string {
+	if x != nil {
+		return x.OnBehalfOfOrgId
+	}
+	return ""
 }
 
 type RunCrewResponse struct {
@@ -3767,7 +3801,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x06engine\x18\x01 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12R\n" +
 	"\x11credential_source\x18\x02 \x01(\x0e2%.containarium.v1.CodeCredentialSourceR\x10credentialSource\x129\n" +
 	"\n" +
-	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xde\x02\n" +
+	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\x8c\x03\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
@@ -3782,7 +3816,8 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12-\n" +
 	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\x124\n" +
 	"\x06engine\x18\n" +
-	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\"\xd3\x01\n" +
+	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12,\n" +
+	"\x13on_behalf_of_org_id\x18\v \x01(\tR\x0fonBehalfOfOrgId\"\xd3\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +
@@ -3890,7 +3925,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x0eGetCrewRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"<\n" +
 	"\x0fGetCrewResponse\x12)\n" +
-	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xb4\x03\n" +
+	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xe2\x03\n" +
 	"\x0eRunCrewRequest\x12\x17\n" +
 	"\acrew_id\x18\x01 \x01(\tR\x06crewId\x12\x1d\n" +
 	"\n" +
@@ -3903,7 +3938,9 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
 	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
 	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12_\n" +
-	"\x10engine_overrides\x18\t \x03(\v24.containarium.v1.RunCrewRequest.EngineOverridesEntryR\x0fengineOverrides\x1a`\n" +
+	"\x10engine_overrides\x18\t \x03(\v24.containarium.v1.RunCrewRequest.EngineOverridesEntryR\x0fengineOverrides\x12,\n" +
+	"\x13on_behalf_of_org_id\x18\n" +
+	" \x01(\tR\x0fonBehalfOfOrgId\x1a`\n" +
 	"\x14EngineOverridesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
 	"\x05value\x18\x02 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x05value:\x028\x01\"=\n" +

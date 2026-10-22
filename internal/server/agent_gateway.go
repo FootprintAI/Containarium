@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"log"
 	"os"
 	"sort"
@@ -142,9 +144,13 @@ func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner,
 // owner is never stamped and never degrades to a different owner: a stamped
 // but malformed attribution must not fall through to the caller's username,
 // since that would bill someone the cloud did not attribute the box to.
-func runKeyOwner(ctx context.Context, box *pb.Container) string {
+func runKeyOwner(ctx context.Context, box *pb.Container, orgID string) string {
 	var owner string
-	if orgID := strings.TrimSpace(box.GetLabels()[cloudOrgIDLabel]); orgID != "" {
+	if orgID != "" {
+		// The request's own org attribution (#3028) wins: the skill box is
+		// shared across runs, so its label cannot say whose run this is.
+		owner = modelgateway.OrgKeyOwner(orgID)
+	} else if orgID := strings.TrimSpace(box.GetLabels()[cloudOrgIDLabel]); orgID != "" {
 		owner = modelgateway.OrgKeyOwner(orgID)
 	} else if username, _, ok := auth.SubjectFromGRPCContext(ctx); ok && username != "" {
 		owner = modelgateway.UserKeyOwner(username)
@@ -156,6 +162,25 @@ func runKeyOwner(ctx context.Context, box *pb.Container) string {
 		return ""
 	}
 	return owner
+}
+
+// authorizeRunOrg validates RunAgentSkillRequest/RunCrewRequest.
+// on_behalf_of_org_id (#3028) and returns it, or "" when unset. Setting it
+// spends that org's provider key, so only a service credential carrying the
+// literal agents:run-for-org scope may; it must also be a well-formed id.
+func authorizeRunOrg(ctx context.Context, orgID string) (string, error) {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return "", nil
+	}
+	if !auth.HasLiteralScope(ctx, auth.ScopeAgentsRunForOrg) {
+		return "", status.Errorf(codes.PermissionDenied,
+			"on_behalf_of_org_id requires the %s scope", auth.ScopeAgentsRunForOrg)
+	}
+	if err := modelgateway.ValidateKeyOwner(modelgateway.OrgKeyOwner(orgID)); err != nil {
+		return "", status.Errorf(codes.InvalidArgument, "on_behalf_of_org_id: %v", err)
+	}
+	return orgID, nil
 }
 
 // mintRunGatewayToken mints the gateway token for one skill/crew run on the box
@@ -179,8 +204,8 @@ func runKeyOwner(ctx context.Context, box *pb.Container) string {
 //
 // model (#2229) is the skill manifest's own pinned model — see
 // gatewayProvisioning.mintGatewayToken's doc for what it does to the token.
-func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider, model string, box *pb.Container) (string, tokenid.MintedID, error) {
-	keyOwner := runKeyOwner(ctx, box)
+func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider, model string, box *pb.Container, orgID string) (string, tokenid.MintedID, error) {
+	keyOwner := runKeyOwner(ctx, box, orgID)
 	if keyOwner == "" {
 		log.Printf("[agent-skill] run %s on %s has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
 	}

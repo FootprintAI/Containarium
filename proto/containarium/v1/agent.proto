@@ -350,6 +350,16 @@ message RunAgentSkillRequest {
   // way an unready manifest engine is. UNSPECIFIED (the default) means "use
   // the manifest", unchanged pre-#2228 behavior.
   AgentEngine engine = 10;
+  // The organization this run is attributed to for MODEL KEY RESOLUTION
+  // (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+  // and spends that org's registered provider key, instead of the owner
+  // derived from the shared skill box's cloud_org_id label or the calling
+  // identity. The skill box is shared across runs, so the org has to travel
+  // with the request. Honoured ONLY for a service credential carrying the
+  // literal agents:run-for-org scope (a managed control plane that has already
+  // authorized the end user); any other caller setting it is PermissionDenied.
+  // Empty = unchanged behaviour.
+  string on_behalf_of_org_id = 11;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -895,6 +905,16 @@ message RunCrewRequest {
   // no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
   // unchanged pre-#2228 behavior.
   map<string, AgentEngine> engine_overrides = 9;
+  // The organization every member run is attributed to for MODEL KEY RESOLUTION
+  // (#3028): when set, the run's gateway token carries key_owner "org:<id>"
+  // and spends that org's registered provider key, instead of the owner
+  // derived from the shared skill box's cloud_org_id label or the calling
+  // identity. The skill box is shared across runs, so the org has to travel
+  // with the request. Honoured ONLY for a service credential carrying the
+  // literal agents:run-for-org scope (a managed control plane that has already
+  // authorized the end user); any other caller setting it is PermissionDenied.
+  // Empty = unchanged behaviour.
+  string on_behalf_of_org_id = 10;
 }
 message RunCrewResponse {
   CrewRun run = 1;

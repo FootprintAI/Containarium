@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`on_behalf_of_org_id` on `RunAgentSkillRequest` and `RunCrewRequest` attributes a run's model key to an organization** (#3028). The skill box is shared across runs, so its `cloud_org_id` label cannot say whose run it is; a run fell back to the calling identity's key owner and never found the org's registered key. With the field set, the run's gateway token carries `org:<id>` and spends that org's key. Only a service credential holding the new literal `agents:run-for-org` scope may set it (the wildcard and an unscoped admin token do not); anyone else is `PermissionDenied`. Unset keeps today's behaviour.
+
 ## [0.113.0] - 2026-10-22
 
 ### Added

@@ -158,6 +158,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	if err != nil {
 		return nil, err
 	}
+	// on_behalf_of_org_id (#3028): refuse an unauthorized or malformed org
+	// attribution before any member is provisioned.
+	if _, err := authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
+		return nil, err
+	}
 	crew, err := s.catalog.Get(req.CrewId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
@@ -217,7 +222,11 @@ func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkil
 	// RunAgentSkillRequest.engine, applied once per member. A member with no
 	// entry gets the map's zero value, AGENT_ENGINE_UNSPECIFIED, which
 	// agentengine.Override treats as "no override".
-	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id]}
+	orgID, err := authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId())
+	if err != nil {
+		return runlease.Lease{}, "", err
+	}
+	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id], orgID: orgID}
 	containerName, _, lease, gitCommit, _, engineRes, err := s.agents.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, "", runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "", opts)
 	if err != nil {
