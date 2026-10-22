@@ -6448,7 +6448,7 @@
       },
       "put": {
         "summary": "Set retention windows",
-        "description": "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days \u003c 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.",
+        "description": "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days outside 1..36500 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller while the change is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes (if the commit itself fails after the entry was written, the log keeps an entry for a change that never happened); with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.",
         "operationId": "RetentionService_SetRetentionPolicy",
         "responses": {
           "200": {
@@ -18350,7 +18350,7 @@
         "days": {
           "type": "integer",
           "format": "int32",
-          "description": "Days a record of this class is kept, at most. Must be 1 or more."
+          "description": "Days a record of this class is kept, at most. Must be between 1 and\n36500 (100 years); the cap keeps a sweeper's cutoff arithmetic in range."
         },
         "isDefault": {
           "type": "boolean",
@@ -19564,7 +19564,7 @@
             "type": "object",
             "$ref": "#/definitions/RetentionWindow"
           },
-          "description": "The classes to change. Classes not listed keep their window. A class may\nappear once; UNSPECIFIED, an unknown class or days \u003c 1 is\nINVALID_ARGUMENT."
+          "description": "The classes to change. Classes not listed keep their window. A class may\nappear once; UNSPECIFIED, an unknown class, or days outside 1..36500 is\nINVALID_ARGUMENT."
         }
       }
     },
