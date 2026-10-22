@@ -1234,7 +1234,9 @@ type CreateContainerRequest struct {
 	// Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
 	// Run `containarium create --help` for the ids and what each one installs; the
 	// catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
-	// /etc/containarium/stacks.yaml.
+	// /etc/containarium/stacks.yaml. An unknown id is rejected with
+	// INVALID_ARGUMENT, and the error lists the valid ids; a create routed to a
+	// peer backend is validated by that backend against its own catalog.
 	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
 	//
