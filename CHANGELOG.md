@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **The agent-skill run-lease e2e lane works with failed runs reported as failed** (#2931). Its warm-up run accepts the 500 that names an in-box agent failure (the lane runs with a dummy provider key, so the real agent always fails upstream), and its stub `agent-runtime` writes a minimal `artifact.json` before exiting so the measured runs are real successes. Without this, the release-blocking lane failed at warm-up on v0.114.1.
+
 ## [0.114.1] - 2026-10-22
 
 ### Upgrading
