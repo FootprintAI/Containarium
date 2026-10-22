@@ -542,6 +542,10 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
+	// Unknown stack (#2860): refuse before any allocation or placement.
+	if err := validateStackID(req.Stack); err != nil {
+		return nil, err
+	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
 	// create path did not provision an encrypted dataset. It now does
 	// (#1341), so that statement is no longer true and the blanket refusal is

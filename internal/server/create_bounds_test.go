@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -121,5 +123,38 @@ func TestValidateBounds_EmptyRequestPasses(t *testing.T) {
 	req := &pb.CreateContainerRequest{}
 	if err := validateCreateContainerBounds(req); err != nil {
 		t.Fatalf("empty request should pass: %v", err)
+	}
+}
+
+// #2860: an unknown stack ID is rejected before anything is provisioned, and
+// the error lists the valid IDs so the caller can correct the typo.
+func TestValidateStack_RejectsUnknownID(t *testing.T) {
+	err := validateStackID("no-such-stack")
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument", err)
+	}
+	for _, want := range []string{"no-such-stack", "nodejs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q (the bad ID and the valid IDs)", err, want)
+		}
+	}
+}
+
+func TestValidateStack_AcceptsEmptyAndKnown(t *testing.T) {
+	for _, id := range []string{"", "nodejs"} {
+		if err := validateStackID(id); err != nil {
+			t.Errorf("validateStackID(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
+// The create RPC itself rejects it (an empty server would otherwise panic
+// further down, so reaching InvalidArgument proves the check runs first).
+func TestCreateContainer_UnknownStackRejected(t *testing.T) {
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", nil, []string{auth.ScopeContainersWrite})
+	srv := &ContainerServer{}
+	_, err := srv.CreateContainer(ctx, &pb.CreateContainerRequest{Username: "alice", Stack: "no-such-stack"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument", err)
 	}
 }

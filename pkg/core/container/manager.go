@@ -174,6 +174,14 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
+	// An unknown stack is refused before anything is created (#2860):
+	// installPackages silently skips an ID it cannot resolve, which would
+	// leave a box with nothing installed. The RPC rejects it first; this
+	// guards callers that reach the Manager directly.
+	if err := stacks.GetDefault().CheckStackID(opts.Stack); err != nil {
+		return nil, err
+	}
+
 	if opts.Verbose {
 		fmt.Printf("Creating container: %s\n", containerName)
 	}
