@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// Retention policy and legal holds (#2576, slice A #2875;
+// docs/security/DATA-FLOW-AND-RETENTION.md).
+//
+// This service stores the policy only: one window per data class for the
+// whole daemon, and a legal hold per org. Nothing is swept or deleted by
+// anything in this file; the dry-run sweeper and enforcement are later
+// slices (#2876, #2877, #2878, #2879).
+
+// RetentionClass is a kind of customer data with its own retention window.
+enum RetentionClass {
+  RETENTION_CLASS_UNSPECIFIED = 0;
+  // Prompts sent to a model or an agent (default 30 days).
+  RETENTION_CLASS_PROMPTS = 1;
+  // Model and agent responses (default 30 days).
+  RETENTION_CLASS_RESPONSES = 2;
+  // Gateway and API access logs (default 90 days).
+  RETENTION_CLASS_GATEWAY_LOGS = 3;
+  // Session transcripts and session records (default 90 days).
+  RETENTION_CLASS_SESSION_TRANSCRIPTS = 4;
+  // Evidence bundles such as Proof Packs (default 365 days).
+  RETENTION_CLASS_EVIDENCE_BUNDLES = 5;
+}
+
+// RetentionWindow is how long one class is kept, at most.
+message RetentionWindow {
+  RetentionClass class = 1;
+  // Days a record of this class is kept, at most. Must be 1 or more.
+  int32 days = 2;
+  // True when no admin has set this class and days is the built-in default.
+  // Ignored on a set.
+  bool is_default = 3;
+}
+
+// RetentionPolicy is the daemon-wide policy: one window for every class.
+message RetentionPolicy {
+  // Every class, in enum order, set or default.
+  repeated RetentionWindow windows = 1;
+  // 0 until the first set; every set adds 1.
+  int64 revision = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  string updated_by = 4;
+}
+
+// LegalHold stops deletion of an org's records, in every class, until an
+// admin releases it. A hold has no expiry.
+message LegalHold {
+  string org_id = 1;
+  string reason = 2;
+  string set_by = 3;
+  google.protobuf.Timestamp set_at = 4;
+}
+
+message GetRetentionPolicyRequest {}
+
+message GetRetentionPolicyResponse {
+  RetentionPolicy policy = 1;
+}
+
+message SetRetentionPolicyRequest {
+  // The classes to change. Classes not listed keep their window. A class may
+  // appear once; UNSPECIFIED, an unknown class or days < 1 is
+  // INVALID_ARGUMENT.
+  repeated RetentionWindow windows = 1;
+}
+
+message SetRetentionPolicyResponse {
+  RetentionPolicy policy = 1;
+}
+
+message ListLegalHoldsRequest {}
+
+message ListLegalHoldsResponse {
+  // Active holds, ordered by org id.
+  repeated LegalHold holds = 1;
+}
+
+message SetLegalHoldRequest {
+  // Required; must not contain '/' (it travels in one REST path segment).
+  string org_id = 1;
+  // Why the hold exists (a case or ticket reference). Required.
+  string reason = 2;
+}
+
+message SetLegalHoldResponse {
+  LegalHold hold = 1;
+}
+
+message ReleaseLegalHoldRequest {
+  string org_id = 1;
+}
+
+message ReleaseLegalHoldResponse {
+  // The hold that was released.
+  LegalHold hold = 1;
+}
+
+// RetentionService stores the retention policy and legal holds. Every RPC is
+// admin-only. A set, a hold and a release write an audit entry naming the
+// caller when the daemon has an audit store; a failed audit write fails the
+// change and leaves the store unchanged.
+service RetentionService {
+  rpc GetRetentionPolicy(GetRetentionPolicyRequest) returns (GetRetentionPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/retention/policy"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the retention policy";
+      description: "Return the window for every data class: the stored value, or the built-in default (30 days prompts and responses, 90 days gateway logs and session transcripts, 365 days evidence bundles) with is_default=true. Nothing is swept by this service. Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc SetRetentionPolicy(SetRetentionPolicyRequest) returns (SetRetentionPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/retention/policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set retention windows";
+      description: "Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days < 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc ListLegalHolds(ListLegalHoldsRequest) returns (ListLegalHoldsResponse) {
+    option (google.api.http) = {
+      get: "/v1/retention/holds"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List legal holds";
+      description: "Return every active legal hold, ordered by org id. Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc SetLegalHold(SetLegalHoldRequest) returns (SetLegalHoldResponse) {
+    option (google.api.http) = {
+      put: "/v1/retention/holds/{org_id}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Place a legal hold on an org";
+      description: "Hold every record of the org until the hold is released; a hold has no expiry. An empty org_id or reason, or an org_id containing '/', is INVALID_ARGUMENT; an org already on hold is ALREADY_EXISTS. Audited like a policy set. Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc ReleaseLegalHold(ReleaseLegalHoldRequest) returns (ReleaseLegalHoldResponse) {
+    option (google.api.http) = {
+      delete: "/v1/retention/holds/{org_id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Release an org's legal hold";
+      description: "Remove the org's hold. Its records past their window become eligible on the next sweep, with no grace period. An org with no hold is NOT_FOUND. Audited like a policy set. Admin role only.";
+      tags: "Retention";
+    };
+  }
+}

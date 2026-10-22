@@ -289,9 +289,10 @@ func (k *flakyPolicyKV) Set(_ context.Context, key, value string) error {
 }
 
 // TestProcessKilledRecorded_PolicyReadFailsAfterKill (#2766): the kill ran
-// and was audited, then the policy read for the policy action failed. The
-// policy action is skipped, but the finding must still say the process was
-// killed.
+// and was audited, then the policy store went away. The finding must still
+// say the process was killed. Since #2768 the kill and the policy action
+// share one policy read, so the store failing after the kill no longer
+// skips the policy action: it applies the policy the kill was decided on.
 func TestProcessKilledRecorded_PolicyReadFailsAfterKill(t *testing.T) {
 	ctx := context.Background()
 	fx := newResponderFixture(t, false)
@@ -319,8 +320,8 @@ func TestProcessKilledRecorded_PolicyReadFailsAfterKill(t *testing.T) {
 	if f.Response == nil || !f.Response.ProcessKilled {
 		t.Fatalf("stored response = %+v, want process_killed=true", f.Response)
 	}
-	if setCPUCalls(fx) != 0 {
-		t.Fatal("applied a policy action with an unreadable policy")
+	if setCPUCalls(fx) != 1 {
+		t.Fatalf("throttle applied %d times, want once, from the policy read the kill used", setCPUCalls(fx))
 	}
 }
 

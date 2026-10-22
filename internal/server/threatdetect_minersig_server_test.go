@@ -56,6 +56,9 @@ func TestMinerSignatureRPCs_RoundTrip(t *testing.T) {
 	_, dupBaseline := s.AddMinerSignature(badDestAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: name, Pattern: "xmrig"}})
 	_, catchAllName := s.AddMinerSignature(badDestAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: name, Pattern: "*"}})
 	_, shortArgv := s.AddMinerSignature(badDestAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, Pattern: "-o"}})
+	_, removeBadHash := s.RemoveMinerSignature(badDestAdminCtx(), &pb.RemoveMinerSignatureRequest{Kind: pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256, Pattern: "abc"})
+	_, unknownKind := s.AddMinerSignature(badDestAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: pb.MinerSignatureKind(99), Pattern: "xmrig2"}})
+	_, emptyArgv := s.AddMinerSignature(badDestAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, Pattern: "   "}})
 	_, nonAdmin := s.AddMinerSignature(secWriteNonAdminCtx(), &pb.AddMinerSignatureRequest{Signature: &pb.MinerSignature{Kind: name, Pattern: "foo"}})
 	codesFor := []struct {
 		name string
@@ -68,6 +71,9 @@ func TestMinerSignatureRPCs_RoundTrip(t *testing.T) {
 		{"duplicate of baseline", dupBaseline, codes.AlreadyExists},
 		{"catch-all name glob", catchAllName, codes.InvalidArgument},
 		{"too-short argv marker", shortArgv, codes.InvalidArgument},
+		{"remove bad sha256", removeBadHash, codes.InvalidArgument},
+		{"unknown kind", unknownKind, codes.InvalidArgument},
+		{"blank argv marker", emptyArgv, codes.InvalidArgument},
 		{"non-admin add", nonAdmin, codes.PermissionDenied},
 	}
 	for _, c := range codesFor {

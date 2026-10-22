@@ -211,6 +211,20 @@ the hostcheck, agentbox, and sandbox/dialer tests on Linux and rejects
 agent-box source files enabled for Windows. Cross-compilation checks
 build compatibility; it does not run the binaries on Windows or macOS.
 
+Two whole-tree invocations are also supported and kept green by
+`scripts/test-build-constraint-sets.sh` (run in the same workflow):
+
+- `go vet -tags containarium_client ./...` passes for every package,
+  tests included. A server-side file that uses a `!containarium_client`
+  symbol (for example the Postgres-backed stores in `internal/auth` and
+  `internal/cluster`) carries the same constraint.
+- `GOOS=windows go build ./...` is **not** supported as written: the
+  daemon side imports `internal/agentbox` (Unix-only) or `internal/netbpf`
+  (Linux eBPF). The script builds every other package for Windows and
+  keeps the excluded set as an explicit, reviewed list
+  (`WINDOWS_EXCLUDED`). Run the script rather than `go build ./...` to
+  check Windows locally.
+
 ### Rehearsing a release build without publishing
 
 `release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept

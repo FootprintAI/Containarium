@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // mTLS transport tests for the CA-provider surface (#1415, option 1):
@@ -11,6 +13,7 @@ import (
 	"crypto/x509"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -161,5 +164,78 @@ func TestReconciler_DeploysAutoscalerOntoCP(t *testing.T) {
 	unit := string(host.files[cp+":/root/containarium-ca-bootstrap.sh"])
 	if !strings.Contains(unit, clustercore.CAImage) {
 		t.Fatal("CA unit does not pin the image digest")
+	}
+}
+
+// The scale-down timers travel reconciler -> DeployCA -> the unit on the
+// CP. Unset, the unit carries no --scale-down-* flag (stock autoscaler).
+func TestReconciler_CAScaleDownTimersReachTheUnit(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		delay, unneeded time.Duration
+		want, wantNot   []string
+	}{
+		{name: "unset keeps the stock timers", wantNot: []string{"--scale-down-"}},
+		{
+			name: "set timers are rendered", delay: time.Minute, unneeded: time.Minute,
+			want: []string{"--scale-down-delay-after-add=1m0s", "--scale-down-unneeded-time=1m0s"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, rec, host := testReconcilerRig(t)
+			rec.SetCADeployer("10.0.0.1:36442", func(owner, name string) (clustercore.CACredentials, error) {
+				return clustercore.CACredentials{ClientCertPEM: []byte("C"), ClientKeyPEM: []byte("K"), CACertPEM: []byte("A")}, nil
+			})
+			rec.SetCAScaleDown(tc.delay, tc.unneeded)
+			mustCreate(t, srv, tenantCtx("alice"), "demo")
+			ctx := context.Background()
+			for i := 0; i < 3; i++ {
+				rec.ReconcileOnce(ctx)
+			}
+			unit := string(host.files["alice-k8s-demo-cp:/root/containarium-ca-bootstrap.sh"])
+			if unit == "" {
+				t.Fatal("no CA unit deployed")
+			}
+			for _, s := range tc.want {
+				if !strings.Contains(unit, s) {
+					t.Errorf("unit missing %q:\n%s", s, unit)
+				}
+			}
+			for _, s := range tc.wantNot {
+				if strings.Contains(unit, s) {
+					t.Errorf("unit must not contain %q:\n%s", s, unit)
+				}
+			}
+		})
+	}
+}
+
+func TestParseCAScaleDownEnv(t *testing.T) {
+	const (
+		delayKey    = "CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD"
+		unneededKey = "CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME"
+	)
+	for _, tc := range []struct {
+		name                    string
+		env                     map[string]string
+		wantDelay, wantUnneeded time.Duration
+		wantErr                 bool
+	}{
+		{name: "unset", env: map[string]string{}},
+		{name: "both", env: map[string]string{delayKey: "1m", unneededKey: "90s"}, wantDelay: time.Minute, wantUnneeded: 90 * time.Second},
+		{name: "one", env: map[string]string{unneededKey: "2m"}, wantUnneeded: 2 * time.Minute},
+		{name: "not a duration", env: map[string]string{delayKey: "soon"}, wantErr: true},
+		{name: "zero is not an override", env: map[string]string{delayKey: "0s"}, wantErr: true},
+		{name: "negative", env: map[string]string{unneededKey: "-1m"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			delay, unneeded, err := parseCAScaleDownEnv(func(k string) string { return tc.env[k] })
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err == nil && (delay != tc.wantDelay || unneeded != tc.wantUnneeded) {
+				t.Fatalf("got (%v, %v), want (%v, %v)", delay, unneeded, tc.wantDelay, tc.wantUnneeded)
+			}
+		})
 	}
 }

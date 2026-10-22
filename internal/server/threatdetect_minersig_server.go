@@ -55,15 +55,12 @@ func (s *ThreatDetectionServer) AddMinerSignature(ctx context.Context, req *pb.A
 	if sig == nil || sig.GetPattern() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "signature.kind and signature.pattern are required")
 	}
-	if _, err := threatdetect.NormalizeMinerSignature(sig.GetKind(), sig.GetPattern()); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
 	entry, err := s.minerSigRule.AddSignature(ctx, sig.GetKind(), sig.GetPattern(), sig.GetLabel())
 	if err != nil {
 		switch {
 		case errors.Is(err, threatdetect.ErrMinerSignatureBuiltin):
 			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
-		case errors.Is(err, threatdetect.ErrMinerSignatureCatchAll):
+		case errors.Is(err, threatdetect.ErrMinerSignatureInvalid):
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "add miner signature: %v", err)
@@ -86,13 +83,12 @@ func (s *ThreatDetectionServer) RemoveMinerSignature(ctx context.Context, req *p
 	if req.GetPattern() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "kind and pattern are required")
 	}
-	if _, err := threatdetect.NormalizeMinerSignature(req.GetKind(), req.GetPattern()); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
 	err := s.minerSigRule.RemoveSignature(ctx, req.GetKind(), req.GetPattern())
 	switch {
 	case err == nil:
 		return &pb.RemoveMinerSignatureResponse{}, nil
+	case errors.Is(err, threatdetect.ErrMinerSignatureInvalid):
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	case errors.Is(err, threatdetect.ErrMinerSignatureNotFound):
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	case errors.Is(err, threatdetect.ErrMinerSignatureBuiltin):

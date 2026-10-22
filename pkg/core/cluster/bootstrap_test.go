@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -116,6 +117,32 @@ func TestRenderCAUnitScript(t *testing.T) {
 	// private key, then leak it. See #1470.
 	if !strings.Contains(got, "--user 0") {
 		t.Fatalf("autoscaler task must run as uid 0 or it cannot read its own 0600 credentials:\n%s", got)
+	}
+}
+
+// The scale-down timers are opt-in: a zero CADeploy must render no
+// --scale-down-* flag at all (the golden above pins the stock unit byte
+// for byte), and a set one must reach the autoscaler's command line, inside
+// the ExecStart continuation rather than after it.
+func TestRenderCAUnitScriptScaleDownTimers(t *testing.T) {
+	stock := RenderCAUnitScript(CADeploy{ProviderAddr: "10.0.0.1:36442"})
+	if strings.Contains(stock, "--scale-down-") {
+		t.Fatalf("zero timers must leave the stock autoscaler defaults in force:\n%s", stock)
+	}
+
+	got := RenderCAUnitScript(CADeploy{
+		ProviderAddr:           "10.0.0.1:36442",
+		ScaleDownDelayAfterAdd: time.Minute,
+		ScaleDownUnneededTime:  90 * time.Second,
+	})
+	want := "--stderrthreshold=info \\\n  --scale-down-delay-after-add=1m0s \\\n  --scale-down-unneeded-time=1m30s\nRestart=always"
+	if !strings.Contains(got, want) {
+		t.Fatalf("CA unit script missing %q:\n%s", want, got)
+	}
+
+	only := RenderCAUnitScript(CADeploy{ProviderAddr: "10.0.0.1:36442", ScaleDownUnneededTime: time.Minute})
+	if strings.Contains(only, "--scale-down-delay-after-add") || !strings.Contains(only, "--scale-down-unneeded-time=1m0s\nRestart=always") {
+		t.Fatalf("each timer must be rendered independently:\n%s", only)
 	}
 }
 
