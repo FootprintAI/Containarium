@@ -1516,8 +1516,14 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	// stack replaces the first, matching Container.stack. Base scripts are not
 	// stacks (the startup reconcile runs one in every box) and never record.
 	// A failure to record is logged, not returned: the install itself succeeded.
+	// One retry, because the write is a read-modify-write that can lose an
+	// Incus ETag race to another config update on the same instance.
 	if !isBaseScript {
-		if err := m.incus.SetConfig(containerName, incus.StackKey, stackID); err != nil {
+		err := m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		if err != nil {
+			err = m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		}
+		if err != nil {
 			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
 		}
 	}
