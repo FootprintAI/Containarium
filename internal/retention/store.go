@@ -79,28 +79,36 @@ func ValidateWindows(ws []*pb.RetentionWindow) (map[pb.RetentionClass]int32, err
 		if _, dup := out[w.GetClass()]; dup {
 			return nil, fmt.Errorf("%w: class %v listed twice", ErrInvalid, w.GetClass())
 		}
-		if w.GetDays() < 1 {
-			return nil, fmt.Errorf("%w: %v days must be 1 or more, got %d", ErrInvalid, w.GetClass(), w.GetDays())
+		if w.GetDays() < 1 || w.GetDays() > MaxDays {
+			return nil, fmt.Errorf("%w: %v days must be between 1 and %d, got %d", ErrInvalid, w.GetClass(), MaxDays, w.GetDays())
 		}
 		out[w.GetClass()] = w.GetDays()
 	}
 	return out, nil
 }
 
-// ValidateHold checks the org id (and the reason, unless it is a release).
-func ValidateHold(orgID, reason string, needReason bool) error {
-	if strings.TrimSpace(orgID) == "" {
-		return fmt.Errorf("%w: org id is required", ErrInvalid)
+// MaxDays is the longest window (100 years). It keeps days*24h far below
+// time.Duration's limit (about 106,751 days), so a sweeper computing a
+// cutoff can never wrap around and treat every record as expired. The
+// Postgres store enforces it with a CHECK too.
+const MaxDays int32 = 36500
+
+// NormalizeHold checks the org id (and the reason, unless it is a release)
+// and returns the org id trimmed, so " org-a" and "org-a" are one org.
+func NormalizeHold(orgID, reason string, needReason bool) (string, error) {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return "", fmt.Errorf("%w: org id is required", ErrInvalid)
 	}
 	// The REST routes carry the org in one path segment, where a slash
 	// cannot travel; such a hold could never be released over REST.
 	if strings.Contains(orgID, "/") {
-		return fmt.Errorf("%w: org id %q contains a slash", ErrInvalid, orgID)
+		return "", fmt.Errorf("%w: org id %q contains a slash", ErrInvalid, orgID)
 	}
 	if needReason && strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("%w: a reason is required", ErrInvalid)
+		return "", fmt.Errorf("%w: a reason is required", ErrInvalid)
 	}
-	return nil
+	return orgID, nil
 }
 
 // BuildPolicy renders the stored windows (set) as a full policy. Exported
@@ -184,7 +192,8 @@ func (m *MemoryStore) ListHolds(context.Context) ([]*pb.LegalHold, error) {
 }
 
 func (m *MemoryStore) SetHold(_ context.Context, orgID, reason, setBy string, beforeCommit func(*pb.LegalHold) error) (*pb.LegalHold, error) {
-	if err := ValidateHold(orgID, reason, true); err != nil {
+	orgID, err := NormalizeHold(orgID, reason, true)
+	if err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
@@ -203,7 +212,8 @@ func (m *MemoryStore) SetHold(_ context.Context, orgID, reason, setBy string, be
 }
 
 func (m *MemoryStore) ReleaseHold(_ context.Context, orgID, _ string, beforeCommit func(*pb.LegalHold) error) (*pb.LegalHold, error) {
-	if err := ValidateHold(orgID, "", false); err != nil {
+	orgID, err := NormalizeHold(orgID, "", false)
+	if err != nil {
 		return nil, err
 	}
 	m.mu.Lock()

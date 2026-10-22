@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,14 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 			class INTEGER PRIMARY KEY,
 			days  INTEGER NOT NULL CHECK (days > 0)
 		);
+		-- The upper bound (retention.MaxDays) as a named constraint, added
+		-- only when missing so a table created before it gets it too.
+		DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'retention_windows'::regclass AND conname = 'retention_windows_days_max') THEN
+				ALTER TABLE retention_windows ADD CONSTRAINT retention_windows_days_max CHECK (days <= `+maxDaysSQL+`);
+			END IF;
+		END $$;
 		CREATE TABLE IF NOT EXISTS retention_legal_holds (
 			org_id TEXT PRIMARY KEY,
 			reason TEXT NOT NULL,
@@ -50,37 +59,44 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// readPolicy reads the policy through q (the pool, or a transaction that
-// already holds the policy row lock).
+// maxDaysSQL is retention.MaxDays as SQL text for the CHECK constraint.
+var maxDaysSQL = strconv.Itoa(int(retention.MaxDays))
+
+// readPolicy reads the bookkeeping row and every window in one statement, so
+// a concurrent set can never be seen half applied. lock is appended (e.g.
+// " FOR UPDATE OF p" inside a set's transaction). The row is seeded at
+// bootstrap, so no row is a damaged table and an error.
 func readPolicy(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, lock string) (*pb.RetentionPolicy, map[pb.RetentionClass]int32, error) {
+	rows, err := q.Query(ctx, `SELECT p.revision, p.updated_at, p.updated_by, w.class, w.days
+		FROM retention_policy p LEFT JOIN retention_windows w ON true WHERE p.id = 1`+lock)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read retention policy: %w", err)
+	}
+	defer rows.Close()
 	var (
+		found     bool
 		revision  int64
 		updatedAt *time.Time
 		updatedBy string
+		set       = map[pb.RetentionClass]int32{}
 	)
-	if err := q.QueryRow(ctx, `SELECT revision, updated_at, updated_by FROM retention_policy WHERE id = 1`+lock).Scan(&revision, &updatedAt, &updatedBy); err != nil {
+	for rows.Next() {
+		var class, days *int32
+		if err := rows.Scan(&revision, &updatedAt, &updatedBy, &class, &days); err != nil {
+			return nil, nil, fmt.Errorf("read retention policy: %w", err)
+		}
+		found = true
+		if class != nil && days != nil {
+			set[pb.RetentionClass(*class)] = *days
+		}
+	}
+	if err := rows.Err(); err != nil {
 		return nil, nil, fmt.Errorf("read retention policy: %w", err)
 	}
-	rows, err := q.Query(ctx, `SELECT class, days FROM retention_windows`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read retention windows: %w", err)
-	}
-	set := map[pb.RetentionClass]int32{}
-	for rows.Next() {
-		var class int32
-		var days int32
-		if err := rows.Scan(&class, &days); err != nil {
-			rows.Close()
-			return nil, nil, fmt.Errorf("read retention windows: %w", err)
-		}
-		set[pb.RetentionClass(class)] = days
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read retention windows: %w", err)
+	if !found {
+		return nil, nil, fmt.Errorf("read retention policy: the policy row is missing")
 	}
 	return retention.BuildPolicy(set, revision, updatedAt, updatedBy), set, nil
 }
@@ -100,7 +116,7 @@ func (s *Store) SetPolicy(ctx context.Context, ws []*pb.RetentionWindow, updated
 		return nil, fmt.Errorf("begin retention policy set: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	prev, set, err := readPolicy(ctx, tx, " FOR UPDATE")
+	prev, set, err := readPolicy(ctx, tx, " FOR UPDATE OF p")
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +174,12 @@ func scanHold(r pgx.Row) (*pb.LegalHold, error) {
 }
 
 func (s *Store) SetHold(ctx context.Context, orgID, reason, setBy string, beforeCommit func(*pb.LegalHold) error) (*pb.LegalHold, error) {
-	if err := retention.ValidateHold(orgID, reason, true); err != nil {
+	orgID, err := retention.NormalizeHold(orgID, reason, true)
+	if err != nil {
 		return nil, err
 	}
 	h := &pb.LegalHold{OrgId: orgID, Reason: reason, SetBy: setBy, SetAt: timestamppb.New(retention.Now())}
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO retention_legal_holds (org_id, reason, set_by, set_at)
 			VALUES ($1, $2, $3, $4) ON CONFLICT (org_id) DO NOTHING`, orgID, reason, setBy, h.GetSetAt().AsTime())
 		if err != nil {
@@ -183,11 +200,12 @@ func (s *Store) SetHold(ctx context.Context, orgID, reason, setBy string, before
 }
 
 func (s *Store) ReleaseHold(ctx context.Context, orgID, _ string, beforeCommit func(*pb.LegalHold) error) (*pb.LegalHold, error) {
-	if err := retention.ValidateHold(orgID, "", false); err != nil {
+	orgID, err := retention.NormalizeHold(orgID, "", false)
+	if err != nil {
 		return nil, err
 	}
 	var h *pb.LegalHold
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		h, err = scanHold(tx.QueryRow(ctx, `DELETE FROM retention_legal_holds WHERE org_id = $1
 			RETURNING org_id, reason, set_by, set_at`, orgID))

@@ -92,7 +92,8 @@ func (RetentionClass) EnumDescriptor() ([]byte, []int) {
 type RetentionWindow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Class RetentionClass         `protobuf:"varint,1,opt,name=class,proto3,enum=containarium.v1.RetentionClass" json:"class,omitempty"`
-	// Days a record of this class is kept, at most. Must be 1 or more.
+	// Days a record of this class is kept, at most. Must be between 1 and
+	// 36500 (100 years); the cap keeps a sweeper's cutoff arithmetic in range.
 	Days int32 `protobuf:"varint,2,opt,name=days,proto3" json:"days,omitempty"`
 	// True when no admin has set this class and days is the built-in default.
 	// Ignored on a set.
@@ -376,7 +377,7 @@ func (x *GetRetentionPolicyResponse) GetPolicy() *RetentionPolicy {
 type SetRetentionPolicyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The classes to change. Classes not listed keep their window. A class may
-	// appear once; UNSPECIFIED, an unknown class or days < 1 is
+	// appear once; UNSPECIFIED, an unknown class, or days outside 1..36500 is
 	// INVALID_ARGUMENT.
 	Windows       []*RetentionWindow `protobuf:"bytes,1,rep,name=windows,proto3" json:"windows,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -779,12 +780,12 @@ const file_containarium_v1_retention_proto_rawDesc = "" +
 	"\x19RETENTION_CLASS_RESPONSES\x10\x02\x12 \n" +
 	"\x1cRETENTION_CLASS_GATEWAY_LOGS\x10\x03\x12'\n" +
 	"#RETENTION_CLASS_SESSION_TRANSCRIPTS\x10\x04\x12$\n" +
-	" RETENTION_CLASS_EVIDENCE_BUNDLES\x10\x052\xea\x10\n" +
+	" RETENTION_CLASS_EVIDENCE_BUNDLES\x10\x052\x8f\x12\n" +
 	"\x10RetentionService\x12\xbb\x03\n" +
 	"\x12GetRetentionPolicy\x12*.containarium.v1.GetRetentionPolicyRequest\x1a+.containarium.v1.GetRetentionPolicyResponse\"\xcb\x02\x92A\xab\x02\n" +
-	"\tRetention\x12\x18Get the retention policy\x1a\x83\x02Return the window for every data class: the stored value, or the built-in default (30 days prompts and responses, 90 days gateway logs and session transcripts, 365 days evidence bundles) with is_default=true. Nothing is swept by this service. Admin role only.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/retention/policy\x12\x8c\x05\n" +
-	"\x12SetRetentionPolicy\x12*.containarium.v1.SetRetentionPolicyRequest\x1a+.containarium.v1.SetRetentionPolicyResponse\"\x9c\x04\x92A\xf9\x03\n" +
-	"\tRetention\x12\x15Set retention windows\x1a\xd4\x03Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days < 1 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller, and a failed write fails the call with INTERNAL and nothing changes; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.\x82\xd3\xe4\x93\x02\x19:\x01*\x1a\x14/v1/retention/policy\x12\xe4\x01\n" +
+	"\tRetention\x12\x18Get the retention policy\x1a\x83\x02Return the window for every data class: the stored value, or the built-in default (30 days prompts and responses, 90 days gateway logs and session transcripts, 365 days evidence bundles) with is_default=true. Nothing is swept by this service. Admin role only.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/retention/policy\x12\xb1\x06\n" +
+	"\x12SetRetentionPolicy\x12*.containarium.v1.SetRetentionPolicyRequest\x1a+.containarium.v1.SetRetentionPolicyResponse\"\xc1\x05\x92A\x9e\x05\n" +
+	"\tRetention\x12\x15Set retention windows\x1a\xf9\x04Change the window of the listed classes; other classes keep theirs. UNSPECIFIED, an unknown or repeated class, or days outside 1..36500 is INVALID_ARGUMENT and nothing changes. Increments the revision. With an audit store it writes an audit entry naming the caller while the change is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes (if the commit itself fails after the entry was written, the log keeps an entry for a change that never happened); with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the change succeeds and writes no entry. Admin role only.\x82\xd3\xe4\x93\x02\x19:\x01*\x1a\x14/v1/retention/policy\x12\xe4\x01\n" +
 	"\x0eListLegalHolds\x12&.containarium.v1.ListLegalHoldsRequest\x1a'.containarium.v1.ListLegalHoldsResponse\"\x80\x01\x92Ab\n" +
 	"\tRetention\x12\x10List legal holds\x1aCReturn every active legal hold, ordered by org id. Admin role only.\x82\xd3\xe4\x93\x02\x15\x12\x13/v1/retention/holds\x12\xa6\x03\n" +
 	"\fSetLegalHold\x12$.containarium.v1.SetLegalHoldRequest\x1a%.containarium.v1.SetLegalHoldResponse\"\xc8\x02\x92A\x9d\x02\n" +
