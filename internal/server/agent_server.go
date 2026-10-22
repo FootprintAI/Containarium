@@ -395,6 +395,16 @@ func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
 // serves before minting its token. nil is a legitimate value (direct mode,
 // or a caller not wired for this check) — provisionSkillBoxWith treats a nil
 // models the same as "can't check", never as a refusal.
+// SetNoGlobalKeyFallback mirrors the gateway's DisableGlobalKeyFallback into
+// engine readiness, so a run whose owner has no key is refused up front rather
+// than admitted on a daemon-global key the gateway will not spend. Call after
+// SetGatewayProvisioning; a no-op in direct mode.
+func (s *AgentSkillServer) SetNoGlobalKeyFallback(on bool) {
+	if s.gateway != nil {
+		s.gateway.engines.NoGlobalFallback = on
+	}
+}
+
 func (s *AgentSkillServer) SetGatewayProvisioning(defaultProvider string, httpPort int, secret []byte, hostIP string, globalProviders map[string]bool, keyResolver modelgateway.KeyResolver, models modelLister) {
 	g := &gatewayProvisioning{
 		engines: agentengine.Gateway{

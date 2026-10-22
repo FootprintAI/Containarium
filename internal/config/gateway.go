@@ -5,6 +5,14 @@ const (
 	// EnvGatewayOutputFilter — output filtering is on unless set to "0".
 	EnvGatewayOutputFilter = "CONTAINARIUM_GATEWAY_OUTPUT_FILTER"
 
+	// EnvGatewayNoGlobalKeyFallback ("1") makes a gateway token that carries a
+	// key_owner resolve ONLY through its owner's key. With it set, an owner with
+	// no key is refused instead of falling back to a daemon-global provider key
+	// (<PROVIDER>_API_KEY) and being billed to the operator. Unset keeps the
+	// fallback, which self-hosted daemons running on one global key rely on; a
+	// multi-tenant daemon sets it. Tokens without a key_owner are unaffected.
+	EnvGatewayNoGlobalKeyFallback = "CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK"
+
 	// Per-tenant quota. All unset ⇒ no budget ⇒ nothing is ever denied on
 	// quota grounds, which is the behavior of every daemon before these
 	// existed. A deployment opts in by naming numbers.

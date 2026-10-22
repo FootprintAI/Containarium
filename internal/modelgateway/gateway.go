@@ -52,6 +52,15 @@ type Config struct {
 	// key_owner never reaches the resolver.
 	KeyResolver KeyResolver
 
+	// DisableGlobalKeyFallback stops a token that carries a key_owner claim
+	// from ever spending a ProviderKeys entry: an owner with no key of its own
+	// is refused instead of billed to the operator (keyowner.go resolveKey,
+	// case 3). Tokens WITHOUT a key_owner are unaffected. Off by default, which
+	// is right for a self-hosted operator who runs everything on their own
+	// global key; a hosted multi-tenant daemon turns it on so a stray
+	// daemon-global key can never silently pay for tenants' inference.
+	DisableGlobalKeyFallback bool
+
 	// Revocations is the kill-switch for issued gateway tokens (see
 	// revocation.go). Nil disables the check, which is the pre-existing
 	// behavior — a standalone daemon with no Postgres has no revocation store
