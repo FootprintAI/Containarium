@@ -225,7 +225,7 @@ func withRetentionAPI(fn func(retentionAPI) error) error {
 
 func init() {
 	for _, f := range retentionClassFlags {
-		retentionPolicySetCmd.Flags().Int32(f.flag, 0, "days to keep "+f.flag+" (1 or more)")
+		retentionPolicySetCmd.Flags().Int32(f.flag, 0, "days to keep "+f.flag+" (1 to 36500)")
 	}
 	retentionHoldSetCmd.Flags().String("reason", "", "why the hold exists, such as a case reference (required)")
 	_ = retentionHoldSetCmd.MarkFlagRequired("reason")

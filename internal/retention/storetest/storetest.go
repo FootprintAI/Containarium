@@ -99,11 +99,13 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) retention.Store)
 
 	t.Run("an invalid set is rejected and changes nothing", func(t *testing.T) {
 		cases := map[string][]*pb.RetentionWindow{
-			"empty":         nil,
-			"zero days":     {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 0)},
-			"negative days": {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, -1)},
-			"unspecified":   {window(pb.RetentionClass_RETENTION_CLASS_UNSPECIFIED, 30)},
-			"unknown class": {window(pb.RetentionClass(99), 30)},
+			"empty":                nil,
+			"zero days":            {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 0)},
+			"negative days":        {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, -1)},
+			"one day over the cap": {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, retention.MaxDays+1)},
+			"max int32 days":       {window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 1<<31-1)},
+			"unspecified":          {window(pb.RetentionClass_RETENTION_CLASS_UNSPECIFIED, 30)},
+			"unknown class":        {window(pb.RetentionClass(99), 30)},
 			"repeated class": {
 				window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 10),
 				window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 20),
@@ -124,6 +126,37 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) retention.Store)
 					t.Fatalf("policy after a rejected set = %v, want the untouched defaults", p)
 				}
 			})
+		}
+	})
+
+	t.Run("the cap itself and one day are accepted", func(t *testing.T) {
+		s := newStore(t)
+		if retention.MaxDays != 36500 {
+			t.Fatalf("MaxDays = %d, want 36500", retention.MaxDays)
+		}
+		if _, err := s.SetPolicy(ctx, []*pb.RetentionWindow{
+			window(pb.RetentionClass_RETENTION_CLASS_EVIDENCE_BUNDLES, retention.MaxDays),
+			window(pb.RetentionClass_RETENTION_CLASS_PROMPTS, 1),
+		}, "admin-a", nil); err != nil {
+			t.Fatalf("SetPolicy at the bounds: %v", err)
+		}
+		p, _ := s.GetPolicy(ctx)
+		if d := days(t, p)[pb.RetentionClass_RETENTION_CLASS_EVIDENCE_BUNDLES].GetDays(); d != retention.MaxDays {
+			t.Fatalf("evidence bundles = %d, want %d", d, retention.MaxDays)
+		}
+	})
+
+	t.Run("org ids are trimmed, so a padded id is the same org", func(t *testing.T) {
+		s := newStore(t)
+		h, err := s.SetHold(ctx, " org-a ", "case", "admin-a", nil)
+		if err != nil || h.GetOrgId() != "org-a" {
+			t.Fatalf("SetHold(\" org-a \") = (%v, %v), want the hold stored as org-a", h, err)
+		}
+		if _, err := s.SetHold(ctx, "org-a", "case", "admin-a", nil); !errors.Is(err, retention.ErrHoldExists) {
+			t.Fatalf("SetHold(org-a) after the padded one = %v, want ErrHoldExists", err)
+		}
+		if r, err := s.ReleaseHold(ctx, "org-a\t", "admin-a", nil); err != nil || r.GetOrgId() != "org-a" {
+			t.Fatalf("ReleaseHold(padded) = (%v, %v), want org-a released", r, err)
 		}
 	})
 

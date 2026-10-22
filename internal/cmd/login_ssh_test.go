@@ -176,7 +176,7 @@ func TestLogin_WithSSHSetup_AutoRegisters(t *testing.T) {
 		t.Fatalf("--with-ssh-setup should have triggered AddSSHKey; output:\n%s", out.String())
 	}
 	if f.receivedToken != "tok-A7" {
-		t.Errorf("AddSSHKey called with token %q, want tok-A7", f.receivedToken)
+		t.Errorf("AddSSHKey called with token %s, want %s", tokenFingerprint(f.receivedToken), tokenFingerprint("tok-A7"))
 	}
 	if len(f.addedKeys) != 1 {
 		t.Fatalf("added = %+v, want 1 entry", f.addedKeys)
