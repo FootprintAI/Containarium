@@ -12503,7 +12503,7 @@
         },
         "stack": {
           "type": "string",
-          "description": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nRun `containarium create --help` for the ids and what each one installs; the\ncatalog itself is pkg/core/stacks/stacks.yaml, overridable per host at\n/etc/containarium/stacks.yaml."
+          "description": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nRun `containarium create --help` for the ids and what each one installs; the\ncatalog itself is pkg/core/stacks/stacks.yaml, overridable per host at\n/etc/containarium/stacks.yaml. An unknown id is rejected with\nINVALID_ARGUMENT, and the error lists the valid ids; a create routed to a\npeer backend is validated by that backend against its own catalog."
         },
         "gpu": {
           "type": "string",

@@ -190,6 +190,18 @@ func init() {
 	createCmd.Flags().DurationVar(&createWaitTimeout, "wait-timeout", 5*time.Minute, "How long --wait polls before giving up (Go duration).")
 }
 
+// validateStackLocal rejects an unknown --stack before anything is changed,
+// notably before --force deletes the existing box (#2860). Only in local mode:
+// with a server address the daemon's own catalog decides, so a stack defined
+// only in its stacks.yaml is not refused here. Against a daemon, --force still
+// deletes before the daemon validates; see the follow-up filed from #2913.
+func validateStackLocal(serverAddr, stackID string) error {
+	if serverAddr != "" {
+		return nil
+	}
+	return stacks.GetDefault().CheckStackID(stackID)
+}
+
 // validateSSHKeyMode enforces "exactly one of --ssh-key / --no-ssh-key".
 // cobra's MarkFlagsMutuallyExclusive also rejects setting both at parse time;
 // this is the authoritative rule and additionally covers the neither case
@@ -302,6 +314,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	// Resolve the SSH key, unless this is a keyless (platform-managed) service
 	// tenant. Exactly one of --ssh-key / --no-ssh-key must be supplied.
+	if err := validateStackLocal(serverAddr, stackID); err != nil {
+		return err
+	}
 	if err := validateSSHKeyMode(noSSHKey, sshKeyPath); err != nil {
 		return err
 	}

@@ -41,6 +41,10 @@ const (
 	// MaxStackParameterKeyLen caps each stack-parameter key.
 	MaxStackParameterKeyLen = 256
 
+	// MaxStackIDLength caps the stack ID, which is echoed in the rejection
+	// for an unknown one. Catalog IDs are short identifiers.
+	MaxStackIDLength = 64
+
 	// MaxLabels caps the labels map cardinality.
 	MaxLabels = 64
 
@@ -51,10 +55,6 @@ const (
 	MaxLabelValueLen = 256
 )
 
-// validateCreateContainerBounds enforces the size caps above on
-// req. Returns nil if every field is within bounds; otherwise a
-// gRPC InvalidArgument status that names the offending field +
-// limit so the caller can fix.
 // validateStackID rejects an unknown stack ID with InvalidArgument, naming the
 // valid IDs (#2860). Empty means no stack and is valid.
 func validateStackID(id string) error {
@@ -64,7 +64,15 @@ func validateStackID(id string) error {
 	return nil
 }
 
+// validateCreateContainerBounds enforces the size caps above on
+// req. Returns nil if every field is within bounds; otherwise a
+// gRPC InvalidArgument status that names the offending field +
+// limit so the caller can fix.
 func validateCreateContainerBounds(req *pb.CreateContainerRequest) error {
+	if n := len(req.Stack); n > MaxStackIDLength {
+		return status.Errorf(codes.InvalidArgument,
+			"stack is %d bytes, max is %d", n, MaxStackIDLength)
+	}
 	if n := len(req.SshKeys); n > MaxSSHKeys {
 		return status.Errorf(codes.InvalidArgument,
 			"ssh_keys has %d entries, max is %d", n, MaxSSHKeys)
