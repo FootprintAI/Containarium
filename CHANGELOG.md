@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`create` rejects an unknown `--stack` before creating anything** (#2860). `CreateContainer` returns `INVALID_ARGUMENT` naming the unknown id and listing the valid ones, instead of silently creating a box with nothing installed. A create routed to a peer backend is validated by that backend against its own catalog. In local mode the CLI checks the stack before `--force` deletes the existing box; against a daemon, `--force` still deletes before the daemon validates (tracked in a follow-up).
 ### Fixed
 
 - **`internal/cmd` tests no longer read the developer's real credential store** (#2922). `TestCanonicalServerAddr_SchemelessResolvesToStoredURL` failed in package order on a machine with real credentials, and its failure output printed the real token. The test binary now runs with `HOME` and the `CONTAINARIUM_*` environment replaced by a throwaway directory, `withTempHome` resets the flag globals on the way in as well as out, a guard test fails if the credential store resolves outside the temp dir, and no assertion in the package prints a token (a short hash is printed instead).
