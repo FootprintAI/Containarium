@@ -231,6 +231,7 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		DeletePolicy:              info.DeletePolicy,
 		Image:                     info.Image,
 		Stack:                     info.Stack,
+		PodmanEnabled:             info.PodmanEnabled,
 	}
 }
 

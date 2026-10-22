@@ -197,7 +197,7 @@ type containerResponse struct {
 	CreatedAt            string            `json:"createdAt"`
 	Labels               map[string]string `json:"labels"`
 	Image                string            `json:"image"`
-	PodmanEnabled        bool              `json:"dockerEnabled"`
+	PodmanEnabled        bool              `json:"podmanEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
 	GpuDevices           []string          `json:"gpuDevices"`
 	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
