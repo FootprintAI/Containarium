@@ -28,8 +28,6 @@ on:
 
 permissions:
   contents: read
-  packages: write   # for GHCR push
-  security-events: write   # for the Trivy SARIF upload in each job below
 
 jobs:
   otel-sidecar:
@@ -60,10 +58,12 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           # Strip the leading 'v' from the tag to get e.g. 0.16.10
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
@@ -172,9 +172,11 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
@@ -271,9 +273,11 @@ jobs:
 
       - name: Derive image tags
         id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
+            version="${INPUT_VERSION}"
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
