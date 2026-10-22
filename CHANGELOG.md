@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`CONTAINARIUM_GATEWAY_NO_GLOBAL_KEY_FALLBACK=1` stops the model gateway billing a tenant's calls to a daemon-global provider key** (#3028). A token carrying a `key_owner` normally falls back to `<PROVIDER>_API_KEY` when its owner has no key of its own. With the option set it resolves through its owner or is refused up front, with or without a key resolver wired. Unset keeps today's behaviour, which a self-hosted daemon running on one global key relies on. Tokens without a `key_owner` are unaffected. Engine readiness follows the same rule, so a skill run whose owner has no key is refused up front (`FailedPrecondition`, `ListAgentEngines` shows the engine not ready) instead of being admitted on a global key the gateway will not spend.
 
+### Fixed
+
+- **A failed agent skill run is reported as failed, with the engine's own reason** (#2931). When the in-box `agent-runtime` exited non-zero, the daemon returned `in-box runtime did not run on <box>: command exited with code 1` without reading `artifact.json`, where the runtime had already written the real error (for example an engine whose provider rejects the credential: `upstream 401: API key not valid`). `RunAgentSkill` then logged that and returned OK with an empty `artifact_json`. The daemon now reads `artifact.json` on a non-zero exit and puts its `error` in the returned error, redacted (JWTs, bearer tokens, provider API keys, `key=value` secrets) and capped at 1 KiB. `RunAgentSkill` returns `INTERNAL` for a failed run and `FAILED_PRECONDITION` when the box has no `agent-runtime` (exit 127), naming the run id in both. It no longer reports a failed run as a success. The "image may not ship it yet" log hint now shows only for that missing-runtime case. A tracker-dispatched run records the same reason as its failure.
+
 ## [0.113.0] - 2026-10-22
 
 ### Added
