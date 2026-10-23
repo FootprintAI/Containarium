@@ -4,7 +4,6 @@ package server
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,20 +23,10 @@ func TestStartBoxRun_RecordsTheToolchainItsWrapperMeasured(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(engine), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A HERMETIC PATH: only the fake tools plus the plain utilities the run wrapper and the fake
-	// engine use. A CI runner (or a developer machine) has a real node, go, git, java..., and
-	// their presence would turn "added during the run" into "changed" and make the probe slow.
-	utils := t.TempDir()
-	for _, name := range []string{"sh", "mkdir", "chmod", "rm", "mv", "cat", "date", "setsid", "base64", "tr", "ps", "awk", "grep",
-		"head", "cut", "readlink", "ls", "sleep", "touch", "stat", "cksum", "printf", "env", "sed", "timeout", "id", "uname", "true",
-		"dirname", "basename", "wc", "sort", "kill", "tail"} {
-		if p, err := exec.LookPath(name); err == nil {
-			if err := os.Symlink(p, filepath.Join(utils, name)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	t.Setenv("PATH", bin+":"+utils)
+	// The harness's PATH is hermetic (hermeticBoxPath, #2973): only the fake tools in
+	// the user's bin plus plain utilities. A CI runner (or a developer machine) has a
+	// real node, go, git, java..., and their presence would turn "added during the run"
+	// into "changed" and make the probe slow.
 	s, _, _ := boxRunStartServer(t, u)
 
 	if _, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "install a tool"}); err != nil {
