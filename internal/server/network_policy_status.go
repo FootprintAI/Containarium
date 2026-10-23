@@ -119,7 +119,13 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool) *pb.Netw
 	}
 	st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED
 	st.EffectiveMode = bpfModeToProto(a.Mode)
-	st.EffectiveEgressMode = bpfModeToProto(a.EgressMode)
+	// A 0 egress byte is "follow mode" in the program (#2970), so the kernel
+	// applies the mode byte to the allow-list too.
+	egress := a.EgressMode
+	if egress == 0 {
+		egress = a.Mode
+	}
+	st.EffectiveEgressMode = bpfModeToProto(egress)
 	st.LastAppliedAt = timestamppb.New(a.AppliedAt)
 	if a.HasDomains {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG)

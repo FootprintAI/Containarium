@@ -243,6 +243,9 @@ enum NetworkPolicyUncoveredPath {
   // domain moves to is denied, and an address it left still allowed, until
   // the next refresh and reconcile.
   NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG = 2;
+  // The host kernel cannot run egress enforcement. Reserved: not reported
+  // yet; the host kernel check that sets it is tracked separately (#2972).
+  NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED = 3;
 }
 
 // NetworkPolicyStatus is a tenant's applied network policy on this daemon.

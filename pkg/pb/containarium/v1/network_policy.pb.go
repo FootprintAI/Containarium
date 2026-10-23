@@ -100,6 +100,9 @@ const (
 	// domain moves to is denied, and an address it left still allowed, until
 	// the next refresh and reconcile.
 	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG NetworkPolicyUncoveredPath = 2
+	// The host kernel cannot run egress enforcement. Reserved: not reported
+	// yet; the host kernel check that sets it is tracked separately (#2972).
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED NetworkPolicyUncoveredPath = 3
 )
 
 // Enum value maps for NetworkPolicyUncoveredPath.
@@ -108,11 +111,13 @@ var (
 		0: "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
 		1: "NETWORK_POLICY_UNCOVERED_PATH_IPV6",
 		2: "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
+		3: "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED",
 	}
 	NetworkPolicyUncoveredPath_value = map[string]int32{
 		"NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED":        0,
 		"NETWORK_POLICY_UNCOVERED_PATH_IPV6":               1,
 		"NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG": 2,
+		"NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED": 3,
 	}
 )
 
@@ -640,11 +645,12 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"(NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED\x10\x00\x125\n" +
 	"1NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING\x10\x01\x12+\n" +
 	"'NETWORK_POLICY_APPLIED_STATE_NOT_LOADED\x10\x02\x12'\n" +
-	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03*\xa9\x01\n" +
+	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03*\xdf\x01\n" +
 	"\x1aNetworkPolicyUncoveredPath\x12-\n" +
 	")NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"NETWORK_POLICY_UNCOVERED_PATH_IPV6\x10\x01\x124\n" +
-	"0NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG\x10\x022\xd9\x18\n" +
+	"0NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG\x10\x02\x124\n" +
+	"0NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED\x10\x032\xd9\x18\n" +
 	"\x14NetworkPolicyService\x12\x8d\x02\n" +
 	"\x10SetNetworkPolicy\x12(.containarium.v1.SetNetworkPolicyRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xa3\x01\x92A\x80\x01\n" +
 	"\rNetworkPolicy\x12\x12Set network policy\x1a[Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/network-policies\x12\xee\x01\n" +

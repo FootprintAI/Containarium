@@ -222,3 +222,20 @@ func TestNetworkPolicyEnforcer_AppliedState(t *testing.T) {
 		t.Errorf("unknown tenant after a pass = %+v, want reconciled and not found", snap)
 	}
 }
+
+// A loaded egress-mode byte of 0 means "follow mode" in the kernel (#2970), so
+// it is reported as the effective mode, not as unknown.
+func TestBuildPolicyStatus_EgressModeZeroFollowsMode(t *testing.T) {
+	snap := appliedSnapshot{Running: true, Reconciled: true, Found: true, Tenant: tenantApplied{
+		Mode: 2, EgressMode: 0, BoxesLoaded: 1, AppliedAt: time.Unix(1700000000, 0),
+	}}
+	st := buildPolicyStatus("acme", snap, true)
+	if st.GetEffectiveMode() != stEnforce || st.GetEffectiveEgressMode() != stEnforce {
+		t.Errorf("effective mode=%v egress=%v, want ENFORCE/ENFORCE", st.GetEffectiveMode(), st.GetEffectiveEgressMode())
+	}
+	snap.Tenant.Mode = 7 // a byte the program would not act on
+	st = buildPolicyStatus("acme", snap, true)
+	if st.GetEffectiveMode() != stUnset || st.GetEffectiveEgressMode() != stUnset {
+		t.Errorf("unknown byte: effective mode=%v egress=%v, want UNSPECIFIED for both", st.GetEffectiveMode(), st.GetEffectiveEgressMode())
+	}
+}
