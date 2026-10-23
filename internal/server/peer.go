@@ -1016,6 +1016,38 @@ func (pc *PeerClient) ForwardDebugContainer(authToken string, username string) (
 	return body, nil
 }
 
+// ForwardListStacks returns the stack IDs the peer's own catalog defines, read
+// from its GET /v1/stacks (#2952). That endpoint exists on every daemon, so this
+// works against a peer of any version and, unlike a forwarded dry run, can never
+// be misread by an older peer as a real create. An empty result is returned as
+// such: the caller decides what an empty catalog means.
+func (pc *PeerClient) ForwardListStacks(ctx context.Context, authToken string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body, status, err := pc.ForwardRequestCtx(ctx, "GET", "/v1/stacks", authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward list-stacks to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for list-stacks", pc.ID, status)
+	}
+	var result struct {
+		Stacks []struct {
+			ID string `json:"id"`
+		} `json:"stacks"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse list-stacks from %s: %w", pc.ID, err)
+	}
+	ids := make([]string, 0, len(result.Stacks))
+	for _, st := range result.Stacks {
+		if st.ID != "" {
+			ids = append(ids, st.ID)
+		}
+	}
+	return ids, nil
+}
+
 // refreshCachedInfo fetches system info from a peer and caches key fields.
 func (pc *PeerClient) refreshCachedInfo() {
 	body, err := pc.ForwardGetSystemInfo("")

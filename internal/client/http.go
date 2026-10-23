@@ -227,6 +227,8 @@ type listContainersResponse struct {
 
 type createContainerResponse struct {
 	Container *containerResponse `json:"container"`
+	// DryRun echoes a validate-only request (#2925); Container is nil then.
+	DryRun bool `json:"dryRun"`
 }
 
 type getContainerResponse struct {
@@ -438,6 +440,37 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 
 	info := containerToIncusInfo(result.Container)
 	return &info, nil
+}
+
+// ValidateCreate is GRPCClient.ValidateCreate over the REST API (#2925): it
+// POSTs req with dryRun set and requires the daemon to echo it. The body is the
+// request message itself (protojson, the camelCase names grpc-gateway accepts),
+// not a second hand-written copy of the create fields.
+func (c *HTTPClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
+	if !ok {
+		return fmt.Errorf("clone create request: unexpected type")
+	}
+	dry.DryRun = true
+	body, err := protojson.Marshal(dry)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", body)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	result, err := parseResponse[createContainerResponse](resp)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	if !result.DryRun {
+		return errDryRunNotHonoured
+	}
+	return nil
 }
 
 // ToggleAutoSleep writes the per-container auto-sleep opt-in
@@ -2454,6 +2487,16 @@ func (c *HTTPClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.
 // ListLegalHolds lists the active legal holds via HTTP (admin only).
 func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
 	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
+}
+
+// GetRetentionReport reads the dry-run retention report via HTTP (admin
+// only); refresh sweeps now instead of returning the last periodic report.
+func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	path := "/v1/retention/report"
+	if refresh {
+		path += "?refresh=true"
+	}
+	return retentionHTTPCall(c, http.MethodGet, path, nil, &pb.GetRetentionReportResponse{}, "get retention report")
 }
 
 // SetLegalHold places a legal hold on an org via HTTP (admin only). The org

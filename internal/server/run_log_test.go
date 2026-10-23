@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/modelgateway"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -478,5 +479,50 @@ func TestJournalReadScript_RealShell(t *testing.T) {
 	}
 	if w, _ = readJournalWindow(sh, "box", path+".missing", 0, 10); w.exists {
 		t.Errorf("missing file reported as existing")
+	}
+}
+
+// A gateway failure never reaches the journal; TailRunLog returns it next to
+// the journal bytes, for the member being read, and resumes by its own cursor.
+func TestTailRunLog_ReturnsGatewayCallsForTheMemberAndResumes(t *testing.T) {
+	f := &fakeBoxes{}
+	f.put(memberBox("hello-agent"), journalFile("run-skill", "hello-agent"), jStarted)
+	s := newRunLogServer(f)
+	calls := modelgateway.NewCallLog()
+	s.SetGatewayCalls(calls)
+	calls.RecordCall("run-skill", &pb.GatewayCall{SkillId: "hello-agent", Provider: "anthropic", Status: 401})
+	calls.RecordCall("run-skill", &pb.GatewayCall{SkillId: "someone-else", Provider: "anthropic", Status: 200})
+	calls.RecordCall("run-other", &pb.GatewayCall{SkillId: "hello-agent", Provider: "anthropic", Status: 500})
+
+	resp, err := s.TailRunLog(adminCtx(), &pb.TailRunLogRequest{RunId: "run-skill", StartOffset: int64(len(jStarted))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GatewayCalls) != 1 || resp.GatewayCalls[0].Status != 401 {
+		t.Fatalf("calls = %v, want only this run's and member's 401", resp.GatewayCalls)
+	}
+	if len(resp.Chunk) != 0 || resp.GatewayNextSeq != 2 {
+		t.Errorf("chunk=%q next=%d", resp.Chunk, resp.GatewayNextSeq)
+	}
+
+	again, err := s.TailRunLog(adminCtx(), &pb.TailRunLogRequest{RunId: "run-skill", StartOffset: int64(len(jStarted)), GatewayAfterSeq: resp.GatewayNextSeq})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.GatewayCalls) != 0 || again.GatewayNextSeq != resp.GatewayNextSeq {
+		t.Errorf("resume returned %v next=%d", again.GatewayCalls, again.GatewayNextSeq)
+	}
+}
+
+// Without a call log (a daemon with no gateway) the RPC is what it was.
+func TestTailRunLog_NoCallLogReturnsNoCalls(t *testing.T) {
+	f := &fakeBoxes{}
+	f.put(memberBox("hello-agent"), journalFile("run-skill", "hello-agent"), jStarted)
+	resp, err := newRunLogServer(f).TailRunLog(adminCtx(), &pb.TailRunLogRequest{RunId: "run-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GatewayCalls) != 0 || resp.GatewayNextSeq != 0 {
+		t.Errorf("got calls %v next %d", resp.GatewayCalls, resp.GatewayNextSeq)
 	}
 }
