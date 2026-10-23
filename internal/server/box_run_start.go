@@ -359,10 +359,24 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
 	}
 	runAs := req.GetUsername()
+	// The level's policy is CLI flags on the run command, so it exists only for
+	// the Claude Code engine; an unknown level or another engine is refused
+	// before anything is mutated, never started without a policy.
+	var policy boxRunPolicy
+	if level != "" {
+		if eng.Name() != engine.NameClaude {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"%q has a tool-access level recorded, which is only enforced for the %s engine; %s on %q selects %s",
+				req.GetUsername(), engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
+		}
+		if policy, err = boxRunPolicyFor(level); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
+		}
+	}
 
 	// Every precondition has now passed — safe to mutate.
 	if level != "" {
-		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home)
+		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
 		if err != nil {
 			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
 		}
@@ -400,6 +414,10 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	command := eng.RunCommand(req.GetPrompt(), false, req.GetContinueSession(), req.GetSessionId())
 	if req.GetStructuredOutput() {
 		command += engine.ClaudeStructuredOutputFlag
+	}
+
+	if level != "" {
+		command += policy.commandFlags()
 	}
 
 	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput()}
@@ -504,7 +522,7 @@ func boxRunNameCollidesWithDerivedFile(name string) bool {
 // root, all idempotent): the run user exists, the run directory is writable by
 // it, and its home holds a fresh staged copy of what the run reads. Returns the
 // run user's home.
-func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), box, dir, ownerHome string) (string, error) {
+func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), box, dir, ownerHome, level string) (string, error) {
 	out, err := rootExec(box, boxRunProvisionScript())
 	if err != nil {
 		return "", fmt.Errorf("provision %s: %w", boxRunUnprivilegedUser, err)
@@ -513,6 +531,9 @@ func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), b
 	runHome := strings.TrimSpace(lines[len(lines)-1])
 	if !validHomePath(runHome) {
 		return "", fmt.Errorf("unexpected home %q for %s", runHome, boxRunUnprivilegedUser)
+	}
+	if _, err := rootExec(box, boxRunSudoersScript(level)); err != nil {
+		return "", fmt.Errorf("apply the sudo grant for level %q: %w", level, err)
 	}
 	if _, err := rootExec(box, boxRunDirScript(dir)); err != nil {
 		return "", fmt.Errorf("prepare run directory: %w", err)
