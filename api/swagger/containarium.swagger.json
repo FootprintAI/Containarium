@@ -5232,6 +5232,39 @@
         ]
       }
     },
+    "/v1/network-policies/{tenant}/status": {
+      "get": {
+        "summary": "Get network policy status",
+        "description": "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last applied time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.",
+        "operationId": "NetworkPolicyService_GetNetworkPolicyStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNetworkPolicyStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Tenant to report on (required).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policy-signatures": {
       "get": {
         "summary": "List network-policy signatures",
@@ -14963,6 +14996,15 @@
         }
       }
     },
+    "GetNetworkPolicyStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/NetworkPolicyStatus"
+        }
+      },
+      "description": "GetNetworkPolicyStatusResponse carries the tenant's applied state."
+    },
     "GetNetworkTopologyResponse": {
       "type": "object",
       "properties": {
@@ -17176,6 +17218,17 @@
       },
       "title": "NetworkNode represents a node in the network topology"
     },
+    "NetworkPolicyAppliedState": {
+      "type": "string",
+      "enum": [
+        "NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED",
+        "NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING",
+        "NETWORK_POLICY_APPLIED_STATE_NOT_LOADED",
+        "NETWORK_POLICY_APPLIED_STATE_LOADED"
+      ],
+      "default": "NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED",
+      "description": "NetworkPolicyAppliedState says whether this daemon has a tenant's policy\nloaded, and so whether the effective modes can be read at all.\n\n - NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED: The daemon cannot tell (e.g. the enforcer is running but has not yet\ncompleted a reconcile pass). Effective modes are UNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING: No eBPF enforcer is running on this daemon (not configured, or it failed\nto load), so nothing is enforced or observed. Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_NOT_LOADED: The enforcer is running but no running box of this tenant has a policy\nloaded (no running boxes, or none could be attached). Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_LOADED: At least one of the tenant's running boxes has its policy loaded; the\neffective modes are what the kernel holds."
+    },
     "NetworkPolicyDenyRule": {
       "type": "object",
       "properties": {
@@ -17229,6 +17282,64 @@
         }
       },
       "description": "NetworkPolicySignature is one operator-managed cleartext exploit signature\n(#661 Tier 2, PR-B). Unlike deny rules these are GLOBAL (fleet-wide), not\ntenant-scoped — an exploit pattern is matched against every scanned container's\ninbound payload. They augment the daemon's curated built-in set."
+    },
+    "NetworkPolicyStatus": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/NetworkPolicyAppliedState",
+          "description": "Whether the policy is loaded here; the fields below are only meaningful\nwhen it is LOADED."
+        },
+        "effectiveMode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Mode the kernel applies to the cross-tenant, intra-tenant, metadata,\nvirtual-patch and signature checks, after the host's enforce guard.\nUNSPECIFIED = unknown."
+        },
+        "effectiveEgressMode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Mode the kernel applies to the egress allow-list, after the host's\nenforce guard. UNSPECIFIED = unknown."
+        },
+        "lastAppliedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "End of the last reconcile pass that wrote this tenant's config into the\nkernel. Unset when not LOADED."
+        },
+        "enforcementArmed": {
+          "type": "boolean",
+          "description": "Whether this host arms enforcement (CONTAINARIUM_NETWORK_POLICY_ENFORCE).\nWhen false, a requested ENFORCE is loaded as LOG_ONLY."
+        },
+        "boxesLoaded": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Running boxes of the tenant whose policy is loaded."
+        },
+        "boxesNotLoaded": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Running boxes of the tenant whose policy could not be loaded (veth not\nresolved, map write or attach failed). Their traffic is not policed."
+        },
+        "uncoveredPaths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NetworkPolicyUncoveredPath"
+          },
+          "description": "Traffic the loaded policy does not decide."
+        }
+      },
+      "description": "NetworkPolicyStatus is a tenant's applied network policy on this daemon."
+    },
+    "NetworkPolicyUncoveredPath": {
+      "type": "string",
+      "enum": [
+        "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
+        "NETWORK_POLICY_UNCOVERED_PATH_IPV6",
+        "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
+        "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED"
+      ],
+      "default": "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
+      "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel cannot run egress enforcement. Reserved: not reported\nyet; the host kernel check that sets it is tracked separately (#2972)."
     },
     "NetworkTopology": {
       "type": "object",

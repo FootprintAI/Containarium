@@ -133,6 +133,8 @@ type NetworkPolicyEnforcer struct {
 	egressInstalled   map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
 	denyInstalled     map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
 	ipTenantInstalled map[[4]byte]uint32                  // ip_tenant entries currently in the map (#923: converge deletes)
+	running           bool                                // the BPF program is loaded (Start succeeded, Stop not yet called)
+	applied           map[string]tenantApplied            // per-tenant state the last reconcile pass loaded; nil until a pass completes
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -341,6 +343,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	}
 	e.loader = loader
 	e.ctx, e.cancel = context.WithCancel(ctx)
+	e.mu.Lock()
+	e.running = true
+	e.mu.Unlock()
 
 	// Exec telemetry (#2637): the second object. Resolved from the same
 	// operator value; a failure (no BTF, verifier reject, object not built) is
@@ -459,6 +464,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 
 // Stop cancels the loops and closes the loader (detaching every veth).
 func (e *NetworkPolicyEnforcer) Stop() {
+	e.mu.Lock()
+	e.running = false
+	e.mu.Unlock()
 	if e.cancel != nil {
 		e.cancel()
 	}
@@ -774,6 +782,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	enforced := make(map[uint32]bool)
 	e.mu.Lock()
 	present := make(map[int]bool, len(plan.vethPolicy))
+	loaded := make(map[int]bool, len(plan.vethPolicy)) // config written AND program attached
 	for ifindex, cfg := range plan.vethPolicy {
 		if cfg.Mode == netbpf.ModeEnforce {
 			enforced[cfg.TenantID] = true
@@ -794,6 +803,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		}
 		e.attached[ifindex] = plan.ifName[ifindex]
 		present[ifindex] = true
+		loaded[ifindex] = true
 	}
 	// Detach veths that are gone (container stopped/deleted).
 	for ifindex := range e.attached {
@@ -807,7 +817,35 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.idName = idName
 	e.enforced = enforced
 	e.mu.Unlock()
+	// What GetNetworkPolicyStatus reports: built from the plan this pass
+	// actually wrote, never from the stored request.
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies, time.Now()))
 	return nil
+}
+
+// recordApplied stores one reconcile pass's per-tenant applied state.
+func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied) {
+	if a == nil {
+		a = map[string]tenantApplied{}
+	}
+	e.mu.Lock()
+	e.applied = a
+	e.mu.Unlock()
+}
+
+// AppliedState implements appliedStateSource: what the last completed
+// reconcile pass loaded for tenant. Before Start (or after Stop) it reports not
+// running; before the first completed pass it reports not reconciled, so the
+// caller says unknown rather than guessing.
+func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil}
+	if !snap.Running {
+		return appliedSnapshot{}
+	}
+	snap.Tenant, snap.Found = e.applied[tenant]
+	return snap
 }
 
 // boolStr renders a bool as a JSON literal for the audit detail.

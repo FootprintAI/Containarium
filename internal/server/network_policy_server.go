@@ -39,6 +39,12 @@ type NetworkPolicyServer struct {
 	// gateway the plan simply does not subtract the preset's implicit resolver.
 	auditQuery denyAuditQuerier
 	gateway    netip.Addr
+
+	// applied and enforceArmed serve GetNetworkPolicyStatus: the enforcer's
+	// loaded state (nil = no enforcer on this daemon) and the host's
+	// CONTAINARIUM_NETWORK_POLICY_ENFORCE.
+	applied      appliedStateSource
+	enforceArmed bool
 }
 
 // denyAuditQuerier is the slice of *audit.Store PlanNetworkPolicy needs.
