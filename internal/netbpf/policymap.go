@@ -23,6 +23,11 @@ type PolicyConfig struct {
 	Mode          uint8
 	AllowIntra    uint8
 	AllowMetadata uint8
+	// EgressMode is the mode of the egress allow-list decision alone
+	// (ModeLogOnly | ModeEnforce); Mode governs every other check. It occupies
+	// the struct's former pad byte, so the value stays 8 bytes. The program
+	// treats 0 as "follow Mode"; CompileConfig always writes it explicitly.
+	EgressMode uint8
 }
 
 // EgressEntry is one allowed-egress LPM-trie entry the loader writes into the
@@ -108,7 +113,11 @@ func CompileConfig(tenantID uint32, c netpolicy.CompiledPolicy) PolicyConfig {
 	if c.AllowMetadata {
 		meta = 1
 	}
-	return PolicyConfig{TenantID: tenantID, Mode: mode, AllowIntra: allow, AllowMetadata: meta}
+	egress := safecast.U8(c.EffectiveEgressMode())
+	if egress != ModeLogOnly && egress != ModeEnforce {
+		egress = mode
+	}
+	return PolicyConfig{TenantID: tenantID, Mode: mode, AllowIntra: allow, AllowMetadata: meta, EgressMode: egress}
 }
 
 // CompileEgress renders the tenant's egress allow-list (the already-parsed,

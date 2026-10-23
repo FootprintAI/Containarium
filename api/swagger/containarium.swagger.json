@@ -22328,6 +22328,10 @@
         "egressPreset": {
           "$ref": "#/definitions/EgressPreset",
           "description": "Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly\nas its lists say. See EgressPreset."
+        },
+        "egressMode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Enforcement mode for the egress allow-list ONLY. `mode` keeps governing\nthe cross-tenant, intra-tenant, metadata, virtual-patch and signature\nchecks; this field decides whether a flow to a destination outside the\nallow-list (egress_cidrs + resolved egress_domains) is dropped or only\nlogged. It lets an operator soak a narrower allow-list in LOG_ONLY while\nthe cross-tenant drop stays in ENFORCE. UNSPECIFIED (the default, and what\nevery policy written before this field carries) means \"follow `mode`\", so\nexisting policies behave exactly as before. The daemon-wide enforce guard\ndowngrades ENFORCE here exactly as it does for `mode`."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

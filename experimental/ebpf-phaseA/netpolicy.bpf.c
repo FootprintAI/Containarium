@@ -47,7 +47,11 @@ struct policy_cfg {
     __u8  mode;          // MODE_LOG_ONLY | MODE_ENFORCE
     __u8  allow_intra;   // 1 = same-tenant container↔container allowed
     __u8  allow_metadata; // 1 = may reach 169.254.169.254 (default 0 = denied)
-    __u8  pad;
+    __u8  egress_mode;   // mode of the egress allow-list decision ONLY; 0 = follow
+                         // `mode` (the former pad byte, so an older loader that
+                         // writes 0 here keeps today's behaviour). `mode` keeps
+                         // governing the cross-tenant, intra-tenant, metadata,
+                         // virtual-patch and signature checks.
 };
 
 // Cloud metadata service IP (169.254.169.254). Compared against the packet's
@@ -475,6 +479,9 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     // Decide whether this flow is allowed under the sender's policy.
     int allowed = 0;
+    // Which mode decides a would-deny: `mode` for every check except a miss on
+    // the egress allow-list, which uses egress_mode (falling back to `mode`).
+    __u8 deny_mode = cfg->mode;
 
     if (vpatch_deny) {
         allowed = 0; // explicit virtual-patch deny — skip the allow checks entirely.
@@ -501,6 +508,8 @@ int netpolicy_ingress(struct __sk_buff *skb) {
             k.addr = daddr;
             if (bpf_map_lookup_elem(&egress_cidr, &k))
                 allowed = 1;
+            else if (cfg->egress_mode)
+                deny_mode = cfg->egress_mode; // allow-list miss: its own mode
         }
     }
 
@@ -521,7 +530,7 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 
-    if (cfg->mode == MODE_ENFORCE)
+    if (deny_mode == MODE_ENFORCE)
         return TC_ACT_SHOT; // Phase B path; Phase A never sets ENFORCE here.
     return TC_ACT_OK;
 }

@@ -69,11 +69,18 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 			if hasPolicy {
 				cfg = netbpf.CompileConfig(v.TenantID, policy)
 			} else {
-				cfg = netbpf.PolicyConfig{TenantID: v.TenantID, Mode: netbpf.ModeLogOnly}
+				cfg = netbpf.PolicyConfig{TenantID: v.TenantID, Mode: netbpf.ModeLogOnly, EgressMode: netbpf.ModeLogOnly}
 			}
-			// Safety guard: enforcement only drops when armed daemon-wide.
-			if cfg.Mode == netbpf.ModeEnforce && !enforceEnabled {
-				cfg.Mode = netbpf.ModeLogOnly
+			// Safety guard: enforcement only drops when armed daemon-wide. It
+			// applies to both modes — the egress allow-list's own mode cannot
+			// arm drops the guard has not armed.
+			if !enforceEnabled {
+				if cfg.Mode == netbpf.ModeEnforce {
+					cfg.Mode = netbpf.ModeLogOnly
+				}
+				if cfg.EgressMode == netbpf.ModeEnforce {
+					cfg.EgressMode = netbpf.ModeLogOnly
+				}
 			}
 			plan.vethPolicy[v.Ifindex] = cfg
 			plan.ifName[v.Ifindex] = v.Name
