@@ -267,6 +267,12 @@ type AgentSkillServer struct {
 	// inBoxOps overrides the container manager for the in-box agent-runtime
 	// exec and the artifact.json read. Nil in production; see inBoxRunner.
 	inBoxOps inBoxRunner
+	// serveReadyTimeout and serveReadyInterval bound how long startServeMode
+	// waits for a member's A2A endpoint to answer after launching it (#2936).
+	// Zero means serveReadyTimeoutDefault / serveReadyIntervalDefault; tests set
+	// them to milliseconds.
+	serveReadyTimeout  time.Duration
+	serveReadyInterval time.Duration
 }
 
 // inBoxRunner is the part of *container.Manager runInBoxAgentResult goes
@@ -1401,9 +1407,10 @@ func runtimeEnvPrefix(res agentengine.Resolved, model string) string {
 // no-op failure (logged), unlike a one-shot run (runInBoxAgentResult), which reports failure. Used by RunCrew for members.
 // skillID names the member's run journal (#2095); the run id comes with each
 // A2A task, not with the launch.
-func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string, engineRes agentengine.Resolved, model string) {
-	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
-		return
+func (s *AgentSkillServer) startServeMode(ctx context.Context, containerName, seedDir, skillID string, engineRes agentengine.Resolved, model string) error {
+	box := s.inBox()
+	if box == nil {
+		return fmt.Errorf("no container manager to start %s's serve mode on %s", skillID, containerName)
 	}
 	// Stop any previous serve-mode instance before starting a new one
 	// (cloud#1733). The box is reused across runs — provisionSkillBox
@@ -1425,7 +1432,7 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 	// error is intentionally not checked. ExecWithExitCode, not
 	// ExecWithOutput, so this step exercises against the fake/mock backend
 	// in tests — see TestStartServeMode_StopsPriorInstanceBeforeLaunching.
-	_, _, _, _ = s.recipes.containers.manager.ExecWithExitCode(containerName,
+	_, _, _, _ = box.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", "pkill -9 -f agent-runtime"})
 	if s.agentA2ASecret(skillID) == "" {
 		// The box will serve /agent-card and refuse every task (#2125). Say so
@@ -1433,11 +1440,79 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 		log.Printf("[agent-skill] no A2A credential derivable for %s: its serve mode will refuse every task", containerName)
 	}
 	cmd := s.serveModeCommand(seedDir, skillID, engineRes, model)
-	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", cmd}); err != nil {
-		log.Printf("[agent-skill] could not start serve mode on %s (image may not ship runtime): %v; stderr=%s",
-			containerName, err, strings.TrimSpace(stderr))
+	_, stderr, exitCode, err := box.ExecWithExitCode(containerName, []string{"bash", "-lc", cmd})
+	if err != nil && !incusExecCommandMissing(err) {
+		return fmt.Errorf("could not launch %s's serve mode on %s: %w", skillID, containerName, err)
 	}
+	if err != nil || exitCode == exitCommandNotFound {
+		log.Printf("[agent-skill] agent-runtime not found on %s (image may not ship it); stderr=%s", containerName, scrubInBoxText(stderr))
+		return fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("%s's serve-mode launch on %s exited %d; stderr=%s", skillID, containerName, exitCode, scrubInBoxText(stderr))
+	}
+	return s.waitForServeReady(ctx, box, containerName, skillID)
+}
+
+const (
+	// serveReadyTimeoutDefault bounds the wait for a member's A2A endpoint
+	// after its launch. The runtime is a Node process that binds :8674 within
+	// a few seconds when it is healthy; a launch that has not answered by
+	// then is not going to.
+	serveReadyTimeoutDefault  = 30 * time.Second
+	serveReadyIntervalDefault = time.Second
+	// serveLogPath is the process log startServeMode redirects the runtime to.
+	serveLogPath = "/var/log/agent-runtime.log"
+	// serveLogTailBytes is how much of that log is read back on a failure.
+	serveLogTailBytes = 2048
+)
+
+// serveReadyProbe asks the member's A2A server for its agent card from inside
+// the box, over bash's /dev/tcp so it does not depend on curl being installed
+// (#2936). Exit 0 only for an HTTP 200; the surrounding timeout keeps one
+// probe from outliving its poll interval when the port accepts and stalls.
+var serveReadyProbe = []string{"bash", "-lc", fmt.Sprintf(
+	`timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/%d || exit 1; `+
+		`printf "GET /agent-card HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; `+
+		`read -r line <&3; case "$line" in *" 200 "*) exit 0;; esac; exit 1'`, a2aPort)}
+
+// waitForServeReady polls the member's /agent-card until it answers, the
+// bound passes or ctx is cancelled. On a timeout it reads the tail of the
+// runtime's own log back, scrubbed and bounded like every other piece of
+// in-box text (scrubInBoxText): the log is the only place the reason a
+// backgrounded launch died is written (a bad engine credential, a port already
+// bound, a missing binary), and nothing else reads it (#2936).
+func (s *AgentSkillServer) waitForServeReady(ctx context.Context, box inBoxRunner, containerName, skillID string) error {
+	timeout, interval := s.serveReadyTimeout, s.serveReadyInterval
+	if timeout <= 0 {
+		timeout = serveReadyTimeoutDefault
+	}
+	if interval <= 0 {
+		interval = serveReadyIntervalDefault
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, _, code, err := box.ExecWithExitCode(containerName, serveReadyProbe); err == nil && code == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for %s's serve mode on %s: %w", skillID, containerName, ctx.Err())
+		case <-time.After(interval):
+		}
+	}
+
+	tail, _, _, _ := box.ExecWithExitCode(containerName,
+		[]string{"bash", "-lc", fmt.Sprintf("tail -c %d %s 2>/dev/null", serveLogTailBytes, serveLogPath)})
+	tail = scrubInBoxText(tail)
+	if strings.Contains(tail, "command not found") {
+		return fmt.Errorf("on %s: %w; %s: %s", containerName, errInBoxRuntimeMissing, serveLogPath, tail)
+	}
+	return fmt.Errorf("%s's serve mode on %s did not answer /agent-card within %s; the tail of %s: %s",
+		skillID, containerName, timeout, serveLogPath, tail)
 }
 
 // serveModeCommand is the in-box command startServeMode backgrounds. It
