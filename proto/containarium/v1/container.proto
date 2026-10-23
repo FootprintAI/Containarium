@@ -96,6 +96,28 @@ enum DeletePolicy {
   DELETE_POLICY_PROTECTED = 1;
 }
 
+// BoxToolAccess is what a platform-started (unattended, headless) agent run on
+// a box may do without a person present (#2944). It governs only those runs;
+// the owner's own login and `containarium code run` over SSH are unaffected.
+// Backed by the user.containarium.tool_access Incus config key
+// (ToolAccessKey in pkg/core/incus). Only a recorded level changes behaviour:
+// UNSPECIFIED (key absent) keeps today's run path.
+enum BoxToolAccess {
+  // No level recorded (the key is absent). Platform-started runs behave exactly
+  // as before this setting existed. Setting it clears a recorded level.
+  BOX_TOOL_ACCESS_UNSPECIFIED = 0;
+
+  // Nothing that needs approval.
+  BOX_TOOL_ACCESS_NONE = 1;
+
+  // The platform-managed build and test toolchains.
+  BOX_TOOL_ACCESS_BUILD_TOOLS = 2;
+
+  // Passwordless sudo for the unprivileged run user. An explicit, per-box
+  // choice; software installed this way is the owner's to maintain.
+  BOX_TOOL_ACCESS_FULL_SUDO = 3;
+}
+
 // ResourceLimits defines resource constraints for a container
 message ResourceLimits {
   // CPU limit (e.g., "4" for 4 cores)
@@ -332,6 +354,10 @@ message Container {
   // (QEMU/KVM), read back from the instance itself. UNSPECIFIED when the
   // backend does not report it.
   IsolationType isolation = 29;
+
+  // The tool-access level recorded for platform-started runs (#2944), read
+  // back from the instance config. UNSPECIFIED when none is recorded.
+  BoxToolAccess tool_access = 30;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -879,6 +905,23 @@ message SetContainerDeletePolicyRequest {
 message SetContainerDeletePolicyResponse {
   // The delete policy now in effect on the container.
   DeletePolicy delete_policy = 1;
+}
+
+// SetContainerToolAccessRequest records the tool-access level for
+// platform-started runs on a container (#2944).
+message SetContainerToolAccessRequest {
+  // Container name — the bare username, matching the per-container RPC
+  // convention (the handler appends "-container"; see SetContainerDeletePolicy).
+  string name = 1;
+
+  // Target level. BOX_TOOL_ACCESS_UNSPECIFIED clears a recorded level.
+  BoxToolAccess tool_access = 2;
+}
+
+// SetContainerToolAccessResponse reports the level now recorded.
+message SetContainerToolAccessResponse {
+  // The tool-access level now recorded on the container.
+  BoxToolAccess tool_access = 1;
 }
 
 // SetContainerAttributionRequest merges labels onto an existing container
