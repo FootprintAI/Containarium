@@ -249,4 +249,68 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) retention.Store)
 			t.Fatalf("holds after a failed release hook = %v, want the hold kept", hs)
 		}
 	})
+	t.Run("a fresh store is in DRY_RUN with no setter", func(t *testing.T) {
+		m, err := newStore(t).GetMode(ctx)
+		if err != nil {
+			t.Fatalf("GetMode: %v", err)
+		}
+		if m.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || m.GetUpdatedBy() != "" || m.GetUpdatedAt() != nil {
+			t.Errorf("fresh mode = %v, want DRY_RUN, never set", m)
+		}
+	})
+
+	t.Run("a mode set round-trips and reports what it replaced", func(t *testing.T) {
+		s := newStore(t)
+		res, err := s.SetMode(ctx, pb.RetentionMode_RETENTION_MODE_ENFORCE, "admin-a", nil)
+		if err != nil {
+			t.Fatalf("SetMode: %v", err)
+		}
+		if res.Previous.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || res.Current.GetMode() != pb.RetentionMode_RETENTION_MODE_ENFORCE {
+			t.Errorf("result = %v -> %v, want DRY_RUN -> ENFORCE", res.Previous.GetMode(), res.Current.GetMode())
+		}
+		got, err := s.GetMode(ctx)
+		if err != nil {
+			t.Fatalf("GetMode: %v", err)
+		}
+		if got.GetMode() != pb.RetentionMode_RETENTION_MODE_ENFORCE || got.GetUpdatedBy() != "admin-a" || got.GetUpdatedAt() == nil {
+			t.Errorf("mode = %v, want ENFORCE set by admin-a", got)
+		}
+		if _, err := s.SetMode(ctx, pb.RetentionMode_RETENTION_MODE_DRY_RUN, "admin-b", nil); err != nil {
+			t.Fatalf("SetMode back: %v", err)
+		}
+		if got, _ := s.GetMode(ctx); got.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || got.GetUpdatedBy() != "admin-b" {
+			t.Errorf("mode after switching back = %v, want DRY_RUN by admin-b", got)
+		}
+	})
+
+	t.Run("a mode set rejects UNSPECIFIED and unknown values and changes nothing", func(t *testing.T) {
+		s := newStore(t)
+		for _, m := range []pb.RetentionMode{pb.RetentionMode_RETENTION_MODE_UNSPECIFIED, pb.RetentionMode(99)} {
+			if _, err := s.SetMode(ctx, m, "admin-a", nil); !errors.Is(err, retention.ErrInvalid) {
+				t.Errorf("SetMode(%v) = %v, want ErrInvalid", m, err)
+			}
+		}
+		if got, _ := s.GetMode(ctx); got.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || got.GetUpdatedBy() != "" {
+			t.Errorf("mode after rejected sets = %v, want the untouched default", got)
+		}
+	})
+
+	t.Run("a failing beforeCommit discards a mode set", func(t *testing.T) {
+		s := newStore(t)
+		boom := errors.New("audit down")
+		var seen *retention.ModeSetResult
+		_, err := s.SetMode(ctx, pb.RetentionMode_RETENTION_MODE_ENFORCE, "admin-a", func(r *retention.ModeSetResult) error {
+			seen = r
+			return boom
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("SetMode = %v, want the hook's error", err)
+		}
+		if seen == nil || seen.Current.GetMode() != pb.RetentionMode_RETENTION_MODE_ENFORCE {
+			t.Errorf("hook saw %v, want the pending ENFORCE change", seen)
+		}
+		if got, _ := s.GetMode(ctx); got.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+			t.Errorf("mode after a failed hook = %v, want DRY_RUN kept", got.GetMode())
+		}
+	})
 }

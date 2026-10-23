@@ -42,6 +42,14 @@ func TestRetentionServer_AdminOnly(t *testing.T) {
 			_, err := s.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{})
 			return err
 		},
+		"get mode": func(ctx context.Context, s *RetentionServer) error {
+			_, err := s.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{})
+			return err
+		},
+		"set mode": func(ctx context.Context, s *RetentionServer) error {
+			_, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE})
+			return err
+		},
 		"set policy": func(ctx context.Context, s *RetentionServer) error {
 			_, err := s.SetRetentionPolicy(ctx, promptsDays(7))
 			return err
@@ -291,5 +299,189 @@ func TestNewRetentionReporter_NoPoolListsEveryStoreNotSwept(t *testing.T) {
 		if got, ok := notes[key]; !ok || !strings.Contains(got, want) {
 			t.Errorf("%s note = %q (present %v), want it to mention %q", key, got, ok, want)
 		}
+	}
+}
+
+// removingSource is a count-and-delete source that tallies its removals.
+type removingSource struct {
+	countingSource
+	removals int
+}
+
+func (r *removingSource) Remove(context.Context, time.Time, []string, int) (retention.Removal, error) {
+	r.removals++
+	return retention.Removal{Removed: r.count.Eligible}, nil
+}
+
+// TestRetentionServer_ModeStartsDryRunAndSwitchIsAuditedWithTheCaller: the
+// default is DRY_RUN; a switch writes one entry naming the admin, with the
+// mode it replaced.
+func TestRetentionServer_ModeStartsDryRunAndSwitchIsAuditedWithTheCaller(t *testing.T) {
+	s, a := newRetentionTestServer()
+	ctx := gpAdminCtx()
+	got, err := s.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{})
+	if err != nil || got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+		t.Fatalf("default mode = %v (%v), want DRY_RUN", got.GetState(), err)
+	}
+	set, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE})
+	if err != nil {
+		t.Fatalf("SetRetentionMode: %v", err)
+	}
+	if set.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_ENFORCE || set.GetState().GetUpdatedBy() != "ops" {
+		t.Fatalf("state = %v, want ENFORCE by ops", set.GetState())
+	}
+	entries := a.byAction(retentionModeSetAction)
+	if len(entries) != 1 || entries[0].Username != "ops" {
+		t.Fatalf("%s entries = %+v, want one by ops", retentionModeSetAction, entries)
+	}
+	var d retentionModeAuditDetail
+	if err := json.Unmarshal([]byte(entries[0].Detail), &d); err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if d.PreviousMode != "RETENTION_MODE_DRY_RUN" || d.Mode != "RETENTION_MODE_ENFORCE" {
+		t.Errorf("detail = %+v, want DRY_RUN -> ENFORCE", d)
+	}
+}
+
+func TestRetentionServer_ASwitchWithADownAuditStoreChangesNothing(t *testing.T) {
+	s, a := newRetentionTestServer()
+	a.err = errors.New("audit store down")
+	if _, err := s.SetRetentionMode(gpAdminCtx(), &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE}); status.Code(err) != codes.Internal {
+		t.Fatalf("SetRetentionMode with audit down = %v, want Internal", err)
+	}
+	if got, _ := s.GetRetentionMode(gpAdminCtx(), &pb.GetRetentionModeRequest{}); got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+		t.Errorf("mode after a failed audit = %v, want DRY_RUN kept", got.GetState().GetMode())
+	}
+}
+
+func TestRetentionServer_AnInvalidModeIsRefusedAndNotAudited(t *testing.T) {
+	s, a := newRetentionTestServer()
+	for _, m := range []pb.RetentionMode{pb.RetentionMode_RETENTION_MODE_UNSPECIFIED, pb.RetentionMode(42)} {
+		if _, err := s.SetRetentionMode(gpAdminCtx(), &pb.SetRetentionModeRequest{Mode: m}); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("SetRetentionMode(%v) = %v, want InvalidArgument", m, err)
+		}
+	}
+	if len(a.entries) != 0 {
+		t.Errorf("refused switches wrote %d audit entries", len(a.entries))
+	}
+}
+
+// TestRetentionServer_AnEnforcedSweepWritesOneEntryWithCountsOnly: the entry
+// carries per-class, per-store counts and no record content; a DRY_RUN sweep
+// writes none.
+func TestRetentionServer_AnEnforcedSweepWritesOneEntryWithCountsOnly(t *testing.T) {
+	store := retention.NewMemoryStore()
+	src := &removingSource{countingSource: countingSource{count: retention.Count{Older: 5, Eligible: 4}}}
+	reporter := retention.NewReporter(retention.NewSweeper(store, []retention.Source{src}, nil))
+	s, a := newRetentionTestServer()
+	s.SetStore(store)
+	s.SetReporter(reporter)
+
+	runOnce := func() {
+		t.Helper()
+		prev := reporter.Last()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { reporter.Run(ctx, time.Hour); close(done) }()
+		deadline := time.After(5 * time.Second)
+		for reporter.Last() == prev { // wait for this run's start-up sweep
+			select {
+			case <-deadline:
+				t.Fatal("no sweep ran")
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		cancel()
+		<-done
+	}
+
+	runOnce() // DRY_RUN
+	if n := len(a.byAction(retentionSweepAction)); n != 0 || src.removals != 0 {
+		t.Fatalf("a DRY_RUN sweep wrote %d entries and removed %d times, want neither", n, src.removals)
+	}
+	if _, err := s.SetRetentionMode(gpAdminCtx(), &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE}); err != nil {
+		t.Fatal(err)
+	}
+	runOnce() // ENFORCE
+	entries := a.byAction(retentionSweepAction)
+	if len(entries) != 1 || src.removals != 1 {
+		t.Fatalf("an ENFORCE sweep wrote %d entries and removed %d times, want one of each", len(entries), src.removals)
+	}
+	var d retentionSweepAuditDetail
+	if err := json.Unmarshal([]byte(entries[0].Detail), &d); err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	want := []retentionSweepAuditStore{{Class: "RETENTION_CLASS_PROMPTS", Store: "agent_tasks", WindowDays: 30, Eligible: 4, Held: 1}}
+	if fmt.Sprint(d.Stores) != fmt.Sprint(want) {
+		t.Errorf("stores = %+v, want %+v", d.Stores, want)
+	}
+	if entries[0].Username != retentionSweeperActor {
+		t.Errorf("entry by %q, want the sweeper actor %q", entries[0].Username, retentionSweeperActor)
+	}
+}
+
+func TestRetentionServer_ASweepWithADownAuditStoreRemovesNothing(t *testing.T) {
+	store := retention.NewMemoryStore()
+	if _, err := store.SetMode(context.Background(), pb.RetentionMode_RETENTION_MODE_ENFORCE, "ops", nil); err != nil {
+		t.Fatal(err)
+	}
+	src := &removingSource{countingSource: countingSource{count: retention.Count{Older: 2, Eligible: 2}}}
+	reporter := retention.NewReporter(retention.NewSweeper(store, []retention.Source{src}, nil))
+	s, a := newRetentionTestServer()
+	s.SetReporter(reporter)
+	a.err = errors.New("audit store down")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { reporter.Run(ctx, time.Hour); close(done) }()
+	deadline := time.After(5 * time.Second)
+	for len(a.byAction(retentionSweepAction)) == 0 { // the sweep reached its audit write
+		select {
+		case <-deadline:
+			t.Fatal("the enforced sweep never tried to write its audit entry")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+	if src.removals != 0 {
+		t.Errorf("removals = %d after a failed audit write, want none", src.removals)
+	}
+}
+
+// Without an audit store (no Postgres, REST disabled, or an audit store that
+// failed to start) ENFORCE would delete data with nothing recorded, so it is
+// refused with a clear error; DRY_RUN stays available.
+func TestRetentionServer_EnforceNeedsAnAuditStore(t *testing.T) {
+	s := NewRetentionServer(retention.NewMemoryStore()) // no SetAuditStore
+	ctx := gpAdminCtx()
+	_, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "audit store") {
+		t.Fatalf("SetRetentionMode(ENFORCE) with no audit store = %v, want FailedPrecondition naming the audit store", err)
+	}
+	if got, _ := s.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{}); got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+		t.Errorf("mode after the refusal = %v, want DRY_RUN", got.GetState().GetMode())
+	}
+	if _, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_DRY_RUN}); err != nil {
+		t.Errorf("SetRetentionMode(DRY_RUN) with no audit store: %v, want it allowed", err)
+	}
+}
+
+// A daemon restarted with ENFORCE stored but no audit store must not delete.
+func TestRetentionServer_AStoredEnforceModeWithNoAuditStoreRemovesNothing(t *testing.T) {
+	store := retention.NewMemoryStore()
+	if _, err := store.SetMode(context.Background(), pb.RetentionMode_RETENTION_MODE_ENFORCE, "ops", nil); err != nil {
+		t.Fatal(err)
+	}
+	src := &removingSource{countingSource: countingSource{count: retention.Count{Older: 2, Eligible: 2}}}
+	reporter := retention.NewReporter(retention.NewSweeper(store, []retention.Source{src}, nil))
+	s := NewRetentionServer(store) // no audit store
+	s.SetReporter(reporter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	reporter.Run(ctx, time.Hour) // one start-up sweep, then until the timeout
+	if src.removals != 0 {
+		t.Errorf("removals = %d with no audit store, want none", src.removals)
 	}
 }

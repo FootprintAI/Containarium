@@ -25,6 +25,8 @@ const (
 	RetentionService_SetLegalHold_FullMethodName       = "/containarium.v1.RetentionService/SetLegalHold"
 	RetentionService_ReleaseLegalHold_FullMethodName   = "/containarium.v1.RetentionService/ReleaseLegalHold"
 	RetentionService_GetRetentionReport_FullMethodName = "/containarium.v1.RetentionService/GetRetentionReport"
+	RetentionService_GetRetentionMode_FullMethodName   = "/containarium.v1.RetentionService/GetRetentionMode"
+	RetentionService_SetRetentionMode_FullMethodName   = "/containarium.v1.RetentionService/SetRetentionMode"
 )
 
 // RetentionServiceClient is the client API for RetentionService service.
@@ -43,6 +45,8 @@ type RetentionServiceClient interface {
 	SetLegalHold(ctx context.Context, in *SetLegalHoldRequest, opts ...grpc.CallOption) (*SetLegalHoldResponse, error)
 	ReleaseLegalHold(ctx context.Context, in *ReleaseLegalHoldRequest, opts ...grpc.CallOption) (*ReleaseLegalHoldResponse, error)
 	GetRetentionReport(ctx context.Context, in *GetRetentionReportRequest, opts ...grpc.CallOption) (*GetRetentionReportResponse, error)
+	GetRetentionMode(ctx context.Context, in *GetRetentionModeRequest, opts ...grpc.CallOption) (*GetRetentionModeResponse, error)
+	SetRetentionMode(ctx context.Context, in *SetRetentionModeRequest, opts ...grpc.CallOption) (*SetRetentionModeResponse, error)
 }
 
 type retentionServiceClient struct {
@@ -113,6 +117,26 @@ func (c *retentionServiceClient) GetRetentionReport(ctx context.Context, in *Get
 	return out, nil
 }
 
+func (c *retentionServiceClient) GetRetentionMode(ctx context.Context, in *GetRetentionModeRequest, opts ...grpc.CallOption) (*GetRetentionModeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRetentionModeResponse)
+	err := c.cc.Invoke(ctx, RetentionService_GetRetentionMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *retentionServiceClient) SetRetentionMode(ctx context.Context, in *SetRetentionModeRequest, opts ...grpc.CallOption) (*SetRetentionModeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetRetentionModeResponse)
+	err := c.cc.Invoke(ctx, RetentionService_SetRetentionMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RetentionServiceServer is the server API for RetentionService service.
 // All implementations must embed UnimplementedRetentionServiceServer
 // for forward compatibility.
@@ -129,6 +153,8 @@ type RetentionServiceServer interface {
 	SetLegalHold(context.Context, *SetLegalHoldRequest) (*SetLegalHoldResponse, error)
 	ReleaseLegalHold(context.Context, *ReleaseLegalHoldRequest) (*ReleaseLegalHoldResponse, error)
 	GetRetentionReport(context.Context, *GetRetentionReportRequest) (*GetRetentionReportResponse, error)
+	GetRetentionMode(context.Context, *GetRetentionModeRequest) (*GetRetentionModeResponse, error)
+	SetRetentionMode(context.Context, *SetRetentionModeRequest) (*SetRetentionModeResponse, error)
 	mustEmbedUnimplementedRetentionServiceServer()
 }
 
@@ -156,6 +182,12 @@ func (UnimplementedRetentionServiceServer) ReleaseLegalHold(context.Context, *Re
 }
 func (UnimplementedRetentionServiceServer) GetRetentionReport(context.Context, *GetRetentionReportRequest) (*GetRetentionReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRetentionReport not implemented")
+}
+func (UnimplementedRetentionServiceServer) GetRetentionMode(context.Context, *GetRetentionModeRequest) (*GetRetentionModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRetentionMode not implemented")
+}
+func (UnimplementedRetentionServiceServer) SetRetentionMode(context.Context, *SetRetentionModeRequest) (*SetRetentionModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetRetentionMode not implemented")
 }
 func (UnimplementedRetentionServiceServer) mustEmbedUnimplementedRetentionServiceServer() {}
 func (UnimplementedRetentionServiceServer) testEmbeddedByValue()                          {}
@@ -286,6 +318,42 @@ func _RetentionService_GetRetentionReport_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RetentionService_GetRetentionMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRetentionModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RetentionServiceServer).GetRetentionMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RetentionService_GetRetentionMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RetentionServiceServer).GetRetentionMode(ctx, req.(*GetRetentionModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RetentionService_SetRetentionMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetRetentionModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RetentionServiceServer).SetRetentionMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RetentionService_SetRetentionMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RetentionServiceServer).SetRetentionMode(ctx, req.(*SetRetentionModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RetentionService_ServiceDesc is the grpc.ServiceDesc for RetentionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -316,6 +384,14 @@ var RetentionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRetentionReport",
 			Handler:    _RetentionService_GetRetentionReport_Handler,
+		},
+		{
+			MethodName: "GetRetentionMode",
+			Handler:    _RetentionService_GetRetentionMode_Handler,
+		},
+		{
+			MethodName: "SetRetentionMode",
+			Handler:    _RetentionService_SetRetentionMode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

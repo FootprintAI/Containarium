@@ -1,7 +1,7 @@
 // Package retention stores the per-class retention policy and the per-org
 // legal holds (#2576, slice A #2875; docs/security/DATA-FLOW-AND-RETENTION.md).
-// It deletes nothing: the sweeper in this package only counts (#2876); the
-// enforcing slices come later.
+// The store itself deletes nothing; the sweeper in this package counts
+// (#2876) and, once an admin switches the mode to ENFORCE, removes (#2877).
 package retention
 
 import (
@@ -50,7 +50,31 @@ type PolicySetResult struct {
 	Previous, Current *pb.RetentionPolicy
 }
 
-// Store keeps the policy and the holds. Each write takes a beforeCommit hook
+// ModeSetResult is what one SetMode replaced and stored.
+type ModeSetResult struct {
+	Previous, Current *pb.RetentionModeState
+}
+
+// ValidateMode rejects UNSPECIFIED and unknown modes.
+func ValidateMode(m pb.RetentionMode) error {
+	switch m {
+	case pb.RetentionMode_RETENTION_MODE_DRY_RUN, pb.RetentionMode_RETENTION_MODE_ENFORCE:
+		return nil
+	}
+	return fmt.Errorf("%w: mode must be DRY_RUN or ENFORCE, got %v", ErrInvalid, m)
+}
+
+// BuildModeState renders a stored mode. A mode never set is the DRY_RUN
+// default with no setter and no time. Exported for the Postgres store.
+func BuildModeState(mode pb.RetentionMode, updatedAt *time.Time, updatedBy string) *pb.RetentionModeState {
+	st := &pb.RetentionModeState{Mode: mode, UpdatedBy: updatedBy}
+	if updatedAt != nil {
+		st.UpdatedAt = timestamppb.New(*updatedAt)
+	}
+	return st
+}
+
+// Store keeps the policy, the mode and the holds. Each write takes a beforeCommit hook
 // (nil = none) that runs with the pending change before it is committed; its
 // error discards the change and is returned, so a caller can make a change
 // conditional on its audit entry being written.
@@ -59,6 +83,10 @@ type Store interface {
 	GetPolicy(ctx context.Context) (*pb.RetentionPolicy, error)
 	// SetPolicy changes the listed classes only; revision = previous + 1.
 	SetPolicy(ctx context.Context, windows []*pb.RetentionWindow, updatedBy string, beforeCommit func(*PolicySetResult) error) (*PolicySetResult, error)
+	// GetMode returns the retention mode: DRY_RUN until an admin sets it.
+	GetMode(ctx context.Context) (*pb.RetentionModeState, error)
+	// SetMode switches the mode; UNSPECIFIED or an unknown mode is ErrInvalid.
+	SetMode(ctx context.Context, mode pb.RetentionMode, updatedBy string, beforeCommit func(*ModeSetResult) error) (*ModeSetResult, error)
 	// ListHolds returns the active holds ordered by org id.
 	ListHolds(ctx context.Context) ([]*pb.LegalHold, error)
 	// SetHold places a hold; an org already on hold is ErrHoldExists.
@@ -141,6 +169,41 @@ type MemoryStore struct {
 	updatedAt *time.Time
 	updatedBy string
 	holds     map[string]*pb.LegalHold
+
+	mode          pb.RetentionMode // zero = never set = DRY_RUN
+	modeUpdatedAt *time.Time
+	modeUpdatedBy string
+}
+
+func (m *MemoryStore) modeState() *pb.RetentionModeState {
+	mode := m.mode
+	if mode == pb.RetentionMode_RETENTION_MODE_UNSPECIFIED {
+		mode = pb.RetentionMode_RETENTION_MODE_DRY_RUN
+	}
+	return BuildModeState(mode, m.modeUpdatedAt, m.modeUpdatedBy)
+}
+
+func (m *MemoryStore) GetMode(context.Context) (*pb.RetentionModeState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.modeState(), nil
+}
+
+func (m *MemoryStore) SetMode(_ context.Context, mode pb.RetentionMode, updatedBy string, beforeCommit func(*ModeSetResult) error) (*ModeSetResult, error) {
+	if err := ValidateMode(mode); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := Now()
+	res := &ModeSetResult{Previous: m.modeState(), Current: BuildModeState(mode, &now, updatedBy)}
+	if beforeCommit != nil {
+		if err := beforeCommit(res); err != nil {
+			return nil, err
+		}
+	}
+	m.mode, m.modeUpdatedAt, m.modeUpdatedBy = mode, &now, updatedBy
+	return res, nil
 }
 
 func NewMemoryStore() *MemoryStore {
