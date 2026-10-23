@@ -257,6 +257,11 @@ type Manager struct {
 	// CONTAINARIUM_SENTINEL_AUTH_SECRET at startup.
 	hmacSecret []byte
 
+	// authHealth records, per primary, whether its last request to a
+	// daemon-AUTH-gated route authenticated or got 401 (#2892). Zero value
+	// is ready to use. See primary_auth_health.go.
+	authHealth primaryAuthTracker
+
 	// adminSecret gates POST /sentinel/tunnel-tokens (registering a
 	// freshly-minted tunnel-join token at runtime). Deliberately a
 	// different secret than hmacSecret — see EnvSentinelAdminSecret.
@@ -780,6 +785,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				return
 			}
 			stored := m.primaries.Register(p)
+			// Only reachable behind daemonAuthGate: the request authenticated,
+			// so its pool may now be tied to its source address (#2892).
+			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
 			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
@@ -790,6 +798,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			m.authHealth.bind(updated.Pool, requestSourceAddr(r))
 			_ = json.NewEncoder(w).Encode(updated)
 
 		case r.Method == http.MethodDelete && rest != "":
@@ -797,6 +806,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			// Kept after deregistration: a daemon restarted with a new secret
+			// deregisters with the old one, then 401s re-registering.
+			m.authHealth.bind(Pool(rest), requestSourceAddr(r))
 			log.Printf("[sentinel] primary unregistered: pool=%q", rest)
 			w.WriteHeader(http.StatusNoContent)
 

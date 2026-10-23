@@ -267,6 +267,7 @@ contains such a host.
 ## Verify (after A or B)
 
 - Sentinel status: `curl -s http://<sentinel-host>:8888/status | grep -o '"sentinel_auth_misconfigured":[a-z]*'` is `false`. This only proves the sentinel *has* a usable secret, not that it matches the daemons, so also check the next items.
+- Primary auth health: `curl -s http://<sentinel-host>:8888/status | jq '.primary_auth_health, .unattributed_auth_failures'`. Every primary of the domain must be listed with `"state": "ok"` and a `last_success` after the last restart. `"failing_401"` means that primary's daemon-to-sentinel requests (registration, heartbeat, peer-cert, key resync) are signed with a different secret. The record is in memory, so after a sentinel restart a primary is listed only once it has authenticated again: a primary missing after one heartbeat (30 s), or a rising `unattributed_auth_failures`, means a daemon that is not authenticating. This field carries no secret-derived data (#2892).
 - Window closed: within one keysync interval (2m) the sentinel logs, for every backend:
 
   ```bash
@@ -314,7 +315,9 @@ fixed here.
 3. **Terraform startup scripts overwrite `env.secrets`** (fact 8), including hand-appended
    ed25519 key lines.
 4. **The sentinel's `/status` flag reports only "secret present and long enough"**,
-   not "matches the daemons"; mismatch is visible only in keysync logs.
+   not "matches the daemons". Since #2892 `/status` also reports per-primary
+   auth health for the daemon-to-sentinel direction (see Verify); the
+   sentinel-to-daemon direction is still visible only in keysync logs.
 5. **Commands not run by the author.** This runbook was written from the code;
    it was not executed against a live fleet. Execution on live and
    customer-operated hosts is an operator task.
