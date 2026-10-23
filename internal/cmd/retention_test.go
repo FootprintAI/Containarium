@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -16,6 +18,25 @@ type fakeRetentionAPI struct {
 	sets     []*pb.SetRetentionPolicyRequest
 	holds    []*pb.SetLegalHoldRequest
 	released []string
+	refresh  []bool
+}
+
+func (f *fakeRetentionAPI) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	f.refresh = append(f.refresh, refresh)
+	return &pb.GetRetentionReportResponse{Report: &pb.RetentionReport{
+		Mode:           pb.RetentionMode_RETENTION_MODE_DRY_RUN,
+		GeneratedAt:    timestamppb.New(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
+		PolicyRevision: 2,
+		ActiveHolds:    1,
+		Stores: []*pb.RetentionStoreReport{
+			{Class: pb.RetentionClass_RETENTION_CLASS_PROMPTS, Store: "agent_tasks", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: 7, Cutoff: timestamppb.New(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)), OlderThanCutoff: 5, Eligible: 3, Held: 2},
+			{Class: pb.RetentionClass_RETENTION_CLASS_GATEWAY_LOGS, Store: "audit_logs", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_NOT_SWEPT,
+				WindowDays: 90, Note: "hash-chained; handled by #2878"},
+			{Class: pb.RetentionClass_RETENTION_CLASS_RESPONSES, Store: "agent_task_results", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_ERROR,
+				WindowDays: 30, Note: "count agent_task_results: connection refused"},
+		},
+	}}, nil
 }
 
 func (f *fakeRetentionAPI) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
@@ -50,7 +71,7 @@ func runRetentionCLI(t *testing.T, f *fakeRetentionAPI, args ...string) (string,
 	newRetentionAPI = func() (retentionAPI, func(), error) { return f, func() {}, nil }
 	t.Cleanup(func() { newRetentionAPI = prev })
 	// cobra keeps flag values and Changed marks across Execute calls.
-	for _, c := range []interface{ Flags() *pflag.FlagSet }{retentionPolicySetCmd, retentionHoldSetCmd} {
+	for _, c := range []interface{ Flags() *pflag.FlagSet }{retentionPolicySetCmd, retentionHoldSetCmd, retentionReportCmd} {
 		c.Flags().VisitAll(func(fl *pflag.Flag) { _ = fl.Value.Set(fl.DefValue); fl.Changed = false })
 	}
 	var out bytes.Buffer
@@ -92,7 +113,7 @@ func TestRetentionPolicyGetCLI_PrintsEveryWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("policy get: %v", err)
 	}
-	for _, want := range []string{"prompts", "7 days", "evidence-bundles", "365 days (default)", "revision 2", "not enforced"} {
+	for _, want := range []string{"prompts", "7 days", "evidence-bundles", "365 days (default)", "revision 2", "Not enforced"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output %q missing %q", out, want)
 		}
@@ -115,5 +136,36 @@ func TestRetentionHoldCLI(t *testing.T) {
 	}
 	if _, err := runRetentionCLI(t, f, "hold", "release", "org-a"); err != nil || len(f.released) != 1 || f.released[0] != "org-a" {
 		t.Fatalf("hold release = %v, released %v", err, f.released)
+	}
+}
+
+func TestRetentionReportCLI_PrintsCountsCutoffAndMode(t *testing.T) {
+	f := &fakeRetentionAPI{}
+	out, err := runRetentionCLI(t, f, "report")
+	if err != nil {
+		t.Fatalf("report: %v (%s)", err, out)
+	}
+	for _, want := range []string{
+		"mode: dry-run", "nothing is deleted", "policy revision 2", "1 active legal hold",
+		"prompts", "agent_tasks", "7d", "2026-10-16T12:00:00Z", "5", "3", "2",
+		"audit_logs", "not swept", "#2878",
+		"agent_task_results", "error", "connection refused",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if len(f.refresh) != 1 || f.refresh[0] {
+		t.Errorf("refresh flags sent = %v, want one false", f.refresh)
+	}
+}
+
+func TestRetentionReportCLI_RefreshFlag(t *testing.T) {
+	f := &fakeRetentionAPI{}
+	if _, err := runRetentionCLI(t, f, "report", "--refresh"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.refresh) != 1 || !f.refresh[0] {
+		t.Errorf("refresh flags sent = %v, want one true", f.refresh)
 	}
 }

@@ -118,7 +118,7 @@
     },
     {
       "name": "RetentionService",
-      "description": "RetentionService stores the retention policy and legal holds. Every RPC is\nadmin-only. A set, a hold and a release write an audit entry naming the\ncaller when the daemon has an audit store; a failed audit write fails the\nchange and leaves the store unchanged."
+      "description": "RetentionService stores the retention policy and legal holds and reports\nwhat a sweep would remove. Every RPC is\nadmin-only. A set, a hold and a release write an audit entry naming the\ncaller when the daemon has an audit store; a failed audit write fails the\nchange and leaves the store unchanged."
     },
     {
       "name": "SecurityService",
@@ -6513,6 +6513,39 @@
             "schema": {
               "$ref": "#/definitions/SetRetentionPolicyRequest"
             }
+          }
+        ],
+        "tags": [
+          "Retention"
+        ]
+      }
+    },
+    "/v1/retention/report": {
+      "get": {
+        "summary": "Get the retention report",
+        "description": "Return the last dry-run sweep: per data class and store, how many records are past the class window, how many a legal hold keeps, and how many an enforcing sweep would remove. Nothing is deleted. The daemon sweeps periodically; refresh=true sweeps now. The hash-chained audit_logs classes and evidence bundles are listed as NOT_SWEPT with the slice that handles them. Admin role only.",
+        "operationId": "RetentionService_GetRetentionReport",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetRetentionReportResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "refresh",
+            "description": "Run a sweep now instead of returning the last periodic one.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
           }
         ],
         "tags": [
@@ -14816,6 +14849,14 @@
         }
       }
     },
+    "GetRetentionReportResponse": {
+      "type": "object",
+      "properties": {
+        "report": {
+          "$ref": "#/definitions/RetentionReport"
+        }
+      }
+    },
     "GetRoutesResponse": {
       "type": "object",
       "properties": {
@@ -18371,6 +18412,15 @@
       "default": "RETENTION_CLASS_UNSPECIFIED",
       "description": "RetentionClass is a kind of customer data with its own retention window.\n\n - RETENTION_CLASS_PROMPTS: Prompts sent to a model or an agent (default 30 days).\n - RETENTION_CLASS_RESPONSES: Model and agent responses (default 30 days).\n - RETENTION_CLASS_GATEWAY_LOGS: Gateway and API access logs (default 90 days).\n - RETENTION_CLASS_SESSION_TRANSCRIPTS: Session transcripts and session records (default 90 days).\n - RETENTION_CLASS_EVIDENCE_BUNDLES: Evidence bundles such as Proof Packs (default 365 days)."
     },
+    "RetentionMode": {
+      "type": "string",
+      "enum": [
+        "RETENTION_MODE_UNSPECIFIED",
+        "RETENTION_MODE_DRY_RUN"
+      ],
+      "default": "RETENTION_MODE_UNSPECIFIED",
+      "description": "RetentionMode is what the sweeper does with the records it finds past\ntheir window.\n\n - RETENTION_MODE_DRY_RUN: Count and report only; delete nothing. The only mode until #2877."
+    },
     "RetentionPolicy": {
       "type": "object",
       "properties": {
@@ -18396,6 +18446,93 @@
         }
       },
       "description": "RetentionPolicy is the daemon-wide policy: one window for every class."
+    },
+    "RetentionReport": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/RetentionMode"
+        },
+        "generatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "policyRevision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision of the policy the windows came from."
+        },
+        "activeHolds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Legal holds active during the sweep."
+        },
+        "stores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RetentionStoreReport"
+          },
+          "description": "Every store, in class then store order."
+        }
+      },
+      "description": "RetentionReport is the result of one sweep."
+    },
+    "RetentionStoreReport": {
+      "type": "object",
+      "properties": {
+        "class": {
+          "$ref": "#/definitions/RetentionClass"
+        },
+        "store": {
+          "type": "string",
+          "description": "The store, such as \"agent_tasks\"; a table name where there is one."
+        },
+        "status": {
+          "$ref": "#/definitions/RetentionSweepStatus"
+        },
+        "windowDays": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The class window the cutoff was computed from."
+        },
+        "cutoff": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Records older than this are past the window. Unset when not swept."
+        },
+        "olderThanCutoff": {
+          "type": "string",
+          "format": "int64",
+          "description": "Records past the window, held or not."
+        },
+        "eligible": {
+          "type": "string",
+          "format": "int64",
+          "description": "Records an enforcing sweep would remove: past the window and not held."
+        },
+        "held": {
+          "type": "string",
+          "format": "int64",
+          "description": "Records past the window that a legal hold keeps. While any hold is\nactive a record with no org attribution counts as held."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a store is not swept, or the error of a failed count."
+        }
+      },
+      "description": "RetentionStoreReport is one (class, store) pair in a retention report. A\nstore that holds two classes (a crew run keeps a prompt and a response in\none row) appears once per class, each against its own window."
+    },
+    "RetentionSweepStatus": {
+      "type": "string",
+      "enum": [
+        "RETENTION_SWEEP_STATUS_UNSPECIFIED",
+        "RETENTION_SWEEP_STATUS_COUNTED",
+        "RETENTION_SWEEP_STATUS_NOT_SWEPT",
+        "RETENTION_SWEEP_STATUS_ERROR"
+      ],
+      "default": "RETENTION_SWEEP_STATUS_UNSPECIFIED",
+      "description": "RetentionSweepStatus is how one store came out of a sweep.\n\n - RETENTION_SWEEP_STATUS_COUNTED: The store was counted; the counts are valid.\n - RETENTION_SWEEP_STATUS_NOT_SWEPT: The sweeper does not count this store; note says why and where it is\nhandled.\n - RETENTION_SWEEP_STATUS_ERROR: Counting failed; note carries the error and the counts are zero."
     },
     "RetentionWindow": {
       "type": "object",

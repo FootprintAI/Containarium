@@ -1345,6 +1345,14 @@ func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldRespons
 	})
 }
 
+// GetRetentionReport reads the dry-run retention report via gRPC (admin
+// only); refresh sweeps now instead of returning the last periodic report.
+func (c *GRPCClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	return retentionCall("get retention report", func(ctx context.Context) (*pb.GetRetentionReportResponse, error) {
+		return c.retentionClient.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{Refresh: refresh})
+	})
+}
+
 // ListApps lists all applications via gRPC
 func (c *GRPCClient) ListApps(username string, stateFilter pb.AppState) ([]*pb.App, int32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

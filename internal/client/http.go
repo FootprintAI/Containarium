@@ -2456,6 +2456,16 @@ func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
 	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
 }
 
+// GetRetentionReport reads the dry-run retention report via HTTP (admin
+// only); refresh sweeps now instead of returning the last periodic report.
+func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	path := "/v1/retention/report"
+	if refresh {
+		path += "?refresh=true"
+	}
+	return retentionHTTPCall(c, http.MethodGet, path, nil, &pb.GetRetentionReportResponse{}, "get retention report")
+}
+
 // SetLegalHold places a legal hold on an org via HTTP (admin only). The org
 // travels in the path.
 func (c *HTTPClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
