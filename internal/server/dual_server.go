@@ -4400,3 +4400,17 @@ func envTruthy(v string) bool {
 type k8sClientsetProvider interface {
 	Clientset() kubernetes.Interface
 }
+
+// wireRetentionAnchor gives the audit_logs purge (#2878) the anchor that bounds
+// it, if there is a safe one (see retentionAnchorFunc).
+func (ds *DualServer) wireRetentionAnchor(file *audit.FileSink, bucket *audit.GCSAnchorSink, bucketURI string) {
+	if ds.retentionChainSource == nil {
+		return
+	}
+	fn, ok := retentionAnchorFunc(file, bucket, bucketURI)
+	if !ok {
+		log.Printf("[retention] the audit_logs purge is off: CONTAINARIUM_AUDIT_ANCHOR_BUCKET is set but the external anchor is unavailable")
+		return
+	}
+	ds.retentionChainSource.SetAnchor(fn)
+}

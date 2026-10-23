@@ -154,20 +154,6 @@ func newRetentionReporter(store retention.Store, pool *pgxpool.Pool) *retention.
 	return retention.NewReporter(retention.NewSweeper(store, sources, unswept))
 }
 
-// wireRetentionAnchor gives the audit_logs purge (#2878) the anchor that bounds
-// it, if there is a safe one (see retentionAnchorFunc).
-func (ds *DualServer) wireRetentionAnchor(file *audit.FileSink, bucket *audit.GCSAnchorSink, bucketURI string) {
-	if ds.retentionChainSource == nil {
-		return
-	}
-	fn, ok := retentionAnchorFunc(file, bucket, bucketURI)
-	if !ok {
-		log.Printf("[retention] the audit_logs purge is off: CONTAINARIUM_AUDIT_ANCHOR_BUCKET is set but the external anchor is unavailable")
-		return
-	}
-	ds.retentionChainSource.SetAnchor(fn)
-}
-
 // retentionAnchorFunc is the anchor that bounds a purge: the lower of the local
 // file's and the external bucket's latest checkpoint (audit.SafeAnchor). It
 // fails closed. With a bucket configured but not built (a bad URI, no gcloud) it
