@@ -193,8 +193,8 @@ func init() {
 // validateStackLocal rejects an unknown --stack before anything is changed,
 // notably before --force deletes the existing box (#2860). Only in local mode:
 // with a server address the daemon's own catalog decides, so a stack defined
-// only in its stacks.yaml is not refused here. Against a daemon, --force still
-// deletes before the daemon validates; see the follow-up filed from #2913.
+// only in its stacks.yaml is not refused here. Against a daemon, --force asks
+// the daemon to validate the create before it deletes (#2925).
 func validateStackLocal(serverAddr, stackID string) error {
 	if serverAddr != "" {
 		return nil
@@ -355,6 +355,22 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		sshKeys = []string{sshKey}
 	}
 
+	// Parse the flags that can still fail BEFORE --force deletes anything: a
+	// bad --isolation or an unreadable git credential file used to be found
+	// only after the existing box was gone (#2925).
+	osType := ostype.OSTypeFromString(osTypeStr)
+	isolation, err := ostype.ParseIsolation(isolationStr)
+	if err != nil {
+		return err
+	}
+
+	// Resolve optional git-source provisioning from flags (reads the
+	// credential file if one was given). Empty Source = no-op.
+	gitOpts, err := resolveGitSourceOpts()
+	if err != nil {
+		return err
+	}
+
 	// Handle --force flag: delete existing container if it exists
 	if forceRecreate {
 		if verbose {
@@ -394,6 +410,17 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 
 		if containerExists {
+			// Against a daemon, ask it to validate the create BEFORE deleting
+			// (#2925): its stack catalog, TTL bounds, image policy and capacity
+			// are not knowable here, and a rejected create after the delete
+			// would leave the user with no box at all. Local mode was already
+			// checked above against the host's own catalog.
+			if serverAddr != "" {
+				preflight := client.NewCreateContainerRequest(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, isolation, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion, parsedLabels)
+				if err := validateCreateRemote(preflight); err != nil {
+					return fmt.Errorf("%w\nThe existing container for '%s' was NOT deleted", err, username)
+				}
+			}
 			fmt.Printf("Container for user '%s' already exists, deleting due to --force flag...\n", username)
 
 			// Delete the container
@@ -456,20 +483,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	// Create container - use remote or local mode
 	var info *incus.ContainerInfo
-
-	// Parse OS type from flag
-	osType := ostype.OSTypeFromString(osTypeStr)
-	isolation, err := ostype.ParseIsolation(isolationStr)
-	if err != nil {
-		return err
-	}
-
-	// Resolve optional git-source provisioning from flags (reads the
-	// credential file if one was given). Empty Source = no-op.
-	gitOpts, err := resolveGitSourceOpts()
-	if err != nil {
-		return err
-	}
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
@@ -742,6 +755,25 @@ func createRemote(username, image, cpu, memory, disk string, sshKeys []string, e
 	defer func() { _ = grpcClient.Close() }()
 
 	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+}
+
+// validateCreateRemote runs the daemon's pre-flight checks for req without
+// creating anything (#2925), over whichever transport the CLI was told to use.
+func validateCreateRemote(req *pb.CreateContainerRequest) error {
+	if httpMode {
+		httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		defer func() { _ = httpClient.Close() }()
+		return httpClient.ValidateCreate(req)
+	}
+	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	if err != nil {
+		return fmt.Errorf("failed to connect to remote server: %w", err)
+	}
+	defer func() { _ = grpcClient.Close() }()
+	return grpcClient.ValidateCreate(req)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
