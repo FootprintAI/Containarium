@@ -10,6 +10,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/retention"
 	"github.com/footprintai/containarium/internal/server"
@@ -30,11 +31,17 @@ type retentionClient interface {
 	SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error)
 }
 
+// discardAudit is an audit store that accepts and drops every entry.
+type discardAudit struct{}
+
+func (discardAudit) Log(context.Context, *audit.AuditEntry) error { return nil }
+
 // reportingRetentionServer is a RetentionServer whose sweeper lists the
 // chained and bundle classes, so both transports have a report to return.
 func reportingRetentionServer() *server.RetentionServer {
 	store := retention.NewMemoryStore()
 	s := server.NewRetentionServer(store)
+	s.SetAuditStore(discardAudit{}) // ENFORCE is refused on a daemon with no audit store
 	s.SetReporter(retention.NewReporter(retention.NewSweeper(store, nil, retention.ChainAndBundles())))
 	return s
 }

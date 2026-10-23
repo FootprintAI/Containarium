@@ -84,25 +84,48 @@ containarium retention mode set --mode dry-run --server <host>:50051
 
 Switching needs the admin role and writes a `retention.mode.set` audit entry
 naming the caller and the mode it replaced; like a policy set, it is refused
-(`INTERNAL`, nothing changes) if that entry cannot be written, and on a
-daemon with no audit store it succeeds and keeps no entry. The mode survives
-a restart on Postgres and resets to dry-run in memory.
+(`INTERNAL`, nothing changes) if that entry cannot be written.
+
+**Enforce needs an audit store.** On a daemon with no audit store (no
+Postgres, REST disabled, or an audit store that failed to start), setting
+`enforce` is refused with `FAILED_PRECONDITION` and the mode stays as it
+was; `dry-run` is always allowed. The sweeper checks this too: if the mode is
+`enforce` (stored before, or after a restart that lost the audit store) but
+no audit store is wired, the sweep deletes nothing and logs the error every
+hour. Deleting data is never done without a record of it. This is the one
+exception to "with no audit store, changes go unrecorded" below.
+
+The mode survives a restart on Postgres and resets to dry-run in memory.
 
 What an enforced sweep does, once an hour:
 
 1. It reads the policy, the mode and the legal holds, and counts every store
    (the same counts as the report).
-2. It writes **one** `retention.sweep` audit entry with the policy revision,
-   the number of active holds and, per class and store, the window, the
-   eligible count and the held count. The entry carries counts only, never
-   the content of a record. If the entry cannot be written, **nothing is
-   deleted** in that sweep.
+2. If anything is eligible, it writes **one** `retention.sweep` audit entry,
+   with the actor `retention-sweeper` (no admin runs the hourly sweep), the
+   policy revision, the number of active holds and, per class and store, the
+   window, the eligible count and the held count. The entry carries counts
+   only, never the content of a record. If the entry cannot be written,
+   **nothing is deleted** in that sweep. A sweep that finds nothing eligible
+   writes no entry and deletes nothing, so an idle daemon does not add a row
+   to the audit log every hour.
 3. It deletes, store by store, the records older than the class cutoff that
    no hold keeps, in batches of 1000 rows and at most 100000 rows per store
-   per sweep (a larger backlog is worked off over the next sweeps). The
-   delete statement repeats the age test and re-checks the holds table, so a
-   hold placed after step 1 still stops it, and it can never touch a newer
-   row.
+   per sweep (a larger backlog is worked off over the next sweeps). Each
+   batch is its own transaction. It first takes a `SHARE` lock on the holds
+   table and then runs a `DELETE` that repeats the age test and has a
+   `NOT EXISTS` on the holds table. Placing a hold inserts into that table,
+   which the lock excludes: a hold that is being placed either committed
+   before the batch looked, and stops it, or waits until the batch has
+   committed. Placing a hold can therefore wait for one batch (at most a few
+   seconds; the sweep gives up after 10 seconds of waiting), but no batch can
+   delete a record a hold already covers. Records deleted by a batch that
+   finished before the hold was committed are gone; a hold protects what is
+   left. A `DELETE` can never touch a newer row.
+
+A store the sweeper could not delete from, such as a table that does not
+exist on this daemon, shows `not removed:` and the reason in the note of its
+report entry, so a zero is not mistaken for "nothing was past the window".
 
 `containarium retention report --refresh` is a read: it counts like a
 dry run in either mode and never deletes. It does not replace the kept
@@ -117,8 +140,11 @@ none existed. A class that is not swept (below) is untouched by the mode.
 
 A crew run keeps a prompt and a response in one row. In enforce mode a
 `crew_runs` row is deleted once it is past the **longer** of the prompts and
-responses windows, so neither class loses a record early. This is the default
-proposed on #2877; the report still counts it under each class against that
+responses windows, so neither class loses a record early. **The shorter
+window is therefore not honored for these rows.** With a 90-day prompts window
+and a 30-day responses window, a run's response is kept for 90 days, not 30.
+This is the default proposed on #2877 and is still open for the owner to
+confirm. The report still counts the row under each class against that
 class's own window, and says so in the note of the shorter-window entry.
 
 ## The report
@@ -200,7 +226,9 @@ Changes are audited:
 - **With no audit store, changes go unrecorded.** On a daemon without one,
   a change succeeds and **no audit entry is kept**. That is the case when
   the daemon has no Postgres, REST is disabled, or the audit store failed
-  to start. The guardrail baseline switch behaves the same way.
+  to start. The guardrail baseline switch behaves the same way. The one
+  exception is enforce mode, which is refused without an audit store (see
+  "Dry-run and enforce mode").
 
 Where the policy and holds are stored:
 

@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -55,7 +56,16 @@ const MaxRemovePerStore = 100_000
 // than the cutoff that no legal hold keeps. It removes at most maxRows and
 // returns how many it removed.
 type Remover interface {
-	Remove(ctx context.Context, cutoff time.Time, heldOrgs []string, maxRows int) (int64, error)
+	Remove(ctx context.Context, cutoff time.Time, heldOrgs []string, maxRows int) (Removal, error)
+}
+
+// Removal is what one Remove did.
+type Removal struct {
+	Removed int64
+	// Skipped says why a store could not be swept at all (a table that does not
+	// exist, so no hold could be ruled out), so a silent zero is not mistaken
+	// for "nothing to remove".
+	Skipped string
 }
 
 // Auditor records an enforced sweep before anything is removed. The report it
@@ -197,19 +207,19 @@ func (s *Sweeper) run(ctx context.Context, mayRemove bool) (*pb.RetentionReport,
 	return rep, nil
 }
 
+// ErrNoAuditor is returned by an enforced sweep on a daemon with no audit
+// store: removing data with no record of it is refused.
+var ErrNoAuditor = errors.New("enforce mode needs an audit store (Postgres with REST enabled and a started audit store); nothing removed")
+
 // enforce audits the sweep and then removes, store by store. A store shared by
 // two classes (a crew run holds a prompt and a response) is removed once, with
 // the longer of its classes' windows, so neither class loses a record early.
+// It fails closed: with no auditor, or when the audit write fails, nothing is
+// removed; with nothing eligible it neither audits nor removes.
 func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []counted, heldOrgs []string) error {
-	if s.audit != nil {
-		if err := s.audit(ctx, rep); err != nil {
-			return fmt.Errorf("audit the enforced sweep (nothing removed): %w", err)
-		}
-	}
-	rep.Enforced = true
-
 	var order []string
 	byStore := map[string][]counted{}
+	var eligible int64
 	for _, c := range swept {
 		if _, ok := c.src.(Remover); !ok {
 			continue
@@ -218,7 +228,22 @@ func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []
 			order = append(order, c.src.Store())
 		}
 		byStore[c.src.Store()] = append(byStore[c.src.Store()], c)
+		if c.entry.GetStatus() == pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
+			eligible += c.entry.GetEligible()
+		}
 	}
+	if s.audit == nil {
+		return ErrNoAuditor
+	}
+	rep.Enforced = true
+	if eligible == 0 {
+		return nil // nothing to remove, so nothing to record
+	}
+	if err := s.audit(ctx, rep); err != nil {
+		rep.Enforced = false
+		return fmt.Errorf("audit the enforced sweep (nothing removed): %w", err)
+	}
+
 	for _, store := range order {
 		group := byStore[store]
 		decider := group[0]
@@ -249,17 +274,20 @@ func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []
 			}
 			continue
 		}
-		n, err := decider.src.(Remover).Remove(ctx, decider.cutoff, heldOrgs, MaxRemovePerStore)
-		if err != nil {
+		res, err := decider.src.(Remover).Remove(ctx, decider.cutoff, heldOrgs, MaxRemovePerStore)
+		// res.Removed rows may have gone before a failure; report them.
+		decider.entry.Removed = res.Removed
+		switch {
+		case err != nil:
 			for _, c := range group {
 				c.entry.Status = pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_ERROR
 				c.entry.Note = err.Error()
 			}
-			// n rows may have been removed before the failure; report them.
-			decider.entry.Removed = n
-			continue
+		case res.Skipped != "":
+			for _, c := range group {
+				c.entry.Note = "not removed: " + res.Skipped
+			}
 		}
-		decider.entry.Removed = n
 	}
 	return nil
 }

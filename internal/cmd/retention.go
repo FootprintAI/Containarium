@@ -239,8 +239,11 @@ the records past their class window that no legal hold keeps, in the stores
 outside the hash chain (agent tasks and results, crew runs, gateway traffic).
 
 The change writes an audit entry naming the caller and is refused if that
-entry cannot be written; every enforced sweep writes one more with the
-per-class counts. Check "retention report" and your legal holds first.
+entry cannot be written. Enforce is refused on a daemon with no audit store
+(it needs Postgres, REST enabled and a started audit store), because the
+deletions could not be recorded. Every enforced sweep that has something to
+delete writes one more entry, as "retention-sweeper", with the per-class
+counts. Check "retention report" and your legal holds first.
 
 Example:
   containarium retention mode set --mode enforce --server <host>:50051`,

@@ -308,9 +308,9 @@ type removingSource struct {
 	removals int
 }
 
-func (r *removingSource) Remove(context.Context, time.Time, []string, int) (int64, error) {
+func (r *removingSource) Remove(context.Context, time.Time, []string, int) (retention.Removal, error) {
 	r.removals++
-	return r.count.Eligible, nil
+	return retention.Removal{Removed: r.count.Eligible}, nil
 }
 
 // TestRetentionServer_ModeStartsDryRunAndSwitchIsAuditedWithTheCaller: the
@@ -446,5 +446,42 @@ func TestRetentionServer_ASweepWithADownAuditStoreRemovesNothing(t *testing.T) {
 	<-done
 	if src.removals != 0 {
 		t.Errorf("removals = %d after a failed audit write, want none", src.removals)
+	}
+}
+
+// Without an audit store (no Postgres, REST disabled, or an audit store that
+// failed to start) ENFORCE would delete data with nothing recorded, so it is
+// refused with a clear error; DRY_RUN stays available.
+func TestRetentionServer_EnforceNeedsAnAuditStore(t *testing.T) {
+	s := NewRetentionServer(retention.NewMemoryStore()) // no SetAuditStore
+	ctx := gpAdminCtx()
+	_, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "audit store") {
+		t.Fatalf("SetRetentionMode(ENFORCE) with no audit store = %v, want FailedPrecondition naming the audit store", err)
+	}
+	if got, _ := s.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{}); got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+		t.Errorf("mode after the refusal = %v, want DRY_RUN", got.GetState().GetMode())
+	}
+	if _, err := s.SetRetentionMode(ctx, &pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_DRY_RUN}); err != nil {
+		t.Errorf("SetRetentionMode(DRY_RUN) with no audit store: %v, want it allowed", err)
+	}
+}
+
+// A daemon restarted with ENFORCE stored but no audit store must not delete.
+func TestRetentionServer_AStoredEnforceModeWithNoAuditStoreRemovesNothing(t *testing.T) {
+	store := retention.NewMemoryStore()
+	if _, err := store.SetMode(context.Background(), pb.RetentionMode_RETENTION_MODE_ENFORCE, "ops", nil); err != nil {
+		t.Fatal(err)
+	}
+	src := &removingSource{countingSource: countingSource{count: retention.Count{Older: 2, Eligible: 2}}}
+	reporter := retention.NewReporter(retention.NewSweeper(store, []retention.Source{src}, nil))
+	s := NewRetentionServer(store) // no audit store
+	s.SetReporter(reporter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	reporter.Run(ctx, time.Hour) // one start-up sweep, then until the timeout
+	if src.removals != 0 {
+		t.Errorf("removals = %d with no audit store, want none", src.removals)
 	}
 }

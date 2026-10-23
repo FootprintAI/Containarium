@@ -86,6 +86,10 @@ type retentionHoldAuditDetail struct {
 // change was rolled back.
 var errRetentionAuditFailed = errors.New("audit write failed")
 
+// errRetentionEnforceNeedsAudit is why ENFORCE is refused on a daemon with no
+// audit store.
+var errRetentionEnforceNeedsAudit = errors.New("enforce mode needs an audit store: this daemon has none (it needs Postgres, REST enabled and a started audit store), so deletions could not be recorded; the mode stays as it is")
+
 // errRetentionStoreUnavailable is what every call returns while Postgres is
 // configured but the retention store could not be installed at startup.
 var errRetentionStoreUnavailable = errors.New("retention store unavailable: Postgres is configured but the retention store was not installed (restart the daemon once Postgres answers)")
@@ -296,6 +300,12 @@ func (s *RetentionServer) SetRetentionMode(ctx context.Context, req *pb.SetReten
 	subject, err := s.requireRetentionAdmin(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// Enforcing deletes data, so it must leave a record: without an audit store
+	// (no Postgres, REST disabled, or an audit store that failed to start) it
+	// is refused rather than run unaudited.
+	if req.GetMode() == pb.RetentionMode_RETENTION_MODE_ENFORCE && s.audit == nil {
+		return nil, status.Error(codes.FailedPrecondition, errRetentionEnforceNeedsAudit.Error())
 	}
 	res, err := s.store.SetMode(ctx, req.GetMode(), subject, func(r *retention.ModeSetResult) error {
 		return s.writeAudit(ctx, subject, retentionModeSetAction, "retention_mode", "cluster",

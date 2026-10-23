@@ -10,6 +10,7 @@ package pgstore_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,15 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
+// auditCounter stands in for the audit store and counts the entries an
+// enforced sweep writes.
+type auditCounter struct{ n int }
+
+func (a *auditCounter) audit(context.Context, *pb.RetentionReport) error { a.n++; return nil }
+
 // enforcePath is the daemon's retention path over a seeded database, with the
 // three classes the swept tables use set to the test window.
-func enforcePath(t *testing.T) (context.Context, *pgxpool.Pool, *pgstore.Store, *retention.Sweeper) {
+func enforcePath(t *testing.T) (context.Context, *pgxpool.Pool, *pgstore.Store, *retention.Sweeper, *auditCounter) {
 	t.Helper()
 	ctx := context.Background()
 	pool := sourcesPool(t)
@@ -38,7 +45,10 @@ func enforcePath(t *testing.T) (context.Context, *pgxpool.Pool, *pgstore.Store, 
 	}, "admin", nil); err != nil {
 		t.Fatal(err)
 	}
-	return ctx, pool, store, retention.NewSweeper(store, pgstore.NewSources(pool), nil)
+	a := &auditCounter{}
+	sw := retention.NewSweeper(store, pgstore.NewSources(pool), nil)
+	sw.SetAuditor(a.audit)
+	return ctx, pool, store, sw, a
 }
 
 func setMode(t *testing.T, ctx context.Context, s *pgstore.Store, m pb.RetentionMode) {
@@ -58,7 +68,7 @@ func wantRows(t *testing.T, pool *pgxpool.Pool, want int, why string) {
 }
 
 func TestEnforce_RemovesOlderRecordsKeepsNewerAndDryRunRemovesNothing(t *testing.T) {
-	ctx, pool, store, sw := enforcePath(t)
+	ctx, pool, store, sw, audits := enforcePath(t)
 
 	// DRY_RUN is the default: a full sweep removes nothing.
 	rep, err := sw.Sweep(ctx)
@@ -69,6 +79,9 @@ func TestEnforce_RemovesOlderRecordsKeepsNewerAndDryRunRemovesNothing(t *testing
 		t.Errorf("default report = mode %v enforced %v, want DRY_RUN and not enforced", rep.GetMode(), rep.GetEnforced())
 	}
 	wantRows(t, pool, 3, "DRY_RUN must remove nothing")
+	if audits.n != 0 {
+		t.Errorf("a DRY_RUN sweep wrote %d audit entries, want none", audits.n)
+	}
 
 	setMode(t, ctx, store, pb.RetentionMode_RETENTION_MODE_ENFORCE)
 	rep, err = sw.Sweep(ctx)
@@ -79,6 +92,15 @@ func TestEnforce_RemovesOlderRecordsKeepsNewerAndDryRunRemovesNothing(t *testing
 		t.Error("report of an ENFORCE sweep is not marked enforced")
 	}
 	wantRows(t, pool, 1, "the two rows past the window are gone, the newer one is kept")
+	if audits.n != 1 {
+		t.Errorf("the enforced sweep wrote %d audit entries, want exactly one", audits.n)
+	}
+	if _, err := sw.Sweep(ctx); err != nil { // nothing is left to remove
+		t.Fatalf("second enforced Sweep: %v", err)
+	}
+	if audits.n != 1 {
+		t.Errorf("a sweep with nothing eligible wrote an audit entry (%d in all), want none", audits.n)
+	}
 	var kept int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_tasks WHERE id = 't-c'`).Scan(&kept); err != nil || kept != 1 {
 		t.Errorf("the newer agent_tasks row t-c: count %d, err %v; want it kept", kept, err)
@@ -93,7 +115,7 @@ func TestEnforce_RemovesOlderRecordsKeepsNewerAndDryRunRemovesNothing(t *testing
 }
 
 func TestEnforce_AHeldOrgsRecordsSurviveAndGoOnTheNextSweepAfterRelease(t *testing.T) {
-	ctx, pool, store, sw := enforcePath(t)
+	ctx, pool, store, sw, _ := enforcePath(t)
 	setMode(t, ctx, store, pb.RetentionMode_RETENTION_MODE_ENFORCE)
 	if _, err := store.SetHold(ctx, "org-a", "case 1", "admin", nil); err != nil {
 		t.Fatal(err)
@@ -132,7 +154,9 @@ func TestEnforce_ACrewRunUsesTheLongerOfItsTwoWindows(t *testing.T) {
 		}
 	}
 	setMode(t, ctx, store, pb.RetentionMode_RETENTION_MODE_ENFORCE)
-	if _, err := retention.NewSweeper(store, pgstore.NewSources(pool), nil).Sweep(ctx); err != nil {
+	sw := retention.NewSweeper(store, pgstore.NewSources(pool), nil)
+	sw.SetAuditor((&auditCounter{}).audit)
+	if _, err := sw.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
 	rows, err := pool.Query(ctx, `SELECT id FROM crew_runs ORDER BY id`)
@@ -171,13 +195,13 @@ func TestRemove_IsBoundedByMaxRows(t *testing.T) {
 	}
 	cutoff := time.Now().AddDate(0, 0, -sourceWindowDays)
 	rm := removers(pool, "agent_tasks")
-	n, err := rm.Remove(ctx, cutoff, nil, 1)
-	if err != nil || n != 1 {
-		t.Fatalf("Remove(maxRows=1) = (%d, %v), want (1, nil) of the 2 eligible", n, err)
+	res, err := rm.Remove(ctx, cutoff, nil, 1)
+	if err != nil || res.Removed != 1 {
+		t.Fatalf("Remove(maxRows=1) = (%+v, %v), want 1 removed of the 2 eligible", res, err)
 	}
-	n, err = rm.Remove(ctx, cutoff, nil, 100)
-	if err != nil || n != 1 {
-		t.Fatalf("Remove(maxRows=100) = (%d, %v), want the 1 remaining eligible row", n, err)
+	res, err = rm.Remove(ctx, cutoff, nil, 100)
+	if err != nil || res.Removed != 1 {
+		t.Fatalf("Remove(maxRows=100) = (%+v, %v), want the 1 remaining eligible row", res, err)
 	}
 	var left int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_tasks`).Scan(&left); err != nil || left != 1 {
@@ -201,8 +225,8 @@ func TestRemove_ReChecksHoldsInTheSameStatement(t *testing.T) {
 	cutoff := time.Now().AddDate(0, 0, -sourceWindowDays)
 	// The caller believes there are no holds (it read them before the hold was placed).
 	for _, tbl := range []string{"agent_tasks", "agent_task_results", "crew_runs", "traffic_connections", "traffic_aggregates"} {
-		if n, err := removers(pool, tbl).Remove(ctx, cutoff, nil, 100); err != nil || n != 0 {
-			t.Errorf("Remove on %s = (%d, %v), want (0, nil) while a hold exists", tbl, n, err)
+		if res, err := removers(pool, tbl).Remove(ctx, cutoff, nil, 100); err != nil || res.Removed != 0 {
+			t.Errorf("Remove on %s = (%+v, %v), want nothing removed while a hold exists", tbl, res, err)
 		}
 	}
 	wantRows(t, pool, 3, "a hold placed mid-sweep keeps every record")
@@ -213,11 +237,57 @@ func TestRemove_WithoutTheHoldsTableRemovesNothing(t *testing.T) {
 	ctx := context.Background()
 	pool := sourcesPool(t)
 	seed(t, pool)
-	n, err := removers(pool, "agent_tasks").Remove(ctx, time.Now().AddDate(0, 0, -sourceWindowDays), nil, 100)
-	if err != nil || n != 0 {
-		t.Errorf("Remove with no holds table = (%d, %v), want (0, nil)", n, err)
+	res, err := removers(pool, "agent_tasks").Remove(ctx, time.Now().AddDate(0, 0, -sourceWindowDays), nil, 100)
+	if err != nil || res.Removed != 0 || !strings.Contains(res.Skipped, "retention_legal_holds") {
+		t.Errorf("Remove with no holds table = (%+v, %v), want nothing removed and a Skipped reason naming the holds table", res, err)
 	}
 	wantRows(t, pool, 3, "no holds table, no removal")
+}
+
+// SetLegalHold inserts the hold in a transaction that stays open while its
+// audit entry is written. A delete batch that started meanwhile must not
+// read "no hold yet" and delete: Remove takes a SHARE lock on the holds table,
+// so it waits for the hold's transaction and then sees the committed hold.
+func TestRemove_WaitsForAHoldThatIsBeingPlaced(t *testing.T) {
+	ctx := context.Background()
+	pool := sourcesPool(t)
+	seed(t, pool)
+	if _, err := pgstore.New(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO retention_legal_holds (org_id, reason, set_by, set_at) VALUES ('org-a', 'case 1', 'admin', now())`); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		res retention.Removal
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		res, err := removers(pool, "agent_tasks").Remove(callCtx, time.Now().AddDate(0, 0, -sourceWindowDays), nil, 100)
+		done <- result{res, err}
+	}()
+	select {
+	case r := <-done:
+		t.Fatalf("Remove returned (%+v, %v) while a hold was being placed; it must wait for that transaction", r.res, r.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.res.Removed != 0 {
+		t.Errorf("Remove after the hold committed = (%+v, %v), want nothing removed", r.res, r.err)
+	}
+	wantRows(t, pool, 3, "the hold committed before the delete ran, so every record is kept")
 }
 
 func TestRemove_AMissingTableRemovesNothing(t *testing.T) {
@@ -226,8 +296,12 @@ func TestRemove_AMissingTableRemovesNothing(t *testing.T) {
 	if _, err := pool.Exec(ctx, `DROP TABLE traffic_aggregates`); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := removers(pool, "traffic_aggregates").Remove(ctx, time.Now(), nil, 10); err != nil || n != 0 {
-		t.Errorf("Remove on a missing table = (%d, %v), want (0, nil)", n, err)
+	if _, err := pgstore.New(ctx, pool); err != nil { // the holds table exists; the swept one does not
+		t.Fatal(err)
+	}
+	res, err := removers(pool, "traffic_aggregates").Remove(ctx, time.Now(), nil, 10)
+	if err != nil || res.Removed != 0 || !strings.Contains(res.Skipped, "traffic_aggregates") {
+		t.Errorf("Remove on a missing table = (%+v, %v), want nothing removed and a Skipped reason naming the table", res, err)
 	}
 }
 

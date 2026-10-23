@@ -6489,7 +6489,7 @@
       },
       "put": {
         "summary": "Set the retention mode",
-        "description": "Switch between DRY_RUN and ENFORCE. In ENFORCE the next periodic sweep permanently deletes records past their class window that no legal hold keeps, in agent_tasks, agent_task_results, crew_runs and the gateway traffic tables. UNSPECIFIED or an unknown mode is INVALID_ARGUMENT. With an audit store the change writes an audit entry naming the caller while it is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes; with no audit store the change succeeds and writes no entry. Admin role only.",
+        "description": "Switch between DRY_RUN and ENFORCE. In ENFORCE the next periodic sweep permanently deletes records past their class window that no legal hold keeps, in agent_tasks, agent_task_results, crew_runs and the gateway traffic tables. UNSPECIFIED or an unknown mode is INVALID_ARGUMENT. ENFORCE needs an audit store (Postgres with REST enabled and a started audit store): on a daemon without one it is FAILED_PRECONDITION and the mode is unchanged, and a sweep on such a daemon removes nothing even if ENFORCE was stored earlier. DRY_RUN is always allowed. The change writes an audit entry naming the caller while it is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes. Admin role only.",
         "operationId": "RetentionService_SetRetentionMode",
         "responses": {
           "200": {
