@@ -125,3 +125,59 @@ func TestStoragePoolRecorder_PeerBackendLabel(t *testing.T) {
 		t.Errorf("got %d data points, want 2 (used + total)", n)
 	}
 }
+
+// #2853: the ZFS-only gauges are recorded for the pools that have zpool
+// numbers, under the same labels, and fragmentation only when zpool gave one.
+func TestStoragePoolRecorder_ZpoolGauges(t *testing.T) {
+	rd := metric.NewManualReader()
+	rec, err := newStoragePoolRecorder(metric.NewMeterProvider(metric.WithReader(rd)), "backend-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.record([]poolcapacity.Sample{
+		{StoragePoolUsage: incus.StoragePoolUsage{Name: "z1", UsedBytes: 1, TotalBytes: 100,
+			Zpool: &incus.ZpoolStat{CapacityPercent: 41, FragmentationPercent: 17, FragmentationKnown: true}}},
+		{StoragePoolUsage: incus.StoragePoolUsage{Name: "z2", UsedBytes: 1, TotalBytes: 100,
+			Zpool: &incus.ZpoolStat{CapacityPercent: 9}}}, // fragmentation not available
+		{StoragePoolUsage: incus.StoragePoolUsage{Name: "plain", UsedBytes: 1, TotalBytes: 100}}, // not ZFS
+	})
+
+	var rm metricdata.ResourceMetrics
+	if err := rd.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range g.DataPoints {
+				pool, _ := dp.Attributes.Value(attribute.Key("pool"))
+				if b, _ := dp.Attributes.Value(attribute.Key("backend.id")); b.AsString() != "backend-a" {
+					t.Errorf("%s missing backend.id label: %v", m.Name, dp.Attributes)
+				}
+				got[m.Name+"/"+pool.AsString()] = dp.Value
+			}
+		}
+	}
+	want := map[string]int64{
+		storagePoolZpoolCapacityName + "/z1": 41, storagePoolFragmentationName + "/z1": 17,
+		storagePoolZpoolCapacityName + "/z2": 9,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %d, want %d (all %v)", k, got[k], v, got)
+		}
+	}
+	for _, absent := range []string{storagePoolFragmentationName + "/z2", storagePoolZpoolCapacityName + "/plain", storagePoolFragmentationName + "/plain"} {
+		if _, ok := got[absent]; ok {
+			t.Errorf("%s was recorded although zpool gave no number for it", absent)
+		}
+	}
+	if strings.ReplaceAll(storagePoolFragmentationName, ".", "_") != storagePoolFragmentationSeries ||
+		strings.ReplaceAll(storagePoolZpoolCapacityName, ".", "_") != storagePoolZpoolCapacitySeries {
+		t.Error("the Series spellings do not match the instrument names")
+	}
+}
