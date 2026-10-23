@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -512,15 +513,46 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
-// createTargetsPeer reports whether the create names a remote backend, by the
-// same rule as the forwarding block in createContainerAuthorized. It is
-// evaluated BEFORE pool placement, so it sees only an explicit backend_id: a
-// --pool create that placement later routes to a peer is still validated
-// against THIS daemon's stack catalog (known gap; moving the check after
-// placement would mean allocating encrypted tenant storage before rejecting a
-// typo).
+// createTargetsPeer reports whether the create is bound for a remote backend,
+// by the same rule as the forwarding block in createContainerAuthorized. It is
+// evaluated AFTER pool placement has set req.BackendId, so a --pool create that
+// placement routes to a peer is a peer-bound create too (#2952).
 func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
 	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
+}
+
+// validateStackOnPeer checks req.Stack against the catalog of the peer the
+// create is bound for (#2952). It rejects only when it has read a non-empty
+// catalog that lacks the stack. Anything it cannot conclude (no stack asked
+// for, the peer unknown or unhealthy, the catalog unreadable or empty) is
+// let through: the forwarding block reports an unreachable peer with its own
+// error, and a peer validates every create it receives for itself, so this
+// check exists to fail early, before storage is allocated, not to be the only
+// line of defence.
+func (s *ContainerServer) validateStackOnPeer(ctx context.Context, req *pb.CreateContainerRequest) error {
+	if req.Stack == "" || s.peerPool == nil {
+		return nil
+	}
+	peer := s.peerPool.Get(req.BackendId)
+	if peer == nil || !peer.Healthy {
+		return nil
+	}
+	ids, err := peer.ForwardListStacks(ctx, extractAuthToken(ctx))
+	if err != nil {
+		log.Printf("[create] could not read backend %q's stack catalog (%v); leaving the stack check to the backend", req.BackendId, err)
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		if id == req.Stack {
+			return nil
+		}
+	}
+	sort.Strings(ids)
+	return status.Errorf(codes.InvalidArgument, "unknown stack %q on backend %q; valid stacks there: %s",
+		req.Stack, req.BackendId, strings.Join(ids, ", "))
 }
 
 // CreateContainer creates a new container
@@ -559,13 +591,28 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
-	// Unknown stack (#2860): refuse before any allocation or placement. A
-	// create bound for a peer is forwarded as is: the peer validates it against
-	// its own catalog, which may define stacks this daemon does not.
-	if !s.createTargetsPeer(req) {
-		if err := validateStackID(req.Stack); err != nil {
+	// Pool resolution — if a pool is requested, either validate that
+	// the explicit backend_id belongs to that pool, or pick any
+	// healthy backend in the pool when backend_id is empty.
+	//
+	// This runs BEFORE the stack check and before any storage is allocated
+	// (#2952): it only chooses a backend (it sets req.BackendId), it provisions
+	// nothing, and the stack has to be checked against the catalog of the
+	// backend that will actually create the box.
+	if req.Pool != "" {
+		if err := s.resolvePoolPlacement(req); err != nil {
 			return nil, err
 		}
+	}
+	// Unknown stack (#2860, #2952): refuse before any allocation. The catalog
+	// that counts is the one of the backend that will create the box: this
+	// daemon's, or the peer's, which may define stacks this daemon does not.
+	if s.createTargetsPeer(req) {
+		if err := s.validateStackOnPeer(ctx, req); err != nil {
+			return nil, err
+		}
+	} else if err := validateStackID(req.Stack); err != nil {
+		return nil, err
 	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
 	// create path did not provision an encrypted dataset. It now does
@@ -644,15 +691,6 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		}
 	}
 
-	// Pool resolution — if a pool is requested, either validate that
-	// the explicit backend_id belongs to that pool, or pick any
-	// healthy backend in the pool when backend_id is empty.
-	if req.Pool != "" {
-		if err := s.resolvePoolPlacement(req); err != nil {
-			return nil, err
-		}
-	}
-
 	// Route to peer if backend_id specifies a remote backend
 	if req.BackendId != "" && s.peerPool != nil {
 		localID := s.peerPool.LocalBackendID()
@@ -666,12 +704,13 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			}
 			if req.GetDryRun() {
 				// #2925: not forwarded. A peer that predates dry_run would
-				// ignore it and really create the box. What this daemon could
-				// check without the peer's catalog has passed above.
+				// ignore it and really create the box. The stack was checked
+				// against the peer's catalog above (#2952); the peer's other
+				// checks are not run.
 				return &pb.CreateContainerResponse{
 					DryRun: true,
-					Message: fmt.Sprintf("Validated by this daemon only: the create is bound for backend %q, whose own checks "+
-						"(its stack catalog, image policy and capacity) were not run.", req.BackendId),
+					Message: fmt.Sprintf("Validated by this daemon, and the stack against backend %q's catalog; that backend's "+
+						"other checks (image policy, capacity) were not run.", req.BackendId),
 				}, nil
 			}
 			// Forward to peer — extract auth token from context
