@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path"
@@ -183,18 +184,31 @@ func (g *GCSAnchorSink) LastPublished(ctx context.Context) (int64, string, bool,
 }
 
 func (g *GCSAnchorSink) readRecord(ctx context.Context, uri string) (anchorRecord, error) {
-	out, err := g.run(ctx, nil, "storage", "cat", uri)
+	rec, problem, err := g.fetchRecord(ctx, uri)
 	if err != nil {
-		return anchorRecord{}, fmt.Errorf("audit: read anchor %s: %w", uri, err)
+		return anchorRecord{}, err
 	}
-	var rec anchorRecord
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rec); err != nil {
-		return anchorRecord{}, fmt.Errorf("audit: anchor %s is not a valid record: %w", uri, err)
-	}
-	if want := g.objectURI(rec.Checkpoint); want != uri {
-		return anchorRecord{}, fmt.Errorf("audit: anchor %s records checkpoint %d, which belongs at %s", uri, rec.Checkpoint, want)
+	if problem != "" {
+		return anchorRecord{}, errors.New(problem)
 	}
 	return rec, nil
+}
+
+// fetchRecord reads one anchor object. A failure to read it is err; content
+// that is not a record for its own name is problem, which verify-anchor
+// reports as tampering rather than aborting on.
+func (g *GCSAnchorSink) fetchRecord(ctx context.Context, uri string) (rec anchorRecord, problem string, err error) {
+	out, err := g.run(ctx, nil, "storage", "cat", uri)
+	if err != nil {
+		return anchorRecord{}, "", fmt.Errorf("audit: read anchor %s: %w", uri, err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rec); err != nil {
+		return anchorRecord{}, fmt.Sprintf("audit: anchor %s is not a valid record: %v", uri, err), nil
+	}
+	if want := g.objectURI(rec.Checkpoint); want != uri {
+		return anchorRecord{}, fmt.Sprintf("audit: anchor %s records checkpoint %d, which belongs at %s", uri, rec.Checkpoint, want), nil
+	}
+	return rec, "", nil
 }
 
 // RetentionLockStatus is what the bucket's retention policy says.
