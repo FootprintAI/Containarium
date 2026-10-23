@@ -105,8 +105,9 @@ What an enforced sweep does, once an hour:
 2. If anything is eligible, it writes **one** `retention.sweep` audit entry,
    with the actor `retention-sweeper` (no admin runs the hourly sweep), the
    policy revision, the number of active holds and, per class and store, the
-   window, the eligible count and the held count. The entry carries counts
-   only, never the content of a record. If the entry cannot be written,
+   window, the eligible count and the held count (and, for the hash-chained
+   `audit_logs`, `previous_base_id`: the chain base the purge starts from).
+   The entry carries counts and ids only, never the content of a record. If the entry cannot be written,
    **nothing is deleted** in that sweep. A sweep that finds nothing eligible
    writes no entry and deletes nothing, so an idle daemon does not add a row
    to the audit log every hour.
@@ -325,10 +326,39 @@ the purge.
 **What the base does not prove.** It records where verification starts, not
 why the rows before it are gone. Someone with database write access could
 delete the oldest rows and write a matching base; the chain cannot tell that
-from a purge. The record that a purge was authorised is the
-`retention.sweep` audit entry each enforced sweep writes (before it deletes),
-which is itself in the chain and covered by the next anchor. Rows are not
-exported or archived before removal: that is an open decision on #2420.
+from a purge. The record that a purge was authorised is the pair of audit
+entries each enforced purge of `audit_logs` writes, both in the chain and
+covered by the next anchor:
+
+- `retention.sweep`, written **before** it deletes (and without it nothing is
+  deleted), with `previous_base_id`: the base the purge started from.
+- `retention.sweep.result`, written **after** it, with `base_id` (the new
+  base, equal to the stored one), `previous_base_id`, `rows_removed` and the
+  rows removed per class: ids and counts only. It is a separate entry because
+  the new base does not exist until the rows are gone. If it cannot be
+  written, the purge stays committed (it cannot be undone), the failure is
+  logged and noted on the report entry, and `retention.sweep` stands alone.
+  A purge that removed nothing writes no result entry.
+
+**The base can outlive its authorising entries.** Every audit action that is
+not an SSH session action uses the gateway-logs window (90 days by default),
+and that includes admin events: `retention.sweep`, `retention.sweep.result`,
+`retention.mode.set`, `retention.policy.set`, `retention.hold.set` and
+`retention.hold.release`, logins, token and container actions. They are rows
+of the chain like any other, so once they are older than the window and below
+the latest anchor a later purge removes them. The stored base only moves
+forward and is not itself purged, so it can remain after the entries that
+authorised it are gone; the entries of a purge can be matched to its base only
+while both exist. An operator who needs to show for longer than the
+gateway-logs window that a purge was authorised should export those entries
+before they age out (`containarium audit query --action retention.sweep
+--raw`, and the same for `retention.sweep.result`, `retention.mode.set`,
+`retention.policy.set`, `retention.hold.set`, `retention.hold.release`) and
+keep the exports with the anchor copies. Whether admin events should have a
+longer window than gateway logs is an open decision (#2979); today they do not.
+
+Rows are not exported or archived before removal: that is an open decision on
+#2420.
 Replaying an old sentinel session batch after its rows were purged would
 re-insert them as new rows, because their dedupe keys went with them.
 

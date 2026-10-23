@@ -1541,8 +1541,25 @@ above:
 The base records where verification starts, not why the rows before it are
 gone. A database writer who deletes the oldest rows and writes a matching base
 looks like a purge to both commands. Check an unexpected base against the
-`retention.sweep` entries in the audit log (`containarium audit query`): every
-authorised purge writes one before it deletes.
+audit log (`containarium audit query --action retention.sweep` and
+`--action retention.sweep.result`): every authorised purge writes a
+`retention.sweep` entry before it deletes (with `previous_base_id`, the base it
+started from) and, if it removed rows, a `retention.sweep.result` entry after
+it with `base_id`, the new base. The `base_id` of the latest result entry
+equals the stored base, and its `previous_base_id` equals the `base_id` of the
+result before it, unless a result entry could not be written (the daemon log
+says so, and the sweep report notes it). A base with no matching entry and no
+such note is the thing to investigate.
+
+Those entries are ordinary rows of the chain and use the gateway-logs window
+(90 days by default), so a later purge removes them like any other admin event.
+The base outlives them. To keep the proof of authorisation longer than that
+window, export the `retention.sweep`, `retention.sweep.result`,
+`retention.mode.set`, `retention.policy.set`, `retention.hold.set` and
+`retention.hold.release` entries before they age out
+(`containarium audit query --action <action> --raw > <file>`) and store the
+exports with the anchor copies. Whether admin events should be kept longer
+than gateway logs is an open decision (#2979); today they are not.
 
 ### Integrity self-measurement heartbeat
 
