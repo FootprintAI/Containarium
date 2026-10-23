@@ -2740,7 +2740,11 @@ skipAppHosting:
 			// gatewayOwnerRevocations for the same nil-interface reason as
 			// gwRevocations above.
 			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
+			// One typed event per proxied call, read back by TailRunLog (#2928).
+			gwCalls := modelgateway.NewCallLog()
+			agentSkillServer.SetGatewayCalls(gwCalls)
 			gw := modelgateway.New(modelgateway.Config{
+				Calls:        gwCalls,
 				Secret:       []byte(config.JWTSecret),
 				Providers:    gwProviders,
 				ProviderKeys: keys,
