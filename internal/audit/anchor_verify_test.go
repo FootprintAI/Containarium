@@ -27,7 +27,6 @@ type anchorFixture struct {
 	filePath  string
 	tee       *TeeSink
 	chain     *fakeChainStore
-	publishAt []int64
 }
 
 func newAnchorFixture(t *testing.T, maxID int64) *anchorFixture {
