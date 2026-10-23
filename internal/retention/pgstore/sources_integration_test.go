@@ -40,7 +40,7 @@ func sourcesPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS agent_tasks, agent_task_results, crew_runs, traffic_connections, traffic_aggregates, retention_policy, retention_windows, retention_legal_holds`); err != nil {
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS agent_tasks, agent_task_results, crew_runs, traffic_connections, traffic_aggregates, retention_policy, retention_windows, retention_legal_holds, retention_mode`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	if _, err := server.NewPostgresAgentTaskQueue(ctx, pool); err != nil {

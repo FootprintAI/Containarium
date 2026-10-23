@@ -16,9 +16,14 @@ import (
 // pgUndefinedTable is the SQLSTATE of a query on a table that does not exist.
 const pgUndefinedTable = "42P01"
 
-// tableSource counts the rows of one table older than its age column. None of
-// the swept tables carries an org, so every count goes through
-// retention.Unattributed. It runs a SELECT and nothing else.
+// removeBatch is how many rows one DELETE statement removes, so no statement
+// holds locks on more than this many rows.
+const removeBatch = 1000
+
+// tableSource counts the rows of one table older than its age column, and
+// removes them. None of the swept tables carries an org, so every count goes
+// through retention.Unattributed and every removal is refused while any legal
+// hold exists. Count runs a SELECT and nothing else.
 type tableSource struct {
 	pool      *pgxpool.Pool
 	class     pb.RetentionClass
@@ -80,4 +85,75 @@ func NoDatabase() []retention.Unswept {
 			Note: "no database connection on this daemon, so nothing is counted"}
 	}
 	return out
+}
+
+// Remove deletes the rows Count lists as eligible, at most maxRows, in batches
+// of removeBatch. The predicate is Count's (age column before the cutoff), and
+// the DELETE carries it itself, so no statement can touch a newer row. The
+// rows have no org, so while any legal hold exists nothing is removed (Q21 on
+// #2727). A caller's list of held orgs is only the fast path: each batch runs
+// in its own transaction that first takes a SHARE lock on retention_legal_holds
+// and then DELETEs with a NOT EXISTS on that table. SetLegalHold inserts into
+// the table, which the SHARE lock excludes, so a hold being placed either
+// committed before the batch looked (and stops it) or waits until the batch
+// has committed (and then protects what is left). Waiting is bounded by
+// lock_timeout; a timeout is an error and removes nothing more.
+func (s *tableSource) Remove(ctx context.Context, cutoff time.Time, heldOrgs []string, maxRows int) (retention.Removal, error) {
+	if len(heldOrgs) > 0 || maxRows < 1 {
+		return retention.Removal{}, nil
+	}
+	// table and ageColumn are constants of this file, never request input.
+	q := fmt.Sprintf(`DELETE FROM %[1]s
+		WHERE %[2]s < $1
+		  AND NOT EXISTS (SELECT 1 FROM retention_legal_holds)
+		  AND ctid = ANY(ARRAY(SELECT ctid FROM %[1]s WHERE %[2]s < $1 LIMIT $2 FOR UPDATE SKIP LOCKED))`,
+		s.table, s.ageColumn)
+	var total int64
+	for total < int64(maxRows) {
+		if err := ctx.Err(); err != nil {
+			return retention.Removal{Removed: total}, err
+		}
+		batch := int64(removeBatch)
+		if left := int64(maxRows) - total; left < batch {
+			batch = left
+		}
+		n, err := s.removeBatch(ctx, q, cutoff, batch)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == pgUndefinedTable {
+				// The swept table, or the holds table, was never installed
+				// here: nothing to remove, or no way to prove nothing is held.
+				return retention.Removal{Removed: total, Skipped: pgErr.Message}, nil
+			}
+			return retention.Removal{Removed: total}, fmt.Errorf("remove from %s: %w", s.table, err)
+		}
+		total += n
+		if n < batch {
+			break
+		}
+	}
+	return retention.Removal{Removed: total}, nil
+}
+
+// removeBatch runs one locked DELETE and returns the rows it removed.
+func (s *tableSource) removeBatch(ctx context.Context, q string, cutoff time.Time, batch int64) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `LOCK TABLE retention_legal_holds IN SHARE MODE`); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, q, cutoff, batch)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

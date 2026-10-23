@@ -33,7 +33,7 @@ func retentionPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS retention_policy, retention_windows, retention_legal_holds`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS retention_policy, retention_windows, retention_legal_holds, retention_mode`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	return pool

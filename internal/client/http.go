@@ -2489,8 +2489,19 @@ func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
 	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
 }
 
-// GetRetentionReport reads the dry-run retention report via HTTP (admin
-// only); refresh sweeps now instead of returning the last periodic report.
+// GetRetentionMode reads the retention mode via HTTP (admin only).
+func (c *HTTPClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/mode", nil, &pb.GetRetentionModeResponse{}, "get retention mode")
+}
+
+// SetRetentionMode switches the retention mode via HTTP (admin only).
+func (c *HTTPClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/mode", req, &pb.SetRetentionModeResponse{}, "set retention mode")
+}
+
+// GetRetentionReport reads the retention report via HTTP (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
 func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
 	path := "/v1/retention/report"
 	if refresh {

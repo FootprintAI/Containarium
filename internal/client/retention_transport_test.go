@@ -10,6 +10,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/retention"
 	"github.com/footprintai/containarium/internal/server"
@@ -26,13 +27,21 @@ type retentionClient interface {
 	SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error)
 	ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error)
 	GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error)
+	GetRetentionMode() (*pb.GetRetentionModeResponse, error)
+	SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error)
 }
+
+// discardAudit is an audit store that accepts and drops every entry.
+type discardAudit struct{}
+
+func (discardAudit) Log(context.Context, *audit.AuditEntry) error { return nil }
 
 // reportingRetentionServer is a RetentionServer whose sweeper lists the
 // chained and bundle classes, so both transports have a report to return.
 func reportingRetentionServer() *server.RetentionServer {
 	store := retention.NewMemoryStore()
 	s := server.NewRetentionServer(store)
+	s.SetAuditStore(discardAudit{}) // ENFORCE is refused on a daemon with no audit store
 	s.SetReporter(retention.NewReporter(retention.NewSweeper(store, nil, retention.ChainAndBundles())))
 	return s
 }
@@ -124,6 +133,27 @@ func TestRetentionTransports_ReportAgrees(t *testing.T) {
 						t.Errorf("store %v/%s = %v, want NOT_SWEPT with a note", st.GetClass(), st.GetStore(), st)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestRetentionTransports_ModeAgrees(t *testing.T) {
+	for name, c := range retentionTransports(t) {
+		t.Run(name, func(t *testing.T) {
+			got, err := c.GetRetentionMode()
+			if err != nil || got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+				t.Fatalf("fresh GetRetentionMode = (%v, %v), want DRY_RUN", got, err)
+			}
+			if _, err := c.SetRetentionMode(&pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE}); err != nil {
+				t.Fatalf("SetRetentionMode: %v", err)
+			}
+			got, err = c.GetRetentionMode()
+			if err != nil || got.GetState().GetMode() != pb.RetentionMode_RETENTION_MODE_ENFORCE {
+				t.Fatalf("GetRetentionMode after set = (%v, %v), want ENFORCE", got, err)
+			}
+			if _, err := c.SetRetentionMode(&pb.SetRetentionModeRequest{Mode: pb.RetentionMode_RETENTION_MODE_UNSPECIFIED}); err == nil {
+				t.Fatal("setting UNSPECIFIED succeeded")
 			}
 		})
 	}

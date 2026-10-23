@@ -164,6 +164,8 @@ resize
 retention hold list
 retention hold release
 retention hold set
+retention mode get
+retention mode set
 retention policy get
 retention policy set
 retention report

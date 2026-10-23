@@ -17,7 +17,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// Store keeps the policy bookkeeping in a singleton row (locked by every set,
+// Store keeps the mode in a singleton row, the policy bookkeeping in another (locked by every set,
 // so revisions never repeat), the set windows one row per class, and the
 // active holds one row per org. A released hold's row is deleted; its history
 // is in the audit log.
@@ -47,6 +47,15 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 				ALTER TABLE retention_windows ADD CONSTRAINT retention_windows_days_max CHECK (days <= `+maxDaysSQL+`);
 			END IF;
 		END $$;
+		-- The daemon-wide mode: a singleton row, DRY_RUN (1) until an admin sets
+		-- it. updated_at stays NULL until the first set.
+		CREATE TABLE IF NOT EXISTS retention_mode (
+			id         SMALLINT PRIMARY KEY CHECK (id = 1),
+			mode       INTEGER NOT NULL DEFAULT 1 CHECK (mode IN (1, 2)),
+			updated_at TIMESTAMPTZ,
+			updated_by TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO retention_mode (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 		CREATE TABLE IF NOT EXISTS retention_legal_holds (
 			org_id TEXT PRIMARY KEY,
 			reason TEXT NOT NULL,
@@ -140,6 +149,53 @@ func (s *Store) SetPolicy(ctx context.Context, ws []*pb.RetentionWindow, updated
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit retention policy: %w", err)
+	}
+	return res, nil
+}
+
+// readMode reads the mode row; lock is appended (" FOR UPDATE" inside a set).
+func readMode(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, lock string) (*pb.RetentionModeState, error) {
+	var (
+		mode      int32
+		updatedAt *time.Time
+		updatedBy string
+	)
+	if err := q.QueryRow(ctx, `SELECT mode, updated_at, updated_by FROM retention_mode WHERE id = 1`+lock).
+		Scan(&mode, &updatedAt, &updatedBy); err != nil {
+		return nil, fmt.Errorf("read retention mode: %w", err)
+	}
+	return retention.BuildModeState(pb.RetentionMode(mode), updatedAt, updatedBy), nil
+}
+
+func (s *Store) GetMode(ctx context.Context) (*pb.RetentionModeState, error) {
+	return readMode(ctx, s.pool, "")
+}
+
+func (s *Store) SetMode(ctx context.Context, mode pb.RetentionMode, updatedBy string, beforeCommit func(*retention.ModeSetResult) error) (*retention.ModeSetResult, error) {
+	if err := retention.ValidateMode(mode); err != nil {
+		return nil, err
+	}
+	var res *retention.ModeSetResult
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		prev, err := readMode(ctx, tx, " FOR UPDATE")
+		if err != nil {
+			return err
+		}
+		now := retention.Now()
+		res = &retention.ModeSetResult{Previous: prev, Current: retention.BuildModeState(mode, &now, updatedBy)}
+		if _, err := tx.Exec(ctx, `UPDATE retention_mode SET mode = $1, updated_at = $2, updated_by = $3 WHERE id = 1`,
+			int32(mode), now, updatedBy); err != nil {
+			return fmt.Errorf("store retention mode: %w", err)
+		}
+		if beforeCommit != nil {
+			return beforeCommit(res)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return res, nil
 }
