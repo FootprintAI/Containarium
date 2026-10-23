@@ -5,12 +5,12 @@ model responses, logs, session transcripts or evidence. For each store it
 gives how long the data is kept today and which retention class covers it.
 It is the data-flow document that #2576 asks for.
 
-> **Status (slice A, #2875).** The retention windows and legal holds below
-> can be set and read, but **nothing enforces them yet**. No sweeper runs and
-> nothing is deleted because of a window. The "Kept today" column is what
-> actually happens. Later slices add enforcement:
+> **Status (slices A and B, #2875, #2876).** The retention windows and legal
+> holds below can be set and read, and a dry-run sweeper reports what a
+> window would remove, but **nothing enforces them yet**. The sweeper only
+> counts; nothing is deleted because of a window. The "Kept today" column is
+> what actually happens. Later slices add enforcement:
 >
-> - #2876: a dry-run report of what would be removed.
 > - #2877: enforced deletion for the stores outside the hash chain.
 > - #2878: removing the oldest rows of the hash-chained audit log.
 > - #2879: evidence bundles.
@@ -64,9 +64,66 @@ containarium retention hold list --server <host>:50051
 containarium retention hold release <org-id> --server <host>:50051
 ```
 
+## The dry-run report
+
+`containarium retention report` shows what a sweep would remove. It is
+read-only: the sweeper has no delete path, and the report says
+`mode: dry-run`.
+
+```bash
+containarium retention report --server <host>:50051            # the daemon's last report
+containarium retention report --server <host>:50051 --refresh  # count now
+```
+
+The daemon counts at start and then hourly, and keeps the last report; the
+report carries when it was counted and the policy revision it used, so a
+window changed since then shows as a different revision. `--refresh` counts
+now.
+
+For each class and store the report gives the window, the cutoff (now minus
+the window), and three counts:
+
+- **Older**: records past the window.
+- **Held**: the part of Older that a legal hold keeps. The stores below have
+  no org column, so while *any* hold is active every record past the window
+  counts as held.
+- **Eligible**: Older minus Held, the records an enforcing sweep would
+  remove.
+
+Stores the sweeper counts today, by age column:
+
+| Class | Store | Age column |
+|---|---|---|
+| Prompts | `agent_tasks` | `enqueued_at` |
+| Responses | `agent_task_results` | `completed_at` |
+| Prompts and responses | `crew_runs`, listed once per class | `created_at` |
+| Gateway logs | `traffic_connections` | `created_at` |
+| Gateway logs | `traffic_aggregates` | `interval_start` |
+
+A crew run keeps a prompt and a response in one row, so it appears under
+both classes, each against its own window. Counting it twice is a report
+choice; which window decides its deletion is for the enforcement slice
+(#2877).
+
+The window is a maximum (Q23): the daemon already deletes `traffic_*` rows
+after 7 and 28 days, so those counts stay near zero until a window is set
+below that. The report does not hide this.
+
+Not counted, and listed as **not swept** with the slice that handles them:
+
+- The hash-chained `audit_logs` classes (gateway logs and session
+  transcripts): #2878.
+- Evidence bundles: no bundle store exists yet; #2879.
+
+On a daemon with no database every Postgres-backed store is listed as not
+swept, because there is nothing to count. A store whose table does not exist
+holds nothing and counts as zero. A store that fails to count is listed as
+`error` with the reason, and the other stores are still counted.
+
 ## Who can change it, and the audit trail
 
-Every retention command, reads included, needs the admin role.
+Every retention command, reads and the report included, needs the admin
+role.
 
 Changes are audited:
 

@@ -95,7 +95,12 @@ func TestCreateContainer_DryRun_RejectsExactlyWhatARealCreateRejects(t *testing.
 func TestCreateContainer_DryRun_IsNotForwardedToAPeer(t *testing.T) {
 	var hits int32
 	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		// Only a create is what a forwarded dry run would be. The read-only
+		// GET /v1/stacks the daemon makes to check the peer's catalog (#2952)
+		// is expected.
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&hits, 1)
+		}
 		_, _ = w.Write([]byte("{}"))
 	}))
 	defer peerSrv.Close()
@@ -112,7 +117,7 @@ func TestCreateContainer_DryRun_IsNotForwardedToAPeer(t *testing.T) {
 		t.Fatalf("dry run bound for a peer failed: %v", err)
 	}
 	if n := atomic.LoadInt32(&hits); n != 0 {
-		t.Fatalf("the peer received %d request(s) for a dry run; it could really create the box", n)
+		t.Fatalf("the peer received %d create(s) for a dry run; it could really create the box", n)
 	}
 	if !resp.GetDryRun() {
 		t.Error("response.dry_run = false")

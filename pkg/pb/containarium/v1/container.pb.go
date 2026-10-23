@@ -1456,8 +1456,9 @@ type CreateContainerRequest struct {
 	// (a --force caller expects it to).
 	//
 	// A create bound for a peer backend is NOT forwarded: a peer that predates
-	// this field would ignore it and really create the box. The response says
-	// the peer's own checks were not run.
+	// this field would ignore it and really create the box. The stack is checked
+	// against that peer's own catalog (#2952), read with an ordinary
+	// GET /v1/stacks; the response says the peer's other checks were not run.
 	DryRun        bool `protobuf:"varint,29,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
