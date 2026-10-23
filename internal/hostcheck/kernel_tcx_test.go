@@ -39,6 +39,11 @@ func TestKernelSupportsTCX(t *testing.T) {
 		{"6.x.1", false, false},
 		{".6.1", false, false},
 		{"-1.6.0", false, false},
+		{"10.0", true, true},
+		{"6.6.0-rc1", true, true},
+		{"v6.6", false, false},
+		{" ", false, false},
+		{"99999999999999999999.6", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.release, func(t *testing.T) {
