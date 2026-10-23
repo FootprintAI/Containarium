@@ -3,6 +3,8 @@
 package audit
 
 import (
+	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -13,6 +15,10 @@ import (
 func bindToProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone // group already gone: not a failure
+		}
+		return err
 	}
 }

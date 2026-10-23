@@ -1,10 +1,15 @@
+//go:build !windows
+
 package audit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -13,19 +18,47 @@ import (
 // deadline even when gcloud leaves a child holding the stdout/stderr pipes.
 
 // hangingGcloud writes a stub `gcloud` that starts a background sleep (which
-// inherits the pipes) and then waits on it, like a hung network helper.
-func hangingGcloud(t *testing.T) string {
+// inherits the pipes), records that child's pid, and then waits on it, like a
+// hung network helper. It returns the stub path and the pid file.
+func hangingGcloud(t *testing.T) (bin, pidFile string) {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "gcloud")
-	script := "#!/bin/sh\nsleep 20 &\nwait\n"
+	dir := t.TempDir()
+	bin = filepath.Join(dir, "gcloud")
+	pidFile = filepath.Join(dir, "child.pid")
+	script := "#!/bin/sh\nsleep 20 &\necho $! > " + pidFile + "\nwait\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil { // #nosec G306 -- test stub must be executable
 		t.Fatalf("write stub gcloud: %v", err)
 	}
-	return bin
+	return bin, pidFile
+}
+
+// requireGone fails unless the pid in pidFile no longer exists shortly after
+// the call returned.
+func requireGone(t *testing.T, pidFile string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(pidFile))
+	if err != nil {
+		t.Fatalf("stub never recorded its child's pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("bad pid file %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL) // don't leak the sleeper
+			t.Fatalf("background child %d survived the deadline: the process group was not killed", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestRunGcloud_HungChildIsBoundedByDeadline(t *testing.T) {
-	bin := hangingGcloud(t)
+	bin, pidFile := hangingGcloud(t)
 	start := time.Now()
 	_, err := runGcloud(context.Background(), bin, 300*time.Millisecond, nil, "storage", "ls", "gs://example-bucket/")
 	elapsed := time.Since(start)
@@ -35,6 +68,7 @@ func TestRunGcloud_HungChildIsBoundedByDeadline(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatalf("runGcloud returned after %s, want within a bounded time of the 300ms deadline", elapsed)
 	}
+	requireGone(t, pidFile)
 }
 
 func TestRunGcloud_Success(t *testing.T) {
@@ -62,7 +96,7 @@ func TestRunGcloud_FailureCarriesStderr(t *testing.T) {
 // A hung bucket call must not stop the file sink from anchoring, and must not
 // make AnchorManager.Stop block.
 func TestAnchorManager_HungBucketDoesNotStallFileAnchoringOrStop(t *testing.T) {
-	bin := hangingGcloud(t)
+	bin, _ := hangingGcloud(t)
 	bucket, err := newGCSAnchorSink("gs://example-bucket/audit-anchors", func(ctx context.Context, stdin []byte, args ...string) (string, error) {
 		return runGcloud(ctx, bin, 300*time.Millisecond, stdin, args...)
 	})
