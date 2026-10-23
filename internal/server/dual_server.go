@@ -298,6 +298,7 @@ type DualServer struct {
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
+	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
@@ -1642,6 +1643,8 @@ skipAppHosting:
 	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
 	var guardrailPGStore guardrailpolicy.Store
 	var retentionPGStore retention.Store
+	// The pool the dry-run sweeper counts through (#2876); nil without one.
+	var retentionSweepPool *pgxpool.Pool
 	// The startup pool, handed to the policy-store recovery retry (#2483)
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
@@ -1685,6 +1688,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create Postgres retention store: %v", rErr)
 			} else {
 				retentionPGStore = rStore
+				retentionSweepPool = pool
 			}
 
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
@@ -1733,7 +1737,11 @@ skipAppHosting:
 		}
 	}
 	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
-	retentionServer.SetStore(retentionStartupStore(postgresConnString != "", retentionPGStore))
+	retentionStore := retentionStartupStore(postgresConnString != "", retentionPGStore)
+	retentionServer.SetStore(retentionStore)
+	// The dry-run sweeper (#2876): counts only, started in Start.
+	retentionReporter := newRetentionReporter(retentionStore, retentionSweepPool)
+	retentionServer.SetReporter(retentionReporter)
 	// Either policy store still on its fail-closed stand-in is retried in the
 	// background (5 s doubling to 60 s) until Postgres answers; the install
 	// is an atomic swap, and Provider() below follows it (#2483).
@@ -2732,7 +2740,11 @@ skipAppHosting:
 			// gatewayOwnerRevocations for the same nil-interface reason as
 			// gwRevocations above.
 			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
+			// One typed event per proxied call, read back by TailRunLog (#2928).
+			gwCalls := modelgateway.NewCallLog()
+			agentSkillServer.SetGatewayCalls(gwCalls)
 			gw := modelgateway.New(modelgateway.Config{
+				Calls:        gwCalls,
 				Secret:       []byte(config.JWTSecret),
 				Providers:    gwProviders,
 				ProviderKeys: keys,
@@ -3064,6 +3076,7 @@ skipAppHosting:
 		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
+		retentionReporter:      retentionReporter,
 		credentialWatcher:      credentialWatcher,
 		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
 		grpcServer:             grpcServer,
@@ -3440,6 +3453,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
+	if ds.retentionReporter != nil {
+		go ds.retentionReporter.Run(ctx, retentionSweepInterval)
 	}
 	if ds.credentialWatcher != nil {
 		ds.credentialWatcher.Start(ctx)

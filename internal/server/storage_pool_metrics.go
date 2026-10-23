@@ -24,13 +24,22 @@ const (
 	storagePoolUsedSeries  = "storage_pool_used_bytes"
 	storagePoolTotalSeries = "storage_pool_total_bytes"
 
+	// ZFS-only (#2853): what Incus does not expose. Recorded only for a pool
+	// whose `zpool list` answered, and the fragmentation one only when zpool
+	// reported it.
+	storagePoolZpoolCapacityName   = "storage_pool.zpool_capacity_percent"
+	storagePoolFragmentationName   = "storage_pool.fragmentation_percent"
+	storagePoolZpoolCapacitySeries = "storage_pool_zpool_capacity_percent"
+	storagePoolFragmentationSeries = "storage_pool_fragmentation_percent"
+
 	storagePoolInterval    = 60 * time.Second
 	storagePoolReadTimeout = 10 * time.Second
 )
 
 type storagePoolRecorder struct {
-	backendID   string
-	used, total otelmetric.Int64Gauge
+	backendID           string
+	used, total         otelmetric.Int64Gauge
+	zpoolCap, zpoolFrag otelmetric.Int64Gauge
 }
 
 func newStoragePoolRecorder(provider *sdkmetric.MeterProvider, backendID string) (*storagePoolRecorder, error) {
@@ -45,7 +54,17 @@ func newStoragePoolRecorder(provider *sdkmetric.MeterProvider, backendID string)
 	if err != nil {
 		return nil, fmt.Errorf("storage pool metrics: %w", err)
 	}
-	return &storagePoolRecorder{backendID: backendID, used: used, total: total}, nil
+	zcap, err := meter.Int64Gauge(storagePoolZpoolCapacityName, otelmetric.WithUnit("%"),
+		otelmetric.WithDescription("A ZFS pool's capacity as zpool list reports it (ZFS pools only; slop space included, unlike used/total)"))
+	if err != nil {
+		return nil, fmt.Errorf("storage pool metrics: %w", err)
+	}
+	zfrag, err := meter.Int64Gauge(storagePoolFragmentationName, otelmetric.WithUnit("%"),
+		otelmetric.WithDescription("A ZFS pool's free-space fragmentation as zpool list reports it (ZFS pools only)"))
+	if err != nil {
+		return nil, fmt.Errorf("storage pool metrics: %w", err)
+	}
+	return &storagePoolRecorder{backendID: backendID, used: used, total: total, zpoolCap: zcap, zpoolFrag: zfrag}, nil
 }
 
 // record is the monitor's OnSample hook: this daemon's own pools.
@@ -67,6 +86,12 @@ func (r *storagePoolRecorder) recordOne(backendID string, p incus.StoragePoolUsa
 	attrs := otelmetric.WithAttributes(attribute.String("pool", p.Name), attribute.String("backend.id", backendID))
 	r.used.Record(context.Background(), p.UsedBytes, attrs)
 	r.total.Record(context.Background(), p.TotalBytes, attrs)
+	if z := p.Zpool; z != nil {
+		r.zpoolCap.Record(context.Background(), z.CapacityPercent, attrs)
+		if z.FragmentationKnown {
+			r.zpoolFrag.Record(context.Background(), z.FragmentationPercent, attrs)
+		}
+	}
 }
 
 // startStoragePoolMonitor runs the pool capacity monitor on every daemon, so
@@ -90,7 +115,9 @@ func startStoragePoolMonitor(ctx context.Context, mc *metrics.Collector, backend
 			mc.SetPeerStoragePoolHook(rec.recordPeer)
 		}
 	}
-	m := poolcapacity.New(client.StoragePoolUsages, opts)
+	// ZFS pools also get zpool's raw capacity and fragmentation (#2853), each
+	// read under its own short deadline so a hung zpool never delays the tick.
+	m := poolcapacity.New(poolcapacity.WithZpool(client.StoragePoolUsages, poolcapacity.ExecRunner, poolcapacity.ZpoolDeadline), opts)
 	go m.Run(ctx, storagePoolInterval)
 	return m
 }

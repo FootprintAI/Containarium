@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,6 +36,10 @@ func TestRetentionServer_AdminOnly(t *testing.T) {
 	calls := map[string]func(context.Context, *RetentionServer) error{
 		"get policy": func(ctx context.Context, s *RetentionServer) error {
 			_, err := s.GetRetentionPolicy(ctx, &pb.GetRetentionPolicyRequest{})
+			return err
+		},
+		"get report": func(ctx context.Context, s *RetentionServer) error {
+			_, err := s.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{})
 			return err
 		},
 		"set policy": func(ctx context.Context, s *RetentionServer) error {
@@ -207,5 +213,83 @@ func TestRetentionServer_ErrorCodes(t *testing.T) {
 				t.Fatalf("%s = %v, want %v", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// countingSource answers with a fixed count and tallies its calls.
+type countingSource struct {
+	calls int
+	count retention.Count
+}
+
+func (c *countingSource) Class() pb.RetentionClass { return pb.RetentionClass_RETENTION_CLASS_PROMPTS }
+func (c *countingSource) Store() string            { return "agent_tasks" }
+func (c *countingSource) Count(context.Context, time.Time, []string) (retention.Count, error) {
+	c.calls++
+	return c.count, nil
+}
+
+func TestRetentionServer_GetRetentionReport(t *testing.T) {
+	s, _ := newRetentionTestServer()
+	src := &countingSource{count: retention.Count{Older: 3, Eligible: 3}}
+	s.SetReporter(retention.NewReporter(retention.NewSweeper(retention.NewMemoryStore(), []retention.Source{src},
+		[]retention.Unswept{{Class: pb.RetentionClass_RETENTION_CLASS_EVIDENCE_BUNDLES, Store: "evidence_bundles", Note: "no store yet (#2879)"}})))
+
+	resp, err := s.GetRetentionReport(gpAdminCtx(), &pb.GetRetentionReportRequest{})
+	if err != nil {
+		t.Fatalf("GetRetentionReport: %v", err)
+	}
+	if resp.GetReport().GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || len(resp.GetReport().GetStores()) != 2 {
+		t.Fatalf("report = %v", resp.GetReport())
+	}
+	if _, err := s.GetRetentionReport(gpAdminCtx(), &pb.GetRetentionReportRequest{}); err != nil || src.calls != 1 {
+		t.Fatalf("second call: err=%v, sweeps=%d; want the kept report (1 sweep)", err, src.calls)
+	}
+	if _, err := s.GetRetentionReport(gpAdminCtx(), &pb.GetRetentionReportRequest{Refresh: true}); err != nil || src.calls != 2 {
+		t.Fatalf("refresh: err=%v, sweeps=%d; want a new sweep (2)", err, src.calls)
+	}
+}
+
+func TestRetentionServer_GetRetentionReportWithoutAReporterIsUnavailable(t *testing.T) {
+	s, _ := newRetentionTestServer()
+	_, err := s.GetRetentionReport(gpAdminCtx(), &pb.GetRetentionReportRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v (%v), want Unavailable", status.Code(err), err)
+	}
+}
+
+func TestRetentionServer_GetRetentionReportWithAnUnavailableStoreIsUnavailable(t *testing.T) {
+	s, _ := newRetentionTestServer()
+	s.SetReporter(retention.NewReporter(retention.NewSweeper(unavailableRetentionStore{}, nil, nil)))
+	_, err := s.GetRetentionReport(gpAdminCtx(), &pb.GetRetentionReportRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v (%v), want Unavailable", status.Code(err), err)
+	}
+}
+
+// With no database pool the daemon still answers: every Postgres-backed store
+// is listed NOT_SWEPT with the reason, next to the chained and bundle classes.
+func TestNewRetentionReporter_NoPoolListsEveryStoreNotSwept(t *testing.T) {
+	rep, err := newRetentionReporter(retention.NewMemoryStore(), nil).Report(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	notes := map[string]string{}
+	for _, s := range rep.GetStores() {
+		if s.GetStatus() != pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_NOT_SWEPT {
+			t.Errorf("%v/%s status = %v, want NOT_SWEPT with no database", s.GetClass(), s.GetStore(), s.GetStatus())
+		}
+		notes[s.GetClass().String()+"/"+s.GetStore()] = s.GetNote()
+	}
+	for key, want := range map[string]string{
+		"RETENTION_CLASS_PROMPTS/agent_tasks":               "no database",
+		"RETENTION_CLASS_GATEWAY_LOGS/traffic_connections":  "no database",
+		"RETENTION_CLASS_GATEWAY_LOGS/audit_logs":           "#2878",
+		"RETENTION_CLASS_SESSION_TRANSCRIPTS/audit_logs":    "#2878",
+		"RETENTION_CLASS_EVIDENCE_BUNDLES/evidence_bundles": "#2879",
+	} {
+		if got, ok := notes[key]; !ok || !strings.Contains(got, want) {
+			t.Errorf("%s note = %q (present %v), want it to mention %q", key, got, ok, want)
+		}
 	}
 }

@@ -3,7 +3,9 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -11,9 +13,10 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// `containarium retention policy|hold` (#2875, slice A of #2576): thin clients
-// over RetentionService. They store the policy and the holds; nothing is
-// swept or deleted yet (the dry-run sweeper is #2876).
+// `containarium retention policy|hold|report` (#2875, #2876; slices A and B of
+// #2576): thin clients over RetentionService. They store the policy and the
+// holds and print what a sweep would remove; nothing is deleted (enforcement
+// is #2877).
 
 // retentionAPI is the slice of the typed clients these commands use.
 type retentionAPI interface {
@@ -22,6 +25,7 @@ type retentionAPI interface {
 	ListLegalHolds() (*pb.ListLegalHoldsResponse, error)
 	SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error)
 	ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error)
+	GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error)
 }
 
 // newRetentionAPI builds the client from the global --server/--http flags. A
@@ -69,8 +73,9 @@ var retentionCmd = &cobra.Command{
 	Use:   "retention",
 	Short: "Retention windows per data class and legal holds per org (admin only; talks to the daemon)",
 	Long: `Read and set how long each class of customer data is kept, and place or
-release legal holds. The windows are stored only: no sweeper runs yet, so
-nothing is deleted (see docs/security/DATA-FLOW-AND-RETENTION.md).
+release legal holds, and see what a sweep would remove. The windows are not
+enforced yet: the sweeper only counts, so nothing is deleted (see
+docs/security/DATA-FLOW-AND-RETENTION.md).
 
 Every command needs the admin role. A change writes an audit entry naming the
 caller and is refused if that entry cannot be written. A daemon with no audit
@@ -103,7 +108,7 @@ var retentionPolicyGetCmd = &cobra.Command{
 			if p.GetUpdatedBy() != "" {
 				fmt.Fprintf(out, ", set by %s", p.GetUpdatedBy())
 			}
-			_, err = fmt.Fprintln(out, "\nStored only, not enforced: no sweeper runs yet.")
+			_, err = fmt.Fprintln(out, "\nNot enforced: the sweeper only counts (see `retention report`).")
 			return err
 		})
 	},
@@ -147,6 +152,63 @@ Examples:
 			return err
 		})
 	},
+}
+
+var retentionReportCmd = &cobra.Command{
+	Use:   "report",
+	Short: "Show what a retention sweep would remove (dry run; deletes nothing)",
+	Long: `Show, per data class and store, how many records are past the class window,
+how many a legal hold keeps, and how many an enforcing sweep would remove.
+
+The daemon recounts hourly and keeps the last report; --refresh counts now.
+The hash-chained audit log classes and evidence bundles are listed as "not
+swept" with the slice that handles them. Admin role only.
+
+Example:
+  containarium retention report --server <host>:50051 --refresh`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		refresh, _ := cmd.Flags().GetBool("refresh")
+		return withRetentionAPI(func(api retentionAPI) error {
+			resp, err := api.GetRetentionReport(refresh)
+			if err != nil {
+				return err
+			}
+			return printRetentionReport(cmd.OutOrStdout(), resp.GetReport())
+		})
+	},
+}
+
+func retentionModeName(m pb.RetentionMode) string {
+	if m == pb.RetentionMode_RETENTION_MODE_DRY_RUN {
+		return "dry-run"
+	}
+	return m.String()
+}
+
+func printRetentionReport(out io.Writer, r *pb.RetentionReport) error {
+	fmt.Fprintf(out, "Retention report (mode: %s, nothing is deleted)\n", retentionModeName(r.GetMode()))
+	holds := "no active legal holds"
+	if n := r.GetActiveHolds(); n > 0 {
+		holds = fmt.Sprintf("%d active legal hold(s); records with no org count as held", n)
+	}
+	fmt.Fprintf(out, "Counted %s, policy revision %d, %s\n\n",
+		r.GetGeneratedAt().AsTime().Format("2006-01-02T15:04:05Z"), r.GetPolicyRevision(), holds)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "CLASS\tSTORE\tWINDOW\tCUTOFF\tOLDER\tELIGIBLE\tHELD")
+	for _, s := range r.GetStores() {
+		window := fmt.Sprintf("%dd", s.GetWindowDays())
+		switch s.GetStatus() {
+		case pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED:
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%d\n", retentionClassName(s.GetClass()), s.GetStore(), window,
+				s.GetCutoff().AsTime().Format("2006-01-02T15:04:05Z"), s.GetOlderThanCutoff(), s.GetEligible(), s.GetHeld())
+		case pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_NOT_SWEPT:
+			fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\tnot swept: %s\n", retentionClassName(s.GetClass()), s.GetStore(), window, s.GetNote())
+		default:
+			fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\terror: %s\n", retentionClassName(s.GetClass()), s.GetStore(), window, s.GetNote())
+		}
+	}
+	return tw.Flush()
 }
 
 var retentionHoldCmd = &cobra.Command{Use: "hold", Short: "List, place or release legal holds per org"}
@@ -227,10 +289,11 @@ func init() {
 	for _, f := range retentionClassFlags {
 		retentionPolicySetCmd.Flags().Int32(f.flag, 0, "days to keep "+f.flag+" (1 to 36500)")
 	}
+	retentionReportCmd.Flags().Bool("refresh", false, "count now instead of showing the daemon's last hourly report")
 	retentionHoldSetCmd.Flags().String("reason", "", "why the hold exists, such as a case reference (required)")
 	_ = retentionHoldSetCmd.MarkFlagRequired("reason")
 	retentionPolicyCmd.AddCommand(retentionPolicyGetCmd, retentionPolicySetCmd)
 	retentionHoldCmd.AddCommand(retentionHoldListCmd, retentionHoldSetCmd, retentionHoldReleaseCmd)
-	retentionCmd.AddCommand(retentionPolicyCmd, retentionHoldCmd)
+	retentionCmd.AddCommand(retentionPolicyCmd, retentionHoldCmd, retentionReportCmd)
 	rootCmd.AddCommand(retentionCmd)
 }

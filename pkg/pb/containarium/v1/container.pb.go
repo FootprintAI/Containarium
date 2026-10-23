@@ -1444,8 +1444,24 @@ type CreateContainerRequest struct {
 	// together with idle_stop_minutes > 0 is contradictory and rejected with
 	// InvalidArgument.
 	DisableAutoSleep bool `protobuf:"varint,28,opt,name=disable_auto_sleep,json=disableAutoSleep,proto3" json:"disable_auto_sleep,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Validate only (#2925). Runs every pre-flight check the create would run
+	// (bounds, stack id, TTL and idle-stop ranges, encryption wiring, pool
+	// placement, ssh keys, image policy, CPU admission) and returns before
+	// anything is provisioned: no storage, no Box CR, no instance, no async
+	// job, and no CPU reservation is left behind. A rejection comes back as
+	// the same error the real create would return; success comes back with
+	// `dry_run` set on the response. Its purpose is `create --force`, which
+	// deletes the existing box first and must not do so for a request the
+	// daemon would reject. It does not check whether the box already exists
+	// (a --force caller expects it to).
+	//
+	// A create bound for a peer backend is NOT forwarded: a peer that predates
+	// this field would ignore it and really create the box. The stack is checked
+	// against that peer's own catalog (#2952), read with an ordinary
+	// GET /v1/stacks; the response says the peer's other checks were not run.
+	DryRun        bool `protobuf:"varint,29,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateContainerRequest) Reset() {
@@ -1674,6 +1690,13 @@ func (x *CreateContainerRequest) GetDisableAutoSleep() bool {
 	return false
 }
 
+func (x *CreateContainerRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
 // CreateContainerResponse is the response from creating a container
 type CreateContainerResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1684,7 +1707,12 @@ type CreateContainerResponse struct {
 	// SSH connection string for the user (Linux containers)
 	SshCommand string `protobuf:"bytes,3,opt,name=ssh_command,json=sshCommand,proto3" json:"ssh_command,omitempty"`
 	// RDP connection address (Windows VMs)
-	RdpAddress    string `protobuf:"bytes,4,opt,name=rdp_address,json=rdpAddress,proto3" json:"rdp_address,omitempty"`
+	RdpAddress string `protobuf:"bytes,4,opt,name=rdp_address,json=rdpAddress,proto3" json:"rdp_address,omitempty"`
+	// True when the request was a dry run (#2925) and nothing was created:
+	// `container` is unset. A client that asked for a dry run and gets false
+	// back is talking to a daemon that predates the field and really created
+	// (or tried to create) the box.
+	DryRun        bool `protobuf:"varint,5,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1745,6 +1773,13 @@ func (x *CreateContainerResponse) GetRdpAddress() string {
 		return x.RdpAddress
 	}
 	return ""
+}
+
+func (x *CreateContainerResponse) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
 }
 
 // ListContainersRequest is the request to list containers
@@ -6693,7 +6728,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0ecpu_nr_periods\x18\t \x01(\x03R\fcpuNrPeriods\x12(\n" +
 	"\x10cpu_nr_throttled\x18\n" +
 	" \x01(\x03R\x0ecpuNrThrottled\x12,\n" +
-	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xc5\t\n" +
+	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xde\t\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -6728,20 +6763,22 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x12\x16\n" +
 	"\x06region\x18\x1a \x01(\tR\x06region\x12<\n" +
 	"\tisolation\x18\x1b \x01(\x0e2\x1e.containarium.v1.IsolationTypeR\tisolation\x12,\n" +
-	"\x12disable_auto_sleep\x18\x1c \x01(\bR\x10disableAutoSleep\x1a9\n" +
+	"\x12disable_auto_sleep\x18\x1c \x01(\bR\x10disableAutoSleep\x12\x17\n" +
+	"\adry_run\x18\x1d \x01(\bR\x06dryRun\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
 	"\x14StackParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc8\x01\n" +
 	"\x17CreateContainerResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1f\n" +
 	"\vssh_command\x18\x03 \x01(\tR\n" +
 	"sshCommand\x12\x1f\n" +
 	"\vrdp_address\x18\x04 \x01(\tR\n" +
-	"rdpAddress\"\x86\x02\n" +
+	"rdpAddress\x12\x17\n" +
+	"\adry_run\x18\x05 \x01(\bR\x06dryRun\"\x86\x02\n" +
 	"\x15ListContainersRequest\x125\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1f.containarium.v1.ContainerStateR\x05state\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12Z\n" +

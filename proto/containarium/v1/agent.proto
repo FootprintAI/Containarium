@@ -472,6 +472,11 @@ message TailRunLogRequest {
   // 0..10: when no bytes are available at start_offset, wait up to this many
   // seconds for the journal to grow before answering with an empty chunk.
   int32 follow_seconds = 5;
+  // Model-gateway calls recorded for this run and member after this sequence
+  // number (#2928); 0 = from the first. Pass the previous response's
+  // gateway_next_seq to resume. Independent of start_offset: the calls are
+  // recorded by the daemon, not written to the journal file.
+  int64 gateway_after_seq = 6;
 }
 
 // TailRunLogResponse is one window of a run's journal.
@@ -487,6 +492,65 @@ message TailRunLogResponse {
   bool ended = 4;
   // The run's members that have a journal file for this run.
   repeated string skill_ids = 5;
+  // Model-gateway calls made for this run and member since gateway_after_seq,
+  // oldest first (#2928). A failure at the gateway happens outside the box and
+  // never reaches the journal, so it is reported here as typed events. A client
+  // interleaves them with the journal lines by `time`. Readers that predate the
+  // field ignore it.
+  repeated GatewayCall gateway_calls = 6;
+  // Pass back as gateway_after_seq on the next call.
+  int64 gateway_next_seq = 7;
+}
+
+// GatewayCall is one model call the gateway proxied on behalf of a run (#2928).
+// It carries who paid and how it ended, never the key, a key id, the token, or
+// any prompt or response content.
+message GatewayCall {
+  // Position in the run's call log; strictly increasing per run.
+  int64 seq = 1;
+  // When the gateway finished the call.
+  google.protobuf.Timestamp time = 2;
+  // The run member (skill) whose token made the call.
+  string skill_id = 3;
+  // Upstream provider name as the gateway knows it ("anthropic", "openai", ...).
+  string provider = 4;
+  // Model the request named; empty when the request did not say.
+  string model = 5;
+  // Whose key the call spent. The owner type only.
+  GatewayKeyOwner key_owner = 6;
+  // HTTP status of the response sent to the box; 0 when no response was
+  // produced (see transport_error).
+  int32 status = 7;
+  // Set when the call failed before any upstream response (dial, TLS,
+  // timeout, ...); UNSPECIFIED otherwise.
+  GatewayTransportError transport_error = 8;
+  // Time from the gateway accepting the call to the upstream's response
+  // headers (to the failure, when there were none).
+  int64 latency_ms = 9;
+}
+
+// GatewayKeyOwner is the type of owner whose upstream key a call spent.
+enum GatewayKeyOwner {
+  GATEWAY_KEY_OWNER_UNSPECIFIED = 0;
+  // An organization's key (key_owner "org:<id>").
+  GATEWAY_KEY_OWNER_ORG = 1;
+  // A member's key (key_owner "user:<name>").
+  GATEWAY_KEY_OWNER_MEMBER = 2;
+  // The daemon-global key: the token named no owner, or the owner had none.
+  GATEWAY_KEY_OWNER_OPERATOR_FALLBACK = 3;
+}
+
+// GatewayTransportError classifies a call that produced no upstream response.
+enum GatewayTransportError {
+  GATEWAY_TRANSPORT_ERROR_UNSPECIFIED = 0;
+  GATEWAY_TRANSPORT_ERROR_DIAL = 1;
+  GATEWAY_TRANSPORT_ERROR_TLS = 2;
+  GATEWAY_TRANSPORT_ERROR_TIMEOUT = 3;
+  // The caller went away before the upstream answered.
+  GATEWAY_TRANSPORT_ERROR_CANCELED = 4;
+  // The gateway held no key for the provider, so nothing was sent.
+  GATEWAY_TRANSPORT_ERROR_NO_KEY = 5;
+  GATEWAY_TRANSPORT_ERROR_OTHER = 6;
 }
 
 // AgentSkillService manages and runs individual packaged agents.

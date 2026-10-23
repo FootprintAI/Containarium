@@ -595,6 +595,23 @@ message CreateContainerRequest {
   // together with idle_stop_minutes > 0 is contradictory and rejected with
   // InvalidArgument.
   bool disable_auto_sleep = 28;
+
+  // Validate only (#2925). Runs every pre-flight check the create would run
+  // (bounds, stack id, TTL and idle-stop ranges, encryption wiring, pool
+  // placement, ssh keys, image policy, CPU admission) and returns before
+  // anything is provisioned: no storage, no Box CR, no instance, no async
+  // job, and no CPU reservation is left behind. A rejection comes back as
+  // the same error the real create would return; success comes back with
+  // `dry_run` set on the response. Its purpose is `create --force`, which
+  // deletes the existing box first and must not do so for a request the
+  // daemon would reject. It does not check whether the box already exists
+  // (a --force caller expects it to).
+  //
+  // A create bound for a peer backend is NOT forwarded: a peer that predates
+  // this field would ignore it and really create the box. The stack is checked
+  // against that peer's own catalog (#2952), read with an ordinary
+  // GET /v1/stacks; the response says the peer's other checks were not run.
+  bool dry_run = 29;
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -610,6 +627,12 @@ message CreateContainerResponse {
 
   // RDP connection address (Windows VMs)
   string rdp_address = 4;
+
+  // True when the request was a dry run (#2925) and nothing was created:
+  // `container` is unset. A client that asked for a dry run and gets false
+  // back is talking to a daemon that predates the field and really created
+  // (or tried to create) the box.
+  bool dry_run = 5;
 }
 
 // ListContainersRequest is the request to list containers

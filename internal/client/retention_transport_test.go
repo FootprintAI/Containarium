@@ -25,13 +25,23 @@ type retentionClient interface {
 	ListLegalHolds() (*pb.ListLegalHoldsResponse, error)
 	SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error)
 	ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error)
+	GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error)
+}
+
+// reportingRetentionServer is a RetentionServer whose sweeper lists the
+// chained and bundle classes, so both transports have a report to return.
+func reportingRetentionServer() *server.RetentionServer {
+	store := retention.NewMemoryStore()
+	s := server.NewRetentionServer(store)
+	s.SetReporter(retention.NewReporter(retention.NewSweeper(store, nil, retention.ChainAndBundles())))
+	return s
 }
 
 func retentionTransports(t *testing.T) map[string]retentionClient {
 	t.Helper()
 	admin := func(ctx context.Context) context.Context { return auth.ContextWithClaims(ctx, gpClaims(true)) }
 
-	grpcSrv := server.NewRetentionServer(retention.NewMemoryStore())
+	grpcSrv := reportingRetentionServer()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -49,7 +59,7 @@ func retentionTransports(t *testing.T) map[string]retentionClient {
 	t.Cleanup(func() { _ = g.Close() })
 
 	mux := runtime.NewServeMux()
-	if err := pb.RegisterRetentionServiceHandlerServer(context.Background(), mux, server.NewRetentionServer(retention.NewMemoryStore())); err != nil {
+	if err := pb.RegisterRetentionServiceHandlerServer(context.Background(), mux, reportingRetentionServer()); err != nil {
 		t.Fatalf("register gateway handler: %v", err)
 	}
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +102,28 @@ func TestRetentionTransports_Agree(t *testing.T) {
 			}
 			if _, err := c.ReleaseLegalHold(org); err == nil {
 				t.Fatal("releasing a released hold succeeded")
+			}
+		})
+	}
+}
+
+func TestRetentionTransports_ReportAgrees(t *testing.T) {
+	for name, c := range retentionTransports(t) {
+		t.Run(name, func(t *testing.T) {
+			for _, refresh := range []bool{false, true} {
+				resp, err := c.GetRetentionReport(refresh)
+				if err != nil {
+					t.Fatalf("GetRetentionReport(refresh=%v): %v", refresh, err)
+				}
+				rep := resp.GetReport()
+				if rep.GetMode() != pb.RetentionMode_RETENTION_MODE_DRY_RUN || len(rep.GetStores()) != 3 {
+					t.Fatalf("report = %v, want DRY_RUN with the 3 not-swept entries", rep)
+				}
+				for _, st := range rep.GetStores() {
+					if st.GetStatus() != pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_NOT_SWEPT || st.GetNote() == "" {
+						t.Errorf("store %v/%s = %v, want NOT_SWEPT with a note", st.GetClass(), st.GetStore(), st)
+					}
+				}
 			}
 		})
 	}
