@@ -2129,6 +2129,9 @@ skipAppHosting:
 	// available (IDs must be stable across restarts) and in-memory otherwise.
 	var networkPolicyEnforcer *NetworkPolicyEnforcer
 	netCfg := appconfig.LoadNetwork()
+	// GetNetworkPolicyStatus reports this host's guard whether or not an
+	// enforcer is configured.
+	npServer.SetEnforcementArmed(netCfg.PolicyEnforce)
 	if bpfObj := netCfg.PolicyBPFObject; bpfObj != "" && networkIncusClient != nil {
 		var tenantRegistry TenantRegistry
 		if postgresConnString != "" {
@@ -2151,6 +2154,9 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		// Status reads what the enforcer loaded; it reports "not running" on its
+		// own until Start succeeds, so a failed start needs no unwiring.
+		npServer.SetAppliedStateSource(networkPolicyEnforcer)
 		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
