@@ -48,6 +48,46 @@ message BoxRun {
   // found one yet (a race with a just-started run — poll ListBoxRuns again).
   // Pass it to StartBoxRun's session_id to resume this exact conversation.
   string session_id = 8;
+  // The tools available to this run, measured on the box by the run's own wrapper
+  // (a probe before the engine starts and one after it ends, written to a sidecar
+  // whatever the engine's exit status), never reported by the agent. Empty for a
+  // run with no readable sidecar (an older run, or a box without the probe).
+  repeated BoxRunTool tools = 9;
+}
+
+// BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
+// what was AVAILABLE, not what was USED: knowing use would need process tracing.
+message BoxRunTool {
+  // The tool's name from the daemon's fixed allowlist (for example "go", "buf").
+  string name = 1;
+  // The first line of the tool's own version command, reduced to printable ASCII
+  // and length-capped (the value ends up in public pull requests). Empty when the
+  // tool printed nothing usable.
+  string version = 2;
+  // How the tool compares between the probe before the run and the one after it.
+  BoxRunToolProvenance provenance = 3;
+  // Where the resolved binary lives, as a class only (never a filesystem path).
+  BoxRunToolLocation location = 4;
+}
+
+// BoxRunToolProvenance compares a tool across the two probes of one run.
+enum BoxRunToolProvenance {
+  BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED = 0;
+  // Present at the start with the same version at the end.
+  BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START = 1;
+  // Not on the PATH at the start, found at the end: installed during the run.
+  BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN = 2;
+  // On the PATH at both ends, but a different version or a different location.
+  BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN = 3;
+}
+
+// BoxRunToolLocation classifies where a tool's binary resolved.
+enum BoxRunToolLocation {
+  BOX_RUN_TOOL_LOCATION_UNSPECIFIED = 0;
+  // Outside the run user's home: part of the box image or its system packages.
+  BOX_RUN_TOOL_LOCATION_SYSTEM = 1;
+  // Under the run user's home: installed by the owner or by a run.
+  BOX_RUN_TOOL_LOCATION_HOME = 2;
 }
 
 // StartBoxRunRequest starts (or resumes) a coding-agent run on a box through

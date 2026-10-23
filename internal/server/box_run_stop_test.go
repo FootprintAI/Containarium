@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -42,13 +43,32 @@ func newFakeEngine(t *testing.T, body string) *fakeBoxUser {
 	return &fakeBoxUser{home: home}
 }
 
+// startLongRun starts a run whose fake engine runs body. A body containing the token
+// {{READY}} says where the engine marks itself ready (after any trap it installs); the
+// helper then waits for that mark, because the run wrapper probes the toolchain before
+// it starts the engine and a stop that lands first would kill the wrapper before the
+// engine exists.
 func startLongRun(t *testing.T, body string) (*ContainerServer, string, *pb.BoxRun) {
 	t.Helper()
 	owner := stopTestUser(t)
+	ready := filepath.Join(t.TempDir(), "engine-ready")
+	body = strings.ReplaceAll(body, "{{READY}}", "touch '"+ready+"'")
 	s, _, _ := boxRunStartServer(t, newFakeEngine(t, body))
 	resp, err := s.StartBoxRun(tenantCtx(owner), &pb.StartBoxRunRequest{Username: owner, Prompt: "work"})
 	if err != nil {
 		t.Fatalf("StartBoxRun: %v", err)
+	}
+	if strings.Contains(body, ready) {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the fake engine never reported ready")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	t.Cleanup(func() {
 		// Never leave a sleeping run behind if a test failed early.
@@ -84,7 +104,7 @@ func TestStopBoxRun_StopsARunningRun_AndIsIdempotent(t *testing.T) {
 }
 
 func TestStopBoxRun_ForceKillsARunThatIgnoresSIGTERM(t *testing.T) {
-	s, owner, run := startLongRun(t, "trap '' TERM\nwhile :; do sleep 1; done")
+	s, owner, run := startLongRun(t, "trap '' TERM\n{{READY}}\nwhile :; do sleep 1; done")
 
 	soft, err := s.StopBoxRun(tenantCtx(owner), &pb.StopBoxRunRequest{Username: owner, RunName: run.GetRunName()})
 	if err != nil {
