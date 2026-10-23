@@ -58,12 +58,12 @@ type ChainBaseReader interface {
 	ChainBase(ctx context.Context) (ChainBase, bool, error)
 }
 
-// querier is the read side shared by *pgxpool.Pool and pgx.Tx.
-type querier interface {
+// RowQuerier is the read side shared by *pgxpool.Pool and pgx.Tx.
+type RowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func readChainBase(ctx context.Context, q querier) (ChainBase, bool, error) {
+func readChainBase(ctx context.Context, q RowQuerier) (ChainBase, bool, error) {
 	var b ChainBase
 	err := q.QueryRow(ctx,
 		`SELECT base_id, base_hash, purged_at, rows_purged FROM audit_chain_base WHERE id = 1`,
@@ -82,9 +82,10 @@ func (s *Store) ChainBase(ctx context.Context) (ChainBase, bool, error) {
 	return readChainBase(ctx, s.pool)
 }
 
-// ReadChainBase reads the base inside tx.
-func ReadChainBase(ctx context.Context, tx pgx.Tx) (ChainBase, bool, error) {
-	return readChainBase(ctx, tx)
+// ReadChainBase reads the base through q, a pool or the transaction that is
+// about to act on it.
+func ReadChainBase(ctx context.Context, q RowQuerier) (ChainBase, bool, error) {
+	return readChainBase(ctx, q)
 }
 
 // WriteChainBase moves the base to (id, hash) inside tx, the transaction that
@@ -113,3 +114,8 @@ func WriteChainBase(ctx context.Context, tx pgx.Tx, id int64, hash string, purge
 	}
 	return nil
 }
+
+// SessionTranscriptActions are the audit_logs actions that make up the
+// session-transcript retention class (SSH logins and the sentinel's session
+// records). Every other action in the chain counts as gateway logs (#2878).
+var SessionTranscriptActions = []string{"ssh_login", "ssh_session_open", "ssh_session_close"}
