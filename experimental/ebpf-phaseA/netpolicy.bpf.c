@@ -40,6 +40,15 @@
 #define DENY_REASON_VIRTUAL_PATCH 1  // matched an explicit virtual-patch deny rule (#660)
 #define DENY_REASON_SIGNATURE     2  // matched a cleartext exploit signature (#661, Tier 2)
 
+// Verdict carried in deny_event.verdict — mirror netbpf.DenyVerdict* in Go. The
+// verdict the program actually applied: with a separate egress_mode an
+// allow-list miss can be logged while the tenant's mode is ENFORCE (and the
+// reverse), so the consumer must not infer it from the tenant-wide mode. 0 is
+// what an older object leaves in the former pad, so it means "not reported".
+#define DENY_VERDICT_UNKNOWN 0
+#define DENY_VERDICT_LOGGED  1
+#define DENY_VERDICT_DROPPED 2
+
 // Per-veth policy config, keyed by the veth's host ifindex. The loader writes
 // one entry per managed container veth.
 struct policy_cfg {
@@ -190,7 +199,8 @@ struct deny_event {
     __u8  proto;
     __u8  reason;        // DENY_REASON_* (was pad; size unchanged) #660
     __u16 sig_id;        // matched signature id when reason==SIGNATURE, else 0 (#661)
-    __u16 pad2;
+    __u8  verdict;       // DENY_VERDICT_* actually applied (was pad2's low byte; size unchanged) #2970
+    __u8  pad2;
 };
 
 // --- Tier 2 (#661): cleartext exploit-signature scanning --------------------
@@ -527,6 +537,9 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     ev.proto = ip->protocol;
     ev.dport = dport; // parsed once above
     ev.reason = deny_reason; // policy miss vs. explicit virtual-patch deny (#660)
+    // The verdict applied below, so a split mode/egress_mode is audited from
+    // the packet's real fate rather than the tenant-wide mode (#2970).
+    ev.verdict = (deny_mode == MODE_ENFORCE) ? DENY_VERDICT_DROPPED : DENY_VERDICT_LOGGED;
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 
@@ -611,6 +624,7 @@ int netpolicy_egress(struct __sk_buff *skb) {
                     ev.dport = dport; // the container's service port (tcp->dest)
                     ev.reason = DENY_REASON_SIGNATURE;
                     ev.sig_id = (__u16)sig;
+                    ev.verdict = (cfg->mode == MODE_ENFORCE) ? DENY_VERDICT_DROPPED : DENY_VERDICT_LOGGED;
                     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
                     if (cfg->mode == MODE_ENFORCE)
                         return TC_ACT_SHOT; // drop the exploit before it reaches the service

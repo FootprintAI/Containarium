@@ -481,47 +481,65 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 	// the audit write below — nil hook is the default (sentry disabled).
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
-	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
-	// The hook learns the tenant's effective mode (#2612): the BPF program
-	// emits the event for a log_only would-deny exactly as for a drop.
+	dropped := e.denyEventDropped(ev)
+	// The hook learns whether the packet was really dropped (#2612): the BPF
+	// program emits the event for a log_only would-deny exactly as for a drop.
 	if e.denyHook != nil {
 		hookEv := ev
 		hookEv.LogOnly = !dropped
 		e.denyHook(hookEv)
 	}
 	// Always log the denied flow. The program emits the event whether or not it
-	// drops, so the action depends on the tenant's effective mode: a DROP under
+	// drops, so the action depends on the verdict it applied: a DROP under
 	// enforce, an observation under log_only. This line is the operator's signal.
 	action := "log_only (not dropped)"
 	if dropped {
 		action = "DROPPED (enforce)"
 	}
-	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
-	signature := ev.Reason == netbpf.DenyReasonSignature
-	kind := "deny"
-	switch {
-	case vpatch:
-		kind = "virtual-patch"
-	case signature:
-		kind = "signature"
-	}
 	var sigName string
-	if signature {
+	if ev.Reason == netbpf.DenyReasonSignature {
 		e.mu.Lock()
 		sigName = e.sigNames[ev.SigID]
 		e.mu.Unlock()
-	}
-	if signature {
 		log.Printf("[netpolicy] signature: tenant=%q src=%s dst=%s dport=%d sig=%d(%s) %s",
 			tenant, ev.Src(), ev.Dst(), ev.Dport, ev.SigID, sigName, action)
 	} else {
+		kind := "deny"
+		if ev.Reason == netbpf.DenyReasonVirtualPatch {
+			kind = "virtual-patch"
+		}
 		log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
 			kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
 	}
 	if e.audit == nil {
 		return
 	}
+	if err := e.audit.Log(ctx, denyAuditEntry(ev, tenant, sigName, dropped)); err != nil {
+		log.Printf("[netpolicy] audit deny event: %v", err)
+	}
+}
+
+// denyEventDropped reports whether the program dropped the packet behind ev.
+// The program reports the verdict it applied (#2970): with a separate
+// egress_mode an allow-list miss follows egress_mode while every other check
+// follows mode, so the tenant-wide mode can be wrong in either direction. The
+// tenant-wide mode (e.enforced) is only the fallback for an event from an
+// object that predates the verdict byte.
+func (e *NetworkPolicyEnforcer) denyEventDropped(ev netbpf.DenyEvent) bool {
+	e.mu.Lock()
+	enforced := e.enforced[ev.TenantID]
+	e.mu.Unlock()
+	return ev.Dropped(enforced)
+}
+
+// denyAuditEntry builds the audit row for one deny event. Each deny reason gets
+// its own audit action so an operator can tell a blocked vulnerable destination
+// (#660) and a blocked inbound exploit (#661) apart from a routine allow-list
+// miss; dropped is the verdict the program applied (see denyEventDropped).
+func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *audit.AuditEntry {
+	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
+	signature := ev.Reason == netbpf.DenyReasonSignature
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
 		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) + `}`
@@ -532,29 +550,23 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 			`","dport":` + itoa(int(ev.Dport)) + `,"sig_id":` + itoa(int(ev.SigID)) +
 			`,"sig_name":"` + sigName + `","dropped":` + boolStr(dropped) + `}`
 	}
-	// Each deny reason gets its own audit action so an operator can tell a blocked
-	// vulnerable destination (#660) and a blocked inbound exploit (#661) apart from
-	// a routine allow-list miss.
-	var action2 string
+	var action string
 	switch {
 	case signature:
-		action2 = "network_policy.signature_match"
+		action = "network_policy.signature_match"
 	case vpatch:
-		action2 = "network_policy.virtual_patch"
+		action = "network_policy.virtual_patch"
 	case dropped:
-		action2 = "network_policy.deny_dropped"
+		action = "network_policy.deny_dropped"
 	default:
-		action2 = "network_policy.deny_logged"
+		action = "network_policy.deny_logged"
 	}
-	entry := &audit.AuditEntry{
+	return &audit.AuditEntry{
 		Username:     "_system",
-		Action:       action2,
+		Action:       action,
 		ResourceType: "network_policy",
 		ResourceID:   tenant,
 		Detail:       detail,
-	}
-	if err := e.audit.Log(ctx, entry); err != nil {
-		log.Printf("[netpolicy] audit deny event: %v", err)
 	}
 }
 
@@ -756,7 +768,9 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		log.Printf("[netpolicy] %d virtual-patch deny rule(s) configured but loaded BPF object lacks the 'deny_cidr' map (rebuild netpolicy.bpf.o to enable #660)", len(plan.deny))
 	}
 	// Per-veth config + attach. Track which tenants end up in effective-enforce
-	// mode, so OnDenyEvent can label a denied flow as dropped vs observed.
+	// mode. OnDenyEvent labels a denied flow from the verdict the program
+	// reports (#2970); this map is only its fallback for an event from an
+	// object that predates that verdict byte.
 	enforced := make(map[uint32]bool)
 	e.mu.Lock()
 	present := make(map[int]bool, len(plan.vethPolicy))
