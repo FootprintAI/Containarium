@@ -37,21 +37,21 @@ func newPurgedAnchorChain(maxID, baseID int64) *purgedAnchorChain {
 }
 
 func TestVerifyAnchorBucket_PlantedCheckpointBelowTheChainBaseExitsNonZero(t *testing.T) {
-	run := func(bucket *fakeAnchorBucket) (error, string, string) {
+	run := func(bucket *fakeAnchorBucket) (stdout, stderr string, err error) {
 		var out, errOut bytes.Buffer
-		err := verifyAnchorBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t, 20, 30), "anchors.jsonl", bucket, &out, &errOut)
-		return err, out.String(), errOut.String()
+		err = verifyAnchorBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t, 20, 30), "anchors.jsonl", bucket, &out, &errOut)
+		return out.String(), errOut.String(), err
 	}
 
 	// Control: the same purged chain with an honest bucket exits zero, so the
 	// failure below is caused by the planted checkpoint and nothing else.
-	if err, _, stderr := run(bucketAt(20, 30)); err != nil {
+	if _, stderr, err := run(bucketAt(20, 30)); err != nil {
 		t.Fatalf("an honest bucket over a purged chain must exit zero: %v\n%s", err, stderr)
 	}
 
 	planted := bucketAt(20, 30)
 	planted.cps = append(planted.cps, audit.BucketCheckpoint{Checkpoint: 3, Root: "forged-root"})
-	err, stdout, stderr := run(planted)
+	stdout, stderr, err := run(planted)
 	if err == nil {
 		t.Fatalf("a checkpoint planted below the chain base exited zero:\n%s", stdout)
 	}
