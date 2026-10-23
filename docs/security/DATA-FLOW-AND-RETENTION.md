@@ -5,16 +5,16 @@ model responses, logs, session transcripts or evidence. For each store it
 gives how long the data is kept today and which retention class covers it.
 It is the data-flow document that #2576 asks for.
 
-> **Status (slices A to C, #2875, #2876, #2877).** The retention windows and
-> legal holds below can be set and read, and a sweeper reports what a window
-> would remove. The daemon starts in **dry-run** mode, where nothing is
-> deleted because of a window. An admin can switch it to **enforce** mode,
-> and then the sweep deletes the eligible records of the stores *outside the
-> hash chain*. The chained audit log and evidence bundles are never deleted
+> **Status (slices A to D, #2875, #2876, #2877, #2878).** The retention
+> windows and legal holds below can be set and read, and a sweeper reports
+> what a window would remove. The daemon starts in **dry-run** mode, where
+> nothing is deleted because of a window. An admin can switch it to
+> **enforce** mode, and then the sweep deletes the eligible records of the
+> stores outside the hash chain, and the *oldest rows* of the hash-chained
+> audit log (a prefix only, see below). Evidence bundles are never deleted
 > yet. The "Kept today" column is what happens without enforce mode; the
-> "Enforced default" column is what happens with it. Later slices:
+> "Enforced default" column is what happens with it. Later slice:
 >
-> - #2878: removing the oldest rows of the hash-chained audit log.
 > - #2879: evidence bundles.
 >
 > This document is updated as each slice ships.
@@ -59,7 +59,8 @@ Legal holds are per org.
   the inventory). While *any* hold is active, a record with no org is
   treated as held and is never deleted.
 - **One global hash chain.** On the hash-chained audit log (see below), the
-  oldest held row also stops the purge of everything after it.
+  oldest held row, or while any hold is active the oldest row with no org,
+  also stops the purge of everything after it.
 
 ```bash
 containarium retention hold set <org-id> --reason "<case reference>" --server <host>:50051
@@ -191,10 +192,12 @@ The window is a maximum (Q23): the daemon already deletes `traffic_*` rows
 after 7 and 28 days, so those counts stay near zero until a window is set
 below that. The report does not hide this.
 
-Not counted, and listed as **not swept** with the slice that handles them:
+Listed as **not swept**, with the reason:
 
 - The hash-chained `audit_logs` classes (gateway logs and session
-  transcripts): #2878.
+  transcripts), only on a daemon with no audit store (it needs Postgres with
+  REST enabled). With one they are counted and purged as a prefix; see
+  below.
 - Evidence bundles: no bundle store exists yet; #2879.
 
 On a daemon with no database every Postgres-backed store is listed as not
@@ -242,6 +245,10 @@ Where the policy and holds are stored:
 
 ## Known limits
 
+- **The `audit_logs` purge is a prefix, bounded by anchors and holds.** It can
+  lag far behind the window: no anchor, a hold, or one unexpired row near the
+  front each stop it. The report says which.
+
 - **Any admin can hold or release any org.** Retention is per daemon (Q24
   on #2727), so a daemon-wide admin can place or release a hold on any
   org. There is no org-scoped role for holds.
@@ -264,8 +271,8 @@ chain.
 | Prompts and responses | Crew runs, `crew_runs.run` (Postgres; holds the run's input and output) | none | No automatic deletion; a standalone skill-run record is deleted with its journal | 30 days in enforce mode, the longer of the two class windows | no |
 | Session transcripts | Agent run journals inside the box, `/var/log/agent-runtime/runs/<run>/` | none | 7 days (`--run-journal-retention`), removed hourly | none: inside the box, never swept (Q25) | no |
 | Gateway logs | Connection logs, `traffic_connections` / `traffic_aggregates` (Postgres) | none | 7 days / 28 days, cleaned daily | 90 days in enforce mode, but the daily cleanup deletes sooner (7 / 28 days) | no |
-| Gateway logs | Model-gateway detections and blocks, and the API access log, in `audit_logs` (Postgres). Metadata only: the model gateway never stores prompt or response bodies | `org_id`, often empty | No automatic deletion | not yet: hash-chained, slice #2878 | **yes** |
-| Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | not yet: hash-chained, slice #2878 | **yes** |
+| Gateway logs | Model-gateway detections and blocks, and the API access log, in `audit_logs` (Postgres). Metadata only: the model gateway never stores prompt or response bodies. Every action that is not an SSH session action counts as this class | `org_id`, often empty | No automatic deletion | 90 days in enforce mode, as a prefix below the latest anchor (see below) | **yes** |
+| Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | 90 days in enforce mode, as a prefix below the latest anchor (see below) | **yes** |
 | Session transcripts | Front-door session log file on the sentinel VM | none | 90 days after rotation (configurable) | none: a file on the sentinel VM, rotated by logrotate | no |
 | Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names; the platform does not store them yet (#2798) | n/a | Kept as long as the operator keeps the file | not yet: no store, slice #2879 | n/a |
 | (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl` | n/a | No automatic deletion; required to verify the chain | none: required to verify the chain | anchors it |
@@ -278,10 +285,52 @@ a restart.
 Gateway logs and session transcripts in `audit_logs` share one hash chain
 across every org. Deleting a row from the middle, such as one org's rows or
 one class's rows, breaks verification for every later row. Retention there
-can therefore only remove the **oldest** rows. Even those must be strictly
-below the latest published anchor, with a stored chain base, so that
-`containarium audit verify` and `audit verify-anchor` still pass. That is
-slice #2878, which also closes #2420.
+removes the **oldest rows only**, as a prefix (#2878, which also closes
+#2420). In enforce mode the sweep removes every row below the lowest of:
+
+1. **The latest published anchor.** The anchored row and everything after it
+   stay, so `audit verify-anchor` still has the row it compares. With
+   `CONTAINARIUM_AUDIT_ANCHOR_BUCKET` set, it is the lower of the local
+   file's and the bucket's latest checkpoint, so a bucket object planted
+   above the real tip cannot raise it. With no anchor published, or an
+   anchor that cannot be read, **nothing is purged**. So is the case where
+   the anchored row no longer matches its anchor: a rewrite is suspected, and
+   the rows are kept for `audit verify-anchor`.
+2. **The first row not yet past its own window.** SSH session actions use the
+   session-transcripts window, every other action the gateway-logs window.
+   A prefix cannot skip a row, so one unexpired row at the front keeps
+   everything behind it, however old.
+3. **The oldest row a legal hold keeps.** A row of a held org, or, while any
+   hold is active, a row with no org (Q21). On a daemon whose rows carry no
+   org this means nothing in `audit_logs` is purged while any hold exists.
+
+Other audit actions (container and API actions that belong to neither class)
+inside the prefix are removed with it, since a prefix cannot skip them.
+
+**How verification starts after a purge.** The same transaction that deletes
+a batch stores the **chain base**: the id and hash of the last purged row, in
+the `audit_chain_base` table. The first retained row's `prev_hash` is that
+hash, so `containarium audit verify` starts from the base exactly as it
+starts from the empty hash on a chain that was never purged, and says so;
+a from-id inside the purged range is clamped to it. `audit verify-anchor`
+treats anchored checkpoints below the base as purged, not as deleted rows: it
+still compares the two anchor copies with each other, and the checkpoint at
+the base is compared with the base hash. Tampering with a retained row, a
+base that does not match the first retained row, and a row removed from
+beyond the prefix are all still reported.
+
+`containarium retention report` shows the base after a purge, and what bounded
+the purge.
+
+**What the base does not prove.** It records where verification starts, not
+why the rows before it are gone. Someone with database write access could
+delete the oldest rows and write a matching base; the chain cannot tell that
+from a purge. The record that a purge was authorised is the
+`retention.sweep` audit entry each enforced sweep writes (before it deletes),
+which is itself in the chain and covered by the next anchor. Rows are not
+exported or archived before removal: that is an open decision on #2420.
+Replaying an old sentinel session batch after its rows were purged would
+re-insert them as new rows, because their dedupe keys went with them.
 
 ### Out of scope: documented, not swept
 

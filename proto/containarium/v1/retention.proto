@@ -111,6 +111,25 @@ message RetentionStoreReport {
   // longer of the two windows, and reports the deletion on the class with
   // that window.
   int64 removed = 10;
+  // For the hash-chained audit_logs only (#2878): where verification of the
+  // retained chain starts after a purge. Unset until the first purge.
+  RetentionChainBase chain_base = 11;
+}
+
+// RetentionChainBase is the stored starting root of the hash-chained
+// audit_logs after retention purged its oldest rows (#2878, #2420). The base is
+// the id and hash of the LAST purged row; the first retained row's prev_hash is
+// that hash, so `containarium audit verify` and `audit verify-anchor` start
+// from it. It records where verification starts, not why the rows before it
+// are gone: every purge also writes a retention.sweep audit entry.
+message RetentionChainBase {
+  // Id of the last purged audit_logs row. Every retained row has a higher id.
+  int64 base_id = 1;
+  // That row's row hash; empty when every purged row predates the chain.
+  string base_hash = 2;
+  google.protobuf.Timestamp purged_at = 3;
+  // Rows purged in total, over every purge.
+  int64 rows_purged = 4;
 }
 
 // RetentionReport is the result of one sweep.

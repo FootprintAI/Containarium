@@ -1518,6 +1518,32 @@ differs from the database), so a planted object never passes as an anchor.
 
 Nothing runs this check on a schedule; an operator or a monitor has to.
 
+#### After a retention purge
+
+Once retention is in enforce mode (see
+[DATA-FLOW-AND-RETENTION.md](DATA-FLOW-AND-RETENTION.md#the-hash-chained-audit-log)),
+the oldest `audit_logs` rows are removed and the daemon stores a **chain
+base**: the id and hash of the last purged row. What changes for the checks
+above:
+
+- `audit verify` starts from the base instead of the first row, and prints
+  that it did. A clean result means "intact since the base", not "intact since
+  the first row ever written".
+- `audit verify-anchor`, with or without `--anchor-bucket`, no longer treats a
+  checkpoint below the base as a deleted row. Those checkpoints are still
+  compared between the bucket and the local file, and the checkpoint at the
+  base is compared with the base hash; the output counts them as "below the
+  chain base". A checkpoint at or above the base is compared with the database
+  as before.
+- A purge never removes the latest anchored row or anything after it, and is
+  refused when that row no longer matches its anchor.
+
+The base records where verification starts, not why the rows before it are
+gone. A database writer who deletes the oldest rows and writes a matching base
+looks like a purge to both commands. Check an unexpected base against the
+`retention.sweep` entries in the audit log (`containarium audit query`): every
+authorised purge writes one before it deletes.
+
 ### Integrity self-measurement heartbeat
 
 The daemon also emits a self-measurement digest to its log on a periodic

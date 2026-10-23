@@ -273,3 +273,43 @@ func TestRetentionReportCLI_SaysWhetherThisSweepDeleted(t *testing.T) {
 		}
 	}
 }
+
+// The purged audit_logs reports where verification now starts, once per store
+// (both chained classes carry the same base), and says what a verifier does
+// with it.
+func TestRetentionReportCLI_PrintsTheChainBaseOnceForAPurgedAuditLog(t *testing.T) {
+	base := &pb.RetentionChainBase{
+		BaseId: 510, BaseHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		PurgedAt: timestamppb.New(time.Date(2026, 10, 23, 11, 0, 0, 0, time.UTC)), RowsPurged: 1234,
+	}
+	cutoff := timestamppb.New(time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC))
+	f := &fakeRetentionAPI{report: &pb.RetentionReport{
+		Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE, Enforced: true,
+		GeneratedAt: timestamppb.New(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
+		Stores: []*pb.RetentionStoreReport{
+			{Class: pb.RetentionClass_RETENTION_CLASS_GATEWAY_LOGS, Store: "audit_logs", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: 90, Cutoff: cutoff, OlderThanCutoff: 9, Eligible: 7, Held: 2, Removed: 7, ChainBase: base,
+				Note: "the purge stops below the latest anchor (id 600)"},
+			{Class: pb.RetentionClass_RETENTION_CLASS_SESSION_TRANSCRIPTS, Store: "audit_logs", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: 90, Cutoff: cutoff, OlderThanCutoff: 4, Eligible: 3, Held: 1, Removed: 3, ChainBase: base},
+		},
+	}}
+	out, err := runRetentionCLI(t, f, "report")
+	if err != nil {
+		t.Fatalf("report: %v (%s)", err, out)
+	}
+	for _, want := range []string{
+		"audit_logs chain base: row id 510", "0123456789abcdef", "1234 row(s) purged", "2026-10-23T11:00:00Z",
+		"audit verify", "the latest anchor (id 600)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "chain base:"); n != 1 {
+		t.Errorf("the base was printed %d times, want once per store:\n%s", n, out)
+	}
+	if strings.Contains(out, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") {
+		t.Errorf("the full hash should be abbreviated in the table output:\n%s", out)
+	}
+}
