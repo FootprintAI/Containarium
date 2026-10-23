@@ -154,3 +154,53 @@ func TestChainBase_TheBaseNeverMovesBackwards(t *testing.T) {
 		t.Fatal("WriteChainBase moved the base backwards")
 	}
 }
+
+// publishReal anchors the real hash of each row through the tee, file first.
+func publishReal(t *testing.T, s *Store, f *anchorFixture, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
+		h, found, err := s.RowHashAt(context.Background(), id)
+		if err != nil || !found {
+			t.Fatalf("no row %d to anchor: found=%v err=%v", id, found, err)
+		}
+		if err := f.tee.PublishRoot(context.Background(), id, h); err != nil {
+			t.Fatalf("PublishRoot(%d): %v", id, err)
+		}
+	}
+}
+
+func TestVerifyAnchorsAgainstBucket_AfterARealPurge(t *testing.T) {
+	ctx := context.Background()
+	s := auditTestStore(t)
+	logN(t, s, 40)
+	f := newAnchorFixture(t, 0)
+	publishReal(t, s, f, 5, 10, 20, 30, 40)
+	simulatePurge(t, s, 15) // base = 15: checkpoints 5 and 10 lose their rows
+
+	r, err := VerifyAnchorsAgainstBucket(ctx, s, f.file, f.bucket)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !r.OK() {
+		t.Fatalf("a legitimately purged chain must pass the bucket comparison, got failures=%v", r.Failures)
+	}
+	if r.CheckedCheckpoints != 3 || r.BelowChainBase != 2 || r.LatestCheckpoint != 40 {
+		t.Errorf("checked/below/latest = %d/%d/%d, want 3/2/40", r.CheckedCheckpoints, r.BelowChainBase, r.LatestCheckpoint)
+	}
+	// The file-only path ends at the latest checkpoint, which the purge kept.
+	if res, err := s.VerifyChainAgainstAnchor(ctx, f.file); err != nil || !res.OK() {
+		t.Fatalf("verify-anchor against the local file after a purge: %+v err=%v", res, err)
+	}
+
+	// Rewriting a retained, anchored row is still caught.
+	if _, err := s.pool.Exec(ctx, `UPDATE audit_logs SET row_hash = 'forged' WHERE id = 20`); err != nil {
+		t.Fatal(err)
+	}
+	r, err = VerifyAnchorsAgainstBucket(ctx, s, f.file, f.bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(r.Failures, FindingDatabaseRootDiffers, 20) {
+		t.Fatalf("a rewritten anchored row must still fail after a purge, got %v", findingKinds(r.Failures))
+	}
+}

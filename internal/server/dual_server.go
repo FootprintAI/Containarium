@@ -299,6 +299,7 @@ type DualServer struct {
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
 	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
+	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
@@ -1645,6 +1646,8 @@ skipAppHosting:
 	var retentionPGStore retention.Store
 	// The pool the dry-run sweeper counts through (#2876); nil without one.
 	var retentionSweepPool *pgxpool.Pool
+	// The audit_logs prefix purge (#2878); only built once there is an audit store.
+	var retentionChainSource *retentionpg.ChainSource
 	// The startup pool, handed to the policy-store recovery retry (#2483)
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
@@ -2951,6 +2954,14 @@ skipAppHosting:
 			guardrailPolicyServer.SetAuditStore(auditStore)
 			// retention.policy.set / retention.hold.* entries (#2875).
 			retentionServer.SetAuditStore(auditStore)
+			// The hash-chained audit_logs is swept once the audit store has
+			// created its tables (#2878). The anchor that bounds a purge is
+			// wired in Start, where the anchor sinks are built; until then it
+			// purges nothing.
+			if retentionSweepPool != nil {
+				retentionChainSource = retentionpg.NewChainSource(retentionSweepPool)
+				retentionReporter.AddPrefixSource(retentionChainSource)
+			}
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
@@ -3077,6 +3088,7 @@ skipAppHosting:
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
 		retentionReporter:      retentionReporter,
+		retentionChainSource:   retentionChainSource,
 		credentialWatcher:      credentialWatcher,
 		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
 		grpcServer:             grpcServer,
@@ -3742,6 +3754,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 					}
 				}()
 			}
+			ds.wireRetentionAnchor(fileSink, bucketSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {

@@ -502,7 +502,7 @@ func TestVerifyAnchorsAgainstBucket_ACheckpointAtTheChainBaseIsComparedWithTheBa
 		t.Fatalf("an anchor at the base that matches the base hash must pass: err=%v failures=%v", err, r.Failures)
 	}
 
-	chain.fakeChainStore.hashes[15] = "not-what-was-anchored"
+	chain.hashes[15] = "not-what-was-anchored"
 	r, err := VerifyAnchorsAgainstBucket(context.Background(), chain, f.file, f.bucket)
 	if err != nil {
 		t.Fatal(err)

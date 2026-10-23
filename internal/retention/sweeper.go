@@ -80,11 +80,13 @@ type Unswept struct {
 	Note  string
 }
 
-// ChainAndBundles lists the classes the dry-run sweeper does not count: the
+// ChainAndBundles lists the classes the sweeper does not count by default: the
 // hash-chained audit_logs classes (slice D, #2878) and evidence bundles
-// (slice E, #2879; no bundle store exists yet).
+// (slice E, #2879; no bundle store exists yet). The chained classes drop off
+// the list when a PrefixSource for audit_logs is added, which the daemon does
+// once it has an audit store.
 func ChainAndBundles() []Unswept {
-	const chained = "in the hash-chained audit_logs: only the oldest rows below the latest anchor can be removed, with a stored chain base; handled by #2878"
+	const chained = "in the hash-chained audit_logs: only the oldest rows below the latest anchor can be purged, with a stored chain base (#2878). This daemon has no audit store (it needs Postgres with REST enabled), so it is not swept"
 	return []Unswept{
 		{Class: pb.RetentionClass_RETENTION_CLASS_GATEWAY_LOGS, Store: "audit_logs", Note: chained},
 		{Class: pb.RetentionClass_RETENTION_CLASS_SESSION_TRANSCRIPTS, Store: "audit_logs", Note: chained},
@@ -416,6 +418,10 @@ func NewReporter(s *Sweeper) *Reporter { return &Reporter{sweeper: s} }
 
 // SetAuditor wires the audit entry of an enforced sweep (see Sweeper.SetAuditor).
 func (r *Reporter) SetAuditor(a Auditor) { r.sweeper.SetAuditor(a) }
+
+// AddPrefixSource wires a PrefixSource into the reporter's sweeper (see
+// Sweeper.AddPrefixSource). Call it before Run.
+func (r *Reporter) AddPrefixSource(p PrefixSource) { r.sweeper.AddPrefixSource(p) }
 
 // Last returns the kept report, nil before the first sweep.
 func (r *Reporter) Last() *pb.RetentionReport {
