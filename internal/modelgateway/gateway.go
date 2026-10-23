@@ -19,6 +19,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // UsageSink receives every metered model call so token usage can be forwarded
@@ -118,6 +119,11 @@ type Config struct {
 	// DefaultInboundAuditTimeout). Sink writes never run on the request path.
 	InboundAuditQueue   int
 	InboundAuditTimeout time.Duration
+
+	// Calls receives one typed event per proxied model call, keyed by the
+	// token's run id, so a failure at the gateway can be shown with the run
+	// (#2928; see calls.go). Nil records nothing.
+	Calls CallRecorder
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
@@ -300,8 +306,10 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 
 	// Whose key this call spends: the token's key_owner if it has one and a
 	// resolver can answer for it, else the daemon-global key (keyowner.go).
-	key, ok := g.resolveKey(r.Context(), claims, provName)
+	key, ok, keyOwner := g.resolveKeyOwner(r.Context(), claims, provName)
 	if !ok {
+		g.recordCall(claims, newCall(claims, provName, "", pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_UNSPECIFIED, int32(http.StatusBadGateway),
+			pb.GatewayTransportError_GATEWAY_TRANSPORT_ERROR_NO_KEY, time.Now(), time.Now()))
 		http.Error(w, "gateway holds no key for provider "+provName, http.StatusBadGateway)
 		return
 	}
@@ -466,10 +474,12 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	// because the streaming usage callback runs in filterSSEStream's goroutine
 	// (the non-streaming path sets them inline in ModifyResponse).
 	var (
-		mu       sync.Mutex
-		streamed bool
-		metered  bool
-		lastU    Usage
+		mu        sync.Mutex
+		streamed  bool
+		metered   bool
+		lastU     Usage
+		proxyErr  error     // set when the upstream round trip itself failed
+		headersAt time.Time // when the upstream's response headers arrived
 	)
 	markStreamed := func() { mu.Lock(); streamed = true; mu.Unlock() }
 	captureUsage := func(u Usage) { mu.Lock(); metered = true; lastU = u; mu.Unlock() }
@@ -493,6 +503,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			mu.Lock()
+			headersAt = time.Now()
+			mu.Unlock()
 			// Baseline (#2736): tee the final body, whatever the steps below
 			// make of it, and scan it once the proxy has written it all.
 			if bl != nil && !inMode.baselineBlock {
@@ -583,6 +596,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 				writeInboundBlock(w, http.StatusBadGateway, blocked.dec)
 				return
 			}
+			mu.Lock()
+			proxyErr = err
+			mu.Unlock()
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
 	}
@@ -602,9 +618,18 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(sw, r)
 
 	mu.Lock()
-	st, md, lu := streamed, metered, lastU
+	st, md, lu, perr, hdrAt := streamed, metered, lastU, proxyErr, headersAt
 	mu.Unlock()
 	dur := time.Since(start)
+	callStatus, terr := int32(sw.status), pb.GatewayTransportError_GATEWAY_TRANSPORT_ERROR_UNSPECIFIED // #nosec G115 -- an HTTP status code
+	if perr != nil {
+		callStatus, terr = 0, classifyTransportError(perr)
+	}
+	callEnd := time.Now()
+	if !hdrAt.IsZero() {
+		callEnd = hdrAt // latency is the time to the response headers, not the whole stream
+	}
+	g.recordCall(claims, newCall(claims, provName, logModel, keyOwner, callStatus, terr, start, callEnd))
 	status := "ok"
 	if sw.status >= 400 {
 		status = "error"
@@ -661,4 +686,11 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// recordCall hands a finished call to the configured recorder, if any.
+func (g *Gateway) recordCall(claims *GatewayClaims, c *pb.GatewayCall) {
+	if g.cfg.Calls != nil {
+		g.cfg.Calls.RecordCall(claims.RunID, c)
+	}
 }
