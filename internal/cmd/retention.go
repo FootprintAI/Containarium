@@ -166,8 +166,10 @@ a sweep that ran in enforce mode, how many it removed.
 
 The daemon sweeps hourly and keeps the last report; --refresh counts now. A
 refresh only counts, in any mode: it never deletes.
-The hash-chained audit log classes and evidence bundles are listed as "not
-swept" with the slice that handles them. Admin role only.
+The hash-chained audit_logs is purged as a prefix only, below the latest
+anchor and clear of legal holds; the report names what bounded it and, after
+a purge, the chain base where verification now starts. Evidence bundles are
+listed as "not swept". Admin role only.
 
 Example:
   containarium retention report --server <host>:50051 --refresh`,
@@ -310,7 +312,35 @@ func printRetentionReport(out io.Writer, r *pb.RetentionReport) error {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\terror: %s\n", retentionClassName(s.GetClass()), s.GetStore(), window, s.GetNote())
 		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	printChainBases(out, r)
+	return nil
+}
+
+// printChainBases prints, once per store, where verification of a purged
+// hash chain starts (#2878). Both chained classes of audit_logs carry the same
+// base, so the store is the key.
+func printChainBases(out io.Writer, r *pb.RetentionReport) {
+	seen := map[string]bool{}
+	for _, s := range r.GetStores() {
+		b := s.GetChainBase()
+		if b == nil || seen[s.GetStore()] {
+			continue
+		}
+		seen[s.GetStore()] = true
+		hash := b.GetBaseHash()
+		if len(hash) > 16 {
+			hash = hash[:16] + "..."
+		}
+		if hash == "" {
+			hash = "(empty: every purged row predates the chain)"
+		}
+		fmt.Fprintf(out, "\n%s chain base: row id %d, hash %s, %d row(s) purged, last purge %s\n",
+			s.GetStore(), b.GetBaseId(), hash, b.GetRowsPurged(), b.GetPurgedAt().AsTime().Format("2006-01-02T15:04:05Z"))
+		fmt.Fprintln(out, "  'containarium audit verify' and 'audit verify-anchor' start from this base, not from the first row.")
+	}
 }
 
 var retentionHoldCmd = &cobra.Command{Use: "hold", Short: "List, place or release legal holds per org"}

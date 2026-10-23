@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -151,6 +152,26 @@ func newRetentionReporter(store retention.Store, pool *pgxpool.Pool) *retention.
 		unswept = append(unswept, retentionpg.NoDatabase()...)
 	}
 	return retention.NewReporter(retention.NewSweeper(store, sources, unswept))
+}
+
+// retentionAnchorFunc is the anchor that bounds a purge: the lower of the local
+// file's and the external bucket's latest checkpoint (audit.SafeAnchor). It
+// fails closed. With a bucket configured but not built (a bad URI, no gcloud) it
+// returns ok=false, so the purge gets no anchor at all rather than a file-only
+// one: turning the external copy on can never be a way to purge against less
+// evidence than the operator asked for.
+func retentionAnchorFunc(file *audit.FileSink, bucket *audit.GCSAnchorSink, bucketURI string) (retentionpg.AnchorFunc, bool) {
+	var external audit.RootSink // stays a nil interface without a bucket
+	switch {
+	case bucket != nil:
+		external = bucket
+	case strings.TrimSpace(bucketURI) != "":
+		return nil, false
+	}
+	return func(ctx context.Context) (retentionpg.Anchor, bool, error) {
+		a, ok, err := audit.SafeAnchor(ctx, file, external)
+		return retentionpg.Anchor{Checkpoint: a.Checkpoint, Root: a.Root}, ok, err
+	}, true
 }
 
 // RetentionServer serves the retention policy and legal holds (#2875). Every

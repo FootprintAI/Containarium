@@ -329,6 +329,17 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	// This over-scans by at most one batch in the worst
 	// case, which is acceptable for an idempotent verify.
 	fromID := auditVerifyFromID
+	// After a retention purge (#2878) the rows before the stored base are gone;
+	// start there instead of re-verifying the same first batch from every
+	// from-id below it.
+	base, purged, err := store.ChainBase(ctx)
+	if err != nil {
+		return err
+	}
+	fromID, baseNote := verifyStartID(fromID, base, purged)
+	if baseNote != "" {
+		fmt.Println("\n  " + baseNote)
+	}
 	for fromID < maxID {
 		firstBad, err := store.VerifyChainSinceID(ctx, fromID, auditVerifyBatch)
 		if err != nil {
@@ -345,6 +356,17 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\n  ✓ Audit-log chain intact (verified through id=%d)\n\n", maxID)
 	return nil
+}
+
+// verifyStartID is where `audit verify` starts: the requested row, or the chain
+// base when a retention purge removed everything up to it. The note says so, so
+// a clean result is not read as "verified from the first row ever written".
+func verifyStartID(from int64, base audit.ChainBase, purged bool) (int64, string) {
+	if !purged || from > base.ID {
+		return from, ""
+	}
+	return base.ID, fmt.Sprintf("Rows up to id=%d were purged by retention (%d in total, last on %s); verifying from the stored chain base.",
+		base.ID, base.RowsPurged, base.PurgedAt.UTC().Format("2006-01-02T15:04:05Z"))
 }
 
 func runAuditVerifyAnchor(cmd *cobra.Command, args []string) error {

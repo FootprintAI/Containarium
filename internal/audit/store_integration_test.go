@@ -45,7 +45,7 @@ func auditTestStore(t *testing.T) *Store {
 
 	// Each test starts from an empty chain, so the first row's prev_hash is
 	// the genesis value rather than whatever a previous test left.
-	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS audit_logs`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS audit_logs, audit_chain_base`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	s, err := NewStore(context.Background(), pool)
