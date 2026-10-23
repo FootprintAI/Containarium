@@ -45,6 +45,7 @@ type NetworkPolicyServer struct {
 	// CONTAINARIUM_NETWORK_POLICY_ENFORCE.
 	applied      appliedStateSource
 	enforceArmed bool
+	clock        func() time.Time // nil = time.Now; tests inject a fixed clock
 }
 
 // denyAuditQuerier is the slice of *audit.Store PlanNetworkPolicy needs.

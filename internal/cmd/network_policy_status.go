@@ -19,9 +19,15 @@ var networkPolicyStatusCmd = &cobra.Command{
 	Short: "Show what this daemon has actually loaded for a tenant's network policy",
 	Long: `Reports the tenant's policy as the daemon loaded it into the kernel, not as it
 was requested: the effective mode and egress mode after this host's enforce
-guard (CONTAINARIUM_NETWORK_POLICY_ENFORCE), when it was last applied, how many
-of the tenant's running boxes have it loaded, and the traffic the eBPF policy
-does not decide. When the daemon cannot tell, it says unknown.`,
+guard (CONTAINARIUM_NETWORK_POLICY_ENFORCE), how many of the tenant's running
+boxes have it loaded, and the traffic the eBPF policy does not decide.
+
+"loaded" means every running box of the tenant has the policy; "PARTIALLY
+loaded" means some do not, and their traffic is not policed. last-reconciled is
+the end of the daemon's last successful reconcile pass (refreshed about every
+10s), not the time the policy last changed; if no pass has succeeded for more
+than three reconcile intervals the state is "stale" and the modes are unknown.
+When the daemon cannot tell, it says unknown.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runNetworkPolicyStatus,
 }
@@ -72,7 +78,9 @@ func runNetworkPolicyStatus(cmd *cobra.Command, args []string) error {
 }
 
 var appliedStateText = map[pb.NetworkPolicyAppliedState]string{
-	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED:               "loaded",
+	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED:               "loaded (every running box of this tenant has the policy)",
+	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED:     "PARTIALLY loaded: the tenant is NOT fully covered (the modes below apply to the loaded boxes only)",
+	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE:                "stale: the reconciler has not completed a pass for over three intervals, so what is loaded now is unknown",
 	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED:           "not loaded (no running box of this tenant has the policy loaded)",
 	pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING: "enforcer not running on this daemon (nothing is enforced or observed)",
 }
@@ -102,13 +110,16 @@ func printStatus(w io.Writer, s *pb.NetworkPolicyStatus) {
 	fmt.Fprintf(w, "  state:              %s\n", state)
 	fmt.Fprintf(w, "  effective-mode:     %s\n", mode(s.GetEffectiveMode()))
 	fmt.Fprintf(w, "  egress-mode:        %s\n", mode(s.GetEffectiveEgressMode()))
-	if s.GetLastAppliedAt() != nil {
-		fmt.Fprintf(w, "  last-applied:       %s\n", s.GetLastAppliedAt().AsTime().UTC().Format(time.RFC3339))
+	if s.GetLastReconciledAt() != nil {
+		fmt.Fprintf(w, "  last-reconciled:    %s\n", s.GetLastReconciledAt().AsTime().UTC().Format(time.RFC3339))
 	}
-	if s.GetEnforcementArmed() {
+	switch {
+	case s.GetEnforcementArmed():
 		fmt.Fprintf(w, "  enforcement-armed:  true\n")
-	} else {
+	case policyLoaded(s.GetState()):
 		fmt.Fprintf(w, "  enforcement-armed:  false (a requested enforce is loaded as log_only on this host)\n")
+	default:
+		fmt.Fprintf(w, "  enforcement-armed:  false\n")
 	}
 	if s.GetBoxesLoaded() > 0 || s.GetBoxesNotLoaded() > 0 {
 		line := fmt.Sprintf("%d loaded", s.GetBoxesLoaded())
@@ -127,4 +138,10 @@ func printStatus(w io.Writer, s *pb.NetworkPolicyStatus) {
 			fmt.Fprintf(w, "    - %s\n", text)
 		}
 	}
+}
+
+// policyLoaded reports whether the state says some policy is in the kernel.
+func policyLoaded(st pb.NetworkPolicyAppliedState) bool {
+	return st == pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED ||
+		st == pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED
 }
