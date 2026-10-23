@@ -200,6 +200,9 @@ func resolveRunID(raw string) (string, error) {
 // agent-runtime image's responsibility and is intentionally out of scope for
 // Phase 0 (artifact_json is returned empty until that lands).
 type AgentSkillServer struct {
+	// gatewayCalls is the model gateway's per-run call log (run_log.go); nil
+	// returns no calls.
+	gatewayCalls gatewayCallReader
 	pb.UnimplementedAgentSkillServiceServer
 	catalog   *skills.Manager
 	recipes   *RecipeServer        // box provisioning (reuses CreateContainer/exec/expose)
