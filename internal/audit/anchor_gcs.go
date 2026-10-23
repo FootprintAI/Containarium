@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +40,10 @@ type gcloudRunFunc func(ctx context.Context, stdin []byte, args ...string) (stri
 // cannot stall the anchor loop past its next tick.
 const gcloudCallTimeout = 60 * time.Second
 
+// gcloudWaitDelay is how long runGcloud waits, after the deadline kills the
+// process group, for the output pipes to close before giving up on them.
+const gcloudWaitDelay = 2 * time.Second
+
 // GCSAnchorSink is a RootSink backed by objects in a GCS bucket.
 type GCSAnchorSink struct {
 	bucket string // bucket name, without gs://
@@ -54,22 +60,29 @@ func NewGCSAnchorSink(uri string) (*GCSAnchorSink, error) {
 		return nil, fmt.Errorf("audit: gcloud not found on PATH (required for the GCS anchor sink): %w", err)
 	}
 	run := func(ctx context.Context, stdin []byte, args ...string) (string, error) {
-		ctx, cancel := context.WithTimeout(ctx, gcloudCallTimeout)
-		defer cancel()
-		// #nosec G204 -- bin is resolved via exec.LookPath("gcloud"); args are
-		// fixed verbs plus gs:// URIs built from a validated bucket URI. No
-		// shell is involved.
-		cmd := exec.CommandContext(ctx, bin, args...)
-		cmd.Stdin = bytes.NewReader(stdin)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return stdout.String(), fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		return stdout.String(), nil
+		return runGcloud(ctx, bin, gcloudCallTimeout, stdin, args...)
 	}
 	return newGCSAnchorSink(uri, run)
+}
+
+// runGcloud runs one `gcloud` invocation under a deadline.
+func runGcloud(ctx context.Context, bin string, timeout time.Duration, stdin []byte, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// #nosec G204 -- bin is resolved via exec.LookPath("gcloud"); args are
+	// fixed verbs plus gs:// URIs built from a validated bucket URI. No
+	// shell is involved.
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	bindToProcessGroup(cmd)
+	cmd.WaitDelay = gcloudWaitDelay
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
 }
 
 func newGCSAnchorSink(uri string, run gcloudRunFunc) (*GCSAnchorSink, error) {
@@ -81,8 +94,17 @@ func newGCSAnchorSink(uri string, run gcloudRunFunc) (*GCSAnchorSink, error) {
 	if bucket == "" {
 		return nil, fmt.Errorf("audit: anchor bucket URI %q has no bucket name", uri)
 	}
+	prefix = strings.Trim(prefix, "/")
+	if !gcsBucketName.MatchString(bucket) {
+		return nil, fmt.Errorf("audit: anchor bucket name %q is not a valid GCS bucket name", bucket)
+	}
+	// gcloud expands * ? [ in a gs:// URL; a wildcard prefix would make
+	// LastPublished list something else and report "never anchored".
+	if prefix != "" && (!gcsObjectPrefix.MatchString(prefix) || strings.Contains(prefix, "//") || slices.Contains(strings.Split(prefix, "/"), "..")) {
+		return nil, fmt.Errorf("audit: anchor bucket prefix %q has characters gcloud would expand or is not a plain path", prefix)
+	}
 	p := "gs://" + bucket + "/"
-	if prefix = strings.Trim(prefix, "/"); prefix != "" {
+	if prefix != "" {
 		p += prefix + "/"
 	}
 	return &GCSAnchorSink{bucket: bucket, prefix: p, run: run}, nil
@@ -231,9 +253,18 @@ func RetentionLockWarning(uri string, st RetentionLockStatus, err error) string 
 	return ""
 }
 
+var (
+	gcsBucketName   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$`)
+	gcsObjectPrefix = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+	gcsURI          = regexp.MustCompile(`gs://\S*`)
+	httpStatus412   = regexp.MustCompile(`\b412\b`)
+)
+
 func isGcloudPreconditionFailed(err error) bool {
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "412") || strings.Contains(s, "precondition") || strings.Contains(s, "pre-condition")
+	// Drop object URIs first: a checkpoint or prefix containing "412" is not
+	// an HTTP status.
+	s := strings.ToLower(gcsURI.ReplaceAllString(err.Error(), ""))
+	return httpStatus412.MatchString(s) || strings.Contains(s, "precondition") || strings.Contains(s, "pre-condition")
 }
 
 func isGcloudNoMatch(err error) bool {
