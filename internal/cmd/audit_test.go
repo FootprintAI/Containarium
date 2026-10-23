@@ -3,8 +3,11 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/footprintai/containarium/internal/audit"
 )
 
 // Phase 4.5 follow-up — unit-level checks on the pure-Go
@@ -147,5 +150,81 @@ func TestAuditQueryFlags_RunIDIsRegisteredAndWired(t *testing.T) {
 	}
 	if params.RunID != "r-1" {
 		t.Errorf("params.RunID = %q, want %q after setting --run-id", params.RunID, "r-1")
+	}
+}
+
+// #2881 — verify-anchor against the bucket: flag/env resolution and the
+// rendered ✓/⚠/✗ lines with their exit semantics.
+
+func TestResolveAnchorBucket_FlagBeatsEnvAndEmptyMeansNoBucket(t *testing.T) {
+	t.Setenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET", "gs://from-env")
+	if got := resolveAnchorBucket("gs://from-flag"); got != "gs://from-flag" {
+		t.Errorf("flag should win, got %q", got)
+	}
+	if got := resolveAnchorBucket(""); got != "gs://from-env" {
+		t.Errorf("env should be the fallback, got %q", got)
+	}
+	t.Setenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET", "  ")
+	if got := resolveAnchorBucket(""); got != "" {
+		t.Errorf("blank env means no bucket, got %q", got)
+	}
+}
+
+func TestPrintBucketAnchorReport(t *testing.T) {
+	tests := []struct {
+		name       string
+		report     audit.BucketAnchorReport
+		firstBad   int64
+		wantErr    bool
+		wantStdout []string
+		wantStderr []string
+	}{
+		{
+			name:       "clean",
+			report:     audit.BucketAnchorReport{CheckedCheckpoints: 3, LatestCheckpoint: 30},
+			wantStdout: []string{"✓", "3 checkpoint", "id=30"},
+		},
+		{
+			name: "local newer than bucket warns and exits zero",
+			report: audit.BucketAnchorReport{CheckedCheckpoints: 1, LatestCheckpoint: 10,
+				Warnings: []audit.BucketAnchorFinding{{Kind: audit.FindingLocalNewerThanBucket, Checkpoint: 20, Detail: "ahead"}}},
+			wantStdout: []string{"⚠", "ahead"},
+		},
+		{
+			name: "planted checkpoint fails",
+			report: audit.BucketAnchorReport{CheckedCheckpoints: 1, LatestCheckpoint: 10,
+				Failures: []audit.BucketAnchorFinding{{Kind: audit.FindingAboveChainTip, Checkpoint: 9223372036854775807, Detail: "planted"}}},
+			wantErr:    true,
+			wantStderr: []string{"✗", "9223372036854775807", "planted"},
+		},
+		{
+			name:       "tail break after the latest checkpoint fails",
+			report:     audit.BucketAnchorReport{CheckedCheckpoints: 1, LatestCheckpoint: 10},
+			firstBad:   12,
+			wantErr:    true,
+			wantStderr: []string{"✗", "id=12"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			err := printBucketAnchorReport(&out, &errOut, "gs://example-bucket/", tc.report, tc.firstBad)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			for _, w := range tc.wantStdout {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("stdout missing %q:\n%s", w, out.String())
+				}
+			}
+			for _, w := range tc.wantStderr {
+				if !strings.Contains(errOut.String(), w) {
+					t.Errorf("stderr missing %q:\n%s", w, errOut.String())
+				}
+			}
+			if tc.wantErr && strings.Contains(out.String(), "✓ Chain matches") {
+				t.Errorf("a failing report must not print the success line:\n%s", out.String())
+			}
+		})
 	}
 }

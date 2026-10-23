@@ -28,6 +28,7 @@ type fakeGcloud struct {
 	objects       map[string][]byte
 	retentionJSON string
 	down          bool
+	lsErr         error // when set, `storage ls` fails with it
 	calls         [][]string
 }
 
@@ -64,6 +65,9 @@ func (f *fakeGcloud) run(_ context.Context, stdin []byte, args ...string) (strin
 		}
 		return string(body), nil
 	case "ls":
+		if f.lsErr != nil {
+			return "", f.lsErr
+		}
 		prefix := args[2]
 		var out []string
 		for uri := range f.objects {
