@@ -24,13 +24,15 @@ const (
 	RetentionService_ListLegalHolds_FullMethodName     = "/containarium.v1.RetentionService/ListLegalHolds"
 	RetentionService_SetLegalHold_FullMethodName       = "/containarium.v1.RetentionService/SetLegalHold"
 	RetentionService_ReleaseLegalHold_FullMethodName   = "/containarium.v1.RetentionService/ReleaseLegalHold"
+	RetentionService_GetRetentionReport_FullMethodName = "/containarium.v1.RetentionService/GetRetentionReport"
 )
 
 // RetentionServiceClient is the client API for RetentionService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// RetentionService stores the retention policy and legal holds. Every RPC is
+// RetentionService stores the retention policy and legal holds and reports
+// what a sweep would remove. Every RPC is
 // admin-only. A set, a hold and a release write an audit entry naming the
 // caller when the daemon has an audit store; a failed audit write fails the
 // change and leaves the store unchanged.
@@ -40,6 +42,7 @@ type RetentionServiceClient interface {
 	ListLegalHolds(ctx context.Context, in *ListLegalHoldsRequest, opts ...grpc.CallOption) (*ListLegalHoldsResponse, error)
 	SetLegalHold(ctx context.Context, in *SetLegalHoldRequest, opts ...grpc.CallOption) (*SetLegalHoldResponse, error)
 	ReleaseLegalHold(ctx context.Context, in *ReleaseLegalHoldRequest, opts ...grpc.CallOption) (*ReleaseLegalHoldResponse, error)
+	GetRetentionReport(ctx context.Context, in *GetRetentionReportRequest, opts ...grpc.CallOption) (*GetRetentionReportResponse, error)
 }
 
 type retentionServiceClient struct {
@@ -100,11 +103,22 @@ func (c *retentionServiceClient) ReleaseLegalHold(ctx context.Context, in *Relea
 	return out, nil
 }
 
+func (c *retentionServiceClient) GetRetentionReport(ctx context.Context, in *GetRetentionReportRequest, opts ...grpc.CallOption) (*GetRetentionReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRetentionReportResponse)
+	err := c.cc.Invoke(ctx, RetentionService_GetRetentionReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RetentionServiceServer is the server API for RetentionService service.
 // All implementations must embed UnimplementedRetentionServiceServer
 // for forward compatibility.
 //
-// RetentionService stores the retention policy and legal holds. Every RPC is
+// RetentionService stores the retention policy and legal holds and reports
+// what a sweep would remove. Every RPC is
 // admin-only. A set, a hold and a release write an audit entry naming the
 // caller when the daemon has an audit store; a failed audit write fails the
 // change and leaves the store unchanged.
@@ -114,6 +128,7 @@ type RetentionServiceServer interface {
 	ListLegalHolds(context.Context, *ListLegalHoldsRequest) (*ListLegalHoldsResponse, error)
 	SetLegalHold(context.Context, *SetLegalHoldRequest) (*SetLegalHoldResponse, error)
 	ReleaseLegalHold(context.Context, *ReleaseLegalHoldRequest) (*ReleaseLegalHoldResponse, error)
+	GetRetentionReport(context.Context, *GetRetentionReportRequest) (*GetRetentionReportResponse, error)
 	mustEmbedUnimplementedRetentionServiceServer()
 }
 
@@ -138,6 +153,9 @@ func (UnimplementedRetentionServiceServer) SetLegalHold(context.Context, *SetLeg
 }
 func (UnimplementedRetentionServiceServer) ReleaseLegalHold(context.Context, *ReleaseLegalHoldRequest) (*ReleaseLegalHoldResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseLegalHold not implemented")
+}
+func (UnimplementedRetentionServiceServer) GetRetentionReport(context.Context, *GetRetentionReportRequest) (*GetRetentionReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRetentionReport not implemented")
 }
 func (UnimplementedRetentionServiceServer) mustEmbedUnimplementedRetentionServiceServer() {}
 func (UnimplementedRetentionServiceServer) testEmbeddedByValue()                          {}
@@ -250,6 +268,24 @@ func _RetentionService_ReleaseLegalHold_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RetentionService_GetRetentionReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRetentionReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RetentionServiceServer).GetRetentionReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RetentionService_GetRetentionReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RetentionServiceServer).GetRetentionReport(ctx, req.(*GetRetentionReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RetentionService_ServiceDesc is the grpc.ServiceDesc for RetentionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -276,6 +312,10 @@ var RetentionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseLegalHold",
 			Handler:    _RetentionService_ReleaseLegalHold_Handler,
+		},
+		{
+			MethodName: "GetRetentionReport",
+			Handler:    _RetentionService_GetRetentionReport_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

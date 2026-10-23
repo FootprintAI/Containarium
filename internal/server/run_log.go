@@ -32,6 +32,15 @@ const (
 	runEndedMarker = `"kind":"status","text":"run ended`
 )
 
+// gatewayCallReader is the model gateway's per-run call log (modelgateway.CallLog).
+type gatewayCallReader interface {
+	Since(runID, skillID string, after int64) ([]*pb.GatewayCall, int64)
+}
+
+// SetGatewayCalls lets TailRunLog return the model-gateway calls recorded for a
+// run next to its journal (#2928). Nil (the default) returns none.
+func (s *AgentSkillServer) SetGatewayCalls(r gatewayCallReader) { s.gatewayCalls = r }
+
 // boxScriptFunc runs a POSIX shell script inside a box and returns its stdout.
 // A non-zero exit is an error. Production wraps the container manager; tests
 // fake it.
@@ -254,13 +263,18 @@ func (s *AgentSkillServer) TailRunLog(ctx context.Context, req *pb.TailRunLogReq
 	deadline := time.Now().Add(follow)
 	var resp *pb.TailRunLogResponse
 	var w journalWindow
+	var calls []*pb.GatewayCall
+	callsNext := req.GetGatewayAfterSeq()
 	for {
 		w, err = readJournalWindow(exec, box, path, offset, maxBytes+1)
 		if err != nil {
 			return nil, status.Errorf(codes.Unavailable, "read journal of %q on %s: %v", skillID, box, err)
 		}
 		resp = windowResponse(w, offset, maxBytes)
-		if len(resp.Chunk) > 0 || resp.Ended || !time.Now().Add(poll).Before(deadline) {
+		if s.gatewayCalls != nil {
+			calls, callsNext = s.gatewayCalls.Since(req.GetRunId(), skillID, req.GetGatewayAfterSeq())
+		}
+		if len(resp.Chunk) > 0 || len(calls) > 0 || resp.Ended || !time.Now().Add(poll).Before(deadline) {
 			break
 		}
 		select {
@@ -270,6 +284,7 @@ func (s *AgentSkillServer) TailRunLog(ctx context.Context, req *pb.TailRunLogReq
 		}
 	}
 
+	resp.GatewayCalls, resp.GatewayNextSeq = calls, callsNext
 	for _, m := range members {
 		if (m == skillID && w.exists) || (m != skillID && s.journalExists(exec, m, req.GetRunId())) {
 			resp.SkillIds = append(resp.SkillIds, m)
