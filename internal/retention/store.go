@@ -1,6 +1,7 @@
 // Package retention stores the per-class retention policy and the per-org
 // legal holds (#2576, slice A #2875; docs/security/DATA-FLOW-AND-RETENTION.md).
-// It deletes nothing: the sweeper that reads this policy is a later slice.
+// It deletes nothing: the sweeper in this package only counts (#2876); the
+// enforcing slices come later.
 package retention
 
 import (
