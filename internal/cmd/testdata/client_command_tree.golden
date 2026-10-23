@@ -143,6 +143,7 @@ network-policy set
 network-policy signature add
 network-policy signature list
 network-policy signature rm
+network-policy status
 org get-default-region
 org set-default-region
 passthrough-route add
