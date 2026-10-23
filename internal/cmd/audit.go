@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -43,7 +44,8 @@ var (
 	auditVerifyBatch  int
 
 	// `audit verify-anchor` flags
-	auditAnchorPath string
+	auditAnchorPath   string
+	auditAnchorBucket string
 )
 
 // defaultAuditAnchorPath mirrors internal/server's constant of the same
@@ -143,12 +145,29 @@ can't see.
 A privileged rewrite of a row anchored less than one anchoring
 interval ago is undetectable until the daemon's next anchor
 publishes a checkpoint past it — that window is inherent to
-periodic anchoring, not a bug in this check.`,
+periodic anchoring, not a bug in this check.
+
+With --anchor-bucket (or CONTAINARIUM_AUDIT_ANCHOR_BUCKET, the same
+variable the daemon reads) the check also uses the daemon's copy of
+the anchors in a GCS bucket, which a host-root attacker cannot
+delete or overwrite while the bucket's retention policy is locked.
+Every bucket checkpoint is compared with the database and with the
+local file. A checkpoint above the database's highest row id, one
+whose content does not match its name, one the local file lacks, or
+one whose root differs is a failure (non-zero exit). Checkpoints
+only the local file holds are still compared with the database
+(a mismatch is a failure) and warned about, since the bucket does
+not vouch for them. A bucket without a locked retention policy is a
+warning (exit 0). With no bucket
+configured, behaviour is unchanged.`,
 	Example: `  # Default anchor path (same as the daemon's default)
   containarium audit verify-anchor
 
   # Non-default anchor location
-  containarium audit verify-anchor --anchor-path /mnt/forensics/audit-anchors.jsonl`,
+  containarium audit verify-anchor --anchor-path /mnt/forensics/audit-anchors.jsonl
+
+  # Also check against the daemon's external anchor bucket
+  containarium audit verify-anchor --anchor-bucket gs://<bucket>/<prefix>`,
 	RunE: runAuditVerifyAnchor,
 }
 
@@ -160,6 +179,8 @@ func init() {
 
 	auditVerifyAnchorCmd.Flags().StringVar(&auditAnchorPath, "anchor-path", "",
 		"Path to the anchor file (default: $CONTAINARIUM_AUDIT_ANCHOR_PATH, or the daemon's own default)")
+	auditVerifyAnchorCmd.Flags().StringVar(&auditAnchorBucket, "anchor-bucket", "",
+		"Also check against the anchors in this bucket, gs://<bucket>[/<prefix>] (default: $CONTAINARIUM_AUDIT_ANCHOR_BUCKET; unset checks the local file only)")
 
 	auditQueryCmd.Flags().StringVar(&auditQueryUsername, "username", "", "Filter by username (exact match)")
 	auditQueryCmd.Flags().StringVar(&auditQueryAction, "action", "", "Filter by action (exact match, e.g. create_container)")
@@ -346,6 +367,10 @@ func runAuditVerifyAnchor(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open anchor sink %q: %w", path, err)
 	}
 
+	if uri := resolveAnchorBucket(auditAnchorBucket); uri != "" {
+		return runAuditVerifyAnchorBucket(ctx, store, sink, path, uri)
+	}
+
 	result, err := store.VerifyChainAgainstAnchor(ctx, sink)
 	if err != nil {
 		if errors.Is(err, audit.ErrNoAnchor) {
@@ -377,6 +402,107 @@ func runAuditVerifyAnchor(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Additionally, internal consistency breaks at row id=%d (after the checkpoint).\n\n", result.FirstBadAfterCheckpoint)
 	}
 	return fmt.Errorf("chain does not match its anchor at checkpoint id=%d", result.Checkpoint)
+}
+
+// resolveAnchorBucket returns the bucket URI to check: the flag, else
+// $CONTAINARIUM_AUDIT_ANCHOR_BUCKET, else "" (no bucket: the local-file check
+// is unchanged).
+func resolveAnchorBucket(flag string) string {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
+}
+
+// fixedRootSink presents one already-read (checkpoint, root) as a RootSink, so
+// Store.VerifyChainAgainstAnchor can run its row-hash and tail-consistency
+// check against a checkpoint the bucket check has validated.
+type fixedRootSink struct {
+	checkpoint int64
+	root       string
+}
+
+func (fixedRootSink) PublishRoot(context.Context, int64, string) error {
+	return errors.New("read-only anchor view")
+}
+
+func (f fixedRootSink) LastPublished(context.Context) (int64, string, bool, error) {
+	return f.checkpoint, f.root, true, nil
+}
+
+// anchorChain is the database side of the bucket check: *audit.Store.
+type anchorChain interface {
+	audit.ChainStore
+	VerifyChainAgainstAnchor(ctx context.Context, sink audit.RootSink) (audit.AnchorVerifyResult, error)
+}
+
+func runAuditVerifyAnchorBucket(ctx context.Context, chain anchorChain, local *audit.FileSink, localPath, uri string) error {
+	bucket, err := audit.NewGCSAnchorSink(uri)
+	if err != nil {
+		return fmt.Errorf("open anchor bucket %q: %w", uri, err)
+	}
+	return verifyAnchorBucket(ctx, chain, local, localPath, bucket, os.Stdout, os.Stderr)
+}
+
+func verifyAnchorBucket(ctx context.Context, chain anchorChain, local *audit.FileSink, localPath string, bucket audit.AnchorBucket, out, errOut io.Writer) error {
+	report, err := audit.VerifyAnchorsAgainstBucket(ctx, chain, local, bucket)
+	if err != nil {
+		if errors.Is(err, audit.ErrNoAnchor) {
+			fmt.Fprintf(out, "\n  ⚠ No anchor has been published yet, locally (%s) or in %s\n\n", localPath, bucket.URI())
+			return nil
+		}
+		return fmt.Errorf("verify against anchor bucket: %w", err)
+	}
+
+	// The chain after the highest verified checkpoint, in either copy, must
+	// still be internally consistent, as in the local-file check.
+	var firstBad int64
+	if report.TailCheckpoint > 0 {
+		res, err := chain.VerifyChainAgainstAnchor(ctx, fixedRootSink{checkpoint: report.TailCheckpoint, root: report.TailRoot})
+		if err != nil {
+			return fmt.Errorf("verify chain since the latest checkpoint: %w", err)
+		}
+		firstBad = res.FirstBadAfterCheckpoint
+	}
+	return printBucketAnchorReport(out, errOut, bucket.URI(), report, firstBad)
+}
+
+// printBucketAnchorReport renders the bucket check: ⚠ lines on stdout, ✗
+// lines on stderr. It returns an error (non-zero exit) when anything failed;
+// warnings alone return nil.
+func printBucketAnchorReport(out, errOut io.Writer, uri string, r audit.BucketAnchorReport, firstBadAfterLatest int64) error {
+	fmt.Fprintln(out)
+	for _, w := range r.Warnings {
+		fmt.Fprintf(out, "  ⚠ %s\n", findingLine(w))
+	}
+	if len(r.Warnings) > 0 {
+		fmt.Fprintln(out)
+	}
+
+	failed := len(r.Failures)
+	if failed > 0 || firstBadAfterLatest != 0 {
+		fmt.Fprintf(errOut, "  ✗ Anchor check against %s FAILED\n\n", uri)
+		for _, f := range r.Failures {
+			fmt.Fprintf(errOut, "  ✗ %s\n", findingLine(f))
+		}
+		if firstBadAfterLatest != 0 {
+			fmt.Fprintf(errOut, "  ✗ Internal consistency breaks at row id=%d (after the latest checkpoint).\n", firstBadAfterLatest)
+			failed++
+		}
+		fmt.Fprintln(errOut)
+		return fmt.Errorf("anchor check against %s failed (%d problem(s))", uri, failed)
+	}
+
+	fmt.Fprintf(out, "  ✓ %d checkpoint(s) in %s match the database and the local anchor file (latest id=%d)\n\n",
+		r.CheckedCheckpoints, uri, r.LatestCheckpoint)
+	return nil
+}
+
+func findingLine(f audit.BucketAnchorFinding) string {
+	if f.Checkpoint == 0 {
+		return f.Detail
+	}
+	return fmt.Sprintf("checkpoint id=%d: %s", f.Checkpoint, f.Detail)
 }
 
 // sanitizeDetailForCLI strips newlines from the detail

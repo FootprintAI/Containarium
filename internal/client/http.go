@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/runlog"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -200,7 +201,8 @@ type containerResponse struct {
 	PodmanEnabled        bool              `json:"podmanEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
 	GpuDevices           []string          `json:"gpuDevices"`
-	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
+	Isolation            string            `json:"isolation"`  // protojson enum name, e.g. ISOLATION_TYPE_VM
+	ToolAccess           string            `json:"toolAccess"` // protojson enum name, e.g. BOX_TOOL_ACCESS_NONE
 	MonitoringEnabled    bool              `json:"monitoringEnabled"`
 	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
 	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
@@ -225,6 +227,8 @@ type listContainersResponse struct {
 
 type createContainerResponse struct {
 	Container *containerResponse `json:"container"`
+	// DryRun echoes a validate-only request (#2925); Container is nil then.
+	DryRun bool `json:"dryRun"`
 }
 
 type getContainerResponse struct {
@@ -267,6 +271,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
 		IdleThresholdMinutes: c.IdleThresholdMinutes,
+		PodmanEnabled:        c.PodmanEnabled,
 	}
 
 	if c.Network != nil {
@@ -280,6 +285,11 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 
 	info.GPU = c.GpuDevice
 	info.GPUs = c.GpuDevices
+	if lvl, ok := pb.BoxToolAccess_value[c.ToolAccess]; ok {
+		if v, ok := toolaccess.ConfigValue(pb.BoxToolAccess(lvl)); ok {
+			info.ToolAccess = v
+		}
+	}
 
 	info.CreatedAt = parseCreatedAt(c.CreatedAt)
 
@@ -432,6 +442,37 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	return &info, nil
 }
 
+// ValidateCreate is GRPCClient.ValidateCreate over the REST API (#2925): it
+// POSTs req with dryRun set and requires the daemon to echo it. The body is the
+// request message itself (protojson, the camelCase names grpc-gateway accepts),
+// not a second hand-written copy of the create fields.
+func (c *HTTPClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
+	if !ok {
+		return fmt.Errorf("clone create request: unexpected type")
+	}
+	dry.DryRun = true
+	body, err := protojson.Marshal(dry)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", body)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	result, err := parseResponse[createContainerResponse](resp)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	if !result.DryRun {
+		return errDryRunNotHonoured
+	}
+	return nil
+}
+
 // ToggleAutoSleep writes the per-container auto-sleep opt-in
 // metadata via HTTP. See GRPCClient.ToggleAutoSleep for semantics.
 func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThresholdMinutes int32) (*pb.ToggleAutoSleepResponse, error) {
@@ -554,6 +595,49 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	}
 
 	out := &pb.SetContainerDeletePolicyResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container via the REST shim (#2944); BOX_TOOL_ACCESS_UNSPECIFIED
+// clears it. A 404 (a daemon too old to expose /v1/containers/{name}/tool-access)
+// is mapped to gRPC codes.Unimplemented so callers see the same soft-path across
+// both transports.
+func (c *HTTPClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/tool-access", url.PathEscape(username))
+	// The enum goes by its proto JSON name so grpc-gateway decodes it into the
+	// BoxToolAccess enum.
+	body, err := json.Marshal(setContainerToolAccessRequest{ToolAccess: level.String()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set tool access: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerToolAccess (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set tool access: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerToolAccessResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
@@ -2403,6 +2487,16 @@ func (c *HTTPClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.
 // ListLegalHolds lists the active legal holds via HTTP (admin only).
 func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
 	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
+}
+
+// GetRetentionReport reads the dry-run retention report via HTTP (admin
+// only); refresh sweeps now instead of returning the last periodic report.
+func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	path := "/v1/retention/report"
+	if refresh {
+		path += "?refresh=true"
+	}
+	return retentionHTTPCall(c, http.MethodGet, path, nil, &pb.GetRetentionReportResponse{}, "get retention report")
 }
 
 // SetLegalHold places a legal hold on an org via HTTP (admin only). The org

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/retention"
+	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -88,13 +92,31 @@ func retentionStartupStore(postgresConfigured bool, pg retention.Store) retentio
 	}
 }
 
+// retentionSweepInterval is how often the daemon recounts what a sweep would
+// remove. The report carries its generated_at, and refresh=true sweeps now.
+const retentionSweepInterval = time.Hour
+
+// newRetentionReporter builds the dry-run reporter over the retention store
+// and, when the daemon has a database pool, the Postgres sources.
+func newRetentionReporter(store retention.Store, pool *pgxpool.Pool) *retention.Reporter {
+	unswept := retention.ChainAndBundles()
+	var sources []retention.Source
+	if pool != nil {
+		sources = retentionpg.NewSources(pool)
+	} else {
+		unswept = append(unswept, retentionpg.NoDatabase()...)
+	}
+	return retention.NewReporter(retention.NewSweeper(store, sources, unswept))
+}
+
 // RetentionServer serves the retention policy and legal holds (#2875). Every
 // RPC is admin-only; changes are audited, and a failed audit write fails the
-// change. It deletes nothing.
+// change. It deletes nothing: GetRetentionReport only counts.
 type RetentionServer struct {
 	pb.UnimplementedRetentionServiceServer
-	store retention.Store
-	audit auditLogger
+	store    retention.Store
+	audit    auditLogger
+	reporter *retention.Reporter
 }
 
 func NewRetentionServer(store retention.Store) *RetentionServer {
@@ -103,6 +125,10 @@ func NewRetentionServer(store retention.Store) *RetentionServer {
 
 // SetStore sets the backing store at startup, before the server serves.
 func (s *RetentionServer) SetStore(store retention.Store) { s.store = store }
+
+// SetReporter wires the dry-run sweeper's reporter (#2876) at startup. With
+// none, GetRetentionReport is UNAVAILABLE.
+func (s *RetentionServer) SetReporter(r *retention.Reporter) { s.reporter = r }
 
 // SetAuditStore wires the audit store. With none, changes succeed and write
 // no entry (no Postgres, REST disabled, or an audit store that failed to
@@ -227,4 +253,18 @@ func (s *RetentionServer) ReleaseLegalHold(ctx context.Context, req *pb.ReleaseL
 		return nil, retentionStatus("release legal hold", err)
 	}
 	return &pb.ReleaseLegalHoldResponse{Hold: h}, nil
+}
+
+func (s *RetentionServer) GetRetentionReport(ctx context.Context, req *pb.GetRetentionReportRequest) (*pb.GetRetentionReportResponse, error) {
+	if _, err := s.requireRetentionAdmin(ctx); err != nil {
+		return nil, err
+	}
+	if s.reporter == nil {
+		return nil, status.Error(codes.Unavailable, "the retention sweeper is not running on this daemon")
+	}
+	rep, err := s.reporter.Report(ctx, req.GetRefresh())
+	if err != nil {
+		return nil, retentionStatus("get retention report", err)
+	}
+	return &pb.GetRetentionReportResponse{Report: rep}, nil
 }

@@ -2,17 +2,20 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 // GRPCClient wraps a gRPC connection to the containarium daemon
@@ -158,16 +161,14 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:                 container.Name,
-			Username:             container.Username,
-			SSHHost:              container.SshHost,
-			State:                container.State.String(),
-			Labels:               container.Labels,
-			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
-			MonitoringEnabled:    container.MonitoringEnabled,
-			AutoSleepEnabled:     container.AutoSleepEnabled,
-			IdleThresholdMinutes: container.IdleThresholdMinutes,
+			Name:         container.Name,
+			Username:     container.Username,
+			SSHHost:      container.SshHost,
+			State:        container.State.String(),
+			Labels:       container.Labels,
+			InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
+		applyProtoLifecycle(&info, container)
 
 		// Get IP address from network info
 		if container.Network != nil {
@@ -195,7 +196,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
-	req := newCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
 	resp, err := c.client.CreateContainer(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -231,10 +232,40 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	return info, nil
 }
 
-// newCreateContainerRequest builds the wire request for CreateContainer;
+// ValidateCreate asks the daemon to run every pre-flight check for req and stop
+// before provisioning anything (#2925). nil means the daemon would accept the
+// create; the error is the daemon's own rejection otherwise. `create --force`
+// calls it before deleting the existing box.
+//
+// A daemon that predates dry_run ignores the field and answers a real create,
+// so only a response that echoes dry_run counts. Anything else is an error:
+// treating it as "validated" would delete the box on an unchecked request.
+func (c *GRPCClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
+	if !ok {
+		return fmt.Errorf("clone create request: unexpected type")
+	}
+	dry.DryRun = true
+	resp, err := c.client.CreateContainer(ctx, dry)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	if !resp.GetDryRun() {
+		return errDryRunNotHonoured
+	}
+	return nil
+}
+
+// errDryRunNotHonoured is returned when a daemon answered a dry-run create
+// with a normal response: it predates the field.
+var errDryRunNotHonoured = errors.New("the daemon did not honour the dry run (it predates dry_run support); refusing to treat the request as validated")
+
+// NewCreateContainerRequest builds the wire request for CreateContainer;
 // pure, so what the CLI flags turn into is unit-testable (#2358 — labels
 // used to be dropped between the CLI and this request).
-func newCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
+func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -371,6 +402,20 @@ func (c *GRPCClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	return c.client.SetContainerDeletePolicy(ctx, &pb.SetContainerDeletePolicyRequest{
 		Name:         username,
 		DeletePolicy: policy,
+	})
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container (#2944); BOX_TOOL_ACCESS_UNSPECIFIED clears it. The error
+// is returned UNWRAPPED so a daemon too old to implement the RPC surfaces as
+// gRPC codes.Unimplemented.
+func (c *GRPCClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerToolAccess(ctx, &pb.SetContainerToolAccessRequest{
+		Name:       username,
+		ToolAccess: level,
 	})
 }
 
@@ -568,14 +613,12 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:                 container.Name,
-		Username:             container.Username,
-		State:                container.State.String(),
-		MonitoringEnabled:    container.MonitoringEnabled,
-		AutoSleepEnabled:     container.AutoSleepEnabled,
-		IdleThresholdMinutes: container.IdleThresholdMinutes,
-		Labels:               container.Labels,
+		Name:     container.Name,
+		Username: container.Username,
+		State:    container.State.String(),
+		Labels:   container.Labels,
 	}
+	applyProtoLifecycle(info, container)
 
 	if container.Network != nil {
 		info.IPAddress = container.Network.IpAddress
@@ -1334,6 +1377,14 @@ func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldRespons
 	})
 }
 
+// GetRetentionReport reads the dry-run retention report via gRPC (admin
+// only); refresh sweeps now instead of returning the last periodic report.
+func (c *GRPCClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	return retentionCall("get retention report", func(ctx context.Context) (*pb.GetRetentionReportResponse, error) {
+		return c.retentionClient.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{Refresh: refresh})
+	})
+}
+
 // ListApps lists all applications via gRPC
 func (c *GRPCClient) ListApps(username string, stateFilter pb.AppState) ([]*pb.App, int32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1984,4 +2035,16 @@ func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
+}
+
+// applyProtoLifecycle copies the box lifecycle flags a daemon reports, shared
+// by the list and get converters so they cannot drift (#2858).
+func applyProtoLifecycle(info *incus.ContainerInfo, c *pb.Container) {
+	info.MonitoringEnabled = c.MonitoringEnabled
+	info.AutoSleepEnabled = c.AutoSleepEnabled
+	info.IdleThresholdMinutes = c.IdleThresholdMinutes
+	info.PodmanEnabled = c.PodmanEnabled
+	if v, ok := toolaccess.ConfigValue(c.ToolAccess); ok {
+		info.ToolAccess = v
+	}
 }

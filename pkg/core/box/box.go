@@ -186,6 +186,7 @@ type BoxStatus struct {
 	StoppedAt                 time.Time
 	DeleteAfterStoppedSeconds int64
 	DeletePolicy              string // "protected" or "" (unprotected)
+	ToolAccess                string // "none", "build_tools", "full_sudo", or "" (none recorded)
 
 	// Stack is the software stack the box was created with. LXC only
 	// (user.containarium.stack); empty on K8s, which does not persist it, and
