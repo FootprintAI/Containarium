@@ -12679,6 +12679,10 @@
         "disableAutoSleep": {
           "type": "boolean",
           "description": "Opt out of auto-sleep at create (#2759). Meaningful only on a hosted\ncontrol plane that turns auto-sleep on by default for some orgs (for\nexample a seat-billed org defaulting to 30 minutes): true asks for a box\nwith NO idle-stop timer. A standalone daemon never enables auto-sleep\nunless idle_stop_minutes \u003e 0, so it ignores this field. Setting it\ntogether with idle_stop_minutes \u003e 0 is contradictory and rejected with\nInvalidArgument."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "Validate only (#2925). Runs every pre-flight check the create would run\n(bounds, stack id, TTL and idle-stop ranges, encryption wiring, pool\nplacement, ssh keys, image policy, CPU admission) and returns before\nanything is provisioned: no storage, no Box CR, no instance, no async\njob, and no CPU reservation is left behind. A rejection comes back as\nthe same error the real create would return; success comes back with\n`dry_run` set on the response. Its purpose is `create --force`, which\ndeletes the existing box first and must not do so for a request the\ndaemon would reject. It does not check whether the box already exists\n(a --force caller expects it to).\n\nA create bound for a peer backend is NOT forwarded: a peer that predates\nthis field would ignore it and really create the box. The response says\nthe peer's own checks were not run."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -12701,6 +12705,10 @@
         "rdpAddress": {
           "type": "string",
           "title": "RDP connection address (Windows VMs)"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "True when the request was a dry run (#2925) and nothing was created:\n`container` is unset. A client that asked for a dry run and gets false\nback is talking to a daemon that predates the field and really created\n(or tried to create) the box."
         }
       },
       "title": "CreateContainerResponse is the response from creating a container"
