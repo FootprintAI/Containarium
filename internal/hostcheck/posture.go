@@ -70,6 +70,8 @@ type posturePaths struct {
 	metadataBlockProbe func() (present bool, detail string, err error)
 	// nicGuardProbe reads the tenant-guard facts from Incus (nic_guard.go).
 	nicGuardProbe NICGuardProbe
+	// kernelRelease reads `uname -r`; nil means unknown (egress_prereq.go).
+	kernelRelease func() (string, error)
 }
 
 func defaultPosturePaths() posturePaths {
@@ -93,6 +95,7 @@ func defaultPosturePaths() posturePaths {
 			return hostharden.MetadataBlockPresent(hostharden.DefaultBridge)
 		},
 		nicGuardProbe: defaultNICGuardProbe,
+		kernelRelease: defaultEgressPrereqProbes().kernelRelease,
 	}
 }
 
@@ -121,6 +124,7 @@ func runPosture(p posturePaths) []Check {
 		tunnelTokenExposedCheck(p),
 		platformCPUWeightCheck(p),
 		nicGuardCheck(p),
+		kernelTCXCheck(p.kernelRelease),
 	}
 	for i := range checks {
 		checks[i].Kind = KindPosture
