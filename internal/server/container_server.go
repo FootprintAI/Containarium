@@ -622,7 +622,15 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// image, and a ZFS clone takes its key from where it is made (#1335).
 	var encPool string
 	var encRef zfskey.KeyRef
-	if req.GetEncrypted() {
+	if req.GetEncrypted() && req.GetDryRun() {
+		// Validate only (#2925): EnsureTenantStorage creates the tenant's
+		// encrypted dataset and pool, which a dry run must not do. What it
+		// would have refused for lack of wiring it is still refused for here,
+		// with the same error as the real path below.
+		if !s.encryption.enabled() {
+			return nil, errEncryptionNotWired
+		}
+	} else if req.GetEncrypted() {
 		encPool, encRef, err = s.encryption.EnsureTenantStorage(ctx, encryptionTenantFor(req))
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, err.Error())
@@ -632,11 +640,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		// the container on the daemon's default pool — unencrypted, reported
 		// as encrypted, which is precisely what #1294 refused to ship.
 		if encPool == "" {
-			return nil, status.Error(codes.FailedPrecondition,
-				"encrypted=true resolved no storage pool for this tenant: the daemon has key "+
-					"custody configured but no encryption storage wired, so the container would "+
-					"be created on the default pool without encryption. Refusing rather than "+
-					"delivering plaintext under an encryption guarantee")
+			return nil, errEncryptionNotWired
 		}
 	}
 
@@ -659,6 +663,16 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			}
 			if !peer.Healthy {
 				return nil, fmt.Errorf("backend %q is not healthy", req.BackendId)
+			}
+			if req.GetDryRun() {
+				// #2925: not forwarded. A peer that predates dry_run would
+				// ignore it and really create the box. What this daemon could
+				// check without the peer's catalog has passed above.
+				return &pb.CreateContainerResponse{
+					DryRun: true,
+					Message: fmt.Sprintf("Validated by this daemon only: the create is bound for backend %q, whose own checks "+
+						"(its stack catalog, image policy and capacity) were not run.", req.BackendId),
+				}, nil
 			}
 			// Forward to peer — extract auth token from context
 			authToken := extractAuthToken(ctx)
@@ -800,6 +814,18 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr
+	}
+
+	// Validate only (#2925): every check above has passed and nothing has been
+	// provisioned. Release the cores admission just reserved, or a dry run
+	// would block real creates for the reservation TTL. Not counted as a
+	// provisioning attempt (#1083), which starts below.
+	if req.GetDryRun() {
+		cpuRelease()
+		return &pb.CreateContainerResponse{
+			DryRun:  true,
+			Message: fmt.Sprintf("Dry run: a create for %s would be accepted. Nothing was created.", req.Username),
+		}, nil
 	}
 
 	// #1083: everything past this point is a genuine attempt to provision
