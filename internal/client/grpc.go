@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -369,6 +370,20 @@ func (c *GRPCClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	return c.client.SetContainerDeletePolicy(ctx, &pb.SetContainerDeletePolicyRequest{
 		Name:         username,
 		DeletePolicy: policy,
+	})
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container (#2944); BOX_TOOL_ACCESS_UNSPECIFIED clears it. The error
+// is returned UNWRAPPED so a daemon too old to implement the RPC surfaces as
+// gRPC codes.Unimplemented.
+func (c *GRPCClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerToolAccess(ctx, &pb.SetContainerToolAccessRequest{
+		Name:       username,
+		ToolAccess: level,
 	})
 }
 
@@ -1989,4 +2004,7 @@ func applyProtoLifecycle(info *incus.ContainerInfo, c *pb.Container) {
 	info.AutoSleepEnabled = c.AutoSleepEnabled
 	info.IdleThresholdMinutes = c.IdleThresholdMinutes
 	info.PodmanEnabled = c.PodmanEnabled
+	if v, ok := toolaccess.ConfigValue(c.ToolAccess); ok {
+		info.ToolAccess = v
+	}
 }

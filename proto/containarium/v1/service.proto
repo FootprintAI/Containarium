@@ -430,6 +430,23 @@ service ContainerService {
     };
   }
 
+  // SetContainerToolAccess records the tool-access level for platform-started
+  // (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+  // FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+  // user.containarium.tool_access, so it survives daemon restart with no
+  // separate store, and is read back on list/get as Container.tool_access.
+  rpc SetContainerToolAccess(SetContainerToolAccessRequest) returns (SetContainerToolAccessResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/tool-access"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Record the tool-access level for platform-started runs";
+      description: "Sets the container's tool-access level (#2944). Only platform-started (headless) agent runs are governed by it; the owner's own login is unaffected. UNSPECIFIED clears it.";
+      tags: "Container Operations";
+    };
+  }
+
   // SetContainerAttribution merges labels onto an EXISTING container's config
   // (cloud #746). The hosted control plane stamps attribution labels
   // (cloud_org_id / cloud_container_id / managed_by) at create time today; this

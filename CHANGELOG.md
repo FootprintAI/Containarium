@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Record a per-box tool-access level for platform-started runs** (#2944, slice 1a). New `SetContainerToolAccess` RPC (`POST /v1/containers/{name}/tool-access`), a `tool_access` field on the container view, and `containarium tool-access set|get|clear <username>` (levels `none`, `build-tools`, `full-sudo`). The level is stored on the Incus container config (`user.containarium.tool_access`), so it survives a daemon restart with no separate store; an absent or unrecognised value reads back as "none recorded" and never grants anything. This change only RECORDS the level: nothing reads it yet, so a platform-started run behaves exactly as before. Applying it to the run path (a separate unprivileged run user, a root-owned policy file, sudo only for `full-sudo`) follows in later slices.
+
 ### Changed
 
 - **Review follow-ups for the stack and podman status work** (#2858, #2859, #2860). `containarium` clients (REST and gRPC) now copy `podman_enabled` into the container info they return (the REST decode and the converters previously dropped it, so remote readers always saw `false`); a test pins that `create --force --stack <unknown>` fails on the stack before `--force` looks for or deletes the existing box (local mode); and the K8s backend is pinned to report `PodmanEnabled: true`. Known gap: a `--pool` create that placement routes to a peer backend is still validated against the receiving daemon's stack catalog, because the check runs before placement. Only an explicit `backend_id` is forwarded unvalidated. Boxes created through paths other than `Create` have no recorded podman flag and report `true`.

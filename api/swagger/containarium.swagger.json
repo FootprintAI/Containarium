@@ -3037,6 +3037,47 @@
         ]
       }
     },
+    "/v1/containers/{name}/tool-access": {
+      "post": {
+        "summary": "Record the tool-access level for platform-started runs",
+        "description": "Sets the container's tool-access level (#2944). Only platform-started (headless) agent runs are governed by it; the owner's own login is unaffected. UNSPECIFIED clears it.",
+        "operationId": "ContainerService_SetContainerToolAccess",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetContainerToolAccessResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "Container name — the bare username, matching the per-container RPC\nconvention (the handler appends \"-container\"; see SetContainerDeletePolicy).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetContainerToolAccessBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{name}/ttl": {
       "post": {
         "summary": "Schedule or clear a container's auto-delete TTL",
@@ -11106,6 +11147,17 @@
       "default": "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
       "description": "BoxRunStopSignal is the signal StopBoxRun actually sent.\n\n - BOX_RUN_STOP_SIGNAL_NONE: The run had already exited, so nothing was signaled."
     },
+    "BoxToolAccess": {
+      "type": "string",
+      "enum": [
+        "BOX_TOOL_ACCESS_UNSPECIFIED",
+        "BOX_TOOL_ACCESS_NONE",
+        "BOX_TOOL_ACCESS_BUILD_TOOLS",
+        "BOX_TOOL_ACCESS_FULL_SUDO"
+      ],
+      "default": "BOX_TOOL_ACCESS_UNSPECIFIED",
+      "description": "BoxToolAccess is what a platform-started (unattended, headless) agent run on\na box may do without a person present (#2944). It governs only those runs;\nthe owner's own login and `containarium code run` over SSH are unaffected.\nBacked by the user.containarium.tool_access Incus config key\n(ToolAccessKey in pkg/core/incus). Only a recorded level changes behaviour:\nUNSPECIFIED (key absent) keeps today's run path.\n\n - BOX_TOOL_ACCESS_UNSPECIFIED: No level recorded (the key is absent). Platform-started runs behave exactly\nas before this setting existed. Setting it clears a recorded level.\n - BOX_TOOL_ACCESS_NONE: Nothing that needs approval.\n - BOX_TOOL_ACCESS_BUILD_TOOLS: The platform-managed build and test toolchains.\n - BOX_TOOL_ACCESS_FULL_SUDO: Passwordless sudo for the unprivileged run user. An explicit, per-box\nchoice; software installed this way is the owner's to maintain."
+    },
     "BridgeDNSState": {
       "type": "string",
       "enum": [
@@ -12197,6 +12249,10 @@
         "isolation": {
           "$ref": "#/definitions/IsolationType",
           "description": "How the box is isolated from the host: CONTAINER (LXC) or VM\n(QEMU/KVM), read back from the instance itself. UNSPECIFIED when the\nbackend does not report it."
+        },
+        "toolAccess": {
+          "$ref": "#/definitions/BoxToolAccess",
+          "description": "The tool-access level recorded for platform-started runs (#2944), read\nback from the instance config. UNSPECIFIED when none is recorded."
         }
       }
     },
@@ -19362,6 +19418,26 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetContainerToolAccessBody": {
+      "type": "object",
+      "properties": {
+        "toolAccess": {
+          "$ref": "#/definitions/BoxToolAccess",
+          "description": "Target level. BOX_TOOL_ACCESS_UNSPECIFIED clears a recorded level."
+        }
+      },
+      "description": "SetContainerToolAccessRequest records the tool-access level for\nplatform-started runs on a container (#2944)."
+    },
+    "SetContainerToolAccessResponse": {
+      "type": "object",
+      "properties": {
+        "toolAccess": {
+          "$ref": "#/definitions/BoxToolAccess",
+          "description": "The tool-access level now recorded on the container."
+        }
+      },
+      "description": "SetContainerToolAccessResponse reports the level now recorded."
     },
     "SetGuardrailBaselineModeRequest": {
       "type": "object",

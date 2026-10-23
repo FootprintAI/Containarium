@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/runlog"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -200,7 +201,8 @@ type containerResponse struct {
 	PodmanEnabled        bool              `json:"podmanEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
 	GpuDevices           []string          `json:"gpuDevices"`
-	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
+	Isolation            string            `json:"isolation"`  // protojson enum name, e.g. ISOLATION_TYPE_VM
+	ToolAccess           string            `json:"toolAccess"` // protojson enum name, e.g. BOX_TOOL_ACCESS_NONE
 	MonitoringEnabled    bool              `json:"monitoringEnabled"`
 	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
 	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
@@ -281,6 +283,11 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 
 	info.GPU = c.GpuDevice
 	info.GPUs = c.GpuDevices
+	if lvl, ok := pb.BoxToolAccess_value[c.ToolAccess]; ok {
+		if v, ok := toolaccess.ConfigValue(pb.BoxToolAccess(lvl)); ok {
+			info.ToolAccess = v
+		}
+	}
 
 	info.CreatedAt = parseCreatedAt(c.CreatedAt)
 
@@ -555,6 +562,49 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	}
 
 	out := &pb.SetContainerDeletePolicyResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container via the REST shim (#2944); BOX_TOOL_ACCESS_UNSPECIFIED
+// clears it. A 404 (a daemon too old to expose /v1/containers/{name}/tool-access)
+// is mapped to gRPC codes.Unimplemented so callers see the same soft-path across
+// both transports.
+func (c *HTTPClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/tool-access", url.PathEscape(username))
+	// The enum goes by its proto JSON name so grpc-gateway decodes it into the
+	// BoxToolAccess enum.
+	body, err := json.Marshal(setContainerToolAccessRequest{ToolAccess: level.String()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set tool access: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerToolAccess (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set tool access: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerToolAccessResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}

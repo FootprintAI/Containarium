@@ -41,6 +41,7 @@ const (
 	ContainerService_ToggleAutoSleep_FullMethodName           = "/containarium.v1.ContainerService/ToggleAutoSleep"
 	ContainerService_SetContainerTTL_FullMethodName           = "/containarium.v1.ContainerService/SetContainerTTL"
 	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
+	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
@@ -241,6 +242,12 @@ type ContainerServiceClient interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(ctx context.Context, in *SetContainerDeletePolicyRequest, opts ...grpc.CallOption) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerToolAccess records the tool-access level for platform-started
+	// (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+	// FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+	// user.containarium.tool_access, so it survives daemon restart with no
+	// separate store, and is read back on list/get as Container.tool_access.
+	SetContainerToolAccess(ctx context.Context, in *SetContainerToolAccessRequest, opts ...grpc.CallOption) (*SetContainerToolAccessResponse, error)
 	// SetContainerAttribution merges labels onto an EXISTING container's config
 	// (cloud #746). The hosted control plane stamps attribution labels
 	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -651,6 +658,16 @@ func (c *containerServiceClient) SetContainerDeletePolicy(ctx context.Context, i
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetContainerDeletePolicyResponse)
 	err := c.cc.Invoke(ctx, ContainerService_SetContainerDeletePolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetContainerToolAccess(ctx context.Context, in *SetContainerToolAccessRequest, opts ...grpc.CallOption) (*SetContainerToolAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetContainerToolAccessResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetContainerToolAccess_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1278,6 +1295,12 @@ type ContainerServiceServer interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerToolAccess records the tool-access level for platform-started
+	// (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+	// FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+	// user.containarium.tool_access, so it survives daemon restart with no
+	// separate store, and is read back on list/get as Container.tool_access.
+	SetContainerToolAccess(context.Context, *SetContainerToolAccessRequest) (*SetContainerToolAccessResponse, error)
 	// SetContainerAttribution merges labels onto an EXISTING container's config
 	// (cloud #746). The hosted control plane stamps attribution labels
 	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -1539,6 +1562,9 @@ func (UnimplementedContainerServiceServer) SetContainerTTL(context.Context, *Set
 }
 func (UnimplementedContainerServiceServer) SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerDeletePolicy not implemented")
+}
+func (UnimplementedContainerServiceServer) SetContainerToolAccess(context.Context, *SetContainerToolAccessRequest) (*SetContainerToolAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetContainerToolAccess not implemented")
 }
 func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerAttribution not implemented")
@@ -2094,6 +2120,24 @@ func _ContainerService_SetContainerDeletePolicy_Handler(srv interface{}, ctx con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).SetContainerDeletePolicy(ctx, req.(*SetContainerDeletePolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetContainerToolAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetContainerToolAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetContainerToolAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetContainerToolAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetContainerToolAccess(ctx, req.(*SetContainerToolAccessRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3038,6 +3082,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetContainerDeletePolicy",
 			Handler:    _ContainerService_SetContainerDeletePolicy_Handler,
+		},
+		{
+			MethodName: "SetContainerToolAccess",
+			Handler:    _ContainerService_SetContainerToolAccess_Handler,
 		},
 		{
 			MethodName: "SetContainerAttribution",

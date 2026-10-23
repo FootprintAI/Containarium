@@ -613,6 +613,12 @@ type ContainerInfo struct {
 	// single-box delete can remove it. Empty = unprotected (today's default).
 	DeletePolicy string
 
+	// ToolAccess mirrors user.containarium.tool_access (#2944): the level
+	// recorded for platform-started agent runs (ToolAccessNone,
+	// ToolAccessBuildTools, ToolAccessFullSudo). Empty = none recorded, and
+	// those runs keep today's behaviour.
+	ToolAccess string
+
 	// Image is a human-readable description of the image the container was
 	// launched from (Incus's auto-populated image.description config key,
 	// falling back to the volatile.base_image fingerprint). Empty if Incus
@@ -696,6 +702,20 @@ const DeletePolicyKey = "user.containarium.delete_policy"
 // contract: operators can set it directly (`incus config set <box>
 // user.containarium.delete_policy protected`) and every deletion path honors it.
 const DeletePolicyProtected = "protected"
+
+// ToolAccessKey is the Incus config key carrying the tool-access level for
+// platform-started (unattended) agent runs on a box (#2944). Absent = none
+// recorded: those runs keep today's behaviour. Operators can set it directly
+// (`incus config set <box> user.containarium.tool_access build_tools`).
+const ToolAccessKey = "user.containarium.tool_access"
+
+// The recorded tool-access values. A stable string contract, like
+// DeletePolicyProtected; the proto enum BoxToolAccess is the typed API.
+const (
+	ToolAccessNone       = "none"
+	ToolAccessBuildTools = "build_tools"
+	ToolAccessFullSudo   = "full_sudo"
+)
 
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
@@ -1245,6 +1265,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
+			ToolAccess:                inst.Config[ToolAccessKey],
 			Stack:                     inst.Config[StackKey],
 			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
@@ -1329,6 +1350,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
+		ToolAccess:           inst.Config[ToolAccessKey],
 		Stack:                inst.Config[StackKey],
 		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
