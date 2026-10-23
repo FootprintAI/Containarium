@@ -11121,6 +11121,14 @@
         "sessionId": {
           "type": "string",
           "description": "The engine's own session identifier (#2193), read back from the box\nshortly after the run starts: Claude Code's session id, or pi's session\nfile name. Empty when the engine exposes none, or when discovery hasn't\nfound one yet (a race with a just-started run — poll ListBoxRuns again).\nPass it to StartBoxRun's session_id to resume this exact conversation."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxRunTool"
+          },
+          "description": "The tools available to this run, measured on the box by the run's own wrapper\n(a probe before the engine starts and one after it ends, written to a sidecar\nwhatever the engine's exit status), never reported by the agent. Empty for a\nrun with no readable sidecar (an older run, or a box without the probe)."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -11146,6 +11154,49 @@
       ],
       "default": "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
       "description": "BoxRunStopSignal is the signal StopBoxRun actually sent.\n\n - BOX_RUN_STOP_SIGNAL_NONE: The run had already exited, so nothing was signaled."
+    },
+    "BoxRunTool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The tool's name from the daemon's fixed allowlist (for example \"go\", \"buf\")."
+        },
+        "version": {
+          "type": "string",
+          "description": "The first line of the tool's own version command, reduced to printable ASCII\nand length-capped (the value ends up in public pull requests). Empty when the\ntool printed nothing usable."
+        },
+        "provenance": {
+          "$ref": "#/definitions/BoxRunToolProvenance",
+          "description": "How the tool compares between the probe before the run and the one after it."
+        },
+        "location": {
+          "$ref": "#/definitions/BoxRunToolLocation",
+          "description": "Where the resolved binary lives, as a class only (never a filesystem path)."
+        }
+      },
+      "description": "BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says\nwhat was AVAILABLE, not what was USED: knowing use would need process tracing."
+    },
+    "BoxRunToolLocation": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_TOOL_LOCATION_UNSPECIFIED",
+        "BOX_RUN_TOOL_LOCATION_SYSTEM",
+        "BOX_RUN_TOOL_LOCATION_HOME"
+      ],
+      "default": "BOX_RUN_TOOL_LOCATION_UNSPECIFIED",
+      "description": "BoxRunToolLocation classifies where a tool's binary resolved.\n\n - BOX_RUN_TOOL_LOCATION_SYSTEM: Outside the run user's home: part of the box image or its system packages.\n - BOX_RUN_TOOL_LOCATION_HOME: Under the run user's home: installed by the owner or by a run."
+    },
+    "BoxRunToolProvenance": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED",
+        "BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START",
+        "BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN",
+        "BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN"
+      ],
+      "default": "BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED",
+      "description": "BoxRunToolProvenance compares a tool across the two probes of one run.\n\n - BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START: Present at the start with the same version at the end.\n - BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN: Not on the PATH at the start, found at the end: installed during the run.\n - BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN: On the PATH at both ends, but a different version or a different location."
     },
     "BoxToolAccess": {
       "type": "string",
