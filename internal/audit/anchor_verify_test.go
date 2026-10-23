@@ -533,3 +533,32 @@ func TestVerifyAnchorsAgainstBucket_BelowTheBaseTheBucketAndLocalFileStillAgree(
 		t.Fatalf("a tampered local copy of a purged checkpoint must still fail, got %v", findingKinds(r.Failures))
 	}
 }
+
+// #2989: with the local anchor file empty, the bucket holds nothing but an
+// object planted below the chain base. The database cannot contradict it (the
+// rows are gone) and there is no local record to compare it with, so the
+// missing-locally rule is the only thing that can fail it.
+func TestVerifyAnchorsAgainstBucket_PlantedObjectBelowTheBaseWithAnEmptyLocalFileFails(t *testing.T) {
+	ctx := context.Background()
+	f, chain := newPurgedFixture(t, 40, 15)
+
+	// Control: nothing anchored anywhere is ErrNoAnchor, not a pass or a fail,
+	// so the failure below is caused by the planted object alone.
+	if _, err := VerifyAnchorsAgainstBucket(ctx, chain, f.file, f.bucket); !errors.Is(err, ErrNoAnchor) {
+		t.Fatalf("control: want ErrNoAnchor with nothing anchored, got %v", err)
+	}
+
+	if err := f.bucket.PublishRoot(ctx, 3, "forged-root"); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+	r, err := VerifyAnchorsAgainstBucket(ctx, chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if r.OK() {
+		t.Fatalf("an object planted below the chain base passed with an empty local file; warnings=%v", findingKinds(r.Warnings))
+	}
+	if !hasFinding(r.Failures, FindingMissingLocally, 3) {
+		t.Fatalf("want a missing-locally failure at checkpoint 3, got %v", findingKinds(r.Failures))
+	}
+}
