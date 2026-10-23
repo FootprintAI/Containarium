@@ -134,6 +134,8 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	stderrPath := dir + "/" + name + ".stderr.log"
 	exitPath := dir + "/" + name + ".exit"
 	sessionPath := dir + "/" + name + ".session"
+	toolsPath := dir + "/" + name + ".tools"
+	toolsTmp := toolsPath + ".tmp"
 
 	redirect := ">" + q(logPath) + " 2>&1"
 	if sp.structured {
@@ -141,7 +143,12 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		// The result object carries the conversation's own session_id; the
 		// daemon decodes it (top-level key only) when listing the run.
 	}
-	inner := "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+	// The toolchain report (#2954): a probe before the engine and one after it, in the
+	// run's own shell, so it is written whatever the engine's exit status and costs no
+	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
+	// finished also sees its tools.
+	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+		boxRunToolsPostProbe(toolsTmp, toolsPath) +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
 
@@ -154,7 +161,7 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + "\n" +
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
 		"cd " + q(sp.home) + " 2>/dev/null || true\n"
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
@@ -202,7 +209,7 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	q := shellSingleQuote
 	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
 	var b strings.Builder
-	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap"} {
+	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
 		from := q(dir + "/" + name + "." + ext)
 		to := q(dir + "/" + name + suffix + "." + ext)
 		fmt.Fprintf(&b, "[ -e %s ] && mv -f %s %s 2>/dev/null; ", from, from, to)
