@@ -73,6 +73,28 @@ type Removal struct {
 // Its error stops the sweep: nothing is removed without its audit entry.
 type Auditor func(ctx context.Context, rep *pb.RetentionReport) error
 
+// PurgeResult is what a prefix purge of a chained store did, for the second
+// audit entry (#2979). The Auditor entry is written before anything is removed,
+// so it can name only the base the purge started from; the base the purge
+// ended on exists only afterwards, and this is how it reaches the log. Ids and
+// counts only, never record content.
+type PurgeResult struct {
+	Store string
+	// PreviousBaseID is the chain base before the purge, 0 when there was none.
+	PreviousBaseID int64
+	// BaseID is the chain base after the purge.
+	BaseID int64
+	// RowsRemoved is the number of rows this purge removed.
+	RowsRemoved int64
+	// ByClass is RowsRemoved per class.
+	ByClass map[pb.RetentionClass]int64
+}
+
+// ResultAuditor records a PurgeResult after the rows are gone. The purge is
+// already committed when it runs, so its error cannot undo it: it is noted on
+// the report entry and logged, and the sweep still succeeds.
+type ResultAuditor func(ctx context.Context, r PurgeResult) error
+
 // Unswept is a store the sweeper lists but does not count, with why.
 type Unswept struct {
 	Class pb.RetentionClass
@@ -103,14 +125,19 @@ type Sweeper struct {
 	sources []Source
 	unswept []Unswept
 	// prefixes are the stores swept as one ordered history (#2878).
-	prefixes []PrefixSource
-	audit    Auditor
-	now      func() time.Time
+	prefixes    []PrefixSource
+	audit       Auditor
+	resultAudit ResultAuditor
+	now         func() time.Time
 }
 
 // SetAuditor wires the audit entry an enforced sweep writes. With none, an
 // enforced sweep writes no entry (no audit store on this daemon).
 func (s *Sweeper) SetAuditor(a Auditor) { s.audit = a }
+
+// SetResultAuditor wires the entry written after a prefix purge removed rows
+// (#2979). With none, no result entry is written.
+func (s *Sweeper) SetResultAuditor(a ResultAuditor) { s.resultAudit = a }
 
 func NewSweeper(store Store, sources []Source, unswept []Unswept) *Sweeper {
 	return &Sweeper{store: store, sources: sources, unswept: unswept, now: time.Now}
@@ -372,6 +399,14 @@ func (s *Sweeper) removePrefix(ctx context.Context, cp countedPrefix, heldOrgs [
 		}
 		return
 	}
+	// The base the purge starts from, read before the loop below overwrites it.
+	var previousBase int64
+	for _, e := range cp.entries {
+		if b := e.GetChainBase(); b != nil {
+			previousBase = b.GetBaseId()
+			break
+		}
+	}
 	res, err := cp.src.RemovePrefix(ctx, cp.cutoffs, heldOrgs, MaxRemovePerStore)
 	for class, e := range cp.entries {
 		// Rows may have gone before a failure; report them.
@@ -385,6 +420,38 @@ func (s *Sweeper) removePrefix(ctx context.Context, cp countedPrefix, heldOrgs [
 			e.Note = err.Error()
 		case res.Skipped != "":
 			e.Note = "not removed: " + res.Skipped
+		}
+	}
+	s.recordPurge(ctx, cp, res, previousBase)
+}
+
+// recordPurge writes the result entry of a prefix purge that removed rows
+// (#2979). It runs after the removal, so a failure cannot undo the purge: it is
+// logged and noted on the store's entries, and the sweep carries on. Rows that
+// went before an error count too, because the chain base has moved past them.
+func (s *Sweeper) recordPurge(ctx context.Context, cp countedPrefix, res PrefixRemoval, previousBase int64) {
+	var removed int64
+	for _, n := range res.RemovedByClass {
+		removed += n
+	}
+	if removed == 0 || res.Base == nil || s.resultAudit == nil {
+		return
+	}
+	err := s.resultAudit(ctx, PurgeResult{
+		Store: cp.src.Store(), PreviousBaseID: previousBase, BaseID: res.Base.GetBaseId(),
+		RowsRemoved: removed, ByClass: res.RemovedByClass,
+	})
+	if err == nil {
+		return
+	}
+	log.Printf("[retention] %s purge removed %d rows (chain base now %d) but its retention.sweep.result entry could not be written: %v",
+		cp.src.Store(), removed, res.Base.GetBaseId(), err)
+	note := fmt.Sprintf("rows were removed, but the retention.sweep.result entry could not be written: %v", err)
+	for _, e := range cp.entries {
+		if e.GetNote() != "" {
+			e.Note += "; " + note
+		} else {
+			e.Note = note
 		}
 	}
 }
@@ -418,6 +485,10 @@ func NewReporter(s *Sweeper) *Reporter { return &Reporter{sweeper: s} }
 
 // SetAuditor wires the audit entry of an enforced sweep (see Sweeper.SetAuditor).
 func (r *Reporter) SetAuditor(a Auditor) { r.sweeper.SetAuditor(a) }
+
+// SetResultAuditor wires the entry written after a prefix purge (see
+// Sweeper.SetResultAuditor).
+func (r *Reporter) SetResultAuditor(a ResultAuditor) { r.sweeper.SetResultAuditor(a) }
 
 // AddPrefixSource wires a PrefixSource into the reporter's sweeper (see
 // Sweeper.AddPrefixSource). Call it before Run.
