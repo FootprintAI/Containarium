@@ -135,6 +135,7 @@ type NetworkPolicyEnforcer struct {
 	ipTenantInstalled map[[4]byte]uint32                  // ip_tenant entries currently in the map (#923: converge deletes)
 	running           bool                                // the BPF program is loaded (Start succeeded, Stop not yet called)
 	applied           map[string]tenantApplied            // per-tenant state the last reconcile pass loaded; nil until a pass completes
+	appliedAt         time.Time                           // when the pass that produced applied ended
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -466,6 +467,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 func (e *NetworkPolicyEnforcer) Stop() {
 	e.mu.Lock()
 	e.running = false
+	// A later Start reports "not reconciled" until its own first pass.
+	e.applied = nil
+	e.appliedAt = time.Time{}
 	e.mu.Unlock()
 	if e.cancel != nil {
 		e.cancel()
@@ -819,17 +823,18 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass
 	// actually wrote, never from the stored request.
-	e.recordApplied(appliedFromPass(views, plan, loaded, policies, time.Now()))
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies), time.Now())
 	return nil
 }
 
 // recordApplied stores one reconcile pass's per-tenant applied state.
-func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied) {
+func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied, at time.Time) {
 	if a == nil {
 		a = map[string]tenantApplied{}
 	}
 	e.mu.Lock()
 	e.applied = a
+	e.appliedAt = at
 	e.mu.Unlock()
 }
 
@@ -840,7 +845,7 @@ func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied) {
 func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil}
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval}
 	if !snap.Running {
 		return appliedSnapshot{}
 	}

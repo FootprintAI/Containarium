@@ -66,7 +66,7 @@ type NetworkPolicyServiceClient interface {
 	PlanNetworkPolicy(ctx context.Context, in *PlanNetworkPolicyRequest, opts ...grpc.CallOption) (*PlanNetworkPolicyResponse, error)
 	// GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
 	// the kernel for a tenant: the effective modes after the host's enforce
-	// guard, when it was last applied, whether enforcement is armed here, and the
+	// guard, when it was last reconciled, whether enforcement is armed here, and the
 	// traffic the eBPF program does not cover. It reads the applied BPF state,
 	// not the stored policy, and says unknown when it cannot tell. Read-only.
 	GetNetworkPolicyStatus(ctx context.Context, in *GetNetworkPolicyStatusRequest, opts ...grpc.CallOption) (*GetNetworkPolicyStatusResponse, error)
@@ -225,7 +225,7 @@ type NetworkPolicyServiceServer interface {
 	PlanNetworkPolicy(context.Context, *PlanNetworkPolicyRequest) (*PlanNetworkPolicyResponse, error)
 	// GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
 	// the kernel for a tenant: the effective modes after the host's enforce
-	// guard, when it was last applied, whether enforcement is armed here, and the
+	// guard, when it was last reconciled, whether enforcement is armed here, and the
 	// traffic the eBPF program does not cover. It reads the applied BPF state,
 	// not the stored policy, and says unknown when it cannot tell. Read-only.
 	GetNetworkPolicyStatus(context.Context, *GetNetworkPolicyStatusRequest) (*GetNetworkPolicyStatusResponse, error)

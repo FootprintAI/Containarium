@@ -5235,7 +5235,7 @@
     "/v1/network-policies/{tenant}/status": {
       "get": {
         "summary": "Get network policy status",
-        "description": "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last applied time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.",
+        "description": "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last reconcile time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.",
         "operationId": "NetworkPolicyService_GetNetworkPolicyStatus",
         "responses": {
           "200": {
@@ -17224,10 +17224,12 @@
         "NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED",
         "NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING",
         "NETWORK_POLICY_APPLIED_STATE_NOT_LOADED",
-        "NETWORK_POLICY_APPLIED_STATE_LOADED"
+        "NETWORK_POLICY_APPLIED_STATE_LOADED",
+        "NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED",
+        "NETWORK_POLICY_APPLIED_STATE_STALE"
       ],
       "default": "NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED",
-      "description": "NetworkPolicyAppliedState says whether this daemon has a tenant's policy\nloaded, and so whether the effective modes can be read at all.\n\n - NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED: The daemon cannot tell (e.g. the enforcer is running but has not yet\ncompleted a reconcile pass). Effective modes are UNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING: No eBPF enforcer is running on this daemon (not configured, or it failed\nto load), so nothing is enforced or observed. Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_NOT_LOADED: The enforcer is running but no running box of this tenant has a policy\nloaded (no running boxes, or none could be attached). Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_LOADED: At least one of the tenant's running boxes has its policy loaded; the\neffective modes are what the kernel holds."
+      "description": "NetworkPolicyAppliedState says whether this daemon has a tenant's policy\nloaded, and so whether the effective modes can be read at all.\n\n - NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED: The daemon cannot tell (e.g. the enforcer is running but has not yet\ncompleted a reconcile pass). Effective modes are UNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING: No eBPF enforcer is running on this daemon (not configured, or it failed\nto load), so nothing is enforced or observed. Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_NOT_LOADED: The enforcer is running but no running box of this tenant has a policy\nloaded (no running boxes, or none could be attached). Effective modes are\nUNSPECIFIED.\n - NETWORK_POLICY_APPLIED_STATE_LOADED: Every running box of the tenant has its policy loaded; the effective\nmodes are what the kernel holds for all of them.\n - NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED: Some, but not all, of the tenant's running boxes have the policy loaded\n(boxes_not_loaded \u003e 0). The effective modes are what the kernel holds for\nthe loaded boxes only; the traffic of the other boxes is not policed, so\nthe tenant is NOT fully covered.\n - NETWORK_POLICY_APPLIED_STATE_STALE: The last completed reconcile pass is too old to trust (older than three\nreconcile intervals): the reconciler is stalled, e.g. every pass fails\nto read the containers or the policy store. What the kernel holds now is\nunknown, so the effective modes and box counts are UNSPECIFIED;\nlast_reconciled_at shows how old the last good pass is."
     },
     "NetworkPolicyDenyRule": {
       "type": "object",
@@ -17291,7 +17293,7 @@
         },
         "state": {
           "$ref": "#/definitions/NetworkPolicyAppliedState",
-          "description": "Whether the policy is loaded here; the fields below are only meaningful\nwhen it is LOADED."
+          "description": "Whether the policy is loaded here; the modes below are only meaningful\nwhen it is LOADED or PARTIALLY_LOADED (for PARTIALLY_LOADED they cover\nthe loaded boxes only)."
         },
         "effectiveMode": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
@@ -17301,10 +17303,10 @@
           "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
           "description": "Mode the kernel applies to the egress allow-list, after the host's\nenforce guard. UNSPECIFIED = unknown."
         },
-        "lastAppliedAt": {
+        "lastReconciledAt": {
           "type": "string",
           "format": "date-time",
-          "description": "End of the last reconcile pass that wrote this tenant's config into the\nkernel. Unset when not LOADED."
+          "description": "End of the last successful reconcile pass on this daemon. Passes run\nabout every 10 seconds (and on container events) and rewrite the kernel\nconfig each time, so this is refreshed continuously: it is NOT the time\nthe policy last changed. A value older than a few reconcile intervals\nmeans the reconciler is stalled; past three intervals the daemon reports\nSTALE. Unset when no pass has completed (or the enforcer is not running)."
         },
         "enforcementArmed": {
           "type": "boolean",

@@ -24,7 +24,6 @@ type tenantApplied struct {
 	BoxesLoaded    int   // running boxes whose config was written and program attached
 	BoxesNotLoaded int   // running boxes with no loaded config (no veth, write or attach failed)
 	HasDomains     bool  // the loaded allow-list includes resolved egress_domains
-	AppliedAt      time.Time
 }
 
 // appliedSnapshot is the enforcer's answer for one tenant.
@@ -33,7 +32,15 @@ type appliedSnapshot struct {
 	Reconciled bool // at least one reconcile pass has applied the maps
 	Found      bool // the last pass saw a running box of this tenant
 	Tenant     tenantApplied
+	// ReconciledAt is when the last completed pass ended; Interval is the
+	// enforcer's reconcile interval, which decides when that pass is stale.
+	ReconciledAt time.Time
+	Interval     time.Duration
 }
+
+// staleAfterPasses is how many reconcile intervals the last completed pass may
+// age before the status stops trusting it.
+const staleAfterPasses = 3
 
 // appliedStateSource is the slice of the enforcer GetNetworkPolicyStatus reads.
 // *NetworkPolicyEnforcer satisfies it.
@@ -45,7 +52,7 @@ type appliedStateSource interface {
 // the plan it applied and, per planned veth, whether the config write and the
 // attach both succeeded. A running box without a resolved veth never reaches
 // the plan's veth map, so it is counted as not loaded from the views.
-func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, now time.Time) map[string]tenantApplied {
+func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
 		if !v.Running {
@@ -56,7 +63,6 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 		if v.HasVeth && planned && loaded[v.Ifindex] {
 			a.Mode, a.EgressMode = cfg.Mode, cfg.EgressMode
 			a.BoxesLoaded++
-			a.AppliedAt = now
 			a.HasDomains = len(policies[v.Tenant].EgressDomains) > 0
 		} else {
 			a.BoxesNotLoaded++
@@ -75,6 +81,14 @@ func (s *NetworkPolicyServer) SetEnforcementArmed(armed bool) { s.enforceArmed =
 // enforcer as not running.
 func (s *NetworkPolicyServer) SetAppliedStateSource(src appliedStateSource) { s.applied = src }
 
+// now is the status clock; tests replace clock.
+func (s *NetworkPolicyServer) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
+}
+
 // GetNetworkPolicyStatus reports what this daemon has loaded for a tenant. It
 // never falls back to the stored policy: a state it cannot read is reported as
 // unknown (UNSPECIFIED modes).
@@ -90,10 +104,10 @@ func (s *NetworkPolicyServer) GetNetworkPolicyStatus(ctx context.Context, req *p
 	if s.applied != nil {
 		snap = s.applied.AppliedState(tenant)
 	}
-	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed)}, nil
+	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed, s.now())}, nil
 }
 
-func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool) *pb.NetworkPolicyStatus {
+func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time.Time) *pb.NetworkPolicyStatus {
 	st := &pb.NetworkPolicyStatus{
 		Tenant:           tenant,
 		EnforcementArmed: armed,
@@ -108,6 +122,19 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool) *pb.Netw
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED
 		return st
 	}
+	// A pass completed: its time is reported in every state below, so an
+	// operator can see how old the record is.
+	st.LastReconciledAt = timestamppb.New(snap.ReconciledAt)
+	// Failing passes leave the last record in place; past a few intervals it
+	// no longer says what the kernel holds (boxes may have started since).
+	interval := snap.Interval
+	if interval <= 0 {
+		interval = defaultNetPolicyReconcileInterval
+	}
+	if now.Sub(snap.ReconciledAt) > staleAfterPasses*interval {
+		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE
+		return st
+	}
 	a := snap.Tenant
 	if snap.Found {
 		st.BoxesLoaded = uint32(max(a.BoxesLoaded, 0))       // #nosec G115 -- clamped, box counts are small
@@ -117,7 +144,12 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool) *pb.Netw
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED
 		return st
 	}
+	// LOADED only when every running box is covered; otherwise the modes are
+	// true for the loaded boxes alone.
 	st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED
+	if a.BoxesNotLoaded > 0 {
+		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED
+	}
 	st.EffectiveMode = bpfModeToProto(a.Mode)
 	// A 0 egress byte is "follow mode" in the program (#2970), so the kernel
 	// applies the mode byte to the allow-list too.
@@ -126,7 +158,6 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool) *pb.Netw
 		egress = a.Mode
 	}
 	st.EffectiveEgressMode = bpfModeToProto(egress)
-	st.LastAppliedAt = timestamppb.New(a.AppliedAt)
 	if a.HasDomains {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG)
 	}

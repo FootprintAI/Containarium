@@ -16,7 +16,7 @@ import (
 func TestDecodeStatus_GatewayJSON(t *testing.T) {
 	raw := []byte(`{"status":{"tenant":"acme","state":"NETWORK_POLICY_APPLIED_STATE_LOADED",
 		"effectiveMode":"NETWORK_POLICY_MODE_LOG_ONLY","effectiveEgressMode":"NETWORK_POLICY_MODE_ENFORCE",
-		"lastAppliedAt":"2026-10-23T10:00:00Z","enforcementArmed":false,"boxesLoaded":2,"boxesNotLoaded":1,
+		"lastReconciledAt":"2026-10-23T10:00:00Z","enforcementArmed":false,"boxesLoaded":2,"boxesNotLoaded":1,
 		"uncoveredPaths":["NETWORK_POLICY_UNCOVERED_PATH_IPV6","NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG"],
 		"aFieldFromANewerDaemon":true}}`)
 	s, err := decodeStatus(raw)
@@ -29,8 +29,8 @@ func TestDecodeStatus_GatewayJSON(t *testing.T) {
 	if s.GetEffectiveEgressMode() != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE {
 		t.Errorf("effective egress mode = %v", s.GetEffectiveEgressMode())
 	}
-	if !s.GetLastAppliedAt().AsTime().Equal(time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)) {
-		t.Errorf("last_applied_at = %v", s.GetLastAppliedAt())
+	if !s.GetLastReconciledAt().AsTime().Equal(time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("last_reconciled_at = %v", s.GetLastReconciledAt())
 	}
 }
 
@@ -42,14 +42,14 @@ func TestNetworkPolicyStatusURL_EscapesTenant(t *testing.T) {
 	}
 }
 
-func TestPrintStatus_LoadedOnUnarmedHost(t *testing.T) {
+func TestPrintStatus_PartiallyLoadedOnUnarmedHost(t *testing.T) {
 	var b bytes.Buffer
 	printStatus(&b, &pb.NetworkPolicyStatus{
 		Tenant:              "acme",
-		State:               pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED,
+		State:               pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED,
 		EffectiveMode:       pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
 		EffectiveEgressMode: pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
-		LastAppliedAt:       timestamppb.New(time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)),
+		LastReconciledAt:    timestamppb.New(time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)),
 		BoxesLoaded:         2,
 		BoxesNotLoaded:      1,
 		UncoveredPaths: []pb.NetworkPolicyUncoveredPath{
@@ -60,10 +60,10 @@ func TestPrintStatus_LoadedOnUnarmedHost(t *testing.T) {
 	})
 	out := b.String()
 	for _, want := range []string{
-		"state:              loaded",
+		"state:              PARTIALLY loaded: the tenant is NOT fully covered",
 		"effective-mode:     LOG_ONLY",
 		"egress-mode:        LOG_ONLY",
-		"last-applied:       2026-10-23T10:00:00Z",
+		"last-reconciled:    2026-10-23T10:00:00Z",
 		"enforcement-armed:  false (a requested enforce is loaded as log_only on this host)",
 		"boxes:              2 loaded, 1 NOT loaded",
 		"ipv6",
@@ -92,8 +92,73 @@ func TestPrintStatus_UnknownSaysUnknown(t *testing.T) {
 		if !strings.Contains(out, "effective-mode:     unknown") || !strings.Contains(out, "egress-mode:        unknown") {
 			t.Errorf("state %v: modes must read unknown:\n%s", state, out)
 		}
-		if strings.Contains(out, "last-applied") {
-			t.Errorf("state %v: no last-applied when nothing is loaded:\n%s", state, out)
+		if strings.Contains(out, "last-reconciled") {
+			t.Errorf("state %v: no last-reconciled when no pass is reported:\n%s", state, out)
+		}
+	}
+}
+
+// Every running box loaded reads as plainly loaded.
+func TestPrintStatus_FullyLoaded(t *testing.T) {
+	var b bytes.Buffer
+	printStatus(&b, &pb.NetworkPolicyStatus{
+		Tenant:              "acme",
+		State:               pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED,
+		EffectiveMode:       pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+		EffectiveEgressMode: pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+		EnforcementArmed:    true,
+		BoxesLoaded:         3,
+	})
+	out := b.String()
+	for _, want := range []string{"state:              loaded (every running box", "effective-mode:     ENFORCE", "boxes:              3 loaded\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// A stalled reconciler: modes unknown, the last pass's time still shown.
+func TestPrintStatus_Stale(t *testing.T) {
+	var b bytes.Buffer
+	printStatus(&b, &pb.NetworkPolicyStatus{
+		Tenant:           "acme",
+		State:            pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE,
+		LastReconciledAt: timestamppb.New(time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)),
+		EnforcementArmed: true,
+	})
+	out := b.String()
+	for _, want := range []string{
+		"state:              stale",
+		"effective-mode:     unknown",
+		"egress-mode:        unknown",
+		"last-reconciled:    2026-10-23T10:00:00Z",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// "loaded as log_only" describes what is loaded, so it is said only when
+// something is loaded.
+func TestPrintStatus_UnarmedSuffixOnlyWhenLoaded(t *testing.T) {
+	const suffix = "a requested enforce is loaded as log_only"
+	for state, want := range map[pb.NetworkPolicyAppliedState]bool{
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED:               true,
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED:     true,
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING: false,
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED:           false,
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE:                false,
+		pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED:          false,
+	} {
+		var b bytes.Buffer
+		printStatus(&b, &pb.NetworkPolicyStatus{Tenant: "acme", State: state})
+		out := b.String()
+		if !strings.Contains(out, "enforcement-armed:  false") {
+			t.Errorf("state %v: missing enforcement-armed line:\n%s", state, out)
+		}
+		if got := strings.Contains(out, suffix); got != want {
+			t.Errorf("state %v: suffix printed = %v, want %v:\n%s", state, got, want, out)
 		}
 	}
 }
