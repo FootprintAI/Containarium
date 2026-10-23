@@ -167,6 +167,11 @@ var (
 	// ensureJumpServerAccountFn creates the account with no key material, for
 	// boxes created without SSH keys (#2489).
 	ensureJumpServerAccountFn = EnsureJumpServerAccount
+	// userExistsFn and deleteJumpServerAccountFn let a failed create remove the
+	// host account it made, and let tests keep `id` and `userdel` off the host
+	// (#2850).
+	userExistsFn              = userExists
+	deleteJumpServerAccountFn = DeleteJumpServerAccount
 )
 
 // Create creates a new container with full setup
@@ -392,6 +397,11 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Println("  [3/7] Creating jump server account (proxy-only)...")
 	}
 
+	// Whether the account was already there decides, on a failed create,
+	// whether it is ours to remove (#2850). Read before the goroutine starts so
+	// the answer cannot be "yes" only because the goroutine got there first.
+	accountPreexisted := userExistsFn(opts.Username)
+
 	var jumpAccountDone chan error
 	if len(opts.SSHKeys) > 0 {
 		jumpAccountDone = make(chan error, 1)
@@ -448,8 +458,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		ipAddr, err = m.incus.WaitForNetwork(containerName, 30*time.Second)
 		return err
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to get container IP: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to get container IP: %w", err))
 	}
 
 	if opts.Verbose {
@@ -493,8 +503,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	} else if err := m.timed(StageInstallPackages, func() error {
 		return m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family)
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to install packages: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to install packages: %w", err))
 	}
 
 	// Bring the box under the sshd policy at birth (#2424), on the baked
@@ -520,8 +530,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if err := m.timed(StageCreateUser, func() error {
 		return m.createUser(containerName, opts.Username, family)
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to create user: %w", err))
 	}
 
 	// Step 7: Add SSH keys (including jump server's key for ProxyJump support)
@@ -551,8 +561,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if err := m.timed(StageAddSSHKeys, func() error {
 			return m.addSSHKeys(containerName, opts.Username, allKeys)
 		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to add SSH keys: %w", err)
+			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+				fmt.Errorf("failed to add SSH keys: %w", err))
 		}
 	} else {
 		if opts.Verbose {
@@ -571,19 +581,18 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if err := m.timed(StageGitSource, func() error {
 			return m.provisionGitSource(containerName, opts)
 		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to provision git source: %w", err)
+			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+				fmt.Errorf("failed to provision git source: %w", err))
 		}
 	}
 
-	// Join the jump-account goroutine (step 3). An early error return
-	// above skips this join deliberately: the goroutine's send is buffered
-	// so it never leaks, and a host account created for a failed create
-	// dangles exactly as it did when the account was created up front.
+	// Join the jump-account goroutine (step 3). Every failure return above
+	// joins it too, through abortCreate (#2850): it used to be skipped, which
+	// left the host account behind, and left the goroutine free to create it
+	// after the rollback had already run.
 	if jumpAccountDone != nil {
 		if err := <-jumpAccountDone; err != nil {
-			_ = m.cleanup(containerName)
-			return nil, err
+			return nil, m.abortCreate(containerName, opts.Username, nil, accountPreexisted, err)
 		}
 	}
 
@@ -1285,6 +1294,41 @@ func (m *Manager) Delete(username string, force bool) error {
 }
 
 // cleanup removes a container (used on creation failure)
+// jumpAccountJoinTimeout bounds how long a failing create waits for the
+// concurrent account creation (flock -w 30 and a few retries bound it already;
+// this is the backstop). A var so a test can shorten it.
+var jumpAccountJoinTimeout = 2 * time.Minute
+
+// abortCreate rolls back a Linux create that failed after step 3 started the
+// host jump-account goroutine, and returns cause (#2850). The container is
+// removed as before. Then, if the account goroutine is still in flight
+// (jumpAccountDone non-nil) it is waited for, so the account cannot be created
+// after the removal below; and an account that did not exist when this create
+// started is removed, because nothing else will: the daemon's delete path acts
+// on a box that exists, and this one is gone. An account that already existed
+// is not ours and is left alone.
+//
+// Best-effort and quiet: a failure to remove the account is logged and never
+// replaces cause, which is what the caller needs to see.
+func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-chan error, accountPreexisted bool, cause error) error {
+	_ = m.cleanup(containerName)
+	if jumpAccountDone != nil {
+		select {
+		case <-jumpAccountDone:
+		case <-time.After(jumpAccountJoinTimeout):
+			log.Printf("[create] %s: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
+			return cause
+		}
+	}
+	if accountPreexisted {
+		return cause
+	}
+	if err := deleteJumpServerAccountFn(username, false); err != nil {
+		log.Printf("[create] %s: could not remove the host account %q left by the failed create: %v", containerName, username, err)
+	}
+	return cause
+}
+
 func (m *Manager) cleanup(containerName string) error {
 	// Try to stop first (ignore errors)
 	_ = m.incus.StopContainer(containerName, true)

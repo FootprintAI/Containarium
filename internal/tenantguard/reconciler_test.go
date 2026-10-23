@@ -39,6 +39,12 @@ type fakeBackend struct {
 	aclErr   error
 
 	fmu sync.Mutex // the fake itself is used from two goroutines in the serialisation test
+	// ensureErrs fails EnsureNICDevice for the named container, and
+	// onEnsureErr (if set) runs when it does: the tests use it to simulate a
+	// rollback finishing, i.e. the instance disappearing from the host.
+	ensureErrs  map[string]error
+	onEnsureErr func(container string)
+	afterList   func()
 	// nicErrs are returned, in order, by successive SetDeviceConfig calls
 	// before the real behaviour resumes (transient-conflict tests).
 	nicErrs []error
@@ -63,7 +69,13 @@ func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return append([]incus.ContainerInfo(nil), f.containers...), nil
+	out := append([]incus.ContainerInfo(nil), f.containers...)
+	if f.afterList != nil {
+		// Runs after the snapshot is taken, so a test can change the host
+		// between two successive lists.
+		defer f.afterList()
+	}
+	return out, nil
 }
 
 func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
@@ -163,6 +175,12 @@ func (f *fakeBackend) EnsureNICDevice(container string, want incus.NICDevice) er
 	defer f.leave()
 	f.fmu.Lock()
 	defer f.fmu.Unlock()
+	if err := f.ensureErrs[container]; err != nil {
+		if f.onEnsureErr != nil {
+			f.onEnsureErr(container)
+		}
+		return err
+	}
 	if f.devices[container] == nil {
 		f.devices[container] = map[string]map[string]string{}
 	}
