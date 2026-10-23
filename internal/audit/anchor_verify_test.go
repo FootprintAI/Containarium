@@ -20,13 +20,13 @@ const lockedRetentionJSON = `{"retention_policy": {"isLocked": true, "retentionP
 // way the daemon does it (file first, then bucket), plus a chain whose
 // rows hash to "root-<id>".
 type anchorFixture struct {
-	t         *testing.T
-	gcloud    *fakeGcloud
-	bucket    *GCSAnchorSink
-	file      *FileSink
-	filePath  string
-	tee       *TeeSink
-	chain     *fakeChainStore
+	t        *testing.T
+	gcloud   *fakeGcloud
+	bucket   *GCSAnchorSink
+	file     *FileSink
+	filePath string
+	tee      *TeeSink
+	chain    *fakeChainStore
 }
 
 func newAnchorFixture(t *testing.T, maxID int64) *anchorFixture {
