@@ -546,6 +546,14 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "gatewayAfterSeq",
+            "description": "Model-gateway calls recorded for this run and member after this sequence\nnumber (#2928); 0 = from the first. Pass the previous response's\ngateway_next_seq to resume. Independent of start_offset: the calls are\nrecorded by the daemon, not written to the journal file.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
           }
         ],
         "tags": [
@@ -14280,6 +14288,63 @@
       "default": "GPU_VENDOR_UNSPECIFIED",
       "description": "GPU vendor enum"
     },
+    "GatewayCall": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "string",
+          "format": "int64",
+          "description": "Position in the run's call log; strictly increasing per run."
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the gateway finished the call."
+        },
+        "skillId": {
+          "type": "string",
+          "description": "The run member (skill) whose token made the call."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Upstream provider name as the gateway knows it (\"anthropic\", \"openai\", ...)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model the request named; empty when the request did not say."
+        },
+        "keyOwner": {
+          "$ref": "#/definitions/GatewayKeyOwner",
+          "description": "Whose key the call spent. The owner type only."
+        },
+        "status": {
+          "type": "integer",
+          "format": "int32",
+          "description": "HTTP status of the response sent to the box; 0 when no response was\nproduced (see transport_error)."
+        },
+        "transportError": {
+          "$ref": "#/definitions/GatewayTransportError",
+          "description": "Set when the call failed before any upstream response (dial, TLS,\ntimeout, ...); UNSPECIFIED otherwise."
+        },
+        "latencyMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Time from the gateway accepting the call to the upstream's response\nheaders (to the failure, when there were none)."
+        }
+      },
+      "description": "GatewayCall is one model call the gateway proxied on behalf of a run (#2928).\nIt carries who paid and how it ended, never the key, a key id, the token, or\nany prompt or response content."
+    },
+    "GatewayKeyOwner": {
+      "type": "string",
+      "enum": [
+        "GATEWAY_KEY_OWNER_UNSPECIFIED",
+        "GATEWAY_KEY_OWNER_ORG",
+        "GATEWAY_KEY_OWNER_MEMBER",
+        "GATEWAY_KEY_OWNER_OPERATOR_FALLBACK"
+      ],
+      "default": "GATEWAY_KEY_OWNER_UNSPECIFIED",
+      "description": "GatewayKeyOwner is the type of owner whose upstream key a call spent.\n\n - GATEWAY_KEY_OWNER_ORG: An organization's key (key_owner \"org:\u003cid\u003e\").\n - GATEWAY_KEY_OWNER_MEMBER: A member's key (key_owner \"user:\u003cname\u003e\").\n - GATEWAY_KEY_OWNER_OPERATOR_FALLBACK: The daemon-global key: the token named no owner, or the owner had none."
+    },
     "GatewayModel": {
       "type": "object",
       "properties": {
@@ -14300,6 +14365,20 @@
       ],
       "default": "GATEWAY_PROVIDER_UNSPECIFIED",
       "description": "GatewayProvider names one upstream the gateway brokers. An enum, not a\nstring, because the value is \"one of a known set\" (both repos' CLAUDE.md:\nprotobuf enums over magic strings) — a typo is then a compile error on every\ngenerated client instead of a 400 at runtime.\n\nThe enum names the provider; it does NOT carry its endpoint. Upstream URLs\ncome from the daemon's environment (\u003cPROVIDER\u003e_UPSTREAM_URL, see\nmodelgateway.ProvidersFromEnv), so no brokered vendor's hostname is\ncompiled into this repo. Accepted tradeoff, per the design note: the next\nOpenAI-compatible vendor still needs a new enum value, a regen, and a\nredeploy. A provider-kind + name/upstream shape would onboard one with no\nproto change, but that is a larger refactor of this enum and out of scope.\n\n - GATEWAY_PROVIDER_KAFEIDO: GATEWAY_PROVIDER_KAFEIDO is OpenAI-shaped and registered only when the\noperator sets its \u003cPROVIDER\u003e_UPSTREAM_URL; nothing about it is compiled in\nbeyond this name."
+    },
+    "GatewayTransportError": {
+      "type": "string",
+      "enum": [
+        "GATEWAY_TRANSPORT_ERROR_UNSPECIFIED",
+        "GATEWAY_TRANSPORT_ERROR_DIAL",
+        "GATEWAY_TRANSPORT_ERROR_TLS",
+        "GATEWAY_TRANSPORT_ERROR_TIMEOUT",
+        "GATEWAY_TRANSPORT_ERROR_CANCELED",
+        "GATEWAY_TRANSPORT_ERROR_NO_KEY",
+        "GATEWAY_TRANSPORT_ERROR_OTHER"
+      ],
+      "default": "GATEWAY_TRANSPORT_ERROR_UNSPECIFIED",
+      "description": "GatewayTransportError classifies a call that produced no upstream response.\n\n - GATEWAY_TRANSPORT_ERROR_CANCELED: The caller went away before the upstream answered.\n - GATEWAY_TRANSPORT_ERROR_NO_KEY: The gateway held no key for the provider, so nothing was sent."
     },
     "GetAgentSkillResponse": {
       "type": "object",
@@ -20753,6 +20832,19 @@
             "type": "string"
           },
           "description": "The run's members that have a journal file for this run."
+        },
+        "gatewayCalls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GatewayCall"
+          },
+          "description": "Model-gateway calls made for this run and member since gateway_after_seq,\noldest first (#2928). A failure at the gateway happens outside the box and\nnever reaches the journal, so it is reported here as typed events. A client\ninterleaves them with the journal lines by `time`. Readers that predate the\nfield ignore it."
+        },
+        "gatewayNextSeq": {
+          "type": "string",
+          "format": "int64",
+          "description": "Pass back as gateway_after_seq on the next call."
         }
       },
       "description": "TailRunLogResponse is one window of a run's journal."
