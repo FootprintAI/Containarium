@@ -154,9 +154,11 @@ delete or overwrite while the bucket's retention policy is locked.
 Every bucket checkpoint is compared with the database and with the
 local file. A checkpoint above the database's highest row id, one
 whose content does not match its name, one the local file lacks, or
-one whose root differs is a failure (non-zero exit). Local
-checkpoints newer than the bucket's latest, or a bucket without a
-locked retention policy, are warnings (exit 0). With no bucket
+one whose root differs is a failure (non-zero exit). Checkpoints
+only the local file holds are still compared with the database
+(a mismatch is a failure) and warned about, since the bucket does
+not vouch for them. A bucket without a locked retention policy is a
+warning (exit 0). With no bucket
 configured, behaviour is unchanged.`,
 	Example: `  # Default anchor path (same as the daemon's default)
   containarium audit verify-anchor
@@ -428,31 +430,41 @@ func (f fixedRootSink) LastPublished(context.Context) (int64, string, bool, erro
 	return f.checkpoint, f.root, true, nil
 }
 
-func runAuditVerifyAnchorBucket(ctx context.Context, store *audit.Store, local *audit.FileSink, localPath, uri string) error {
+// anchorChain is the database side of the bucket check: *audit.Store.
+type anchorChain interface {
+	audit.ChainStore
+	VerifyChainAgainstAnchor(ctx context.Context, sink audit.RootSink) (audit.AnchorVerifyResult, error)
+}
+
+func runAuditVerifyAnchorBucket(ctx context.Context, chain anchorChain, local *audit.FileSink, localPath, uri string) error {
 	bucket, err := audit.NewGCSAnchorSink(uri)
 	if err != nil {
 		return fmt.Errorf("open anchor bucket %q: %w", uri, err)
 	}
-	report, err := audit.VerifyAnchorsAgainstBucket(ctx, store, local, bucket)
+	return verifyAnchorBucket(ctx, chain, local, localPath, bucket, os.Stdout, os.Stderr)
+}
+
+func verifyAnchorBucket(ctx context.Context, chain anchorChain, local *audit.FileSink, localPath string, bucket audit.AnchorBucket, out, errOut io.Writer) error {
+	report, err := audit.VerifyAnchorsAgainstBucket(ctx, chain, local, bucket)
 	if err != nil {
 		if errors.Is(err, audit.ErrNoAnchor) {
-			fmt.Printf("\n  ⚠ No anchor has been published yet, locally (%s) or in %s\n\n", localPath, bucket.URI())
+			fmt.Fprintf(out, "\n  ⚠ No anchor has been published yet, locally (%s) or in %s\n\n", localPath, bucket.URI())
 			return nil
 		}
 		return fmt.Errorf("verify against anchor bucket: %w", err)
 	}
 
-	// The chain after the latest valid bucket checkpoint must still be
-	// internally consistent, as in the local-file check.
+	// The chain after the highest verified checkpoint, in either copy, must
+	// still be internally consistent, as in the local-file check.
 	var firstBad int64
-	if report.LatestCheckpoint > 0 {
-		res, err := store.VerifyChainAgainstAnchor(ctx, fixedRootSink{checkpoint: report.LatestCheckpoint, root: report.LatestRoot})
+	if report.TailCheckpoint > 0 {
+		res, err := chain.VerifyChainAgainstAnchor(ctx, fixedRootSink{checkpoint: report.TailCheckpoint, root: report.TailRoot})
 		if err != nil {
-			return fmt.Errorf("verify chain since the latest bucket checkpoint: %w", err)
+			return fmt.Errorf("verify chain since the latest checkpoint: %w", err)
 		}
 		firstBad = res.FirstBadAfterCheckpoint
 	}
-	return printBucketAnchorReport(os.Stdout, os.Stderr, bucket.URI(), report, firstBad)
+	return printBucketAnchorReport(out, errOut, bucket.URI(), report, firstBad)
 }
 
 // printBucketAnchorReport renders the bucket check: ⚠ lines on stdout, ✗

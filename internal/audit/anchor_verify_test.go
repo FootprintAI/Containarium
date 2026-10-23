@@ -335,3 +335,113 @@ func TestFileSinkCheckpoints_ReadsEveryValidLineAndSkipsDamagedTail(t *testing.T
 		t.Fatalf("Checkpoints = %+v", got)
 	}
 }
+
+// Review of #2959: enabling the bucket must not weaken the local check. A
+// checkpoint only the local file holds (not yet uploaded, or the bucket
+// prefix is empty or wrong) is still compared with the database.
+func TestVerifyAnchorsAgainstBucket_LocalOnlyCheckpointIsComparedWithDatabase(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(f *anchorFixture)
+	}{
+		{"row rewritten", func(f *anchorFixture) { f.chain.hashes[20] = "rewritten" }},
+		{"row deleted", func(f *anchorFixture) { delete(f.chain.hashes, 20) }},
+		{"above the database tip", func(f *anchorFixture) { f.chain.maxID = 15 }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAnchorFixture(t, 30)
+			f.anchor(10)
+			if err := f.file.PublishRoot(context.Background(), 20, "root-20"); err != nil { // never reached the bucket
+				t.Fatal(err)
+			}
+			tc.setup(f)
+
+			r, err := f.verify()
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if r.OK() || !hasFinding(r.Failures, FindingDatabaseRootDiffers, 20) {
+				t.Fatalf("want FindingDatabaseRootDiffers at 20, got failures=%v", findingKinds(r.Failures))
+			}
+			if !hasFinding(r.Warnings, FindingLocalNewerThanBucket, 20) {
+				t.Fatalf("the bucket still does not vouch for 20; want the warning too, got %v", findingKinds(r.Warnings))
+			}
+		})
+	}
+}
+
+func TestVerifyAnchorsAgainstBucket_EmptyBucketStillChecksLocalFileAgainstDatabase(t *testing.T) {
+	f := newAnchorFixture(t, 30)
+	for _, cp := range []int64{10, 20} {
+		if err := f.file.PublishRoot(context.Background(), cp, fmt.Sprintf("root-%d", cp)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.chain.hashes[20] = "rewritten"
+
+	r, err := f.verify()
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !hasFinding(r.Failures, FindingDatabaseRootDiffers, 20) {
+		t.Fatalf("a wrong or empty bucket prefix must not hide a rewrite, got failures=%v", findingKinds(r.Failures))
+	}
+}
+
+// The local-newer warning must survive a planted object: nothing about a
+// failure elsewhere may silence it.
+func TestVerifyAnchorsAgainstBucket_LocalNewerWarningSurvivesPlantedObject(t *testing.T) {
+	f := newAnchorFixture(t, 40)
+	f.anchor(10, 30)
+	if err := f.file.PublishRoot(context.Background(), 40, "root-40"); err != nil {
+		t.Fatal(err)
+	}
+	f.gcloud.objects[f.bucket.objectURI(9223372036854775807)] = []byte(`{"checkpoint":9223372036854775807,"root":"planted","anchored_at":"x"}` + "\n")
+
+	r, err := f.verify()
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !hasFinding(r.Failures, FindingAboveChainTip, 9223372036854775807) {
+		t.Fatalf("want the planted checkpoint to fail, got %v", findingKinds(r.Failures))
+	}
+	if !hasFinding(r.Warnings, FindingLocalNewerThanBucket, 40) {
+		t.Fatalf("want FindingLocalNewerThanBucket at 40 alongside it, got %v", findingKinds(r.Warnings))
+	}
+}
+
+func TestVerifyAnchorsAgainstBucket_TailCheckpointIsHighestVerifiedAcrossBothCopies(t *testing.T) {
+	f := newAnchorFixture(t, 30)
+	f.anchor(10)
+	if err := f.file.PublishRoot(context.Background(), 20, "root-20"); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := f.verify()
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if r.TailCheckpoint != 20 || r.TailRoot != "root-20" {
+		t.Fatalf("Tail = %d/%q, want 20/root-20 (the local-only checkpoint)", r.TailCheckpoint, r.TailRoot)
+	}
+	if r.LatestCheckpoint != 10 {
+		t.Fatalf("LatestCheckpoint = %d, want the bucket's 10", r.LatestCheckpoint)
+	}
+}
+
+// A 20-character name ParseInt accepts but that is not the canonical
+// zero-padded form must be ignored with a warning, not read as checkpoint N.
+func TestVerifyAnchorsAgainstBucket_NonCanonicalNameIsUnrecognised(t *testing.T) {
+	f := newAnchorFixture(t, 30)
+	f.anchor(10)
+	f.gcloud.objects[f.bucket.prefix+"+0000000000000000010.json"] = []byte("{}")
+
+	r, err := f.verify()
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !r.OK() || !hasFinding(r.Warnings, FindingUnrecognisedObject, 0) {
+		t.Fatalf("want OK with an unrecognised-object warning, got failures=%v warnings=%v", findingKinds(r.Failures), findingKinds(r.Warnings))
+	}
+}

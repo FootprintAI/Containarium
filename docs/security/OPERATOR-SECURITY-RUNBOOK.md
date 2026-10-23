@@ -1471,8 +1471,9 @@ command reads every checkpoint in the bucket, not just the highest one:
 | ✗ | A bucket checkpoint's root differs from the database row's hash, or the row no longer exists. | non-zero |
 | ✗ | A bucket checkpoint and the local file record different roots, or the bucket has a checkpoint the local file lacks. | non-zero |
 | ✗ | A bucket checkpoint is above the database's highest row id, or its content does not match its name. The daemon cannot have written it. | non-zero |
-| ✗ | The chain is internally inconsistent after the latest bucket checkpoint. | non-zero |
-| ⚠ | The local file has checkpoints newer than the bucket's latest (an upload is still being retried). | 0 |
+| ✗ | A checkpoint only the local file holds (not in the bucket) differs from the database row, or the row no longer exists. The database is checked against the local file for these exactly as it is without `--anchor-bucket`, so turning the bucket on never weakens the local check. | non-zero |
+| ✗ | The chain is internally inconsistent after the latest checkpoint in either copy. | non-zero |
+| ⚠ | The local file holds checkpoints the bucket does not (an upload is still being retried, or the prefix is wrong or empty). The bucket does not vouch for them; they are checked against the database only. | 0 |
 | ⚠ | The bucket has no retention policy, or an unlocked one, or it could not be read. | 0 |
 | ⚠ | An object under the prefix is not named like an anchor; it is ignored. | 0 |
 
@@ -1497,7 +1498,8 @@ It does **not** protect against:
 - a rewrite of rows after the latest uploaded checkpoint, until the next
   anchoring tick (15 minutes by default) uploads a newer one;
 - a checkpoint whose upload failed and was superseded: it exists only in the
-  local file, so only the local file vouches for it;
+  local file, so only the local file vouches for it (the database is still
+  compared with it, but a host-root attacker can edit both);
 - a bucket whose retention policy is missing or unlocked: anyone with delete
   rights can then remove or replace anchors, and the check can only warn;
 - a host-root attacker who stops the daemon, or who alters the `containarium`
@@ -1505,6 +1507,14 @@ It does **not** protect against:
   machine you trust, with its own read-only credentials;
 - anyone who controls the cloud project and can wait out the retention
   period.
+
+An attacker holding the host's `gcloud` credentials can also pre-plant an
+object at a checkpoint id the daemon has not anchored yet. The daemon's
+create-only upload of that checkpoint then fails (HTTP 412, logged as an
+anchor conflict on each tick), so the operator first sees a failing upload in
+the daemon log. `verify-anchor` reports the same object as ✗ (above the
+database's highest row id, missing from the local file, or a root that
+differs from the database), so a planted object never passes as an anchor.
 
 Nothing runs this check on a schedule; an operator or a monitor has to.
 

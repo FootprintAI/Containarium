@@ -92,7 +92,9 @@ func (g *GCSAnchorSink) ListCheckpoints(ctx context.Context) (cps []BucketCheckp
 			continue
 		}
 		cp, perr := strconv.ParseInt(name, 10, 64)
-		if perr != nil || cp < 0 {
+		// ParseInt also accepts a sign; only the zero-padded form
+		// objectURI writes is an anchor name.
+		if perr != nil || cp < 0 || fmt.Sprintf("%020d", cp) != name {
 			unrecognised = append(unrecognised, line)
 			continue
 		}
@@ -108,6 +110,14 @@ func (g *GCSAnchorSink) ListCheckpoints(ctx context.Context) (cps []BucketCheckp
 	}
 	sort.Slice(cps, func(i, j int) bool { return cps[i].Checkpoint < cps[j].Checkpoint })
 	return cps, unrecognised, nil
+}
+
+// AnchorBucket is the bucket side of the check, an interface so the command
+// glue is testable without gcloud. *GCSAnchorSink implements it.
+type AnchorBucket interface {
+	URI() string
+	ListCheckpoints(ctx context.Context) (cps []BucketCheckpoint, unrecognised []string, err error)
+	CheckRetentionLock(ctx context.Context) (RetentionLockStatus, error)
 }
 
 // BucketFindingKind classifies one result of VerifyAnchorsAgainstBucket.
@@ -190,6 +200,11 @@ type BucketAnchorReport struct {
 	// "" when there is none.
 	LatestCheckpoint int64
 	LatestRoot       string
+	// TailCheckpoint and TailRoot are the highest checkpoint at or below the
+	// database's highest row id in EITHER copy: where the chain-consistency
+	// check of the rows logged after it starts.
+	TailCheckpoint int64
+	TailRoot       string
 }
 
 // OK reports whether there are no failures.
@@ -202,12 +217,15 @@ func (r BucketAnchorReport) OK() bool { return len(r.Failures) == 0 }
 //     row id must match the database row hash and the local file's record;
 //   - a bucket checkpoint above that row id, or whose content does not match
 //     its name, is a failure, as is one missing from the local file;
-//   - local checkpoints newer than the bucket's latest are a warning;
+//   - a checkpoint only the local file holds (an upload not yet done, or a
+//     wrong or empty bucket prefix) is still compared with the database, so
+//     turning the bucket on never weakens the local-file check; the bucket
+//     does not vouch for it, which is a warning;
 //   - a bucket without a locked retention policy is a warning.
 //
 // ErrNoAnchor means nothing is anchored locally or in the bucket. A gcloud
 // failure is an error, never a clean result.
-func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *FileSink, bucket *GCSAnchorSink) (BucketAnchorReport, error) {
+func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *FileSink, bucket AnchorBucket) (BucketAnchorReport, error) {
 	var r BucketAnchorReport
 
 	bucketCPs, unrecognised, err := bucket.ListCheckpoints(ctx)
@@ -227,12 +245,8 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 	}
 
 	localRoots := make(map[int64][]string, len(localCPs))
-	var maxLocal int64
 	for _, c := range localCPs {
 		localRoots[c.Checkpoint] = append(localRoots[c.Checkpoint], c.Root)
-		if c.Checkpoint > maxLocal {
-			maxLocal = c.Checkpoint
-		}
 	}
 
 	for _, uri := range unrecognised {
@@ -253,6 +267,9 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 		r.CheckedCheckpoints++
 		if b.Checkpoint > r.LatestCheckpoint {
 			r.LatestCheckpoint, r.LatestRoot = b.Checkpoint, b.Root
+		}
+		if b.Checkpoint > r.TailCheckpoint {
+			r.TailCheckpoint, r.TailRoot = b.Checkpoint, b.Root
 		}
 
 		dbRoot, found, err := chain.RowHashAt(ctx, b.Checkpoint)
@@ -283,9 +300,41 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 		}
 	}
 
-	if maxLocal > r.LatestCheckpoint && !hasBucketCheckpointAtOrAbove(bucketCPs, maxLocal) {
-		r.Warnings = append(r.Warnings, BucketAnchorFinding{Kind: FindingLocalNewerThanBucket, Checkpoint: maxLocal,
-			Detail: fmt.Sprintf("the local file is ahead of the bucket (latest bucket checkpoint %d); the upload is retried on the next anchoring tick", r.LatestCheckpoint)})
+	// Checkpoints only the local file holds. The bucket does not vouch for
+	// them, but the database still must agree with them.
+	inBucket := make(map[int64]bool, len(bucketCPs))
+	for _, b := range bucketCPs {
+		if b.Problem == "" {
+			inBucket[b.Checkpoint] = true
+		}
+	}
+	localOnly := make([]int64, 0, len(localRoots))
+	for cp := range localRoots {
+		if !inBucket[cp] {
+			localOnly = append(localOnly, cp)
+		}
+	}
+	sort.Slice(localOnly, func(i, j int) bool { return localOnly[i] < localOnly[j] })
+	for _, cp := range localOnly {
+		dbRoot, found, err := chain.RowHashAt(ctx, cp)
+		if err != nil {
+			return r, fmt.Errorf("audit: row hash at anchored checkpoint %d: %w", cp, err)
+		}
+		switch {
+		case cp > maxID || !found:
+			r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: cp,
+				Detail: "the locally anchored row no longer exists in the database"})
+		case rootsDiffer(localRoots[cp], dbRoot):
+			r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: cp,
+				Detail: "the database row's hash differs from the locally anchored root"})
+		}
+		if cp <= maxID && cp > r.TailCheckpoint {
+			r.TailCheckpoint, r.TailRoot = cp, localRoots[cp][0]
+		}
+	}
+	if n := len(localOnly); n > 0 {
+		r.Warnings = append(r.Warnings, BucketAnchorFinding{Kind: FindingLocalNewerThanBucket, Checkpoint: localOnly[n-1],
+			Detail: fmt.Sprintf("%d local checkpoint(s) are not in the bucket (latest bucket checkpoint %d), so the bucket does not vouch for them; they were checked against the database only. A failed upload is retried on the next anchoring tick", n, r.LatestCheckpoint)})
 	}
 
 	st, lockErr := bucket.CheckRetentionLock(ctx)
@@ -295,12 +344,10 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 	return r, nil
 }
 
-// hasBucketCheckpointAtOrAbove reports whether any bucket object, however
-// malformed, is named at or above cp, so a planted object never turns
-// "local is ahead" into a warning that hides its own failure.
-func hasBucketCheckpointAtOrAbove(cps []BucketCheckpoint, cp int64) bool {
-	for _, b := range cps {
-		if b.Checkpoint >= cp {
+// rootsDiffer reports whether any recorded root is not dbRoot.
+func rootsDiffer(roots []string, dbRoot string) bool {
+	for _, root := range roots {
+		if root != dbRoot {
 			return true
 		}
 	}
