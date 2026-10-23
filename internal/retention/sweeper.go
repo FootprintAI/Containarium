@@ -31,9 +31,9 @@ func Unattributed(older int64, heldOrgs []string) Count {
 	return Count{Older: older, Eligible: older}
 }
 
-// Source counts one store's records of one class. It has no delete: the
-// dry-run sweeper (#2876) must not be able to remove anything, and enforcement
-// (#2877) adds its own interface instead of widening this one.
+// Source counts one store's records of one class. It has no delete: a count
+// must never be able to remove anything, so enforcement (#2877) is the
+// separate Remover interface that a source may also implement.
 type Source interface {
 	Class() pb.RetentionClass
 	// Store names the store in the report, such as a table name.
@@ -43,6 +43,25 @@ type Source interface {
 	// returns Unattributed.
 	Count(ctx context.Context, cutoff time.Time, heldOrgs []string) (Count, error)
 }
+
+// MaxRemovePerStore bounds how many records one sweep removes from one store.
+// A backlog larger than this is worked off over the following sweeps, so a
+// first enforced sweep over years of data cannot hold the database for long.
+const MaxRemovePerStore = 100_000
+
+// Remover deletes the records a Source counts as eligible. The cutoff and the
+// held orgs are the ones Count takes, and Remove must apply the same
+// predicate, so a sweep deletes exactly what its report listed: records older
+// than the cutoff that no legal hold keeps. It removes at most maxRows and
+// returns how many it removed.
+type Remover interface {
+	Remove(ctx context.Context, cutoff time.Time, heldOrgs []string, maxRows int) (int64, error)
+}
+
+// Auditor records an enforced sweep before anything is removed. The report it
+// receives carries the per-class, per-store counts and never record content.
+// Its error stops the sweep: nothing is removed without its audit entry.
+type Auditor func(ctx context.Context, rep *pb.RetentionReport) error
 
 // Unswept is a store the sweeper lists but does not count, with why.
 type Unswept struct {
@@ -64,26 +83,53 @@ func ChainAndBundles() []Unswept {
 	}
 }
 
-// Sweeper turns the policy, the holds and the sources into a report. It reads
-// only.
+// Sweeper turns the policy, the holds and the sources into a report. In
+// DRY_RUN mode, and for a Preview in any mode, it reads only; in ENFORCE mode
+// Sweep also removes what the report lists as eligible.
 type Sweeper struct {
 	store   Store
 	sources []Source
 	unswept []Unswept
+	audit   Auditor
 	now     func() time.Time
 }
+
+// SetAuditor wires the audit entry an enforced sweep writes. With none, an
+// enforced sweep writes no entry (no audit store on this daemon).
+func (s *Sweeper) SetAuditor(a Auditor) { s.audit = a }
 
 func NewSweeper(store Store, sources []Source, unswept []Unswept) *Sweeper {
 	return &Sweeper{store: store, sources: sources, unswept: unswept, now: time.Now}
 }
 
-// Sweep counts every source against its class window. A source that fails is
-// reported ERROR and the rest are still counted; only a failure to read the
-// policy or the holds fails the sweep.
-func (s *Sweeper) Sweep(ctx context.Context) (*pb.RetentionReport, error) {
+// Sweep counts every source against its class window and, when the mode is
+// ENFORCE, removes the eligible records. A source that fails is reported ERROR
+// and the rest are still swept; a failure to read the policy, the mode or the
+// holds, or to write the audit entry of an enforced sweep, fails the sweep
+// before anything is removed.
+func (s *Sweeper) Sweep(ctx context.Context) (*pb.RetentionReport, error) { return s.run(ctx, true) }
+
+// Preview counts like Sweep and never removes, whatever the mode: the report
+// is how an admin sees what the next enforced sweep will do.
+func (s *Sweeper) Preview(ctx context.Context) (*pb.RetentionReport, error) {
+	return s.run(ctx, false)
+}
+
+// counted pairs a report entry with the source and cutoff behind it.
+type counted struct {
+	entry  *pb.RetentionStoreReport
+	src    Source
+	cutoff time.Time
+}
+
+func (s *Sweeper) run(ctx context.Context, mayRemove bool) (*pb.RetentionReport, error) {
 	policy, err := s.store.GetPolicy(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read retention policy: %w", err)
+	}
+	modeState, err := s.store.GetMode(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read retention mode: %w", err)
 	}
 	holds, err := s.store.ListHolds(ctx)
 	if err != nil {
@@ -101,11 +147,12 @@ func (s *Sweeper) Sweep(ctx context.Context) (*pb.RetentionReport, error) {
 
 	now := s.now()
 	rep := &pb.RetentionReport{
-		Mode:           pb.RetentionMode_RETENTION_MODE_DRY_RUN,
+		Mode:           modeState.GetMode(),
 		GeneratedAt:    timestamppb.New(now),
 		PolicyRevision: policy.GetRevision(),
 		ActiveHolds:    int64(len(holds)),
 	}
+	var swept []counted
 	for _, src := range s.sources {
 		d := days[src.Class()]
 		cutoff := now.AddDate(0, 0, -int(d))
@@ -124,6 +171,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (*pb.RetentionReport, error) {
 			entry.OlderThanCutoff, entry.Eligible, entry.Held = c.Older, c.Eligible, c.Older-c.Eligible
 		}
 		rep.Stores = append(rep.Stores, entry)
+		swept = append(swept, counted{entry: entry, src: src, cutoff: cutoff})
 	}
 	for _, u := range s.unswept {
 		rep.Stores = append(rep.Stores, &pb.RetentionStoreReport{
@@ -141,7 +189,79 @@ func (s *Sweeper) Sweep(ctx context.Context) (*pb.RetentionReport, error) {
 		}
 		return a.GetStore() < b.GetStore()
 	})
+	if mayRemove && modeState.GetMode() == pb.RetentionMode_RETENTION_MODE_ENFORCE {
+		if err := s.enforce(ctx, rep, swept, heldOrgs); err != nil {
+			return nil, err
+		}
+	}
 	return rep, nil
+}
+
+// enforce audits the sweep and then removes, store by store. A store shared by
+// two classes (a crew run holds a prompt and a response) is removed once, with
+// the longer of its classes' windows, so neither class loses a record early.
+func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []counted, heldOrgs []string) error {
+	if s.audit != nil {
+		if err := s.audit(ctx, rep); err != nil {
+			return fmt.Errorf("audit the enforced sweep (nothing removed): %w", err)
+		}
+	}
+	rep.Enforced = true
+
+	var order []string
+	byStore := map[string][]counted{}
+	for _, c := range swept {
+		if _, ok := c.src.(Remover); !ok {
+			continue
+		}
+		if _, seen := byStore[c.src.Store()]; !seen {
+			order = append(order, c.src.Store())
+		}
+		byStore[c.src.Store()] = append(byStore[c.src.Store()], c)
+	}
+	for _, store := range order {
+		group := byStore[store]
+		decider := group[0]
+		skip := ""
+		for _, c := range group {
+			if c.entry.GetStatus() != pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
+				skip = "not removed: counting this store failed"
+			}
+			if c.entry.GetWindowDays() < 1 {
+				skip = "not removed: the class has no retention window"
+			}
+			if c.entry.GetWindowDays() > decider.entry.GetWindowDays() {
+				decider = c
+			}
+		}
+		if len(group) > 1 {
+			note := fmt.Sprintf("a row is removed once past the longer window of its classes (%v, %d days)",
+				decider.entry.GetClass(), decider.entry.GetWindowDays())
+			for _, c := range group {
+				if c != decider {
+					c.entry.Note = note
+				}
+			}
+		}
+		if skip != "" {
+			for _, c := range group {
+				c.entry.Note = skip
+			}
+			continue
+		}
+		n, err := decider.src.(Remover).Remove(ctx, decider.cutoff, heldOrgs, MaxRemovePerStore)
+		if err != nil {
+			for _, c := range group {
+				c.entry.Status = pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_ERROR
+				c.entry.Note = err.Error()
+			}
+			// n rows may have been removed before the failure; report them.
+			decider.entry.Removed = n
+			continue
+		}
+		decider.entry.Removed = n
+	}
+	return nil
 }
 
 // Reporter keeps the last report of a Sweeper and sweeps on a ticker.
@@ -155,6 +275,9 @@ type Reporter struct {
 
 func NewReporter(s *Sweeper) *Reporter { return &Reporter{sweeper: s} }
 
+// SetAuditor wires the audit entry of an enforced sweep (see Sweeper.SetAuditor).
+func (r *Reporter) SetAuditor(a Auditor) { r.sweeper.SetAuditor(a) }
+
 // Last returns the kept report, nil before the first sweep.
 func (r *Reporter) Last() *pb.RetentionReport {
 	r.mu.RLock()
@@ -162,6 +285,8 @@ func (r *Reporter) Last() *pb.RetentionReport {
 	return r.last
 }
 
+// sweep runs the periodic sweep, which removes in ENFORCE mode, and keeps its
+// report.
 func (r *Reporter) sweep(ctx context.Context) (*pb.RetentionReport, error) {
 	r.sweepMu.Lock()
 	defer r.sweepMu.Unlock()
@@ -175,15 +300,32 @@ func (r *Reporter) sweep(ctx context.Context) (*pb.RetentionReport, error) {
 	return rep, nil
 }
 
-// Report returns the kept report; it sweeps first when refresh is set or no
-// sweep has run yet.
+// preview counts without removing. Its report is kept unless the kept one is an
+// enforced sweep's, which is the evidence of what was removed.
+func (r *Reporter) preview(ctx context.Context) (*pb.RetentionReport, error) {
+	r.sweepMu.Lock()
+	defer r.sweepMu.Unlock()
+	rep, err := r.sweeper.Preview(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	if r.last == nil || !r.last.GetEnforced() {
+		r.last = rep
+	}
+	r.mu.Unlock()
+	return rep, nil
+}
+
+// Report returns the kept report; it runs a count-only preview first when
+// refresh is set or no sweep has run yet. A read never removes records.
 func (r *Reporter) Report(ctx context.Context, refresh bool) (*pb.RetentionReport, error) {
 	if !refresh {
 		if last := r.Last(); last != nil {
 			return last, nil
 		}
 	}
-	return r.sweep(ctx)
+	return r.preview(ctx)
 }
 
 // Run sweeps once at start and then every interval until ctx is done. A failed
@@ -193,7 +335,7 @@ func (r *Reporter) Run(ctx context.Context, interval time.Duration) {
 	defer t.Stop()
 	for {
 		if _, err := r.sweep(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[retention] dry-run sweep failed: %v", err)
+			log.Printf("[retention] sweep failed: %v", err)
 		}
 		select {
 		case <-ctx.Done():

@@ -5,13 +5,15 @@ model responses, logs, session transcripts or evidence. For each store it
 gives how long the data is kept today and which retention class covers it.
 It is the data-flow document that #2576 asks for.
 
-> **Status (slices A and B, #2875, #2876).** The retention windows and legal
-> holds below can be set and read, and a dry-run sweeper reports what a
-> window would remove, but **nothing enforces them yet**. The sweeper only
-> counts; nothing is deleted because of a window. The "Kept today" column is
-> what actually happens. Later slices add enforcement:
+> **Status (slices A to C, #2875, #2876, #2877).** The retention windows and
+> legal holds below can be set and read, and a sweeper reports what a window
+> would remove. The daemon starts in **dry-run** mode, where nothing is
+> deleted because of a window. An admin can switch it to **enforce** mode,
+> and then the sweep deletes the eligible records of the stores *outside the
+> hash chain*. The chained audit log and evidence bundles are never deleted
+> yet. The "Kept today" column is what happens without enforce mode; the
+> "Enforced default" column is what happens with it. Later slices:
 >
-> - #2877: enforced deletion for the stores outside the hash chain.
 > - #2878: removing the oldest rows of the hash-chained audit log.
 > - #2879: evidence bundles.
 >
@@ -51,7 +53,8 @@ Legal holds are per org.
 - **A hold has no expiry.** It stays until an admin runs
   `containarium retention hold release <org-id>`.
 - **After release, no grace period.** The org's records that are past their
-  window become eligible on the sweeper's next pass.
+  window become eligible on the sweeper's next pass; in enforce mode that
+  pass deletes them.
 - **Unattributed records are held too.** Many stores have no org column (see
   the inventory). While *any* hold is active, a record with no org is
   treated as held and is never deleted.
@@ -64,11 +67,65 @@ containarium retention hold list --server <host>:50051
 containarium retention hold release <org-id> --server <host>:50051
 ```
 
-## The dry-run report
+## Dry-run and enforce mode
 
-`containarium retention report` shows what a sweep would remove. It is
-read-only: the sweeper has no delete path, and the report says
-`mode: dry-run`.
+The daemon has one mode, set by an admin and stored with the policy:
+
+- **`dry-run`** (the default, and what a daemon is in until someone sets
+  it): the sweeper counts and reports; it deletes nothing.
+- **`enforce`**: the same sweep, and then it deletes the eligible records of
+  the stores listed under "The dry-run report" below.
+
+```bash
+containarium retention mode get --server <host>:50051
+containarium retention mode set --mode enforce --server <host>:50051
+containarium retention mode set --mode dry-run --server <host>:50051
+```
+
+Switching needs the admin role and writes a `retention.mode.set` audit entry
+naming the caller and the mode it replaced; like a policy set, it is refused
+(`INTERNAL`, nothing changes) if that entry cannot be written, and on a
+daemon with no audit store it succeeds and keeps no entry. The mode survives
+a restart on Postgres and resets to dry-run in memory.
+
+What an enforced sweep does, once an hour:
+
+1. It reads the policy, the mode and the legal holds, and counts every store
+   (the same counts as the report).
+2. It writes **one** `retention.sweep` audit entry with the policy revision,
+   the number of active holds and, per class and store, the window, the
+   eligible count and the held count. The entry carries counts only, never
+   the content of a record. If the entry cannot be written, **nothing is
+   deleted** in that sweep.
+3. It deletes, store by store, the records older than the class cutoff that
+   no hold keeps, in batches of 1000 rows and at most 100000 rows per store
+   per sweep (a larger backlog is worked off over the next sweeps). The
+   delete statement repeats the age test and re-checks the holds table, so a
+   hold placed after step 1 still stops it, and it can never touch a newer
+   row.
+
+`containarium retention report --refresh` is a read: it counts like a
+dry run in either mode and never deletes. It does not replace the kept
+report of an enforced sweep, so the evidence of what the last sweep removed
+stays until the next sweep. A report from an enforced sweep has a `REMOVED`
+column.
+
+Existing shorter windows stay as they are (Q23 on #2727): the run-journal
+reaper (7 days) and the traffic cleanup (7 and 28 days) keep running and
+delete sooner than the class window; enforce mode only adds deletion where
+none existed. A class that is not swept (below) is untouched by the mode.
+
+A crew run keeps a prompt and a response in one row. In enforce mode a
+`crew_runs` row is deleted once it is past the **longer** of the prompts and
+responses windows, so neither class loses a record early. This is the default
+proposed on #2877; the report still counts it under each class against that
+class's own window, and says so in the note of the shorter-window entry.
+
+## The report
+
+`containarium retention report` shows what a sweep would remove, or, for an
+enforced sweep, what it removed. Run as a command it deletes nothing; the
+report of a dry-run daemon says `mode: dry-run`.
 
 ```bash
 containarium retention report --server <host>:50051            # the daemon's last report
@@ -102,8 +159,7 @@ Stores the sweeper counts today, by age column:
 
 A crew run keeps a prompt and a response in one row, so it appears under
 both classes, each against its own window. Counting it twice is a report
-choice; which window decides its deletion is for the enforcement slice
-(#2877).
+choice; its deletion is decided by the longer window (see above).
 
 The window is a maximum (Q23): the daemon already deletes `traffic_*` rows
 after 7 and 28 days, so those counts stay near zero until a window is set
@@ -149,7 +205,7 @@ Changes are audited:
 Where the policy and holds are stored:
 
 - **With Postgres**, they are in the tables `retention_policy`,
-  `retention_windows` and `retention_legal_holds`.
+  `retention_windows`, `retention_mode` and `retention_legal_holds`.
 - **Without a database**, they are kept in memory and lost on restart; the
   daemon logs this at startup.
 - **If Postgres is configured but the store cannot be created at startup**,
@@ -169,21 +225,22 @@ Where the policy and holds are stored:
 
 ## Inventory
 
-**Hash chain** in the last column means the audit log's tamper-evident hash
+**Enforced default** is what the sweeper does to that store in enforce mode,
+with the class defaults above. **Hash chain** in the last column means the audit log's tamper-evident hash
 chain.
 
-| Class | Store | Org attribution | Kept today | Hash chain |
-|---|---|---|---|---|
-| Prompts | Agent task queue, `agent_tasks.input_json` (Postgres) | none | Deleted when the task completes; kept if it never completes | no |
-| Responses | Agent task results, `agent_task_results.artifact_json` / `error` (Postgres) | none | No automatic deletion | no |
-| Prompts and responses | Crew runs, `crew_runs.run` (Postgres; holds the run's input and output) | none | No automatic deletion; a standalone skill-run record is deleted with its journal | no |
-| Session transcripts | Agent run journals inside the box, `/var/log/agent-runtime/runs/<run>/` | none | 7 days (`--run-journal-retention`), removed hourly | no |
-| Gateway logs | Connection logs, `traffic_connections` / `traffic_aggregates` (Postgres) | none | 7 days / 28 days, cleaned daily | no |
-| Gateway logs | Model-gateway detections and blocks, and the API access log, in `audit_logs` (Postgres). Metadata only: the model gateway never stores prompt or response bodies | `org_id`, often empty | No automatic deletion | **yes** |
-| Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | **yes** |
-| Session transcripts | Front-door session log file on the sentinel VM | none | 90 days after rotation (configurable) | no |
-| Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names; the platform does not store them yet (#2798) | n/a | Kept as long as the operator keeps the file | n/a |
-| (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl` | n/a | No automatic deletion; required to verify the chain | anchors it |
+| Class | Store | Org attribution | Kept today | Enforced default | Hash chain |
+|---|---|---|---|---|---|
+| Prompts | Agent task queue, `agent_tasks.input_json` (Postgres) | none | Deleted when the task completes; kept if it never completes | 30 days in enforce mode | no |
+| Responses | Agent task results, `agent_task_results.artifact_json` / `error` (Postgres) | none | No automatic deletion | 30 days in enforce mode | no |
+| Prompts and responses | Crew runs, `crew_runs.run` (Postgres; holds the run's input and output) | none | No automatic deletion; a standalone skill-run record is deleted with its journal | 30 days in enforce mode, the longer of the two class windows | no |
+| Session transcripts | Agent run journals inside the box, `/var/log/agent-runtime/runs/<run>/` | none | 7 days (`--run-journal-retention`), removed hourly | none: inside the box, never swept (Q25) | no |
+| Gateway logs | Connection logs, `traffic_connections` / `traffic_aggregates` (Postgres) | none | 7 days / 28 days, cleaned daily | 90 days in enforce mode, but the daily cleanup deletes sooner (7 / 28 days) | no |
+| Gateway logs | Model-gateway detections and blocks, and the API access log, in `audit_logs` (Postgres). Metadata only: the model gateway never stores prompt or response bodies | `org_id`, often empty | No automatic deletion | not yet: hash-chained, slice #2878 | **yes** |
+| Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | not yet: hash-chained, slice #2878 | **yes** |
+| Session transcripts | Front-door session log file on the sentinel VM | none | 90 days after rotation (configurable) | none: a file on the sentinel VM, rotated by logrotate | no |
+| Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names; the platform does not store them yet (#2798) | n/a | Kept as long as the operator keeps the file | not yet: no store, slice #2879 | n/a |
+| (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl` | n/a | No automatic deletion; required to verify the chain | none: required to verify the chain | anchors it |
 
 The model gateway holds token counts in memory only, so they are gone after
 a restart.

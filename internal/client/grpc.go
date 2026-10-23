@@ -1377,8 +1377,23 @@ func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldRespons
 	})
 }
 
-// GetRetentionReport reads the dry-run retention report via gRPC (admin
-// only); refresh sweeps now instead of returning the last periodic report.
+// GetRetentionMode reads the retention mode via gRPC (admin only).
+func (c *GRPCClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionCall("get retention mode", func(ctx context.Context) (*pb.GetRetentionModeResponse, error) {
+		return c.retentionClient.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{})
+	})
+}
+
+// SetRetentionMode switches the retention mode via gRPC (admin only).
+func (c *GRPCClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionCall("set retention mode", func(ctx context.Context) (*pb.SetRetentionModeResponse, error) {
+		return c.retentionClient.SetRetentionMode(ctx, req)
+	})
+}
+
+// GetRetentionReport reads the retention report via gRPC (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
 func (c *GRPCClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
 	return retentionCall("get retention report", func(ctx context.Context) (*pb.GetRetentionReportResponse, error) {
 		return c.retentionClient.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{Refresh: refresh})

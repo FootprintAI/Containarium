@@ -25,7 +25,41 @@ const (
 	retentionPolicySetAction   = "retention.policy.set"
 	retentionHoldSetAction     = "retention.hold.set"
 	retentionHoldReleaseAction = "retention.hold.release"
+	// retentionModeSetAction and retentionSweepAction are the audit actions of
+	// the mode switch and of an enforced sweep (#2877).
+	retentionModeSetAction = "retention.mode.set"
+	retentionSweepAction   = "retention.sweep"
 )
+
+// retentionSweeperActor is the username on the audit entry of an enforced
+// sweep, which no admin runs.
+const retentionSweeperActor = "retention-sweeper"
+
+// retentionModeAuditDetail is the Detail of a retention.mode.set entry.
+type retentionModeAuditDetail struct {
+	PreviousMode string `json:"previous_mode"`
+	Mode         string `json:"mode"`
+}
+
+// retentionSweepAuditStore is one store in a retention.sweep entry: counts
+// only, never the content of a record.
+type retentionSweepAuditStore struct {
+	Class      string `json:"class"`
+	Store      string `json:"store"`
+	WindowDays int32  `json:"window_days"`
+	Eligible   int64  `json:"eligible"`
+	Held       int64  `json:"held"`
+}
+
+// retentionSweepAuditDetail is the Detail of a retention.sweep entry, written
+// before an enforced sweep removes anything. Eligible is what the sweep will
+// try to remove; a store with a backlog above retention.MaxRemovePerStore is
+// worked off over the following sweeps.
+type retentionSweepAuditDetail struct {
+	PolicyRevision int64                      `json:"policy_revision"`
+	ActiveHolds    int64                      `json:"active_holds"`
+	Stores         []retentionSweepAuditStore `json:"stores"`
+}
 
 // retentionAuditWindow is one changed class in a retention.policy.set entry.
 type retentionAuditWindow struct {
@@ -66,6 +100,12 @@ func (unavailableRetentionStore) GetPolicy(context.Context) (*pb.RetentionPolicy
 func (unavailableRetentionStore) SetPolicy(context.Context, []*pb.RetentionWindow, string, func(*retention.PolicySetResult) error) (*retention.PolicySetResult, error) {
 	return nil, errRetentionStoreUnavailable
 }
+func (unavailableRetentionStore) GetMode(context.Context) (*pb.RetentionModeState, error) {
+	return nil, errRetentionStoreUnavailable
+}
+func (unavailableRetentionStore) SetMode(context.Context, pb.RetentionMode, string, func(*retention.ModeSetResult) error) (*retention.ModeSetResult, error) {
+	return nil, errRetentionStoreUnavailable
+}
 func (unavailableRetentionStore) ListHolds(context.Context) ([]*pb.LegalHold, error) {
 	return nil, errRetentionStoreUnavailable
 }
@@ -96,7 +136,7 @@ func retentionStartupStore(postgresConfigured bool, pg retention.Store) retentio
 // remove. The report carries its generated_at, and refresh=true sweeps now.
 const retentionSweepInterval = time.Hour
 
-// newRetentionReporter builds the dry-run reporter over the retention store
+// newRetentionReporter builds the reporter over the retention store
 // and, when the daemon has a database pool, the Postgres sources.
 func newRetentionReporter(store retention.Store, pool *pgxpool.Pool) *retention.Reporter {
 	unswept := retention.ChainAndBundles()
@@ -111,7 +151,8 @@ func newRetentionReporter(store retention.Store, pool *pgxpool.Pool) *retention.
 
 // RetentionServer serves the retention policy and legal holds (#2875). Every
 // RPC is admin-only; changes are audited, and a failed audit write fails the
-// change. It deletes nothing: GetRetentionReport only counts.
+// change. The server itself deletes nothing: GetRetentionReport only counts,
+// and the periodic sweep removes records only while the mode is ENFORCE.
 type RetentionServer struct {
 	pb.UnimplementedRetentionServiceServer
 	store    retention.Store
@@ -126,9 +167,35 @@ func NewRetentionServer(store retention.Store) *RetentionServer {
 // SetStore sets the backing store at startup, before the server serves.
 func (s *RetentionServer) SetStore(store retention.Store) { s.store = store }
 
-// SetReporter wires the dry-run sweeper's reporter (#2876) at startup. With
-// none, GetRetentionReport is UNAVAILABLE.
-func (s *RetentionServer) SetReporter(r *retention.Reporter) { s.reporter = r }
+// SetReporter wires the sweeper's reporter (#2876) at startup. With none,
+// GetRetentionReport is UNAVAILABLE.
+func (s *RetentionServer) SetReporter(r *retention.Reporter) {
+	s.reporter = r
+	s.wireSweepAudit()
+}
+
+// wireSweepAudit gives the reporter's sweeper the audit entry an enforced
+// sweep writes, once both the reporter and the audit store are known.
+func (s *RetentionServer) wireSweepAudit() {
+	if s.reporter != nil && s.audit != nil {
+		s.reporter.SetAuditor(s.auditSweep)
+	}
+}
+
+// auditSweep writes the retention.sweep entry of an enforced sweep.
+func (s *RetentionServer) auditSweep(ctx context.Context, rep *pb.RetentionReport) error {
+	d := retentionSweepAuditDetail{PolicyRevision: rep.GetPolicyRevision(), ActiveHolds: rep.GetActiveHolds(), Stores: []retentionSweepAuditStore{}}
+	for _, st := range rep.GetStores() {
+		if st.GetStatus() != pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
+			continue
+		}
+		d.Stores = append(d.Stores, retentionSweepAuditStore{
+			Class: st.GetClass().String(), Store: st.GetStore(), WindowDays: st.GetWindowDays(),
+			Eligible: st.GetEligible(), Held: st.GetHeld(),
+		})
+	}
+	return s.writeAudit(ctx, retentionSweeperActor, retentionSweepAction, "retention_sweep", "cluster", d)
+}
 
 // SetAuditStore wires the audit store. With none, changes succeed and write
 // no entry (no Postgres, REST disabled, or an audit store that failed to
@@ -136,6 +203,7 @@ func (s *RetentionServer) SetReporter(r *retention.Reporter) { s.reporter = r }
 func (s *RetentionServer) SetAuditStore(a auditLogger) {
 	if a != nil {
 		s.audit = a
+		s.wireSweepAudit()
 	}
 }
 
@@ -211,6 +279,32 @@ func (s *RetentionServer) SetRetentionPolicy(ctx context.Context, req *pb.SetRet
 		return nil, retentionStatus("set retention policy", err)
 	}
 	return &pb.SetRetentionPolicyResponse{Policy: res.Current}, nil
+}
+
+func (s *RetentionServer) GetRetentionMode(ctx context.Context, _ *pb.GetRetentionModeRequest) (*pb.GetRetentionModeResponse, error) {
+	if _, err := s.requireRetentionAdmin(ctx); err != nil {
+		return nil, err
+	}
+	m, err := s.store.GetMode(ctx)
+	if err != nil {
+		return nil, retentionStatus("get retention mode", err)
+	}
+	return &pb.GetRetentionModeResponse{State: m}, nil
+}
+
+func (s *RetentionServer) SetRetentionMode(ctx context.Context, req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	subject, err := s.requireRetentionAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.store.SetMode(ctx, req.GetMode(), subject, func(r *retention.ModeSetResult) error {
+		return s.writeAudit(ctx, subject, retentionModeSetAction, "retention_mode", "cluster",
+			retentionModeAuditDetail{PreviousMode: r.Previous.GetMode().String(), Mode: r.Current.GetMode().String()})
+	})
+	if err != nil {
+		return nil, retentionStatus("set retention mode", err)
+	}
+	return &pb.SetRetentionModeResponse{State: res.Current}, nil
 }
 
 func (s *RetentionServer) ListLegalHolds(ctx context.Context, _ *pb.ListLegalHoldsRequest) (*pb.ListLegalHoldsResponse, error) {

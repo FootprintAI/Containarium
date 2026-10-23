@@ -65,8 +65,12 @@ message LegalHold {
 // their window.
 enum RetentionMode {
   RETENTION_MODE_UNSPECIFIED = 0;
-  // Count and report only; delete nothing. The only mode until #2877.
+  // Count and report only; delete nothing. The default.
   RETENTION_MODE_DRY_RUN = 1;
+  // Delete the records a dry run lists as eligible: past their class window
+  // and not kept by a legal hold. Only the stores outside the hash chain are
+  // swept (#2877); the audit_logs classes and evidence bundles are not.
+  RETENTION_MODE_ENFORCE = 2;
 }
 
 // RetentionSweepStatus is how one store came out of a sweep.
@@ -102,6 +106,11 @@ message RetentionStoreReport {
   int64 held = 8;
   // Why a store is not swept, or the error of a failed count.
   string note = 9;
+  // Records this sweep deleted. Always 0 unless the report's enforced flag is
+  // set. A store shared by two classes (a crew run) is deleted once, by the
+  // longer of the two windows, and reports the deletion on the class with
+  // that window.
+  int64 removed = 10;
 }
 
 // RetentionReport is the result of one sweep.
@@ -114,6 +123,33 @@ message RetentionReport {
   int64 active_holds = 4;
   // Every store, in class then store order.
   repeated RetentionStoreReport stores = 5;
+  // True when this sweep deleted the eligible records: the periodic sweep ran
+  // in ENFORCE mode. False for a count-only sweep (DRY_RUN mode, or a
+  // refresh=true preview, which never deletes).
+  bool enforced = 6;
+}
+
+// RetentionModeState is the daemon-wide retention mode.
+message RetentionModeState {
+  RetentionMode mode = 1;
+  // Unset until the first set, when the mode is the DRY_RUN default.
+  google.protobuf.Timestamp updated_at = 2;
+  string updated_by = 3;
+}
+
+message GetRetentionModeRequest {}
+
+message GetRetentionModeResponse {
+  RetentionModeState state = 1;
+}
+
+message SetRetentionModeRequest {
+  // DRY_RUN or ENFORCE; UNSPECIFIED or an unknown value is INVALID_ARGUMENT.
+  RetentionMode mode = 1;
+}
+
+message SetRetentionModeResponse {
+  RetentionModeState state = 1;
 }
 
 message GetRetentionReportRequest {
@@ -233,7 +269,28 @@ service RetentionService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get the retention report";
-      description: "Return the last dry-run sweep: per data class and store, how many records are past the class window, how many a legal hold keeps, and how many an enforcing sweep would remove. Nothing is deleted. The daemon sweeps periodically; refresh=true sweeps now. The hash-chained audit_logs classes and evidence bundles are listed as NOT_SWEPT with the slice that handles them. Admin role only.";
+      description: "Return the last sweep: per data class and store, how many records are past the class window, how many a legal hold keeps, and how many an enforcing sweep would remove (and, when the report's enforced flag is set, how many it removed). The daemon sweeps periodically and deletes only in ENFORCE mode; refresh=true runs a count-only preview now and never deletes. The hash-chained audit_logs classes and evidence bundles are listed as NOT_SWEPT with the slice that handles them. Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc GetRetentionMode(GetRetentionModeRequest) returns (GetRetentionModeResponse) {
+    option (google.api.http) = {
+      get: "/v1/retention/mode"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the retention mode";
+      description: "Return DRY_RUN (the default: sweeps count and delete nothing) or ENFORCE (sweeps delete the eligible records of the stores outside the hash chain). Admin role only.";
+      tags: "Retention";
+    };
+  }
+  rpc SetRetentionMode(SetRetentionModeRequest) returns (SetRetentionModeResponse) {
+    option (google.api.http) = {
+      put: "/v1/retention/mode"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the retention mode";
+      description: "Switch between DRY_RUN and ENFORCE. In ENFORCE the next periodic sweep permanently deletes records past their class window that no legal hold keeps, in agent_tasks, agent_task_results, crew_runs and the gateway traffic tables. UNSPECIFIED or an unknown mode is INVALID_ARGUMENT. With an audit store the change writes an audit entry naming the caller while it is still uncommitted, and a failed write fails the call with INTERNAL and nothing changes; with no audit store the change succeeds and writes no entry. Admin role only.";
       tags: "Retention";
     };
   }
