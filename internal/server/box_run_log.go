@@ -79,9 +79,11 @@ for f in "$d"/*.json; do
   if [ "$x" != - ] && grep -q -e '--output-format json' "$f" 2>/dev/null && open3 "${f%%.json}.log"; then
     res=$(head -c %d <&3 | base64 | tr -d '\n'); exec 3<&-
   fi
-  echo "R ${f##*/} ${r:--} ${x:--} ${sid:--} ${res:--}"
+  tl=-
+  if open3 "${f%%.json}.tools"; then tl=$(head -c %d <&3 | base64 | tr -d '\n'); exec 3<&-; fi
+  echo "R ${f##*/} ${r:--} ${x:--} ${sid:--} ${res:--} ${tl:--}"
 done
-`, shellSingleQuote(dir), boxRunOpenFn, boxRunResultReadLimit)
+`, shellSingleQuote(dir), boxRunOpenFn, boxRunResultReadLimit, boxRunToolsReadLimit)
 }
 
 // boxRunResultReadLimit caps how much of an exited structured run's log the
@@ -131,6 +133,7 @@ type boxRunView struct {
 	fileName  string
 	record    agentbox.RunRecord
 	sessionID string
+	tools     []*pb.BoxRunTool
 }
 
 func decodeB64Field(s string) ([]byte, error) {
@@ -159,7 +162,7 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 			}
 		case "R":
 			fields := strings.Fields(rest)
-			if len(fields) != 5 || !agentbox.IsCurrentRecordFile(fields[0]) {
+			if len(fields) != 6 || !agentbox.IsCurrentRecordFile(fields[0]) {
 				continue
 			}
 			name := strings.TrimSuffix(fields[0], ".json")
@@ -191,10 +194,17 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 					sessionID = id
 				}
 			}
+			// The run wrapper's own toolchain report (#2954); absent or malformed
+			// means no tools, never an error.
+			var tools []*pb.BoxRunTool
+			if toolBytes, err := decodeB64Field(fields[5]); err == nil && len(toolBytes) > 0 {
+				tools = parseBoxRunTools(toolBytes)
+			}
 			views = append(views, boxRunView{
 				fileName:  name,
 				record:    agentbox.FoldExitSidecar(record, sidecar),
 				sessionID: sessionID,
+				tools:     tools,
 			})
 		}
 	}
@@ -216,6 +226,7 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })
 		run := boxRunProto(v.fileName, dir, v.record, outcome)
 		run.SessionId = v.sessionID
+		run.Tools = v.tools
 		runs = append(runs, run)
 	}
 	return runs
