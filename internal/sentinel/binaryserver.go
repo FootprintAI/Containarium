@@ -40,6 +40,14 @@ type StatusJSON struct {
 	// it without scraping logs — alert on this being true. #341.
 	SentinelAuthMisconfigured bool   `json:"sentinel_auth_misconfigured"`
 	SentinelAuthDetail        string `json:"sentinel_auth_detail,omitempty"`
+	// PrimaryAuthHealth is, per primary, whether its last daemon-AUTH
+	// request authenticated or got 401 (#2892). Never secret-derived.
+	PrimaryAuthHealth []PrimaryAuthHealthJSON `json:"primary_auth_health"`
+	// UnattributedAuthFailures counts daemon-AUTH 401s that could not be
+	// tied to exactly one primary by source address (scanners, a daemon
+	// that never authenticated, several primaries behind one address).
+	UnattributedAuthFailures    uint64 `json:"unattributed_auth_failures"`
+	LastUnattributedAuthFailure string `json:"last_unattributed_auth_failure,omitempty"`
 }
 
 // buildBinaryServerMux registers every binary-server route on a fresh
@@ -100,17 +108,19 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// at all could otherwise read the full primary registry, overwrite any
 	// pool's declared routing target, or delete it outright.
 	// One handler covers both /sentinel/primaries and /sentinel/primaries/{pool}.
-	mux.Handle("/sentinel/primaries", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PrimariesHandler()))
-	mux.Handle("/sentinel/primaries/", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PrimariesHandler()))
+	// daemonAuthGate is SentinelHMACMiddleware over the same secret, plus
+	// per-primary auth-health recording for /status (#2892).
+	mux.Handle("/sentinel/primaries", manager.daemonAuthGate(manager.PrimariesHandler()))
+	mux.Handle("/sentinel/primaries/", manager.daemonAuthGate(manager.PrimariesHandler()))
 
 	// Phase 0.5: peer-CA distribution + leaf-cert issuance. Both
 	// gated by the existing HMAC middleware — the same secret that
 	// guards /authorized-keys and /certs. 503 when no CA is wired up
 	// (rollout mode), so daemons can detect the sentinel's
 	// capability without a separate feature flag.
-	mux.Handle("/sentinel/ca", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.CAHandler()))
-	mux.Handle("/sentinel/peer-cert", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PeerCertHandler()))
-	mux.Handle("/sentinel/fetch-release", auth.SentinelHMACMiddleware(manager.hmacSecret, fetchReleaseHandler(binaryPath)))
+	mux.Handle("/sentinel/ca", manager.daemonAuthGate(manager.CAHandler()))
+	mux.Handle("/sentinel/peer-cert", manager.daemonAuthGate(manager.PeerCertHandler()))
+	mux.Handle("/sentinel/fetch-release", manager.daemonAuthGate(fetchReleaseHandler(binaryPath)))
 
 	// Event-driven SSH key resync — a daemon calls this the moment its
 	// host-side authorized_keys set changes, so a freshly created box is
@@ -119,7 +129,7 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// authenticates the sentinel's own /authorized-keys pull; it triggers
 	// that pull rather than accepting key material, so it grants no
 	// authority the caller doesn't already have.
-	mux.Handle("/sentinel/keys/resync", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.KeyResyncHandler()))
+	mux.Handle("/sentinel/keys/resync", manager.daemonAuthGate(manager.KeyResyncHandler()))
 
 	// Runtime tunnel-token registration — gated by the separate
 	// admin secret (CONTAINARIUM_SENTINEL_ADMIN_SECRET), not the
@@ -205,6 +215,11 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 			status.SentinelAuthDetail = fmt.Sprintf(
 				"CONTAINARIUM_SENTINEL_AUTH_SECRET unset or < %d bytes; keysync/certsync to daemons is failing with 401",
 				auth.SentinelMinSecretLen)
+		}
+		var lastUnattributed time.Time
+		status.PrimaryAuthHealth, status.UnattributedAuthFailures, lastUnattributed = manager.authHealth.snapshot()
+		if !lastUnattributed.IsZero() {
+			status.LastUnattributedAuthFailure = lastUnattributed.Format(time.RFC3339)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
