@@ -127,6 +127,7 @@ func clonePolicy(p *pb.NetworkPolicy) *pb.NetworkPolicy {
 		DenyRules:        cloneDenyRules(p.GetDenyRules()),
 		AllowFromTenants: append([]string(nil), p.GetAllowFromTenants()...),
 		EgressPreset:     p.GetEgressPreset(),
+		EgressMode:       p.GetEgressMode(),
 	}
 }
 
@@ -218,6 +219,8 @@ func NewPostgresNetworkPolicyStore(ctx context.Context, pool *pgxpool.Pool) (*Po
 		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS allow_from_tenants TEXT[] NOT NULL DEFAULT '{}';
 		-- egress_preset: #2440 ready-made egress posture (0 = none).
 		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS egress_preset INTEGER NOT NULL DEFAULT 0;
+		-- egress_mode: mode of the egress allow-list alone (0 = follow mode).
+		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS egress_mode INTEGER NOT NULL DEFAULT 0;
 	`
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		return nil, fmt.Errorf("init network_policies schema: %w", err)
@@ -232,8 +235,8 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 	// existing tenant's deny rules untouched — so `set` never clobbers them and
 	// needs no client round-trip.
 	const q = `
-		INSERT INTO network_policies (tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, '[]'::jsonb, $8, $9, NOW())
+		INSERT INTO network_policies (tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset, egress_mode, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '[]'::jsonb, $8, $9, $10, NOW())
 		ON CONFLICT (tenant) DO UPDATE SET
 			allow_intra_tenant = EXCLUDED.allow_intra_tenant,
 			egress_cidrs = EXCLUDED.egress_cidrs,
@@ -243,6 +246,7 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 			source = EXCLUDED.source,
 			allow_from_tenants = EXCLUDED.allow_from_tenants,
 			egress_preset = EXCLUDED.egress_preset,
+			egress_mode = EXCLUDED.egress_mode,
 			updated_at = NOW()
 	`
 	// egress_cidrs / egress_domains are `TEXT[] NOT NULL DEFAULT '{}'`, but the
@@ -254,7 +258,8 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 	_, err := s.pool.Exec(ctx, q,
 		p.GetTenant(), p.GetAllowIntraTenant(),
 		nonNilStrings(p.GetEgressCidrs()), nonNilStrings(p.GetEgressDomains()), int32(p.GetMode()),
-		p.GetAllowMetadata(), p.GetSource(), nonNilStrings(p.GetAllowFromTenants()), int32(p.GetEgressPreset()))
+		p.GetAllowMetadata(), p.GetSource(), nonNilStrings(p.GetAllowFromTenants()), int32(p.GetEgressPreset()),
+		int32(p.GetEgressMode()))
 	if err != nil {
 		return fmt.Errorf("save network policy: %w", err)
 	}
@@ -271,12 +276,12 @@ func nonNilStrings(s []string) []string {
 }
 
 func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*pb.NetworkPolicy, error) {
-	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset
+	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset, egress_mode
 		FROM network_policies WHERE tenant = $1`
 	p := &pb.NetworkPolicy{}
-	var mode, preset int32
+	var mode, preset, egressMode int32
 	var denyJSON []byte
-	err := s.pool.QueryRow(ctx, q, tenant).Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset)
+	err := s.pool.QueryRow(ctx, q, tenant).Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset, &egressMode)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNetworkPolicyNotFound
@@ -285,6 +290,7 @@ func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*p
 	}
 	p.Mode = pb.NetworkPolicyMode(mode)
 	p.EgressPreset = pb.EgressPreset(preset)
+	p.EgressMode = pb.NetworkPolicyMode(egressMode)
 	if p.DenyRules, err = decodeDenyRules(denyJSON); err != nil {
 		return nil, err
 	}
@@ -292,7 +298,7 @@ func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*p
 }
 
 func (s *PostgresNetworkPolicyStore) List(ctx context.Context) ([]*pb.NetworkPolicy, error) {
-	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset
+	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset, egress_mode
 		FROM network_policies ORDER BY tenant`
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -302,13 +308,14 @@ func (s *PostgresNetworkPolicyStore) List(ctx context.Context) ([]*pb.NetworkPol
 	var out []*pb.NetworkPolicy
 	for rows.Next() {
 		p := &pb.NetworkPolicy{}
-		var mode, preset int32
+		var mode, preset, egressMode int32
 		var denyJSON []byte
-		if err := rows.Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset); err != nil {
+		if err := rows.Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset, &egressMode); err != nil {
 			return nil, fmt.Errorf("scan network policy: %w", err)
 		}
 		p.Mode = pb.NetworkPolicyMode(mode)
 		p.EgressPreset = pb.EgressPreset(preset)
+		p.EgressMode = pb.NetworkPolicyMode(egressMode)
 		if p.DenyRules, err = decodeDenyRules(denyJSON); err != nil {
 			return nil, err
 		}
@@ -335,16 +342,17 @@ func (s *PostgresNetworkPolicyStore) MutateDenyRules(ctx context.Context, tenant
 	}
 
 	p := &pb.NetworkPolicy{Tenant: tenant}
-	var mode, preset int32
+	var mode, preset, egressMode int32
 	var denyJSON []byte
-	err = tx.QueryRow(ctx, `SELECT allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset
+	err = tx.QueryRow(ctx, `SELECT allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, egress_preset, egress_mode
 		FROM network_policies WHERE tenant = $1 FOR UPDATE`, tenant).
-		Scan(&p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset)
+		Scan(&p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants, &preset, &egressMode)
 	if err != nil {
 		return nil, fmt.Errorf("lock policy: %w", err)
 	}
 	p.Mode = pb.NetworkPolicyMode(mode)
 	p.EgressPreset = pb.EgressPreset(preset)
+	p.EgressMode = pb.NetworkPolicyMode(egressMode)
 	existing, err := decodeDenyRules(denyJSON)
 	if err != nil {
 		return nil, err

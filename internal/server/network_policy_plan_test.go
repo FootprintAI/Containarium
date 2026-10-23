@@ -157,3 +157,46 @@ func TestDiffEgress(t *testing.T) {
 		t.Errorf("converged diff should be empty, got add=%v del=%v", add2, del2)
 	}
 }
+
+// TestPlanReconcile_EgressMode: egress_mode reaches the BPF config on its own,
+// unset follows mode, and the daemon-wide enforce guard downgrades both modes.
+func TestPlanReconcile_EgressMode(t *testing.T) {
+	const (
+		unset   = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+		logOnly = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+		enforce = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
+	)
+	cases := []struct {
+		name           string
+		mode, egress   pb.NetworkPolicyMode
+		armed          bool
+		wantMode, want uint8
+	}{
+		{"unset follows enforce", enforce, unset, true, netbpf.ModeEnforce, netbpf.ModeEnforce},
+		{"unset follows log-only", logOnly, unset, true, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"cross-tenant enforce, egress log-only", enforce, logOnly, true, netbpf.ModeEnforce, netbpf.ModeLogOnly},
+		{"cross-tenant log-only, egress enforce", logOnly, enforce, true, netbpf.ModeLogOnly, netbpf.ModeEnforce},
+		{"guard off downgrades both", enforce, enforce, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"guard off downgrades a followed egress", enforce, unset, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"guard off downgrades egress-only enforce", logOnly, enforce, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policies := map[string]netpolicy.CompiledPolicy{
+				"alice": compiled(t, &pb.NetworkPolicy{Tenant: "alice", Mode: tc.mode, EgressMode: tc.egress}),
+			}
+			views := []containerView{{Name: "alice-container", Tenant: "alice", TenantID: 1, Ifindex: 11, HasVeth: true, Running: true}}
+			cfg := planReconcile(views, policies, tc.armed).vethPolicy[11]
+			if cfg.Mode != tc.wantMode || cfg.EgressMode != tc.want {
+				t.Errorf("mode=%d egress=%d, want mode=%d egress=%d", cfg.Mode, cfg.EgressMode, tc.wantMode, tc.want)
+			}
+		})
+	}
+
+	// A container with no stored policy gets the Phase A default for both.
+	views := []containerView{{Name: "bob-container", Tenant: "bob", TenantID: 2, Ifindex: 20, HasVeth: true, Running: true}}
+	cfg := planReconcile(views, nil, true).vethPolicy[20]
+	if cfg.Mode != netbpf.ModeLogOnly || cfg.EgressMode != netbpf.ModeLogOnly {
+		t.Errorf("default cfg = %+v, want log-only for both modes", cfg)
+	}
+}

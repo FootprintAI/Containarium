@@ -21,6 +21,7 @@ type DenyEvent struct {
 	Proto    uint8  // IP protocol number (1=ICMP, 6=TCP, 17=UDP)
 	Reason   uint8  // why the flow was denied (DenyReason*); 0 on objects predating #660
 	SigID    uint16 // matched signature id when Reason==SIGNATURE, else 0 (#661); 0 on objects predating it
+	Verdict  uint8  // what the program actually did with the packet (DenyVerdict*); DenyVerdictUnknown on objects predating #2970
 
 	// LogOnly is NOT part of the wire struct: the program emits the event
 	// whether or not it drops, so the consumer sets this from the tenant's
@@ -39,6 +40,36 @@ const (
 	DenyReasonVirtualPatch uint8 = 1 // matched an explicit virtual-patch deny rule (#660)
 	DenyReasonSignature    uint8 = 2 // matched a cleartext exploit signature (#661, Tier 2)
 )
+
+// Verdicts carried in DenyEvent.Verdict — mirror the DENY_VERDICT_* #defines in
+// netpolicy.bpf.c. The program reports the verdict it actually applied, which
+// differs from the tenant-wide mode once mode and egress_mode differ (#2970):
+// an allow-list miss follows egress_mode, every other check follows mode. The
+// byte reuses the low half of the former pad2, so an object built before #2970
+// always emits 0 (DenyVerdictUnknown) and the consumer falls back to its own
+// tenant-wide guess.
+const (
+	DenyVerdictUnknown uint8 = 0 // not reported (older object or short sample)
+	DenyVerdictLogged  uint8 = 1 // observed only; the packet passed
+	DenyVerdictDropped uint8 = 2 // the packet was dropped (TC_ACT_SHOT)
+)
+
+// denyEventVerdictOffset is where the verdict byte sits in struct deny_event.
+const denyEventVerdictOffset = 22
+
+// Dropped reports whether the program dropped the packet. It trusts the
+// program-reported verdict, and only when the sample carried none (an older
+// object) uses fallback, the caller's tenant-wide "mode is ENFORCE" guess.
+func (e DenyEvent) Dropped(fallback bool) bool {
+	switch e.Verdict {
+	case DenyVerdictLogged:
+		return false
+	case DenyVerdictDropped:
+		return true
+	default:
+		return fallback
+	}
+}
 
 // denyEventSizeV1 is the wire size of struct deny_event through the Reason byte
 // (#660). #661 appends u16 sig_id + u16 pad (→ 24 bytes); decoding stays tolerant
@@ -65,6 +96,9 @@ func ParseDenyEvent(raw []byte) (DenyEvent, error) {
 	}
 	if len(raw) >= 22 { // #661 sig_id tail present
 		ev.SigID = b.Uint16(raw[20:22])
+	}
+	if len(raw) > denyEventVerdictOffset { // #2970 verdict byte present
+		ev.Verdict = raw[denyEventVerdictOffset]
 	}
 	return ev, nil
 }

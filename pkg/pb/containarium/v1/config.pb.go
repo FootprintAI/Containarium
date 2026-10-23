@@ -2879,7 +2879,17 @@ type NetworkPolicy struct {
 	AllowFromTenants []string `protobuf:"bytes,9,rep,name=allow_from_tenants,json=allowFromTenants,proto3" json:"allow_from_tenants,omitempty"`
 	// Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly
 	// as its lists say. See EgressPreset.
-	EgressPreset  EgressPreset `protobuf:"varint,10,opt,name=egress_preset,json=egressPreset,proto3,enum=containarium.v1.EgressPreset" json:"egress_preset,omitempty"`
+	EgressPreset EgressPreset `protobuf:"varint,10,opt,name=egress_preset,json=egressPreset,proto3,enum=containarium.v1.EgressPreset" json:"egress_preset,omitempty"`
+	// Enforcement mode for the egress allow-list ONLY. `mode` keeps governing
+	// the cross-tenant, intra-tenant, metadata, virtual-patch and signature
+	// checks; this field decides whether a flow to a destination outside the
+	// allow-list (egress_cidrs + resolved egress_domains) is dropped or only
+	// logged. It lets an operator soak a narrower allow-list in LOG_ONLY while
+	// the cross-tenant drop stays in ENFORCE. UNSPECIFIED (the default, and what
+	// every policy written before this field carries) means "follow `mode`", so
+	// existing policies behave exactly as before. The daemon-wide enforce guard
+	// downgrades ENFORCE here exactly as it does for `mode`.
+	EgressMode    NetworkPolicyMode `protobuf:"varint,11,opt,name=egress_mode,json=egressMode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"egress_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2982,6 +2992,13 @@ func (x *NetworkPolicy) GetEgressPreset() EgressPreset {
 		return x.EgressPreset
 	}
 	return EgressPreset_EGRESS_PRESET_UNSPECIFIED
+}
+
+func (x *NetworkPolicy) GetEgressMode() NetworkPolicyMode {
+	if x != nil {
+		return x.EgressMode
+	}
+	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a
@@ -5777,7 +5794,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\vlast_action\x18\v \x01(\tR\n" +
 	"lastAction\x129\n" +
 	"\n" +
-	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xcf\x03\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x94\x04\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
@@ -5790,7 +5807,9 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"deny_rules\x18\b \x03(\v2&.containarium.v1.NetworkPolicyDenyRuleR\tdenyRules\x12,\n" +
 	"\x12allow_from_tenants\x18\t \x03(\tR\x10allowFromTenants\x12B\n" +
 	"\regress_preset\x18\n" +
-	" \x01(\x0e2\x1d.containarium.v1.EgressPresetR\fegressPreset\"\x88\x01\n" +
+	" \x01(\x0e2\x1d.containarium.v1.EgressPresetR\fegressPreset\x12C\n" +
+	"\vegress_mode\x18\v \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\n" +
+	"egressMode\"\x88\x01\n" +
 	"\x15NetworkPolicyDenyRule\x12\x12\n" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\rR\x04port\x12\x14\n" +
@@ -6174,36 +6193,37 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	7,  // 29: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
 	37, // 30: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
 	8,  // 31: containarium.v1.NetworkPolicy.egress_preset:type_name -> containarium.v1.EgressPreset
-	36, // 32: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
-	36, // 33: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	36, // 34: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	36, // 35: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	37, // 36: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
-	47, // 37: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
-	47, // 38: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
-	47, // 39: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	60, // 40: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	58, // 41: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
-	56, // 42: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
-	55, // 43: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
-	22, // 44: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
-	57, // 45: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
-	59, // 46: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
-	54, // 47: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	59, // 48: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
-	58, // 49: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	58, // 50: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	77, // 51: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
-	58, // 52: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	56, // 53: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	56, // 54: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	74, // 55: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
-	73, // 56: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
-	57, // [57:57] is the sub-list for method output_type
-	57, // [57:57] is the sub-list for method input_type
-	57, // [57:57] is the sub-list for extension type_name
-	57, // [57:57] is the sub-list for extension extendee
-	0,  // [0:57] is the sub-list for field type_name
+	7,  // 32: containarium.v1.NetworkPolicy.egress_mode:type_name -> containarium.v1.NetworkPolicyMode
+	36, // 33: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
+	36, // 34: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	36, // 35: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	36, // 36: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
+	37, // 37: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
+	47, // 38: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
+	47, // 39: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
+	47, // 40: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
+	60, // 41: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	58, // 42: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	56, // 43: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	55, // 44: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
+	22, // 45: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
+	57, // 46: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
+	59, // 47: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	54, // 48: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	59, // 49: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	58, // 50: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	58, // 51: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	77, // 52: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
+	58, // 53: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	56, // 54: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	56, // 55: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	74, // 56: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	73, // 57: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	58, // [58:58] is the sub-list for method output_type
+	58, // [58:58] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
