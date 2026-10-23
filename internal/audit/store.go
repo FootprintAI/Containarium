@@ -151,7 +151,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON audit_logs(run_id);
 	`
 
-	_, err := s.pool.Exec(ctx, schema)
+	_, err := s.pool.Exec(ctx, schema+chainBaseSchema)
 	return err
 }
 
@@ -404,7 +404,28 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := s.pool.Query(ctx, `
+	// The base and the rows are read in one snapshot: a purge that commits
+	// between two separate reads would move the base after the rows were
+	// chosen, and the first retained row would then look like a break.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return -1, fmt.Errorf("audit: begin verify snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read-only snapshot
+
+	// After a retention purge (#2878) verification starts at the stored base,
+	// not at genesis: a from-id inside the purged range is clamped to it, and
+	// the first retained row must chain from the base hash.
+	base, purged, err := ReadChainBase(ctx, tx)
+	if err != nil {
+		return -1, err
+	}
+	atBase := purged && fromID <= base.ID
+	if atBase {
+		fromID = base.ID
+	}
+
+	rows, err := tx.Query(ctx, `
 		SELECT id, timestamp, username, action, resource_type,
 		       resource_id, detail, source_ip, status_code,
 		       actor, delegation_chain, token_id, org_id, run_id,
@@ -442,9 +463,12 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 	// reach back beyond the WHERE without an extra query. The
 	// VerifyChain helper compares prev_hash to the value passed
 	// in. For a fromID=0 verification, the first row's
-	// prev_hash should be HashEmpty.
+	// prev_hash should be HashEmpty; on a purged chain it is the base hash.
 	expectedRoot := entries[0].PrevHash
-	if fromID == 0 {
+	switch {
+	case atBase:
+		expectedRoot = base.Hash
+	case fromID == 0:
 		expectedRoot = HashEmpty
 	}
 	return VerifyChain(entries, expectedRoot)
@@ -587,6 +611,15 @@ func (s *Store) Close() {
 func (s *Store) RowHashAt(ctx context.Context, id int64) (hash string, found bool, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT row_hash FROM audit_logs WHERE id = $1`, id).Scan(&hash)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The last purged row (#2878) is gone, but its hash is the chain
+		// base, so an anchor at exactly that checkpoint can still be checked.
+		base, purged, berr := s.ChainBase(ctx)
+		if berr != nil {
+			return "", false, berr
+		}
+		if purged && base.ID == id {
+			return base.Hash, true, nil
+		}
 		return "", false, nil
 	}
 	if err != nil {

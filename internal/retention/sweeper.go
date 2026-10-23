@@ -80,11 +80,13 @@ type Unswept struct {
 	Note  string
 }
 
-// ChainAndBundles lists the classes the dry-run sweeper does not count: the
+// ChainAndBundles lists the classes the sweeper does not count by default: the
 // hash-chained audit_logs classes (slice D, #2878) and evidence bundles
-// (slice E, #2879; no bundle store exists yet).
+// (slice E, #2879; no bundle store exists yet). The chained classes drop off
+// the list when a PrefixSource for audit_logs is added, which the daemon does
+// once it has an audit store.
 func ChainAndBundles() []Unswept {
-	const chained = "in the hash-chained audit_logs: only the oldest rows below the latest anchor can be removed, with a stored chain base; handled by #2878"
+	const chained = "in the hash-chained audit_logs: only the oldest rows below the latest anchor can be purged, with a stored chain base (#2878). This daemon has no audit store (it needs Postgres with REST enabled), so it is not swept"
 	return []Unswept{
 		{Class: pb.RetentionClass_RETENTION_CLASS_GATEWAY_LOGS, Store: "audit_logs", Note: chained},
 		{Class: pb.RetentionClass_RETENTION_CLASS_SESSION_TRANSCRIPTS, Store: "audit_logs", Note: chained},
@@ -100,8 +102,10 @@ type Sweeper struct {
 	store   Store
 	sources []Source
 	unswept []Unswept
-	audit   Auditor
-	now     func() time.Time
+	// prefixes are the stores swept as one ordered history (#2878).
+	prefixes []PrefixSource
+	audit    Auditor
+	now      func() time.Time
 }
 
 // SetAuditor wires the audit entry an enforced sweep writes. With none, an
@@ -130,6 +134,28 @@ type counted struct {
 	entry  *pb.RetentionStoreReport
 	src    Source
 	cutoff time.Time
+}
+
+// countedPrefix pairs a PrefixSource with the report entries and cutoffs of its
+// classes.
+type countedPrefix struct {
+	src     PrefixSource
+	cutoffs map[pb.RetentionClass]time.Time
+	entries map[pb.RetentionClass]*pb.RetentionStoreReport
+}
+
+// skipReason is non-empty when a class of the store was not counted or has no
+// window, which stops the store being removed from.
+func (c countedPrefix) skipReason() string {
+	for _, e := range c.entries {
+		if e.GetStatus() != pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
+			return "not removed: counting this store failed"
+		}
+		if e.GetWindowDays() < 1 {
+			return "not removed: the class has no retention window"
+		}
+	}
+	return ""
 }
 
 func (s *Sweeper) run(ctx context.Context, mayRemove bool) (*pb.RetentionReport, error) {
@@ -183,7 +209,40 @@ func (s *Sweeper) run(ctx context.Context, mayRemove bool) (*pb.RetentionReport,
 		rep.Stores = append(rep.Stores, entry)
 		swept = append(swept, counted{entry: entry, src: src, cutoff: cutoff})
 	}
+	var prefixed []countedPrefix
+	for _, p := range s.prefixes {
+		cp := countedPrefix{src: p, cutoffs: map[pb.RetentionClass]time.Time{}, entries: map[pb.RetentionClass]*pb.RetentionStoreReport{}}
+		for _, class := range p.Classes() {
+			d := days[class]
+			cutoff := now.AddDate(0, 0, -int(d))
+			cp.cutoffs[class] = cutoff
+			cp.entries[class] = &pb.RetentionStoreReport{
+				Class:      class,
+				Store:      p.Store(),
+				Status:     pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: d,
+				Cutoff:     timestamppb.New(cutoff),
+			}
+		}
+		pc, err := p.CountPrefix(ctx, cp.cutoffs, heldOrgs)
+		for _, class := range p.Classes() {
+			entry := cp.entries[class]
+			if err != nil {
+				entry.Status = pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_ERROR
+				entry.Note = err.Error()
+			} else {
+				c := pc.ByClass[class]
+				entry.OlderThanCutoff, entry.Eligible, entry.Held = c.Older, c.Eligible, c.Older-c.Eligible
+				entry.Note, entry.ChainBase = pc.Note, pc.Base
+			}
+			rep.Stores = append(rep.Stores, entry)
+		}
+		prefixed = append(prefixed, cp)
+	}
 	for _, u := range s.unswept {
+		if s.coveredByPrefix(u) {
+			continue
+		}
 		rep.Stores = append(rep.Stores, &pb.RetentionStoreReport{
 			Class:      u.Class,
 			Store:      u.Store,
@@ -200,7 +259,7 @@ func (s *Sweeper) run(ctx context.Context, mayRemove bool) (*pb.RetentionReport,
 		return a.GetStore() < b.GetStore()
 	})
 	if mayRemove && modeState.GetMode() == pb.RetentionMode_RETENTION_MODE_ENFORCE {
-		if err := s.enforce(ctx, rep, swept, heldOrgs); err != nil {
+		if err := s.enforce(ctx, rep, swept, prefixed, heldOrgs); err != nil {
 			return nil, err
 		}
 	}
@@ -216,7 +275,7 @@ var ErrNoAuditor = errors.New("enforce mode needs an audit store (Postgres with 
 // the longer of its classes' windows, so neither class loses a record early.
 // It fails closed: with no auditor, or when the audit write fails, nothing is
 // removed; with nothing eligible it neither audits nor removes.
-func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []counted, heldOrgs []string) error {
+func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []counted, prefixed []countedPrefix, heldOrgs []string) error {
 	var order []string
 	byStore := map[string][]counted{}
 	var eligible int64
@@ -230,6 +289,13 @@ func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []
 		byStore[c.src.Store()] = append(byStore[c.src.Store()], c)
 		if c.entry.GetStatus() == pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
 			eligible += c.entry.GetEligible()
+		}
+	}
+	for _, cp := range prefixed {
+		for _, e := range cp.entries {
+			if e.GetStatus() == pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED {
+				eligible += e.GetEligible()
+			}
 		}
 	}
 	if s.audit == nil {
@@ -289,7 +355,54 @@ func (s *Sweeper) enforce(ctx context.Context, rep *pb.RetentionReport, swept []
 			}
 		}
 	}
+	for _, cp := range prefixed {
+		s.removePrefix(ctx, cp, heldOrgs)
+	}
 	return nil
+}
+
+// removePrefix removes the prefix of one PrefixSource and writes the outcome
+// onto its classes' entries. Like the per-store removal it skips a store whose
+// count failed or whose class has no window, and reports a skip or an error
+// instead of leaving a silent zero.
+func (s *Sweeper) removePrefix(ctx context.Context, cp countedPrefix, heldOrgs []string) {
+	if skip := cp.skipReason(); skip != "" {
+		for _, e := range cp.entries {
+			e.Note = skip
+		}
+		return
+	}
+	res, err := cp.src.RemovePrefix(ctx, cp.cutoffs, heldOrgs, MaxRemovePerStore)
+	for class, e := range cp.entries {
+		// Rows may have gone before a failure; report them.
+		e.Removed = res.RemovedByClass[class]
+		if res.Base != nil {
+			e.ChainBase = res.Base
+		}
+		switch {
+		case err != nil:
+			e.Status = pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_ERROR
+			e.Note = err.Error()
+		case res.Skipped != "":
+			e.Note = "not removed: " + res.Skipped
+		}
+	}
+}
+
+// coveredByPrefix reports whether a PrefixSource sweeps u's class in u's
+// store, in which case u must not also be listed as not swept.
+func (s *Sweeper) coveredByPrefix(u Unswept) bool {
+	for _, p := range s.prefixes {
+		if p.Store() != u.Store {
+			continue
+		}
+		for _, c := range p.Classes() {
+			if c == u.Class {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Reporter keeps the last report of a Sweeper and sweeps on a ticker.
@@ -305,6 +418,10 @@ func NewReporter(s *Sweeper) *Reporter { return &Reporter{sweeper: s} }
 
 // SetAuditor wires the audit entry of an enforced sweep (see Sweeper.SetAuditor).
 func (r *Reporter) SetAuditor(a Auditor) { r.sweeper.SetAuditor(a) }
+
+// AddPrefixSource wires a PrefixSource into the reporter's sweeper (see
+// Sweeper.AddPrefixSource). Call it before Run.
+func (r *Reporter) AddPrefixSource(p PrefixSource) { r.sweeper.AddPrefixSource(p) }
 
 // Last returns the kept report, nil before the first sweep.
 func (r *Reporter) Last() *pb.RetentionReport {

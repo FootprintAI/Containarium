@@ -156,6 +156,10 @@ const (
 	// FindingUnrecognisedObject: an object under the prefix is not named like
 	// an anchor. Never counted as an anchor.
 	FindingUnrecognisedObject
+	// FindingBelowChainBase: anchored checkpoints lie below the chain base, so
+	// their rows were purged by retention (#2878). They are compared between
+	// the bucket and the local file, not with the database.
+	FindingBelowChainBase
 )
 
 func (k BucketFindingKind) String() string {
@@ -176,6 +180,8 @@ func (k BucketFindingKind) String() string {
 		return "no-locked-retention"
 	case FindingUnrecognisedObject:
 		return "unrecognised-object"
+	case FindingBelowChainBase:
+		return "below-chain-base"
 	}
 	return "unspecified"
 }
@@ -205,6 +211,10 @@ type BucketAnchorReport struct {
 	// check of the rows logged after it starts.
 	TailCheckpoint int64
 	TailRoot       string
+	// BelowChainBase counts the anchored checkpoints (in either copy) below the
+	// chain base, whose rows retention purged (#2878). They are not compared
+	// with the database.
+	BelowChainBase int
 }
 
 // OK reports whether there are no failures.
@@ -243,6 +253,18 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 	if err != nil {
 		return r, fmt.Errorf("audit: max row id: %w", err)
 	}
+	// After a retention purge (#2878) the rows below the base are gone. A
+	// checkpoint there is not a deleted row; the base itself is served by
+	// RowHashAt as the hash of the last purged row.
+	var base ChainBase
+	var purged bool
+	if br, ok := chain.(ChainBaseReader); ok {
+		if base, purged, err = br.ChainBase(ctx); err != nil {
+			return r, err
+		}
+	}
+	belowBase := func(cp int64) bool { return purged && cp < base.ID }
+	belowSeen := map[int64]bool{}
 
 	localRoots := make(map[int64][]string, len(localCPs))
 	for _, c := range localCPs {
@@ -264,25 +286,29 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 				Detail: fmt.Sprintf("the bucket holds a checkpoint above the database's highest row id %d; the daemon cannot have anchored it", maxID)})
 			continue
 		}
-		r.CheckedCheckpoints++
-		if b.Checkpoint > r.LatestCheckpoint {
-			r.LatestCheckpoint, r.LatestRoot = b.Checkpoint, b.Root
-		}
-		if b.Checkpoint > r.TailCheckpoint {
-			r.TailCheckpoint, r.TailRoot = b.Checkpoint, b.Root
-		}
+		if belowBase(b.Checkpoint) {
+			belowSeen[b.Checkpoint] = true
+		} else {
+			r.CheckedCheckpoints++
+			if b.Checkpoint > r.LatestCheckpoint {
+				r.LatestCheckpoint, r.LatestRoot = b.Checkpoint, b.Root
+			}
+			if b.Checkpoint > r.TailCheckpoint {
+				r.TailCheckpoint, r.TailRoot = b.Checkpoint, b.Root
+			}
 
-		dbRoot, found, err := chain.RowHashAt(ctx, b.Checkpoint)
-		if err != nil {
-			return r, fmt.Errorf("audit: row hash at anchored checkpoint %d: %w", b.Checkpoint, err)
-		}
-		switch {
-		case !found:
-			r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: b.Checkpoint,
-				Detail: "the anchored row no longer exists in the database"})
-		case dbRoot != b.Root:
-			r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: b.Checkpoint,
-				Detail: "the database row's hash differs from the anchored root"})
+			dbRoot, found, err := chain.RowHashAt(ctx, b.Checkpoint)
+			if err != nil {
+				return r, fmt.Errorf("audit: row hash at anchored checkpoint %d: %w", b.Checkpoint, err)
+			}
+			switch {
+			case !found:
+				r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: b.Checkpoint,
+					Detail: "the anchored row no longer exists in the database"})
+			case dbRoot != b.Root:
+				r.Failures = append(r.Failures, BucketAnchorFinding{Kind: FindingDatabaseRootDiffers, Checkpoint: b.Checkpoint,
+					Detail: "the database row's hash differs from the anchored root"})
+			}
 		}
 
 		roots := localRoots[b.Checkpoint]
@@ -316,6 +342,10 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 	}
 	sort.Slice(localOnly, func(i, j int) bool { return localOnly[i] < localOnly[j] })
 	for _, cp := range localOnly {
+		if belowBase(cp) {
+			belowSeen[cp] = true
+			continue
+		}
 		dbRoot, found, err := chain.RowHashAt(ctx, cp)
 		if err != nil {
 			return r, fmt.Errorf("audit: row hash at anchored checkpoint %d: %w", cp, err)
@@ -335,6 +365,11 @@ func VerifyAnchorsAgainstBucket(ctx context.Context, chain ChainStore, local *Fi
 	if n := len(localOnly); n > 0 {
 		r.Warnings = append(r.Warnings, BucketAnchorFinding{Kind: FindingLocalNewerThanBucket, Checkpoint: localOnly[n-1],
 			Detail: fmt.Sprintf("%d local checkpoint(s) are not in the bucket (latest bucket checkpoint %d), so the bucket does not vouch for them; they were checked against the database only. A failed upload is retried on the next anchoring tick", n, r.LatestCheckpoint)})
+	}
+
+	if r.BelowChainBase = len(belowSeen); r.BelowChainBase > 0 {
+		r.Warnings = append(r.Warnings, BucketAnchorFinding{Kind: FindingBelowChainBase,
+			Detail: fmt.Sprintf("%d anchored checkpoint(s) lie below the chain base id=%d (rows purged by retention); they are compared between the bucket and the local file, not with the database", r.BelowChainBase, base.ID)})
 	}
 
 	st, lockErr := bucket.CheckRetentionLock(ctx)

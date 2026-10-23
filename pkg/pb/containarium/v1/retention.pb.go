@@ -432,7 +432,10 @@ type RetentionStoreReport struct {
 	// set. A store shared by two classes (a crew run) is deleted once, by the
 	// longer of the two windows, and reports the deletion on the class with
 	// that window.
-	Removed       int64 `protobuf:"varint,10,opt,name=removed,proto3" json:"removed,omitempty"`
+	Removed int64 `protobuf:"varint,10,opt,name=removed,proto3" json:"removed,omitempty"`
+	// For the hash-chained audit_logs only (#2878): where verification of the
+	// retained chain starts after a purge. Unset until the first purge.
+	ChainBase     *RetentionChainBase `protobuf:"bytes,11,opt,name=chain_base,json=chainBase,proto3" json:"chain_base,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -537,6 +540,90 @@ func (x *RetentionStoreReport) GetRemoved() int64 {
 	return 0
 }
 
+func (x *RetentionStoreReport) GetChainBase() *RetentionChainBase {
+	if x != nil {
+		return x.ChainBase
+	}
+	return nil
+}
+
+// RetentionChainBase is the stored starting root of the hash-chained
+// audit_logs after retention purged its oldest rows (#2878, #2420). The base is
+// the id and hash of the LAST purged row; the first retained row's prev_hash is
+// that hash, so `containarium audit verify` and `audit verify-anchor` start
+// from it. It records where verification starts, not why the rows before it
+// are gone: every purge also writes a retention.sweep audit entry.
+type RetentionChainBase struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id of the last purged audit_logs row. Every retained row has a higher id.
+	BaseId int64 `protobuf:"varint,1,opt,name=base_id,json=baseId,proto3" json:"base_id,omitempty"`
+	// That row's row hash; empty when every purged row predates the chain.
+	BaseHash string                 `protobuf:"bytes,2,opt,name=base_hash,json=baseHash,proto3" json:"base_hash,omitempty"`
+	PurgedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=purged_at,json=purgedAt,proto3" json:"purged_at,omitempty"`
+	// Rows purged in total, over every purge.
+	RowsPurged    int64 `protobuf:"varint,4,opt,name=rows_purged,json=rowsPurged,proto3" json:"rows_purged,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetentionChainBase) Reset() {
+	*x = RetentionChainBase{}
+	mi := &file_containarium_v1_retention_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetentionChainBase) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetentionChainBase) ProtoMessage() {}
+
+func (x *RetentionChainBase) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_retention_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetentionChainBase.ProtoReflect.Descriptor instead.
+func (*RetentionChainBase) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RetentionChainBase) GetBaseId() int64 {
+	if x != nil {
+		return x.BaseId
+	}
+	return 0
+}
+
+func (x *RetentionChainBase) GetBaseHash() string {
+	if x != nil {
+		return x.BaseHash
+	}
+	return ""
+}
+
+func (x *RetentionChainBase) GetPurgedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.PurgedAt
+	}
+	return nil
+}
+
+func (x *RetentionChainBase) GetRowsPurged() int64 {
+	if x != nil {
+		return x.RowsPurged
+	}
+	return 0
+}
+
 // RetentionReport is the result of one sweep.
 type RetentionReport struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
@@ -558,7 +645,7 @@ type RetentionReport struct {
 
 func (x *RetentionReport) Reset() {
 	*x = RetentionReport{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[4]
+	mi := &file_containarium_v1_retention_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -570,7 +657,7 @@ func (x *RetentionReport) String() string {
 func (*RetentionReport) ProtoMessage() {}
 
 func (x *RetentionReport) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[4]
+	mi := &file_containarium_v1_retention_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -583,7 +670,7 @@ func (x *RetentionReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetentionReport.ProtoReflect.Descriptor instead.
 func (*RetentionReport) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RetentionReport) GetMode() RetentionMode {
@@ -641,7 +728,7 @@ type RetentionModeState struct {
 
 func (x *RetentionModeState) Reset() {
 	*x = RetentionModeState{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[5]
+	mi := &file_containarium_v1_retention_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -653,7 +740,7 @@ func (x *RetentionModeState) String() string {
 func (*RetentionModeState) ProtoMessage() {}
 
 func (x *RetentionModeState) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[5]
+	mi := &file_containarium_v1_retention_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -666,7 +753,7 @@ func (x *RetentionModeState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetentionModeState.ProtoReflect.Descriptor instead.
 func (*RetentionModeState) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RetentionModeState) GetMode() RetentionMode {
@@ -698,7 +785,7 @@ type GetRetentionModeRequest struct {
 
 func (x *GetRetentionModeRequest) Reset() {
 	*x = GetRetentionModeRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[6]
+	mi := &file_containarium_v1_retention_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -710,7 +797,7 @@ func (x *GetRetentionModeRequest) String() string {
 func (*GetRetentionModeRequest) ProtoMessage() {}
 
 func (x *GetRetentionModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[6]
+	mi := &file_containarium_v1_retention_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -723,7 +810,7 @@ func (x *GetRetentionModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionModeRequest.ProtoReflect.Descriptor instead.
 func (*GetRetentionModeRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{7}
 }
 
 type GetRetentionModeResponse struct {
@@ -735,7 +822,7 @@ type GetRetentionModeResponse struct {
 
 func (x *GetRetentionModeResponse) Reset() {
 	*x = GetRetentionModeResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[7]
+	mi := &file_containarium_v1_retention_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +834,7 @@ func (x *GetRetentionModeResponse) String() string {
 func (*GetRetentionModeResponse) ProtoMessage() {}
 
 func (x *GetRetentionModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[7]
+	mi := &file_containarium_v1_retention_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +847,7 @@ func (x *GetRetentionModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionModeResponse.ProtoReflect.Descriptor instead.
 func (*GetRetentionModeResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{7}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetRetentionModeResponse) GetState() *RetentionModeState {
@@ -780,7 +867,7 @@ type SetRetentionModeRequest struct {
 
 func (x *SetRetentionModeRequest) Reset() {
 	*x = SetRetentionModeRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[8]
+	mi := &file_containarium_v1_retention_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -792,7 +879,7 @@ func (x *SetRetentionModeRequest) String() string {
 func (*SetRetentionModeRequest) ProtoMessage() {}
 
 func (x *SetRetentionModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[8]
+	mi := &file_containarium_v1_retention_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -805,7 +892,7 @@ func (x *SetRetentionModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRetentionModeRequest.ProtoReflect.Descriptor instead.
 func (*SetRetentionModeRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{8}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SetRetentionModeRequest) GetMode() RetentionMode {
@@ -824,7 +911,7 @@ type SetRetentionModeResponse struct {
 
 func (x *SetRetentionModeResponse) Reset() {
 	*x = SetRetentionModeResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[9]
+	mi := &file_containarium_v1_retention_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -836,7 +923,7 @@ func (x *SetRetentionModeResponse) String() string {
 func (*SetRetentionModeResponse) ProtoMessage() {}
 
 func (x *SetRetentionModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[9]
+	mi := &file_containarium_v1_retention_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -849,7 +936,7 @@ func (x *SetRetentionModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRetentionModeResponse.ProtoReflect.Descriptor instead.
 func (*SetRetentionModeResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SetRetentionModeResponse) GetState() *RetentionModeState {
@@ -869,7 +956,7 @@ type GetRetentionReportRequest struct {
 
 func (x *GetRetentionReportRequest) Reset() {
 	*x = GetRetentionReportRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[10]
+	mi := &file_containarium_v1_retention_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -881,7 +968,7 @@ func (x *GetRetentionReportRequest) String() string {
 func (*GetRetentionReportRequest) ProtoMessage() {}
 
 func (x *GetRetentionReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[10]
+	mi := &file_containarium_v1_retention_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -894,7 +981,7 @@ func (x *GetRetentionReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionReportRequest.ProtoReflect.Descriptor instead.
 func (*GetRetentionReportRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetRetentionReportRequest) GetRefresh() bool {
@@ -913,7 +1000,7 @@ type GetRetentionReportResponse struct {
 
 func (x *GetRetentionReportResponse) Reset() {
 	*x = GetRetentionReportResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[11]
+	mi := &file_containarium_v1_retention_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -925,7 +1012,7 @@ func (x *GetRetentionReportResponse) String() string {
 func (*GetRetentionReportResponse) ProtoMessage() {}
 
 func (x *GetRetentionReportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[11]
+	mi := &file_containarium_v1_retention_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -938,7 +1025,7 @@ func (x *GetRetentionReportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionReportResponse.ProtoReflect.Descriptor instead.
 func (*GetRetentionReportResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetRetentionReportResponse) GetReport() *RetentionReport {
@@ -956,7 +1043,7 @@ type GetRetentionPolicyRequest struct {
 
 func (x *GetRetentionPolicyRequest) Reset() {
 	*x = GetRetentionPolicyRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[12]
+	mi := &file_containarium_v1_retention_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -968,7 +1055,7 @@ func (x *GetRetentionPolicyRequest) String() string {
 func (*GetRetentionPolicyRequest) ProtoMessage() {}
 
 func (x *GetRetentionPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[12]
+	mi := &file_containarium_v1_retention_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -981,7 +1068,7 @@ func (x *GetRetentionPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetRetentionPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{13}
 }
 
 type GetRetentionPolicyResponse struct {
@@ -993,7 +1080,7 @@ type GetRetentionPolicyResponse struct {
 
 func (x *GetRetentionPolicyResponse) Reset() {
 	*x = GetRetentionPolicyResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[13]
+	mi := &file_containarium_v1_retention_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1005,7 +1092,7 @@ func (x *GetRetentionPolicyResponse) String() string {
 func (*GetRetentionPolicyResponse) ProtoMessage() {}
 
 func (x *GetRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[13]
+	mi := &file_containarium_v1_retention_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1018,7 +1105,7 @@ func (x *GetRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRetentionPolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetRetentionPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetRetentionPolicyResponse) GetPolicy() *RetentionPolicy {
@@ -1040,7 +1127,7 @@ type SetRetentionPolicyRequest struct {
 
 func (x *SetRetentionPolicyRequest) Reset() {
 	*x = SetRetentionPolicyRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[14]
+	mi := &file_containarium_v1_retention_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1052,7 +1139,7 @@ func (x *SetRetentionPolicyRequest) String() string {
 func (*SetRetentionPolicyRequest) ProtoMessage() {}
 
 func (x *SetRetentionPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[14]
+	mi := &file_containarium_v1_retention_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1065,7 +1152,7 @@ func (x *SetRetentionPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRetentionPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetRetentionPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SetRetentionPolicyRequest) GetWindows() []*RetentionWindow {
@@ -1084,7 +1171,7 @@ type SetRetentionPolicyResponse struct {
 
 func (x *SetRetentionPolicyResponse) Reset() {
 	*x = SetRetentionPolicyResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[15]
+	mi := &file_containarium_v1_retention_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1096,7 +1183,7 @@ func (x *SetRetentionPolicyResponse) String() string {
 func (*SetRetentionPolicyResponse) ProtoMessage() {}
 
 func (x *SetRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[15]
+	mi := &file_containarium_v1_retention_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1109,7 +1196,7 @@ func (x *SetRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRetentionPolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetRetentionPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{15}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SetRetentionPolicyResponse) GetPolicy() *RetentionPolicy {
@@ -1127,7 +1214,7 @@ type ListLegalHoldsRequest struct {
 
 func (x *ListLegalHoldsRequest) Reset() {
 	*x = ListLegalHoldsRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[16]
+	mi := &file_containarium_v1_retention_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1139,7 +1226,7 @@ func (x *ListLegalHoldsRequest) String() string {
 func (*ListLegalHoldsRequest) ProtoMessage() {}
 
 func (x *ListLegalHoldsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[16]
+	mi := &file_containarium_v1_retention_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1152,7 +1239,7 @@ func (x *ListLegalHoldsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLegalHoldsRequest.ProtoReflect.Descriptor instead.
 func (*ListLegalHoldsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{17}
 }
 
 type ListLegalHoldsResponse struct {
@@ -1165,7 +1252,7 @@ type ListLegalHoldsResponse struct {
 
 func (x *ListLegalHoldsResponse) Reset() {
 	*x = ListLegalHoldsResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[17]
+	mi := &file_containarium_v1_retention_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1177,7 +1264,7 @@ func (x *ListLegalHoldsResponse) String() string {
 func (*ListLegalHoldsResponse) ProtoMessage() {}
 
 func (x *ListLegalHoldsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[17]
+	mi := &file_containarium_v1_retention_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1190,7 +1277,7 @@ func (x *ListLegalHoldsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLegalHoldsResponse.ProtoReflect.Descriptor instead.
 func (*ListLegalHoldsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListLegalHoldsResponse) GetHolds() []*LegalHold {
@@ -1212,7 +1299,7 @@ type SetLegalHoldRequest struct {
 
 func (x *SetLegalHoldRequest) Reset() {
 	*x = SetLegalHoldRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[18]
+	mi := &file_containarium_v1_retention_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1224,7 +1311,7 @@ func (x *SetLegalHoldRequest) String() string {
 func (*SetLegalHoldRequest) ProtoMessage() {}
 
 func (x *SetLegalHoldRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[18]
+	mi := &file_containarium_v1_retention_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1237,7 +1324,7 @@ func (x *SetLegalHoldRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLegalHoldRequest.ProtoReflect.Descriptor instead.
 func (*SetLegalHoldRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetLegalHoldRequest) GetOrgId() string {
@@ -1263,7 +1350,7 @@ type SetLegalHoldResponse struct {
 
 func (x *SetLegalHoldResponse) Reset() {
 	*x = SetLegalHoldResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[19]
+	mi := &file_containarium_v1_retention_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1275,7 +1362,7 @@ func (x *SetLegalHoldResponse) String() string {
 func (*SetLegalHoldResponse) ProtoMessage() {}
 
 func (x *SetLegalHoldResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[19]
+	mi := &file_containarium_v1_retention_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1288,7 +1375,7 @@ func (x *SetLegalHoldResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLegalHoldResponse.ProtoReflect.Descriptor instead.
 func (*SetLegalHoldResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetLegalHoldResponse) GetHold() *LegalHold {
@@ -1307,7 +1394,7 @@ type ReleaseLegalHoldRequest struct {
 
 func (x *ReleaseLegalHoldRequest) Reset() {
 	*x = ReleaseLegalHoldRequest{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[20]
+	mi := &file_containarium_v1_retention_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1319,7 +1406,7 @@ func (x *ReleaseLegalHoldRequest) String() string {
 func (*ReleaseLegalHoldRequest) ProtoMessage() {}
 
 func (x *ReleaseLegalHoldRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[20]
+	mi := &file_containarium_v1_retention_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1332,7 +1419,7 @@ func (x *ReleaseLegalHoldRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseLegalHoldRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseLegalHoldRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReleaseLegalHoldRequest) GetOrgId() string {
@@ -1352,7 +1439,7 @@ type ReleaseLegalHoldResponse struct {
 
 func (x *ReleaseLegalHoldResponse) Reset() {
 	*x = ReleaseLegalHoldResponse{}
-	mi := &file_containarium_v1_retention_proto_msgTypes[21]
+	mi := &file_containarium_v1_retention_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1364,7 +1451,7 @@ func (x *ReleaseLegalHoldResponse) String() string {
 func (*ReleaseLegalHoldResponse) ProtoMessage() {}
 
 func (x *ReleaseLegalHoldResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_retention_proto_msgTypes[21]
+	mi := &file_containarium_v1_retention_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1377,7 +1464,7 @@ func (x *ReleaseLegalHoldResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseLegalHoldResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseLegalHoldResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_retention_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ReleaseLegalHoldResponse) GetHold() *LegalHold {
@@ -1408,7 +1495,7 @@ const file_containarium_v1_retention_proto_rawDesc = "" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x15\n" +
 	"\x06set_by\x18\x03 \x01(\tR\x05setBy\x121\n" +
-	"\x06set_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05setAt\"\x81\x03\n" +
+	"\x06set_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05setAt\"\xc5\x03\n" +
 	"\x14RetentionStoreReport\x125\n" +
 	"\x05class\x18\x01 \x01(\x0e2\x1f.containarium.v1.RetentionClassR\x05class\x12\x14\n" +
 	"\x05store\x18\x02 \x01(\tR\x05store\x12=\n" +
@@ -1421,7 +1508,15 @@ const file_containarium_v1_retention_proto_rawDesc = "" +
 	"\x04held\x18\b \x01(\x03R\x04held\x12\x12\n" +
 	"\x04note\x18\t \x01(\tR\x04note\x12\x18\n" +
 	"\aremoved\x18\n" +
-	" \x01(\x03R\aremoved\"\xab\x02\n" +
+	" \x01(\x03R\aremoved\x12B\n" +
+	"\n" +
+	"chain_base\x18\v \x01(\v2#.containarium.v1.RetentionChainBaseR\tchainBase\"\xa4\x01\n" +
+	"\x12RetentionChainBase\x12\x17\n" +
+	"\abase_id\x18\x01 \x01(\x03R\x06baseId\x12\x1b\n" +
+	"\tbase_hash\x18\x02 \x01(\tR\bbaseHash\x127\n" +
+	"\tpurged_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bpurgedAt\x12\x1f\n" +
+	"\vrows_purged\x18\x04 \x01(\x03R\n" +
+	"rowsPurged\"\xab\x02\n" +
 	"\x0fRetentionReport\x122\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1e.containarium.v1.RetentionModeR\x04mode\x12=\n" +
 	"\fgenerated_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x12'\n" +
@@ -1512,7 +1607,7 @@ func file_containarium_v1_retention_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_retention_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_retention_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_containarium_v1_retention_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_containarium_v1_retention_proto_goTypes = []any{
 	(RetentionClass)(0),                // 0: containarium.v1.RetentionClass
 	(RetentionMode)(0),                 // 1: containarium.v1.RetentionMode
@@ -1521,70 +1616,73 @@ var file_containarium_v1_retention_proto_goTypes = []any{
 	(*RetentionPolicy)(nil),            // 4: containarium.v1.RetentionPolicy
 	(*LegalHold)(nil),                  // 5: containarium.v1.LegalHold
 	(*RetentionStoreReport)(nil),       // 6: containarium.v1.RetentionStoreReport
-	(*RetentionReport)(nil),            // 7: containarium.v1.RetentionReport
-	(*RetentionModeState)(nil),         // 8: containarium.v1.RetentionModeState
-	(*GetRetentionModeRequest)(nil),    // 9: containarium.v1.GetRetentionModeRequest
-	(*GetRetentionModeResponse)(nil),   // 10: containarium.v1.GetRetentionModeResponse
-	(*SetRetentionModeRequest)(nil),    // 11: containarium.v1.SetRetentionModeRequest
-	(*SetRetentionModeResponse)(nil),   // 12: containarium.v1.SetRetentionModeResponse
-	(*GetRetentionReportRequest)(nil),  // 13: containarium.v1.GetRetentionReportRequest
-	(*GetRetentionReportResponse)(nil), // 14: containarium.v1.GetRetentionReportResponse
-	(*GetRetentionPolicyRequest)(nil),  // 15: containarium.v1.GetRetentionPolicyRequest
-	(*GetRetentionPolicyResponse)(nil), // 16: containarium.v1.GetRetentionPolicyResponse
-	(*SetRetentionPolicyRequest)(nil),  // 17: containarium.v1.SetRetentionPolicyRequest
-	(*SetRetentionPolicyResponse)(nil), // 18: containarium.v1.SetRetentionPolicyResponse
-	(*ListLegalHoldsRequest)(nil),      // 19: containarium.v1.ListLegalHoldsRequest
-	(*ListLegalHoldsResponse)(nil),     // 20: containarium.v1.ListLegalHoldsResponse
-	(*SetLegalHoldRequest)(nil),        // 21: containarium.v1.SetLegalHoldRequest
-	(*SetLegalHoldResponse)(nil),       // 22: containarium.v1.SetLegalHoldResponse
-	(*ReleaseLegalHoldRequest)(nil),    // 23: containarium.v1.ReleaseLegalHoldRequest
-	(*ReleaseLegalHoldResponse)(nil),   // 24: containarium.v1.ReleaseLegalHoldResponse
-	(*timestamppb.Timestamp)(nil),      // 25: google.protobuf.Timestamp
+	(*RetentionChainBase)(nil),         // 7: containarium.v1.RetentionChainBase
+	(*RetentionReport)(nil),            // 8: containarium.v1.RetentionReport
+	(*RetentionModeState)(nil),         // 9: containarium.v1.RetentionModeState
+	(*GetRetentionModeRequest)(nil),    // 10: containarium.v1.GetRetentionModeRequest
+	(*GetRetentionModeResponse)(nil),   // 11: containarium.v1.GetRetentionModeResponse
+	(*SetRetentionModeRequest)(nil),    // 12: containarium.v1.SetRetentionModeRequest
+	(*SetRetentionModeResponse)(nil),   // 13: containarium.v1.SetRetentionModeResponse
+	(*GetRetentionReportRequest)(nil),  // 14: containarium.v1.GetRetentionReportRequest
+	(*GetRetentionReportResponse)(nil), // 15: containarium.v1.GetRetentionReportResponse
+	(*GetRetentionPolicyRequest)(nil),  // 16: containarium.v1.GetRetentionPolicyRequest
+	(*GetRetentionPolicyResponse)(nil), // 17: containarium.v1.GetRetentionPolicyResponse
+	(*SetRetentionPolicyRequest)(nil),  // 18: containarium.v1.SetRetentionPolicyRequest
+	(*SetRetentionPolicyResponse)(nil), // 19: containarium.v1.SetRetentionPolicyResponse
+	(*ListLegalHoldsRequest)(nil),      // 20: containarium.v1.ListLegalHoldsRequest
+	(*ListLegalHoldsResponse)(nil),     // 21: containarium.v1.ListLegalHoldsResponse
+	(*SetLegalHoldRequest)(nil),        // 22: containarium.v1.SetLegalHoldRequest
+	(*SetLegalHoldResponse)(nil),       // 23: containarium.v1.SetLegalHoldResponse
+	(*ReleaseLegalHoldRequest)(nil),    // 24: containarium.v1.ReleaseLegalHoldRequest
+	(*ReleaseLegalHoldResponse)(nil),   // 25: containarium.v1.ReleaseLegalHoldResponse
+	(*timestamppb.Timestamp)(nil),      // 26: google.protobuf.Timestamp
 }
 var file_containarium_v1_retention_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.RetentionWindow.class:type_name -> containarium.v1.RetentionClass
 	3,  // 1: containarium.v1.RetentionPolicy.windows:type_name -> containarium.v1.RetentionWindow
-	25, // 2: containarium.v1.RetentionPolicy.updated_at:type_name -> google.protobuf.Timestamp
-	25, // 3: containarium.v1.LegalHold.set_at:type_name -> google.protobuf.Timestamp
+	26, // 2: containarium.v1.RetentionPolicy.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 3: containarium.v1.LegalHold.set_at:type_name -> google.protobuf.Timestamp
 	0,  // 4: containarium.v1.RetentionStoreReport.class:type_name -> containarium.v1.RetentionClass
 	2,  // 5: containarium.v1.RetentionStoreReport.status:type_name -> containarium.v1.RetentionSweepStatus
-	25, // 6: containarium.v1.RetentionStoreReport.cutoff:type_name -> google.protobuf.Timestamp
-	1,  // 7: containarium.v1.RetentionReport.mode:type_name -> containarium.v1.RetentionMode
-	25, // 8: containarium.v1.RetentionReport.generated_at:type_name -> google.protobuf.Timestamp
-	6,  // 9: containarium.v1.RetentionReport.stores:type_name -> containarium.v1.RetentionStoreReport
-	1,  // 10: containarium.v1.RetentionModeState.mode:type_name -> containarium.v1.RetentionMode
-	25, // 11: containarium.v1.RetentionModeState.updated_at:type_name -> google.protobuf.Timestamp
-	8,  // 12: containarium.v1.GetRetentionModeResponse.state:type_name -> containarium.v1.RetentionModeState
-	1,  // 13: containarium.v1.SetRetentionModeRequest.mode:type_name -> containarium.v1.RetentionMode
-	8,  // 14: containarium.v1.SetRetentionModeResponse.state:type_name -> containarium.v1.RetentionModeState
-	7,  // 15: containarium.v1.GetRetentionReportResponse.report:type_name -> containarium.v1.RetentionReport
-	4,  // 16: containarium.v1.GetRetentionPolicyResponse.policy:type_name -> containarium.v1.RetentionPolicy
-	3,  // 17: containarium.v1.SetRetentionPolicyRequest.windows:type_name -> containarium.v1.RetentionWindow
-	4,  // 18: containarium.v1.SetRetentionPolicyResponse.policy:type_name -> containarium.v1.RetentionPolicy
-	5,  // 19: containarium.v1.ListLegalHoldsResponse.holds:type_name -> containarium.v1.LegalHold
-	5,  // 20: containarium.v1.SetLegalHoldResponse.hold:type_name -> containarium.v1.LegalHold
-	5,  // 21: containarium.v1.ReleaseLegalHoldResponse.hold:type_name -> containarium.v1.LegalHold
-	15, // 22: containarium.v1.RetentionService.GetRetentionPolicy:input_type -> containarium.v1.GetRetentionPolicyRequest
-	17, // 23: containarium.v1.RetentionService.SetRetentionPolicy:input_type -> containarium.v1.SetRetentionPolicyRequest
-	19, // 24: containarium.v1.RetentionService.ListLegalHolds:input_type -> containarium.v1.ListLegalHoldsRequest
-	21, // 25: containarium.v1.RetentionService.SetLegalHold:input_type -> containarium.v1.SetLegalHoldRequest
-	23, // 26: containarium.v1.RetentionService.ReleaseLegalHold:input_type -> containarium.v1.ReleaseLegalHoldRequest
-	13, // 27: containarium.v1.RetentionService.GetRetentionReport:input_type -> containarium.v1.GetRetentionReportRequest
-	9,  // 28: containarium.v1.RetentionService.GetRetentionMode:input_type -> containarium.v1.GetRetentionModeRequest
-	11, // 29: containarium.v1.RetentionService.SetRetentionMode:input_type -> containarium.v1.SetRetentionModeRequest
-	16, // 30: containarium.v1.RetentionService.GetRetentionPolicy:output_type -> containarium.v1.GetRetentionPolicyResponse
-	18, // 31: containarium.v1.RetentionService.SetRetentionPolicy:output_type -> containarium.v1.SetRetentionPolicyResponse
-	20, // 32: containarium.v1.RetentionService.ListLegalHolds:output_type -> containarium.v1.ListLegalHoldsResponse
-	22, // 33: containarium.v1.RetentionService.SetLegalHold:output_type -> containarium.v1.SetLegalHoldResponse
-	24, // 34: containarium.v1.RetentionService.ReleaseLegalHold:output_type -> containarium.v1.ReleaseLegalHoldResponse
-	14, // 35: containarium.v1.RetentionService.GetRetentionReport:output_type -> containarium.v1.GetRetentionReportResponse
-	10, // 36: containarium.v1.RetentionService.GetRetentionMode:output_type -> containarium.v1.GetRetentionModeResponse
-	12, // 37: containarium.v1.RetentionService.SetRetentionMode:output_type -> containarium.v1.SetRetentionModeResponse
-	30, // [30:38] is the sub-list for method output_type
-	22, // [22:30] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	26, // 6: containarium.v1.RetentionStoreReport.cutoff:type_name -> google.protobuf.Timestamp
+	7,  // 7: containarium.v1.RetentionStoreReport.chain_base:type_name -> containarium.v1.RetentionChainBase
+	26, // 8: containarium.v1.RetentionChainBase.purged_at:type_name -> google.protobuf.Timestamp
+	1,  // 9: containarium.v1.RetentionReport.mode:type_name -> containarium.v1.RetentionMode
+	26, // 10: containarium.v1.RetentionReport.generated_at:type_name -> google.protobuf.Timestamp
+	6,  // 11: containarium.v1.RetentionReport.stores:type_name -> containarium.v1.RetentionStoreReport
+	1,  // 12: containarium.v1.RetentionModeState.mode:type_name -> containarium.v1.RetentionMode
+	26, // 13: containarium.v1.RetentionModeState.updated_at:type_name -> google.protobuf.Timestamp
+	9,  // 14: containarium.v1.GetRetentionModeResponse.state:type_name -> containarium.v1.RetentionModeState
+	1,  // 15: containarium.v1.SetRetentionModeRequest.mode:type_name -> containarium.v1.RetentionMode
+	9,  // 16: containarium.v1.SetRetentionModeResponse.state:type_name -> containarium.v1.RetentionModeState
+	8,  // 17: containarium.v1.GetRetentionReportResponse.report:type_name -> containarium.v1.RetentionReport
+	4,  // 18: containarium.v1.GetRetentionPolicyResponse.policy:type_name -> containarium.v1.RetentionPolicy
+	3,  // 19: containarium.v1.SetRetentionPolicyRequest.windows:type_name -> containarium.v1.RetentionWindow
+	4,  // 20: containarium.v1.SetRetentionPolicyResponse.policy:type_name -> containarium.v1.RetentionPolicy
+	5,  // 21: containarium.v1.ListLegalHoldsResponse.holds:type_name -> containarium.v1.LegalHold
+	5,  // 22: containarium.v1.SetLegalHoldResponse.hold:type_name -> containarium.v1.LegalHold
+	5,  // 23: containarium.v1.ReleaseLegalHoldResponse.hold:type_name -> containarium.v1.LegalHold
+	16, // 24: containarium.v1.RetentionService.GetRetentionPolicy:input_type -> containarium.v1.GetRetentionPolicyRequest
+	18, // 25: containarium.v1.RetentionService.SetRetentionPolicy:input_type -> containarium.v1.SetRetentionPolicyRequest
+	20, // 26: containarium.v1.RetentionService.ListLegalHolds:input_type -> containarium.v1.ListLegalHoldsRequest
+	22, // 27: containarium.v1.RetentionService.SetLegalHold:input_type -> containarium.v1.SetLegalHoldRequest
+	24, // 28: containarium.v1.RetentionService.ReleaseLegalHold:input_type -> containarium.v1.ReleaseLegalHoldRequest
+	14, // 29: containarium.v1.RetentionService.GetRetentionReport:input_type -> containarium.v1.GetRetentionReportRequest
+	10, // 30: containarium.v1.RetentionService.GetRetentionMode:input_type -> containarium.v1.GetRetentionModeRequest
+	12, // 31: containarium.v1.RetentionService.SetRetentionMode:input_type -> containarium.v1.SetRetentionModeRequest
+	17, // 32: containarium.v1.RetentionService.GetRetentionPolicy:output_type -> containarium.v1.GetRetentionPolicyResponse
+	19, // 33: containarium.v1.RetentionService.SetRetentionPolicy:output_type -> containarium.v1.SetRetentionPolicyResponse
+	21, // 34: containarium.v1.RetentionService.ListLegalHolds:output_type -> containarium.v1.ListLegalHoldsResponse
+	23, // 35: containarium.v1.RetentionService.SetLegalHold:output_type -> containarium.v1.SetLegalHoldResponse
+	25, // 36: containarium.v1.RetentionService.ReleaseLegalHold:output_type -> containarium.v1.ReleaseLegalHoldResponse
+	15, // 37: containarium.v1.RetentionService.GetRetentionReport:output_type -> containarium.v1.GetRetentionReportResponse
+	11, // 38: containarium.v1.RetentionService.GetRetentionMode:output_type -> containarium.v1.GetRetentionModeResponse
+	13, // 39: containarium.v1.RetentionService.SetRetentionMode:output_type -> containarium.v1.SetRetentionModeResponse
+	32, // [32:40] is the sub-list for method output_type
+	24, // [24:32] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_retention_proto_init() }
@@ -1598,7 +1696,7 @@ func file_containarium_v1_retention_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_retention_proto_rawDesc), len(file_containarium_v1_retention_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

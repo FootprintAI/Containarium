@@ -18712,6 +18712,30 @@
         }
       }
     },
+    "RetentionChainBase": {
+      "type": "object",
+      "properties": {
+        "baseId": {
+          "type": "string",
+          "format": "int64",
+          "description": "Id of the last purged audit_logs row. Every retained row has a higher id."
+        },
+        "baseHash": {
+          "type": "string",
+          "description": "That row's row hash; empty when every purged row predates the chain."
+        },
+        "purgedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "rowsPurged": {
+          "type": "string",
+          "format": "int64",
+          "description": "Rows purged in total, over every purge."
+        }
+      },
+      "description": "RetentionChainBase is the stored starting root of the hash-chained\naudit_logs after retention purged its oldest rows (#2878, #2420). The base is\nthe id and hash of the LAST purged row; the first retained row's prev_hash is\nthat hash, so `containarium audit verify` and `audit verify-anchor` start\nfrom it. It records where verification starts, not why the rows before it\nare gone: every purge also writes a retention.sweep audit entry."
+    },
     "RetentionClass": {
       "type": "string",
       "enum": [
@@ -18859,6 +18883,10 @@
           "type": "string",
           "format": "int64",
           "description": "Records this sweep deleted. Always 0 unless the report's enforced flag is\nset. A store shared by two classes (a crew run) is deleted once, by the\nlonger of the two windows, and reports the deletion on the class with\nthat window."
+        },
+        "chainBase": {
+          "$ref": "#/definitions/RetentionChainBase",
+          "description": "For the hash-chained audit_logs only (#2878): where verification of the\nretained chain starts after a purge. Unset until the first purge."
         }
       },
       "description": "RetentionStoreReport is one (class, store) pair in a retention report. A\nstore that holds two classes (a crew run keeps a prompt and a response in\none row) appears once per class, each against its own window."
