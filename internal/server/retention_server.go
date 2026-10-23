@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +31,11 @@ const (
 	// the mode switch and of an enforced sweep (#2877).
 	retentionModeSetAction = "retention.mode.set"
 	retentionSweepAction   = "retention.sweep"
+	// retentionSweepResultAction is the second entry of a purge of the
+	// hash-chained audit_logs (#2979): the retention.sweep entry is written
+	// before the purge and can name only the chain base it started from, so
+	// this one, written after, names the base it ended on.
+	retentionSweepResultAction = "retention.sweep.result"
 )
 
 // retentionSweeperActor is the username on the audit entry of an enforced
@@ -50,6 +56,9 @@ type retentionSweepAuditStore struct {
 	WindowDays int32  `json:"window_days"`
 	Eligible   int64  `json:"eligible"`
 	Held       int64  `json:"held"`
+	// PreviousBaseID is the chain base the sweep starts from, for the
+	// audit_logs store; absent when the store has no chain base (#2979).
+	PreviousBaseID int64 `json:"previous_base_id,omitempty"`
 }
 
 // retentionSweepAuditDetail is the Detail of a retention.sweep entry, written
@@ -60,6 +69,22 @@ type retentionSweepAuditDetail struct {
 	PolicyRevision int64                      `json:"policy_revision"`
 	ActiveHolds    int64                      `json:"active_holds"`
 	Stores         []retentionSweepAuditStore `json:"stores"`
+}
+
+// retentionSweepResultClass is the rows one class lost in a purge.
+type retentionSweepResultClass struct {
+	Class   string `json:"class"`
+	Removed int64  `json:"removed"`
+}
+
+// retentionSweepResultAuditDetail is the Detail of a retention.sweep.result
+// entry: ids and counts only, never the content of a row (#2979).
+type retentionSweepResultAuditDetail struct {
+	Store          string                      `json:"store"`
+	PreviousBaseID int64                       `json:"previous_base_id,omitempty"`
+	BaseID         int64                       `json:"base_id"`
+	RowsRemoved    int64                       `json:"rows_removed"`
+	Classes        []retentionSweepResultClass `json:"classes"`
 }
 
 // retentionAuditWindow is one changed class in a retention.policy.set entry.
@@ -204,6 +229,7 @@ func (s *RetentionServer) SetReporter(r *retention.Reporter) {
 func (s *RetentionServer) wireSweepAudit() {
 	if s.reporter != nil && s.audit != nil {
 		s.reporter.SetAuditor(s.auditSweep)
+		s.reporter.SetResultAuditor(s.auditSweepResult)
 	}
 }
 
@@ -217,9 +243,28 @@ func (s *RetentionServer) auditSweep(ctx context.Context, rep *pb.RetentionRepor
 		d.Stores = append(d.Stores, retentionSweepAuditStore{
 			Class: st.GetClass().String(), Store: st.GetStore(), WindowDays: st.GetWindowDays(),
 			Eligible: st.GetEligible(), Held: st.GetHeld(),
+			PreviousBaseID: st.GetChainBase().GetBaseId(),
 		})
 	}
 	return s.writeAudit(ctx, retentionSweeperActor, retentionSweepAction, "retention_sweep", "cluster", d)
+}
+
+// auditSweepResult writes the retention.sweep.result entry of a prefix purge
+// that removed rows (#2979): the chain base the purge ended on, written after
+// the rows are gone because it did not exist before. The sweeper treats a
+// failure here as non-fatal, since the purge is already committed.
+func (s *RetentionServer) auditSweepResult(ctx context.Context, r retention.PurgeResult) error {
+	d := retentionSweepResultAuditDetail{
+		Store: r.Store, PreviousBaseID: r.PreviousBaseID, BaseID: r.BaseID, RowsRemoved: r.RowsRemoved,
+		Classes: []retentionSweepResultClass{},
+	}
+	for class, n := range r.ByClass {
+		if n > 0 {
+			d.Classes = append(d.Classes, retentionSweepResultClass{Class: class.String(), Removed: n})
+		}
+	}
+	sort.Slice(d.Classes, func(i, j int) bool { return d.Classes[i].Class < d.Classes[j].Class })
+	return s.writeAudit(ctx, retentionSweeperActor, retentionSweepResultAction, "retention_sweep", "cluster", d)
 }
 
 // SetAuditStore wires the audit store. With none, changes succeed and write

@@ -101,7 +101,9 @@ func KernelSupportsTCX(release string) (supported bool, known bool) {
 }
 
 // parseKernelRelease reads "major.minor" from a release like
-// "6.8.0-137-generic" or "6.6.12+". Both must be plain digit runs.
+// "6.8.0-137-generic" or "6.6.12+". The major must be a plain digit run;
+// the minor is read up to its first non-digit (so "6.6-rc1" and "6.6abc"
+// both read as 6.6).
 func parseKernelRelease(rel string) (major, minor int, ok bool) {
 	parts := strings.SplitN(strings.TrimSpace(rel), ".", 3)
 	if len(parts) < 2 {
