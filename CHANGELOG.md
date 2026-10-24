@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The dispatch row names the change request its run submitted** (#3001). `SubmitTrackerChange` records the opened pull / merge request on the `tracker_dispatches` row that started the run (matched by run id), and `ListTrackerDispatches` / `TrackerDispatch` expose it as `change_url` and `change_number` — empty / zero until the run submits one. A control plane mirroring the listing can link the change without reading the provider itself. A run the dispatcher did not start has no row to annotate; the submit succeeds as before and the miss is logged.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Fixed
+
+- **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading
