@@ -50,7 +50,10 @@ describe("ClaudeEngine journal", () => {
       fakeQuery([user({ type: "tool_result", tool_use_id: "nope", content: "plain" }), { type: "result", subtype: "success", is_error: false }]),
     );
     await engine.run("task", cfg, j);
-    expect(j.entries).toEqual([{ kind: "tool_result", tool: "unknown", text: "plain" }]);
+    expect(j.entries).toEqual([
+      { kind: "tool_result", tool: "unknown", text: "plain" },
+      { kind: "status", text: "model ended without a final message: stop_reason=unknown result=success" },
+    ]);
   });
 
   it("journals an error result", async () => {
@@ -60,7 +63,72 @@ describe("ClaudeEngine journal", () => {
     );
     const res = await engine.run("task", cfg, j);
     expect(res.authenticationSucceeded).toBe(false);
-    expect(j.entries).toEqual([{ kind: "error", text: "error_max_turns: hit the turn cap" }]);
+    expect(j.entries).toEqual([
+      { kind: "error", text: "error_max_turns: hit the turn cap" },
+      { kind: "status", text: "model ended without a final message: stop_reason=unknown result=error_max_turns" },
+    ]);
+  });
+});
+
+// #2513: a run that edited files and stopped without its final JSON left only
+// tool rows behind. The journal now names how the model's turn ended — the
+// SDK's stop reason, terminal reason and result subtype — plus a bounded
+// preview of the final message, whenever there is no final message or the
+// ending was anything but an ordinary end_turn.
+describe("ClaudeEngine ending row", () => {
+  it("names the stop reason when the run edits files and ends without a final message", async () => {
+    const j = new CaptureJournal();
+    const engine = new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "text", text: "Editing the file." }),
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__write_file", input: { path: "text/slug.go" } }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: [{ type: "text", text: "bytes_written: 649" }] }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", terminal_reason: "completed" },
+      ]),
+    );
+    await engine.run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: "model ended without a final message: stop_reason=end_turn terminal_reason=completed result=success",
+    });
+  });
+
+  it("names the stop reason and a truncated final message when the model is cut off", async () => {
+    const j = new CaptureJournal();
+    const final = '{"files":[{"path":"text/slug.go","content":"' + "x".repeat(500);
+    const engine = new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__read_file", input: {} }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: "ok" }),
+        assistant({ type: "text", text: final }),
+        { type: "result", subtype: "success", is_error: false, result: final, stop_reason: "max_tokens" },
+      ]),
+    );
+    await engine.run("task", cfg, j);
+    const row = j.entries.at(-1);
+    expect(row).toEqual({
+      kind: "status",
+      text: `model ended abnormally after its final message: stop_reason=max_tokens result=success final_message=${JSON.stringify(final.slice(0, 200))} final_message_chars=${final.length}`,
+    });
+    // Bounded: the row never carries the whole message.
+    expect(row && "text" in row ? row.text.length : Infinity).toBeLessThan(400);
+  });
+
+  it("names a run that ends with no result message at all", async () => {
+    const j = new CaptureJournal();
+    await new ClaudeEngine(fakeQuery([assistant({ type: "text", text: "half" })])).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: 'model ended abnormally after its final message: stop_reason=unknown result=none final_message="half"',
+    });
+  });
+
+  it("writes no ending row for an ordinary end_turn with a final message", async () => {
+    const j = new CaptureJournal();
+    await new ClaudeEngine(
+      fakeQuery([assistant({ type: "text", text: '{"files":[]}' }), { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", terminal_reason: "completed" }]),
+    ).run("task", cfg, j);
+    expect(j.entries).toEqual([{ kind: "assistant", text: '{"files":[]}' }]);
   });
 });
 
@@ -118,6 +186,7 @@ describe("ClaudeEngine output schema", () => {
     expect(j.entries).toEqual([
       { kind: "assistant", text: "not json" },
       { kind: "error", text: "error_max_structured_output_retries: output did not match the schema" },
+      { kind: "status", text: 'model ended abnormally after its final message: stop_reason=unknown result=error_max_structured_output_retries final_message="not json"' },
     ]);
   });
 
