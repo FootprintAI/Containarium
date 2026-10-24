@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The dispatch row names the change request its run submitted** (#3001). `SubmitTrackerChange` records the opened pull / merge request on the `tracker_dispatches` row that started the run (matched by run id), and `ListTrackerDispatches` / `TrackerDispatch` expose it as `change_url` and `change_number` — empty / zero until the run submits one. A control plane mirroring the listing can link the change without reading the provider itself. A run the dispatcher did not start has no row to annotate; the submit succeeds as before and the miss is logged.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Fixed
+
+- **An older network-policy BPF object no longer reports a split egress mode it does not apply** (#2987). An object loaded from `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` that was built before `egress_mode` existed (#2974) reads that byte as padding and applies `mode` to the egress allow-list too. Before this fix, `network-policy status` still showed the requested egress mode. The loader now checks the object's BTF for a `policy_cfg.egress_mode` member. On an object without it, the daemon writes and reports the egress mode as `mode`, logs a warning at load, and logs a warning once for each tenant whose `egress_mode` differs from `mode`. Release builds embed a current object and are unaffected.
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading

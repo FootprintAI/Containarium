@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
@@ -43,6 +44,7 @@ type Loader struct {
 	coll        *ebpf.Collection
 	links       map[int]link.Link // ifindex -> TCX ingress link
 	egressLinks map[int]link.Link // ifindex -> TCX egress link (#631 reply accounting)
+	egressMode  bool              // the object's program reads policy_cfg.egress_mode (#2987)
 }
 
 // Resolve loads the netpolicy BPF object from the operator-supplied source. The
@@ -123,8 +125,43 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 		coll:        coll,
 		links:       make(map[int]link.Link),
 		egressLinks: make(map[int]link.Link),
+		egressMode:  specSupportsEgressMode(spec),
 	}, nil
 }
+
+// vethPolicyEgressModeField is the `struct policy_cfg` member an object must
+// declare for its program to read the egress-mode byte (#2974).
+const vethPolicyEgressModeField = "egress_mode"
+
+// specSupportsEgressMode reports whether the object's program reads the
+// egress_mode byte of `struct policy_cfg` (#2987). The byte was padding before
+// #2974, and an object built from that source loads fine and simply ignores it,
+// applying `mode` to the egress allow-list too. Detected from the object's own
+// BTF (clang -g, which `make build-bpf` and every BTF-defined map require): the
+// veth_policy value type names the member egress_mode only in a program built
+// to read it. No BTF, no map, or a non-struct value proves nothing, so it is
+// reported as unsupported.
+func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
+	ms := spec.Maps[mapVethPolicy]
+	if ms == nil || ms.Value == nil {
+		return false
+	}
+	st, ok := btf.UnderlyingType(ms.Value).(*btf.Struct)
+	if !ok {
+		return false
+	}
+	for _, m := range st.Members {
+		if m.Name == vethPolicyEgressModeField {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsEgressMode reports whether the loaded object applies the egress_mode
+// byte to the egress allow-list (#2987). When false, the program applies `mode`
+// to every check, whatever egress_mode the daemon writes.
+func (l *Loader) SupportsEgressMode() bool { return l.egressMode }
 
 // hasEgressProgram reports whether the loaded object carries the reply-accounting
 // egress program (#631).
