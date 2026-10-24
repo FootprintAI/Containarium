@@ -167,7 +167,10 @@ they appear as would-deny rows during the soak. Some hosts redirect to other
 names (for example GitHub release downloads use `*.githubusercontent.com`), so
 expect to extend the list from the first soak. A bad extra is logged and the
 daemon runs the built-in list only. Storing a policy for a tenant replaces the
-default for that tenant.
+default for that tenant; a stored policy that fails validation is skipped (and
+logged), so that tenant runs the default too. The default list's names are
+resolved by the refresh loop shortly after start, not before the daemon comes
+up, so for the first seconds they can still log as would-deny.
 
 Then a tenant's `--mode enforce` policy drops denied flows (`TC_ACT_SHOT`),
 audited as `network_policy.deny_dropped`. Safety properties:

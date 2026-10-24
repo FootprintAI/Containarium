@@ -41,11 +41,11 @@ func TestRefreshDomains_StoreOutageBacksOff(t *testing.T) {
 	clk := newResolverClock()
 	f := &fakeTTLResolver{answers: map[string]dnsAnswer{"a.example": {Addrs: addrs("192.0.2.5"), TTL: 30 * time.Second}}}
 	e.resolver = newDomainResolver(f, clk.now)
-	e.refreshDomains()
+	e.refreshDomains(true)
 
 	store.fail = true
 	clk.advance(30 * time.Second) // a.example is now due
-	e.refreshDomains()
+	e.refreshDomains(true)
 	if got := e.resolver.NextRefreshDelay(); got != 30*time.Second {
 		t.Fatalf("after a store outage NextRefreshDelay = %v, want the 30s interval (not the 1s floor)", got)
 	}
@@ -80,7 +80,7 @@ func TestDomainRefreshLoop_FollowsTTL(t *testing.T) {
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	dns := &countingTTLResolver{ttl: 0}
 	e.resolver = newDomainResolver(dns, time.Now)
-	e.refreshDomains() // what Start does before launching the loop
+	e.refreshDomains(false) // what Start does before launching the loop
 
 	e.wg.Add(1)
 	go e.domainRefreshLoop()
@@ -111,7 +111,7 @@ func TestCompiledPolicies_DomainAddrsReachEnforcerAsIPv4Only(t *testing.T) {
 	e.resolver = newDomainResolver(&fakeTTLResolver{answers: map[string]dnsAnswer{
 		"dual.example": {Addrs: addrs("192.0.2.5", "2001:db8::5"), TTL: 30 * time.Second},
 	}}, newResolverClock().now)
-	e.refreshDomains()
+	e.refreshDomains(true)
 
 	if got := len(e.resolver.Addrs("dual.example")); got != 2 {
 		t.Fatalf("setup: resolver should hold both families, got %d addrs", got)
