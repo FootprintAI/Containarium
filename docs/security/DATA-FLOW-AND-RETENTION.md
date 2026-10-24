@@ -41,6 +41,16 @@ keeps the cutoff a sweeper computes from it far inside the range of a Go
 `time.Duration`, which overflows past about 106,751 days. The Postgres
 store enforces the same bound with a `CHECK` constraint.
 
+**Data from before the cap and trimming.** An earlier release could store a
+window above the cap or a hold under a padded org id. The first start after
+upgrading fixes both, in one transaction that daemons starting together
+take in turn, and logs each change:
+
+- **A window above the cap** is clamped to 36500 days.
+- **A padded hold id** is re-stored under the trimmed id.
+- **Several stored ids that trim to the same org** keep only the earliest
+  hold. The org stays held.
+
 ```bash
 containarium retention policy get --server <host>:50051
 containarium retention policy set --prompts 14 --server <host>:50051

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Retention windows above 36,500 days are rejected, and legal-hold org ids are trimmed** (#2933, #2875 review follow-up; upgrade handling in this release's follow-up).
+  - **The cap.** `containarium retention policy set` and `SetRetentionPolicy` answer `INVALID_ARGUMENT` for a window outside 1–36,500 days (100 years). The Postgres store enforces the same bound with a `CHECK` constraint.
+  - **Trimming.** An org id is trimmed before it is stored or matched, so `" org-a"` and `"org-a"` are one hold.
+  - **What the first start after upgrading does.**
+    - Windows: a window stored above the cap by an earlier release is clamped to 36,500 days, and the clamp is logged. Startup no longer fails the constraint check, which would have left every retention call `UNAVAILABLE`.
+    - Holds: a hold stored with a padded org id is re-stored under the trimmed id, so it can be released by that id and the sweepers match it against record org ids. If several stored ids trim to the same org, the earliest hold is kept, and each other one is logged in full and removed. The org stays held.
+  - **Concurrent starts.** Daemons starting at the same time serialize this step.
+
+### Fixed
+
+- **A retention policy set that waited for another set reported stale windows** (#2875 review follow-up). On Postgres, a `SetPolicy` that waited on the policy row lock built its `Previous` and `Current` policies, and so its `retention.policy.set` audit detail, from windows read before the wait. The windows the other set had just committed were missing. The stored windows were always right. The set now takes the row lock in a statement of its own and reads the windows afterwards.
+
 ### Added
 
 - **A default egress allow-list for tenants with no stored network policy** (#2577, stage 1 of the staged default-deny plan). Such a tenant used to run an empty allow-list in `log_only`, so every outbound flow was logged as a would-deny. It now runs a built-in list (git hosts, language registries, OS mirrors, and the box's DNS resolver), still `log_only` for both modes: nothing is dropped, and a stored policy always replaces it. Add the model gateway and control plane with `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`; `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty fallback. This is not "default-deny egress": arming `enforce` per tenant and the CI proof are later stages. The daemon now also resolves the list's names on each refresh, so it needs DNS reachability for them.
