@@ -274,6 +274,34 @@ func (s *RetentionServer) SetAuditStore(a auditLogger) {
 	if a != nil {
 		s.audit = a
 		s.wireSweepAudit()
+		s.auditUpgradeChanges()
+	}
+}
+
+// auditUpgradeChanges writes the audit entries of the changes the store's
+// bootstrap made to data an earlier release stored (Q31 on #2727): it ran
+// before any audit store existed, so it recorded them durably instead. A
+// failed write is logged and leaves the rest pending for the next start;
+// it never fails the daemon. An entry can be written twice if the store's
+// commit fails after the write (at least once, never lost).
+func (s *RetentionServer) auditUpgradeChanges() {
+	u, ok := s.store.(retention.UpgradeAuditor)
+	if !ok || s.audit == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n, err := u.AuditUpgradeEvents(ctx, func(ev retention.UpgradeEvent) error {
+		return s.audit.Log(ctx, &audit.AuditEntry{
+			Username: retention.UpgradeActor, Action: ev.Action,
+			ResourceType: ev.ResourceType, ResourceID: ev.ResourceID, Detail: ev.Detail,
+		})
+	})
+	if n > 0 {
+		log.Printf("Retention: audited %d upgrade change(s) made at startup", n)
+	}
+	if err != nil {
+		log.Printf("Warning: retention: auditing the upgrade changes made at startup failed; they stay pending for the next start: %v", err)
 	}
 }
 

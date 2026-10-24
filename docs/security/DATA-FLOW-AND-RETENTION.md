@@ -44,12 +44,32 @@ store enforces the same bound with a `CHECK` constraint.
 **Data from before the cap and trimming.** An earlier release could store a
 window above the cap or a hold under a padded org id. The first start after
 upgrading fixes both, in one transaction that daemons starting together
-take in turn, and logs each change:
+take in turn:
 
-- **A window above the cap** is clamped to 36500 days.
+- **A window above the cap** is clamped to 36500 days, and the policy
+  revision is bumped (`updated_by` is `containarium-upgrade`).
 - **A padded hold id** is re-stored under the trimmed id.
 - **Several stored ids that trim to the same org** keep only the earliest
   hold. The org stays held.
+- **A hold id that is empty once trimmed** is quarantined. It stays active
+  under `quarantined-blank-org-id-<hash>`, so `retention hold list` shows it
+  and an admin can release it. It is not dropped, because while any hold is
+  active, records with no org are held.
+
+Each of these changes is a compliance-setting change, so each is audited:
+
+- **Recorded in the same transaction.** The change is logged and recorded
+  in `retention_upgrade_events` together with the data it changes. A
+  removed hold's reason, setter and time are kept in the record.
+- **Audited once an audit store exists.** At that point each record becomes
+  an audit entry by `containarium-upgrade`, with the action
+  `retention.policy.clamp`, `retention.hold.normalise`,
+  `retention.hold.merge` or `retention.hold.quarantine`. There is no audit
+  store yet when the change is made at startup.
+- **Never lost, possibly repeated.** A record whose audit write fails stays
+  pending for the next start. A daemon with no audit store keeps the
+  records in the table. An entry can be written twice if marking it audited
+  fails after the write.
 
 ```bash
 containarium retention policy get --server <host>:50051
