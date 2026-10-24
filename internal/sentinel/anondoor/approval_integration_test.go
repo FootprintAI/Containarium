@@ -126,8 +126,17 @@ func TestIntegration_PublicKeyPartialSuccessKeyboardInteractive(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = logFile.Close() })
-	cmd := exec.Command(piperd, "-l", "127.0.0.1", "-i", hostKey, "-p", fmt.Sprint(port),
-		"--drop-hostkeys-message", "--login-grace-time", "90s", plugin)
+	piperArgs := []string{"-l", "127.0.0.1", "-i", hostKey, "-p", fmt.Sprint(port), "--drop-hostkeys-message", "--login-grace-time", "90s"}
+	if adapter := os.Getenv("ANONDOOR_APPROVAL_ADAPTER"); adapter != "" {
+		piperArgs = append(piperArgs, adapter, "sentinel", "ssh-upstream-plugin", "--plugin", plugin)
+		if os.Getenv("ANONDOOR_APPROVAL_GUARDED") == "1" {
+			socket, ban := approvalGuardControl(t, upstream)
+			piperArgs = append(piperArgs, "--upstream-control-socket", socket, "--", adapter, "sentinel", "ssh-ban-plugin", "--upstream-control-socket", socket, "--control-socket", ban)
+		}
+	} else {
+		piperArgs = append(piperArgs, plugin)
+	}
+	cmd := exec.Command(piperd, piperArgs...)
 	cmd.Env = append(os.Environ(), "ANONDOOR_APPROVAL_PLUGIN=1",
 		"ANONDOOR_APPROVAL_TEST_BINARY="+testBinary, "ANONDOOR_APPROVAL_UPSTREAM="+upstream,
 		"ANONDOOR_APPROVAL_UPSTREAM_KEY="+upstreamKey, "ANONDOOR_APPROVAL_FINGERPRINT="+ssh.FingerprintSHA256(pub))

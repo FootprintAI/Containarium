@@ -5,8 +5,10 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,13 +17,16 @@ import (
 
 	"github.com/footprintai/containarium/internal/sentinel"
 	"github.com/footprintai/containarium/internal/sentinel/anondoor"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 var (
-	sentinelAnonDoorDaemonURL   string
-	sentinelAnonDoorUpstreamKey string
-	sentinelAnonDoorTimeout     time.Duration
-	sentinelAnonDoorBanner      string
+	sentinelAnonDoorDaemonURL      string
+	sentinelAnonDoorUpstreamKey    string
+	sentinelAnonDoorTimeout        time.Duration
+	sentinelAnonDoorBanner         string
+	sentinelAnonDoorUpstreamSocket string
 )
 
 var sentinelAnonDoorPluginCmd = &cobra.Command{
@@ -59,9 +64,29 @@ func init() {
 	sentinelAnonDoorPluginCmd.Flags().StringVar(&sentinelAnonDoorBanner, "banner", "",
 		"Pre-auth banner text (default: the built-in 'use an SSH key' hint)")
 	_ = sentinelAnonDoorPluginCmd.MarkFlagRequired("daemon-url")
+	sentinelAnonDoorPluginCmd.Flags().StringVar(&sentinelAnonDoorUpstreamSocket, "upstream-control-socket", "", "Shared private upstream controller socket")
 }
 
 func runSentinelAnonDoorPlugin(cmd *cobra.Command, args []string) error {
+	var register func(libplugin.ConnMetadata, *pb.EnsureAnonymousBoxResponse) error
+	if sentinelAnonDoorUpstreamSocket != "" {
+		peer, err := sshcontrol.DialPeer(sentinelAnonDoorUpstreamSocket, pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = peer.Close() }()
+		register = func(conn libplugin.ConnMetadata, res *pb.EnsureAnonymousBoxResponse) error {
+			ref, err := peer.Open(cmd.Context(), conn.UniqueID(), conn.RemoteAddr())
+			if err != nil {
+				return err
+			}
+			defer peer.Forget(conn.UniqueID())
+			ctx, cancel := sshcontrol.CallContext(cmd.Context())
+			defer cancel()
+			_, err = peer.Client.RegisterSSHAnonymousRoute(ctx, &pb.RegisterSSHAnonymousRouteRequest{Connection: ref, BoxName: res.GetBoxName(), Endpoint: net.JoinHostPort(res.GetSshHost(), strconv.Itoa(int(res.GetSshPort())))})
+			return err
+		}
+	}
 	plugin, err := anondoor.New(anondoor.Config{
 		DaemonURL:       sentinelAnonDoorDaemonURL,
 		UpstreamKeyPath: sentinelAnonDoorUpstreamKey,
@@ -69,6 +94,7 @@ func runSentinelAnonDoorPlugin(cmd *cobra.Command, args []string) error {
 		Timeout:         sentinelAnonDoorTimeout,
 		Banner:          sentinelAnonDoorBanner,
 		Logf:            log.Printf,
+		RegisterRoute:   register,
 	})
 	if err != nil {
 		return err

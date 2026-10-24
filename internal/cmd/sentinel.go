@@ -57,6 +57,9 @@ var (
 	sentinelConsoleRouterAddr      string
 	sentinelConsoleRouterToken     string
 	sentinelWatchSpotVMs           []string
+	sentinelUpstreamPolicy         string
+	sentinelUpstreamState          string
+	sentinelUpstreamSocket         string
 
 	// Domains the in-fleet backend is registered for; its certificate
 	// sync may only supply certificates inside them.
@@ -97,6 +100,9 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(sentinelCmd)
+	sentinelCmd.Flags().StringVar(&sentinelUpstreamPolicy, "ssh-upstream-policy", os.Getenv("CONTAINARIUM_SSH_UPSTREAM_POLICY"), "Strict protobuf JSON policy enabling shared backend SSH admission")
+	sentinelCmd.Flags().StringVar(&sentinelUpstreamState, "ssh-upstream-state", "", "Private durable upstream risk checkpoint")
+	sentinelCmd.Flags().StringVar(&sentinelUpstreamSocket, "ssh-upstream-socket", "", "Private upstream control socket shared by both SSH listeners")
 
 	sentinelCmd.Flags().StringVar(&sentinelProvider, "provider", "gcp", "Cloud provider: \"gcp\", \"none\" (local testing), or \"tunnel\" (reverse tunnel)")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelToken, "tunnel-token", "", "Pre-shared token for tunnel authentication, allowed for any pool (legacy; use --tunnel-token-policy for pool-restricted tokens, or CONTAINARIUM_TUNNEL_TOKEN env)")
@@ -328,6 +334,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			log.Printf("[sentinel] hybrid mode: GCP + tunnel (ConnMux on port %d)", sentinelHTTPSPort)
 
 			config := sentinel.Config{
+				SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
 				HealthPort:                sentinelHealthPort,
 				CheckInterval:             sentinelCheckInterval,
 				HTTPPort:                  sentinelHTTPPort,
@@ -441,6 +448,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		provider = sentinel.NewTunnelProvider(registry, "")
 
 		config := sentinel.Config{
+			SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
 			HealthPort:                sentinelHealthPort,
 			CheckInterval:             sentinelCheckInterval,
 			HTTPPort:                  sentinelHTTPPort,
@@ -530,6 +538,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	}
 
 	config := sentinel.Config{
+		SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
 		HealthPort:                sentinelHealthPort,
 		CheckInterval:             sentinelCheckInterval,
 		HTTPPort:                  sentinelHTTPPort,

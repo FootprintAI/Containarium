@@ -66,6 +66,7 @@ resource "google_compute_instance" "sentinel" {
     # never reached already-running sentinels (issue #933) — some sentinels
     # kept running months-stale, far more aggressive settings indefinitely.
     sshpiper-service-unit = local.sshpiper_service_unit
+    ssh-upstream-policy   = local.ssh_upstream_policy_json
     # The anonymous-box door's unit, same live-metadata reconcile as above
     # (#2198). Present only when the door is configured; the startup script
     # treats an absent key as "disable and remove the unit".
@@ -103,6 +104,12 @@ resource "google_compute_instance" "sentinel" {
   allow_stopping_for_update = true
 
   lifecycle {
+    # Cross-variable validation belongs in a precondition to preserve the
+    # module's Terraform >=1.2 floor (input validation cross-references need 1.9).
+    precondition {
+      condition     = var.ssh_upstream_risk_per_attempt <= var.ssh_upstream_failure_budget
+      error_message = "Per-attempt SSH risk must fit within the shared failure budget."
+    }
     ignore_changes = [
       metadata["ssh-keys"],
     ]
