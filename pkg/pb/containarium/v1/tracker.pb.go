@@ -1392,8 +1392,15 @@ type TrackerDispatch struct {
 	// When the oldest of those reservations was claimed; unset when there
 	// are none. Filled in by ListTrackerDispatches only.
 	OldestLineageReservationAt *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=oldest_lineage_reservation_at,json=oldestLineageReservationAt,proto3" json:"oldest_lineage_reservation_at,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// The change request the run submitted through SubmitTrackerChange
+	// (#3001): its URL and number on the provider (a pull request or merge
+	// request). Empty / zero when the run has not submitted one — a
+	// control plane mirroring this listing can link the change without
+	// scraping the provider itself.
+	ChangeUrl     string `protobuf:"bytes,17,opt,name=change_url,json=changeUrl,proto3" json:"change_url,omitempty"`
+	ChangeNumber  int64  `protobuf:"varint,18,opt,name=change_number,json=changeNumber,proto3" json:"change_number,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TrackerDispatch) Reset() {
@@ -1536,6 +1543,20 @@ func (x *TrackerDispatch) GetOldestLineageReservationAt() *timestamppb.Timestamp
 		return x.OldestLineageReservationAt
 	}
 	return nil
+}
+
+func (x *TrackerDispatch) GetChangeUrl() string {
+	if x != nil {
+		return x.ChangeUrl
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetChangeNumber() int64 {
+	if x != nil {
+		return x.ChangeNumber
+	}
+	return 0
 }
 
 // TrackerDispatchInput is EXACTLY the run's input_json (protojson
@@ -3533,7 +3554,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"connection\x12\x14\n" +
 	"\x05scope\x18\x03 \x01(\tR\x05scope\"6\n" +
 	"\x1aDeleteTrackerRouteResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xc4\x05\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\x88\x06\n" +
 	"\x0fTrackerDispatch\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1e\n" +
@@ -3555,7 +3576,10 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\bended_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12A\n" +
 	"\afailure\x18\x0e \x01(\x0e2'.containarium.v1.TrackerDispatchFailureR\afailure\x121\n" +
 	"\x14lineage_reservations\x18\x0f \x01(\x05R\x13lineageReservations\x12]\n" +
-	"\x1doldest_lineage_reservation_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\x1aoldestLineageReservationAt\"\xc2\x01\n" +
+	"\x1doldest_lineage_reservation_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\x1aoldestLineageReservationAt\x12\x1d\n" +
+	"\n" +
+	"change_url\x18\x11 \x01(\tR\tchangeUrl\x12#\n" +
+	"\rchange_number\x18\x12 \x01(\x03R\fchangeNumber\"\xc2\x01\n" +
 	"\x14TrackerDispatchInput\x12\x1e\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\tR\n" +

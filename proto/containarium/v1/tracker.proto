@@ -316,6 +316,14 @@ message TrackerDispatch {
   // When the oldest of those reservations was claimed; unset when there
   // are none. Filled in by ListTrackerDispatches only.
   google.protobuf.Timestamp oldest_lineage_reservation_at = 16;
+
+  // The change request the run submitted through SubmitTrackerChange
+  // (#3001): its URL and number on the provider (a pull request or merge
+  // request). Empty / zero when the run has not submitted one — a
+  // control plane mirroring this listing can link the change without
+  // scraping the provider itself.
+  string change_url = 17;
+  int64 change_number = 18;
 }
 
 // TrackerDispatchInput is EXACTLY the run's input_json (protojson

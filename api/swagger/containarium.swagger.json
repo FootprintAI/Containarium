@@ -21556,6 +21556,14 @@
           "type": "string",
           "format": "date-time",
           "description": "When the oldest of those reservations was claimed; unset when there\nare none. Filled in by ListTrackerDispatches only."
+        },
+        "changeUrl": {
+          "type": "string",
+          "description": "The change request the run submitted through SubmitTrackerChange\n(#3001): its URL and number on the provider (a pull request or merge\nrequest). Empty / zero when the run has not submitted one — a\ncontrol plane mirroring this listing can link the change without\nscraping the provider itself."
+        },
+        "changeNumber": {
+          "type": "string",
+          "format": "int64"
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."
