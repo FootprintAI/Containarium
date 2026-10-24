@@ -4,7 +4,7 @@ import "testing"
 
 func clearNetworkEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{EnvNetworkPolicyBPFObject, EnvNetworkPolicyEnforce, EnvNetworkPolicySignatures} {
+	for _, k := range []string{EnvNetworkPolicyBPFObject, EnvNetworkPolicyEnforce, EnvNetworkPolicySignatures, EnvDefaultEgress, EnvDefaultEgressDomains, EnvDefaultEgressCIDRs} {
 		t.Setenv(k, "")
 	}
 }
@@ -46,5 +46,18 @@ func TestLoadNetworkArmingFlagsOffByDefault(t *testing.T) {
 		if LoadNetwork().PolicyEnforce {
 			t.Errorf("PolicyEnforce=true for %q, want off", v)
 		}
+	}
+}
+
+// The default-egress variables are carried raw; parsing and validation live in
+// netpolicy.ParseDefaultEgress.
+func TestLoadNetworkDefaultEgressRaw(t *testing.T) {
+	clearNetworkEnv(t)
+	t.Setenv(EnvDefaultEgress, "off")
+	t.Setenv(EnvDefaultEgressDomains, "gw.example.com,cp.example.com")
+	t.Setenv(EnvDefaultEgressCIDRs, "10.9.0.0/24")
+	got := LoadNetwork()
+	if got.DefaultEgress != "off" || got.DefaultEgressDomains != "gw.example.com,cp.example.com" || got.DefaultEgressCIDRs != "10.9.0.0/24" {
+		t.Errorf("LoadNetwork default-egress fields = %+v", got)
 	}
 }

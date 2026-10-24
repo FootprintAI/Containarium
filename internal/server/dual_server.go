@@ -47,6 +47,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
@@ -2175,6 +2176,18 @@ skipAppHosting:
 		if auditStore != nil {
 			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
 			npServer.SetPlanSources(auditStore, planGW)
+		}
+		// Default egress posture (#2577, stage 1): a tenant with no stored policy
+		// runs the default allow-list in log_only instead of an empty one, so the
+		// would-deny log shows real surprises. Observe-only; never arms drops.
+		if on, extras := netpolicy.ParseDefaultEgress(netCfg.DefaultEgress, netCfg.DefaultEgressDomains, netCfg.DefaultEgressCIDRs); on {
+			if derr := networkPolicyEnforcer.SetDefaultEgress(extras); derr != nil {
+				log.Printf("NetworkPolicy: ignoring %s/%s (%v); using the built-in default allow-list only", appconfig.EnvDefaultEgressDomains, appconfig.EnvDefaultEgressCIDRs, derr)
+				_ = networkPolicyEnforcer.SetDefaultEgress(netpolicy.DefaultEgressExtras{})
+			}
+			log.Printf("NetworkPolicy: default egress allow-list (log_only) applies to tenants with no stored policy")
+		} else {
+			log.Printf("NetworkPolicy: default egress posture is off (%s=off); tenants with no stored policy run an empty allow-list in log_only", appconfig.EnvDefaultEgress)
 		}
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures

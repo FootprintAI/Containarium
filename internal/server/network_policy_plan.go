@@ -102,6 +102,33 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	return plan
 }
 
+// withDefaultPolicies returns policies plus, for every tenant seen in views
+// that has no stored policy, the default posture from build (#2577 stage 1). A
+// stored policy always wins; a nil build (default posture off) or a tenant the
+// builder declines leaves the tenant on the bare log-only fallback in
+// planReconcile. The input map is not modified.
+func withDefaultPolicies(policies map[string]netpolicy.CompiledPolicy, views []containerView, build func(tenant string) (netpolicy.CompiledPolicy, bool)) map[string]netpolicy.CompiledPolicy {
+	if build == nil {
+		return policies
+	}
+	out := make(map[string]netpolicy.CompiledPolicy, len(policies))
+	for k, v := range policies {
+		out[k] = v
+	}
+	for _, v := range views {
+		if v.Tenant == "" {
+			continue
+		}
+		if _, ok := out[v.Tenant]; ok {
+			continue
+		}
+		if c, ok := build(v.Tenant); ok {
+			out[v.Tenant] = c
+		}
+	}
+	return out
+}
+
 // subEvents returns the subscriber's event channel, or a nil channel (which
 // blocks forever in a select) when there is no subscriber.
 func subEvents(sub *events.Subscriber) <-chan *pb.Event {
