@@ -1540,7 +1540,22 @@ above:
 
 The base records where verification starts, not why the rows before it are
 gone. A database writer who deletes the oldest rows and writes a matching base
-looks like a purge to both commands. Check an unexpected base against the
+looks like a purge to both commands: by the database alone, a rewritten chain
+base is indistinguishable from a legitimate purge. What tells them apart is the
+anchor bucket, and the comparison is yours to make: `audit verify-anchor
+--anchor-bucket` reports how many checkpoints lie "below the chain base", and
+you compare that with the bucket's own listing. The bucket's checkpoints are
+write-once, so rows that vanished while the bucket still holds anchors for
+them, or a base far above the bucket's latest checkpoint, are not explained by
+any purge. `verify-anchor` does not flag either of those: they are manual
+judgements. If an attacker moves the base over those rows, the checkpoints sit
+below the base, the database is no longer compared with them, and the only
+automatic check left is the comparison between the bucket and the local anchor
+file, which needs a non-empty local record at the same checkpoint. What
+`verify-anchor` does fail is a bucket object below the base that the local file
+has no record of (the missing-locally rule, also for an object with an empty
+root or when the local file is empty) or whose root differs from the local
+file's. Check an unexpected base against the
 audit log (`containarium audit query --action retention.sweep` and
 `--action retention.sweep.result`): every authorised purge writes a
 `retention.sweep` entry before it deletes (with `previous_base_id`, the base it
