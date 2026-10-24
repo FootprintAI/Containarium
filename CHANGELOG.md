@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
+
+## [0.116.0] - 2026-10-24
+
 ### Upgrading
 
 - **Retention windows above 36,500 days are rejected, and legal-hold org ids are trimmed** (#2933, #2875 review follow-up; upgrade handling in this release's follow-up).
@@ -31,9 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
-
-- **Host posture reports whether the kernel supports egress enforcement** (#2972). The advisory host-posture section now includes `egress: kernel >= 6.6`, so it appears in `containarium doctor`, `containarium cloud enroll`, `containarium pool join` and the daemon's host status report: the running kernel release and a pass/fail for TCX attach support (kernel 6.6 or newer, per `docs/architecture/coding-cli-egress-allowlist.md`). A release that cannot be read or parsed is reported as `kernel_version_unknown`, never as a pass; the check is not required: it does not change any exit code, and `self_check_ok` in the status report is unaffected. Hosts on a kernel older than 6.6 now list one more unmet advisory posture item. The parser is exported as `hostcheck.KernelSupportsTCX(release) (supported, known)` for the network-policy status report to use. Not included yet: the `KERNEL_UNSUPPORTED` uncovered reason in the applied-state report.
+- **Orchestrator and freeform crews can run an explicit task graph** (#2805, #2839). `crew run <crew-id> --plan <file> --concurrency <n>` (also over gRPC and HTTP) validates the whole graph before any box is provisioned, then runs ready nodes concurrently (five by default, configurable). A node starts only after all its dependencies succeed; a failed node blocks its dependents while independent branches finish. Pipeline crews and crews without a graph behave as before.
 - **A default egress allow-list for tenants with no stored network policy** (#2577, stage 1 of the staged default-deny plan). Such a tenant used to run an empty allow-list in `log_only`, so every outbound flow was logged as a would-deny. It now runs a built-in list (git hosts, language registries, OS mirrors, and the box's DNS resolver), still `log_only` for both modes: nothing is dropped, and a stored policy always replaces it. Add the model gateway and control plane with `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`; `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty fallback. This is not "default-deny egress": arming `enforce` per tenant and the CI proof are later stages. The daemon now also resolves the list's names on each refresh, so it needs DNS reachability for them; the first resolution happens in the refresh loop, off the startup path, so a host with slow or no DNS does not delay daemon start. A stored policy that fails validation is skipped, and its tenant runs the default list.
 
 ### Fixed
