@@ -440,7 +440,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	// names here would hold up daemon startup on a host with slow or no DNS,
 	// and the default is log-only, so a few seconds of would-deny rows for
 	// them cost nothing.
-	e.refreshDomains(false)
+	e.refreshDomainsForStartup()
 
 	if err := e.reconcile(e.ctx); err != nil {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
@@ -1119,11 +1119,20 @@ func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
 	}
 }
 
+// refreshDomainsForStartup is the synchronous pre-reconcile refresh Start runs:
+// stored policies' domains only, never the default allow-list's names (#2997).
+// It is a named method so a test can pin that contract without a loaded BPF
+// object, which Start itself needs.
+func (e *NetworkPolicyEnforcer) refreshDomainsForStartup() {
+	e.refreshDomains(false)
+}
+
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
 //
 // includeDefault adds the default allow-list's names (#2577) when that posture
-// is on. Start passes false so they are not resolved on the startup path.
+// is on. refreshDomainsForStartup passes false so they are not resolved on the
+// startup path.
 func (e *NetworkPolicyEnforcer) refreshDomains(includeDefault bool) {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
