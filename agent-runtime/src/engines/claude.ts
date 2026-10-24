@@ -5,6 +5,7 @@ import {
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
+import { describeRunEnding, type EndingField, type RunEnding } from "./ending.js";
 import {
   claudeAllowedTools,
   claudeMcpServers,
@@ -42,7 +43,9 @@ type ClaudeResult = Extract<SDKMessage, { type: "result" }>;
 //
 // Journal (#2095): every assistant text block, tool_use block and tool_result
 // block the query() iterator yields is appended as it arrives; an error
-// result is journaled as an error.
+// result is journaled as an error. When the run ends without a final message
+// or ends any way but an ordinary end_turn, a status row names the stop
+// reason and previews the final message (#2513; see ending.ts).
 export class ClaudeEngine implements Engine {
   readonly name = "claude";
 
@@ -57,6 +60,9 @@ export class ClaudeEngine implements Engine {
     let source: AuthenticationSource = cfg.authenticationSource ?? "unknown";
     let externalProvider = false;
     let text = "";
+    // The text after the last tool call: the final message the skill
+    // contract asks for (#2513), as opposed to narration between tool calls.
+    let finalText = "";
     let usage: unknown;
     let result: ClaudeResult | undefined;
     // tool_use id -> tool name, so a tool_result line can name its tool.
@@ -132,8 +138,10 @@ export class ClaudeEngine implements Engine {
           for (const block of m.message.content ?? []) {
             if (block.type === "text" && block.text) {
               text += block.text;
+              finalText += block.text;
               journal.append({ kind: "assistant", text: block.text });
             } else if (block.type === "tool_use") {
+              finalText = "";
               toolNames.set(block.id, block.name);
               journal.append({
                 kind: "tool_use",
@@ -181,6 +189,10 @@ export class ClaudeEngine implements Engine {
         process.stderr.write("agent-runtime: SDK cleanup unavailable\n");
       }
     }
+    const ending = describeRunEnding(
+      claudeEnding(result, finalText, !!cfg.outputSchema),
+    );
+    if (ending) journal.append({ kind: "status", text: ending });
     const authenticated =
       result?.subtype === "success" && result.is_error === false;
     if (cfg.outputSchema) {
@@ -198,6 +210,33 @@ export class ClaudeEngine implements Engine {
       authenticationSource: source,
     };
   }
+}
+
+// claudeEnding reads how the turn ended from the result message (#2513): the
+// API stop reason, the SDK's terminal reason and the result subtype. Anything
+// but a successful end_turn (or an unreported stop reason) that completed is
+// abnormal; so is a run with no result message at all.
+function claudeEnding(
+  result: ClaudeResult | undefined,
+  finalText: string,
+  schemaBound: boolean,
+): RunEnding {
+  const stop = result?.stop_reason ?? null;
+  const terminal = result?.terminal_reason;
+  const fields: EndingField[] = [{ name: "stop_reason", value: stop ?? "unknown" }];
+  if (terminal) fields.push({ name: "terminal_reason", value: terminal });
+  fields.push({ name: "result", value: result?.subtype ?? "none" });
+  if (result?.subtype === "success" && result.is_error) fields.push({ name: "is_error", value: "true" });
+  const abnormal =
+    result === undefined ||
+    result.subtype !== "success" ||
+    result.is_error ||
+    (stop !== null && stop !== "end_turn") ||
+    (terminal !== undefined && terminal !== "completed");
+  const hasFinalOutput = schemaBound
+    ? result?.subtype === "success" && result.structured_output !== undefined
+    : finalText.trim() !== "";
+  return { finalMessage: finalText, hasFinalOutput, abnormal, fields };
 }
 
 // structuredOutput is the SDK-validated output of a schema-bound run, or
