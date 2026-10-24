@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading
