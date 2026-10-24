@@ -4,9 +4,11 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +82,17 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 			set_by TEXT NOT NULL,
 			set_at TIMESTAMPTZ NOT NULL
 		);
+		-- Changes the bootstrap made to data an earlier release stored, kept
+		-- until each has its audit entry (Q31; see upgrade).
+		CREATE TABLE IF NOT EXISTS retention_upgrade_events (
+			id            BIGSERIAL PRIMARY KEY,
+			action        TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			resource_id   TEXT NOT NULL,
+			detail        TEXT NOT NULL,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			audited_at    TIMESTAMPTZ
+		);
 	`); err != nil {
 		return nil, fmt.Errorf("init retention schema: %w", err)
 	}
@@ -93,17 +106,49 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 }
 
 // upgrade brings data an earlier release stored into line with today's
-// rules, inside the bootstrap transaction. Each change is logged.
+// rules, inside the bootstrap transaction. Every change is logged and
+// recorded in retention_upgrade_events in the same transaction, so it can
+// be audited once an audit store exists (Q31; see AuditUpgradeEvents).
 //
 //   - A window above retention.MaxDays (possible before the cap existed) is
-//     clamped to the cap, then the cap's CHECK is validated. Failing the
-//     bootstrap instead would leave every retention call UNAVAILABLE.
+//     clamped to the cap, the policy revision is bumped (updated_by
+//     retention.UpgradeActor), then the cap's CHECK is validated. Failing
+//     the bootstrap instead would leave every retention call UNAVAILABLE.
 //   - A hold whose org id has surrounding whitespace (possible before ids
 //     were trimmed) is stored under the trimmed id, so it can be released
 //     by that id and the sweepers match it against record org ids. When
 //     several stored ids trim to the same org, the earliest hold is kept and
-//     each other one is logged in full and removed: the org stays held.
+//     each other one is removed; its record keeps it in full and the org
+//     stays held.
+//   - A hold whose org id is empty once trimmed is quarantined: re-stored,
+//     still active, under retention.QuarantineOrgID, so an admin can release
+//     it. It is not dropped: while any hold is active, records with no org
+//     are held, and dropping it could release them.
 func upgrade(ctx context.Context, tx pgx.Tx) error {
+	if err := clampWindows(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE retention_windows VALIDATE CONSTRAINT retention_windows_days_max`); err != nil {
+		return fmt.Errorf("validate the retention window cap: %w", err)
+	}
+	return normaliseHoldIDs(ctx, tx)
+}
+
+// recordUpgrade stores one upgrade change for its later audit entry.
+func recordUpgrade(ctx context.Context, tx pgx.Tx, action, resourceType, resourceID string, detail any) error {
+	payload, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("record %s: %w", action, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO retention_upgrade_events (action, resource_type, resource_id, detail)
+		VALUES ($1, $2, $3, $4)`, action, resourceType, resourceID, string(payload)); err != nil {
+		return fmt.Errorf("record %s: %w", action, err)
+	}
+	return nil
+}
+
+// clampWindows clamps windows above the cap; see upgrade.
+func clampWindows(ctx context.Context, tx pgx.Tx) error {
 	rows, err := tx.Query(ctx, `WITH old AS (
 			SELECT class, days FROM retention_windows WHERE days > $1 FOR UPDATE
 		)
@@ -112,26 +157,37 @@ func upgrade(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return fmt.Errorf("clamp retention windows: %w", err)
 	}
+	var clamped []retention.UpgradeClampedWindow
 	for rows.Next() {
 		var class, days int32
 		if err := rows.Scan(&class, &days); err != nil {
 			rows.Close()
 			return fmt.Errorf("clamp retention windows: %w", err)
 		}
-		log.Printf("Retention: clamped the stored %v window from %d to %d days (the cap)", pb.RetentionClass(class), days, retention.MaxDays)
+		clamped = append(clamped, retention.UpgradeClampedWindow{Class: pb.RetentionClass(class).String(), StoredDays: days, Days: retention.MaxDays})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("clamp retention windows: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `ALTER TABLE retention_windows VALIDATE CONSTRAINT retention_windows_days_max`); err != nil {
-		return fmt.Errorf("validate the retention window cap: %w", err)
+	if len(clamped) == 0 {
+		return nil
 	}
-	return normaliseHoldIDs(ctx, tx)
+	sort.Slice(clamped, func(i, j int) bool { return clamped[i].Class < clamped[j].Class })
+	d := retention.UpgradeClampDetail{Windows: clamped}
+	if err := tx.QueryRow(ctx, `UPDATE retention_policy SET revision = revision + 1, updated_at = $1, updated_by = $2
+		WHERE id = 1 RETURNING revision`, retention.Now(), retention.UpgradeActor).Scan(&d.Revision); err != nil {
+		return fmt.Errorf("bump the retention policy revision: %w", err)
+	}
+	d.PreviousRevision = d.Revision - 1
+	for _, w := range clamped {
+		log.Printf("Retention: clamped the stored %s window from %d to %d days (the cap); policy revision %d", w.Class, w.StoredDays, w.Days, d.Revision)
+	}
+	return recordUpgrade(ctx, tx, retention.UpgradeActionClamp, "retention_policy", "cluster", d)
 }
 
 // normaliseHoldIDs trims stored hold org ids the way retention.NormalizeHold
-// does; see upgrade.
+// does, and quarantines ids that trim to nothing; see upgrade.
 func normaliseHoldIDs(ctx context.Context, tx pgx.Tx) error {
 	rows, err := tx.Query(ctx, `SELECT org_id, reason, set_by, set_at FROM retention_legal_holds ORDER BY set_at, org_id`)
 	if err != nil {
@@ -150,20 +206,24 @@ func normaliseHoldIDs(ctx context.Context, tx pgx.Tx) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read legal holds: %w", err)
 	}
-	// Group by trimmed id; holds are ordered by set_at, so the first of a
-	// group is the earliest and is the one kept.
+	// Group by the id each hold should have; holds are ordered by set_at, so
+	// the first of a group is the earliest and is the one kept.
 	groups := map[string][]*pb.LegalHold{}
 	var order []string
 	for _, h := range holds {
 		id := strings.TrimSpace(h.GetOrgId())
 		if id == "" {
-			log.Printf("Warning: retention: the legal hold stored as %q has an empty org id once trimmed; left as it is", h.GetOrgId())
-			continue
+			id = retention.QuarantineOrgID(h.GetOrgId())
 		}
 		if _, seen := groups[id]; !seen {
 			order = append(order, id)
 		}
 		groups[id] = append(groups[id], h)
+	}
+	stored := func(h *pb.LegalHold, heldAs string) retention.UpgradeHoldDetail {
+		return retention.UpgradeHoldDetail{HeldAs: heldAs, StoredAs: retention.UpgradeHold{
+			OrgID: h.GetOrgId(), Reason: h.GetReason(), SetBy: h.GetSetBy(), SetAt: h.GetSetAt().AsTime().UTC(),
+		}}
 	}
 	for _, id := range order {
 		g := groups[id]
@@ -176,15 +236,63 @@ func normaliseHoldIDs(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, `DELETE FROM retention_legal_holds WHERE org_id = $1`, h.GetOrgId()); err != nil {
 				return fmt.Errorf("normalise legal hold %q: %w", h.GetOrgId(), err)
 			}
-		}
-		if g[0].GetOrgId() != id {
-			if _, err := tx.Exec(ctx, `UPDATE retention_legal_holds SET org_id = $1 WHERE org_id = $2`, id, g[0].GetOrgId()); err != nil {
-				return fmt.Errorf("normalise legal hold %q: %w", g[0].GetOrgId(), err)
+			if err := recordUpgrade(ctx, tx, retention.UpgradeActionHoldMerge, "legal_hold", id, stored(h, id)); err != nil {
+				return err
 			}
-			log.Printf("Retention: the legal hold stored as %q is now stored as %q", g[0].GetOrgId(), id)
+		}
+		if first := g[0]; first.GetOrgId() != id {
+			if _, err := tx.Exec(ctx, `UPDATE retention_legal_holds SET org_id = $1 WHERE org_id = $2`, id, first.GetOrgId()); err != nil {
+				return fmt.Errorf("normalise legal hold %q: %w", first.GetOrgId(), err)
+			}
+			action := retention.UpgradeActionHoldNormalise
+			if strings.TrimSpace(first.GetOrgId()) == "" {
+				action = retention.UpgradeActionHoldQuarantine
+			}
+			log.Printf("Retention: the legal hold stored as %q is now stored as %q (%s)", first.GetOrgId(), id, action)
+			if err := recordUpgrade(ctx, tx, action, "legal_hold", id, stored(first, id)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// AuditUpgradeEvents implements retention.UpgradeAuditor. Each event is
+// locked, written and marked audited in a transaction of its own, so a
+// failed write leaves it (and the ones after it) pending; concurrent
+// callers skip each other's locked events.
+func (s *Store) AuditUpgradeEvents(ctx context.Context, write func(retention.UpgradeEvent) error) (int, error) {
+	n := 0
+	for {
+		found := false
+		err := s.inTx(ctx, func(tx pgx.Tx) error {
+			var ev retention.UpgradeEvent
+			err := tx.QueryRow(ctx, `SELECT id, action, resource_type, resource_id, detail, created_at
+				FROM retention_upgrade_events WHERE audited_at IS NULL ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).
+				Scan(&ev.ID, &ev.Action, &ev.ResourceType, &ev.ResourceID, &ev.Detail, &ev.CreatedAt)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("read upgrade event: %w", err)
+			}
+			found = true
+			if err := write(ev); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE retention_upgrade_events SET audited_at = now() WHERE id = $1`, ev.ID); err != nil {
+				return fmt.Errorf("mark upgrade event %d audited: %w", ev.ID, err)
+			}
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+		if !found {
+			return n, nil
+		}
+		n++
+	}
 }
 
 // maxDaysSQL is retention.MaxDays as SQL text for the CHECK constraint.
