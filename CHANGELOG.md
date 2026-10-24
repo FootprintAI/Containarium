@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The dispatch row names the change request its run submitted** (#3001). `SubmitTrackerChange` records the opened pull / merge request on the `tracker_dispatches` row that started the run (matched by run id), and `ListTrackerDispatches` / `TrackerDispatch` expose it as `change_url` and `change_number` — empty / zero until the run submits one. A control plane mirroring the listing can link the change without reading the provider itself. A run the dispatcher did not start has no row to annotate; the submit succeeds as before and the miss is logged.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Fixed
+
+- **Sentinel tunnel tests no longer leave session goroutines running after they finish** (#3009, follow-up to #2963). Tests that started a `TunnelServer` never stopped it or waited for its goroutines, so `monitorSession` could fire after the owning test ended and write to the process-global logger or run `ip addr del` during a later test; a `waitForListener` probe connection was also left open, holding a handler goroutine for 10 s. The tunnel tests now close their sessions and wait for the server's goroutines on cleanup, and `TestFallbackToOwnListenerIsRefused` compares the goroutine count against a baseline taken at its start instead of a fixed 60, which failed under `-count` above 1. Production change: `TunnelServer` tracks the goroutines it starts and exposes `Wait()`; behaviour is otherwise unchanged.
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading
