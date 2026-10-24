@@ -1,0 +1,156 @@
+name: deps-guard
+
+# Dependency-change gate for Go modules (#2794, story 3 of #2649).
+#
+#   go-mod-verify  the deps-guard self-test (seeded failures must fail), then
+#                  `go mod verify` with GOFLAGS=-mod=readonly and an explicit
+#                  GOSUMDB.
+#   deps-guard     scripts/ci/deps-guard.sh against the PR base: fails on a
+#                  new or changed `replace`, a new or re-versioned module that
+#                  sum.golang.org does not know or disagrees with, or a Go env
+#                  that exempts modules from the checksum database. Writes a
+#                  report (each new module with its age and source, under 14
+#                  days in bold) to the job summary.
+#   comment        posts that report as one sticky PR comment. Same-repo PRs
+#                  only: a fork PR's token is read-only, so forks get the job
+#                  summary alone. This is the only job with a write scope, and
+#                  it checks out nothing and runs no PR code.
+#
+# Hard fail, no label. The only override is a code-owner approval of the PR
+# (decision 4 on #2649), which needs the CODEOWNERS and branch-protection
+# settings from #2792.
+#
+# Never pull_request_target.
+
+on:
+  push:
+    branches: [main]
+  # No `branches:` filter (#1215) and no `paths:` filter: a check that is
+  # absent on some PRs cannot be made required, and the run is cheap when
+  # go.mod did not change.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOFLAGS: -mod=readonly
+  GOSUMDB: sum.golang.org
+
+jobs:
+  go-mod-verify:
+    name: go mod verify (readonly, sum.golang.org)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version-file: go.mod
+          cache-name: shared
+
+      - name: deps-guard unit tests (one fixture per failure, one passing)
+        # No repo-wide `go test ./...` lane runs these, so this step does.
+        run: go test -count=1 ./internal/depsguard/ ./cmd/deps-guard/
+
+      - name: deps-guard self-test (seeded failures must fail, live sum.golang.org)
+        run: scripts/ci/deps-guard.sh --self-test
+
+      - name: go mod verify
+        run: |
+          go mod download
+          go mod verify
+
+  deps-guard:
+    name: deps-guard (replace + checksum database)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # HEAD^1 is the base: the base tip of a PR merge commit, or the
+          # previous main commit on push.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version-file: go.mod
+          cache-name: shared
+
+      - name: Check go.mod against the base
+        run: scripts/ci/deps-guard.sh --base HEAD^1 --report "$RUNNER_TEMP/deps-guard/report.md"
+
+      - name: Write the report to the job summary
+        if: ${{ !cancelled() }}
+        # No report means no verdict (exit 2: e.g. sum.golang.org was
+        # unreachable); say so instead of leaving the comment stale.
+        run: |
+          report="$RUNNER_TEMP/deps-guard/report.md"
+          if [[ ! -s "$report" ]]; then
+            mkdir -p "$(dirname "$report")"
+            printf '%s\n### deps-guard: Go dependency changes\n\n**No verdict.** deps-guard could not finish; see the job log.\n' \
+              '<!-- deps-guard -->' > "$report"
+          fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the report to the comment job
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: deps-guard-report
+          path: ${{ runner.temp }}/deps-guard/report.md
+          if-no-files-found: ignore
+          retention-days: 3
+
+  comment:
+    name: deps-guard PR comment
+    needs: deps-guard
+    # Same-repo PRs only; a fork PR's token cannot comment.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Fetch the report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: deps-guard-report
+          path: ${{ runner.temp }}/deps-guard
+
+      - name: Create or update the sticky comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/deps-guard/report.md"
+          marker='<!-- deps-guard -->'
+          [[ -s "$report" ]] || { echo "no report to post"; exit 0; }
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id")
+          existing=${ids%%$'\n'*}
+          if [[ -z "$existing" ]] && grep -q '^\*\*Passes:\*\*' "$report" \
+              && grep -q '^No new or changed modules in go.mod\.$' "$report"; then
+            echo "nothing to report and no earlier comment; not commenting"
+            exit 0
+          fi
+          if [[ -n "$existing" ]]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$report" --silent
+            echo "updated comment $existing"
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F "body=@$report" --silent
+            echo "created comment"
+          fi

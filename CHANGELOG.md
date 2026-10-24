@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The dispatch row names the change request its run submitted** (#3001). `SubmitTrackerChange` records the opened pull / merge request on the `tracker_dispatches` row that started the run (matched by run id), and `ListTrackerDispatches` / `TrackerDispatch` expose it as `change_url` and `change_number` — empty / zero until the run submits one. A control plane mirroring the listing can link the change without reading the provider itself. A run the dispatcher did not start has no row to annotate; the submit succeeds as before and the miss is logged.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
+- **Dependency-change gate on every PR** (#2794, story 3 of #2649). Two new workflows, with checks `dependency review`, `go mod verify (readonly, sum.golang.org)` and `deps-guard (replace + checksum database)`:
+  - `dependency-review` fails a PR that adds a dependency with a known vulnerability of severity high or above. Its licence summary is informational; the licence allow-list stays in `licenses.yml`.
+  - `deps-guard` (`scripts/ci/deps-guard.sh`) diffs `go.mod` against the PR base. It fails on a new or changed `replace` (an existing, unchanged one passes), and on a new or re-versioned module that sum.golang.org has no record of, or whose `go.sum` hash differs from it. It also fails if `GONOSUMDB`, `GOPRIVATE`, `GONOPROXY` or `GOINSECURE` is set. Hard fail with no label; the only override is a code-owner approval of the PR, which takes effect once the code-owner settings from #2792 are applied.
+  - A sticky PR comment lists each new module with its age (the module proxy's publication time) and source. Modules younger than 14 days are in bold. Fork PRs get the same report in the job summary.
+  - CI's shared Go setup now sets `GOFLAGS=-mod=readonly` and `GOSUMDB=sum.golang.org` explicitly, and the lane runs `go mod verify`.
 
 ## [0.116.0] - 2026-10-24
 
