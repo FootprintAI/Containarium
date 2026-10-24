@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The dispatch row names the change request its run submitted** (#3001). `SubmitTrackerChange` records the opened pull / merge request on the `tracker_dispatches` row that started the run (matched by run id), and `ListTrackerDispatches` / `TrackerDispatch` expose it as `change_url` and `change_number` — empty / zero until the run submits one. A control plane mirroring the listing can link the change without reading the provider itself. A run the dispatcher did not start has no row to annotate; the submit succeeds as before and the miss is logged.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Security
+
+- **Build-time downloads are pinned and inventoried** (#2795, story 5 of #2649). `xcaddy` (Makefile, `scripts/setup-caddy.sh`, proxyproto e2e) is now a checksum-verified release binary via `scripts/install-xcaddy.sh` instead of `go install ...@latest`; `govulncheck` is pinned to `v1.9.0`; the `kind` binary in the k8s and helm lanes is sha256-verified; `scripts/build-webui.sh` uses `npm ci`; the release notes' quick-install line now points at the release tag's `hacks/install.sh`, not `main`. `docs/security/BUILD-SUPPLY-CHAIN.md` lists every build-time fetch and how it is pinned, and `scripts/ci/check-build-fetches.sh` (workflow-lint lane, with a seeded self-test) fails on an unlisted fetch, any `@latest`, or a project-level `npm install`.
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading

@@ -38,12 +38,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
       - name: Install actual SSH, jail, tracing and isolated firewall tools
         run: |
           sudo apt-get update
@@ -83,7 +83,7 @@ jobs:
       - name: Make allowlisted evidence readable to artifact uploader
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/ssh-upstream-proof"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: guarded-upstream-firewall
@@ -95,12 +95,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
       - name: Install real backend SSH and jail prerequisites
         run: |
           sudo apt-get update
@@ -114,7 +114,7 @@ jobs:
           set -euo pipefail
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/backendjail | tee "$RUNNER_TEMP/backend-jail/verification.log"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: backend-jail-characterization
