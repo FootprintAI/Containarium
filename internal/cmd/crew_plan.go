@@ -151,6 +151,9 @@ func runCrewPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("encode graph: %w", err)
 	}
+	if resp.GetRunId() != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Planner run:", resp.GetRunId())
+	}
 	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return err
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,11 +45,11 @@ func (s *CrewServer) runPlannerSkill(ctx context.Context, req *pb.RunAgentSkillR
 		return nil, err
 	}
 	defer s.agents.endRunLease(ctx, run.lease, s.agents.boxWiper(), runExitReason)
-	// Unlike RunAgentSkill's compatibility fallback, planning must fail if
-	// the runtime or artifact is unavailable.
+	// Planning requires an artifact; use the standalone run's status mapping
+	// so a missing runtime remains distinguishable from execution failure.
 	out, err := s.agents.runInBoxAgentResult(run.containerName, run.lease.SeedDir, run.runID, run.skillID, run.engineRes, run.model)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "planner runtime: %v", err)
+		return nil, inBoxRunStatus(run.runID, err)
 	}
 	return &pb.RunAgentSkillResponse{ArtifactJson: out, RunId: run.runID, GitCommit: run.gitCommit}, nil
 }
@@ -69,7 +70,9 @@ func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphReq
 		}
 	}
 	for _, crew := range s.catalog.List() {
-		in.Crews = append(in.Crews, plannerAssignee{ID: crew.Id, Description: crew.Description})
+		if !slices.Contains(crew.SkillIds, plannerSkillID) {
+			in.Crews = append(in.Crews, plannerAssignee{ID: crew.Id, Description: crew.Description})
+		}
 	}
 	input, err := json.Marshal(in)
 	if err != nil {

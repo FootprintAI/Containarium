@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -101,11 +102,48 @@ func TestPlanTaskGraph_RejectedOutputIsRecordedWithoutExecutingNodes(t *testing.
 			if resp != nil || status.Code(err) != codes.FailedPrecondition || calls != 1 || !strings.Contains(err.Error(), runID) {
 				t.Fatalf("invalid plan escaped rejection: response=%v error=%v calls=%d", resp, err, calls)
 			}
+			if name == "self assignee" && (!strings.Contains(err.Error(), `node "a"`) || !strings.Contains(err.Error(), "planner")) {
+				t.Fatalf("self-assignment error must identify the node: %v", err)
+			}
 			record, ok, storeErr := s.runs.Get(ctx, runID)
 			if storeErr != nil || !ok || record.State != pb.CrewRunState_CREW_RUN_STATE_FAILED || record.Error == "" || record.ArtifactJson != "" {
 				t.Fatalf("failure reason must be retained, not a usable artifact: %v %v", record, storeErr)
 			}
 		})
+	}
+}
+
+func TestPlanTaskGraph_RejectsCrewContainingPlanner(t *testing.T) {
+	s := NewCrewServer(nil)
+	s.catalog = crews.New()
+	if err := s.catalog.LoadFromBytes([]byte(`crews:
+  - id: planner-crew
+    name: Planner Crew
+    topology: freeform
+    skill_ids: [task-planner, code-review]
+`)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctxAs("admin", true)
+	var runID string
+	resp, err := s.planTaskGraph(ctx, &pb.PlanTaskGraphRequest{Goal: "review API", Repo: "https://example.com/repo.git"},
+		func(_ context.Context, task *pb.RunAgentSkillRequest) (*pb.RunAgentSkillResponse, error) {
+			runID = task.RunId
+			var input plannerInput
+			if err := json.Unmarshal([]byte(task.InputJson), &input); err != nil {
+				t.Fatal(err)
+			}
+			if len(input.Crews) != 0 || task.SkillId != plannerSkillID {
+				t.Fatal("planner crews must not be offered or executed as work assignees")
+			}
+			return &pb.RunAgentSkillResponse{ArtifactJson: `{"goal":"review API","nodes":[{"id":"delegate","goal":"implement","crew_id":"planner-crew"}]}`}, nil
+		})
+	if resp != nil || status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), `node "delegate"`) {
+		t.Fatalf("crew-mediated self-assignment escaped rejection: %v %v", resp, err)
+	}
+	record, ok, storeErr := s.runs.Get(ctx, runID)
+	if storeErr != nil || !ok || record.State != pb.CrewRunState_CREW_RUN_STATE_FAILED || record.Error == "" || record.ArtifactJson != "" {
+		t.Fatalf("self-assignment failure must be recorded without an artifact: %v %v", record, storeErr)
 	}
 }
 

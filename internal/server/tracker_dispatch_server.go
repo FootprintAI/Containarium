@@ -208,6 +208,8 @@ func toProtoTrackerDispatch(d *tracker.Dispatch) *pb.TrackerDispatch {
 		State:         d.State,
 		FailureReason: d.FailureReason,
 		Failure:       d.Failure,
+		ChangeUrl:     d.ChangeURL,
+		ChangeNumber:  d.ChangeNumber,
 	}
 	if !d.CreatedAt.IsZero() {
 		out.CreatedAt = timestamppb.New(d.CreatedAt)
