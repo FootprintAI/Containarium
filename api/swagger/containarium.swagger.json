@@ -8649,6 +8649,52 @@
         ]
       }
     },
+    "/v1/tracker/connections/{username}/{connection}/changes:files": {
+      "post": {
+        "summary": "Submit a tracker change request from files",
+        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
+        "operationId": "TrackerService_SubmitTrackerChangeFiles",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeFilesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeFilesBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/connections/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
@@ -20866,6 +20912,52 @@
       },
       "description": "SubmitTrackerChangeRequest publishes the calling run's committed\nworkspace and opens a change request referencing issue — see\ndocs/architecture/agent-tracker-broker.md's \"Submit path\". Carries\nno remote, no target ref, and no credential: the daemon resolves the\nrun's box, base commit, and connection itself from the verified JWT,\nand chooses the branch (never a request field — see\ninternal/tracker/submit.BranchName)."
     },
+    "SubmitTrackerChangeFilesBody": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "type": "string",
+          "format": "int64",
+          "description": "issue this change closes/references. Required."
+        },
+        "title": {
+          "type": "string",
+          "description": "title is the change request title and the commit subject. Required."
+        },
+        "description": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "draft opens the change request as a draft/WIP."
+        },
+        "baseRef": {
+          "type": "string",
+          "description": "base_ref is the branch the change targets and is built on. Empty\nresolves the project's actual default branch from the provider."
+        },
+        "headBranch": {
+          "type": "string",
+          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Never force-pushed; must differ from base_ref."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerChangeFile"
+          },
+          "description": "files is the change: at least one, each path distinct."
+        }
+      },
+      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
+    },
+    "SubmitTrackerChangeFilesResponse": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/TrackerChange"
+        }
+      }
+    },
     "SubmitTrackerChangeResponse": {
       "type": "object",
       "properties": {
@@ -21411,6 +21503,20 @@
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
+    },
+    "TrackerChangeFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "path is repo-relative and must already be clean: no leading \"/\",\nno \".\" or \"..\" segment, no \".git\" segment, no control characters."
+        },
+        "content": {
+          "type": "string",
+          "description": "content is the file's complete new content (text). An existing file\nkeeps its executable bit; a new file is created non-executable."
+        }
+      },
+      "description": "TrackerChangeFile is one whole file of a SubmitTrackerChangeFiles\nchange: its repo-relative path and its complete new content."
     },
     "TrackerCiVerdict": {
       "type": "string",

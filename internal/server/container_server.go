@@ -373,6 +373,10 @@ type ContainerServer struct {
 	// test never shells out to real git or touches the network.
 	submitPusher submit.GitPusher
 
+	// submitFilePusher overrides SubmitTrackerChangeFiles' commit-and-push
+	// backend (#3005). Nil in production (submit.NewGitPusher()).
+	submitFilePusher submit.FilePusher
+
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
 	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND
