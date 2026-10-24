@@ -72,7 +72,7 @@ func serveRecorded(t *testing.T, ctx context.Context, ts *TunnelServer) (*record
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	ln := &recordingListener{Listener: raw}
-	go func() { _ = ts.Serve(ctx, ln) }()
+	serveTunnelServer(t, ctx, ts, ln)
 	waitForListener(t, raw.Addr().String())
 	return ln, raw.Addr().String()
 }
