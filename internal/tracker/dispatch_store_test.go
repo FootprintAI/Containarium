@@ -382,3 +382,54 @@ func TestIssueInRunLineage(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatchStore_RecordChange is #3001: the change request a run
+// submits lands on the dispatch row that started the run, matched by run
+// id, and reads back through GetDispatch and ListDispatches. A run id no
+// row names (an operator-started run, another daemon's run) records
+// nothing and is not an error.
+func TestDispatchStore_RecordChange(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "dispatch-record-change"
+	seedDispatchConnection(t, store, ctx, user)
+
+	d := newDispatch(user, 41)
+	d.RunID = "run-change-0001"
+	inserted, err := store.InsertDispatch(ctx, d)
+	if err != nil {
+		t.Fatalf("InsertDispatch: %v", err)
+	}
+	if inserted.ChangeURL != "" || inserted.ChangeNumber != 0 {
+		t.Fatalf("fresh row = {%q, %d}, want no change yet", inserted.ChangeURL, inserted.ChangeNumber)
+	}
+
+	ok, err := store.RecordDispatchChange(ctx, "run-change-0001", "https://gitlab.example/group/project/-/merge_requests/9", 9)
+	if err != nil || !ok {
+		t.Fatalf("RecordDispatchChange = (%v, %v), want (true, nil)", ok, err)
+	}
+	got, err := store.GetDispatch(ctx, inserted.ID)
+	if err != nil {
+		t.Fatalf("GetDispatch: %v", err)
+	}
+	if got.ChangeURL != "https://gitlab.example/group/project/-/merge_requests/9" || got.ChangeNumber != 9 {
+		t.Errorf("row after record = {%q, %d}, want the submitted change", got.ChangeURL, got.ChangeNumber)
+	}
+	rows, err := store.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListDispatches = %d rows, %v; want 1", len(rows), err)
+	}
+	if rows[0].ChangeNumber != 9 {
+		t.Errorf("listed row change number = %d, want 9", rows[0].ChangeNumber)
+	}
+
+	for name, runID := range map[string]string{"unknown run": "run-nobody", "empty run id": ""} {
+		ok, err := store.RecordDispatchChange(ctx, runID, "https://example.invalid/x/1", 1)
+		if err != nil || ok {
+			t.Errorf("%s: RecordDispatchChange = (%v, %v), want (false, nil)", name, ok, err)
+		}
+	}
+	got, _ = store.GetDispatch(ctx, inserted.ID)
+	if got.ChangeNumber != 9 {
+		t.Errorf("row touched by an unmatched record: change number = %d, want 9", got.ChangeNumber)
+	}
+}

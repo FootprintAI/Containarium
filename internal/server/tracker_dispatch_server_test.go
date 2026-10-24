@@ -301,3 +301,17 @@ func TestTrackerRunStarter_UnknownSkillFails(t *testing.T) {
 		t.Fatalf("code = %v, want NotFound", status.Code(err))
 	}
 }
+
+// TestToProtoTrackerDispatch_CarriesTheSubmittedChange is #3001's
+// projection: change_url / change_number come straight off the row, empty
+// / zero when the run never submitted one.
+func TestToProtoTrackerDispatch_CarriesTheSubmittedChange(t *testing.T) {
+	with := toProtoTrackerDispatch(&tracker.Dispatch{ID: "d1", RunID: "run-1", ChangeURL: "https://gitlab.example/g/p/-/merge_requests/3", ChangeNumber: 3})
+	if with.GetChangeUrl() != "https://gitlab.example/g/p/-/merge_requests/3" || with.GetChangeNumber() != 3 {
+		t.Errorf("projection = {%q, %d}, want the row's change", with.GetChangeUrl(), with.GetChangeNumber())
+	}
+	without := toProtoTrackerDispatch(&tracker.Dispatch{ID: "d2", RunID: "run-2"})
+	if without.GetChangeUrl() != "" || without.GetChangeNumber() != 0 {
+		t.Errorf("projection without a change = {%q, %d}, want empty / zero", without.GetChangeUrl(), without.GetChangeNumber())
+	}
+}
