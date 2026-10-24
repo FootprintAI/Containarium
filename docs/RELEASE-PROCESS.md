@@ -41,6 +41,18 @@ That's it — two files (three when the skills pin moves), one commit, conventio
 `main` for the pattern). PR it, get CI green, merge like any other
 change.
 
+**The release PR's CI takes about two minutes, not the full suite.** When a
+PR into `main` changes only `CHANGELOG.md` and the `Version` constant, and
+the `main` commit it sits on already passed each workflow on its own push,
+the heavy jobs (unit + e2e, the CLI build/test gates, golangci-lint) skip.
+gosec uploads the base commit's stored analysis instead of rescanning. A
+skipped job reports as passing, so the PR stays mergeable. The detector is
+`.github/actions/release-only-diff` and `scripts/ci/release-only-diff.sh`.
+Anything else in the diff, including a skills-pin bump, means a full run. So
+does a base whose `main` run is still in progress or failed. If you see the
+full suite on a release PR, that's why: wait for `main` to go green, or let
+it run.
+
 **Not required:** `web-ui/package.json`'s `version` field is versioned
 independently of the daemon and does not need to track the release tag.
 
@@ -93,7 +105,9 @@ anyway; it's the only thing a non-release build has to go on.
    `appVersion: v<version>`. Check that the `sign-release` job ran and
    that every file on the Release has a `<file>.sigstore.json`
    (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
-   documented `cosign verify-blob` command. This job and the SBOM
+   documented `cosign verify-blob` command. Check that each image job's
+   `Sign and verify the image` step passed and verify one image by digest
+   with the documented `cosign verify` command. These signing steps and the SBOM
    attachment run only on a real tag, so the first release after they
    landed is their first run: expect to look.
    Also require the `helm-install-upgrade` job to pass: it downloads the
@@ -157,9 +171,9 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle (listed in `SHA256SUMS.txt`), the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256`, four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries, the SBOMs, the agent-runtime bundle, the SDLC skills bundle and (appended by the `helm-chart` job, which downloads, appends and re-uploads the file before signing; #2702) the chart `.tgz`, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
-| `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
-| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
+| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle (listed in `SHA256SUMS.txt`), the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256`, four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries, the SBOMs, the agent-runtime bundle, the SDLC skills bundle and (appended by the `helm-chart` job, which downloads, appends and re-uploads the file before signing; #2702) the chart `.tgz`, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`), and the `model-gateway-image` job pushes `ghcr.io/<org>/containarium-model-gateway` with its keyless cosign signature (by digest) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
+| `containarium-daemon.yml` | Daemon container image, plus its keyless cosign signature (by digest) | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
+| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images, each with its keyless cosign signature (by digest) | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
 
 The PyPI one deserves particular care: per `TELEMETRY-DISTRO-DESIGN.md`
@@ -196,6 +210,20 @@ the macOS client and `agent-box` for both amd64 and arm64. It also runs
 the hostcheck, agentbox, and sandbox/dialer tests on Linux and rejects
 agent-box source files enabled for Windows. Cross-compilation checks
 build compatibility; it does not run the binaries on Windows or macOS.
+
+Two whole-tree invocations are also supported and kept green by
+`scripts/test-build-constraint-sets.sh` (run in the same workflow):
+
+- `go vet -tags containarium_client ./...` passes for every package,
+  tests included. A server-side file that uses a `!containarium_client`
+  symbol (for example the Postgres-backed stores in `internal/auth` and
+  `internal/cluster`) carries the same constraint.
+- `GOOS=windows go build ./...` is **not** supported as written: the
+  daemon side imports `internal/agentbox` (Unix-only) or `internal/netbpf`
+  (Linux eBPF). The script builds every other package for Windows and
+  keeps the excluded set as an explicit, reviewed list
+  (`WINDOWS_EXCLUDED`). Run the script rather than `go build ./...` to
+  check Windows locally.
 
 ### Rehearsing a release build without publishing
 

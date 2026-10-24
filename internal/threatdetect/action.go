@@ -23,6 +23,10 @@ const (
 	// confirmed applied — the daemon died mid-apply) and was undone by the
 	// sweep.
 	ReleasedByOrphanSweep = "orphan-sweep"
+	// ReleasedByContainerDeleted marks an action closed because its box no
+	// longer exists (#2835): the box was deleted through the daemon, or a
+	// sweep found it gone. There is nothing to restore on a deleted box.
+	ReleasedByContainerDeleted = "container-deleted"
 )
 
 // PendingOrphanAfter is how long a PENDING row may wait for its actuator
@@ -61,6 +65,12 @@ type SecurityAction struct {
 	Pending   bool
 	AppliedAt time.Time
 	ExpiresAt time.Time
+	// InstanceID is the Incus instance id (volatile.uuid) of the box the
+	// action was applied to (#2835): a box re-created under the same name is
+	// another instance, and an undo must never write this row's saved limits
+	// onto it. "" on rows recorded before it existed, or when it could not
+	// be read.
+	InstanceID string
 	// ReleasedAt is zero while the action is in effect.
 	ReleasedAt time.Time
 	ReleasedBy string

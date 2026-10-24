@@ -1,0 +1,10 @@
+name: bad-template-injection
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.pull_request.title }}"

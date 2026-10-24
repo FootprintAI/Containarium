@@ -48,6 +48,24 @@ type CompiledPolicy struct {
 	// "just the lists". The implicit allow it implies (the DNS resolver) is
 	// added by ImplicitEgress, because the address is the daemon's to know.
 	EgressPreset pb.EgressPreset
+	// EgressMode is the enforcement mode of the egress allow-list alone; Mode
+	// keeps governing every other check. Carried as given: UNSPECIFIED means
+	// "follow Mode" and is resolved by EffectiveEgressMode, so a stored policy
+	// written before the field existed keeps behaving exactly as it did.
+	EgressMode pb.NetworkPolicyMode
+}
+
+// EffectiveEgressMode is the mode the egress allow-list decision runs under:
+// EgressMode when set, otherwise Mode (already resolved UNSPECIFIED→LOG_ONLY by
+// Compile).
+func (c CompiledPolicy) EffectiveEgressMode() pb.NetworkPolicyMode {
+	if c.EgressMode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED {
+		return c.EgressMode
+	}
+	if c.Mode == pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED {
+		return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+	}
+	return c.Mode
 }
 
 // DenyRule is one normalized virtual-patch block rule (#660). The destination
@@ -114,6 +132,16 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		return CompiledPolicy{}, fmt.Errorf("network policy: unknown mode %d", int32(mode))
 	}
 
+	// egress_mode: UNSPECIFIED is kept (it means "follow mode"); unknown values
+	// are rejected like an unknown mode.
+	switch p.GetEgressMode() {
+	case pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED,
+		pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE:
+	default:
+		return CompiledPolicy{}, fmt.Errorf("network policy: unknown egress mode %d", int32(p.GetEgressMode()))
+	}
+
 	switch p.GetEgressPreset() {
 	case pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED, pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY:
 	default:
@@ -131,6 +159,7 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		DenyRules:        deny,
 		AllowFromTenants: allowFrom,
 		EgressPreset:     p.GetEgressPreset(),
+		EgressMode:       p.GetEgressMode(),
 	}, nil
 }
 
@@ -206,6 +235,7 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		DenyRules:        deny,
 		AllowFromTenants: append([]string(nil), c.AllowFromTenants...),
 		EgressPreset:     c.EgressPreset,
+		EgressMode:       c.EgressMode,
 	}
 }
 

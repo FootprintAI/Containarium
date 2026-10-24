@@ -2,17 +2,20 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 // GRPCClient wraps a gRPC connection to the containarium daemon
@@ -36,6 +39,8 @@ type GRPCClient struct {
 	modelGatewayClient pb.ModelGatewayServiceClient
 	// guardrailPolicyClient is the server-side guardrail policy (#2368).
 	guardrailPolicyClient pb.GuardrailPolicyServiceClient
+	// retentionClient is the retention policy and legal holds (#2875).
+	retentionClient pb.RetentionServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -122,6 +127,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		modelGatewayClient: modelGatewayClient,
 
 		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
+		retentionClient:       pb.NewRetentionServiceClient(conn),
 	}, nil
 }
 
@@ -155,16 +161,14 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:                 container.Name,
-			Username:             container.Username,
-			SSHHost:              container.SshHost,
-			State:                container.State.String(),
-			Labels:               container.Labels,
-			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
-			MonitoringEnabled:    container.MonitoringEnabled,
-			AutoSleepEnabled:     container.AutoSleepEnabled,
-			IdleThresholdMinutes: container.IdleThresholdMinutes,
+			Name:         container.Name,
+			Username:     container.Username,
+			SSHHost:      container.SshHost,
+			State:        container.State.String(),
+			Labels:       container.Labels,
+			InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
+		applyProtoLifecycle(&info, container)
 
 		// Get IP address from network info
 		if container.Network != nil {
@@ -192,7 +196,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
-	req := newCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
 	resp, err := c.client.CreateContainer(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -228,10 +232,40 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	return info, nil
 }
 
-// newCreateContainerRequest builds the wire request for CreateContainer;
+// ValidateCreate asks the daemon to run every pre-flight check for req and stop
+// before provisioning anything (#2925). nil means the daemon would accept the
+// create; the error is the daemon's own rejection otherwise. `create --force`
+// calls it before deleting the existing box.
+//
+// A daemon that predates dry_run ignores the field and answers a real create,
+// so only a response that echoes dry_run counts. Anything else is an error:
+// treating it as "validated" would delete the box on an unchecked request.
+func (c *GRPCClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
+	if !ok {
+		return fmt.Errorf("clone create request: unexpected type")
+	}
+	dry.DryRun = true
+	resp, err := c.client.CreateContainer(ctx, dry)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	if !resp.GetDryRun() {
+		return errDryRunNotHonoured
+	}
+	return nil
+}
+
+// errDryRunNotHonoured is returned when a daemon answered a dry-run create
+// with a normal response: it predates the field.
+var errDryRunNotHonoured = errors.New("the daemon did not honour the dry run (it predates dry_run support); refusing to treat the request as validated")
+
+// NewCreateContainerRequest builds the wire request for CreateContainer;
 // pure, so what the CLI flags turn into is unit-testable (#2358 — labels
 // used to be dropped between the CLI and this request).
-func newCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
+func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -368,6 +402,20 @@ func (c *GRPCClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	return c.client.SetContainerDeletePolicy(ctx, &pb.SetContainerDeletePolicyRequest{
 		Name:         username,
 		DeletePolicy: policy,
+	})
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container (#2944); BOX_TOOL_ACCESS_UNSPECIFIED clears it. The error
+// is returned UNWRAPPED so a daemon too old to implement the RPC surfaces as
+// gRPC codes.Unimplemented.
+func (c *GRPCClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerToolAccess(ctx, &pb.SetContainerToolAccessRequest{
+		Name:       username,
+		ToolAccess: level,
 	})
 }
 
@@ -565,14 +613,12 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:                 container.Name,
-		Username:             container.Username,
-		State:                container.State.String(),
-		MonitoringEnabled:    container.MonitoringEnabled,
-		AutoSleepEnabled:     container.AutoSleepEnabled,
-		IdleThresholdMinutes: container.IdleThresholdMinutes,
-		Labels:               container.Labels,
+		Name:     container.Name,
+		Username: container.Username,
+		State:    container.State.String(),
+		Labels:   container.Labels,
 	}
+	applyProtoLifecycle(info, container)
 
 	if container.Network != nil {
 		info.IPAddress = container.Network.IpAddress
@@ -717,6 +763,7 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 		KernelVersion: resp.Info.KernelVersion,
 		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
 			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),
 	}
 
 	return info, nil
@@ -1291,6 +1338,88 @@ func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.
 		return nil, fmt.Errorf("set guardrail policy: %w", err)
 	}
 	return resp, nil
+}
+
+// SetGuardrailBaselineMode switches the baseline response scan between LOG
+// and BLOCK via gRPC (#2738; admin only).
+func (c *GRPCClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailBaselineMode(ctx, &pb.SetGuardrailBaselineModeRequest{Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail baseline mode: %w", err)
+	}
+	return resp, nil
+}
+
+// retentionCall runs one RetentionService call with the usual timeout (#2875).
+func retentionCall[T any](op string, call func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := call(ctx)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", op, err)
+	}
+	return resp, nil
+}
+
+// GetRetentionPolicy reads the retention windows via gRPC (admin only).
+func (c *GRPCClient) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
+	return retentionCall("get retention policy", func(ctx context.Context) (*pb.GetRetentionPolicyResponse, error) {
+		return c.retentionClient.GetRetentionPolicy(ctx, &pb.GetRetentionPolicyRequest{})
+	})
+}
+
+// SetRetentionPolicy changes retention windows via gRPC (admin only).
+func (c *GRPCClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	return retentionCall("set retention policy", func(ctx context.Context) (*pb.SetRetentionPolicyResponse, error) {
+		return c.retentionClient.SetRetentionPolicy(ctx, req)
+	})
+}
+
+// ListLegalHolds lists the active legal holds via gRPC (admin only).
+func (c *GRPCClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
+	return retentionCall("list legal holds", func(ctx context.Context) (*pb.ListLegalHoldsResponse, error) {
+		return c.retentionClient.ListLegalHolds(ctx, &pb.ListLegalHoldsRequest{})
+	})
+}
+
+// SetLegalHold places a legal hold on an org via gRPC (admin only).
+func (c *GRPCClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	return retentionCall("set legal hold", func(ctx context.Context) (*pb.SetLegalHoldResponse, error) {
+		return c.retentionClient.SetLegalHold(ctx, req)
+	})
+}
+
+// ReleaseLegalHold releases an org's legal hold via gRPC (admin only).
+func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error) {
+	return retentionCall("release legal hold", func(ctx context.Context) (*pb.ReleaseLegalHoldResponse, error) {
+		return c.retentionClient.ReleaseLegalHold(ctx, &pb.ReleaseLegalHoldRequest{OrgId: orgID})
+	})
+}
+
+// GetRetentionMode reads the retention mode via gRPC (admin only).
+func (c *GRPCClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionCall("get retention mode", func(ctx context.Context) (*pb.GetRetentionModeResponse, error) {
+		return c.retentionClient.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{})
+	})
+}
+
+// SetRetentionMode switches the retention mode via gRPC (admin only).
+func (c *GRPCClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionCall("set retention mode", func(ctx context.Context) (*pb.SetRetentionModeResponse, error) {
+		return c.retentionClient.SetRetentionMode(ctx, req)
+	})
+}
+
+// GetRetentionReport reads the retention report via gRPC (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
+func (c *GRPCClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	return retentionCall("get retention report", func(ctx context.Context) (*pb.GetRetentionReportResponse, error) {
+		return c.retentionClient.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{Refresh: refresh})
+	})
 }
 
 // ListApps lists all applications via gRPC
@@ -1943,4 +2072,16 @@ func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
+}
+
+// applyProtoLifecycle copies the box lifecycle flags a daemon reports, shared
+// by the list and get converters so they cannot drift (#2858).
+func applyProtoLifecycle(info *incus.ContainerInfo, c *pb.Container) {
+	info.MonitoringEnabled = c.MonitoringEnabled
+	info.AutoSleepEnabled = c.AutoSleepEnabled
+	info.IdleThresholdMinutes = c.IdleThresholdMinutes
+	info.PodmanEnabled = c.PodmanEnabled
+	if v, ok := toolaccess.ConfigValue(c.ToolAccess); ok {
+		info.ToolAccess = v
+	}
 }

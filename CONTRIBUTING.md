@@ -87,8 +87,10 @@ tool download, name the exact version and where it comes from.
 | Static analysis, known vulnerabilities, dependency scan | `security.yml` | `gosec`, `govulncheck`, `Trivy`. See [`SECURITY.md`](SECURITY.md#automated-scanning). |
 | Lint | `golangci-lint.yml` | `golangci-lint` on Go code. |
 | Proto lint and compatibility | `proto.yml` | `buf` lint and breaking-change checks. |
+| Workflow lint and action pins | `workflow-lint.yml` | `actionlint`; every `uses:` must be a full 40-hex commit SHA with the version as a trailing comment (`scripts/ci/check-action-pins.sh`; local `./` actions are exempt); and `zizmor` (`scripts/ci/check-workflow-security.sh`) fails on `pull_request_target`, `${{ }}` event data expanded inside a `run:` block (pass it through `env:` instead) and over-broad `permissions:` (grant write scopes per job, not per workflow). A justified exception is a per-finding entry with a reason in `.github/zizmor.yml`. Dependabot bumps the SHA and the comment. |
 | Dependency updates | `.github/dependabot.yml` | Weekly Go module and GitHub Actions update PRs. They are reviewed like any other PR. |
 
+Run `scripts/ci/check-action-pins.sh` to check action pins before you push.
 Run `scripts/ci/check-licenses.sh` (needs `go-licenses` v1.6.0) or
 `scripts/ci/npm-licenses.sh check` locally to see a licence failure before
 you push.
@@ -103,8 +105,6 @@ epic. Until each ships, do not assume the check exists:
   [#2791](https://github.com/FootprintAI/Containarium/issues/2791)
 - Code owners and required review on the paths above:
   [#2792](https://github.com/FootprintAI/Containarium/issues/2792)
-- GitHub Actions pinned by commit SHA, and a workflow-lint lane:
-  [#2793](https://github.com/FootprintAI/Containarium/issues/2793)
 - Dependency-change gate (dependency review, new or changed `replace`
   directives, modules missing from the Go checksum database):
   [#2794](https://github.com/FootprintAI/Containarium/issues/2794)

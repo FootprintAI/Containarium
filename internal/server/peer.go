@@ -767,6 +767,9 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			Labels    map[string]string `json:"labels"`
 			GpuDevice string            `json:"gpuDevice"`
 			BackendID string            `json:"backendId"`
+			// A pointer so a peer that predates the field (omits it) is
+			// distinguishable from an explicit false (#2858).
+			PodmanEnabled *bool `json:"podmanEnabled"`
 		} `json:"containers"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
@@ -784,16 +787,21 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			state = "Stopped"
 		}
 
+		// Absent = an older peer: report true, as every box did before the
+		// flag was recorded.
+		podmanEnabled := c.PodmanEnabled == nil || *c.PodmanEnabled
+
 		containers = append(containers, incus.ContainerInfo{
-			Name:      c.Name,
-			State:     state,
-			IPAddress: c.Network.IPAddress,
-			CPU:       c.Resources.CPU,
-			Memory:    c.Resources.Memory,
-			Disk:      c.Resources.Disk,
-			GPU:       c.GpuDevice,
-			Labels:    c.Labels,
-			BackendID: pc.ID, // Tag with peer's backend ID
+			Name:          c.Name,
+			PodmanEnabled: podmanEnabled,
+			State:         state,
+			IPAddress:     c.Network.IPAddress,
+			CPU:           c.Resources.CPU,
+			Memory:        c.Resources.Memory,
+			Disk:          c.Resources.Disk,
+			GPU:           c.GpuDevice,
+			Labels:        c.Labels,
+			BackendID:     pc.ID, // Tag with peer's backend ID
 		})
 	}
 	return containers, nil
@@ -1006,6 +1014,38 @@ func (pc *PeerClient) ForwardDebugContainer(authToken string, username string) (
 		return nil, fmt.Errorf("peer %s returned status %d for debug", pc.ID, status)
 	}
 	return body, nil
+}
+
+// ForwardListStacks returns the stack IDs the peer's own catalog defines, read
+// from its GET /v1/stacks (#2952). That endpoint exists on every daemon, so this
+// works against a peer of any version and, unlike a forwarded dry run, can never
+// be misread by an older peer as a real create. An empty result is returned as
+// such: the caller decides what an empty catalog means.
+func (pc *PeerClient) ForwardListStacks(ctx context.Context, authToken string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body, status, err := pc.ForwardRequestCtx(ctx, "GET", "/v1/stacks", authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward list-stacks to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for list-stacks", pc.ID, status)
+	}
+	var result struct {
+		Stacks []struct {
+			ID string `json:"id"`
+		} `json:"stacks"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse list-stacks from %s: %w", pc.ID, err)
+	}
+	ids := make([]string, 0, len(result.Stacks))
+	for _, st := range result.Stacks {
+		if st.ID != "" {
+			ids = append(ids, st.ID)
+		}
+	}
+	return ids, nil
 }
 
 // refreshCachedInfo fetches system info from a peer and caches key fields.
@@ -1326,45 +1366,26 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []m
 		if err != nil {
 			continue
 		}
-		var resp struct {
-			Info struct {
-				TotalCpus            json.Number `json:"totalCpus"`
-				TotalMemoryBytes     json.Number `json:"totalMemoryBytes"`
-				AvailableMemoryBytes json.Number `json:"availableMemoryBytes"`
-				TotalDiskBytes       json.Number `json:"totalDiskBytes"`
-				AvailableDiskBytes   json.Number `json:"availableDiskBytes"`
-				CpuLoad1Min          json.Number `json:"cpuLoad1min"`
-				CpuLoad5Min          json.Number `json:"cpuLoad5min"`
-				CpuLoad15Min         json.Number `json:"cpuLoad15min"`
-				ContainersRunning    json.Number `json:"containersRunning"`
-				ContainersStopped    json.Number `json:"containersStopped"`
-			} `json:"info"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
+		// protojson against the contract (int64 as strings, enums by name);
+		// DiscardUnknown so a newer peer's extra fields never drop it.
+		var resp pb.GetSystemInfoResponse
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &resp); err != nil {
 			continue
 		}
-		totalCpus, _ := resp.Info.TotalCpus.Int64()
-		totalMem, _ := resp.Info.TotalMemoryBytes.Int64()
-		availMem, _ := resp.Info.AvailableMemoryBytes.Int64()
-		totalDisk, _ := resp.Info.TotalDiskBytes.Int64()
-		availDisk, _ := resp.Info.AvailableDiskBytes.Int64()
-		load1, _ := resp.Info.CpuLoad1Min.Float64()
-		load5, _ := resp.Info.CpuLoad5Min.Float64()
-		load15, _ := resp.Info.CpuLoad15Min.Float64()
-		cRunning, _ := resp.Info.ContainersRunning.Int64()
-		cStopped, _ := resp.Info.ContainersStopped.Int64()
+		in := resp.GetInfo()
 		results = append(results, metricsPackage.PeerSystemMetrics{
 			BackendID:         peer.ID,
-			TotalCPUs:         totalCpus,
-			TotalMemoryBytes:  totalMem,
-			UsedMemoryBytes:   totalMem - availMem,
-			TotalDiskBytes:    totalDisk,
-			UsedDiskBytes:     totalDisk - availDisk,
-			CPULoad1Min:       load1,
-			CPULoad5Min:       load5,
-			CPULoad15Min:      load15,
-			ContainersRunning: cRunning,
-			ContainersStopped: cStopped,
+			TotalCPUs:         int64(in.GetTotalCpus()),
+			TotalMemoryBytes:  in.GetTotalMemoryBytes(),
+			UsedMemoryBytes:   in.GetTotalMemoryBytes() - in.GetAvailableMemoryBytes(),
+			TotalDiskBytes:    in.GetTotalDiskBytes(),
+			UsedDiskBytes:     in.GetTotalDiskBytes() - in.GetAvailableDiskBytes(),
+			CPULoad1Min:       in.GetCpuLoad_1Min(),
+			CPULoad5Min:       in.GetCpuLoad_5Min(),
+			CPULoad15Min:      in.GetCpuLoad_15Min(),
+			ContainersRunning: int64(in.GetContainersRunning()),
+			ContainersStopped: int64(in.GetContainersStopped()),
+			StoragePools:      storagePoolUsagesFromProto(in.GetStoragePools()),
 		})
 	}
 	return results

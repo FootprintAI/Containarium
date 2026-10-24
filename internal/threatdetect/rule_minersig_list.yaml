@@ -7,9 +7,14 @@
 # Kinds:
 #   name   — case-insensitive exact name or glob on the basename of the
 #            exec'd file and on the task comm.
-#   argv   — case-insensitive marker in the joined argv: a literal substring,
-#            or (with a glob character) space-separated glob tokens matched
-#            against consecutive arguments. A token without '=' never
+#   argv   — case-insensitive marker matched against the real argument
+#            vector (NUL-separated, so a quoted argument stays one): a
+#            literal must begin an argument (or the value of an
+#            "--opt=value" argument), and a space in it is an argument
+#            boundary; a marker merely inside an argument (a commit
+#            message) does not match. With a glob character, space-separated
+#            glob tokens are matched against consecutive whole arguments.
+#            A token without '=' never
 #            matches a key=value argument, so "-o *:4444" does not hit
 #            ssh's "-o ProxyJump=bastion:4444". Option tokens ("-o",
 #            "--url") match case-sensitively: "-O" is another flag.

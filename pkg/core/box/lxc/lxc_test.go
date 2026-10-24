@@ -126,6 +126,27 @@ func TestInfoToStatus(t *testing.T) {
 	}
 }
 
+// TestInfoToStatus_Stack: the stack recorded at create rides ContainerInfo
+// onto BoxStatus (#2163); an unrecorded stack stays empty.
+func TestInfoToStatus_Stack(t *testing.T) {
+	if got := StatusFromInfo(&incus.ContainerInfo{Name: "a-container", Stack: "nodejs"}).Stack; got != "nodejs" {
+		t.Errorf("Stack = %q, want nodejs", got)
+	}
+	if got := StatusFromInfo(&incus.ContainerInfo{Name: "a-container"}).Stack; got != "" {
+		t.Errorf("Stack = %q, want empty for a box with no recorded stack", got)
+	}
+}
+
+// TestInfoToStatus_PodmanEnabled (#2858): the flag rides ContainerInfo onto
+// BoxStatus unchanged in both directions.
+func TestInfoToStatus_PodmanEnabled(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		if got := StatusFromInfo(&incus.ContainerInfo{Name: "a-container", PodmanEnabled: want}).PodmanEnabled; got != want {
+			t.Errorf("PodmanEnabled = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestLifecycleDelegation(t *testing.T) {
 	mock := incustest.NewMockBackend()
 	mock.Containers["alice-container"] = &incus.ContainerInfo{

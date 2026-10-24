@@ -147,6 +147,31 @@ export CONTAINARIUM_NETWORK_POLICY_ENFORCE=1   # arm drops
 # restart the daemon
 ```
 
+### Default egress allow-list (#2577, stage 1)
+
+A tenant with **no stored policy** runs a built-in egress allow-list in
+`log_only` (it never drops): git hosts, the language registries and the OS
+mirrors of the supported base images, plus the box's DNS resolver. It is the
+first stage of the staged default-deny plan, so the would-deny log shows real
+surprises instead of every flow.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS` | Unset keeps the default list on. `off` restores the empty log-only fallback. |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` | Comma-separated extra hostnames (bare names, no scheme or port). |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRS` | Comma-separated extra IPv4 CIDRs. IPv6 is refused. |
+
+The model gateway and the control plane are deployment-specific and **not** in
+the built-in list: set them with the two `_DOMAINS` / `_CIDRS` variables, or
+they appear as would-deny rows during the soak. Some hosts redirect to other
+names (for example GitHub release downloads use `*.githubusercontent.com`), so
+expect to extend the list from the first soak. A bad extra is logged and the
+daemon runs the built-in list only. Storing a policy for a tenant replaces the
+default for that tenant; a stored policy that fails validation is skipped (and
+logged), so that tenant runs the default too. The default list's names are
+resolved by the refresh loop shortly after start, not before the daemon comes
+up, so for the first seconds they can still log as would-deny.
+
 Then a tenant's `--mode enforce` policy drops denied flows (`TC_ACT_SHOT`),
 audited as `network_policy.deny_dropped`. Safety properties:
 

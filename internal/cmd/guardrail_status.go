@@ -33,7 +33,8 @@ var guardrailStatusCmd = &cobra.Command{
 authenticated caller may read it.
 
   baseline  no admin policy was ever set: responses are scanned with the
-            built-in rules (private keys, cloud keys), log-only
+            built-in rules (private keys, cloud keys), log-only or blocking
+            as 'Baseline mode' shows (see 'guardrail baseline set')
   admin     the admin policy has an inbound BLOCK rule: it decides what is
             scanned and blocked, and the baseline is off
   none      an admin policy is set but has no inbound BLOCK rule: responses

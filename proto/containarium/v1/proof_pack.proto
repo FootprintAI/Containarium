@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Proof Pack: the evidence that a repository's test commands were run, and
+// what they printed and returned, recorded by the execution environment
+// rather than claimed by the coding agent (#2366, docs/PROOF-PACK.md).
+//
+// The platform runs the repository's declared test command set inside a box
+// and records each command's outcome and output. Nothing in a pack comes
+// from the coding agent: a `tests_run: true` the agent reports is not an
+// input. Sealing the pack into the audit chain and attaching it to a PR are
+// later steps (#2798); this file is only the record.
+//
+// What a pack never holds: the command lines that ran and the environment
+// they ran in. A step is identified by the name and kind the repository
+// declared for it. A command's own output can still echo what it runs (make
+// prints its recipe lines); that is log content, not a manifest field.
+
+// ProofPartKind is the category a declared step belongs to. A repository
+// that does not categorise its steps gets PROOF_PART_KIND_TEST.
+enum ProofPartKind {
+  PROOF_PART_KIND_UNSPECIFIED = 0;
+  // A test command the repository did not categorise further, including the
+  // `make test` fallback.
+  PROOF_PART_KIND_TEST = 1;
+  PROOF_PART_KIND_UNIT = 2;
+  PROOF_PART_KIND_INTEGRATION = 3;
+  PROOF_PART_KIND_E2E = 4;
+  PROOF_PART_KIND_STATIC_ANALYSIS = 5;
+  PROOF_PART_KIND_SECURITY_SCAN = 6;
+}
+
+// ProofCommandSource says where the commands that ran came from.
+enum ProofCommandSource {
+  PROOF_COMMAND_SOURCE_UNSPECIFIED = 0;
+  // The `test:` key of the repository's .github/containarium.yml.
+  PROOF_COMMAND_SOURCE_DECLARED = 1;
+  // No declaration; the repository has a Makefile, so `make test` ran.
+  PROOF_COMMAND_SOURCE_FALLBACK_MAKE_TEST = 2;
+  // No declaration and no Makefile: nothing ran.
+  PROOF_COMMAND_SOURCE_NONE = 3;
+}
+
+// ProofPackStatus is the pack's overall outcome.
+enum ProofPackStatus {
+  PROOF_PACK_STATUS_UNSPECIFIED = 0;
+  // Every step exited 0 within its timeout.
+  PROOF_PACK_STATUS_PASSED = 1;
+  // At least one step exited non-zero or timed out.
+  PROOF_PACK_STATUS_FAILED = 2;
+  // No step ran. Not a pass: there is nothing to show.
+  PROOF_PACK_STATUS_NO_COMMANDS = 3;
+}
+
+// ProofStep is one declared command's outcome and output.
+message ProofStep {
+  // The name the repository declared for the step ("make-test" for the
+  // fallback). Never the command line.
+  string name = 1;
+  ProofPartKind kind = 2;
+  int32 exit_code = 3;
+  // The step hit the pack's step timeout and was killed. exit_code is then
+  // the timeout's status (124, or 137 when it had to be killed).
+  bool timed_out = 4;
+  int64 duration_ms = 5;
+  // Combined stdout and stderr. When the output is longer than the pack's
+  // log_limit_bytes, only the LAST log_limit_bytes are kept: a test run's
+  // summary and failures are at its end.
+  bytes log = 6;
+  // SHA-256 (lowercase hex) of `log` exactly as stored, so a verifier can
+  // recompute it from the pack alone.
+  string log_sha256 = 7;
+  bool log_truncated = 8;
+  // Size of the whole output before truncation.
+  int64 log_original_bytes = 9;
+}
+
+// ProofKindCount is the steps that passed and failed for one kind, as a
+// typed pair rather than a map so the pack's encoding is deterministic.
+// Counts are of steps by exit status, not of test cases: the pack does not
+// parse any test framework's output.
+message ProofKindCount {
+  ProofPartKind kind = 1;
+  int32 passed = 2;
+  int32 failed = 3;
+}
+
+// ProofPack is the record of one generation run.
+message ProofPack {
+  // 1 for this layout.
+  uint32 schema_version = 1;
+  // The box (container) the commands ran in.
+  string producer = 2;
+  // The repository directory inside the box the commands ran from.
+  string repo_dir = 3;
+  // `git rev-parse HEAD` in repo_dir; empty when it is not a git checkout.
+  string git_commit = 4;
+  ProofCommandSource command_source = 5;
+  // SHA-256 (lowercase hex) of the .github/containarium.yml read; empty
+  // unless command_source is DECLARED.
+  string declaration_sha256 = 6;
+  // In declaration order.
+  repeated ProofStep steps = 7;
+  // One entry per kind that has a step, sorted by kind.
+  repeated ProofKindCount counts = 8;
+  ProofPackStatus status = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp finished_at = 11;
+  // The bound each step's log was truncated to.
+  int64 log_limit_bytes = 12;
+  // The per-step timeout the steps ran under.
+  int64 step_timeout_seconds = 13;
+}

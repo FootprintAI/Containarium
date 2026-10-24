@@ -283,6 +283,44 @@ message GetGuardrailStatusResponse {
   // Stable ids of the baseline rules in force, e.g.
   // "baseline.pem_private_key". Set only when response_policy is BASELINE.
   repeated string baseline_rule_ids = 4;
+  // The stored baseline mode (#2738), always reported. It applies only while
+  // response_policy is BASELINE; under NONE or ADMIN it is kept but unused.
+  GuardrailBaselineSetting baseline = 5;
+}
+
+// GuardrailBaselineMode is what the baseline does with a detection (#2738,
+// slice C of #2575). A per-daemon setting, separate from the server policy:
+// storing it never marks a policy as configured.
+enum GuardrailBaselineMode {
+  GUARDRAIL_BASELINE_MODE_UNSPECIFIED = 0;
+  // Default. The response streams to the client unchanged and is scanned at
+  // its end; a detection is logged and audited, never blocked.
+  GUARDRAIL_BASELINE_MODE_LOG = 1;
+  // The response is held, scanned with the baseline rules and blocked on a
+  // match, with the admin policy's hold-and-block semantics (a stream is held
+  // to its end; over the hold limit, or a compressed body, is blocked).
+  GUARDRAIL_BASELINE_MODE_BLOCK = 2;
+}
+
+// GuardrailBaselineSetting is the stored baseline mode plus its bookkeeping.
+message GuardrailBaselineSetting {
+  GuardrailBaselineMode mode = 1;
+  // Server-assigned: every successful set increments it by one. 0 means the
+  // mode was never set and is the default, LOG.
+  int64 revision = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  // Authenticated subject that made the last set.
+  string updated_by = 4;
+}
+
+message SetGuardrailBaselineModeRequest {
+  // Required: LOG or BLOCK.
+  GuardrailBaselineMode mode = 1;
+}
+
+message SetGuardrailBaselineModeResponse {
+  // The stored setting, with its new revision.
+  GuardrailBaselineSetting baseline = 1;
 }
 
 // GuardrailPolicyService is the daemon's store for the server-side policy.
@@ -317,6 +355,17 @@ service GuardrailPolicyService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set the server guardrail policy";
       description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.";
+      tags: "Guardrail";
+    };
+  }
+  rpc SetGuardrailBaselineMode(SetGuardrailBaselineModeRequest) returns (SetGuardrailBaselineModeResponse) {
+    option (google.api.http) = {
+      put: "/v1/guardrail/baseline"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the baseline response scan mode";
+      description: "Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.";
       tags: "Guardrail";
     };
   }

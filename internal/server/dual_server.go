@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import (
@@ -48,6 +50,8 @@ import (
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/internal/retention"
+	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
@@ -294,7 +298,10 @@ type DualServer struct {
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
+	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
+	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
+	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
@@ -695,6 +702,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// guardrailPolicyStartupStore once postgresConnString is final (below).
 	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
 	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
+	// RetentionService (#2875): per-class retention windows and per-org legal
+	// holds. The store is chosen by retentionStartupStore below.
+	retentionServer := NewRetentionServer(unavailableRetentionStore{})
+	pb.RegisterRetentionServiceServer(grpcServer, retentionServer)
 
 	// Policy-store readiness (#2483): grpc.health.v1, one status per policy
 	// service, NOT_SERVING while its store is on the fail-closed stand-in.
@@ -702,6 +713,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// the cloud status probe reads it in-process.
 	policyStoreHealth := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
+
+	// One bounded Postgres check gates every database-backed store below
+	// (#2824): if it fails, they are skipped rather than each retried.
+	pgGate := newPostgresStartupGate(startupPostgresTimeoutFromEnv(), pingPostgres, policyStoreHealth)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
@@ -1095,7 +1110,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// app-store path: shares Postgres but holds its own
 			// pgxpool. Failure here only disables the secrets
 			// API; the rest of the daemon keeps running.
-			if secretsPool, secretsErr := connectToPostgres(postgresConnString, 5, 3*time.Second); secretsErr != nil {
+			if secretsPool, secretsErr := pgGate.connect(postgresConnString, 5, 3*time.Second); secretsErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for secrets store: %v", secretsErr)
 			} else {
 				key, created, kerr := corecryptosecrets.LoadOrCreateMasterKey("/etc/containarium/secrets.key")
@@ -1181,7 +1196,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// directly above: shares Postgres but holds its own pgxpool.
 			// Failure here only disables the TrackerService API; the rest
 			// of the daemon keeps running.
-			if trackerPool, trackerErr := connectToPostgres(postgresConnString, 5, 3*time.Second); trackerErr != nil {
+			if trackerPool, trackerErr := pgGate.connect(postgresConnString, 5, 3*time.Second); trackerErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for tracker store: %v", trackerErr)
 			} else if trkStore, terr := trackerstore.NewStore(context.Background(), trackerPool); terr != nil {
 				log.Printf("Warning: Failed to init tracker store: %v. Tracker connections disabled.", terr)
@@ -1199,7 +1214,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			}
 
 			// Connect to app store
-			appStore, err := app.NewStore(context.Background(), postgresConnString)
+			appStore, err := gatedStore(pgGate, postgresConnString, app.NewStore)
 			if err != nil {
 				log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
 			} else {
@@ -1287,7 +1302,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 				// Update TrafficCollector with store for persistence
 				if trafficCollector != nil && postgresConnString != "" {
-					trafficStore, err := traffic.NewStore(context.Background(), postgresConnString)
+					trafficStore, err := gatedStore(pgGate, postgresConnString, traffic.NewStore)
 					if err != nil {
 						log.Printf("Warning: Failed to create traffic store: %v. Traffic persistence disabled.", err)
 					} else {
@@ -1386,8 +1401,8 @@ skipAppHosting:
 	var collabStore *collaborator.Store
 	if postgresConnString != "" {
 		for attempt := 1; attempt <= 5; attempt++ {
-			collabStore, err = collaborator.NewStore(context.Background(), postgresConnString)
-			if err == nil {
+			collabStore, err = gatedStore(pgGate, postgresConnString, collaborator.NewStore)
+			if err == nil || pgGate.check(postgresConnString) != nil { // #2824: no per-store retries after a failed startup check
 				break
 			}
 			if attempt < 5 {
@@ -1417,7 +1432,7 @@ skipAppHosting:
 	// When it's not, we still need them for the management route to work after VM recreation.
 	caddyAdminURL := config.CaddyAdminURL
 	if routeStore == nil && postgresConnString != "" && caddyAdminURL != "" && config.BaseDomain != "" {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for route store: %v", poolErr)
 		} else {
@@ -1581,7 +1596,7 @@ skipAppHosting:
 	var passthroughStore network.PassthroughStore
 	var passthroughSyncJob *network.PassthroughSyncJob
 	if postgresConnString != "" && networkServer != nil {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for passthrough store: %v", poolErr)
 		} else {
@@ -1628,11 +1643,16 @@ skipAppHosting:
 	// The Postgres guardrail policy store (#2368), or nil if it is not
 	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
 	var guardrailPGStore guardrailpolicy.Store
+	var retentionPGStore retention.Store
+	// The pool the dry-run sweeper counts through (#2876); nil without one.
+	var retentionSweepPool *pgxpool.Pool
+	// The audit_logs prefix purge (#2878); only built once there is an audit store.
+	var retentionChainSource *retentionpg.ChainSource
 	// The startup pool, handed to the policy-store recovery retry (#2483)
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
 	if postgresConnString != "" {
-		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
@@ -1665,6 +1685,13 @@ skipAppHosting:
 			} else {
 				guardrailPGStore = gpStore
 				log.Printf("Guardrail policy persistence enabled (Postgres store)")
+			}
+			// Retention policy and legal holds (#2875), independent of the rest.
+			if rStore, rErr := retentionpg.New(context.Background(), pool); rErr != nil {
+				log.Printf("Warning: Failed to create Postgres retention store: %v", rErr)
+			} else {
+				retentionPGStore = rStore
+				retentionSweepPool = pool
 			}
 
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
@@ -1713,6 +1740,11 @@ skipAppHosting:
 		}
 	}
 	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
+	retentionStore := retentionStartupStore(postgresConnString != "", retentionPGStore)
+	retentionServer.SetStore(retentionStore)
+	// The dry-run sweeper (#2876): counts only, started in Start.
+	retentionReporter := newRetentionReporter(retentionStore, retentionSweepPool)
+	retentionServer.SetReporter(retentionReporter)
 	// Either policy store still on its fail-closed stand-in is retried in the
 	// background (5 s doubling to 60 s) until Postgres answers; the install
 	// is an atomic swap, and Provider() below follows it (#2483).
@@ -1793,6 +1825,15 @@ skipAppHosting:
 							return clustercore.CACredentials{ClientCertPEM: cert, ClientKeyPEM: key, CACertPEM: pki.CAPEM()}, nil
 						})
 						log.Printf("Managed-cluster autoscaler enabled (provider %s)", caAdvertise)
+						// Opt-in scale-down timer overrides (test lanes); unset = stock.
+						// A malformed value is logged and ignored rather than
+						// fatal: it only ever shortens a wait.
+						if delay, unneeded, sdErr := parseCAScaleDownEnv(os.Getenv); sdErr != nil {
+							log.Printf("[cluster] ignoring autoscaler scale-down override: %v", sdErr)
+						} else if delay > 0 || unneeded > 0 {
+							clusterReconciler.SetCAScaleDown(delay, unneeded)
+							log.Printf("[cluster] autoscaler scale-down timers overridden: delay-after-add=%v unneeded-time=%v (0 = stock)", delay, unneeded)
+						}
 					}
 				}
 			} else {
@@ -1840,6 +1881,11 @@ skipAppHosting:
 		}
 	}
 
+	// Storage pool capacity log + gauges, on every daemon (#2823).
+	if m := startStoragePoolMonitor(context.Background(), metricsCollector, config.LocalBackendID); m != nil {
+		containerServer.SetStoragePoolSource(m.Snapshot)
+	}
+
 	// Set monitoring URLs on container server so GetMonitoringInfo works.
 	// Grafana is served via reverse proxy at /grafana/ on the same host,
 	// so the public URL is relative to the server's own origin.
@@ -1854,7 +1900,7 @@ skipAppHosting:
 	var securityStore *security.Store
 	var securityServerInstance *SecurityServer
 	if postgresConnString != "" && !config.DisableSecurityScanner {
-		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		securityPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
 		} else {
@@ -1909,7 +1955,7 @@ skipAppHosting:
 
 	var pentestStore *pentest.Store
 	if postgresConnString != "" && !config.DisablePentestScanner {
-		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		pentestPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
 		} else {
@@ -1946,7 +1992,7 @@ skipAppHosting:
 	var zapManager *zapscanner.Manager
 	var zapStore *zapscanner.Store
 	if postgresConnString != "" && !config.DisableZapScanner {
-		zapPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		zapPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
 		} else {
@@ -1974,7 +2020,7 @@ skipAppHosting:
 	var revocationStoreLocal *auth.PgRevocationStore
 	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
 	if postgresConnString != "" {
-		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		auditPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for audit store: %v", poolErr)
 		} else {
@@ -2086,10 +2132,13 @@ skipAppHosting:
 	// available (IDs must be stable across restarts) and in-memory otherwise.
 	var networkPolicyEnforcer *NetworkPolicyEnforcer
 	netCfg := appconfig.LoadNetwork()
+	// GetNetworkPolicyStatus reports this host's guard whether or not an
+	// enforcer is configured.
+	npServer.SetEnforcementArmed(netCfg.PolicyEnforce)
 	if bpfObj := netCfg.PolicyBPFObject; bpfObj != "" && networkIncusClient != nil {
 		var tenantRegistry TenantRegistry
 		if postgresConnString != "" {
-			if regPool, perr := connectToPostgres(postgresConnString, 5, 3*time.Second); perr != nil {
+			if regPool, perr := pgGate.connect(postgresConnString, 5, 3*time.Second); perr != nil {
 				log.Printf("Warning: tenant registry Postgres connect failed (%v); using in-memory IDs", perr)
 				tenantRegistry = NewMemTenantRegistry()
 			} else if pgReg, rerr := NewPostgresTenantRegistry(context.Background(), regPool); rerr != nil {
@@ -2108,6 +2157,9 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		// Status reads what the enforcer loaded; it reports "not running" on its
+		// own until Start succeeds, so a failed start needs no unwiring.
+		npServer.SetAppliedStateSource(networkPolicyEnforcer)
 		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
@@ -2124,6 +2176,10 @@ skipAppHosting:
 			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
 			npServer.SetPlanSources(auditStore, planGW)
 		}
+		// Default egress posture (#2577, stage 1): a tenant with no stored policy
+		// runs the default allow-list in log_only instead of an empty one, so the
+		// would-deny log shows real surprises. Observe-only; never arms drops.
+		configureDefaultEgress(networkPolicyEnforcer, netCfg.DefaultEgress, netCfg.DefaultEgressDomains, netCfg.DefaultEgressCIDRs)
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
@@ -2306,7 +2362,7 @@ skipAppHosting:
 		var findingsPool *pgxpool.Pool
 		degraded := true
 		if postgresConnString != "" {
-			if fsPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second); poolErr != nil {
+			if fsPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second); poolErr != nil {
 				log.Printf("Warning: threat-detection FindingStore Postgres connect failed (%v); sentry running DEGRADED (in-memory, no persistence)", poolErr)
 			} else if fs, fsErr := threatdetect.NewFindingStore(context.Background(), fsPool, events.NewEmitter(events.GetBus()), auditStore); fsErr != nil {
 				log.Printf("Warning: threat-detection FindingStore init failed (%v); sentry running DEGRADED (in-memory, no persistence)", fsErr)
@@ -2515,6 +2571,7 @@ skipAppHosting:
 					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
 				})
 				threatDetectEngine.SetExecHasher(execHash.Request)
+				threatDetectServer.SetExecHashSource(execHash)
 			}
 		}
 	}
@@ -2543,7 +2600,7 @@ skipAppHosting:
 	var alertStore *alert.Store
 	var alertManager *alert.Manager
 	if postgresConnString != "" && config.VictoriaMetricsURL != "" {
-		alertPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		alertPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for alert store: %v", poolErr)
 		} else {
@@ -2588,7 +2645,7 @@ skipAppHosting:
 	// the last-seen state lives there so a restart does not re-fire.
 	var credentialWatcher *alert.CredentialWatcher
 	if postgresConnString != "" && config.DaemonConfigStore != nil {
-		if cwPool, poolErr := connectToPostgres(postgresConnString, 2, 3*time.Second); poolErr != nil {
+		if cwPool, poolErr := pgGate.connect(postgresConnString, 2, 3*time.Second); poolErr != nil {
 			log.Printf("Warning: credential-expiry watch Postgres connect failed (%v); watch disabled", poolErr)
 		} else if stateStore, stErr := alert.NewPGCredentialStateStore(context.Background(), cwPool); stErr != nil {
 			log.Printf("Warning: credential-expiry watch state store init failed (%v); watch disabled", stErr)
@@ -2696,15 +2753,22 @@ skipAppHosting:
 			// gatewayOwnerRevocations for the same nil-interface reason as
 			// gwRevocations above.
 			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
+			// One typed event per proxied call, read back by TailRunLog (#2928).
+			gwCalls := modelgateway.NewCallLog()
+			agentSkillServer.SetGatewayCalls(gwCalls)
 			gw := modelgateway.New(modelgateway.Config{
-				Secret:           []byte(config.JWTSecret),
-				Providers:        gwProviders,
-				ProviderKeys:     keys,
-				KeyResolver:      gwKeyResolver,
-				Sink:             gwSink,
-				Revocations:      gwRevocations,
-				OwnerRevocations: gwOwnerRevocations,
-				Policy:           gwPolicy,
+				Calls:        gwCalls,
+				Secret:       []byte(config.JWTSecret),
+				Providers:    gwProviders,
+				ProviderKeys: keys,
+				KeyResolver:  gwKeyResolver,
+				// Hosted multi-tenant daemons refuse an owner with no key rather
+				// than bill the operator's global key. Default off.
+				DisableGlobalKeyFallback: os.Getenv(appconfig.EnvGatewayNoGlobalKeyFallback) == "1",
+				Sink:                     gwSink,
+				Revocations:              gwRevocations,
+				OwnerRevocations:         gwOwnerRevocations,
+				Policy:                   gwPolicy,
 				// Redact system-prompt (skill persona) leakage on the streaming
 				// chat path (#670 layer 2). Default on; set
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
@@ -2716,8 +2780,11 @@ skipAppHosting:
 				// has an audit store. The reference rules engine runs
 				// in-process.
 				InboundPolicy: guardrailPolicyServer.Provider(),
-				InboundEngine: guardrail.RulesEngine{},
-				InboundAudit:  newGatewayInboundAudit(auditStore),
+				// The baseline's LOG/BLOCK switch (#2738), stored next to
+				// the policy; a switch invalidates the cached read below.
+				InboundBaselineMode: guardrailPolicyServer.BaselineModeProvider(),
+				InboundEngine:       guardrail.RulesEngine{},
+				InboundAudit:        newGatewayInboundAudit(auditStore),
 			})
 			modelGW = gw
 			guardrailPolicyServer.SetOnChange(gw.InvalidateInboundPolicy)
@@ -2743,6 +2810,7 @@ skipAppHosting:
 				globalProviders[p] = true
 			}
 			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver, gw)
+			agentSkillServer.SetNoGlobalKeyFallback(os.Getenv(appconfig.EnvGatewayNoGlobalKeyFallback) == "1")
 			// The providers a recipe box may be seeded for: every provider the
 			// daemon holds a global key for, plus every operator-registered
 			// upstream (whose keys arrive per owner, so there is no global key to
@@ -2894,6 +2962,16 @@ skipAppHosting:
 			containerServer.SetAuditStore(auditStore)
 			// guardrail.policy.set entries (#2368).
 			guardrailPolicyServer.SetAuditStore(auditStore)
+			// retention.policy.set / retention.hold.* entries (#2875).
+			retentionServer.SetAuditStore(auditStore)
+			// The hash-chained audit_logs is swept once the audit store has
+			// created its tables (#2878). The anchor that bounds a purge is
+			// wired in Start, where the anchor sinks are built; until then it
+			// purges nothing.
+			if retentionSweepPool != nil {
+				retentionChainSource = retentionpg.NewChainSource(retentionSweepPool)
+				retentionReporter.AddPrefixSource(retentionChainSource)
+			}
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
@@ -3019,7 +3097,10 @@ skipAppHosting:
 		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
+		retentionReporter:      retentionReporter,
+		retentionChainSource:   retentionChainSource,
 		credentialWatcher:      credentialWatcher,
+		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -3381,7 +3462,12 @@ func (ds *DualServer) startCapabilityProfile(ctx context.Context) <-chan struct{
 	return done
 }
 
-func (ds *DualServer) Start(ctx context.Context) error {
+func (ds *DualServer) Start(ctx context.Context) (err error) {
+	// #2824: with CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 and a failed
+	// startup Postgres check, Postgres coming back cancels ctx (graceful
+	// shutdown below) and Start returns ErrRestartForPostgresRecovery.
+	ctx, finish := ds.watchPostgresRecovery(ctx)
+	defer func() { err = finish(err) }()
 	// Anonymous-box funnel (#2201): emit expired / killed events within a
 	// minute of a box disappearing.
 	if ds.anonManager != nil {
@@ -3389,6 +3475,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
+	if ds.retentionReporter != nil {
+		go ds.retentionReporter.Run(ctx, retentionSweepInterval)
 	}
 	if ds.credentialWatcher != nil {
 		ds.credentialWatcher.Start(ctx)
@@ -3652,10 +3741,30 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if anchorPath == "" {
 			anchorPath = defaultAuditAnchorPath
 		}
-		anchorSink, err := audit.NewFileSink(anchorPath)
+		fileSink, err := audit.NewFileSink(anchorPath)
 		if err != nil {
 			log.Printf("[audit-anchor] disabled: %v", err)
 		} else {
+			// #2880: CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
+			// adds an external copy in a retention-locked GCS bucket, written
+			// after the local file. Unset keeps file-only anchoring.
+			anchorSink, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
+			if err != nil {
+				log.Printf("[audit-anchor] ERROR: external anchor bucket disabled, anchoring to the local file only: %v", err)
+			}
+			if bucketSink != nil {
+				log.Printf("[audit-anchor] anchoring to %s and to %s (file first)", anchorPath, bucketSink.URI())
+				// Off the startup path: a slow gcloud call must not delay serving.
+				go func() {
+					st, err := bucketSink.CheckRetentionLock(ctx)
+					if warn := audit.RetentionLockWarning(bucketSink.URI(), st, err); warn != "" {
+						log.Printf("[audit-anchor] %s", warn)
+					} else {
+						log.Printf("[audit-anchor] %s retention policy is locked (%ss)", bucketSink.URI(), st.RetentionPeriod)
+					}
+				}()
+			}
+			ds.wireRetentionAnchor(fileSink, bucketSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
@@ -4219,7 +4328,10 @@ func connectToPostgres(connString string, maxRetries int, retryInterval time.Dur
 			}
 			continue
 		}
-		if err := pool.Ping(context.Background()); err != nil {
+		pingCtx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout) // #2824: pgx's dial has no deadline of its own
+		err = pool.Ping(pingCtx)
+		cancel()
+		if err != nil {
 			pool.Close()
 			lastErr = err
 			if i < maxRetries-1 {
@@ -4297,4 +4409,18 @@ func envTruthy(v string) bool {
 // an operation every backend has (#1189).
 type k8sClientsetProvider interface {
 	Clientset() kubernetes.Interface
+}
+
+// wireRetentionAnchor gives the audit_logs purge (#2878) the anchor that bounds
+// it, if there is a safe one (see retentionAnchorFunc).
+func (ds *DualServer) wireRetentionAnchor(file *audit.FileSink, bucket *audit.GCSAnchorSink, bucketURI string) {
+	if ds.retentionChainSource == nil {
+		return
+	}
+	fn, ok := retentionAnchorFunc(file, bucket, bucketURI)
+	if !ok {
+		log.Printf("[retention] the audit_logs purge is off: CONTAINARIUM_AUDIT_ANCHOR_BUCKET is set but the external anchor is unavailable")
+		return
+	}
+	ds.retentionChainSource.SetAnchor(fn)
 }

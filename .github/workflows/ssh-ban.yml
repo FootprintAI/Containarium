@@ -38,12 +38,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,13 +65,13 @@ jobs:
           export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: '1.13.4'
           terraform_wrapper: false
       - name: Validate real policy templates without cloud credentials
         run: bash scripts/test-ssh-ban-templates.sh
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: ssh-ban-verification
@@ -83,12 +84,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,7 +116,7 @@ jobs:
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
               || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
           done
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: ssh-authz-verification

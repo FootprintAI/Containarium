@@ -25,6 +25,7 @@ const (
 	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName          = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
 	NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName  = "/containarium.v1.NetworkPolicyService/PatchNetworkPolicyDenyRules"
 	NetworkPolicyService_PlanNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/PlanNetworkPolicy"
+	NetworkPolicyService_GetNetworkPolicyStatus_FullMethodName       = "/containarium.v1.NetworkPolicyService/GetNetworkPolicyStatus"
 	NetworkPolicyService_SetNetworkPolicySignature_FullMethodName    = "/containarium.v1.NetworkPolicyService/SetNetworkPolicySignature"
 	NetworkPolicyService_ListNetworkPolicySignatures_FullMethodName  = "/containarium.v1.NetworkPolicyService/ListNetworkPolicySignatures"
 	NetworkPolicyService_DeleteNetworkPolicySignature_FullMethodName = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicySignature"
@@ -63,6 +64,12 @@ type NetworkPolicyServiceClient interface {
 	// what the tenant actually does and checked before it is armed (#2440).
 	// Read-only; it changes nothing.
 	PlanNetworkPolicy(ctx context.Context, in *PlanNetworkPolicyRequest, opts ...grpc.CallOption) (*PlanNetworkPolicyResponse, error)
+	// GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
+	// the kernel for a tenant: the effective modes after the host's enforce
+	// guard, when it was last reconciled, whether enforcement is armed here, and the
+	// traffic the eBPF program does not cover. It reads the applied BPF state,
+	// not the stored policy, and says unknown when it cannot tell. Read-only.
+	GetNetworkPolicyStatus(ctx context.Context, in *GetNetworkPolicyStatusRequest, opts ...grpc.CallOption) (*GetNetworkPolicyStatusResponse, error)
 	// SetNetworkPolicySignature creates or replaces a global operator exploit
 	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
 	// form (with its assigned id) is echoed back.
@@ -143,6 +150,16 @@ func (c *networkPolicyServiceClient) PlanNetworkPolicy(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *networkPolicyServiceClient) GetNetworkPolicyStatus(ctx context.Context, in *GetNetworkPolicyStatusRequest, opts ...grpc.CallOption) (*GetNetworkPolicyStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNetworkPolicyStatusResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_GetNetworkPolicyStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *networkPolicyServiceClient) SetNetworkPolicySignature(ctx context.Context, in *SetNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*SetNetworkPolicySignatureResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetNetworkPolicySignatureResponse)
@@ -206,6 +223,12 @@ type NetworkPolicyServiceServer interface {
 	// what the tenant actually does and checked before it is armed (#2440).
 	// Read-only; it changes nothing.
 	PlanNetworkPolicy(context.Context, *PlanNetworkPolicyRequest) (*PlanNetworkPolicyResponse, error)
+	// GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
+	// the kernel for a tenant: the effective modes after the host's enforce
+	// guard, when it was last reconciled, whether enforcement is armed here, and the
+	// traffic the eBPF program does not cover. It reads the applied BPF state,
+	// not the stored policy, and says unknown when it cannot tell. Read-only.
+	GetNetworkPolicyStatus(context.Context, *GetNetworkPolicyStatusRequest) (*GetNetworkPolicyStatusResponse, error)
 	// SetNetworkPolicySignature creates or replaces a global operator exploit
 	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
 	// form (with its assigned id) is echoed back.
@@ -243,6 +266,9 @@ func (UnimplementedNetworkPolicyServiceServer) PatchNetworkPolicyDenyRules(conte
 }
 func (UnimplementedNetworkPolicyServiceServer) PlanNetworkPolicy(context.Context, *PlanNetworkPolicyRequest) (*PlanNetworkPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PlanNetworkPolicy not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) GetNetworkPolicyStatus(context.Context, *GetNetworkPolicyStatusRequest) (*GetNetworkPolicyStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNetworkPolicyStatus not implemented")
 }
 func (UnimplementedNetworkPolicyServiceServer) SetNetworkPolicySignature(context.Context, *SetNetworkPolicySignatureRequest) (*SetNetworkPolicySignatureResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetNetworkPolicySignature not implemented")
@@ -382,6 +408,24 @@ func _NetworkPolicyService_PlanNetworkPolicy_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkPolicyService_GetNetworkPolicyStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNetworkPolicyStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).GetNetworkPolicyStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_GetNetworkPolicyStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).GetNetworkPolicyStatus(ctx, req.(*GetNetworkPolicyStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NetworkPolicyService_SetNetworkPolicySignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetNetworkPolicySignatureRequest)
 	if err := dec(in); err != nil {
@@ -466,6 +510,10 @@ var NetworkPolicyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanNetworkPolicy",
 			Handler:    _NetworkPolicyService_PlanNetworkPolicy_Handler,
+		},
+		{
+			MethodName: "GetNetworkPolicyStatus",
+			Handler:    _NetworkPolicyService_GetNetworkPolicyStatus_Handler,
 		},
 		{
 			MethodName: "SetNetworkPolicySignature",

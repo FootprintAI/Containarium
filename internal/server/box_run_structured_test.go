@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import (
@@ -60,7 +62,7 @@ func TestParseBoxRunList_StructuredResultOverridesSidecar(t *testing.T) {
 		return base64.StdEncoding.EncodeToString([]byte(s))
 	}
 	line := func(sid, result string) string {
-		return fmt.Sprintf("B boot\nP \nR s.json %s - %s %s\n", b(string(rec)), b(sid), b(result))
+		return fmt.Sprintf("B boot\nP \nR s.json %s - %s %s -\n", b(string(rec)), b(sid), b(result))
 	}
 	nested := `{"permission_denials":[{"tool_input":{"session_id":"evil"}}],"session_id":"good"}`
 	if got := parseBoxRunList(line("resumed-id", nested), "/d")[0].GetSessionId(); got != "good" {

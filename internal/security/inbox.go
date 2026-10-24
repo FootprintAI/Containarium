@@ -151,23 +151,61 @@ func classifyInBoxRun(exitCode int, stdout string) (status string, findingsCount
 	}
 }
 
+// scanPrivilegeArgs is the `setpriv` argument list the scanner runs under:
+// effective uid and gid 65534 (nobody, so a write by the scanner is refused as
+// an ordinary unprivileged write), no supplementary groups, and
+// CAP_DAC_READ_SEARCH as the ONLY capability left in every set (bounding,
+// inheritable, permitted/effective via ambient), with no_new_privs.
+//
+// The REAL uid is deliberately 0 (--ruid=0), not 65534. clamscan pre-checks
+// every file with plain access(2), and the kernel evaluates access() with the
+// real uid and drops the effective capabilities for a non-root real uid, so a
+// scanner whose real uid is nobody gets "Access denied" on every root-only file
+// even though open() would succeed (measured; #2888). With a real uid of 0 the
+// effective set for access() is the permitted set, and that set holds just
+// CAP_DAC_READ_SEARCH.
+//
+// Known residual: the real uid being 0 means a compromised scanner could
+// setuid(0) back. It would then hold euid 0 with that one read capability, no
+// mount, mknod, chown or override capability, and could write the files root
+// owns. The measured behaviour is in docs/security/TENANT-MALWARE-SCAN.md.
+func scanPrivilegeArgs() []string {
+	return []string{
+		"setpriv", "--ruid=0", "--euid=65534", "--rgid=65534", "--egid=65534", "--clear-groups",
+		"--bounding-set=-all,+dac_read_search",
+		"--inh-caps=-all,+dac_read_search",
+		"--ambient-caps=-all,+dac_read_search",
+		"--no-new-privs",
+	}
+}
+
 // inBoxScanCommand is the argv run inside the box. `timeout` bounds it;
-// `setpriv` drops to the unprivileged nobody user keeping only
-// CAP_DAC_READ_SEARCH (read bypass, no write), so clamscan can read root-only
-// files without being root.
+// scanPrivilegeArgs drops the scanner to nobody with only the read bypass.
 func inBoxScanCommand(timeout time.Duration) []string {
 	secs := int(timeout / time.Second)
 	if secs < 1 {
 		secs = 1
 	}
-	return []string{
-		"timeout", strconv.Itoa(secs),
-		"setpriv", "--reuid=65534", "--regid=65534", "--clear-groups",
-		"--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search",
+	argv := []string{"timeout", strconv.Itoa(secs)}
+	argv = append(argv, scanPrivilegeArgs()...)
+	return append(argv,
 		"clamscan", "-r", "-i", "--no-summary", "--stdout",
 		"--exclude-dir=^/proc", "--exclude-dir=^/sys", "--exclude-dir=^/dev", "--exclude-dir=^/run",
 		"/",
-	}
+	)
+}
+
+// presenceProbe is a shell snippet that exits 0 when bin is on the box's PATH
+// and exactly 1 when it is not.
+//
+// A bare `command -v bin` is NOT safe here: under dash (the /bin/sh of Debian
+// and Ubuntu) it exits 127 for a missing command, and Incus turns an exec
+// exit status of 127 into an error ("Command not found") instead of an exit
+// code. The boxes that most need the ClamAV install are exactly the ones where
+// the binary is missing, so the unwrapped probe made both the install and the
+// scan fail with "could not reach the box" there. The if/else pins the status.
+func presenceProbe(bin string) string {
+	return "if command -v " + bin + " >/dev/null 2>&1; then exit 0; else exit 1; fi"
 }
 
 // preflight returns a non-empty status (with reason) when the scan must not be
@@ -184,7 +222,7 @@ func (s *Scanner) preflight(box boxAPI, name string) (status, reason string) {
 		return ScanStatusUnsupportedSize,
 			fmt.Sprintf(reasonTooSmallFmt, info.Memory, MinBoxMemoryBytes/1_000_000_000)
 	}
-	if _, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", "command -v clamscan"}); err != nil {
+	if _, _, code, err := box.ExecWithExitCode(name, []string{"sh", "-c", presenceProbe("clamscan")}); err != nil {
 		return ScanStatusIncomplete, fmt.Sprintf(reasonExecFailedFmt, err)
 	} else if code != 0 {
 		return ScanStatusNotInstalled, reasonNoClamscan

@@ -392,7 +392,12 @@ type RunAgentSkillRequest struct {
 
 // RunAgentSkillResponse is the result of an agent-skill run.
 type RunAgentSkillResponse struct {
-	ArtifactJSON  string `json:"artifactJson"`
+	ArtifactJSON string `json:"artifactJson"`
+	// RunID is the run's handle; follow it with crew_logs.
+	RunID string `json:"runId,omitempty"`
+	// Message is free-form status from the server, e.g. how to follow a run
+	// still in flight on a server that runs skills asynchronously.
+	Message       string `json:"message,omitempty"`
 	GitCommit     string `json:"gitCommit,omitempty"`
 	WorkspacePath string `json:"workspacePath,omitempty"`
 	Container     *struct {
@@ -2438,4 +2443,16 @@ type SystemInfo struct {
 	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
 	CpuAdmissionMode      string  `json:"cpuAdmissionMode,omitempty"`
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// StoragePools is each storage pool's fill (#2823), as the daemon's
+	// SystemInfo carries it (int64 as strings, enums by proto name).
+	StoragePools []StoragePoolCapacity `json:"storagePools,omitempty"`
+}
+
+// StoragePoolCapacity mirrors the proto StoragePoolCapacity (#2823).
+type StoragePoolCapacity struct {
+	Pool       string `json:"pool"`
+	Driver     string `json:"driver,omitempty"`
+	UsedBytes  int64  `json:"usedBytes,string"`
+	TotalBytes int64  `json:"totalBytes,string"`
+	Level      string `json:"level,omitempty"`
 }

@@ -1,0 +1,26 @@
+# actionlint configuration (run by .github/workflows/workflow-lint.yml).
+self-hosted-runner:
+  labels:
+    - incus
+    - kvm
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    # shellcheck codes silenced in existing scripts (#2793, reviewed in #2904).
+    # Each is kept deliberately; every other shellcheck code, and all
+    # non-shellcheck actionlint rules, still fail the lane. SC2034 was fixed
+    # and is not listed.
+    #  SC2015  `A && B || C` used deliberately as "B, else C" or "|| true" guards
+    #          in the e2e scripts (C is a no-op or the fallback, never a trap).
+    #          Fires on the CI runner's shellcheck, not on every local version.
+    #  SC2024  `sudo cmd > file`: the redirect runs as the unprivileged runner
+    #          user on purpose (a runner-owned log/state file, not a root file).
+    #  SC2046  `go test $(go list ./... | grep -v ...)`: the package list must
+    #          word-split into one argument per package.
+    #  SC2086  `git log ... $RANGE` in the release-notes script: RANGE may be
+    #          empty or a `a..b` pair, and must expand unquoted.
+    #  SC2129  style only (several `>> file` redirects in a row); rewriting the
+    #          blocks as `{ ...; } >> file` would touch scripts for no gain.
+    #  SC2209  `VAR=value cmd` prefix in the Postgres readiness loop, read by
+    #          shellcheck as an assignment of the string; intended as written.
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2015|2024|2046|2086|2129|2209):'

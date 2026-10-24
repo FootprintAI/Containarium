@@ -186,6 +186,18 @@ type BoxStatus struct {
 	StoppedAt                 time.Time
 	DeleteAfterStoppedSeconds int64
 	DeletePolicy              string // "protected" or "" (unprotected)
+	ToolAccess                string // "none", "build_tools", "full_sudo", or "" (none recorded)
+
+	// Stack is the software stack the box was created with. LXC only
+	// (user.containarium.stack); empty on K8s, which does not persist it, and
+	// on LXC boxes created before the key existed.
+	Stack string
+
+	// PodmanEnabled is whether the box was created with podman support. LXC
+	// reads user.containarium.podman_enabled back; boxes created before that
+	// key existed report true (the value status always returned). The K8s
+	// backend has no podman toggle and reports true.
+	PodmanEnabled bool
 
 	// Image is a human-readable label for the image the box was launched
 	// from (LXC: Incus's image.description / volatile.base_image config

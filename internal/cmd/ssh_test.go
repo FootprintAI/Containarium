@@ -268,7 +268,7 @@ func TestNewSSHHTTPClient_LoadsTokenFromCreds(t *testing.T) {
 		t.Fatalf("newSSHHTTPClient: %v", err)
 	}
 	if c.token != "tok-xyz" {
-		t.Errorf("token = %q", c.token)
+		t.Errorf("token fingerprint = %s, want %s", tokenFingerprint(c.token), tokenFingerprint("tok-xyz"))
 	}
 }
 

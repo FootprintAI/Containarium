@@ -62,26 +62,50 @@ func failed(c Check, r EgressPrereqReason, format string, args ...any) Check {
 	return c
 }
 
-func kernelCheck(p egressPrereqProbes) Check {
+func kernelCheck(p egressPrereqProbes) Check { return kernelTCXCheck(p.kernelRelease) }
+
+// kernelTCXCheck reports the running kernel and whether it can attach TCX
+// hooks (>= 6.6). A nil probe, a probe error or an unparseable release is
+// "unknown", which fails the check rather than passing it.
+func kernelTCXCheck(release func() (string, error)) Check {
 	c := Check{Name: egressCheckKernel}
-	rel, err := p.kernelRelease()
+	if release == nil {
+		return failed(c, ReasonKernelUnknown, "no kernel release probe")
+	}
+	rel, err := release()
 	if err != nil {
 		return failed(c, ReasonKernelUnknown, "cannot read kernel release: %v", err)
 	}
-	major, minor, ok := parseKernelRelease(rel)
-	if !ok {
+	supported, known := KernelSupportsTCX(rel)
+	if !known {
 		return failed(c, ReasonKernelUnknown, "cannot parse kernel release %q", rel)
 	}
-	if major < egressMinKernelMajor || (major == egressMinKernelMajor && minor < egressMinKernelMinor) {
-		return failed(c, ReasonKernelTooOld, "kernel %s is below %d.%d", rel, egressMinKernelMajor, egressMinKernelMinor)
+	if !supported {
+		return failed(c, ReasonKernelTooOld, "kernel %s is below %d.%d (TCX attach needs it)", strings.TrimSpace(rel), egressMinKernelMajor, egressMinKernelMinor)
 	}
-	c.OK, c.Detail = true, "kernel "+rel
+	c.OK, c.Detail = true, "kernel "+strings.TrimSpace(rel)
 	return c
 }
 
-// parseKernelRelease reads "major.minor" from a release like "6.8.0-137-generic".
+// KernelSupportsTCX reports whether a kernel release string (as printed by
+// `uname -r`, e.g. "6.8.0-45-generic", "6.6.12+", "5.15.0-1050-gcp") is new
+// enough for TCX attach (kernel >= 6.6). known is false when the release
+// cannot be parsed; supported is then false too, and callers must treat that
+// as "could not tell", not as a pass. Pure.
+func KernelSupportsTCX(release string) (supported bool, known bool) {
+	major, minor, ok := parseKernelRelease(release)
+	if !ok {
+		return false, false
+	}
+	return major > egressMinKernelMajor || (major == egressMinKernelMajor && minor >= egressMinKernelMinor), true
+}
+
+// parseKernelRelease reads "major.minor" from a release like
+// "6.8.0-137-generic" or "6.6.12+". The major must be a plain digit run;
+// the minor is read up to its first non-digit (so "6.6-rc1" and "6.6abc"
+// both read as 6.6).
 func parseKernelRelease(rel string) (major, minor int, ok bool) {
-	parts := strings.SplitN(rel, ".", 3)
+	parts := strings.SplitN(strings.TrimSpace(rel), ".", 3)
 	if len(parts) < 2 {
 		return 0, 0, false
 	}
@@ -89,9 +113,24 @@ func parseKernelRelease(rel string) (major, minor int, ok bool) {
 	if i := strings.IndexFunc(minorStr, func(r rune) bool { return r < '0' || r > '9' }); i >= 0 {
 		minorStr = minorStr[:i]
 	}
+	if !allDigits(parts[0]) || !allDigits(minorStr) {
+		return 0, 0, false
+	}
 	major, err1 := strconv.Atoi(parts[0])
 	minor, err2 := strconv.Atoi(minorStr)
 	return major, minor, err1 == nil && err2 == nil
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func cgroupV2Check(p egressPrereqProbes) Check {

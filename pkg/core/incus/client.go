@@ -565,6 +565,14 @@ type ContainerInfo struct {
 	// flag — single source of truth.
 	MonitoringEnabled bool
 
+	// Stack mirrors user.containarium.stack: the stack requested at create.
+	// Empty when none was requested or the box predates the key.
+	Stack string
+
+	// PodmanEnabled mirrors user.containarium.podman_enabled: whether the box
+	// was created with podman support. True for boxes that predate the key.
+	PodmanEnabled bool
+
 	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
 	// on the Incus config — opt-in flag for the serverless feature.
 	AutoSleepEnabled bool
@@ -604,6 +612,12 @@ type ContainerInfo struct {
 	// auto-reap, `containarium prune`) skips the box — only a deliberate
 	// single-box delete can remove it. Empty = unprotected (today's default).
 	DeletePolicy string
+
+	// ToolAccess mirrors user.containarium.tool_access (#2944): the level
+	// recorded for platform-started agent runs (ToolAccessNone,
+	// ToolAccessBuildTools, ToolAccessFullSudo). Empty = none recorded, and
+	// those runs keep today's behaviour.
+	ToolAccess string
 
 	// Image is a human-readable description of the image the container was
 	// launched from (Incus's auto-populated image.description config key,
@@ -651,6 +665,30 @@ const StoppedAtKey = "user.containarium.stopped_at"
 // stop (today's behavior).
 const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_seconds"
 
+// StackKey is the Incus config key recording the software stack a box was
+// created with (--stack), so list/get can report it after creation (#2163).
+// Absent = no stack requested, or a box created before this key existed.
+const StackKey = "user.containarium.stack"
+
+// PodmanEnabledKey is the Incus config key recording whether a box was created
+// with podman support (enable_podman), "true" or "false" (#2858). It is
+// written on every create so a box created with podman off is distinguishable
+// from one that predates the key. Absent = created before this key existed;
+// those boxes keep reporting podman enabled, which is what status reported
+// for every box before the key (see podmanEnabledFromConfig).
+const PodmanEnabledKey = "user.containarium.podman_enabled"
+
+// podmanEnabledFromConfig reads PodmanEnabledKey. Absent or unparseable means
+// a box created before the key existed and reports true, the value status
+// always returned for it; only an explicit "false" reports false.
+func podmanEnabledFromConfig(cfg map[string]string) bool {
+	v, err := strconv.ParseBool(cfg[PodmanEnabledKey])
+	if err != nil {
+		return true
+	}
+	return v
+}
+
 // DeletePolicyKey is the Incus config key carrying a box's delete policy
 // (#284). A box set to DeletePolicyProtected is skipped by every automated /
 // bulk deletion path — the ttlsweeper's auto-reap and `containarium prune` —
@@ -664,6 +702,20 @@ const DeletePolicyKey = "user.containarium.delete_policy"
 // contract: operators can set it directly (`incus config set <box>
 // user.containarium.delete_policy protected`) and every deletion path honors it.
 const DeletePolicyProtected = "protected"
+
+// ToolAccessKey is the Incus config key carrying the tool-access level for
+// platform-started (unattended) agent runs on a box (#2944). Absent = none
+// recorded: those runs keep today's behaviour. Operators can set it directly
+// (`incus config set <box> user.containarium.tool_access build_tools`).
+const ToolAccessKey = "user.containarium.tool_access"
+
+// The recorded tool-access values. A stable string contract, like
+// DeletePolicyProtected; the proto enum BoxToolAccess is the typed API.
+const (
+	ToolAccessNone       = "none"
+	ToolAccessBuildTools = "build_tools"
+	ToolAccessFullSudo   = "full_sudo"
+)
 
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
@@ -772,6 +824,9 @@ type ServerInfo struct {
 	// admission-gate posture (#2284). Nil when the source did not report
 	// one — local Incus mode, or a daemon that predates the field.
 	CPUBudget *CPUBudget
+	// StoragePools is each storage pool's fill as the daemon's capacity
+	// monitor last read it (#2823). Nil in local mode or from an older daemon.
+	StoragePools []StoragePoolCapacity
 }
 
 // DefaultSocketPath is the Incus unix socket path used by New() and by any
@@ -1077,6 +1132,14 @@ func (c *Client) updateState(name, action string) error {
 
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(name string) error {
+	// The instance id goes to the delete observers (#2835), so they can tell
+	// this instance from a later one created under the same name.
+	var instanceID string
+	if inst, _, err := c.server.GetInstance(name); err == nil {
+		instanceID = inst.Config[InstanceIDKey]
+	} else {
+		log.Printf("[incus] delete %s: read its instance id first: %v (delete observers get none)", name, err)
+	}
 	op, err := c.server.DeleteInstance(name)
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %w", err)
@@ -1086,6 +1149,7 @@ func (c *Client) DeleteContainer(name string) error {
 		return fmt.Errorf("failed to delete container (operation failed): %w", err)
 	}
 
+	notifyContainerDeleted(name, instanceID)
 	return nil
 }
 
@@ -1201,6 +1265,9 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
+			ToolAccess:                inst.Config[ToolAccessKey],
+			Stack:                     inst.Config[StackKey],
+			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
@@ -1283,6 +1350,9 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
+		ToolAccess:           inst.Config[ToolAccessKey],
+		Stack:                inst.Config[StackKey],
+		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 

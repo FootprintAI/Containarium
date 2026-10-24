@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import (
@@ -59,6 +61,11 @@ type ClusterReconciler struct {
 	caAddr     string
 	mintCACert func(owner, name string) (clustercore.CACredentials, error)
 
+	// caScaleDownDelay / caScaleDownUnneeded override the autoscaler's
+	// scale-down timers; zero = stock. See SetCAScaleDown.
+	caScaleDownDelay    time.Duration
+	caScaleDownUnneeded time.Duration
+
 	interval time.Duration
 }
 
@@ -81,6 +88,43 @@ func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
 // mint issues each cluster's client credential.
 func (r *ClusterReconciler) SetCADeployer(providerAddr string, mint func(owner, name string) (clustercore.CACredentials, error)) {
 	r.caAddr, r.mintCACert = providerAddr, mint
+}
+
+// SetCAScaleDown overrides the autoscaler's scale-down-delay-after-add and
+// scale-down-unneeded-time for clusters deployed from now on. Zero keeps the
+// stock 10m. Meant for test lanes (CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_*),
+// where the stock ~20m between a scale-up and the surplus node's removal is
+// pure waiting.
+func (r *ClusterReconciler) SetCAScaleDown(delayAfterAdd, unneededTime time.Duration) {
+	r.caScaleDownDelay, r.caScaleDownUnneeded = delayAfterAdd, unneededTime
+}
+
+// parseCAScaleDownEnv reads CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD
+// and CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME as Go durations. Unset
+// means zero (stock timers); a set value must be a positive duration, so a
+// typo fails loudly instead of silently running with defaults.
+func parseCAScaleDownEnv(getenv func(string) string) (delayAfterAdd, unneededTime time.Duration, err error) {
+	parse := func(key string) (time.Duration, error) {
+		v := getenv(key)
+		if v == "" {
+			return 0, nil
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, fmt.Errorf("%s=%q: %w", key, v, err)
+		}
+		if d <= 0 {
+			return 0, fmt.Errorf("%s=%q: must be a positive duration (unset it for the stock timer)", key, v)
+		}
+		return d, nil
+	}
+	if delayAfterAdd, err = parse("CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD"); err != nil {
+		return 0, 0, err
+	}
+	if unneededTime, err = parse("CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME"); err != nil {
+		return 0, 0, err
+	}
+	return delayAfterAdd, unneededTime, nil
 }
 
 // SetEndpointPublisher wires endpoint publish/unpublish.
@@ -363,7 +407,12 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 		if err != nil {
 			return fmt.Errorf("mint autoscaler credential: %w", err)
 		}
-		if err := r.mgr.DeployCA(c.Owner, c.Name, clustercore.CADeploy{ProviderAddr: r.caAddr}, creds); err != nil {
+		deploy := clustercore.CADeploy{
+			ProviderAddr:           r.caAddr,
+			ScaleDownDelayAfterAdd: r.caScaleDownDelay,
+			ScaleDownUnneededTime:  r.caScaleDownUnneeded,
+		}
+		if err := r.mgr.DeployCA(c.Owner, c.Name, deploy, creds); err != nil {
 			return fmt.Errorf("deploy autoscaler: %w", err)
 		}
 	}

@@ -6,11 +6,17 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // securitySentryFindingsCmd IS the list command (per the #1643 acceptance
@@ -54,106 +60,42 @@ var securitySentryFindingsResolveCmd = &cobra.Command{
 	RunE:  runSecurityFindingsResolve,
 }
 
-// findingEnvelope mirrors *Finding's grpc-gateway JSON shape (protojson
-// default: camelCase, enums as their string names, int64 as a JSON string).
-type findingEnvelope struct {
-	ID        string              `json:"id"`
-	Rule      string              `json:"rule"`
-	Severity  string              `json:"severity"`
-	TenantID  string              `json:"tenantId"`
-	Container string              `json:"container"`
-	BackendID string              `json:"backendId"`
-	Subject   string              `json:"subject"`
-	State     string              `json:"state"`
-	Count     string              `json:"count"`
-	Evidence  findingEvidenceEnv  `json:"evidence"`
-	FirstSeen string              `json:"firstSeen"`
-	LastSeen  string              `json:"lastSeen"`
-	Response  *findingResponseEnv `json:"response,omitempty"`
-}
+// The list and resolve responses are decoded into the generated
+// pb.ListFindingsResponse / pb.ResolveFindingResponse with protojson (the
+// grpc-gateway's own encoding), so enums are typed values, never strings
+// with a prefix trimmed off (#2768).
 
-// findingResponseEnv mirrors FindingResponse's grpc-gateway JSON shape
-// (#2636), as far as the list renders it. The kill facts (#2775) are the
-// host pid of the latest kill, how many processes were killed for the
-// finding, and the KillSkipReason enum name when the last attempted kill was
-// skipped (`KILL_SKIP_REASON_UNSPECIFIED`, or absent, when it was not). Like
-// the rest of the envelope they are hand-mirrored strings: protojson enums
-// arrive as their names, and this envelope is what `--json` prints.
-type findingResponseEnv struct {
-	Action         string `json:"action"`
-	State          string `json:"state"`
-	ProcessKilled  bool   `json:"processKilled"`
-	KilledPID      uint32 `json:"killedPid,omitempty"`
-	Kills          uint32 `json:"kills,omitempty"`
-	KillSkipReason string `json:"killSkipReason,omitempty"`
-}
+// enumLabel is an enum value's name without its type prefix, e.g.
+// THREAT_RULE_ID_MINER_SIGNATURE -> MINER_SIGNATURE.
+func enumLabel(name, prefix string) string { return strings.TrimPrefix(name, prefix) }
 
-// killSkipReasonNone is the enum name grpc-gateway renders for no skip.
-const killSkipReasonNone = "KILL_SKIP_REASON_UNSPECIFIED"
-
-// describe is the one-line text rendering of a response, e.g.
-// `response ALERT NONE, process killed (pid 25872, kills 3)` or
-// `response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`.
-func (r findingResponseEnv) describe() string {
-	detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
-	if r.ProcessKilled {
+// describeResponse is the one-line text rendering of a response, e.g.
+// `response ALERT NONE on box-a, process killed (pid 25872, kills 3)` or
+// `response THROTTLE APPLIED on box-b, kill skipped: CONTAINER_INIT` (no
+// `on <box>` for a response recorded before it named one).
+func describeResponse(r *pb.FindingResponse) string {
+	detail := fmt.Sprintf("response %s %s", enumLabel(r.GetAction().String(), "PROCESS_ACTION_"), enumLabel(r.GetState().String(), "RESPONSE_STATE_"))
+	if r.GetContainer() != "" {
+		detail += " on " + r.GetContainer()
+	}
+	if r.GetProcessKilled() {
 		detail += ", process killed"
-		if r.KilledPID != 0 {
-			detail += fmt.Sprintf(" (pid %d, kills %d)", r.KilledPID, r.Kills)
+		if r.GetKilledPid() != 0 {
+			detail += fmt.Sprintf(" (pid %d, kills %d)", r.GetKilledPid(), r.GetKills())
 		}
 	}
-	if r.KillSkipReason != "" && r.KillSkipReason != killSkipReasonNone {
-		detail += ", kill skipped: " + strings.TrimPrefix(r.KillSkipReason, "KILL_SKIP_REASON_")
+	if r.GetKillSkipReason() != pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
+		detail += ", kill skipped: " + enumLabel(r.GetKillSkipReason().String(), "KILL_SKIP_REASON_")
 	}
 	return detail
 }
 
-type findingEvidenceEnv struct {
-	Flows     []map[string]interface{}     `json:"flows"`
-	Denies    []map[string]interface{}     `json:"denies"`
-	Configs   []findingConfigEvidenceEnv   `json:"configs"`
-	Listeners []findingListenerEvidenceEnv `json:"listeners"`
-	Execs     []findingExecEvidenceEnv     `json:"execs"`
-}
-
-// findingExecEvidenceEnv mirrors ExecEvidence's grpc-gateway JSON shape
-// (#2637/#2638): the exec a miner-signature finding matched.
-type findingExecEvidenceEnv struct {
-	PID      uint32 `json:"pid"`
-	Comm     string `json:"comm"`
-	Filename string `json:"filename"`
-	Argv     string `json:"argv"`
-	SHA256   string `json:"sha256"`
-	Matched  string `json:"matched"`
-}
-
-// findingListenerEvidenceEnv mirrors ListenerEvidence's grpc-gateway JSON
-// shape (#2439). grpc-gateway renders proto3 field names in lowerCamelCase.
-type findingListenerEvidenceEnv struct {
-	Port        uint32 `json:"port"`
-	BindAddress string `json:"bindAddress"`
-	PID         uint32 `json:"pid"`
-	Binary      string `json:"binary"`
-	Note        string `json:"note"`
-}
-
-// findingConfigEvidenceEnv mirrors ConfigEvidence's grpc-gateway JSON
-// shape (#2424): a posture finding's offending directive, file and
-// whether the pass re-asserted the managed configuration.
-type findingConfigEvidenceEnv struct {
-	Path       string `json:"path"`
-	Directive  string `json:"directive"`
-	Value      string `json:"value"`
-	Remediated bool   `json:"remediated"`
-	Note       string `json:"note"`
-}
-
-type listFindingsEnvelope struct {
-	Findings []findingEnvelope `json:"findings"`
-}
-
-type resolveFindingEnvelope struct {
-	Finding findingEnvelope `json:"finding"`
+// timestampText renders an optional timestamp as RFC 3339 UTC, "" when unset.
+func timestampText(ts *timestamppb.Timestamp) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.AsTime().UTC().Format(time.RFC3339)
 }
 
 func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
@@ -181,58 +123,64 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 	if enc := q.Encode(); enc != "" {
 		reqURL = base + "?" + enc
 	}
-	var out listFindingsEnvelope
-	if err := getJSON(reqURL, &out); err != nil {
+	var out pb.ListFindingsResponse
+	if err := policyRoundTrip(http.MethodGet, reqURL, nil, &out); err != nil {
 		return err
 	}
-	if findingsJSONOut {
-		return printJSON(out)
-	}
 	w := cmd.OutOrStdout()
-	if len(out.Findings) == 0 {
+	if findingsJSONOut {
+		b, err := protojson.MarshalOptions{Multiline: true}.Marshal(&out)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(w, string(b))
+		return err
+	}
+	if len(out.GetFindings()) == 0 {
 		fmt.Fprintln(w, "No findings.")
 		return nil
 	}
 	fmt.Fprintf(w, "%-6s %-28s %-10s %-8s %-14s %-6s %-10s %s\n",
 		"ID", "RULE", "SEVERITY", "STATE", "TENANT", "COUNT", "LAST SEEN", "SUBJECT")
-	for _, f := range out.Findings {
-		fmt.Fprintf(w, "%-6s %-28s %-10s %-8s %-14s %-6s %-10s %s\n",
-			f.ID,
-			strings.TrimPrefix(f.Rule, "THREAT_RULE_ID_"),
-			strings.TrimPrefix(f.Severity, "THREAT_SEVERITY_"),
-			strings.TrimPrefix(f.State, "FINDING_STATE_"),
-			f.TenantID,
-			f.Count,
-			f.LastSeen,
-			f.Subject,
+	for _, f := range out.GetFindings() {
+		fmt.Fprintf(w, "%-6d %-28s %-10s %-8s %-14s %-6d %-10s %s\n",
+			f.GetId(),
+			enumLabel(f.GetRule().String(), "THREAT_RULE_ID_"),
+			enumLabel(f.GetSeverity().String(), "THREAT_SEVERITY_"),
+			enumLabel(f.GetState().String(), "FINDING_STATE_"),
+			f.GetTenantId(),
+			f.GetCount(),
+			timestampText(f.GetLastSeen()),
+			f.GetSubject(),
 		)
-		for _, c := range f.Evidence.Configs {
-			detail := fmt.Sprintf("%s=%s in %s", c.Directive, c.Value, c.Path)
-			if c.Remediated {
+		ev := f.GetEvidence()
+		for _, c := range ev.GetConfigs() {
+			detail := fmt.Sprintf("%s=%s in %s", c.GetDirective(), c.GetValue(), c.GetPath())
+			if c.GetRemediated() {
 				detail += " (re-asserted)"
 			}
-			if c.Note != "" {
-				detail += " — " + c.Note
+			if c.GetNote() != "" {
+				detail += " — " + c.GetNote()
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}
-		for _, x := range f.Evidence.Execs {
-			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.PID, x.Filename, x.Comm, x.Argv)
-			if x.SHA256 != "" {
-				detail += " sha256 " + x.SHA256
+		for _, x := range ev.GetExecs() {
+			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.GetPid(), x.GetFilename(), x.GetComm(), x.GetArgv())
+			if x.GetSha256() != "" {
+				detail += " sha256 " + x.GetSha256()
 			}
-			if x.Matched != "" {
-				detail += " — matched " + x.Matched
+			if x.GetMatched() != "" {
+				detail += " — matched " + x.GetMatched()
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}
-		if r := f.Response; r != nil {
-			fmt.Fprintf(w, "       %s\n", r.describe())
+		if r := f.GetResponse(); r != nil {
+			fmt.Fprintf(w, "       %s\n", describeResponse(r))
 		}
-		for _, l := range f.Evidence.Listeners {
-			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.BindAddress, l.Port, l.PID, l.Binary)
-			if l.Note != "" {
-				detail += " — " + l.Note
+		for _, l := range ev.GetListeners() {
+			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.GetBindAddress(), l.GetPort(), l.GetPid(), l.GetBinary())
+			if l.GetNote() != "" {
+				detail += " — " + l.GetNote()
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}
@@ -249,12 +197,12 @@ func runSecurityFindingsResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid finding id %q: %w", id, err)
 	}
 	url := strings.TrimSuffix(serverAddr, "/") + "/v1/security/findings/" + id + "/resolve"
-	var out resolveFindingEnvelope
-	if err := postJSON(url, []byte("{}"), &out); err != nil {
+	var out pb.ResolveFindingResponse
+	if err := policyRoundTrip(http.MethodPost, url, nil, &out); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Resolved finding %s (%s)\n", out.Finding.ID,
-		strings.TrimPrefix(out.Finding.State, "FINDING_STATE_"))
+	fmt.Fprintf(cmd.OutOrStdout(), "Resolved finding %d (%s)\n", out.GetFinding().GetId(),
+		enumLabel(out.GetFinding().GetState().String(), "FINDING_STATE_"))
 	return nil
 }
 

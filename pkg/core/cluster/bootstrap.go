@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Bootstrap renderers — pure functions producing the shell that runs
@@ -253,6 +254,28 @@ type CADeploy struct {
 	// ProviderAddr is the daemon's CA-provider mTLS listener as
 	// reachable from the VM (host bridge IP:port).
 	ProviderAddr string
+
+	// ScaleDownDelayAfterAdd and ScaleDownUnneededTime override the
+	// stock autoscaler's scale-down timers (10m each, so a surplus node
+	// lives ~20m after a scale-up). Zero leaves the flag off and the
+	// stock default in force, which is how production runs. The
+	// release-gating e2e lane shortens them so its scale-down step does
+	// not spend most of the run waiting.
+	ScaleDownDelayAfterAdd time.Duration
+	ScaleDownUnneededTime  time.Duration
+}
+
+// caScaleDownArgs renders the opt-in timer flags as continuation lines of
+// the ExecStart command; empty when both are zero.
+func caScaleDownArgs(d CADeploy) string {
+	var b strings.Builder
+	if d.ScaleDownDelayAfterAdd > 0 {
+		fmt.Fprintf(&b, " \\\n  --scale-down-delay-after-add=%s", d.ScaleDownDelayAfterAdd)
+	}
+	if d.ScaleDownUnneededTime > 0 {
+		fmt.Fprintf(&b, " \\\n  --scale-down-unneeded-time=%s", d.ScaleDownUnneededTime)
+	}
+	return b.String()
 }
 
 // RenderCACloudConfig renders the stock externalgrpc cloud-config: the
@@ -306,7 +329,7 @@ ExecStart=%[1]s ctr run --rm --net-host --user 0 \
   --cloud-provider=externalgrpc \
   --cloud-config=%[4]s \
   --kubeconfig=/etc/kubeconfig \
-  --stderrthreshold=info
+  --stderrthreshold=info%[5]s
 Restart=always
 RestartSec=10
 
@@ -316,5 +339,5 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-cluster-autoscaler.service
-`, K3sBinaryPath, CAImage, CACredDir, CACloudConfigPath)
+`, K3sBinaryPath, CAImage, CACredDir, CACloudConfigPath, caScaleDownArgs(d))
 }

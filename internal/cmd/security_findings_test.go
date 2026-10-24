@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 func TestRunSecurityFindingsList_RequiresServer(t *testing.T) {
@@ -115,23 +119,107 @@ func TestRunSecurityFindingsList_RendersKillFacts(t *testing.T) {
 		t.Errorf("a response with no kill facts should print bare:\n%s", out)
 	}
 
-	// --json prints the envelope: the kill facts must survive the round trip
-	// under the gateway's key names, and absent facts must stay absent.
-	var env listFindingsEnvelope
-	if err := json.Unmarshal([]byte(canned), &env); err != nil {
-		t.Fatal(err)
+	// --json prints the gateway's protojson: the kill facts survive the round
+	// trip into the generated types, and absent facts stay absent.
+	resp, raw := findingsListJSON(t, cmd)
+	got := resp.GetFindings()
+	if len(got) != 3 || got[0].GetResponse().GetKilledPid() != 25872 || got[0].GetResponse().GetKills() != 3 ||
+		got[1].GetResponse().GetKillSkipReason() != pb.KillSkipReason_KILL_SKIP_REASON_CONTAINER_INIT {
+		t.Errorf("--json lost the kill facts: %s", raw)
 	}
-	raw, err := json.Marshal(env)
-	if err != nil {
-		t.Fatal(err)
+	if strings.Count(raw, `"killedPid"`) != 1 || strings.Count(raw, `"killSkipReason"`) != 1 {
+		t.Errorf("--json should omit absent kill facts: %s", raw)
 	}
-	for _, want := range []string{`"killedPid":25872`, `"kills":3`, `"killSkipReason":"KILL_SKIP_REASON_CONTAINER_INIT"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("--json envelope missing %s: %s", want, raw)
-		}
+}
+
+// findingsListJSON runs the list with --json and decodes what it printed.
+func findingsListJSON(t *testing.T, cmd *cobra.Command) (*pb.ListFindingsResponse, string) {
+	t.Helper()
+	old := findingsJSONOut
+	findingsJSONOut = true
+	defer func() { findingsJSONOut = old }()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatalf("runSecurityFindingsList --json: %v", err)
 	}
-	if strings.Count(string(raw), `"killedPid"`) != 1 || strings.Count(string(raw), `"killSkipReason"`) != 1 {
-		t.Errorf("--json envelope should omit absent kill facts: %s", raw)
+	var resp pb.ListFindingsResponse
+	if err := protojson.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("--json output is not the ListFindingsResponse protojson: %v\n%s", err, buf.String())
+	}
+	return &resp, buf.String()
+}
+
+// #2820: a finding shared by two boxes shows which box its response is
+// about. Box A was released while box B is still throttled: the line reads
+// B's APPLIED, never RELEASED, and --json carries the box.
+func TestRunSecurityFindingsList_SharedFindingNamesTheBox(t *testing.T) {
+	const canned = `{
+		"findings": [
+			{"id": "6", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			 "tenantId": "acme", "container": "box-a-container", "state": "FINDING_STATE_OPEN", "count": "2",
+			 "lastSeen": "2026-10-20T03:22:13Z", "subject": "name:xmrig",
+			 "response": {"action": "PROCESS_ACTION_THROTTLE", "state": "RESPONSE_STATE_APPLIED",
+			              "container": "box-b-container"}}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(canned))
+	}))
+	defer srv.Close()
+	oldServer := serverAddr
+	serverAddr = srv.URL
+	defer func() { serverAddr = oldServer }()
+
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatalf("runSecurityFindingsList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "response THROTTLE APPLIED on box-b-container\n") || strings.Contains(out, "RELEASED") {
+		t.Errorf("shared finding's response line:\n%s\nwant `response THROTTLE APPLIED on box-b-container` and no RELEASED", out)
+	}
+	resp, raw := findingsListJSON(t, cmd)
+	if r := resp.GetFindings()[0].GetResponse(); r.GetContainer() != "box-b-container" || r.GetState() != pb.ResponseState_RESPONSE_STATE_APPLIED {
+		t.Errorf("--json lost the response's box: %s", raw)
+	}
+}
+
+// TestRunSecurityFindingsList_DecodesIntoGeneratedTypes (#2768 item 5): the
+// list decodes the gateway JSON into pb.ListFindingsResponse. A field or an
+// enum name from a newer daemon does not break an older CLI: the row still
+// prints, the unknown enum as UNSPECIFIED.
+func TestRunSecurityFindingsList_DecodesIntoGeneratedTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "unknown field", body: `{"findings": [{"id": "7", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "state": "FINDING_STATE_OPEN", "futureField": 1}]}`, want: "MINER_SIGNATURE"},
+		{name: "unknown enum name", body: `{"findings": [{"id": "7", "rule": "THREAT_RULE_ID_FROM_THE_FUTURE", "state": "FINDING_STATE_OPEN"}]}`, want: "UNSPECIFIED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			oldServer := serverAddr
+			serverAddr = srv.URL
+			defer func() { serverAddr = oldServer }()
+			cmd := testCmd()
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			if err := runSecurityFindingsList(cmd, nil); err != nil {
+				t.Fatalf("runSecurityFindingsList: %v", err)
+			}
+			if !strings.Contains(buf.String(), tc.want) || !strings.Contains(buf.String(), "OPEN") {
+				t.Errorf("output missing %q:\n%s", tc.want, buf.String())
+			}
+		})
 	}
 }
 

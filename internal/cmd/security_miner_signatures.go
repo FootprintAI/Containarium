@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,22 +27,36 @@ var securityMinerSignaturesCmd = &cobra.Command{
 	Short: "Manage the miner-signature list (name, argv and sha256 matchers, #2638)",
 }
 
-// minerSigKindNames maps the CLI spelling to the proto enum.
-var minerSigKindNames = map[string]pb.MinerSignatureKind{
-	"name":   pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME,
-	"argv":   pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV,
-	"sha256": pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256,
+// minerSigKindPrefix is the enum-name prefix the CLI spelling drops:
+// --kind name is MINER_SIGNATURE_KIND_NAME.
+const minerSigKindPrefix = "MINER_SIGNATURE_KIND_"
+
+// parseMinerSigKind reads --kind off the generated enum, so a kind added to
+// the proto is accepted without a hand-kept map to drift (#2768).
+func parseMinerSigKind(s string) (pb.MinerSignatureKind, error) {
+	v, ok := pb.MinerSignatureKind_value[minerSigKindPrefix+strings.ToUpper(strings.TrimSpace(s))]
+	if !ok || pb.MinerSignatureKind(v) == pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED {
+		return pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED,
+			fmt.Errorf("invalid --kind %q: allowed values are %s", s, minerSigKindAllowed())
+	}
+	return pb.MinerSignatureKind(v), nil
 }
 
-const minerSigKindAllowed = "name, argv, sha256"
-
-func parseMinerSigKind(s string) (pb.MinerSignatureKind, error) {
-	k, ok := minerSigKindNames[strings.ToLower(strings.TrimSpace(s))]
-	if !ok {
-		return pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED,
-			fmt.Errorf("invalid --kind %q: allowed values are %s", s, minerSigKindAllowed)
+// minerSigKindAllowed lists the CLI spellings of every defined kind, in
+// enum order ("name, argv, sha256").
+func minerSigKindAllowed() string {
+	nums := make([]int, 0, len(pb.MinerSignatureKind_name))
+	for n := range pb.MinerSignatureKind_name {
+		if pb.MinerSignatureKind(n) != pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED {
+			nums = append(nums, int(n))
+		}
 	}
-	return k, nil
+	sort.Ints(nums)
+	labels := make([]string, 0, len(nums))
+	for _, n := range nums {
+		labels = append(labels, minerSigKindLabel(pb.MinerSignatureKind(n))) // #nosec G115 -- enum numbers
+	}
+	return strings.Join(labels, ", ")
 }
 
 func minerSigKindLabel(k pb.MinerSignatureKind) string {
@@ -131,7 +146,7 @@ the hot path only when no cheaper entry matched.`,
 			return nil
 		},
 	}
-	c.Flags().StringVar(&kind, "kind", "", "Matcher kind: "+minerSigKindAllowed)
+	c.Flags().StringVar(&kind, "kind", "", "Matcher kind: "+minerSigKindAllowed())
 	c.Flags().StringVar(&label, "label", "", "Human-readable label for the entry")
 	_ = c.MarkFlagRequired("kind")
 	return c
@@ -162,7 +177,7 @@ func newMinerSignaturesRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVar(&kind, "kind", "", "Matcher kind: "+minerSigKindAllowed)
+	c.Flags().StringVar(&kind, "kind", "", "Matcher kind: "+minerSigKindAllowed())
 	_ = c.MarkFlagRequired("kind")
 	return c
 }

@@ -186,17 +186,21 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 	if req.GetContainer() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "container is required")
 	}
-	f, keptOpen, err := s.responder.Release(ctx, req.GetContainer())
+	res, err := s.responder.ReleaseBox(ctx, req.GetContainer())
 	if err != nil {
 		if errors.Is(err, threatdetect.ErrNoOpenAction) {
 			return nil, status.Errorf(codes.NotFound, "%v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "release process action: %v", err)
 	}
-	resp := &pb.ReleaseProcessActionResponse{FindingKeptOpen: keptOpen}
-	if f != nil {
-		resp.Finding = f.ToProto()
+	resp := &pb.ReleaseProcessActionResponse{FindingKeptOpen: res.KeptOpen}
+	if res.Finding != nil {
+		resp.Finding = res.Finding.ToProto()
+		// The release record, as the webhook got it: with the kill on
+		// record, as the finding has it.
+		res.Released.KeepKillOf(res.Finding.Response)
 	}
+	resp.Released = res.Released.ToProto()
 	return resp, nil
 }
 

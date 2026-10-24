@@ -23,7 +23,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,10 +30,13 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
     name: build image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Build sshpiper image
         run: docker build -f images/sshpiper/Dockerfile -t containarium-sshpiper:ci images/sshpiper
       - name: Smoke-check the image
@@ -54,7 +56,7 @@ jobs:
       # limit-severities-for-sarif: without it trivy-action ignores the
       # severity filter entirely for SARIF output).
       - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0 # master
         with:
           image-ref: 'containarium-sshpiper:ci'
           format: 'sarif'
@@ -65,7 +67,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
         if: always()
         with:
           sarif_file: trivy-sshpiper-results.sarif

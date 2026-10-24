@@ -214,9 +214,21 @@ curl http://<sentinel-ip>:8888/status
   "outage_duration": "",
   "last_preemption": "2026-02-27T15:30:00Z",
   "cert_sync_count": 5,
-  "cert_sync_last": "2026-02-27T21:30:00Z"
+  "cert_sync_last": "2026-02-27T21:30:00Z",
+  "primary_auth_health": [
+    {"pool": "<pool>", "state": "ok", "last_success": "2026-02-27T21:30:10Z", "failures_since_success": 0}
+  ],
+  "unattributed_auth_failures": 0
 }
 ```
+
+`primary_auth_health` (#2892) reports, per primary, whether its last request to
+a daemon-AUTH route (`/sentinel/primaries`, `/ca`, `/peer-cert`,
+`/fetch-release`, `/keys/resync`) authenticated (`ok`) or got 401
+(`failing_401`). A primary is listed only after one of its requests
+authenticates, and a 401 is attributed by source address, never by the pool
+name in the request; other 401s count in `unattributed_auth_failures`. Nothing
+in it is derived from the secret.
 
 ## Management SSH (Port 2222)
 

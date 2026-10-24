@@ -39,6 +39,13 @@ type NetworkPolicyServer struct {
 	// gateway the plan simply does not subtract the preset's implicit resolver.
 	auditQuery denyAuditQuerier
 	gateway    netip.Addr
+
+	// applied and enforceArmed serve GetNetworkPolicyStatus: the enforcer's
+	// loaded state (nil = no enforcer on this daemon) and the host's
+	// CONTAINARIUM_NETWORK_POLICY_ENFORCE.
+	applied      appliedStateSource
+	enforceArmed bool
+	clock        func() time.Time // nil = time.Now; tests inject a fixed clock
 }
 
 // denyAuditQuerier is the slice of *audit.Store PlanNetworkPolicy needs.
@@ -325,7 +332,7 @@ func (s *NetworkPolicyServer) PlanNetworkPolicy(ctx context.Context, req *pb.Pla
 	} else if !errors.Is(err, ErrNetworkPolicyNotFound) {
 		return nil, status.Errorf(codes.Internal, "get network policy: %v", err)
 	} else {
-		notes = append(notes, "the tenant has no policy yet; every outbound destination its boxes reached is listed")
+		notes = append(notes, "the tenant has no policy yet; every outbound destination its boxes reached is listed, including any the host's default egress allow-list already allows (it is not subtracted here)")
 	}
 
 	var rows []netpolicy.DenyRow
