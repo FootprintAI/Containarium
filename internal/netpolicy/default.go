@@ -54,14 +54,28 @@ func DefaultPolicy(tenant string, extras DefaultEgressExtras) (CompiledPolicy, e
 		return CompiledPolicy{}, fmt.Errorf("default network policy: tenant is required")
 	}
 	p := &pb.NetworkPolicy{
-		Tenant:        tenant,
-		Mode:          pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
-		EgressMode:    pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
-		EgressPreset:  pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY,
+		Tenant:       tenant,
+		Mode:         pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		EgressMode:   pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		EgressPreset: pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY,
+		// DefaultEgressDomains returns a fresh clone, so append cannot alias the
+		// built-in list.
 		EgressDomains: append(DefaultEgressDomains(), extras.Domains...),
 		EgressCidrs:   slices.Clone(extras.CIDRs),
 	}
-	return Compile(p)
+	c, err := Compile(p)
+	if err != nil {
+		return CompiledPolicy{}, err
+	}
+	// The BPF compile is IPv4-only and the reconcile plan drops a tenant's
+	// whole egress set when it fails, so an IPv6 extra would silently empty the
+	// allow-list of every tenant on the default. Refuse it here instead.
+	for _, pfx := range c.EgressCIDRs {
+		if !pfx.Addr().Is4() {
+			return CompiledPolicy{}, fmt.Errorf("default network policy: extra CIDR %s is not IPv4 (the egress allow-list is IPv4-only)", pfx)
+		}
+	}
+	return c, nil
 }
 
 // ParseDefaultEgress reads the raw CONTAINARIUM_NETWORK_DEFAULT_EGRESS* values.

@@ -332,7 +332,7 @@ func (s *NetworkPolicyServer) PlanNetworkPolicy(ctx context.Context, req *pb.Pla
 	} else if !errors.Is(err, ErrNetworkPolicyNotFound) {
 		return nil, status.Errorf(codes.Internal, "get network policy: %v", err)
 	} else {
-		notes = append(notes, "the tenant has no policy yet; every outbound destination its boxes reached is listed")
+		notes = append(notes, "the tenant has no policy yet; every outbound destination its boxes reached is listed, including any the host's default egress allow-list already allows (it is not subtracted here)")
 	}
 
 	var rows []netpolicy.DenyRow

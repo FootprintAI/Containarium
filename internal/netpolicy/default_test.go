@@ -72,6 +72,11 @@ func TestDefaultPolicy_BadExtraIsAnError(t *testing.T) {
 	if _, err := DefaultPolicy("acme", DefaultEgressExtras{Domains: []string{"https://x.example.com"}}); err == nil {
 		t.Error("an extra domain with a scheme must be reported")
 	}
+	// The BPF compile is IPv4-only and its error would be swallowed by the plan,
+	// emptying every no-policy tenant's allow-list: refuse it up front.
+	if _, err := DefaultPolicy("acme", DefaultEgressExtras{CIDRs: []string{"2001:db8::/32"}}); err == nil {
+		t.Error("an IPv6 extra CIDR must be refused")
+	}
 	if _, err := DefaultPolicy("  ", DefaultEgressExtras{}); err == nil {
 		t.Error("an empty tenant must be refused")
 	}

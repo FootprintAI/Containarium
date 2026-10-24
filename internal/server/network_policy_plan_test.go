@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/netip"
 	"slices"
 	"testing"
@@ -272,5 +273,53 @@ func TestDefaultPolicyFor_OffAndOn(t *testing.T) {
 	}
 	if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix("10.0.3.1/32")) {
 		t.Errorf("the DNS resolver (bridge gateway) must be implicitly allowed: %v", c.EgressCIDRs)
+	}
+}
+
+// The default posture, end to end through the enforcer: an armed host still
+// plans log-only for both modes for a tenant with no stored policy.
+func TestDefaultPosture_ThroughEnforcerStaysLogOnlyWhenArmed(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", NewMemNetworkPolicyStore(), nil, nil, nil, nil, true)
+	e.SetImplicitGateway(netip.MustParseAddr("10.0.3.1"))
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{}); err != nil {
+		t.Fatal(err)
+	}
+	views := []containerView{{Name: "acme-container", Tenant: "acme", TenantID: 7, Ifindex: 11, HasVeth: true, Running: true}}
+	plan := planReconcile(views, withDefaultPolicies(nil, views, e.defaultPolicyFor), true)
+	cfg, ok := plan.vethPolicy[11]
+	if !ok {
+		t.Fatal("no veth policy planned")
+	}
+	if cfg.Mode != netbpf.ModeLogOnly || cfg.EgressMode != netbpf.ModeLogOnly {
+		t.Errorf("mode=%v egress=%v, want log-only for both on an armed host", cfg.Mode, cfg.EgressMode)
+	}
+	if len(plan.egress) == 0 {
+		t.Error("the implicit resolver allow produced no egress entries")
+	}
+}
+
+// Extras are normalized once and the same names are resolved and looked up:
+// a mixed-case, trailing-dot extra must end up cached under the name the
+// policy looks it up by.
+func TestRefreshDomains_ResolvesDefaultAndNormalizedExtraDomains(t *testing.T) {
+	f := &fakeIPResolver{results: map[string][]netip.Addr{
+		"gateway.example.com": addrs("10.9.0.5"),
+		"github.com":          addrs("140.82.112.3"),
+	}}
+	e := NewNetworkPolicyEnforcer("", NewMemNetworkPolicyStore(), nil, nil, nil, nil, false)
+	e.ctx = context.Background()
+	e.resolver = NewDomainResolver(f)
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{Domains: []string{"Gateway.Example.com."}}); err != nil {
+		t.Fatal(err)
+	}
+	e.refreshDomains()
+	c, ok := e.defaultPolicyFor("acme")
+	if !ok {
+		t.Fatal("default policy off")
+	}
+	for _, want := range []string{"10.9.0.5/32", "140.82.112.3/32"} {
+		if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix(want)) {
+			t.Errorf("%s not folded into the default allow-list: %v", want, c.EgressCIDRs)
+		}
 	}
 }

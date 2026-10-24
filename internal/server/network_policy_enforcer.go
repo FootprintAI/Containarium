@@ -92,8 +92,9 @@ type NetworkPolicyEnforcer struct {
 	// defaultExtras is the operator's addition to the default egress allow-list;
 	// defaultOn is whether a tenant with no stored policy gets that list
 	// (#2577 stage 1). Set before Start.
-	defaultOn     bool
-	defaultExtras netpolicy.DefaultEgressExtras
+	defaultOn      bool
+	defaultExtras  netpolicy.DefaultEgressExtras
+	defaultDomains []string // normalized built-ins + extras: what the resolver caches and the policy looks up
 
 	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
@@ -177,10 +178,11 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 // narrow the list; the caller decides what to run with instead. Must be called
 // before Start.
 func (e *NetworkPolicyEnforcer) SetDefaultEgress(extras netpolicy.DefaultEgressExtras) error {
-	if _, err := netpolicy.DefaultPolicy("probe", extras); err != nil {
+	c, err := netpolicy.DefaultPolicy("probe", extras)
+	if err != nil {
 		return err
 	}
-	e.defaultOn, e.defaultExtras = true, extras
+	e.defaultOn, e.defaultExtras, e.defaultDomains = true, extras, c.EgressDomains
 	return nil
 }
 
@@ -1076,8 +1078,7 @@ func (e *NetworkPolicyEnforcer) refreshDomains() {
 	}
 	if e.defaultOn {
 		// The default allow-list's names are resolved too (#2577).
-		domains = append(domains, netpolicy.DefaultEgressDomains()...)
-		domains = append(domains, e.defaultExtras.Domains...)
+		domains = append(domains, e.defaultDomains...)
 	}
 	// No early return on an empty list: Refresh with no domains prunes the
 	// cache, so a removed last domain cannot leave a stale past-due entry that
