@@ -199,11 +199,14 @@ not make that change.
 ## Rollback
 
 The shared AUTH secret remains on the sentinel and every daemon throughout this
-migration, so the HMAC path stays available for rollback. Before Step 2, remove
-`CONTAINARIUM_SENTINEL_SIGNING_KEY` from the sentinel and restart it. After Step
-2, do the same to switch sentinel→daemon requests back to HMAC; daemons still
-accept HMAC. The public key can remain on daemons, where it is inert until the
-sentinel signs with ed25519 again.
+migration, so the HMAC path stays available for rollback.
+
+- **Before Step 2:** no rollback action is needed; the sentinel is still using
+  HMAC.
+- **After Step 2:** remove `CONTAINARIUM_SENTINEL_SIGNING_KEY` from the sentinel
+  and restart it to switch sentinel→daemon requests back to HMAC. Daemons still
+  accept HMAC. The public key can remain on daemons, where it is inert until the
+  sentinel signs with ed25519 again.
 
 ## Troubleshooting
 
