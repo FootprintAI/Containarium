@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -308,6 +309,44 @@ func TestPrimaryAuthTracker_OnlyBindClearsFailures(t *testing.T) {
 	health, _, _ = tr.snapshot()
 	if len(health) != 1 || health[0].State != PrimaryAuthOK || health[0].FailuresSinceSuccess != 0 {
 		t.Fatalf("after bind: %+v, want ok with 0 failures", health)
+	}
+}
+
+// Manager wiring: each of the primary's own authenticated requests on
+// /sentinel/primaries (registration, heartbeat, deregister) clears a 401
+// recorded from its address. Removing the bind from any one handler branch
+// fails its row.
+func TestStatus_PrimaryAuthHealth_OwnRequestClearsFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"register", http.MethodPost, "/sentinel/primaries", `{"pool":"pool-a","hostname":"pool-a.example.com","port":443}`, http.StatusCreated},
+		{"heartbeat", http.MethodPut, "/sentinel/primaries/pool-a", "", http.StatusOK},
+		{"deregister", http.MethodDelete, "/sentinel/primaries/pool-a", "", http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newAuthHealthTestServer(t)
+			registerPool(t, srv, "pool-a")
+			if code, _ := doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/pool-a", wrongPrimariesSecret, true, nil); code != http.StatusUnauthorized {
+				t.Fatalf("wrong-secret heartbeat: code %d, want 401", code)
+			}
+			st, _ := getStatus(t, srv)
+			if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthFailing401 {
+				t.Fatalf("before %s: health = %+v, want failing_401", tc.name, h)
+			}
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			if code, resp := doPrimaries(t, srv, tc.method, tc.path, testPrimariesSecret, true, body); code != tc.want {
+				t.Fatalf("signed %s: code %d body %q, want %d", tc.name, code, resp, tc.want)
+			}
+			st, _ = getStatus(t, srv)
+			if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthOK || h.FailuresSinceSuccess != 0 {
+				t.Fatalf("after signed %s: health = %+v, want ok with 0 failures", tc.name, h)
+			}
+		})
 	}
 }
 

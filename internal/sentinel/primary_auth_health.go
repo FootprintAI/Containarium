@@ -194,8 +194,9 @@ func (t *primaryAuthTracker) snapshot() ([]PrimaryAuthHealthJSON, uint64, time.T
 		if !e.lastFailure.IsZero() {
 			h.LastFailure = e.lastFailure.Format(time.RFC3339)
 		}
-		// Every authenticated request resets the count, so a non-zero count
-		// means the most recent attributed request was a 401.
+		// Only the primary's own authenticated registration, heartbeat or
+		// deregister (bind) resets the count, so a non-zero count means a 401
+		// from its address since then.
 		if e.failuresSinceSuccess > 0 {
 			h.State = PrimaryAuthFailing401
 		}
