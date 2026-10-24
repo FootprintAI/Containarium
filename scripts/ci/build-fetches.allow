@@ -1,47 +1,91 @@
 # Build-time network fetch inventory, checked by scripts/ci/check-build-fetches.sh.
-# One "<path><TAB><tool>" per line, keyed by file and tool (never line number).
-# Every entry must also appear, with how it is pinned, in
-# docs/security/BUILD-SUPPLY-CHAIN.md. Add an entry only for a pinned fetch.
-.github/workflows/agent-runtime.yml	npm ci
-.github/workflows/distros-py-ci.yml	pip install
-.github/workflows/distros-py-release.yml	pip install
-.github/workflows/ebpf-load.yml	curl
-.github/workflows/fence-probe-e2e.yml	curl
-.github/workflows/gitlab-e2e.yml	curl
-.github/workflows/golangci-lint.yml	go install
-.github/workflows/helm-install-upgrade.yml	curl
-.github/workflows/k8s-e2e.yml	curl
-.github/workflows/licenses.yml	go install
-.github/workflows/proxyproto-e2e.yml	npm ci
-.github/workflows/release.yml	curl
-.github/workflows/security.yml	go install
-.github/workflows/tenant-guard-e2e.yml	curl
-.github/workflows/workflow-lint.yml	curl
-internal/runner/install_script_payload.sh	curl
-internal/runner/install_script_payload.sh	npm install
-Makefile	npm ci
-scripts/agent-skill-lease-e2e.sh	curl
-scripts/build-macos11.sh	go install
-scripts/build-webui.sh	npm ci
-scripts/bundle/download-deps.sh	curl
-scripts/bundle/download-deps.sh	wget
-scripts/ci/check-licenses.sh	go install
-scripts/ci/npm-licenses.sh	npm ci
-scripts/ci/tunnel-smoke.sh	curl
-scripts/download-swagger-ui.sh	curl
-scripts/engineer-crew-e2e.sh	curl
-scripts/install-agent-runtime.sh	curl
-scripts/install-agent-runtime.sh	npm ci
-scripts/install-buf.sh	curl
-scripts/install-lab-phase-b.sh	curl
-scripts/install-sdlc-skills.sh	curl
-scripts/install-xcaddy.sh	curl
-scripts/redeploy-workhorse.sh	curl
-scripts/setup-caddy.sh	curl
-scripts/setup-gpu-host.sh	curl
-scripts/setup-gpu-host.sh	wget
-scripts/two-engine-crew-e2e.sh	curl
-scripts/verify-agent-runtime-bundle.sh	npm ci
-sidecars/otel-sidecar/Dockerfile	go install
-sidecars/otel-sidecar/Dockerfile	wget
-web-ui/Dockerfile	npm ci
+# One line per fetch: <path> TAB <tool> TAB <fingerprint> TAB <snippet>.
+# The fingerprint is a hash of the whitespace-normalised command, so adding a
+# fetch, changing a URL/version/checksum, or appending to a listed command
+# needs a deliberate edit here (regenerate with `scripts/ci/check-build-fetches.sh --list`)
+# and a row in docs/security/BUILD-SUPPLY-CHAIN.md saying how it is pinned.
+# Add a line only for a pinned fetch.
+.github/workflows/agent-runtime.yml	npm ci	9db3f780def6	npm ci
+.github/workflows/containarium-daemon.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/distros-py-ci.yml	pip install	e0778e5f27e6	pip install --upgrade pip
+.github/workflows/distros-py-ci.yml	pip install	3a3de063bbb2	pip install -e ".[dev]"
+.github/workflows/distros-py-release.yml	pip install	e0778e5f27e6	pip install --upgrade pip
+.github/workflows/distros-py-release.yml	pip install	c2b68e43260f	pip install build
+.github/workflows/ebpf-load.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
+.github/workflows/fence-probe-e2e.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
+.github/workflows/gitlab-e2e.yml	curl	ecedff73abce	curl -s -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: ${GITLAB_E2E
+.github/workflows/golangci-lint.yml	go install	334849e94998	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1
+.github/workflows/helm-install-upgrade.yml	curl	e4b2410859fe	curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-am
+.github/workflows/k8s-e2e.yml	curl	e4b2410859fe	curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-am
+.github/workflows/licenses.yml	go install	21e4b6a17274	go install github.com/google/go-licenses@v1.6.0
+.github/workflows/proxyproto-e2e.yml	npm ci	9db3f780def6	npm ci
+.github/workflows/proxyproto-e2e.yml	xcaddy build	8bb239cff8e5	xcaddy" build --output ./bin/caddy
+.github/workflows/release.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
+.github/workflows/release.yml	curl	319a84283475	curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/
+.github/workflows/release.yml	curl	f712a0aae030	curl -L -o /usr/local/bin/containariumd https://github.com/footprintai
+.github/workflows/release.yml	curl	017d2c5f035f	curl -L -o /usr/local/bin/containarium https://github.com/footprintai/
+.github/workflows/release.yml	curl	7331291f34b9	curl -L -o /usr/local/bin/mcp-server https://github.com/footprintai/co
+.github/workflows/release.yml	curl	d3ab302517e7	curl -L -o /usr/local/bin/agent-box https://github.com/footprintai/con
+.github/workflows/release.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/security.yml	go install	1cd36a9816f8	go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/ssh-approval-spike.yml	git clone	ef6dbf43ff6c	git clone --depth 1 --branch v1.6.1 https://github.com/tg123/sshpiper 
+.github/workflows/tenant-guard-e2e.yml	curl	d4caf07f25aa	curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /us
+.github/workflows/workflow-lint.yml	curl	afe7011db51b	curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" "https://github.com/rhysd/
+.github/workflows/workflow-lint.yml	curl	f2fe9668674b	curl -fsSL -o "$RUNNER_TEMP/zizmor.tgz" "https://github.com/zizmorcore
+images/sshpiper/Dockerfile	git clone	9fc3df4fdd85	git clone --depth 1 --branch "${SSHPIPER_VERSION}" https://github.com/
+internal/runner/install_script_payload.sh	curl	28f0e70f78b3	curl jq git build-essential libicu-dev sudo
+internal/runner/install_script_payload.sh	curl	7cfda140d680	curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | ta
+internal/runner/install_script_payload.sh	curl	560605c15d13	curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+internal/runner/install_script_payload.sh	npm install	6ab1a9bb3e89	npm install -g pnpm@9
+internal/runner/install_script_payload.sh	go install	11001fcb38de	go install "github.com/bufbuild/buf/cmd/buf@v${BUF_VERSION}"
+internal/runner/install_script_payload.sh	go install	336e4fb7a6c4	go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${
+internal/runner/install_script_payload.sh	curl	97ab8f74deda	curl -fsSL -o "$TARBALL" "https://github.com/actions/runner/releases/d
+internal/runner/install_script_payload.sh	curl	7eb30f4febe0	curl -sX POST -H "Authorization: token $GH_PAT" -H "Accept: applicatio
+Makefile	npm ci	0a73a8e52e66	npm ci + tsc)..."
+Makefile	npm ci	9bfb10619908	npm ci && npm run build
+Makefile	npm ci	90b0b843a328	npm ci --omit=dev` runs in-box)
+Makefile	xcaddy build	e2ebf1abed53	xcaddy build $(CADDY_VERSION) --with github.com/mholt/caddy-l4 --with 
+scripts/agent-skill-lease-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
+scripts/agent-skill-lease-e2e.sh	curl	923d3f75ffa5	curl stderr ----"; read_out "$WORKDIR/during.err"
+scripts/agent-skill-lease-e2e.sh	curl	d2d8c4c75eb1	curl wrote status '$during_code') — the gateway never answered, so not
+scripts/agent-skill-lease-e2e.sh	curl	ada6320f981f	curl wrote status '$during2_code')"
+scripts/build-macos11.sh	go install	3f6c78073ac9	go install cmd/link ) # rebuild the linker with the patch
+scripts/build-webui.sh	npm ci	9db3f780def6	npm ci
+scripts/bundle/download-deps.sh	curl	364927daf155	curl -fL --retry 3 --retry-delay 2 -o "$out.partial" "$url"; then
+scripts/bundle/download-deps.sh	curl	658ed099fb84	curl wget gnupg ca-certificates software-properties-common
+scripts/bundle/download-deps.sh	wget	f7e75fa472a2	wget gnupg ca-certificates software-properties-common
+scripts/ci/check-licenses.sh	go install	6d695ea3e06f	go install github.com/google/go-licenses@v1.6.0" >&2; exit 2; }
+scripts/ci/npm-licenses.sh	npm ci	e195c096bf6a	npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&
+scripts/ci/npm-licenses.sh	npx	5dc65733e2ac	npx --yes "$CHECKER" --production --excludePrivatePackages --json) > "
+scripts/ci/tunnel-smoke.sh	curl	173ca4275450	curl -fsS --max-time 3 "http://$ADDR:$BACKEND_PORT/" 2>/dev/null || tr
+scripts/download-swagger-ui.sh	curl	9221e5efaae7	curl -LO "https://github.com/swagger-api/swagger-ui/archive/refs/tags/
+scripts/engineer-crew-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
+scripts/engineer-crew-e2e.sh	curl	51b9b7360ae9	curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 -I "$BUNDLE_URL
+scripts/install-agent-runtime.sh	curl	2dc46195e36b	curl -fsSL "${ARTIFACT_BASE_URL}/agent-box-linux-amd64" -o "${PREFIX}/
+scripts/install-agent-runtime.sh	curl	a98178bf1782	curl -fsSL "${ARTIFACT_BASE_URL}/mcp-server-linux-amd64" -o "${MCP_TMP
+scripts/install-agent-runtime.sh	curl	a87695249d37	curl -fsSL "${ARTIFACT_BASE_URL}/agent-runtime-bundle.tar.gz" -o /tmp/
+scripts/install-agent-runtime.sh	npm ci	bdbe93167d9c	npm ci --omit=dev )
+scripts/install-buf.sh	curl	c7f76bed5dfe	curl --fail --location --silent --show-error --retry 3 "https://github
+scripts/install-lab-phase-b.sh	curl	54ebe4065cdf	curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt
+scripts/install-sdlc-skills.sh	curl	36cefc91790e	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz" -o "$tmp/sdlc-ski
+scripts/install-sdlc-skills.sh	curl	57ccb9e2751d	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz.sha256" -o "$tmp/s
+scripts/install-xcaddy.sh	curl	4b000e8befa4	curl --fail --location --silent --show-error --retry 3 "https://github
+scripts/k8s-sentinel-e2e.sh	docker pull	cd4534cb0b59	docker pull -q "$AGENT_BOX_IMAGE" >/dev/null
+scripts/redeploy-workhorse.sh	curl	d0e0477500f1	curl -fsSL "$url" -o "$src" || die "download failed"
+scripts/redeploy-workhorse.sh	curl	d277ee5a6d2a	curl -fsSL "$sums" -o "${src}.sums" 2>/dev/null; then
+scripts/setup-caddy.sh	xcaddy build	cf13b287d7da	xcaddy build --with "$dns_module" --output "$CADDY_BIN"
+scripts/setup-caddy.sh	curl	5a62b40def7b	curl https://test.$DOMAIN"
+scripts/setup-gpu-host.sh	curl	704094fb4ccf	curl wget git vim htop jq net-tools bridge-utils ca-certificates gnupg
+scripts/setup-gpu-host.sh	wget	80d8a5a6d3c2	wget git vim htop jq net-tools bridge-utils ca-certificates gnupg lsb-
+scripts/setup-gpu-host.sh	curl	914111067e45	curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg -
+scripts/setup-gpu-host.sh	curl	b15751d901af	curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvi
+scripts/setup-gpu-host.sh	curl	fde4a7dc88f1	curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /usr/sha
+scripts/two-engine-crew-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
+scripts/two-engine-crew-e2e.sh	curl	51b9b7360ae9	curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 -I "$BUNDLE_URL
+scripts/verify-agent-runtime-bundle.sh	npm ci	cc59b6efdd39	npm ci --omit=dev would skip it)" >&2
+sidecars/otel-sidecar/Dockerfile	go install	95563208eaad	go install go.opentelemetry.io/collector/cmd/builder@v${OTELCOL_VERSIO
+sidecars/otel-sidecar/Dockerfile	wget	1f00a81cebd4	wget && rm -rf /var/lib/apt/lists/*
+web-ui/Dockerfile	npm ci	9db3f780def6	npm ci

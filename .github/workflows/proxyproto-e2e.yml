@@ -135,7 +135,7 @@ jobs:
         with:
           path: ./bin/caddy
           # Bump the suffix to invalidate the cache when bumping Caddy.
-          key: caddy-${{ runner.os }}-amd64-v2-stable
+          key: caddy-${{ runner.os }}-amd64-v3-stable
 
       - name: Build Caddy via xcaddy
         if: steps.cache-caddy.outputs.cache-hit != 'true'

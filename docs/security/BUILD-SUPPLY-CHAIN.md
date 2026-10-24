@@ -12,10 +12,19 @@ is missing from this page. It also rejects, with no allow-list escape:
 - a project-level `npm install` (use `npm ci`; a pinned `npm install -g
   <pkg>@<version>` is an ordinary listed fetch).
 
-Entries are keyed by file and tool, not line number, so edits do not rot the
-inventory. Scope: `.github/` workflows and actions, shell scripts, Makefiles
-and Dockerfiles. Out of scope: `hacks/` (operator install-time scripts),
-`benchmark/`, `examples/`, `terraform/`, `experimental/`, and docs.
+Each fetch is one line in the allow-list, keyed by file, tool and a
+fingerprint (a hash of the whitespace-normalised command), never by line
+number. Moving or re-indenting a fetch needs no edit. Adding a fetch, changing
+a URL, version or checksum, appending `| sh` to a listed command, or
+duplicating a line fails the check until the allow-list is updated on purpose
+(`scripts/ci/check-build-fetches.sh --list` prints the lines). The scanner
+reads workflow and action YAML under `.github/`, `*.sh`, `*.bash`, `*.mk`,
+Makefiles and Dockerfiles, joins backslash-continued lines, and recognises
+`curl`, `wget`, `go install|get`, `npm|pnpm|yarn install|ci|add`, `npx`,
+`pip`, `pipx`, `uv`, `cargo install`, `gem install`, `git clone`,
+`docker pull`, `xcaddy build` and Dockerfile `ADD <url>`. A line that only
+talks to `localhost`, `127.0.0.1` or `[::1]` is exempt; anything with another
+host on the line is not.
 
 ## Pin levels
 
@@ -45,6 +54,23 @@ per file. It resolves against the distribution archive signed by the distro
 keyring, with no per-package version pin. Third-party apt repositories add a
 signing key fetch (rows below for `tenant-guard-e2e.yml`,
 `scripts/install-lab-phase-b.sh`, `scripts/setup-gpu-host.sh`).
+
+## Install-time and non-product trees (not scanned)
+
+These fetch things when an operator installs or provisions, or are not part of
+building the product. They are outside the check on purpose, not safe by
+omission; several are the larger supply-chain risk and are tracked as
+follow-ups.
+
+| Tree | What it fetches | Pinned how |
+| --- | --- | --- |
+| `hacks/install.sh`, `hacks/install-cli.sh`, `hacks/runner/` | The operator install path: daemon and CLI binaries from a release (or the newest one by default), a package-repository signing key, the actions runner | Release tag when one is passed; no checksum; unpinned signing key |
+| `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only |
+| `pkg/core/stacks/stacks.yaml`, `pkg/core/recipes/recipes.yaml` (YAML outside `.github/`) | Tenant dev-stack and recipe installs, including `@latest` Go tools and a NodeSource `curl \| bash`, run inside a tenant container at the tenant's request | Unpinned |
+| `benchmark/`, `examples/`, `experimental/` | Lab and demo scripts | Unpinned |
+
+Follow-up: bring `hacks/install.sh` and the terraform startup scripts under the
+check with a checksum for each download.
 
 ## Inventory
 
@@ -83,7 +109,7 @@ signing key fetch (rows below for `tenant-guard-e2e.yml`,
 | `sidecars/otel-sidecar/Dockerfile` | wget | `wget` is an apt package installed for the health check; no download | not a build fetch |
 | `scripts/build-macos11.sh` | go install | rebuilds the patched Go linker from the local toolchain tree | not a network fetch |
 
-### Version only (known gaps, follow-up)
+### Version only or floating (known gaps, follow-up)
 
 | File | Tool | What | Pinned how |
 | --- | --- | --- | --- |
@@ -100,6 +126,14 @@ signing key fetch (rows below for `tenant-guard-e2e.yml`,
 | `scripts/setup-gpu-host.sh` | curl | NVIDIA and Incus apt signing keys and source list | unpinned |
 | `scripts/setup-gpu-host.sh` | wget | `wget` in an apt package list | not a build fetch |
 | `scripts/setup-caddy.sh` | curl | `curl https://test.$DOMAIN` in a usage hint printed to the operator | not a build fetch |
+| `Makefile` | xcaddy build | `make build-caddy` builds Caddy `$(CADDY_VERSION)` with `--with` plugin modules (caddy-l4 and the DNS providers) | Caddy core version pinned; plugin modules float to the newest version the Go module proxy serves (the Go checksum database still verifies each download). Pinning each module would also change the list `TestCaddyModulesInSyncWithMakefile` reads, so it is a follow-up |
+| `scripts/setup-caddy.sh` | xcaddy build | Builds Caddy with one DNS plugin on a host | Caddy core and plugin float |
+| `.github/workflows/proxyproto-e2e.yml` | xcaddy build | Builds Caddy for the real-Caddy e2e | Caddy core and plugins float |
+| `scripts/k8s-sentinel-e2e.sh` | docker pull | The agent-box image, default tag `latest-stable` | Floating tag, no digest |
+| `images/sshpiper/Dockerfile` | git clone | sshpiper source at `SSHPIPER_VERSION` | Release tag, no commit hash |
+| `.github/workflows/ssh-approval-spike.yml` | git clone | sshpiper source at a release tag | Release tag, no commit hash |
+| `.github/workflows/containarium-daemon.yml`, `.github/workflows/release.yml`, `.github/workflows/sidecars.yml` | docker pull | Pulls the image this workflow just published, by tag, so Trivy scans the registry copy | Tag produced by the same run; not an external dependency |
+| `scripts/ci/npm-licenses.sh` | npx | `license-checker-rseidelsohn@5.0.1` | Exact version, npm registry integrity only, no lockfile |
 
 ### Probes of local or test-target services (not build fetches)
 
@@ -117,7 +151,8 @@ signing key fetch (rows below for `tenant-guard-e2e.yml`,
    from the upstream asset (verify the hash yourself; do not copy it from a
    blog post). Model new checksum pins on `.github/workflows/workflow-lint.yml`
    or `scripts/install-xcaddy.sh`.
-2. Add `<path><TAB><tool>` to `scripts/ci/build-fetches.allow`.
+2. Add its line to `scripts/ci/build-fetches.allow` (`scripts/ci/check-build-fetches.sh --list`
+   prints it; the snippet column is for reviewers and is not compared).
 3. Add a row above naming the file, the tool and how it is pinned.
 
 ## Follow-ups (out of scope for #2795)
