@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/backup"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -44,7 +47,7 @@ func verifierServer(t *testing.T) (*ContainerServer, *BackupServer) {
 	dir := t.TempDir()
 	seedBackupRecord(t, dir, "alice-app-20261003T010000Z", "alice")
 	seedBackupRecord(t, dir, "bob-app-20261003T010000Z", "bob")
-	backend := newFakeSandboxBackend()
+	backend := incustest.NewMockBackend()
 	for _, n := range []string{"alice-container", "bob-container"} {
 		if err := backend.CreateContainer(incus.ContainerConfig{Name: n}); err != nil {
 			t.Fatal(err)
@@ -53,8 +56,42 @@ func verifierServer(t *testing.T) (*ContainerServer, *BackupServer) {
 	cs := &ContainerServer{manager: container.NewWithBackend(backend)}
 	return cs, &BackupServer{
 		containers: cs,
-		mgr:        backup.NewManager(&restoreTargetOps{touched: map[string]int{}}, nil, dir),
+		mgr:        backup.NewManager(&scopedVerifierOps{t: t}, nil, dir),
 	}
+}
+
+type scopedVerifierOps struct{ t *testing.T }
+
+// checkTarget rejects verification I/O directed at a live tenant container.
+func (o *scopedVerifierOps) checkTarget(name string) {
+	o.t.Helper()
+	if !strings.HasPrefix(name, "backup-verify-") {
+		o.t.Fatalf("verification touched tenant container %s", name)
+	}
+}
+
+// Exec models successful cleanup commands on an isolated verifier.
+func (o *scopedVerifierOps) Exec(name string, _ []string) error {
+	o.checkTarget(name)
+	return nil
+}
+
+// ExecWithOutput models a successful restore with zero user relations.
+func (o *scopedVerifierOps) ExecWithOutput(name string, _ []string) (string, string, error) {
+	o.checkTarget(name)
+	return "0", "", nil
+}
+
+// WriteFileStream permits dump staging only inside an isolated verifier.
+func (o *scopedVerifierOps) WriteFileStream(name, _ string, content io.Reader, _ string) error {
+	o.checkTarget(name)
+	_, err := io.Copy(io.Discard, content)
+	return err
+}
+
+// ReadFileStream refuses unexpected container reads; test dumps live on the host.
+func (o *scopedVerifierOps) ReadFileStream(string, string) (io.ReadCloser, error) {
+	return nil, os.ErrNotExist
 }
 
 // verifierCtx is the documented per-set verifier token (#2401): a non-admin
@@ -72,46 +109,55 @@ func TestBackupScopedToken_AllowsOwnBackupsOnly(t *testing.T) {
 	cs, bs := verifierServer(t)
 	ctx := verifierCtx("alice")
 
-	t.Run("ListBackups for the bound tenant succeeds and returns only its records", func(t *testing.T) {
-		for _, username := range []string{"", "alice"} {
-			resp, err := bs.ListBackups(ctx, &pb.ListBackupsRequest{Username: username})
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"ListBackups for the bound tenant succeeds and returns only its records", func(t *testing.T) {
+			for _, username := range []string{"", "alice"} {
+				resp, err := bs.ListBackups(ctx, &pb.ListBackupsRequest{Username: username})
+				if err != nil {
+					t.Fatalf("ListBackups(%q): %v", username, err)
+				}
+				if len(resp.Records) != 1 || resp.Records[0].Username != "alice" {
+					t.Fatalf("ListBackups(%q) = %+v, want exactly alice's record", username, resp.Records)
+				}
+			}
+		}},
+
+		{"VerifyBackup for the bound tenant succeeds in an isolated container", func(t *testing.T) {
+			resp, err := bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
 			if err != nil {
-				t.Fatalf("ListBackups(%q): %v", username, err)
+				t.Fatal(err)
 			}
-			if len(resp.Records) != 1 || resp.Records[0].Username != "alice" {
-				t.Fatalf("ListBackups(%q) = %+v, want exactly alice's record", username, resp.Records)
+			if resp.Verification.GetResult() != pb.VerificationResult_VERIFICATION_RESULT_PASSED {
+				t.Fatalf("verification failed: %+v", resp.Verification)
 			}
-		}
-	})
-
-	t.Run("ListBackups naming another tenant never returns that tenant's records", func(t *testing.T) {
-		resp, err := bs.ListBackups(ctx, &pb.ListBackupsRequest{Username: "bob"})
-		if err != nil {
-			if status.Code(err) != codes.PermissionDenied {
-				t.Fatalf("err = %v, want nil or PermissionDenied", err)
+			if resp.Record.GetLastVerification().GetVerifiedBy() != "alice" {
+				t.Fatalf("missing persisted caller evidence: %+v", resp.Record)
 			}
-			return
-		}
-		for _, r := range resp.Records {
-			if r.Username != "alice" {
-				t.Fatalf("leaked %s's record %s to alice's token", r.Username, r.Id)
+			instances, err := cs.manager.List()
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
-
-	t.Run("VerifyBackup for the bound tenant passes authorization", func(t *testing.T) {
-		_, err := bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
-		// The fake container ops cannot run a real restore, so the outcome
-		// past authorization is not the point: it must not be an authz denial.
-		if c := status.Code(err); c == codes.PermissionDenied || c == codes.Unauthenticated {
-			t.Fatalf("VerifyBackup on own backup was refused by authz: %v", err)
-		}
-	})
+			for _, instance := range instances {
+				if strings.HasPrefix(instance.Name, "backup-verify-") {
+					t.Fatalf("verifier was not cleaned up: %s", instance.Name)
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, tc.run)
+	}
 
 	for _, tc := range []struct {
 		name string
 		call func() error
 	}{
+		{"ListBackups naming another tenant", func() error {
+			_, err := bs.ListBackups(ctx, &pb.ListBackupsRequest{Username: "bob"})
+			return err
+		}},
 		{"VerifyBackup of another tenant's backup", func() error {
 			_, err := bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "bob-app-20261003T010000Z", TargetUsername: "alice"})
 			return err
@@ -134,5 +180,35 @@ func TestBackupScopedToken_AllowsOwnBackupsOnly(t *testing.T) {
 				t.Fatalf("code = %v, want PermissionDenied", c)
 			}
 		})
+	}
+}
+
+// TestBackupScopedToken_FailedVerificationCleansTarget checks that a corrupt
+// backup reports failure without leaving a managed verifier behind.
+func TestBackupScopedToken_FailedVerificationCleansTarget(t *testing.T) {
+	cs, bs := verifierServer(t)
+	const id = "alice-app-20261003T010000Z"
+	record, err := bs.mgr.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A checksum mismatch must still produce durable failed evidence and
+	// delete the managed verifier, without touching either tenant container.
+	if err := os.WriteFile(record.Location, []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := bs.VerifyBackup(verifierCtx("alice"), &pb.VerifyBackupRequest{Id: id, TargetUsername: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verification.GetResult() != pb.VerificationResult_VERIFICATION_RESULT_FAILED {
+		t.Fatalf("want failed verification, got %+v", resp.Verification)
+	}
+	instances, err := cs.manager.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("expected only the two original tenant containers, got %+v", instances)
 	}
 }
