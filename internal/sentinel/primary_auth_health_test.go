@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -261,5 +262,107 @@ func TestPrimaryAuthTracker_AttributionAndRetention(t *testing.T) {
 	health, _, _ = tr.snapshot()
 	if len(health) != 1 || health[0].Pool != "pool-b" {
 		t.Fatalf("after retention: %+v, want only pool-b", health)
+	}
+}
+
+// Every daemon-AUTH route must go through daemonAuthGate: a 401 on any of
+// them, from the primary's address, counts against the primary. Reverting
+// one route to the bare auth.SentinelHMACMiddleware fails its row.
+func TestStatus_PrimaryAuthHealth_EveryDaemonAuthRouteRecords401(t *testing.T) {
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/sentinel/primaries"},
+		{http.MethodPut, "/sentinel/primaries/pool-a"},
+		{http.MethodGet, "/sentinel/ca"},
+		{http.MethodPost, "/sentinel/peer-cert"},
+		{http.MethodGet, "/sentinel/fetch-release"},
+		{http.MethodPost, "/sentinel/keys/resync"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			srv := newAuthHealthTestServer(t)
+			registerPool(t, srv, "pool-a")
+			if code, _ := doPrimaries(t, srv, tc.method, tc.path, wrongPrimariesSecret, true, nil); code != http.StatusUnauthorized {
+				t.Fatalf("code %d, want 401", code)
+			}
+			st, _ := getStatus(t, srv)
+			if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthFailing401 || h.FailuresSinceSuccess != 1 {
+				t.Fatalf("health = %+v, want failing_401 with 1 failure: route not observed", h)
+			}
+		})
+	}
+}
+
+// Only the primary's own authenticated registration, heartbeat or deregister
+// (bind) clears its failure count. Any other authenticated request from the
+// same address (a healthy co-located daemon's key resync, say) does not.
+func TestPrimaryAuthTracker_OnlyBindClearsFailures(t *testing.T) {
+	var tr primaryAuthTracker
+	tr.bind("pool-a", "10.0.0.1")
+	tr.observe("10.0.0.1", false)
+	tr.observe("10.0.0.1", true) // authenticated, but not pool-a's own bind
+
+	health, _, _ := tr.snapshot()
+	if len(health) != 1 || health[0].State != PrimaryAuthFailing401 || health[0].FailuresSinceSuccess != 1 {
+		t.Fatalf("after authenticated non-bind request: %+v, want failing_401 with 1 failure", health)
+	}
+
+	tr.bind("pool-a", "10.0.0.1")
+	health, _, _ = tr.snapshot()
+	if len(health) != 1 || health[0].State != PrimaryAuthOK || health[0].FailuresSinceSuccess != 0 {
+		t.Fatalf("after bind: %+v, want ok with 0 failures", health)
+	}
+}
+
+// Manager wiring: each of the primary's own authenticated requests on
+// /sentinel/primaries (registration, heartbeat, deregister) clears a 401
+// recorded from its address. Removing the bind from any one handler branch
+// fails its row.
+func TestStatus_PrimaryAuthHealth_OwnRequestClearsFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"register", http.MethodPost, "/sentinel/primaries", `{"pool":"pool-a","hostname":"pool-a.example.com","port":443}`, http.StatusCreated},
+		{"heartbeat", http.MethodPut, "/sentinel/primaries/pool-a", "", http.StatusOK},
+		{"deregister", http.MethodDelete, "/sentinel/primaries/pool-a", "", http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newAuthHealthTestServer(t)
+			registerPool(t, srv, "pool-a")
+			if code, _ := doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/pool-a", wrongPrimariesSecret, true, nil); code != http.StatusUnauthorized {
+				t.Fatalf("wrong-secret heartbeat: code %d, want 401", code)
+			}
+			st, _ := getStatus(t, srv)
+			if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthFailing401 {
+				t.Fatalf("before %s: health = %+v, want failing_401", tc.name, h)
+			}
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			if code, resp := doPrimaries(t, srv, tc.method, tc.path, testPrimariesSecret, true, body); code != tc.want {
+				t.Fatalf("signed %s: code %d body %q, want %d", tc.name, code, resp, tc.want)
+			}
+			st, _ = getStatus(t, srv)
+			if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthOK || h.FailuresSinceSuccess != 0 {
+				t.Fatalf("after signed %s: health = %+v, want ok with 0 failures", tc.name, h)
+			}
+		})
+	}
+}
+
+// The same rule end to end: an authenticated key resync from the primary's
+// address leaves a wrong-secret heartbeat's 401 on record.
+func TestStatus_PrimaryAuthHealth_AuthenticatedNonBindRequestDoesNotClear(t *testing.T) {
+	srv := newAuthHealthTestServer(t)
+	registerPool(t, srv, "pool-a")
+	if code, _ := doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/pool-a", wrongPrimariesSecret, true, nil); code != http.StatusUnauthorized {
+		t.Fatalf("code %d, want 401", code)
+	}
+	if code, _ := doPrimaries(t, srv, http.MethodPost, "/sentinel/keys/resync", testPrimariesSecret, true, nil); code == http.StatusUnauthorized {
+		t.Fatalf("signed resync got 401")
+	}
+	st, _ := getStatus(t, srv)
+	if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthFailing401 || h.FailuresSinceSuccess != 1 {
+		t.Fatalf("health = %+v, want failing_401 kept", h)
 	}
 }
