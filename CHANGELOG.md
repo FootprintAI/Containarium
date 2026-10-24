@@ -15,11 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The sentinel's per-primary auth health no longer lets another daemon clear a primary's 401** (#2892 follow-up). Any authenticated request from a primary's address used to reset its `failures_since_success`, so a healthy daemon on the same host or NAT could hide a primary still signing with the wrong secret. Only the primary's own authenticated registration, heartbeat or deregister clears it now. The runbook and design doc now say that only primaries registered over HTTP are listed; a primary promoted by a tunnel handshake never is. A test now covers every daemon-AUTH route (`/sentinel/ca`, `/sentinel/peer-cert` and `/sentinel/fetch-release` were not pinned).
 
+- **A data race in a sentinel failback test no longer turns the `-race` unit lane red** (#2963). `TestFailback_AFailedSwitchLeavesThePrimaryAndRetries` read its captured log buffer while a goroutine left over from an earlier tunnel test was still logging into it through the process-global logger. The test now captures into a mutex-guarded buffer. Test-only; no production code changed.
+
 ## [0.115.0] - 2026-10-24
 
 ### Upgrading
 
 - **A crew member whose `agent-runtime` doesn't start now fails the crew run instead of stalling** (#2936). Before this release a member box whose image did not ship `agent-runtime`, or whose runtime crashed on launch, left `RunCrew` waiting with no error. It now returns `FailedPrecondition` (runtime missing) or `Internal` naming the member and box, with a scrubbed tail of the box's runtime log. Before upgrading, make sure every crew member's image ships `agent-runtime`, and that callers treat a failed crew run as final rather than retrying it.
+
 - **A custom BPF object must be rebuilt for `egress_mode`** (#2970, #2987). Release builds embed a matching object, so most installs need nothing. If you set `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` to an object built before 0.115.0, it loads but ignores `egress_mode`: a policy with `egress_mode` different from `mode` is enforced as `mode`, while `network-policy status` reports the requested egress mode. Rebuild the object from this release (`make build-bpf`) before setting `egress_mode` on any policy; #2987 tracks detecting this at load time.
 
 ### Added
