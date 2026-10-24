@@ -16,6 +16,12 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - '.github/CODEOWNERS'
+      - 'scripts/ci/check-codeowners.sh'
+      - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/fake-gh-repo-settings.sh'
+      - 'scripts/ci/testdata/repo-settings/**'
+      - 'scripts/admin/apply-repo-settings.sh'
   pull_request:
     paths:
       - '.github/**'
@@ -23,6 +29,12 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - '.github/CODEOWNERS'
+      - 'scripts/ci/check-codeowners.sh'
+      - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/fake-gh-repo-settings.sh'
+      - 'scripts/ci/testdata/repo-settings/**'
+      - 'scripts/admin/apply-repo-settings.sh'
 
 permissions:
   contents: read
@@ -57,6 +69,20 @@ jobs:
         # Decides which PRs may skip the heavy jobs
         # (.github/actions/release-only-diff); a wrong "true" skips real tests.
         run: scripts/ci/release-only-diff.sh --self-test
+
+      - name: CODEOWNERS coverage self-test (seeded gaps must fail)
+        # #2792: the file must cover every path decided on #2649 with both owners.
+        run: scripts/ci/check-codeowners.sh --self-test
+
+      - name: CODEOWNERS covers the decided paths
+        run: scripts/ci/check-codeowners.sh
+
+      - name: Repo-settings script tests (dry run writes nothing, protection preserved)
+        run: scripts/ci/test-apply-repo-settings.sh
+
+      - name: Action allow-list covers every third-party action in use
+        # The admin script's allow-list must not lock CI out once enforced.
+        run: scripts/admin/apply-repo-settings.sh --check-allow-list
 
       - name: Install actionlint (pinned, checksum-verified)
         run: |
