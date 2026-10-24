@@ -31,9 +31,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Default endpoints. The checksum database is named explicitly rather than
@@ -117,21 +121,35 @@ func LoadGoMod(ctx context.Context, path string) (GoMod, error) {
 }
 
 // GoSum maps "path version" and "path version/go.mod" to their h1: hash.
-type GoSum map[string]string
+// Conflicts lists the keys that appear more than once with different hashes;
+// the go command refuses such a file, and the guard must not let its verdict
+// depend on which of the lines it happened to read last.
+type GoSum struct {
+	Hashes    map[string]string
+	Conflicts []string
+}
 
 // ParseGoSum parses a go.sum file.
 func ParseGoSum(b []byte) (GoSum, error) {
-	sum := GoSum{}
+	sum := GoSum{Hashes: map[string]string{}}
 	for i, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
 		if len(f) == 0 {
 			continue
 		}
 		if len(f) != 3 {
-			return nil, fmt.Errorf("go.sum line %d: want 3 fields, got %d", i+1, len(f))
+			return GoSum{}, fmt.Errorf("go.sum line %d: want 3 fields, got %d", i+1, len(f))
 		}
-		sum[f[0]+" "+f[1]] = f[2]
+		key := f[0] + " " + f[1]
+		if prev, ok := sum.Hashes[key]; ok {
+			if prev != f[2] && !slices.Contains(sum.Conflicts, key) {
+				sum.Conflicts = append(sum.Conflicts, key)
+			}
+			continue
+		}
+		sum.Hashes[key] = f[2]
 	}
+	sort.Strings(sum.Conflicts)
 	return sum, nil
 }
 
@@ -146,16 +164,74 @@ const (
 	FindingNotInSumDB     FindingKind = "not-in-sumdb"
 	FindingSumMismatch    FindingKind = "sum-mismatch"
 	FindingUnsafeEnv      FindingKind = "unsafe-env"
+	FindingSumConflict    FindingKind = "gosum-conflict"
+	FindingLayout         FindingKind = "layout"
 )
 
 // Finding is one policy failure.
+//
+// Module and Evidence carry text from the PR (go.mod, go.sum, file names) or
+// from the network (the checksum database). A quoted local replace target in
+// go.mod can hold any character, newlines and backticks included, so neither
+// field is ever printed raw: String escapes them for logs, and RenderMarkdown
+// puts them in code spans. Detail is fixed prose written here.
 type Finding struct {
-	Kind   FindingKind
-	Module string
-	Detail string
+	Kind     FindingKind
+	Module   string
+	Detail   string
+	Evidence string
 }
 
-func (f Finding) String() string { return fmt.Sprintf("%s %s: %s", f.Kind, f.Module, f.Detail) }
+// String is the finding as one log line, safe to print in a CI log.
+func (f Finding) String() string {
+	s := fmt.Sprintf("%s %s: %s", f.Kind, LogSafe(f.Module), f.Detail)
+	if f.Evidence != "" {
+		s += ": " + LogSafe(f.Evidence)
+	}
+	return s
+}
+
+// LogSafe escapes every control or non-printing character (newline, carriage
+// return, Unicode line separators, ...) as a Go escape such as \n, so the
+// result is always one line. A CI runner executes a workflow command only at
+// the start of a line, so PR text that passes through LogSafe cannot issue
+// one.
+func LogSafe(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\\' || !unicode.IsPrint(r) {
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// CheckLayout fails a tracked file that would put Go modules outside what
+// deps-guard reads, which is the root go.mod and go.sum only: a second
+// go.mod, a workspace (go.work, go.work.sum) or a vendor directory
+// (vendor/modules.txt, which switches the go command to vendor mode). Without
+// this the gate would silently stop covering part of the build.
+func CheckLayout(files []string) []Finding {
+	var out []Finding
+	for _, f := range files {
+		base := path.Base(f)
+		var why string
+		switch {
+		case base == "go.mod" && f != "go.mod":
+			why = "a second go.mod: deps-guard checks the root module only"
+		case base == "go.work" || base == "go.work.sum":
+			why = "a Go workspace file: deps-guard does not read workspaces"
+		case base == "modules.txt" && path.Base(path.Dir(f)) == "vendor":
+			why = "a vendor directory: deps-guard does not check vendored code"
+		default:
+			continue
+		}
+		out = append(out, Finding{Kind: FindingLayout, Module: f, Detail: why + "; extend the gate before adding it"})
+	}
+	return out
+}
 
 // GoEnv is the subset of `go env -json` that decides whether the checksum
 // database is in force. Field names match the variables so the JSON decodes
@@ -178,8 +254,8 @@ var GoEnvVars = []string{"GOFLAGS", "GOSUMDB", "GONOSUMDB", "GOPRIVATE", "GONOPR
 // modules as private, which this public repo has none of.
 func CheckEnv(env GoEnv) []Finding {
 	var out []Finding
-	bad := func(name, detail string) {
-		out = append(out, Finding{Kind: FindingUnsafeEnv, Module: name, Detail: detail})
+	bad := func(name, detail, value string) {
+		out = append(out, Finding{Kind: FindingUnsafeEnv, Module: name, Detail: detail, Evidence: value})
 	}
 	readonly := false
 	for _, f := range strings.Fields(env.GOFLAGS) {
@@ -188,17 +264,17 @@ func CheckEnv(env GoEnv) []Finding {
 		}
 	}
 	if !readonly {
-		bad("GOFLAGS", fmt.Sprintf("%q does not contain -mod=readonly", env.GOFLAGS))
+		bad("GOFLAGS", "does not contain -mod=readonly", fmt.Sprintf("%q", env.GOFLAGS))
 	}
 	if env.GOSUMDB != SumDBName {
-		bad("GOSUMDB", fmt.Sprintf("%q, want %q", env.GOSUMDB, SumDBName))
+		bad("GOSUMDB", "must be "+SumDBName, fmt.Sprintf("%q", env.GOSUMDB))
 	}
 	for name, v := range map[string]string{
 		"GONOSUMDB": env.GONOSUMDB, "GOPRIVATE": env.GOPRIVATE,
 		"GONOPROXY": env.GONOPROXY, "GOINSECURE": env.GOINSECURE,
 	} {
 		if v != "" {
-			bad(name, fmt.Sprintf("set to %q; it exempts modules from the checksum database or TLS", v))
+			bad(name, "is set; it exempts modules from the checksum database or TLS", fmt.Sprintf("%q", v))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Module < out[j].Module })
@@ -220,11 +296,11 @@ func CheckReplaces(base, head GoMod) []Finding {
 		switch {
 		case !ok:
 			out = append(out, Finding{Kind: FindingReplaceAdded, Module: r.Old.Path,
-				Detail: "new replace directive: " + r.String()})
+				Detail: "new replace directive", Evidence: r.String()})
 		case prev != r.New:
 			was := Replace{Old: r.Old, New: prev}
 			out = append(out, Finding{Kind: FindingReplaceChanged, Module: r.Old.Path,
-				Detail: "replace directive changed from `" + was.String() + "` to `" + r.String() + "`"})
+				Detail: "replace directive changed (was, now)", Evidence: was.String() + "  ->  " + r.String()})
 		}
 	}
 	return out
@@ -414,8 +490,8 @@ func get(ctx context.Context, c *http.Client, url string, attempts int) (int, []
 // ModuleRow is one line of the report.
 type ModuleRow struct {
 	Change    ModuleChange
-	Published time.Time // zero: unknown
-	Source    string
+	Published time.Time // zero: unknown (the proxy did not answer)
+	Source    string    // the proxy's recorded VCS origin URL; empty if none
 	Age       time.Duration
 }
 
@@ -447,6 +523,10 @@ func (c Checker) Check(ctx context.Context, base, head GoMod, sum GoSum) (Report
 		now = c.Now
 	}
 	rep := Report{Findings: CheckReplaces(base, head)}
+	for _, key := range sum.Conflicts {
+		rep.Findings = append(rep.Findings, Finding{Kind: FindingSumConflict, Module: key,
+			Detail: "go.sum lists this module version more than once with different hashes"})
+	}
 	for _, ch := range DiffRequires(base, head) {
 		id := ch.Path + "@" + ch.NewVersion
 		rec, found, err := c.SumDB.Lookup(ctx, ch.Path, ch.NewVersion)
@@ -461,18 +541,21 @@ func (c Checker) Check(ctx context.Context, base, head GoMod, sum GoSum) (Report
 				ch.Path + " " + ch.NewVersion:             rec.Hash,
 				ch.Path + " " + ch.NewVersion + "/go.mod": rec.GoModHash,
 			} {
-				if got, ok := sum[key]; ok && want != "" && got != want {
+				if slices.Contains(sum.Conflicts, key) {
+					continue // already a gosum-conflict finding
+				}
+				if got, ok := sum.Hashes[key]; ok && want != "" && got != want {
 					rep.Findings = append(rep.Findings, Finding{Kind: FindingSumMismatch, Module: id,
-						Detail: fmt.Sprintf("go.sum has %s for %q, sum.golang.org has %s", got, key, want)})
+						Detail:   "go.sum hash differs from sum.golang.org (entry, go.sum, sum.golang.org)",
+						Evidence: key + "  " + got + "  " + want})
 				}
 			}
 		}
-		row := ModuleRow{Change: ch, Source: "unknown"}
+		row := ModuleRow{Change: ch}
 		if info, err := c.Proxy.Info(ctx, ch.Path, ch.NewVersion); err == nil && !info.Time.IsZero() {
 			row.Published = info.Time
 			row.Age = now().Sub(info.Time)
-			row.Source = "proxy.golang.org (no VCS origin recorded)"
-			if info.Origin != nil && info.Origin.URL != "" {
+			if info.Origin != nil {
 				row.Source = info.Origin.URL
 			}
 		}
@@ -487,8 +570,39 @@ func (c Checker) Check(ctx context.Context, base, head GoMod, sum GoSum) (Report
 	return rep, nil
 }
 
-func cell(s string) string {
-	return strings.NewReplacer("|", `\|`, "\n", " ", "\r", " ").Replace(s)
+// code renders untrusted text as an inline code span, the one Markdown
+// construct in which links, autolinks, @mentions, emphasis and raw HTML are
+// all inert. The fence is one backtick longer than the longest backtick run
+// in the text, so the text cannot close it; control characters are escaped
+// first so it stays on one line; and | is escaped because GitHub splits
+// table cells on it even inside a code span.
+func code(s string) string {
+	s = strings.ReplaceAll(LogSafe(s), "|", `\|`)
+	longest, run := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
+}
+
+func source(r ModuleRow) string {
+	switch {
+	case r.Published.IsZero():
+		return "unknown"
+	case r.Source == "":
+		return "proxy.golang.org (no VCS origin recorded)"
+	default:
+		return code(r.Source)
+	}
 }
 
 func age(r ModuleRow) string {
@@ -513,7 +627,11 @@ func RenderMarkdown(rep Report) string {
 			"code-owner approval of this PR (#2649, decision 4).\n\n", len(rep.Findings))
 		b.WriteString("| Rule | Module | Detail |\n|---|---|---|\n")
 		for _, f := range rep.Findings {
-			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", f.Kind, cell(f.Module), cell(f.Detail))
+			detail := f.Detail
+			if f.Evidence != "" {
+				detail += ": " + code(f.Evidence)
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s |\n", f.Kind, code(f.Module), detail)
 		}
 		b.WriteString("\n")
 	} else {
@@ -546,8 +664,8 @@ func RenderMarkdown(rep Report) string {
 				change = "added (indirect)"
 			}
 			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
-				bold(y, "`"+cell(r.Change.Path)+"`"), bold(y, change), bold(y, cell(r.Change.NewVersion)),
-				bold(y, age(r)), bold(y, cell(r.Source)))
+				bold(y, code(r.Change.Path)), bold(y, change), bold(y, code(r.Change.NewVersion)),
+				bold(y, age(r)), bold(y, source(r)))
 		}
 		b.WriteString("\n")
 	}
@@ -556,8 +674,8 @@ func RenderMarkdown(rep Report) string {
 		for _, r := range bumped {
 			y := r.Young()
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
-				bold(y, "`"+cell(r.Change.Path)+"`"), bold(y, cell(r.Change.OldVersion)+" → "+cell(r.Change.NewVersion)),
-				bold(y, age(r)), bold(y, cell(r.Source)))
+				bold(y, code(r.Change.Path)), bold(y, code(r.Change.OldVersion)+" → "+code(r.Change.NewVersion)),
+				bold(y, age(r)), bold(y, source(r)))
 		}
 		b.WriteString("\n")
 	}

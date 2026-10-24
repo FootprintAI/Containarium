@@ -61,3 +61,50 @@ func TestDiffExitCodes(t *testing.T) {
 		})
 	}
 }
+
+// A quoted local replace target can carry a newline followed by a workflow
+// command. Neither the log lines nor the ::error annotation may let it
+// reach the start of an output line, where the runner would execute it.
+func TestHostileTextCannotIssueWorkflowCommands(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	notFound := httptest.NewServer(http.NotFoundHandler())
+	defer notFound.Close()
+	d := filepath.Join("..", "..", "internal", "depsguard", "testdata", "fail-replace-hostile-text")
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{"diff", "-sumdb", notFound.URL, "-proxy", notFound.URL,
+		"-base", filepath.Join(d, "base.go.mod"), "-head", filepath.Join(d, "head.go.mod"), "-gosum", filepath.Join(d, "head.go.sum")},
+		&stdout, &stderr)
+	if got != exitFail {
+		t.Fatalf("exit %d, want %d; stderr:\n%s", got, exitFail, stderr.String())
+	}
+	out := stdout.String() + stderr.String()
+	sawAnnotation := false
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "::") {
+			continue
+		}
+		if !strings.HasPrefix(line, "::error file=go.mod,title=deps-guard replace-added::") {
+			t.Errorf("output line issues a workflow command: %q", line)
+			continue
+		}
+		sawAnnotation = true
+		if !strings.Contains(line, "%0A::warning") && !strings.Contains(line, `\n::warning`) {
+			t.Errorf("annotation lost or mangled the hostile text instead of escaping it: %q", line)
+		}
+	}
+	if !sawAnnotation {
+		t.Fatalf("no annotation printed:\n%s", out)
+	}
+}
+
+func TestAnnotationEscaping(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":      "plain",
+		"a\nb":       "a%0Ab",
+		"50%\r\n::x": "50%25%0D%0A::x",
+	} {
+		if got := escapeData(in); got != want {
+			t.Errorf("escapeData(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

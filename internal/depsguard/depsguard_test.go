@@ -307,10 +307,10 @@ func TestReportAgeAndSource(t *testing.T) {
 	md := RenderMarkdown(rep)
 	for _, want := range []string{
 		Marker,
-		"| **`example.com/young`** | **added** | **v0.1.0** | **13 days** | **https://git.example.com/young** |",
-		"| `example.com/old` | added (indirect) | v1.2.0 | 400 days | proxy.golang.org (no VCS origin recorded) |",
-		"| `example.com/UpperCase` | added | v1.0.0 | 15 days |",
-		"| **`example.com/noinfo`** | **added** | **v1.0.0** | **unknown** |",
+		"| **`example.com/young`** | **added** | **`v0.1.0`** | **13 days** | **`https://git.example.com/young`** |",
+		"| `example.com/old` | added (indirect) | `v1.2.0` | 400 days | proxy.golang.org (no VCS origin recorded) |",
+		"| `example.com/UpperCase` | added | `v1.0.0` | 15 days |",
+		"| **`example.com/noinfo`** | **added** | **`v1.0.0`** | **unknown** | **unknown** |",
 		"not-in-sumdb",
 	} {
 		if !strings.Contains(md, want) {
@@ -318,7 +318,138 @@ func TestReportAgeAndSource(t *testing.T) {
 		}
 	}
 	// A version bump is not a new module; it is listed separately with its age.
-	if !strings.Contains(md, "| **`example.com/bumped`** | **v1.0.0 → v1.1.0** | **2 days** |") {
+	if !strings.Contains(md, "| **`example.com/bumped`** | **`v1.0.0` → `v1.1.0`** | **2 days** |") {
 		t.Errorf("report missing the bumped module row\n---\n%s", md)
+	}
+}
+
+// stripCodeSpans removes CommonMark code spans: a run of N backticks opens
+// one, and the next run of exactly N closes it. What is left is the text a
+// renderer would interpret as Markdown or HTML.
+func stripCodeSpans(s string) string {
+	var out strings.Builder
+	run := func(i int) int {
+		j := i
+		for j < len(s) && s[j] == '`' {
+			j++
+		}
+		return j - i
+	}
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		n := run(i)
+		closed := -1
+		for j := i + n; j < len(s); {
+			if s[j] == '`' {
+				m := run(j)
+				if m == n {
+					closed = j
+					break
+				}
+				j += m
+				continue
+			}
+			j++
+		}
+		if closed < 0 {
+			out.WriteString(s[i : i+n]) // unmatched: literal backticks
+			i += n
+			continue
+		}
+		i = closed + n
+	}
+	return out.String()
+}
+
+// PR-controlled text (a quoted local replace target can hold anything) and
+// proxy-supplied text (a module's VCS origin URL) must reach the sticky
+// comment only inside code spans, where links, mentions and HTML are inert,
+// and must not break the table row.
+func TestRenderNeutralisesHostileText(t *testing.T) {
+	base, head, sum, _ := loadFixture(t, "testdata/fail-replace-hostile-text")
+	hostileOrigin := "https://evil.example/@someone [x](https://evil.example) <b>"
+	proxy := fakeProxy(t, map[string]fakeInfo{
+		"example.com/new@v1.0.0": {time: "2020-01-01T00:00:00Z", origin: hostileOrigin},
+	})
+	sumdb := fakeSumDB(t, map[string]SumRecord{"example.com/new@v1.0.0": {Hash: "h1:n", GoModHash: "h1:nm"}})
+	head.Require = append(head.Require, Require{Path: "example.com/new", Version: "v1.0.0"})
+	c := Checker{
+		SumDB: HTTPSumDB{BaseURL: sumdb.URL, Client: sumdb.Client()},
+		Proxy: HTTPProxy{BaseURL: proxy.URL, Client: proxy.Client()},
+		Now:   func() time.Time { return fixedNow },
+	}
+	rep, err := c.Check(context.Background(), base, head, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := RenderMarkdown(rep)
+	body := strings.TrimPrefix(md, Marker+"\n")
+	if body == md {
+		t.Fatalf("report does not start with the marker:\n%s", md)
+	}
+	bare := stripCodeSpans(body)
+	for _, bad := range []string{"@someone", "](", "<img", "<b>", "-->", "::warning"} {
+		if strings.Contains(bare, bad) {
+			t.Errorf("%q reaches the comment outside a code span:\n%s", bad, md)
+		}
+	}
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "::") {
+			t.Errorf("a report line starts a workflow command: %q", line)
+		}
+		if strings.HasPrefix(line, "| replace-added") && strings.Count(strings.ReplaceAll(line, `\|`, ""), "|") != 4 {
+			t.Errorf("hostile text breaks the table row: %q", line)
+		}
+	}
+	if !strings.Contains(md, "evil.example") {
+		t.Errorf("the hostile text should still be shown, as code:\n%s", md)
+	}
+}
+
+func TestParseGoSumConflicts(t *testing.T) {
+	sum, err := ParseGoSum([]byte("m v1 h1:a\nm v1 h1:a\nm v1/go.mod h1:b\nn v2 h1:c\nn v2 h1:d\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Conflicts) != 1 || sum.Conflicts[0] != "n v2" {
+		t.Fatalf("conflicts = %v, want [n v2] (an identical duplicate is not a conflict)", sum.Conflicts)
+	}
+	rep, err := Checker{SumDB: HTTPSumDB{}, Proxy: HTTPProxy{}}.Check(context.Background(), GoMod{}, GoMod{}, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 || rep.Findings[0].Kind != FindingSumConflict {
+		t.Fatalf("findings = %v", rep.Findings)
+	}
+}
+
+func TestCheckLayout(t *testing.T) {
+	tests := []struct {
+		files []string
+		bad   []string
+	}{
+		{[]string{"go.mod", "go.sum", "internal/depsguard/testdata/pass/head.go.mod", "cmd/x/main.go"}, nil},
+		{[]string{"go.mod", "tools/go.mod"}, []string{"tools/go.mod"}},
+		{[]string{"go.mod", "go.work"}, []string{"go.work"}},
+		{[]string{"go.mod", "go.work.sum"}, []string{"go.work.sum"}},
+		{[]string{"go.mod", "vendor/modules.txt"}, []string{"vendor/modules.txt"}},
+		{[]string{"go.mod", "sub/vendor/modules.txt", "web/vendor/lib.js"}, []string{"sub/vendor/modules.txt"}},
+	}
+	for _, tc := range tests {
+		got := CheckLayout(tc.files)
+		var mods []string
+		for _, f := range got {
+			if f.Kind != FindingLayout {
+				t.Fatalf("kind %q", f.Kind)
+			}
+			mods = append(mods, f.Module)
+		}
+		if strings.Join(mods, ",") != strings.Join(tc.bad, ",") {
+			t.Errorf("CheckLayout(%v) flagged %v, want %v", tc.files, mods, tc.bad)
+		}
 	}
 }

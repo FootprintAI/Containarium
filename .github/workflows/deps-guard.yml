@@ -2,23 +2,46 @@ name: deps-guard
 
 # Dependency-change gate for Go modules (#2794, story 3 of #2649).
 #
-#   go-mod-verify  the deps-guard self-test (seeded failures must fail), then
-#                  `go mod verify` with GOFLAGS=-mod=readonly and an explicit
-#                  GOSUMDB.
-#   deps-guard     scripts/ci/deps-guard.sh against the PR base: fails on a
-#                  new or changed `replace`, a new or re-versioned module that
-#                  sum.golang.org does not know or disagrees with, or a Go env
-#                  that exempts modules from the checksum database. Writes a
-#                  report (each new module with its age and source, under 14
-#                  days in bold) to the job summary.
-#   comment        posts that report as one sticky PR comment. Same-repo PRs
-#                  only: a fork PR's token is read-only, so forks get the job
-#                  summary alone. This is the only job with a write scope, and
-#                  it checks out nothing and runs no PR code.
+#   go-mod-verify  PRs and main. The deps-guard unit tests and self-test
+#                  (seeded failures must fail), the Go environment rule
+#                  (-mod=readonly, GOSUMDB=sum.golang.org, no GONOSUMDB /
+#                  GOPRIVATE / GONOPROXY / GOINSECURE), then `go mod verify`.
+#                  Nothing here is meant to be overridden.
+#   deps-guard     PRs only. scripts/ci/deps-guard.sh against the PR base:
+#                  fails on a new or changed `replace`; on a new or
+#                  re-versioned module that sum.golang.org does not know or
+#                  disagrees with; on conflicting duplicate go.sum lines; and
+#                  on a second go.mod, a go.work or a vendor/ directory. Writes
+#                  a report (each new module with its age and source, under
+#                  14 days in bold) to the job summary.
+#   comment        PRs only. Posts that report as one sticky PR comment.
+#                  Same-repo PRs only: a fork PR's token is read-only, so
+#                  forks get the job summary alone. This is the only job with
+#                  a write scope, and it checks out nothing and runs no PR
+#                  code.
 #
 # Hard fail, no label. The only override is a code-owner approval of the PR
 # (decision 4 on #2649), which needs the CODEOWNERS and branch-protection
 # settings from #2792.
+#
+# Why deps-guard does not run on push to main: its verdict is about what a PR
+# adds. A new `replace` that a code owner approved merges as intended, and
+# re-running the policy against the previous commit would only turn main red
+# for a reviewed decision. The checks that hold for every commit regardless
+# of review (environment, go mod verify, self-test) still run on main.
+#
+# Trust: everything here runs the PR's own copy of scripts/ci/deps-guard.sh
+# and cmd/deps-guard, so a PR that edits them can make the gate pass and can
+# make the report say anything. The sticky comment is therefore advisory text
+# from PR-controlled code, posted as escaped Markdown, and is not a check to
+# require. What stops a PR from disabling the gate is code-owner review of
+# .github/** and scripts/** (#2792), not the gate itself.
+#
+# Out of scope (the go command checks these, or they cannot add code):
+# `exclude`, `retract` and `toolchain` directives are not diffed. The
+# toolchain download is verified against sum.golang.org by the go command.
+# The sumdb lookup trusts TLS to sum.golang.org and does not verify the
+# signed tree note; the go command verifies the tree on every download.
 #
 # Never pull_request_target.
 
@@ -64,6 +87,9 @@ jobs:
       - name: deps-guard self-test (seeded failures must fail, live sum.golang.org)
         run: scripts/ci/deps-guard.sh --self-test
 
+      - name: Go environment pins the checksum database
+        run: go run ./cmd/deps-guard env
+
       - name: go mod verify
         run: |
           go mod download
@@ -71,13 +97,14 @@ jobs:
 
   deps-guard:
     name: deps-guard (replace + checksum database)
+    # PR only; see "Why deps-guard does not run on push to main" above.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # HEAD^1 is the base: the base tip of a PR merge commit, or the
-          # previous main commit on push.
+          # HEAD^1 is the base: the base tip of the PR merge commit.
           fetch-depth: 2
           persist-credentials: false
 

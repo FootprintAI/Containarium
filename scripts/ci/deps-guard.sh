@@ -12,17 +12,24 @@
 #   - a new or changed `replace` in go.mod compared with the base (an
 #     existing, unchanged replace passes);
 #   - a new or re-versioned module that sum.golang.org has no record of, or
-#     whose go.sum hash disagrees with it.
+#     whose go.sum hash disagrees with it;
+#   - a go.sum that lists one module version twice with different hashes;
+#   - a tracked second go.mod, go.work / go.work.sum or vendor/modules.txt,
+#     which this gate does not read.
 # The base defaults to HEAD^1: on a pull_request checkout HEAD is GitHub's
-# merge commit, whose first parent is the base branch tip; on a push to main
-# it is the previous main commit. Hard fail, no label; the only override is a
-# code-owner approval of the PR (decision 4 on #2649).
+# merge commit, whose first parent is the base branch tip. Hard fail, no
+# label; the only override is a code-owner approval of the PR (decision 4 on
+# #2649). The workflow runs this on PRs only (see deps-guard.yml).
+#
+# Trust: CI runs the PR's own copy of this script, so it cannot protect
+# itself against a PR that edits it; code-owner review of scripts/** and
+# .github/** (#2792) does. Its report is advisory.
 #
 # --self-test proves the gate can fail: every fixture under
 # internal/depsguard/testdata is run against the live sum.golang.org and
 # must exit with the status its `expect` file names, failing fixtures for
-# the named rule only; seeded unsafe environments must fail and the pinned
-# one must pass.
+# the named rule only; seeded unsafe environments and a seeded second go.mod
+# must fail, and the pinned env and a root-only layout must pass.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -75,6 +82,14 @@ self_test() {
   done
   expect_exit 0 "$d/env.log" "${clean[@]}" "$bin" env
 
+  # Layout rule: a second go.mod must fail, the root one alone must pass.
+  printf 'go.mod\0tools/go.mod\0' >"$d/files"
+  expect_exit 1 "$d/layout.log" "$bin" layout <"$d/files"
+  grep -q '^FAIL layout tools/go.mod:' "$d/layout.log" || {
+    echo "self-test FAIL: second go.mod failed, but not on layout" >&2; cat "$d/layout.log" >&2; return 1; }
+  printf 'go.mod\0go.sum\0' >"$d/files"
+  expect_exit 0 "$d/layout.log" "$bin" layout <"$d/files"
+
   # go.mod rules, against the live checksum database.
   local pass=0 fail=0
   for dir in "$fixtures"/*/; do
@@ -95,15 +110,15 @@ self_test() {
     fi
     echo "  $name: $want ok"
   done
-  if [[ $pass -lt 1 || $fail -lt 4 ]]; then
-    echo "self-test FAIL: want >= 1 passing and >= 4 failing fixtures, got $pass and $fail" >&2
+  if [[ $pass -lt 1 || $fail -lt 6 ]]; then
+    echo "self-test FAIL: want >= 1 passing and >= 6 failing fixtures, got $pass and $fail" >&2
     return 1
   fi
-  echo "self-test ok: ${#bad_envs[@]} unsafe envs and $fail failing fixtures rejected, pinned env and $pass passing fixture accepted"
+  echo "self-test ok: ${#bad_envs[@]} unsafe envs, a second go.mod and $fail failing fixtures rejected; pinned env, root-only layout and $pass passing fixture accepted"
 }
 
 main() {
-  local base=HEAD^1 report="" d=$work bin rc_env rc_diff
+  local base=HEAD^1 report="" d=$work bin rc_env rc_layout rc_diff
   while [[ $# -gt 0 ]]; do
     case $1 in
       --self-test) self_test; return ;;
@@ -121,14 +136,18 @@ main() {
   # only if the head had none, and fail every existing one otherwise.
   git -C "$repo_root" show "$base:go.mod" >"$d/base.go.mod"
 
+  git -C "$repo_root" ls-files -z >"$d/files"
+
   set +e
   "$bin" env
   rc_env=$?
+  "$bin" layout <"$d/files"
+  rc_layout=$?
   (cd "$repo_root" && "$bin" diff -base "$d/base.go.mod" -head go.mod -gosum go.sum ${report:+-report "$report"})
   rc_diff=$?
   set -e
-  if [[ $rc_env -eq 2 || $rc_diff -eq 2 ]]; then return 2; fi
-  if [[ $rc_env -ne 0 || $rc_diff -ne 0 ]]; then return 1; fi
+  if [[ $rc_env -eq 2 || $rc_layout -eq 2 || $rc_diff -eq 2 ]]; then return 2; fi
+  if [[ $rc_env -ne 0 || $rc_layout -ne 0 || $rc_diff -ne 0 ]]; then return 1; fi
 }
 
 work=$(mktemp -d)
