@@ -125,6 +125,10 @@ func TestCreateReconcilesObjects(t *testing.T) {
 	if st.State != pb.ContainerState_CONTAINER_STATE_PROVISIONING {
 		t.Errorf("state = %v, want PROVISIONING", st.State)
 	}
+	// K8s has no podman toggle and reports the long-standing true (#2858).
+	if !st.PodmanEnabled {
+		t.Error("PodmanEnabled = false, want true on the K8s backend")
+	}
 }
 
 func TestCreateIdempotent(t *testing.T) {

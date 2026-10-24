@@ -57,12 +57,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
 
       - name: Install go-licenses
         # Pinned: the report format and its handling of the standard library
@@ -74,9 +75,9 @@ jobs:
         run: scripts/ci/check-licenses.sh
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Check npm licences and the web UI attribution file (#2754)
         run: scripts/ci/npm-licenses.sh check

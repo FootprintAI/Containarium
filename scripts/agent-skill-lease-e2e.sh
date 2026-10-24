@@ -493,16 +493,27 @@ assert_revoked_within_budget() {
 
 # --- warm-up run: create the box, then install the stub agent-runtime -----
 # The warm-up is a real run with a real lease: it provisions, mints, seeds,
-# execs (there is no agent-runtime in the box yet, so the exec fails fast and
-# best-effort as designed), revokes and wipes. Its only purpose here is to
-# bring the box into existence so the stub can be installed into it.
+# execs, revokes and wipes. Its only purpose here is to bring the box into
+# existence so the stub can be installed into it. The in-box agent has only
+# the dummy provider key, so it fails upstream; since #2931 RunAgentSkill
+# reports that as a 500 naming the in-box failure instead of a 200. That 500
+# still means the box was provisioned and the run started and ended, so it is
+# accepted. So is the 400 for a box with no agent-runtime yet (the recipe's
+# install is best-effort; incus reports bash's 127 as "Command not found").
+# Any other non-200 (provisioning, auth, a crash) still fails here.
 log "warm-up run (provisions the box; the agent-runtime recipe installs Node, this is the slow part)"
 WARM_RUN_ID="lease-e2e-warmup-$$"
 run_skill "$WARM_RUN_ID" "$WORKDIR/warm"
 warm_code="$(read_code "$WORKDIR/warm.code")"
 if [ "$warm_code" != "200" ]; then
-  echo "---- warm-up response ----"; read_out "$WORKDIR/warm.body"; echo
-  fail "warm-up RunAgentSkill returned $warm_code (want 200); the box never came up, so there is nothing to measure"
+  if [ "$warm_code" = "500" ] && grep -q "agent run $WARM_RUN_ID failed: in-box agent on " "$WORKDIR/warm.body" 2>/dev/null; then
+    ok "warm-up's in-box agent failed upstream as expected with the dummy key (500 names the in-box failure)"
+  elif [ "$warm_code" = "400" ] && grep -q "agent run $WARM_RUN_ID failed: .*agent-runtime is not installed in the box" "$WORKDIR/warm.body" 2>/dev/null; then
+    ok "warm-up found no agent-runtime in the box yet (400 FailedPrecondition): the recipe's best-effort install did not land, which the stub below replaces anyway"
+  else
+    echo "---- warm-up response ----"; read_out "$WORKDIR/warm.body"; echo
+    fail "warm-up RunAgentSkill returned $warm_code (want 200, a 500 naming an in-box agent failure, or a 400 saying agent-runtime is not installed); the box never came up, so there is nothing to measure"
+  fi
 fi
 sudo incus info "$BOX" >/dev/null 2>&1 || fail "skill box $BOX does not exist after a successful run"
 ok "skill box $BOX provisioned (warm-up run $WARM_RUN_ID)"
@@ -522,8 +533,16 @@ ok "skill box $BOX provisioned (warm-up run $WARM_RUN_ID)"
 # before the measured run turns that into the truth instead.
 STUB_MARKER="containarium-lease-e2e-stub"
 log "installing the stub agent-runtime (sleep ${RUN_SECONDS}s) into $BOX"
-sudo incus exec "$BOX" -- bash -c \
-  "printf '#!/bin/sh\n# %s\nexec sleep %s\n' '$STUB_MARKER' '$RUN_SECONDS' > /usr/local/bin/agent-runtime && chmod 0755 /usr/local/bin/agent-runtime"
+# The stub ends like a real successful run: it writes a minimal artifact.json
+# into the run's seed dir (AGENT_SEED_DIR, exported by the daemon's exec) and
+# exits 0. RunAgentSkill reports a run that leaves no artifact as failed
+# (#2931), so a stub that only slept would turn every measured run into a 500.
+sudo incus exec "$BOX" -- sh -c 'cat > /usr/local/bin/agent-runtime && chmod 0755 /usr/local/bin/agent-runtime' <<STUB
+#!/bin/sh
+# $STUB_MARKER
+sleep $RUN_SECONDS
+printf '%s' '{"outputJson":"{}","engine":"stub"}' > "\$AGENT_SEED_DIR/artifact.json"
+STUB
 sudo incus exec "$BOX" -- test -x /usr/local/bin/agent-runtime \
   || fail "stub agent-runtime was not installed into $BOX"
 sudo incus exec "$BOX" -- grep -q "$STUB_MARKER" /usr/local/bin/agent-runtime \

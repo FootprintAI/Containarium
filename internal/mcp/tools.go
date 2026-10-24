@@ -1773,6 +1773,10 @@ func (s *Server) registerTools() {
 						"type":        "number",
 						"description": "Wait up to this many seconds (0-10) for new bytes when none are available.",
 					},
+					"gateway_after_seq": map[string]interface{}{
+						"type":        "number",
+						"description": "Return model-gateway call events after this sequence number (default 0); pass the previous gateway_next_seq to continue.",
+					},
 				},
 				"required": []string{"run_id"},
 			},
@@ -2668,6 +2672,7 @@ func handleGetSystemInfo(client API, args map[string]interface{}) (string, error
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)
 
 	result += "\n" + formatCPUBudget(resp.Info)
+	result += formatStoragePools(resp.Info.StoragePools)
 
 	// OTLP endpoint: where monitoring=true containers ship telemetry.
 	// Point docker-in-LXC apps here when they can't inherit the
@@ -3306,10 +3311,19 @@ func handleRunAgentSkill(client API, args map[string]interface{}) (string, error
 		out += fmt.Sprintf("Git:       %s\n", resp.GitCommit)
 		out += fmt.Sprintf("Workspace: %s\n", resp.WorkspacePath)
 	}
-	if resp.ArtifactJSON != "" {
+	if resp.RunID != "" {
+		out += fmt.Sprintf("Run:       %s\n", resp.RunID)
+	}
+	if resp.Message != "" {
+		out += fmt.Sprintf("Message:   %s\n", resp.Message)
+	}
+	switch {
+	case resp.ArtifactJSON != "":
 		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
-	} else {
-		out += "(no artifact — the in-box agent loop is a Phase 0 seam)\n"
+	case resp.RunID != "":
+		out += fmt.Sprintf("(no artifact yet — follow the run with crew_logs run_id=%s)\n", resp.RunID)
+	default:
+		out += "(no artifact returned)\n"
 	}
 	return out, nil
 }
@@ -3380,6 +3394,9 @@ func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
 	if v, ok := getInt64Arg(args, "start_offset"); ok {
 		req.StartOffset = v
 	}
+	if v, ok := getInt64Arg(args, "gateway_after_seq"); ok {
+		req.GatewayAfterSeq = v
+	}
 	if v, ok := getIntArg(args, "follow_seconds"); ok {
 		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
 	}
@@ -3388,9 +3405,20 @@ func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n---\n",
+	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), strings.Join(resp.GetSkillIds(), ","))
+	if n := resp.GetGatewayNextSeq(); n > 0 { // absent for a run with no recorded calls: the header is as before
+		fmt.Fprintf(&b, "gateway_next_seq: %d\n", n)
+	}
+	b.WriteString("---\n")
 	b.Write(resp.GetChunk())
+	// After the chunk, which may end mid-line; each event carries its own time.
+	if calls := resp.GetGatewayCalls(); len(calls) > 0 {
+		b.WriteString("\n--- gateway calls ---\n")
+		if err := runlog.WriteGatewayCalls(&b, calls); err != nil {
+			return "", err
+		}
+	}
 	return b.String(), nil
 }
 

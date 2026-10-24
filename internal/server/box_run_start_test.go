@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 import (
@@ -49,6 +51,47 @@ func newFakeBoxUser(t *testing.T, exitCode int, sleep time.Duration) *fakeBoxUse
 	return &fakeBoxUser{home: home}
 }
 
+// hermeticBoxUtilities are the plain utilities the run wrapper, the stop and
+// list scripts and the fake engine use. Anything else on the machine (node, go,
+// git, java, ...) is deliberately absent from a test run's PATH.
+var hermeticBoxUtilities = []string{
+	"sh", "mkdir", "chmod", "rm", "mv", "cat", "date", "setsid", "base64", "tr", "ps", "awk", "grep",
+	"head", "cut", "readlink", "ls", "sleep", "touch", "stat", "cksum", "printf", "env", "sed", "timeout",
+	"id", "uname", "true", "dirname", "basename", "wc", "sort", "kill", "tail",
+}
+
+// hermeticBoxPath returns the PATH a fake box user's run gets: the user's
+// ~/.local/bin first (where the fake engine and any fake tool a test writes
+// live), then a directory of symlinks to hermeticBoxUtilities only. A utility
+// the machine lacks is simply missing, as it would be in a minimal box.
+func hermeticBoxPath(t *testing.T, u *fakeBoxUser) string {
+	t.Helper()
+	utils := t.TempDir()
+	for _, name := range hermeticBoxUtilities {
+		if p, err := exec.LookPath(name); err == nil {
+			if err := os.Symlink(p, filepath.Join(utils, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return filepath.Join(u.home, ".local", "bin") + string(os.PathListSeparator) + utils
+}
+
+// envWithout returns env minus the named variables.
+func envWithout(env []string, names ...string) []string {
+	out := make([]string, 0, len(env))
+outer:
+	for _, kv := range env {
+		for _, n := range names {
+			if strings.HasPrefix(kv, n+"=") {
+				continue outer
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // boxRunStartServer wires a ContainerServer whose two exec seams both run
 // locally via a real shell, the same pattern box_run_log_test.go's shBox
 // uses for List/Tail: boxRunStartExec stands in for `su - <username> -c`,
@@ -85,7 +128,13 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 			started[username] = true
 			startedMu.Unlock()
 			cmd := exec.Command("sh", "-c", script)
-			cmd.Env = append(os.Environ(), "HOME="+u.home)
+			// A HERMETIC environment (#2973): the run's PATH is the box user's own
+			// bin plus the plain utilities the wrapper needs, never the machine's
+			// PATH. The wrapper's end-of-run toolchain probe (#2954) runs every
+			// allowlisted tool it finds and the run is not reported finished until it
+			// returns, so on a host with slow npm/yarn/pnpm shims or a cold JVM every
+			// test waiting on EXITED took 3s and failed against its own 3s bound.
+			cmd.Env = append(envWithout(os.Environ(), "PATH", "HOME"), "HOME="+u.home, "PATH="+hermeticBoxPath(t, u))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				if ee, ok := err.(*exec.ExitError); ok {

@@ -3,6 +3,7 @@ package container
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +55,9 @@ func (b *stagesBackend) SetConfig(_, key, value string) error {
 	return nil
 }
 func (b *stagesBackend) Exec(string, []string) error { return nil }
+func (b *stagesBackend) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", 1, nil // no cloud-init: the stack-install path skips its wait
+}
 func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
 	return nil
 }
@@ -232,6 +236,59 @@ func TestCreate_LabelsRideInTheCreateRequest(t *testing.T) {
 	}
 	if _, ok := got[incus.LabelPrefix+ostype.OSTypeLabelKey]; !ok {
 		t.Errorf("ExtraConfig missing the OS-type label (key %q): %v", incus.LabelPrefix+ostype.OSTypeLabelKey, got)
+	}
+}
+
+// TestCreate_StackPersistedAsConfigKey: the requested stack is stamped into
+// the instance config at create so list/get can report it later (#2163).
+// A create with no stack writes no key.
+func TestCreate_StackPersistedAsConfigKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	for _, tc := range []struct {
+		name, stack string
+		wantKey     bool
+	}{
+		{"with stack", "nodejs", true},
+		{"no stack", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &stagesBackend{}
+			m := NewWithBackend(backend)
+			opts := stagesOpts()
+			opts.Stack = tc.stack
+			if _, err := m.Create(opts); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			want := ""
+			if tc.wantKey {
+				want = tc.stack
+			}
+			got, ok := backend.createdConfig.ExtraConfig[incus.StackKey]
+			if ok != tc.wantKey || got != want {
+				t.Errorf("ExtraConfig[%q] = %q (present=%v), want %q (present=%v)", incus.StackKey, got, ok, want, tc.wantKey)
+			}
+		})
+	}
+}
+
+// TestCreate_UnknownStackRejectedBeforeAnythingIsCreated (#2860): defence in
+// depth behind the RPC check. installPackages silently skips an unknown ID, so
+// the create must fail up front rather than produce a box with nothing
+// installed.
+func TestCreate_UnknownStackRejectedBeforeAnythingIsCreated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	backend := &stagesBackend{}
+	m := NewWithBackend(backend)
+	opts := stagesOpts()
+	opts.Stack = "no-such-stack"
+	_, err := m.Create(opts)
+	if err == nil || !strings.Contains(err.Error(), "no-such-stack") || !strings.Contains(err.Error(), "nodejs") {
+		t.Fatalf("Create err = %v, want an error naming the bad stack and listing valid IDs", err)
+	}
+	if backend.createdConfig.Name != "" {
+		t.Errorf("CreateContainer was called for %q despite the unknown stack", backend.createdConfig.Name)
 	}
 }
 

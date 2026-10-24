@@ -134,3 +134,11 @@ func hasLiteralScope(granted []string, want string) bool {
 	}
 	return false
 }
+
+// HasLiteralScope reports whether the caller's token carries want verbatim.
+// The wildcard scope and a token with no scopes claim do not count, which is
+// what makes a scope like ScopeAgentsRunForOrg impossible to hold by accident.
+func HasLiteralScope(ctx context.Context, want string) bool {
+	scopes, present := ScopesFromGRPCContext(ctx)
+	return present && hasLiteralScope(scopes, want)
+}

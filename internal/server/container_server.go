@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,11 +28,13 @@ import (
 	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	"github.com/footprintai/containarium/pkg/core/backup"
@@ -144,6 +147,11 @@ type ContainerServer struct {
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
+
+	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
+	// recorded for a box (#2944): "" = none recorded, so the run keeps the
+	// owner's identity. Tests set it; production reads the Incus config.
+	boxRunToolAccess func(ctx context.Context, username string) (string, error)
 	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
 	// check through record write) per (box, name) (#2260 review: concurrent
 	// calls for the same not-yet-existing name could both pass the collision
@@ -432,6 +440,10 @@ type ContainerServer struct {
 	// github_tag path return Unavailable, same as an unconfigured autoUpdater
 	// does for the sentinel path.
 	binaryPath string
+
+	// storagePools returns the pool capacity monitor's last snapshot (#2823).
+	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
+	storagePools func() poolcapacity.Snapshot
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -501,6 +513,48 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
+// createTargetsPeer reports whether the create is bound for a remote backend,
+// by the same rule as the forwarding block in createContainerAuthorized. It is
+// evaluated AFTER pool placement has set req.BackendId, so a --pool create that
+// placement routes to a peer is a peer-bound create too (#2952).
+func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
+	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
+}
+
+// validateStackOnPeer checks req.Stack against the catalog of the peer the
+// create is bound for (#2952). It rejects only when it has read a non-empty
+// catalog that lacks the stack. Anything it cannot conclude (no stack asked
+// for, the peer unknown or unhealthy, the catalog unreadable or empty) is
+// let through: the forwarding block reports an unreachable peer with its own
+// error, and a peer validates every create it receives for itself, so this
+// check exists to fail early, before storage is allocated, not to be the only
+// line of defence.
+func (s *ContainerServer) validateStackOnPeer(ctx context.Context, req *pb.CreateContainerRequest) error {
+	if req.Stack == "" || s.peerPool == nil {
+		return nil
+	}
+	peer := s.peerPool.Get(req.BackendId)
+	if peer == nil || !peer.Healthy {
+		return nil
+	}
+	ids, err := peer.ForwardListStacks(ctx, extractAuthToken(ctx))
+	if err != nil {
+		log.Printf("[create] could not read backend %q's stack catalog (%v); leaving the stack check to the backend", req.BackendId, err)
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		if id == req.Stack {
+			return nil
+		}
+	}
+	sort.Strings(ids)
+	return status.Errorf(codes.InvalidArgument, "unknown stack %q on backend %q; valid stacks there: %s",
+		req.Stack, req.BackendId, strings.Join(ids, ", "))
+}
+
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -535,6 +589,29 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// resource caps to unauthenticated callers) but before pool
 	// resolution and peer routing.
 	if err := validateCreateContainerBounds(req); err != nil {
+		return nil, err
+	}
+	// Pool resolution — if a pool is requested, either validate that
+	// the explicit backend_id belongs to that pool, or pick any
+	// healthy backend in the pool when backend_id is empty.
+	//
+	// This runs BEFORE the stack check and before any storage is allocated
+	// (#2952): it only chooses a backend (it sets req.BackendId), it provisions
+	// nothing, and the stack has to be checked against the catalog of the
+	// backend that will actually create the box.
+	if req.Pool != "" {
+		if err := s.resolvePoolPlacement(req); err != nil {
+			return nil, err
+		}
+	}
+	// Unknown stack (#2860, #2952): refuse before any allocation. The catalog
+	// that counts is the one of the backend that will create the box: this
+	// daemon's, or the peer's, which may define stacks this daemon does not.
+	if s.createTargetsPeer(req) {
+		if err := s.validateStackOnPeer(ctx, req); err != nil {
+			return nil, err
+		}
+	} else if err := validateStackID(req.Stack); err != nil {
 		return nil, err
 	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
@@ -592,7 +669,15 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// image, and a ZFS clone takes its key from where it is made (#1335).
 	var encPool string
 	var encRef zfskey.KeyRef
-	if req.GetEncrypted() {
+	if req.GetEncrypted() && req.GetDryRun() {
+		// Validate only (#2925): EnsureTenantStorage creates the tenant's
+		// encrypted dataset and pool, which a dry run must not do. What it
+		// would have refused for lack of wiring it is still refused for here,
+		// with the same error as the real path below.
+		if !s.encryption.enabled() {
+			return nil, errEncryptionNotWired
+		}
+	} else if req.GetEncrypted() {
 		encPool, encRef, err = s.encryption.EnsureTenantStorage(ctx, encryptionTenantFor(req))
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, err.Error())
@@ -602,20 +687,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		// the container on the daemon's default pool — unencrypted, reported
 		// as encrypted, which is precisely what #1294 refused to ship.
 		if encPool == "" {
-			return nil, status.Error(codes.FailedPrecondition,
-				"encrypted=true resolved no storage pool for this tenant: the daemon has key "+
-					"custody configured but no encryption storage wired, so the container would "+
-					"be created on the default pool without encryption. Refusing rather than "+
-					"delivering plaintext under an encryption guarantee")
-		}
-	}
-
-	// Pool resolution — if a pool is requested, either validate that
-	// the explicit backend_id belongs to that pool, or pick any
-	// healthy backend in the pool when backend_id is empty.
-	if req.Pool != "" {
-		if err := s.resolvePoolPlacement(req); err != nil {
-			return nil, err
+			return nil, errEncryptionNotWired
 		}
 	}
 
@@ -629,6 +701,17 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			}
 			if !peer.Healthy {
 				return nil, fmt.Errorf("backend %q is not healthy", req.BackendId)
+			}
+			if req.GetDryRun() {
+				// #2925: not forwarded. A peer that predates dry_run would
+				// ignore it and really create the box. The stack was checked
+				// against the peer's catalog above (#2952); the peer's other
+				// checks are not run.
+				return &pb.CreateContainerResponse{
+					DryRun: true,
+					Message: fmt.Sprintf("Validated by this daemon, and the stack against backend %q's catalog; that backend's "+
+						"other checks (image policy, capacity) were not run.", req.BackendId),
+				}, nil
 			}
 			// Forward to peer — extract auth token from context
 			authToken := extractAuthToken(ctx)
@@ -770,6 +853,18 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr
+	}
+
+	// Validate only (#2925): every check above has passed and nothing has been
+	// provisioned. Release the cores admission just reserved, or a dry run
+	// would block real creates for the reservation TTL. Not counted as a
+	// provisioning attempt (#1083), which starts below.
+	if req.GetDryRun() {
+		cpuRelease()
+		return &pb.CreateContainerResponse{
+			DryRun:  true,
+			Message: fmt.Sprintf("Dry run: a create for %s would be accepted. Nothing was created.", req.Username),
+		}, nil
 	}
 
 	// #1083: everything past this point is a genuine attempt to provision
@@ -3208,6 +3303,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	if driver, derr := client.PoolDriver("default"); derr == nil {
 		info.Storage = backendStorageFromPool("default", driver)
 	}
+	info.StoragePools = s.storagePoolCapacities()
 
 	// This backend's spare-capacity advertisement (#680) and capability
 	// profile (#681), so a peer's GetSystemInfo carries them to the
@@ -4244,10 +4340,14 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: st.IPAddress,
 		},
-		Labels:               st.Labels,
-		CreatedAt:            st.CreatedAt.Unix(),
-		PodmanEnabled:        true, // TODO: Get from container config
-		Stack:                "",   // TODO: Get from container labels
+		Labels:    st.Labels,
+		CreatedAt: st.CreatedAt.Unix(),
+		// Read back from the box (user.containarium.podman_enabled); boxes
+		// created before that key existed report true. See #2858.
+		PodmanEnabled: st.PodmanEnabled,
+		// Empty when no stack is recorded: K8s does not persist it, and LXC
+		// boxes created before user.containarium.stack existed have none.
+		Stack:                st.Stack,
 		GpuDevice:            st.GPU,
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
@@ -4279,6 +4379,9 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	if st.DeletePolicy == incus.DeletePolicyProtected {
 		pc.DeletePolicy = pb.DeletePolicy_DELETE_POLICY_PROTECTED
 	}
+	// Tool-access level for platform-started runs (#2944): absent or any
+	// unrecognised value reads back as UNSPECIFIED (none recorded).
+	pc.ToolAccess = toolaccess.FromConfig(st.ToolAccess)
 	return pc
 }
 

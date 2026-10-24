@@ -118,6 +118,10 @@ on:
         #   correct. Needs the same two-key secret pair as the live job.
         options: ['none', 'join-token', 'no-revoke', 'slow-revoke', 'skip-workspace-removal', 'fixture-path-mismatch', 'blank-pr-title', 'swap-expected-providers']
         default: 'none'
+      short_scale_down:
+        description: 'Use the tag-run autoscaler scale-down timers (5m/1m) instead of stock, to rehearse the release gate'
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'test/e2e/cluster/**'
@@ -164,10 +168,11 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
       - name: Compile the gated e2e package
         run: go vet -tags 'incus cluster_e2e' ./test/e2e/cluster/
       - name: Helper unit tests (pure, no Incus)
@@ -206,8 +211,27 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.sabotage == 'none')
     runs-on: [self-hosted, incus, kvm]
     timeout-minutes: 150
+    env:
+      # Repository variables tune budgets for slower nested-KVM hosts. Defaults
+      # include margin for the observed control-plane and worker startup time.
+      CONTAINARIUM_E2E_GO_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_GO_TIMEOUT || '130m' }}
+      CONTAINARIUM_E2E_READY_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_READY_TIMEOUT || '25m' }}
+      CONTAINARIUM_E2E_SCALEUP_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_SCALEUP_TIMEOUT || '12m' }}
+      CONTAINARIUM_E2E_VPA_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_VPA_TIMEOUT || '15m' }}
+      CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT || '30m' }}
+      CONTAINARIUM_E2E_DELETE_TIMEOUT: ${{ vars.CONTAINARIUM_E2E_DELETE_TIMEOUT || '10m' }}
+      # Autoscaler scale-down timers, TAG RUNS ONLY (the release gate). The
+      # stock timers (10m delay-after-add + 10m unneeded) made step 5 about
+      # 12 of the lane's ~22 minutes of pure waiting (v0.110.0: step 5 ran
+      # 22:56:47 -> 23:08:30). 5m after the last scale-up (~2m into step 5
+      # on that run) keeps the autoscaler from consolidating nodes while the
+      # earlier steps still need them; 1m unneeded then removes the surplus
+      # promptly. Nightly runs, and dispatch runs without short_scale_down,
+      # leave both unset, so the stock cadence is still exercised every night.
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.short_scale_down) && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD || '5m') || '' }}
+      CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.short_scale_down) && (vars.CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME || '1m') || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run the lane
         # No pipes around the go test inside — its exit status is the
         # script's, and the script's is the job's.
@@ -219,7 +243,7 @@ jobs:
     runs-on: [self-hosted, incus, kvm]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Corrupt join tokens and expect the suite to fail
         # Inversion is explicit and lives only in this dispatch-only
         # job: green here means the lane DETECTED the sabotage.
@@ -264,11 +288,12 @@ jobs:
     # runner without letting a wedged daemon hold the queue.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -299,11 +324,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -352,7 +378,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run the lane with no model credential and require a SKIP
         # The empty values are deliberate rather than redundant: they defend
@@ -414,15 +440,16 @@ jobs:
       # fetch-depth 0: the script defaults its agent-runtime RELEASE to the
       # newest reachable v-tag, and actions/checkout's default shallow fetch
       # brings none — the lane would fail pre-flight on "no release tag".
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         if: env.ANTHROPIC_API_KEY != '' || env.GEMINI_API_KEY != ''
@@ -466,13 +493,14 @@ jobs:
           echo "::error::no model credential secret is set, so this sabotage would only prove the skip gate works, not that the lane can fail. Add ANTHROPIC_API_KEY or GEMINI_API_KEY before dispatching a sabotage."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -515,7 +543,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run the lane with no model credential and require a SKIP
         # Deliberately empty, same reasoning as engineer-crew-skip-gate: a
@@ -579,15 +607,16 @@ jobs:
         run: |
           echo "::notice title=two-engine-crew live lane not run::This lane needs BOTH an ANTHROPIC_API_KEY and an OPENAI_API_KEY secret on this repository, and at least one is missing, so #2225's Story 4 has not been measured. The scaffolding is green (see two-engine-crew-skip-gate on every PR); what is missing is a human decision to fund the spend (and add the OPENAI_API_KEY secret, which does not exist here yet). Add both and this job runs the real lane on the next nightly."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         if: env.ANTHROPIC_API_KEY != '' && env.OPENAI_API_KEY != ''
@@ -626,13 +655,14 @@ jobs:
           echo "::error::both ANTHROPIC_API_KEY and OPENAI_API_KEY secrets are required to dispatch this sabotage — without them this would only prove the skip gate works, not that the lane can fail."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh

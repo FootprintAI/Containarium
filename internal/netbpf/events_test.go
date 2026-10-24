@@ -118,3 +118,62 @@ func TestConsumeDenyEvents_CtxCancel(t *testing.T) {
 		t.Errorf("expected no events after ctx cancel, got %d", len(sink.events))
 	}
 }
+
+// #2970 review: the program writes the verdict it actually applied into the
+// byte that used to be the low half of pad2 (offset 22), so a split mode/
+// egress_mode policy is labelled from the packet's real fate, not the
+// tenant-wide mode. A sample without the byte decodes as DenyVerdictUnknown.
+func TestParseDenyEvent_Verdict(t *testing.T) {
+	full := func(verdict byte) []byte {
+		b := make([]byte, 24)
+		copy(b, encodeDenyEvent(DenyEvent{TenantID: 3, Proto: 6}))
+		b[22] = verdict
+		return b
+	}
+	tests := []struct {
+		name string
+		raw  []byte
+		want uint8
+	}{
+		{"logged", full(1), DenyVerdictLogged},
+		{"dropped", full(2), DenyVerdictDropped},
+		{"older object wrote 0 in pad2", full(0), DenyVerdictUnknown},
+		{"sample without the sig_id tail", encodeDenyEvent(DenyEvent{TenantID: 3}), DenyVerdictUnknown},
+		{"sample ending at sig_id", full(2)[:22], DenyVerdictUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, err := ParseDenyEvent(tt.raw)
+			if err != nil {
+				t.Fatalf("ParseDenyEvent: %v", err)
+			}
+			if ev.Verdict != tt.want {
+				t.Errorf("Verdict = %d, want %d", ev.Verdict, tt.want)
+			}
+		})
+	}
+}
+
+// Dropped prefers the program-reported verdict and falls back to the
+// caller's tenant-wide guess only when the sample did not carry one.
+func TestDenyEvent_Dropped(t *testing.T) {
+	tests := []struct {
+		name     string
+		verdict  uint8
+		fallback bool
+		want     bool
+	}{
+		{"logged overrides an enforced tenant (egress_mode=LOG_ONLY miss)", DenyVerdictLogged, true, false},
+		{"dropped overrides a log_only tenant (egress_mode=ENFORCE miss)", DenyVerdictDropped, false, true},
+		{"unknown falls back to enforced", DenyVerdictUnknown, true, true},
+		{"unknown falls back to log_only", DenyVerdictUnknown, false, false},
+		{"out-of-range byte falls back", 9, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (DenyEvent{Verdict: tt.verdict}).Dropped(tt.fallback); got != tt.want {
+				t.Errorf("Dropped(%v) with verdict %d = %v, want %v", tt.fallback, tt.verdict, got, tt.want)
+			}
+		})
+	}
+}

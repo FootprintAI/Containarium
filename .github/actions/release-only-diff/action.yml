@@ -1,0 +1,72 @@
+name: Release-only diff
+description: >
+  Outputs release-only=true when this run's commit only cuts a release on top
+  of a main commit that already passed this same workflow, so the workflow's
+  heavy jobs can skip.
+
+# The release-cut PR (docs/RELEASE-PROCESS.md) changes CHANGELOG.md and the
+# Version constant, nothing else, yet it paid for the full suite twice: once
+# on the PR, once on its push to main. That was ~10-14 minutes on the critical
+# path of every release, measuring code that main had already measured.
+#
+# Requires a checkout with fetch-depth: 2 (HEAD^1 is the base). The answer is
+# true only when ALL of these hold:
+#
+#   1. the event is a PR into main, or a single-commit push to main;
+#   2. scripts/ci/release-only-diff.sh says HEAD^1..HEAD is a release cut;
+#   3. HEAD^1 has a successful push-to-main run of the calling workflow.
+#
+# Condition 3 is what makes skipping safe: the code under test is byte-for-byte
+# the code that already passed. Anything else, including any error while
+# deciding, yields false and the full suite runs. Callers must keep that
+# property: gate jobs on `!= 'true'` together with `!cancelled()`, so a failed
+# detector job still lets them run instead of skipping them (a skipped job
+# counts as passing for a required check).
+outputs:
+  release-only:
+    description: "'true' or 'false'"
+    value: ${{ steps.decide.outputs.release-only }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide
+      id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        BASE_REF: ${{ github.base_ref }}
+        BEFORE: ${{ github.event.before }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: |
+        set -uo pipefail
+        decide() {
+          echo "release-only=$1" >>"$GITHUB_OUTPUT"
+          echo "release-only=$1: $2"
+          [ "$1" = true ] && echo "::notice::Release-only diff on a tested base; heavy jobs skip. $2"
+          exit 0
+        }
+
+        case "$EVENT" in
+          pull_request) [ "$BASE_REF" = main ] || decide false "PR base is ${BASE_REF}, not main" ;;
+          push) [ "$REF" = refs/heads/main ] || decide false "push to ${REF}" ;;
+          *) decide false "${EVENT} always runs the full suite" ;;
+        esac
+
+        base="$(git rev-parse -q --verify HEAD^1)" || decide false "no parent commit in the checkout"
+        if [ "$EVENT" = push ] && [ "$BEFORE" != "$base" ]; then
+          decide false "the push carries more than one commit"
+        fi
+
+        verdict="$(scripts/ci/release-only-diff.sh "$base" HEAD)" || decide false "diff check errored"
+        [ "$verdict" = true ] || decide false "not a release-only diff"
+
+        wf="${WORKFLOW_REF%@*}"
+        wf="${wf##*/}"
+        n="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/runs?head_sha=${base}&event=push&branch=main&status=success&per_page=1" --jq .total_count)" \
+          || decide false "could not query ${wf} runs for ${base}"
+        [ "${n:-0}" -ge 1 ] 2>/dev/null || decide false "${wf} has no successful main run on base ${base}"
+
+        decide true "base ${base} already passed ${wf} on main"

@@ -41,6 +41,7 @@ var (
 	npEgressCidrs      []string
 	npEgressDomains    []string
 	npMode             string
+	npEgressMode       string
 	npAllowMetadata    bool
 	npAllowFromTenants []string
 	npEgressPreset     string
@@ -149,6 +150,8 @@ func init() {
 		"Allowed egress domain (repeatable, e.g. --egress-domain api.github.com)")
 	networkPolicySetCmd.Flags().StringVar(&npMode, "mode", "log_only",
 		"Enforcement mode: log_only | enforce")
+	networkPolicySetCmd.Flags().StringVar(&npEgressMode, "egress-mode", "",
+		"Mode of the egress allow-list alone: log_only | enforce. Empty = follow --mode. Use --mode enforce --egress-mode log_only to soak a new allow-list while the cross-tenant drop stays enforced.")
 	networkPolicySetCmd.Flags().StringSliceVar(&npAllowFromTenants, "allow-from-tenant", nil,
 		"Tenant whose containers may reach this tenant's containers over the bridge (repeatable; #2359). The only way to open tenant ingress to another tenant — one-directional.")
 	networkPolicySetCmd.Flags().StringVar(&npEgressPreset, "egress-preset", "",
@@ -319,6 +322,7 @@ type netPolicyJSON struct {
 	AllowFromTenants []string       `json:"allowFromTenants,omitempty"`
 	EgressPreset     string         `json:"egressPreset,omitempty"`
 	Mode             string         `json:"mode"`
+	EgressMode       string         `json:"egressMode,omitempty"`
 	Source           string         `json:"source"`
 	DenyRules        []denyRuleJSON `json:"denyRules,omitempty"`
 }
@@ -355,6 +359,19 @@ func normalizeMode(m string) (string, error) {
 	}
 }
 
+// normalizeEgressMode maps the friendly --egress-mode value to the proto enum
+// name. Empty stays empty: the field is then omitted and egress follows mode.
+func normalizeEgressMode(m string) (string, error) {
+	if strings.TrimSpace(m) == "" {
+		return "", nil
+	}
+	mode, err := normalizeMode(m)
+	if err != nil {
+		return "", fmt.Errorf("invalid --egress-mode %q (want log_only or enforce, or leave empty to follow --mode)", m)
+	}
+	return mode, nil
+}
+
 // normalizeEgressPreset maps the friendly CLI value to the proto enum name.
 func normalizeEgressPreset(v string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
@@ -379,6 +396,10 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	egressMode, err := normalizeEgressMode(npEgressMode)
+	if err != nil {
+		return err
+	}
 	// `set` declares the allow-policy only; virtual-patch deny rules (#660) are
 	// owned by `network-policy patch` and preserved server-side across a set, so
 	// no client round-trip is needed to keep them.
@@ -391,6 +412,7 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 		AllowFromTenants: npAllowFromTenants,
 		EgressPreset:     preset,
 		Mode:             mode,
+		EgressMode:       egressMode,
 	}}
 	var out policyEnvelope
 	if err := doJSON("POST", strings.TrimSuffix(serverAddr, "/")+"/v1/network-policies", body, &out); err != nil {
@@ -673,6 +695,11 @@ func egressSummary(p netPolicyJSON) string {
 func printPolicy(w io.Writer, p netPolicyJSON) {
 	fmt.Fprintf(w, "  tenant:             %s\n", p.Tenant)
 	fmt.Fprintf(w, "  mode:               %s\n", shortMode(p.Mode))
+	if p.EgressMode == "" || p.EgressMode == "NETWORK_POLICY_MODE_UNSPECIFIED" {
+		fmt.Fprintf(w, "  egress-mode:        %s (follows mode)\n", shortMode(p.Mode))
+	} else {
+		fmt.Fprintf(w, "  egress-mode:        %s\n", shortMode(p.EgressMode))
+	}
 	fmt.Fprintf(w, "  allow-intra-tenant: %v\n", p.AllowIntraTenant)
 	fmt.Fprintf(w, "  allow-metadata:     %v\n", p.AllowMetadata)
 	if p.Source != "" {

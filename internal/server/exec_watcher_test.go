@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -318,11 +321,265 @@ func TestExecWatcher_AttributesAndHandsToEngine(t *testing.T) {
 	}
 	ev := got[0]
 	if ev.Container != "box-a" || ev.TenantID != "t-box-a" || ev.PID != 4242 || ev.PPID != 1 || ev.UID != 1000 ||
-		ev.Comm != "xmrig" || ev.Filename != "/usr/bin/xmrig" || ev.Argv != "./xmrig -o pool:3333" || !ev.At.Equal(time.Unix(1700000000, 0)) {
+		ev.Comm != "xmrig" || ev.Filename != "/usr/bin/xmrig" || ev.ArgvString() != "./xmrig -o pool:3333" || !ev.At.Equal(time.Unix(1700000000, 0)) {
 		t.Fatalf("engine event = %+v", ev)
 	}
 	if w.Unattributed() != 1 {
 		t.Fatalf("unattributed = %d, want 1", w.Unattributed())
+	}
+}
+
+// TestExecWatcher_KeepsArgumentBoundaries (#2768): the engine gets the real
+// NUL-separated argument vector, so an argument holding spaces (a commit
+// message) stays one argument for the argv matchers.
+func TestExecWatcher_KeepsArgumentBoundaries(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	var got []threatdetect.ExecEvent
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	want := []string{"git", "commit", "-m", "document stratum+tcp:// pool format"}
+	w.OnExecEvent(context.Background(), kernelEvent(ino["lxc.payload.box-a"], 4242, "git", want...))
+	if len(got) != 1 || !slices.Equal(got[0].Argv, want) {
+		t.Fatalf("engine events = %+v, want one with argv %q", got, want)
+	}
+}
+
+// TestExecWatcher_StampsExecsWithBootClock (#2765): the watcher stamps
+// every decoded exec with the boot clock and hands the stamp to the engine
+// as StartTime, including an exec whose process already exited (the kill
+// sorts that out against the live pid); a failed clock read gives no stamp
+// (0), never a guessed one, and is counted. Nothing under /proc/<pid> is
+// opened for it (procOpenTrap catches any open, through any code path).
+func TestExecWatcher_StampsExecsWithBootClock(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	opens := procOpenTrap(t, procRoot, 4242, "my (miner)", 987654, procPerExecFiles...)
+	m := newFakeCgroupMap()
+	var got []threatdetect.ExecEvent
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	w.engine = func(ev threatdetect.ExecEvent) { got = append(got, ev) }
+	clock := []threatdetect.ProcStartTicks{987654, 987660}
+	var clockErr error
+	w.bootTicks = func() (threatdetect.ProcStartTicks, error) {
+		if clockErr != nil {
+			return 0, clockErr
+		}
+		v := clock[0]
+		clock = clock[1:]
+		return v, nil
+	}
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	cg := ino["lxc.payload.box-a"]
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 4242, "xmrig", "./xmrig"))
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 5555, "sh", "sh")) // exited before decode
+	clockErr = errors.New("clock_gettime failed")
+	w.OnExecEvent(context.Background(), kernelEvent(cg, 6666, "sh", "sh"))
+
+	if len(got) != 3 {
+		t.Fatalf("engine got %d events, want 3", len(got))
+	}
+	if got[0].StartTime != 987654 || got[1].StartTime != 987660 {
+		t.Fatalf("stamps = %d, %d; want 987654, 987660", got[0].StartTime, got[1].StartTime)
+	}
+	if got[2].StartTime != 0 {
+		t.Fatalf("failed clock read: stamp = %d, want 0 (unknown)", got[2].StartTime)
+	}
+	if w.StampFailures() != 1 {
+		t.Fatalf("stamp failures = %d, want 1", w.StampFailures())
+	}
+	if n := opens.Load(); n != 0 {
+		t.Fatalf("decode opened files under /proc/4242 %d times, want 0", n)
+	}
+}
+
+// TestExecWatcher_StampFailureIsCountedAndLogged: a failing boot clock is
+// counted on every exec and logged the first time and then every
+// execStampFailLogEvery-th, never once per exec.
+func TestExecWatcher_StampFailureIsCountedAndLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	w := NewExecWatcher(func(threatdetect.ExecEvent) {})
+	w.byCgroup[42] = execTarget{Container: "box-a", TenantID: "tenant-a"}
+	w.bootTicks = func() (threatdetect.ProcStartTicks, error) { return 0, errors.New("clock_gettime: EINVAL") }
+	const execs = 2*execStampFailLogEvery + 5
+	for i := 0; i < execs; i++ {
+		w.OnExecEvent(context.Background(), netbpf.ExecEvent{HostPID: uint32(1000 + i), CgroupID: 42, Comm: "sh"}) // #nosec G115 -- small test pids
+	}
+	if w.StampFailures() != execs {
+		t.Fatalf("stamp failures = %d, want %d", w.StampFailures(), execs)
+	}
+	lines := strings.Count(buf.String(), "boot-clock stamp failed")
+	if lines != 3 { // the 1st, the 1000th, the 2000th
+		t.Fatalf("logged %d times, want 3:\n%s", lines, buf.String())
+	}
+	if !strings.Contains(buf.String(), "clock_gettime: EINVAL") {
+		t.Fatalf("log does not name the error:\n%s", buf.String())
+	}
+}
+
+// procPerExecFiles are the /proc/<pid> files a per-exec capture would
+// plausibly read; procOpenTrap turns each into a trap.
+var procPerExecFiles = []string{"stat", "status", "cgroup", "cmdline"}
+
+// procOpenTrap creates <root>/<pid>/<name> for each name as a FIFO whose
+// writer counts every open of it. The paths must not exist yet: replacing a
+// file that was just written lets a host file scanner (seen on macOS)
+// open the FIFO and count as a read. Opening a FIFO for reading rendezvouses
+// with the writer, so ANY open of these paths is seen, whatever code does
+// it (readProcStartTime, os.ReadFile, os.Open...), not just calls through
+// one helper. The reader gets a stat line (field 22 = start) and EOF.
+func procOpenTrap(t *testing.T, root string, pid int, comm string, start threatdetect.ProcStartTicks, names ...string) *atomic.Int64 {
+	t.Helper()
+	dir := filepath.Join(root, fmt.Sprint(pid))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opens := new(atomic.Int64)
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	var paths []string
+	// Stop the writers: each is blocked in open (waiting for a reader) or
+	// probing for its reader to leave. Hold a non-blocking reader open on
+	// every FIFO until they have all returned, so a writer woken after a
+	// short-lived reader already closed cannot block again.
+	t.Cleanup(func() {
+		stop.Store(true)
+		var readers []*os.File
+		for _, p := range paths {
+			if f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+				readers = append(readers, f)
+			}
+		}
+		defer func() {
+			for _, f := range readers {
+				_ = f.Close()
+			}
+		}()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("procOpenTrap writers did not stop")
+		}
+	})
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if _, err := os.Lstat(path); err == nil {
+			t.Fatalf("procOpenTrap: %s already exists; traps go on fresh paths", path)
+		}
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			t.Skipf("no FIFOs here: %v", err)
+		}
+		paths = append(paths, path)
+		content := []byte(statLine(pid, comm, start))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				f, err := os.OpenFile(path, os.O_WRONLY, 0) // blocks until a reader opens
+				if err != nil {
+					return
+				}
+				if stop.Load() {
+					_ = f.Close()
+					return
+				}
+				opens.Add(1)
+				_, _ = f.Write(content)
+				_ = f.Close()
+				// Wait for this reader to close before the next blocking
+				// open, which would otherwise succeed at once against the
+				// same reader and count it twice. A non-blocking writer
+				// open fails (ENXIO) once no reader holds the FIFO.
+				for !stop.Load() {
+					g, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+					if err != nil {
+						break
+					}
+					_ = g.Close()
+					time.Sleep(50 * time.Microsecond)
+				}
+			}
+		}()
+	}
+	return opens
+}
+
+// TestExecWatcher_FloodOfNonMatchingExecsReadsNoProc: the whole exec path
+// (ring decode → watcher → engine with the miner-signature rule →
+// responder with the real host killer, kill_process on) opens nothing under
+// /proc/<pid> for a flood of execs no rule matches, and reads the stat
+// exactly once for the one exec it kills. The flood's pids are FIFO traps
+// (procOpenTrap), so a read added through any code path is caught. The
+// stat read must stay off the per-exec path: under an exec flood it is what
+// would make the ring consumer fall behind (exec_events_lost).
+func TestExecWatcher_FloodOfNonMatchingExecsReadsNoProc(t *testing.T) {
+	const initPID, minerPID = 100, 4242
+	// The miner's cgroup is a plain file; its stat is a trap created on a
+	// fresh path (procOpenTrap must never replace a file just written: a
+	// host file scanner reacting to that write can open the FIFO).
+	proc := fakeProc(t, map[int]string{initPID: "/lxc.payload.box-a/init.scope"})
+	minerDir := filepath.Join(proc, fmt.Sprint(minerPID))
+	if err := os.MkdirAll(minerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(minerDir, "cgroup"), []byte("0::/lxc.payload.box-a/user.slice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const floodPIDs = 8
+	var floodOpens []*atomic.Int64
+	for i := 0; i < floodPIDs; i++ {
+		floodOpens = append(floodOpens, procOpenTrap(t, proc, 10_000+i, "sh", fakeStart(10_000+i), procPerExecFiles...))
+	}
+	minerStatOpens := procOpenTrap(t, proc, minerPID, "xmrig", fakeStart(minerPID), "stat")
+
+	fx := newResponderFixture(t, false)
+	fx.setKill(t, "", true)
+	var killed []int
+	fx.r.SetProcessKiller(&hostProcessKiller{
+		procRoot: proc,
+		initPID:  func(string) (int64, error) { return initPID, nil },
+		open:     func(p int) (pidHandle, error) { return fakePIDHandle{killed: &killed, pid: p}, nil },
+	})
+	engine := threatdetect.NewEngine(NewActingSink(fx.findings, fx.r), "b1", false, nil, nil)
+	rule, err := threatdetect.NewMinerSignatureRule(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Register(rule)
+	w := NewExecWatcher(engine.OnExec)
+	w.procRoot = proc
+	w.bootTicks = func() (threatdetect.ProcStartTicks, error) { return fakeStart(minerPID) + 10, nil }
+	w.byCgroup[42] = execTarget{Container: "box-a", TenantID: "tenant-a"}
+
+	const flood = 20_000
+	ctx := context.Background()
+	for i := 0; i < flood; i++ {
+		w.OnExecEvent(ctx, netbpf.ExecEvent{HostPID: uint32(10_000 + i%floodPIDs), PPID: 1, CgroupID: 42, Comm: "sh", // #nosec G115 -- small test pids
+			Filename: "/usr/bin/sh", Argv: []string{"sh", "-c", "true"}})
+	}
+	for i, o := range floodOpens {
+		if n := o.Load(); n != 0 {
+			t.Fatalf("%d non-matching execs opened files under /proc/%d %d times, want 0", flood, 10_000+i, n)
+		}
+	}
+	if len(killed) != 0 {
+		t.Fatalf("non-matching flood killed %v", killed)
+	}
+	if got := fx.findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE); len(got) != 0 {
+		t.Fatalf("non-matching flood raised %d signature findings", len(got))
+	}
+
+	w.OnExecEvent(ctx, netbpf.ExecEvent{HostPID: minerPID, PPID: 1, CgroupID: 42, Comm: "xmrig",
+		Filename: "/tmp/xmrig", Argv: []string{"./xmrig", "--donate-level", "1"}})
+	if n := minerStatOpens.Load(); n != 1 || len(killed) != 1 || killed[0] != minerPID {
+		t.Fatalf("matched exec: %d stat opens, kills %v; want 1 open and pid %d killed", n, killed, minerPID)
 	}
 }
 

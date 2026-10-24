@@ -4,6 +4,8 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -193,6 +195,18 @@ func (m *Manager) GetStackIDs() []string {
 		ids[i] = stack.ID
 	}
 	return ids
+}
+
+// CheckStackID is ValidateStackID with an actionable error: an unknown ID is
+// reported together with the valid IDs, so a typo can be corrected without
+// consulting the docs. The empty ID (no stack) is valid.
+func (m *Manager) CheckStackID(id string) error {
+	if m.ValidateStackID(id) {
+		return nil
+	}
+	ids := m.GetStackIDs()
+	sort.Strings(ids)
+	return fmt.Errorf("unknown stack %q; valid stacks: %s", id, strings.Join(ids, ", "))
 }
 
 // ValidateStackID checks if a stack ID is valid

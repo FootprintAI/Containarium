@@ -229,7 +229,10 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		StoppedAt:                 info.StoppedAt,
 		DeleteAfterStoppedSeconds: info.DeleteAfterStoppedSeconds,
 		DeletePolicy:              info.DeletePolicy,
+		ToolAccess:                info.ToolAccess,
 		Image:                     info.Image,
+		Stack:                     info.Stack,
+		PodmanEnabled:             info.PodmanEnabled,
 	}
 }
 

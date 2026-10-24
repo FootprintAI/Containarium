@@ -278,7 +278,10 @@ message FindingResponse {
   // When the TTL backstop will release the action if no operator does.
   google.protobuf.Timestamp expires_at = 5;
   google.protobuf.Timestamp released_at = 6;
-  // "operator" or "ttl"; empty while the action is in effect.
+  // Who ended the action: "operator", "ttl", "orphan-sweep" (an apply that
+  // was never confirmed, undone by the sweep) or "container-deleted" (the box
+  // no longer exists, so nothing was restored; #2835). Empty while the
+  // action is in effect.
   string released_by = 7;
   // Incus error text when state is FAILED.
   string error = 8;
@@ -294,6 +297,14 @@ message FindingResponse {
   // kill at once and later ones at most once a minute, carrying this count
   // and the latest killed_pid.
   uint32 kills = 11;
+  // The box this response is about. A miner-signature finding is keyed per
+  // tenant and pattern, so several boxes of one tenant can share it (#2766);
+  // each box's apply and release is a separate webhook delivery that names
+  // its box here (#2820). On the stored finding it names the box whose
+  // record the finding shows: while any box still holds an applied action
+  // that is a box still holding one, never a released box. Empty on
+  // responses recorded before this field existed.
+  string container = 12;
 }
 
 // KillSkipReason is why a kill_process attempt did not kill the process
@@ -301,7 +312,9 @@ message FindingResponse {
 // full detail.
 enum KillSkipReason {
   KILL_SKIP_REASON_UNSPECIFIED = 0;
-  // The pid now belongs to a different cgroup than the container's.
+  // The pid now belongs to a different cgroup than the container's, or to a
+  // different process of the same container: it started after the matched
+  // exec was seen (#2765).
   KILL_SKIP_REASON_PID_REUSED = 1;
   // The process exited before the signal.
   KILL_SKIP_REASON_PROCESS_GONE = 2;
@@ -311,6 +324,15 @@ enum KillSkipReason {
   KILL_SKIP_REASON_POLICY_UNREADABLE = 4;
   // Any other refusal (host or Incus error).
   KILL_SKIP_REASON_OTHER = 5;
+  // The pid cannot be confirmed as the matched process: the matched exec has
+  // no boot-clock stamp, or the pid's start time could not be read. It is
+  // never signalled (#2765).
+  KILL_SKIP_REASON_START_TIME_UNKNOWN = 6;
+  // The container does not run under Incus: its init has no Incus payload
+  // cgroup ("lxc.payload.<name>"), so the pid cannot be confirmed as one of
+  // the container's processes. kill_process is Incus-only and is refused up
+  // front on any other runtime (#2768); the finding is still raised.
+  KILL_SKIP_REASON_RUNTIME_UNSUPPORTED = 7;
 }
 
 // ProcessPolicy says what a HIGH mining finding does to its container
@@ -374,14 +396,19 @@ message ReleaseProcessActionRequest {
 }
 
 message ReleaseProcessActionResponse {
-  // The finding the action belonged to, with its response in state
-  // RELEASED. Resolved unless finding_kept_open is set.
+  // The finding the action belonged to. Resolved, with its response in
+  // state RELEASED, unless finding_kept_open is set. While another box
+  // still holds an applied action on a shared finding, its response is
+  // that box's APPLIED record (#2820); this box's release is `released`.
   Finding finding = 1;
   // The finding was left open because another box still holds it: a
   // miner-signature finding is shared by every box of the tenant running
   // the same miner, and another box still has an action open on it or a
   // response queued. It is resolved when the last box is released.
   bool finding_kept_open = 2;
+  // This box's release record (state RELEASED, container = the released
+  // box), as the finding webhook delivered it (#2820).
+  FindingResponse released = 3;
 }
 
 // SentryState is the overall on/off state of the background threat-detection
@@ -440,6 +467,15 @@ message GetSentryStatusResponse {
   // full, cumulative since the object loaded. Non-zero means a burst
   // outran the consumer; the events are gone, never blocked the exec.
   int64 exec_events_lost = 6;
+  // Exec hash requests the miner-signature hasher dropped because its queue
+  // was full, cumulative since the daemon started (#2768). Requests are made
+  // only while sha256 entries exist; a dropped exec is never hashed, so a
+  // sha256 entry can miss it (name and argv entries still matched it).
+  // An executable already hashed is served from a cache by (device, inode,
+  // size, mtime, ctime) without being read again, so the queue drains fast
+  // and a non-zero count means a burst of execs the worker could not keep
+  // up with.
+  int64 exec_hashes_dropped = 7;
 }
 
 // ExecEvent is one live exec in a tenant container, as streamed by

@@ -1304,6 +1304,54 @@ The retry only ever installs the Postgres store. If you want a host with no
 durable policy storage, run it without Postgres configured: then the
 in-memory store is the store, and a policy set is lost on restart.
 
+## Daemon starting while core Postgres is down
+
+Every database-backed store shares one **startup Postgres check** (#2824).
+That covers secrets, tracker, app hosting, routes, passthrough,
+collaborators, the security/pentest/ZAP scan stores, audit, alerts, the
+credential-expiry watch and the threat-detection finding store. The check
+pings Postgres until `CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT` (a Go duration,
+default `20s`) runs out. If Postgres has not answered by then, the daemon
+skips every one of those stores at once, opens its listeners and serves
+**DEGRADED**. Before this change each store retried on its own, one after
+another, and the API stayed dark for minutes.
+
+While DEGRADED:
+
+- The log has one line,
+  `DEGRADED: startup Postgres check failed within 20s (...); skipping database-backed stores`.
+- `containarium doctor` prints
+  `! core Postgres (database-backed stores) — unavailable (DEGRADED): ...`.
+- `GET /v1/health?service=containarium.core_postgres` answers 503
+  `NOT_SERVING` (200 `SERVING` when the startup check passed). A
+  cloud-enrolled daemon also reports this as an advisory readiness check.
+- Behaviour is the same degraded behaviour as before, only reached sooner.
+  The skipped stores' APIs are not registered. With no audit store, no
+  audit path accepts writes it cannot persist and the threat-detection
+  sentry is not built. The secrets store stays off, and its
+  REQUIRE_ENVELOPE/KMS checks run unchanged on the next normal start. The
+  guardrail and egress policy stores keep their own background retry
+  (previous section).
+
+**Recovery.** By default you restart the daemon once Postgres is back. To
+have it restart itself, set `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`:
+
+- A daemon whose startup check failed then pings Postgres in the background,
+  backing off from 5 s to 60 s.
+- Once Postgres answers **3 pings in a row**, the daemon shuts down
+  gracefully and exits with status **75**. The supervisor starts it again,
+  and every store is wired through the normal path.
+- Flap guard: it never exits before `CONTAINARIUM_POSTGRES_RECOVERY_MIN_UPTIME`
+  (default `2m`), and any failed ping resets the count.
+- A daemon whose startup check passed never exits for this.
+
+**Supervisor requirement.** The self-restart needs a supervisor that
+restarts the daemon after a non-zero exit. Every unit this repository ships
+has `Restart=on-failure`: `containarium service install`,
+`scripts/containarium.service` and the Terraform startup scripts. If you run
+your own unit, check for `Restart=on-failure` (or `always`), and check that
+75 is not listed in `SuccessExitStatus=`. Otherwise leave the flag off.
+
 ## Auditing recent administrative actions
 
 Every authenticated request lands in the `audit_logs` table (Phase
@@ -1390,6 +1438,143 @@ filesystem permissions — it defends against a Postgres-privileged
 attacker, not a host-root one who could edit both. Back it up
 off-host (it's a plain append-only JSON-lines file) for anything
 stronger.
+
+### Anchoring to a bucket
+
+The local anchor file is only as trustworthy as the host: a host-root
+attacker can edit it and the database together. To keep a copy the host
+cannot rewrite, point the daemon at a GCS bucket:
+
+```bash
+CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
+```
+
+The daemon then writes each anchor to the local file first and to the
+bucket second, one object per checkpoint (`<prefix>/<20-digit checkpoint>.json`),
+using the host's `gcloud` credentials. Lock the bucket's retention policy
+(Bucket Lock) so an object can be neither deleted nor overwritten until its
+retention period ends; the daemon warns at startup when the policy is
+missing or unlocked, and anchors anyway.
+
+Check the database and the local file against the bucket:
+
+```bash
+containarium audit verify-anchor --anchor-bucket gs://<bucket>[/<prefix>]
+```
+
+`--anchor-bucket` defaults to `CONTAINARIUM_AUDIT_ANCHOR_BUCKET`; with
+neither set, `verify-anchor` checks the local file only, as before. The
+command reads every checkpoint in the bucket, not just the highest one:
+
+| Result | Meaning | Exit |
+| --- | --- | --- |
+| ✗ | A bucket checkpoint's root differs from the database row's hash, or the row no longer exists. | non-zero |
+| ✗ | A bucket checkpoint and the local file record different roots, or the bucket has a checkpoint the local file lacks. | non-zero |
+| ✗ | A bucket checkpoint is above the database's highest row id, or its content does not match its name. The daemon cannot have written it. | non-zero |
+| ✗ | A checkpoint only the local file holds (not in the bucket) differs from the database row, or the row no longer exists. The database is checked against the local file for these exactly as it is without `--anchor-bucket`, so turning the bucket on never weakens the local check. | non-zero |
+| ✗ | The chain is internally inconsistent after the latest checkpoint in either copy. | non-zero |
+| ⚠ | The local file holds checkpoints the bucket does not (an upload is still being retried, or the prefix is wrong or empty). The bucket does not vouch for them; they are checked against the database only. | 0 |
+| ⚠ | The bucket has no retention policy, or an unlocked one, or it could not be read. | 0 |
+| ⚠ | An object under the prefix is not named like an anchor; it is ignored. | 0 |
+
+An unreachable bucket or a permission error on the listing is an error,
+never a clean result.
+
+#### What the bucket check does and does not prove
+
+With a **locked** retention policy, it proves that every anchor the daemon
+uploaded is still as uploaded, and that the database and the local file
+agree with each one. That catches:
+
+- a database writer rewriting or deleting a row at or below an uploaded
+  checkpoint, even with every later hash recomputed;
+- a host-root attacker editing or truncating the local anchor file;
+- an object planted in the bucket to hide the real latest anchor (the
+  retention lock stops deletes and overwrites, not new objects, so every
+  object is checked rather than trusting the highest name).
+
+It does **not** protect against:
+
+- a rewrite of rows after the latest uploaded checkpoint, until the next
+  anchoring tick (15 minutes by default) uploads a newer one;
+- a checkpoint whose upload failed and was superseded: it exists only in the
+  local file, so only the local file vouches for it (the database is still
+  compared with it, but a host-root attacker can edit both);
+- a bucket whose retention policy is missing or unlocked: anyone with delete
+  rights can then remove or replace anchors, and the check can only warn;
+- a host-root attacker who stops the daemon, or who alters the `containarium`
+  binary or the host's `gcloud` that performs this check. Run it from a
+  machine you trust, with its own read-only credentials;
+- anyone who controls the cloud project and can wait out the retention
+  period.
+
+An attacker holding the host's `gcloud` credentials can also pre-plant an
+object at a checkpoint id the daemon has not anchored yet. The daemon's
+create-only upload of that checkpoint then fails (HTTP 412, logged as an
+anchor conflict on each tick), so the operator first sees a failing upload in
+the daemon log. `verify-anchor` reports the same object as ✗ (above the
+database's highest row id, missing from the local file, or a root that
+differs from the database), so a planted object never passes as an anchor.
+
+Nothing runs this check on a schedule; an operator or a monitor has to.
+
+#### After a retention purge
+
+Once retention is in enforce mode (see
+[DATA-FLOW-AND-RETENTION.md](DATA-FLOW-AND-RETENTION.md#the-hash-chained-audit-log)),
+the oldest `audit_logs` rows are removed and the daemon stores a **chain
+base**: the id and hash of the last purged row. What changes for the checks
+above:
+
+- `audit verify` starts from the base instead of the first row, and prints
+  that it did. A clean result means "intact since the base", not "intact since
+  the first row ever written".
+- `audit verify-anchor`, with or without `--anchor-bucket`, no longer treats a
+  checkpoint below the base as a deleted row. Those checkpoints are still
+  compared between the bucket and the local file, and the checkpoint at the
+  base is compared with the base hash; the output counts them as "below the
+  chain base". A checkpoint at or above the base is compared with the database
+  as before.
+- A purge never removes the latest anchored row or anything after it, and is
+  refused when that row no longer matches its anchor.
+
+The base records where verification starts, not why the rows before it are
+gone. A database writer who deletes the oldest rows and writes a matching base
+looks like a purge to both commands: by the database alone, a rewritten chain
+base is indistinguishable from a legitimate purge. What tells them apart is the
+anchor bucket, and the comparison is yours to make: `audit verify-anchor
+--anchor-bucket` reports how many checkpoints lie "below the chain base", and
+you compare that with the bucket's own listing. The bucket's checkpoints are
+write-once, so rows that vanished while the bucket still holds anchors for
+them, or a base far above the bucket's latest checkpoint, are not explained by
+any purge. `verify-anchor` does not flag either of those: they are manual
+judgements. If an attacker moves the base over those rows, the checkpoints sit
+below the base, the database is no longer compared with them, and the only
+automatic check left is the comparison between the bucket and the local anchor
+file, which needs a non-empty local record at the same checkpoint. What
+`verify-anchor` does fail is a bucket object below the base that the local file
+has no record of (the missing-locally rule, also for an object with an empty
+root or when the local file is empty) or whose root differs from the local
+file's. Check an unexpected base against the
+audit log (`containarium audit query --action retention.sweep` and
+`--action retention.sweep.result`): every authorised purge writes a
+`retention.sweep` entry before it deletes (with `previous_base_id`, the base it
+started from) and, if it removed rows, a `retention.sweep.result` entry after
+it with `base_id`, the new base. The `base_id` of the latest result entry
+equals the stored base, and its `previous_base_id` equals the `base_id` of the
+result before it, unless a result entry could not be written (the daemon log
+says so, and the sweep report notes it). A base with no matching entry and no
+such note is the thing to investigate.
+
+Those entries are ordinary rows of the chain and use the gateway-logs window
+(90 days by default), so a later purge removes them like any other admin event.
+The base outlives them. To keep the proof of authorisation longer than that
+window, export the `retention.sweep`, `retention.sweep.result`,
+`retention.mode.set`, `retention.policy.set`, `retention.hold.set` and
+`retention.hold.release` entries before they age out
+(`containarium audit query --action <action> --raw > <file>`) and store the
+exports with the anchor copies. Whether admin events should be kept longer
+than gateway logs is an open decision (#2979); today they are not.
 
 ### Integrity self-measurement heartbeat
 

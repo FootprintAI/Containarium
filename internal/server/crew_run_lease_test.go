@@ -56,12 +56,16 @@ func crewMemberLease(runID, skillID string) runlease.Lease {
 // drive RunCrew past its first member.
 type fakeCrewProvisioner struct {
 	failOn   string   // skill id whose provisioning fails ("" = none fail)
+	failErr  error    // what that failure is; nil = the seed failure below
 	provided []string // skill ids provisioned successfully, in order
 	leases   []runlease.Lease
 }
 
 func (p *fakeCrewProvisioner) provision(_ context.Context, skill *pb.AgentSkill, _ *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
 	if skill.Id == p.failOn {
+		if p.failErr != nil {
+			return runlease.Lease{}, "", p.failErr
+		}
 		// Shaped like the real seed failure (see provisionSkillBoxWith).
 		return runlease.Lease{}, "", status.Errorf(codes.Internal, "failed to seed agent box agent-%s-container: exec unsupported", skill.Id)
 	}

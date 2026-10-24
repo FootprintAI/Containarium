@@ -350,6 +350,16 @@ message RunAgentSkillRequest {
   // way an unready manifest engine is. UNSPECIFIED (the default) means "use
   // the manifest", unchanged pre-#2228 behavior.
   AgentEngine engine = 10;
+  // The organization this run is attributed to for MODEL KEY RESOLUTION:
+  // when set, the run's gateway token carries key_owner "org:<id>"
+  // and spends that org's registered provider key, instead of the owner
+  // derived from the shared skill box's cloud_org_id label or the calling
+  // identity. The skill box is shared across runs, so the org has to travel
+  // with the request. Honoured ONLY for a service credential carrying the
+  // literal agents:run-for-org scope (a managed control plane that has already
+  // authorized the end user); any other caller setting it is PermissionDenied.
+  // Empty = unchanged behaviour.
+  string on_behalf_of_org_id = 11;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -365,6 +375,10 @@ message RunAgentSkillResponse {
   // Absolute path of the fetched workspace inside the box. Empty when the
   // request carried no git_source.
   string workspace_path = 5;
+  // Human-readable status from the server, e.g. how to follow a run that is
+  // still in flight on a server that runs skills asynchronously. Empty when
+  // the server has nothing to add; clients print it as-is when present.
+  string message = 6;
 }
 
 // ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
@@ -458,6 +472,11 @@ message TailRunLogRequest {
   // 0..10: when no bytes are available at start_offset, wait up to this many
   // seconds for the journal to grow before answering with an empty chunk.
   int32 follow_seconds = 5;
+  // Model-gateway calls recorded for this run and member after this sequence
+  // number (#2928); 0 = from the first. Pass the previous response's
+  // gateway_next_seq to resume. Independent of start_offset: the calls are
+  // recorded by the daemon, not written to the journal file.
+  int64 gateway_after_seq = 6;
 }
 
 // TailRunLogResponse is one window of a run's journal.
@@ -473,6 +492,65 @@ message TailRunLogResponse {
   bool ended = 4;
   // The run's members that have a journal file for this run.
   repeated string skill_ids = 5;
+  // Model-gateway calls made for this run and member since gateway_after_seq,
+  // oldest first (#2928). A failure at the gateway happens outside the box and
+  // never reaches the journal, so it is reported here as typed events. A client
+  // interleaves them with the journal lines by `time`. Readers that predate the
+  // field ignore it.
+  repeated GatewayCall gateway_calls = 6;
+  // Pass back as gateway_after_seq on the next call.
+  int64 gateway_next_seq = 7;
+}
+
+// GatewayCall is one model call the gateway proxied on behalf of a run (#2928).
+// It carries who paid and how it ended, never the key, a key id, the token, or
+// any prompt or response content.
+message GatewayCall {
+  // Position in the run's call log; strictly increasing per run.
+  int64 seq = 1;
+  // When the gateway finished the call.
+  google.protobuf.Timestamp time = 2;
+  // The run member (skill) whose token made the call.
+  string skill_id = 3;
+  // Upstream provider name as the gateway knows it ("anthropic", "openai", ...).
+  string provider = 4;
+  // Model the request named; empty when the request did not say.
+  string model = 5;
+  // Whose key the call spent. The owner type only.
+  GatewayKeyOwner key_owner = 6;
+  // HTTP status of the response sent to the box; 0 when no response was
+  // produced (see transport_error).
+  int32 status = 7;
+  // Set when the call failed before any upstream response (dial, TLS,
+  // timeout, ...); UNSPECIFIED otherwise.
+  GatewayTransportError transport_error = 8;
+  // Time from the gateway accepting the call to the upstream's response
+  // headers (to the failure, when there were none).
+  int64 latency_ms = 9;
+}
+
+// GatewayKeyOwner is the type of owner whose upstream key a call spent.
+enum GatewayKeyOwner {
+  GATEWAY_KEY_OWNER_UNSPECIFIED = 0;
+  // An organization's key (key_owner "org:<id>").
+  GATEWAY_KEY_OWNER_ORG = 1;
+  // A member's key (key_owner "user:<name>").
+  GATEWAY_KEY_OWNER_MEMBER = 2;
+  // The daemon-global key: the token named no owner, or the owner had none.
+  GATEWAY_KEY_OWNER_OPERATOR_FALLBACK = 3;
+}
+
+// GatewayTransportError classifies a call that produced no upstream response.
+enum GatewayTransportError {
+  GATEWAY_TRANSPORT_ERROR_UNSPECIFIED = 0;
+  GATEWAY_TRANSPORT_ERROR_DIAL = 1;
+  GATEWAY_TRANSPORT_ERROR_TLS = 2;
+  GATEWAY_TRANSPORT_ERROR_TIMEOUT = 3;
+  // The caller went away before the upstream answered.
+  GATEWAY_TRANSPORT_ERROR_CANCELED = 4;
+  // The gateway held no key for the provider, so nothing was sent.
+  GATEWAY_TRANSPORT_ERROR_NO_KEY = 5;
+  GATEWAY_TRANSPORT_ERROR_OTHER = 6;
 }
 
 // AgentSkillService manages and runs individual packaged agents.
@@ -895,6 +973,16 @@ message RunCrewRequest {
   // no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
   // unchanged pre-#2228 behavior.
   map<string, AgentEngine> engine_overrides = 9;
+  // The organization every member run is attributed to for MODEL KEY RESOLUTION:
+  // when set, the run's gateway token carries key_owner "org:<id>"
+  // and spends that org's registered provider key, instead of the owner
+  // derived from the shared skill box's cloud_org_id label or the calling
+  // identity. The skill box is shared across runs, so the org has to travel
+  // with the request. Honoured ONLY for a service credential carrying the
+  // literal agents:run-for-org scope (a managed control plane that has already
+  // authorized the end user); any other caller setting it is PermissionDenied.
+  // Empty = unchanged behaviour.
+  string on_behalf_of_org_id = 10;
 }
 message RunCrewResponse {
   CrewRun run = 1;
@@ -905,6 +993,69 @@ message GetCrewRunRequest {
 }
 message GetCrewRunResponse {
   CrewRun run = 1;
+}
+
+// =============================================================================
+// Task graphs — #2369 slice 1 (#2803). A TaskGraph is a high-level goal split
+// into independently-executable subtasks, each assigned to a crew or a skill,
+// wired by depends-on edges. A planner produces one; the crew orchestrator
+// fans its independent nodes out. Validation (pkg/core/taskgraph) rejects a
+// cycle, an assignee the catalogs do not know, and a graph over the cap.
+// =============================================================================
+
+// TaskNode is one subtask of a TaskGraph.
+message TaskNode {
+  // Unique within the graph; edges reference nodes by this id.
+  string id = 1;
+  // What this subtask must achieve, in the planner's words.
+  string goal = 2;
+  // Who runs the subtask: exactly one of a crew or a single skill, by catalog id.
+  oneof assignee {
+    string crew_id = 3;
+    string skill_id = 4;
+  }
+  // JSON input handed to the assignee — the same shape as
+  // RunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}.
+  string input_json = 5;
+}
+
+// TaskEdge says node_id cannot start until depends_on has finished.
+message TaskEdge {
+  // The node that waits.
+  string node_id = 1;
+  // The node it waits for.
+  string depends_on = 2;
+}
+
+// TaskGraphLimits bounds a graph's size. A zero field means the platform
+// default. A graph may tighten a limit below the platform cap but never raise
+// it above — a value over the cap is rejected, not clamped.
+message TaskGraphLimits {
+  // Maximum number of nodes.
+  uint32 max_nodes = 1;
+  // Maximum depth: the number of nodes on the longest depends-on chain (a
+  // graph with no edges has depth 1).
+  uint32 max_depth = 2;
+}
+
+// TaskGraph is a goal decomposed into subtasks with dependencies.
+message TaskGraph {
+  // The high-level goal the graph decomposes.
+  string goal = 1;
+  repeated TaskNode nodes = 2;
+  repeated TaskEdge edges = 3;
+  TaskGraphLimits limits = 4;
+}
+
+message ValidateTaskGraphRequest {
+  TaskGraph graph = 1;
+}
+message ValidateTaskGraphResponse {
+  // Node ids in a dependency-respecting order: every node appears after
+  // everything it depends on.
+  repeated string order = 1;
+  // The graph's depth (see TaskGraphLimits.max_depth).
+  uint32 depth = 2;
 }
 
 // CrewService runs collaborating sets of skills bound to a task purpose.
@@ -957,6 +1108,21 @@ service CrewService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get crew run";
       description: "Returns the state, trace id, and (when complete) the artifact of a crew execution.";
+      tags: "Agents";
+    };
+  }
+
+  // ValidateTaskGraph checks a task graph against this daemon's crew and skill
+  // catalogs: acyclic, every assignee known, node count and depth within the
+  // cap. Returns InvalidArgument naming the first problem found.
+  rpc ValidateTaskGraph(ValidateTaskGraphRequest) returns (ValidateTaskGraphResponse) {
+    option (google.api.http) = {
+      post: "/v1/task-graphs:validate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Validate a task graph";
+      description: "Checks a task graph is acyclic, that every node's crew or skill exists in this daemon's catalogs, and that its node count and depth are within the cap. Returns a dependency-respecting node order and the graph's depth.";
       tags: "Agents";
     };
   }

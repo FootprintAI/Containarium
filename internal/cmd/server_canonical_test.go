@@ -32,8 +32,10 @@ func TestCanonicalServerAddr_SchemelessResolvesToStoredURL(t *testing.T) {
 	if got != "https://cluster.example.com" {
 		t.Fatalf("canonicalServerAddr = %q, want the stored https URL", got)
 	}
-	if tok := resolveAuthToken(got); tok != "tok-https://cluster.example.com" {
-		t.Fatalf("token = %q, want the stored token", tok)
+	// Compare fingerprints, never the tokens: a failure must not print one (#2922).
+	want := "tok-https://cluster.example.com"
+	if tok := resolveAuthToken(got); tok != want {
+		t.Fatalf("token fingerprint = %s, want %s (the seeded token)", tokenFingerprint(tok), tokenFingerprint(want))
 	}
 }
 

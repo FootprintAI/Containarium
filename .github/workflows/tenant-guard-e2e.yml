@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false # later steps run under sudo and need no git auth
 
@@ -79,9 +79,10 @@ jobs:
           df -h /
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Install ZFS
         run: |
@@ -123,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
-          echo "deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+          echo "deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
             | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends incus dnsmasq-base
@@ -188,7 +189,7 @@ jobs:
           echo "CONTAINARIUM_HTTP=true" >> "$GITHUB_ENV"
           echo "SERVER=http://localhost:8080" >> "$GITHUB_ENV"
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if CONTAINARIUM_TOKEN="$TOKEN" CONTAINARIUM_HTTP=true /tmp/containarium --server http://localhost:8080 list >/tmp/probe.log 2>&1; then ready=yes; break; fi
             sleep 5
           done
@@ -213,7 +214,7 @@ jobs:
           /tmp/containarium --server "$SERVER" list
           want=$(sudo incus config device get alice-container eth0 security.acls)
           converged=""
-          for i in $(seq 1 24); do
+          for _ in $(seq 1 24); do
             got=$(sudo incus config device get alice2-container eth0 security.acls 2>/dev/null || true)
             [ -n "$want" ] && [ "$got" = "$want" ] && { converged=yes; break; }
             sleep 5

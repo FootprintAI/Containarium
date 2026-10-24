@@ -154,6 +154,42 @@ func TestReleaseProcessAction(t *testing.T) {
 	}
 }
 
+// #2820: releasing box A of a finding box B still holds. The response keeps
+// the finding open, the finding reads B's APPLIED (a FREEZE here, so the
+// two records cannot be mistaken for each other), and `released` is A's own
+// THROTTLE RELEASED record, which the CLI and MCP report.
+func TestReleaseProcessAction_SharedFindingReturnsTheBoxRecord(t *testing.T) {
+	s, fx := newPolicyServer(t)
+	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
+	if err := fx.policies.SetOverride(context.Background(), "box-b", &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_FREEZE}); err != nil {
+		t.Fatal(err)
+	}
+	fx.fireSignature(t, "box-a", 0)
+	fx.fireSignature(t, "box-b", 0)
+	resp, err := s.ReleaseProcessAction(badDestAdminCtx(), &pb.ReleaseProcessActionRequest{Container: "box-a"})
+	if err != nil {
+		t.Fatalf("ReleaseProcessAction: %v", err)
+	}
+	if !resp.GetFindingKeptOpen() || resp.GetFinding().GetState() != pb.FindingState_FINDING_STATE_OPEN {
+		t.Fatalf("release of box-a = %v, want the finding kept open", resp)
+	}
+	if r := resp.GetFinding().GetResponse(); r.GetState() != pb.ResponseState_RESPONSE_STATE_APPLIED || r.GetAction() != pb.ProcessAction_PROCESS_ACTION_FREEZE || r.GetContainer() != "box-b" {
+		t.Errorf("finding response = %v, want box-b's FREEZE APPLIED", r)
+	}
+	if r := resp.GetReleased(); r.GetState() != pb.ResponseState_RESPONSE_STATE_RELEASED || r.GetAction() != pb.ProcessAction_PROCESS_ACTION_THROTTLE ||
+		r.GetContainer() != "box-a" || r.GetReleasedBy() != "operator" {
+		t.Errorf("released = %v, want box-a's THROTTLE RELEASED by operator", r)
+	}
+	resp, err = s.ReleaseProcessAction(badDestAdminCtx(), &pb.ReleaseProcessActionRequest{Container: "box-b"})
+	if err != nil {
+		t.Fatalf("ReleaseProcessAction box-b: %v", err)
+	}
+	if resp.GetFindingKeptOpen() || resp.GetFinding().GetState() != pb.FindingState_FINDING_STATE_RESOLVED ||
+		resp.GetReleased().GetContainer() != "box-b" || resp.GetFinding().GetResponse().GetContainer() != "box-b" {
+		t.Errorf("release of box-b = %v, want resolved with box-b's release", resp)
+	}
+}
+
 func TestReleaseProcessAction_NoResponder_ReturnsUnavailable(t *testing.T) {
 	s := NewThreatDetectionServer(nil, false, false, "")
 	_, err := s.ReleaseProcessAction(badDestAdminCtx(), &pb.ReleaseProcessActionRequest{Container: "box-a"})

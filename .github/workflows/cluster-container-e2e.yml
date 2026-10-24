@@ -145,11 +145,12 @@ jobs:
       # taken away.
       CONTAINARIUM_E2E_GO_TIMEOUT: 85m
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -188,11 +189,12 @@ jobs:
       CONTAINARIUM_E2E_READY_TIMEOUT: 10m
       CONTAINARIUM_E2E_GO_TIMEOUT: 35m
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh
@@ -231,11 +233,12 @@ jobs:
       CONTAINARIUM_E2E_READY_TIMEOUT: 10m
       CONTAINARIUM_E2E_GO_TIMEOUT: 35m
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Provision Incus (the incus-create.yml precedent, minus KVM)
         run: bash scripts/ci-incus-container-host.sh

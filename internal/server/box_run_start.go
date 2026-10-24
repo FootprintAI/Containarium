@@ -134,6 +134,8 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	stderrPath := dir + "/" + name + ".stderr.log"
 	exitPath := dir + "/" + name + ".exit"
 	sessionPath := dir + "/" + name + ".session"
+	toolsPath := dir + "/" + name + ".tools"
+	toolsTmp := toolsPath + ".tmp"
 
 	redirect := ">" + q(logPath) + " 2>&1"
 	if sp.structured {
@@ -141,7 +143,12 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		// The result object carries the conversation's own session_id; the
 		// daemon decodes it (top-level key only) when listing the run.
 	}
-	inner := "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+	// The toolchain report (#2954): a probe before the engine and one after it, in the
+	// run's own shell, so it is written whatever the engine's exit status and costs no
+	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
+	// finished also sees its tools.
+	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+		boxRunToolsPostProbe(toolsTmp, toolsPath) +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
 
@@ -154,7 +161,7 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + "\n" +
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
 		"cd " + q(sp.home) + " 2>/dev/null || true\n"
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
@@ -202,7 +209,7 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	q := shellSingleQuote
 	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
 	var b strings.Builder
-	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap"} {
+	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
 		from := q(dir + "/" + name + "." + ext)
 		to := q(dir + "/" + name + suffix + "." + ext)
 		fmt.Fprintf(&b, "[ -e %s ] && mv -f %s %s 2>/dev/null; ", from, from, to)
@@ -350,10 +357,63 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
 	}
 
-	// Every precondition has now passed — safe to mutate. Only now does a
-	// finished prior run under this name get rotated aside.
+	// A box with a recorded tool-access level runs platform-started work as a
+	// dedicated unprivileged user (#2944, slice 1b); a box with none keeps the
+	// owner's identity exactly as before. The level is read before anything is
+	// mutated, and a read error refuses the run rather than demoting it.
+	level, err := s.boxRunRecordedToolAccess(ctx, req.GetUsername())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
+	}
+	runAs := req.GetUsername()
+	// The level's policy is CLI flags on the run command, so it exists only for
+	// the Claude Code engine; an unknown level or another engine is refused
+	// before anything is mutated, never started without a policy.
+	var policy boxRunPolicy
+	if level != "" {
+		if eng.Name() != engine.NameClaude {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"%q has a tool-access level recorded, which is only enforced for the %s engine; %s on %q selects %s",
+				req.GetUsername(), engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
+		}
+		if policy, err = boxRunPolicyFor(level); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
+		}
+	}
+
+	// Every precondition has now passed — safe to mutate.
+	if level != "" {
+		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
+		}
+		runAs, home = boxRunUnprivilegedUser, runHome
+
+		// The run user must already hold a usable sign-in of its own. Checked
+		// after provisioning (it needs the user and the CLI) and before anything
+		// is rotated or spawned, so a refusal leaves every earlier run untouched.
+		state, err := boxRunSignInState(startExec, box)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "check the run user's sign-in on %q: %v", req.GetUsername(), err)
+		}
+		if state != engine.CredentialStatusInteractive && state != engine.CredentialStatusAPIKey {
+			return nil, boxRunSignInRefusal(box, state, runHome)
+		}
+	}
+
+	// Only now does a finished prior run under this name get rotated aside. In
+	// the unprivileged path the rotate runs as root: the finished run's files may
+	// belong to the owner (a run from before a level was recorded), which the
+	// run user could not rename in the sticky run directory.
 	if rotate {
-		if _, err := startExec(box, req.GetUsername(), boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())); err != nil {
+		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
+		var err error
+		if level != "" {
+			_, err = listExec(box, rotateScript)
+		} else {
+			_, err = startExec(box, req.GetUsername(), rotateScript)
+		}
+		if err != nil {
 			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
 		}
 	}
@@ -361,6 +421,10 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	command := eng.RunCommand(req.GetPrompt(), false, req.GetContinueSession(), req.GetSessionId())
 	if req.GetStructuredOutput() {
 		command += engine.ClaudeStructuredOutputFlag
+	}
+
+	if level != "" {
+		command += policy.commandFlags()
 	}
 
 	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput()}
@@ -385,7 +449,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	out, err := startExec(box, req.GetUsername(), boxRunSpawnScript(sp))
+	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
@@ -414,7 +478,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal run record: %v", err)
 	}
-	if _, err := startExec(box, req.GetUsername(), boxRunWriteRecordScript(dir, name, recordJSON)); err != nil {
+	if _, err := startExec(box, runAs, boxRunWriteRecordScript(dir, name, recordJSON)); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "persist run record for %q on %q: %v", name, req.GetUsername(), err)
 	}
 
@@ -459,4 +523,34 @@ func boxRunNameCollidesWithDerivedFile(name string) bool {
 		}
 	}
 	return true
+}
+
+// prepareUnprivilegedRun makes the box ready for an unprivileged run (all as
+// root, all idempotent): the run user exists, the run directory is writable by
+// it, and its home holds a fresh staged copy of what the run reads. Returns the
+// run user's home.
+func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), box, dir, ownerHome, level string) (string, error) {
+	out, err := rootExec(box, boxRunProvisionScript())
+	if err != nil {
+		return "", fmt.Errorf("provision %s: %w", boxRunUnprivilegedUser, err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	runHome := strings.TrimSpace(lines[len(lines)-1])
+	if !validHomePath(runHome) {
+		return "", fmt.Errorf("unexpected home %q for %s", runHome, boxRunUnprivilegedUser)
+	}
+	if _, err := rootExec(box, boxRunSudoersScript(level)); err != nil {
+		return "", fmt.Errorf("apply the sudo grant for level %q: %w", level, err)
+	}
+	if _, err := rootExec(box, boxRunDirScript(dir)); err != nil {
+		return "", fmt.Errorf("prepare run directory: %w", err)
+	}
+	stage, err := boxRunStageScript(ownerHome, runHome)
+	if err != nil {
+		return "", err
+	}
+	if _, err := rootExec(box, stage); err != nil {
+		return "", fmt.Errorf("stage the run user's home: %w", err)
+	}
+	return runHome, nil
 }

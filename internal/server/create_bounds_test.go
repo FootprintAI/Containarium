@@ -1,9 +1,14 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -121,5 +126,88 @@ func TestValidateBounds_EmptyRequestPasses(t *testing.T) {
 	req := &pb.CreateContainerRequest{}
 	if err := validateCreateContainerBounds(req); err != nil {
 		t.Fatalf("empty request should pass: %v", err)
+	}
+}
+
+// #2860: an unknown stack ID is rejected before anything is provisioned, and
+// the error lists the valid IDs so the caller can correct the typo.
+func TestValidateStack_RejectsUnknownID(t *testing.T) {
+	err := validateStackID("no-such-stack")
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument", err)
+	}
+	for _, want := range []string{"no-such-stack", "nodejs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q (the bad ID and the valid IDs)", err, want)
+		}
+	}
+}
+
+func TestValidateStack_AcceptsEmptyAndKnown(t *testing.T) {
+	for _, id := range []string{"", "nodejs"} {
+		if err := validateStackID(id); err != nil {
+			t.Errorf("validateStackID(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
+// The create RPC itself rejects it. An empty server would panic further down
+// if the check did not run first, so a panic is turned into a failed
+// assertion rather than left to crash the test binary.
+func TestCreateContainer_UnknownStackRejected(t *testing.T) {
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", nil, []string{auth.ScopeContainersWrite})
+	srv := &ContainerServer{}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("CreateContainer got past the stack check and panicked: %v", r)
+		}
+	}()
+	_, err := srv.CreateContainer(ctx, &pb.CreateContainerRequest{Username: "alice", Stack: "no-such-stack"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument", err)
+	}
+}
+
+// A create bound for a peer backend is validated by that peer against ITS
+// catalog (an operator stacks.yaml may define stacks this daemon lacks), so the
+// receiving daemon must forward it rather than reject it locally.
+func TestCreateContainer_UnknownStackIsForwardedToAPeer(t *testing.T) {
+	var gotStack string
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Stack string `json:"stack"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotStack = body.Stack
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer peerSrv.Close()
+
+	pool := NewPeerPool("local", "", nil, "")
+	pool.mu.Lock()
+	pool.peers["remote"] = &PeerClient{ID: "remote", Addr: peerSrv.Listener.Addr().String(), Healthy: true, client: peerSrv.Client()}
+	pool.mu.Unlock()
+
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", nil, []string{auth.ScopeContainersWrite})
+	srv := &ContainerServer{peerPool: pool}
+	_, err := srv.CreateContainer(ctx, &pb.CreateContainerRequest{Username: "alice", Stack: "peer-only-stack", BackendId: "remote"})
+	if status.Code(err) == codes.InvalidArgument {
+		t.Fatalf("a peer-bound create was rejected locally: %v", err)
+	}
+	if gotStack != "peer-only-stack" {
+		t.Errorf("peer received stack %q, want it forwarded unchanged", gotStack)
+	}
+}
+
+// req.Stack is echoed in the rejection, so it is length-capped like the other
+// free-form request fields.
+func TestValidateBounds_RejectsOverlongStackID(t *testing.T) {
+	err := validateCreateContainerBounds(&pb.CreateContainerRequest{Stack: strings.Repeat("x", MaxStackIDLength+1)})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument", err)
+	}
+	if err := validateCreateContainerBounds(&pb.CreateContainerRequest{Stack: strings.Repeat("x", MaxStackIDLength)}); err != nil {
+		t.Errorf("a stack ID at the cap should pass bounds: %v", err)
 	}
 }

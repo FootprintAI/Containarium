@@ -47,6 +47,11 @@ var ErrMinerSignatureBuiltin = errors.New("miner signature is a baseline entry a
 // every box, so it is refused at insert (#2638 review).
 var ErrMinerSignatureCatchAll = errors.New("miner signature matches every process")
 
+// ErrMinerSignatureInvalid wraps every refusal of NormalizeMinerSignature
+// (empty, malformed, unknown kind, catch-all): the caller gave a pattern
+// that is not a signature. The server maps it to InvalidArgument.
+var ErrMinerSignatureInvalid = errors.New("invalid miner signature")
+
 // minMinerSigArgvLen is the fewest literal characters an argv marker must
 // carry — "-o *" or "ab" tell a miner from nothing. Baseline entries are
 // held to it too (TestMinerSignatureBaselineParses).
@@ -145,8 +150,17 @@ func globLiteralLen(p string) int {
 // form it is stored and matched in: lowercased (matching is
 // case-insensitive) except for an argv glob, whose option tokens match
 // case-sensitively; surrounding whitespace trimmed except for an argv
-// literal, whose trailing space is significant ("--coin ").
+// literal, whose trailing space is significant ("--coin "). Every refusal
+// wraps ErrMinerSignatureInvalid (and a catch-all also ErrMinerSignatureCatchAll).
 func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string, error) {
+	p, err := normalizeMinerSignature(kind, pattern)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMinerSignatureInvalid, err)
+	}
+	return p, nil
+}
+
+func normalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string, error) {
 	switch kind {
 	case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME:
 		p := strings.ToLower(strings.TrimSpace(pattern))
@@ -167,7 +181,8 @@ func NormalizeMinerSignature(kind pb.MinerSignatureKind, pattern string) (string
 		if strings.TrimSpace(pattern) == "" {
 			return "", errors.New("argv pattern is empty")
 		}
-		// A literal is lowercased (case-insensitive substring). A glob keeps
+		// A literal is lowercased (case-insensitive; it matches where a real
+		// argument begins, see matchLiteralRun). A glob keeps
 		// its case: option tokens ("-o") match case-sensitively, since "-O"
 		// is a different flag (gcc's optimisation level); see matchToken.
 		p := strings.ToLower(pattern)
@@ -239,9 +254,17 @@ func parseBaselineMinerSigYAML(raw []byte) (version string, entries []MinerSigna
 // entries, rebuilt (not mutated) on every add/remove.
 type minerSigMatcher struct {
 	names     []MinerSignatureEntry
-	argvLits  []MinerSignatureEntry
+	argvLits  []minerSigArgvLit
 	argvGlobs []minerSigArgvGlob
 	hashes    map[string]MinerSignatureEntry
+}
+
+// minerSigArgvLit is a compiled literal argv marker: the pattern split on
+// its spaces, each space an argument boundary ("--coin " is the argument
+// "--coin" followed by any argument). See matchLiteralRun.
+type minerSigArgvLit struct {
+	entry MinerSignatureEntry
+	parts []string
 }
 
 type minerSigArgvGlob struct {
@@ -259,7 +282,10 @@ func newMinerSigMatcher(all []MinerSignatureEntry) *minerSigMatcher {
 			if hasGlob(e.Pattern) {
 				m.argvGlobs = append(m.argvGlobs, minerSigArgvGlob{entry: e, tokens: strings.Fields(e.Pattern)})
 			} else {
-				m.argvLits = append(m.argvLits, e)
+				// A leading space marks no boundary a marker could start
+				// after: a marker starts an argument by definition.
+				parts := strings.Split(strings.TrimLeft(e.Pattern, " "), " ")
+				m.argvLits = append(m.argvLits, minerSigArgvLit{entry: e, parts: parts})
 			}
 		case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256:
 			m.hashes[e.Pattern] = e
@@ -284,21 +310,77 @@ func (m *minerSigMatcher) matchCheap(ev ExecEvent) (MinerSignatureEntry, bool) {
 			}
 		}
 	}
-	argv := strings.ToLower(ev.Argv)
-	for _, e := range m.argvLits {
-		if strings.Contains(argv, e.Pattern) {
-			return e, true
+	// Both argv matchers work on the real argument vector (#2768): a marker
+	// quoted inside one argument (a commit message) is a mention, not a hit.
+	if len(m.argvLits) > 0 {
+		lower := make([]string, len(ev.Argv))
+		for i, a := range ev.Argv {
+			lower[i] = strings.ToLower(a)
 		}
-	}
-	if len(m.argvGlobs) > 0 {
-		args := strings.Fields(ev.Argv) // original case; matchToken folds where it should
-		for _, g := range m.argvGlobs {
-			if matchTokenRun(g.tokens, args) {
-				return g.entry, true
+		for _, l := range m.argvLits {
+			if matchLiteralRun(l.parts, lower) {
+				return l.entry, true
 			}
 		}
 	}
+	for _, g := range m.argvGlobs {
+		if matchTokenRun(g.tokens, ev.Argv) { // original case; matchToken folds where it should
+			return g.entry, true
+		}
+	}
 	return MinerSignatureEntry{}, false
+}
+
+// matchLiteralRun reports whether a literal marker, split on its spaces into
+// parts, starts at an argument boundary of args (#2768, decided option A).
+// A one-part marker must begin some argument; a marker of n parts must have
+// its first n-1 parts equal to consecutive whole arguments and its last part
+// begin the argument after them. The value of an option argument
+// "--opt=value" (or "-o=value") also counts as an argument start, since
+// getopt reads it as "--opt value": "--url=stratum+tcp://..." is a hit.
+// Where the marker merely appears inside an argument it is not.
+//
+// It is a boundary rule, not a grammar: an argument that begins with the
+// marker matches whatever the command, so `grep -r --donate-level docs/` is
+// still a hit (a documented limitation; no command allowlist is applied).
+// args are already lowercased, like the parts.
+func matchLiteralRun(parts, args []string) bool {
+	last := len(parts) - 1
+	for i := 0; i+last < len(args); i++ {
+		if !matchLiteralFirst(parts[0], args[i], last == 0) {
+			continue
+		}
+		hit := true
+		for j := 1; j <= last && hit; j++ {
+			if j == last {
+				hit = strings.HasPrefix(args[i+j], parts[j])
+			} else {
+				hit = args[i+j] == parts[j]
+			}
+		}
+		if hit {
+			return true
+		}
+	}
+	return false
+}
+
+// matchLiteralFirst matches a marker's first part against one argument: as
+// a prefix when it is also the last part, else as the whole argument;
+// against the argument itself and, for an option "-...=value", its value.
+func matchLiteralFirst(part, arg string, prefix bool) bool {
+	cands := []string{arg}
+	if strings.HasPrefix(arg, "-") {
+		if _, v, ok := strings.Cut(arg, "="); ok {
+			cands = append(cands, v)
+		}
+	}
+	for _, c := range cands {
+		if (prefix && strings.HasPrefix(c, part)) || (!prefix && c == part) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchTokenRun reports whether consecutive args match every glob token in
@@ -474,11 +556,12 @@ func (r *MinerSignatureRule) OnExec(ctx RuleContext, ev ExecEvent) []RawFinding 
 		Subject:   hit.Subject(),
 		Evidence: Evidence{Execs: []ExecEvidence{{
 			PID:           ev.PID,
+			StartTime:     ev.StartTime,
 			PPID:          ev.PPID,
 			UID:           ev.UID,
 			Comm:          ev.Comm,
 			Filename:      ev.Filename,
-			Argv:          ev.Argv,
+			Argv:          ev.ArgvString(),
 			ArgvTruncated: ev.ArgvTruncated,
 			SHA256:        ev.SHA256,
 			Matched:       hit.Subject(),

@@ -2,16 +2,19 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
+	"github.com/footprintai/containarium/pkg/core/taskgraph"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -124,6 +127,20 @@ func (s *CrewServer) GetCrew(ctx context.Context, req *pb.GetCrewRequest) (*pb.G
 	return &pb.GetCrewResponse{Crew: crew}, nil
 }
 
+// ValidateTaskGraph checks a task graph against this daemon's crew and skill
+// catalogs (#2803) — the same taskgraph.Validate `containarium crew plan
+// validate` runs locally against the embedded catalogs.
+func (s *CrewServer) ValidateTaskGraph(ctx context.Context, req *pb.ValidateTaskGraphRequest) (*pb.ValidateTaskGraphResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeCrewsRead); err != nil {
+		return nil, err
+	}
+	res, err := taskgraph.Validate(req.GetGraph(), s.skills, s.catalog)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &pb.ValidateTaskGraphResponse{Order: res.Order, Depth: uint32(res.Depth)}, nil // #nosec G115 -- Depth <= taskgraph.MaxDepth
+}
+
 // RunCrew validates a crew's topology, provisions each member's box under one
 // trace_id, and records the run. Gated on crews:run; box provisioning reuses
 // RunAgentSkill, so the caller also needs agents:run + containers:write.
@@ -141,6 +158,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	// and every member's lease resolve back to the same identifier.
 	runID, err := resolveRunID(req.GetRunId())
 	if err != nil {
+		return nil, err
+	}
+	// on_behalf_of_org_id: refuse an unauthorized or malformed org
+	// attribution before any member is provisioned.
+	if _, err := authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
 		return nil, err
 	}
 	crew, err := s.catalog.Get(req.CrewId)
@@ -202,7 +224,11 @@ func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkil
 	// RunAgentSkillRequest.engine, applied once per member. A member with no
 	// entry gets the map's zero value, AGENT_ENGINE_UNSPECIFIED, which
 	// agentengine.Override treats as "no override".
-	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id]}
+	orgID, err := authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId())
+	if err != nil {
+		return runlease.Lease{}, "", err
+	}
+	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id], orgID: orgID}
 	containerName, _, lease, gitCommit, _, engineRes, err := s.agents.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, "", runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "", opts)
 	if err != nil {
@@ -212,8 +238,27 @@ func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkil
 	// this request's override, #2228) — a crew whose members name two
 	// different engines gets two members on two engines, each with its own
 	// provider-bound gateway token.
-	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id, engineRes, skill.GetModel())
+	if err := s.serveMember(ctx, skill, containerName, lease, engineRes, s.agents.boxWiper()); err != nil {
+		return runlease.Lease{}, "", err
+	}
 	return lease, gitCommit, nil
+}
+
+// serveMember starts a freshly provisioned member serving and waits for it to
+// answer (#2936). On a failure it ends the lease it was just handed: runCrew
+// only ends the leases of members that provisioned successfully ("the member
+// that just failed has no lease to end"), so without this a member whose
+// runtime never came up would keep a live gateway token and a checkout of the
+// caller's repo. The error names the member and its box and wraps
+// errInBoxRuntimeMissing when the box image does not ship the runtime, which
+// runCrew reports as FailedPrecondition; any other failure is Internal.
+func (s *CrewServer) serveMember(ctx context.Context, skill *pb.AgentSkill, containerName string, lease runlease.Lease, engineRes agentengine.Resolved, w runlease.Wiper) error {
+	err := s.agents.startServeMode(ctx, containerName, lease.SeedDir, skill.Id, engineRes, skill.GetModel())
+	if err == nil {
+		return nil
+	}
+	s.agents.endRunLease(ctx, lease, w, provisionFailedReason)
+	return fmt.Errorf("crew member %q (box %s) did not start serving: %w", skill.Id, containerName, err)
 }
 
 // endMemberLeases ends every collected member lease: revoke its credentials,
@@ -297,7 +342,15 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 			// has no lease to end — provisionSkillBox ends its own partial one
 			// before returning its error.
 			s.endMemberLeases(ctx, leases, deps.wiper, provisionFailedReason)
-			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
+			// A member whose runtime is not in its box is a precondition
+			// failure, not an internal one (#2936). Every other provisioning
+			// failure, an engine refusal included, stays Internal as it
+			// always was (TestRunCrew_EngineOverrides_AppliedPerMember).
+			code := codes.Internal
+			if errors.Is(err, errInBoxRuntimeMissing) {
+				code = codes.FailedPrecondition
+			}
+			return nil, status.Errorf(code, "crew %q: %s", crew.Id, run.Error)
 		}
 		leases = append(leases, lease)
 		// Record the commit the FIRST member's fetch resolved to — every

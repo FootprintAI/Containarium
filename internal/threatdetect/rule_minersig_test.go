@@ -19,9 +19,17 @@ func newTestMinerSigRule(t *testing.T, store ConfigKV) *MinerSignatureRule {
 	return r
 }
 
+// execEv builds an exec whose argv is argv split on spaces: one argument
+// per word. Use execArgs for an argument that itself holds a space.
 func execEv(filename, comm, argv string) ExecEvent {
+	return execArgs(filename, comm, strings.Fields(argv)...)
+}
+
+// execArgs builds an exec with the real argument vector args, as the kernel
+// hands it over (NUL-separated, so an argument may hold spaces).
+func execArgs(filename, comm string, args ...string) ExecEvent {
 	return ExecEvent{Container: "box-1", TenantID: "t1", At: time.Unix(100, 0), PID: 4242, PPID: 1, UID: 1000,
-		Comm: comm, Filename: filename, Argv: argv}
+		Comm: comm, Filename: filename, Argv: args}
 }
 
 // TestNormalizeMinerSignature_RejectsCatchAll (#2638 review): a pattern that
@@ -81,6 +89,9 @@ func TestNormalizeMinerSignature_RejectsCatchAll(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
 				}
+				if !errors.Is(err, ErrMinerSignatureInvalid) {
+					t.Fatalf("error = %v, want ErrMinerSignatureInvalid so the server maps it to InvalidArgument", err)
+				}
 				if tt.wantErr != "is empty" && !errors.Is(err, ErrMinerSignatureCatchAll) {
 					t.Fatalf("error = %v, want ErrMinerSignatureCatchAll so the server maps it to InvalidArgument", err)
 				}
@@ -93,6 +104,35 @@ func TestNormalizeMinerSignature_RejectsCatchAll(t *testing.T) {
 				t.Fatalf("normalized = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNormalizeMinerSignature_InvalidSentinel (#2768 item 5): every refusal,
+// whatever the kind, wraps ErrMinerSignatureInvalid, the one sentinel the
+// server maps to InvalidArgument; AddSignature and RemoveSignature return it
+// unchanged, so the server need not normalize first.
+func TestNormalizeMinerSignature_InvalidSentinel(t *testing.T) {
+	r := newTestMinerSigRule(t, nil)
+	for _, c := range []struct {
+		kind    pb.MinerSignatureKind
+		pattern string
+	}{
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, "/tmp/xmrig"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME, "xm[rig"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, "-o [a-"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256, "abcd"},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256, strings.Repeat("z", 64)},
+		{pb.MinerSignatureKind_MINER_SIGNATURE_KIND_UNSPECIFIED, "xmrig"},
+	} {
+		if _, err := NormalizeMinerSignature(c.kind, c.pattern); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("Normalize(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
+		if _, err := r.AddSignature(context.Background(), c.kind, c.pattern, ""); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("AddSignature(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
+		if err := r.RemoveSignature(context.Background(), c.kind, c.pattern); !errors.Is(err, ErrMinerSignatureInvalid) {
+			t.Errorf("RemoveSignature(%v, %q) = %v, want ErrMinerSignatureInvalid", c.kind, c.pattern, err)
+		}
 	}
 }
 
@@ -237,6 +277,98 @@ func TestMinerSignatureRule_Matchers(t *testing.T) {
 	}
 }
 
+// TestMinerSignatureRule_ArgvArgumentBoundaries (#2768 item 4, option A): a
+// literal argv marker matches only where a real argument begins, using the
+// NUL-separated argv rather than the space-joined line, so a marker quoted
+// inside an argument (a commit message, an echo) is a mention, not a hit.
+// A space inside a marker is an argument boundary ("--coin " is the
+// argument "--coin" followed by another). The value of a "--opt=value"
+// argument counts as an argument start: getopt reads it as "--opt value".
+// Glob markers match whole real arguments the same way.
+func TestMinerSignatureRule_ArgvArgumentBoundaries(t *testing.T) {
+	r := newTestMinerSigRule(t, nil)
+	tests := []struct {
+		name        string
+		ev          ExecEvent
+		wantSubject string // "" = no finding
+	}{
+		// the mention class: a marker inside one quoted argument
+		{"git message mentioning a stratum url", execArgs("/usr/bin/git", "git", "git", "commit", "-m", "document stratum+tcp:// pool format"), ""},
+		{"git message starting a word with the marker", execArgs("/usr/bin/git", "git", "git", "commit", "-m", "see stratum+ssl://pool:443 docs"), ""},
+		{"echo of --donate-level inside one argument", execArgs("/bin/echo", "echo", "echo", "set --donate-level 1 before release"), ""},
+		{"--coin inside one argument", execArgs("/usr/bin/git", "git", "git", "commit", "-m", "--coin monero"), ""},
+		{"-o host:3333 inside one argument", execArgs("/bin/echo", "echo", "echo", "use -o pool.example:3333"), ""},
+		{"marker mid-argument", execArgs("/usr/bin/app", "app", "app", "--input=notes-stratum+tcp://x"), ""},
+		{"marker after a non-option '='", execArgs("/usr/bin/env", "env", "env", "POOL=stratum+tcp://pool:443", "app"), ""},
+		{"--coin as the last argument", execArgs("/usr/bin/svc", "svc", "svc", "--coin"), ""},
+		// real arguments still hit
+		{"stratum url argument", execArgs("/usr/bin/node", "node", "node", "pool.js", "stratum+tcp://pool.example:443"), "argv:stratum+tcp://"},
+		{"--opt=value counts as an argument start", execArgs("/opt/x", "x", "./x", "--url=stratum+ssl://pool.example:443"), "argv:stratum+ssl://"},
+		{"--donate-level flag", execArgs("/opt/x", "x", "./x", "--donate-level", "1"), "argv:--donate-level"},
+		{"--donate-level=1", execArgs("/opt/x", "x", "./x", "--donate-level=1"), "argv:--donate-level"},
+		{"--coin then its value", execArgs("/usr/bin/svc", "svc", "svc", "--coin", "monero"), "argv:--coin "},
+		{"uppercase marker argument", execArgs("/usr/bin/svc", "svc", "svc", "STRATUM+TCP://pool.example:443"), "argv:stratum+tcp://"},
+		{"-o host:3333 as two arguments", execArgs("/usr/bin/svc", "svc", "./svc", "-o", "pool.example:3333"), "argv:-o *:3333"},
+		// the acknowledged limitation (option A): an argument that begins
+		// with the marker is a hit whatever the command
+		{"grep for the flag still hits (documented limitation)", execArgs("/usr/bin/grep", "grep", "grep", "-r", "--donate-level", "docs/"), "argv:--donate-level"},
+		{"an argument beginning with -o matches the attached form", execArgs("/bin/echo", "echo", "echo", "-o pool.example:3333"), "argv:-o[^/]*:3333"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.OnExec(RuleContext{}, tt.ev)
+			if tt.wantSubject == "" {
+				if len(got) != 0 {
+					t.Fatalf("finding %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Subject != tt.wantSubject {
+				t.Fatalf("findings %+v, want one with subject %q", got, tt.wantSubject)
+			}
+		})
+	}
+}
+
+// TestMinerSignatureRule_MultiPartLiteral (#2768): in an operator marker with
+// spaces, every part before the last is a whole argument and the last begins
+// the next one.
+func TestMinerSignatureRule_MultiPartLiteral(t *testing.T) {
+	r := newTestMinerSigRule(t, nil)
+	argv := pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV
+	for _, p := range []string{"--algo rx/0", "-a rx -o"} {
+		if _, err := r.AddSignature(context.Background(), argv, p, "test"); err != nil {
+			t.Fatalf("AddSignature(%q): %v", p, err)
+		}
+	}
+	tests := []struct {
+		name        string
+		args        []string
+		wantSubject string
+	}{
+		{"two parts", []string{"./x", "--algo", "rx/0"}, "argv:--algo rx/0"},
+		{"last part is a prefix", []string{"./x", "--algo", "rx/0-fast"}, "argv:--algo rx/0"},
+		{"first part must be the whole argument", []string{"./x", "--algorithm", "rx/0"}, ""},
+		{"three parts", []string{"./x", "-a", "rx", "-o", "pool:443"}, "argv:-a rx -o"},
+		{"middle part must be the whole argument", []string{"./x", "-a", "rxx", "-o", "pool:443"}, ""},
+		{"parts in one argument", []string{"./x", "--algo rx/0"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.OnExec(RuleContext{}, execArgs("/opt/x", "x", tt.args...))
+			if tt.wantSubject == "" {
+				if len(got) != 0 {
+					t.Fatalf("finding %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Subject != tt.wantSubject {
+				t.Fatalf("findings %+v, want one with subject %q", got, tt.wantSubject)
+			}
+		})
+	}
+}
+
 // TestMinerSignatureRule_FindingCarriesExec: a hit is one HIGH
 // MINER_SIGNATURE finding for the event's container and tenant with the
 // exec attached as evidence and `matched` set.
@@ -244,6 +376,7 @@ func TestMinerSignatureRule_FindingCarriesExec(t *testing.T) {
 	r := newTestMinerSigRule(t, nil)
 	ev := execEv("/tmp/xmrig", "xmrig", "./xmrig --donate-level 1")
 	ev.ArgvTruncated = true
+	ev.StartTime = 987654 // #2765: the kill compares it against the pid's
 	got := r.OnExec(RuleContext{}, ev)
 	if len(got) != 1 {
 		t.Fatalf("findings = %d, want 1", len(got))
@@ -253,7 +386,7 @@ func TestMinerSignatureRule_FindingCarriesExec(t *testing.T) {
 		f.Container != "box-1" || f.TenantID != "t1" || f.Subject != "name:xmrig" {
 		t.Fatalf("finding = %+v", f)
 	}
-	want := ExecEvidence{PID: 4242, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/xmrig",
+	want := ExecEvidence{PID: 4242, StartTime: 987654, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/xmrig",
 		Argv: "./xmrig --donate-level 1", ArgvTruncated: true, Matched: "name:xmrig"}
 	if len(f.Evidence.Execs) != 1 || f.Evidence.Execs[0] != want {
 		t.Fatalf("evidence = %+v, want %+v", f.Evidence.Execs, want)

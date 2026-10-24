@@ -108,6 +108,17 @@ Two further lanes cover the supply chain:
   verify a download, see
   [`docs/security/VERIFYING-RELEASES.md`](docs/security/VERIFYING-RELEASES.md).
 
+- **Pinned GitHub Actions and workflow lint** — every `uses:` in
+  `.github/workflows` is pinned to a full commit SHA (version kept as a
+  trailing comment), and the
+  [`workflow-lint`](.github/workflows/workflow-lint.yml) workflow runs
+  `actionlint` and fails on any unpinned action. It also runs `zizmor` and
+  fails on `pull_request_target`, template injection from event data in
+  `run:` blocks, and over-broad `permissions:`; a seeded violation of each
+  rule is part of the lane's self-test. Workflows that pin a
+  branch were frozen at the branch head on the day of pinning; Dependabot
+  moves the pin forward.
+
 Dependabot opens weekly update PRs for Go modules and GitHub Actions
 ([`.github/dependabot.yml`](.github/dependabot.yml)).
 
@@ -115,9 +126,7 @@ Dependabot opens weekly update PRs for Go modules and GitHub Actions
 ([#2791](https://github.com/FootprintAI/Containarium/issues/2791)), code
 owners with required review on dependency, build and CI paths
 ([#2792](https://github.com/FootprintAI/Containarium/issues/2792)),
-SHA-pinned GitHub Actions with a workflow-lint lane
-([#2793](https://github.com/FootprintAI/Containarium/issues/2793)), a
-dependency-change gate
+a dependency-change gate
 ([#2794](https://github.com/FootprintAI/Containarium/issues/2794)), and
 lockfiles with pinned build-time downloads
 ([#2795](https://github.com/FootprintAI/Containarium/issues/2795)). They

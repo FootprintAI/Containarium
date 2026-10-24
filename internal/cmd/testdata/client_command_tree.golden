@@ -36,6 +36,7 @@ backup list
 backup prune
 backup restore
 backup verify
+box delete
 bridge-dns status
 capacity advertise
 capacity get
@@ -74,6 +75,7 @@ create
 crew get
 crew list
 crew logs
+crew plan validate
 crew run
 crew status
 debug
@@ -87,6 +89,7 @@ gateway mint
 gateway models
 get
 guardrail apply
+guardrail baseline set
 guardrail keygen
 guardrail policy get
 guardrail policy set
@@ -140,6 +143,7 @@ network-policy set
 network-policy signature add
 network-policy signature list
 network-policy signature rm
+network-policy status
 org get-default-region
 org set-default-region
 passthrough-route add
@@ -158,6 +162,14 @@ recipe workspace-access
 regions
 remind-me
 resize
+retention hold list
+retention hold release
+retention hold set
+retention mode get
+retention mode set
+retention policy get
+retention policy set
+retention report
 route add
 route delete
 route list
@@ -223,6 +235,9 @@ token list-revoked
 token refresh
 token revoke
 token unscoped-report
+tool-access clear
+tool-access get
+tool-access set
 tracker change submit
 tracker change view
 tracker connect

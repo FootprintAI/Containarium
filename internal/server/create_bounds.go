@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,6 +41,10 @@ const (
 	// MaxStackParameterKeyLen caps each stack-parameter key.
 	MaxStackParameterKeyLen = 256
 
+	// MaxStackIDLength caps the stack ID, which is echoed in the rejection
+	// for an unknown one. Catalog IDs are short identifiers.
+	MaxStackIDLength = 64
+
 	// MaxLabels caps the labels map cardinality.
 	MaxLabels = 64
 
@@ -50,11 +55,24 @@ const (
 	MaxLabelValueLen = 256
 )
 
+// validateStackID rejects an unknown stack ID with InvalidArgument, naming the
+// valid IDs (#2860). Empty means no stack and is valid.
+func validateStackID(id string) error {
+	if err := stacks.GetDefault().CheckStackID(id); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return nil
+}
+
 // validateCreateContainerBounds enforces the size caps above on
 // req. Returns nil if every field is within bounds; otherwise a
 // gRPC InvalidArgument status that names the offending field +
 // limit so the caller can fix.
 func validateCreateContainerBounds(req *pb.CreateContainerRequest) error {
+	if n := len(req.Stack); n > MaxStackIDLength {
+		return status.Errorf(codes.InvalidArgument,
+			"stack is %d bytes, max is %d", n, MaxStackIDLength)
+	}
 	if n := len(req.SshKeys); n > MaxSSHKeys {
 		return status.Errorf(codes.InvalidArgument,
 			"ssh_keys has %d entries, max is %d", n, MaxSSHKeys)
