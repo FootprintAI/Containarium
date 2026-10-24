@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,14 +82,17 @@ func (o *scopedVerifierOps) ExecWithOutput(name string, _ []string) (string, str
 	return "0", "", nil
 }
 
-// WriteFile permits dump staging only inside an isolated verifier.
-func (o *scopedVerifierOps) WriteFile(name, _ string, _ []byte, _ string) error {
+// WriteFileStream permits dump staging only inside an isolated verifier.
+func (o *scopedVerifierOps) WriteFileStream(name, _ string, content io.Reader, _ string) error {
 	o.checkTarget(name)
-	return nil
+	_, err := io.Copy(io.Discard, content)
+	return err
 }
 
-// ReadFile refuses unexpected container reads; test dumps live on the host.
-func (o *scopedVerifierOps) ReadFile(string, string) ([]byte, error) { return nil, os.ErrNotExist }
+// ReadFileStream refuses unexpected container reads; test dumps live on the host.
+func (o *scopedVerifierOps) ReadFileStream(string, string) (io.ReadCloser, error) {
+	return nil, os.ErrNotExist
+}
 
 // verifierCtx is the documented per-set verifier token (#2401): a non-admin
 // token bound to ONE tenant, scopes exactly backups:read + backups:write.
