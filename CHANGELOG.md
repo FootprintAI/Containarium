@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.116.0] - 2026-10-24
+
 ### Upgrading
 
 - **Retention windows above 36,500 days are rejected, and legal-hold org ids are trimmed** (#2933, #2875 review follow-up; upgrade handling in this release's follow-up).
@@ -31,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Orchestrator and freeform crews can run an explicit task graph** (#2805, #2839). `crew run <crew-id> --plan <file> --concurrency <n>` (also over gRPC and HTTP) validates the whole graph before any box is provisioned, then runs ready nodes concurrently (five by default, configurable). A node starts only after all its dependencies succeed; a failed node blocks its dependents while independent branches finish. Pipeline crews and crews without a graph behave as before.
 - **A default egress allow-list for tenants with no stored network policy** (#2577, stage 1 of the staged default-deny plan). Such a tenant used to run an empty allow-list in `log_only`, so every outbound flow was logged as a would-deny. It now runs a built-in list (git hosts, language registries, OS mirrors, and the box's DNS resolver), still `log_only` for both modes: nothing is dropped, and a stored policy always replaces it. Add the model gateway and control plane with `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`; `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty fallback. This is not "default-deny egress": arming `enforce` per tenant and the CI proof are later stages. The daemon now also resolves the list's names on each refresh, so it needs DNS reachability for them; the first resolution happens in the refresh loop, off the startup path, so a host with slow or no DNS does not delay daemon start. A stored policy that fails validation is skipped, and its tenant runs the default list.
 
 ### Fixed
