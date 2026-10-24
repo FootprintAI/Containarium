@@ -53,6 +53,11 @@ type Dispatch struct {
 	CreatedAt time.Time
 	StartedAt time.Time
 	EndedAt   time.Time
+	// ChangeURL / ChangeNumber are the change request the run submitted
+	// through SubmitTrackerChange (#3001), recorded by RecordDispatchChange
+	// against the row's run id; empty / zero until then.
+	ChangeURL    string
+	ChangeNumber int64
 }
 
 // ErrDispatchActive is returned by InsertDispatch when the issue already
@@ -96,6 +101,10 @@ const dispatchSchema = `
 
 	-- The typed cause of a failed row (#2026); '' when not failed.
 	ALTER TABLE tracker_dispatches ADD COLUMN IF NOT EXISTS failure TEXT NOT NULL DEFAULT '';
+
+	-- The change request the run submitted (#3001); '' / 0 until it does.
+	ALTER TABLE tracker_dispatches ADD COLUMN IF NOT EXISTS change_url TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tracker_dispatches ADD COLUMN IF NOT EXISTS change_number BIGINT NOT NULL DEFAULT 0;
 
 	-- The exactly-once guarantee (#2022).
 	CREATE UNIQUE INDEX IF NOT EXISTS tracker_dispatches_active
@@ -336,14 +345,14 @@ func (s *Store) SetDispatchLabelsPending(ctx context.Context, id string, pending
 }
 
 const dispatchColumns = `id, username, connection, issue_number, scope, skill_id, run_id, depth, state,
-	failure_reason, failure, labels_pending, created_at, started_at, ended_at`
+	failure_reason, failure, labels_pending, created_at, started_at, ended_at, change_url, change_number`
 
 func scanDispatch(row pgx.Row) (*Dispatch, error) {
 	var d Dispatch
 	var state, failure string
 	var startedAt, endedAt *time.Time
 	if err := row.Scan(&d.ID, &d.Username, &d.Connection, &d.IssueNumber, &d.Scope, &d.SkillID, &d.RunID, &d.Depth,
-		&state, &d.FailureReason, &failure, &d.LabelsPending, &d.CreatedAt, &startedAt, &endedAt); err != nil {
+		&state, &d.FailureReason, &failure, &d.LabelsPending, &d.CreatedAt, &startedAt, &endedAt, &d.ChangeURL, &d.ChangeNumber); err != nil {
 		return nil, err
 	}
 	d.State = dispatchStateFromString(state)
@@ -355,6 +364,25 @@ func scanDispatch(row pgx.Row) (*Dispatch, error) {
 		d.EndedAt = *endedAt
 	}
 	return &d, nil
+}
+
+// RecordDispatchChange records the change request a run submitted on the
+// dispatch row that started the run (#3001), matched by run id. Returns
+// false (no error) when no row names runID — a run the dispatcher did not
+// start (an operator-started run, a run from another daemon instance) has
+// nothing to annotate, and the submit itself already succeeded. The newest
+// row for the run id wins if a run id were ever reused.
+func (s *Store) RecordDispatchChange(ctx context.Context, runID, changeURL string, changeNumber int64) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE tracker_dispatches SET change_url = $2, change_number = $3
+		WHERE id = (SELECT id FROM tracker_dispatches WHERE run_id = $1 ORDER BY seq DESC LIMIT 1)`,
+		runID, changeURL, changeNumber)
+	if err != nil {
+		return false, fmt.Errorf("record tracker dispatch change: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // GetDispatch returns one row by id, or ErrDispatchNotFound.

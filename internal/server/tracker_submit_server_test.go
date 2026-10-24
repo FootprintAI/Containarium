@@ -383,6 +383,13 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	pusher := &fakeSubmitPusher{result: submit.PushResult{Branch: wantBranch, SHA: headSHA}}
 	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
 	s.auditStore = mustTestAuditStore(t)
+	// #3001: the dispatcher's row for this run, which the submit annotates.
+	dispatch, err := s.trackerStore.InsertDispatch(ctx, tracker.Dispatch{
+		Username: user, Connection: "default", IssueNumber: 1, Scope: "product", SkillID: "code-review", RunID: "run-abc123",
+	})
+	if err != nil {
+		t.Fatalf("seed dispatch row: %v", err)
+	}
 
 	resp, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: user, Connection: "default", Issue: 1, Title: "My change", Description: "does the thing",
@@ -395,6 +402,23 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	}
 	if resp.GetChange().GetUrl() != "https://github.com/acme/widgets/pull/6" {
 		t.Errorf("response change url = %q, want the provider's URL echoed", resp.GetChange().GetUrl())
+	}
+
+	// #3001: the dispatch row now names the change, and the listing a
+	// control plane mirrors carries it.
+	row, err := s.trackerStore.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatalf("GetDispatch: %v", err)
+	}
+	if row.ChangeURL != "https://github.com/acme/widgets/pull/6" || row.ChangeNumber != 6 {
+		t.Errorf("dispatch row change = {%q, %d}, want the submitted change recorded by run id", row.ChangeURL, row.ChangeNumber)
+	}
+	listed, err := s.ListTrackerDispatches(kmsKeyTestCtx(user, "member", "tracker:admin"), &pb.ListTrackerDispatchesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("ListTrackerDispatches: %v", err)
+	}
+	if len(listed.GetDispatches()) != 1 || listed.GetDispatches()[0].GetChangeUrl() != "https://github.com/acme/widgets/pull/6" || listed.GetDispatches()[0].GetChangeNumber() != 6 {
+		t.Errorf("listed dispatches = %v, want one row carrying change_url / change_number", listed.GetDispatches())
 	}
 
 	// PushBundle must have been called with the run's actual recorded
