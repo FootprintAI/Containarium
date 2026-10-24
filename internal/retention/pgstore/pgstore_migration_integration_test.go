@@ -259,4 +259,22 @@ func TestRetentionPGStore_ConcurrentBootstrapsOnALegacySchema(t *testing.T) {
 	for err := range errs {
 		t.Errorf("concurrent New: %v", err)
 	}
+	// The upgrade ran exactly once: clamped and trimmed, one revision bump,
+	// one recorded change of each kind.
+	s := pgStore(t, pool)
+	p, err := s.GetPolicy(ctx)
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	if got := windowDays(p, classPrompts); got != retention.MaxDays || p.GetRevision() != 2 || p.GetUpdatedBy() != retention.UpgradeActor {
+		t.Errorf("policy after concurrent starts = prompts %d at revision %d by %q, want %d at revision 2 by %s",
+			got, p.GetRevision(), p.GetUpdatedBy(), retention.MaxDays, retention.UpgradeActor)
+	}
+	hs, err := s.ListHolds(ctx)
+	if err != nil || len(hs) != 1 || hs[0].GetOrgId() != "org-a" || hs[0].GetReason() != "case 1" {
+		t.Errorf("holds after concurrent starts = (%v, %v), want only org-a (case 1)", hs, err)
+	}
+	if got := pendingActions(t, s); len(got) != 2 || got[0] != retention.UpgradeActionClamp || got[1] != retention.UpgradeActionHoldNormalise {
+		t.Errorf("recorded upgrade changes = %v, want one clamp and one normalise", got)
+	}
 }
