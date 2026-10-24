@@ -1,6 +1,9 @@
 package server
 
 import (
+	"context"
+	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/netbpf"
@@ -155,5 +158,168 @@ func TestDiffEgress(t *testing.T) {
 	add2, del2 := diffEgress(map[netbpf.EgressEntry]bool{a: true, c: true}, []netbpf.EgressEntry{a, c})
 	if len(add2) != 0 || len(del2) != 0 {
 		t.Errorf("converged diff should be empty, got add=%v del=%v", add2, del2)
+	}
+}
+
+// TestPlanReconcile_EgressMode: egress_mode reaches the BPF config on its own,
+// unset follows mode, and the daemon-wide enforce guard downgrades both modes.
+func TestPlanReconcile_EgressMode(t *testing.T) {
+	const (
+		unset   = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+		logOnly = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+		enforce = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
+	)
+	cases := []struct {
+		name           string
+		mode, egress   pb.NetworkPolicyMode
+		armed          bool
+		wantMode, want uint8
+	}{
+		{"unset follows enforce", enforce, unset, true, netbpf.ModeEnforce, netbpf.ModeEnforce},
+		{"unset follows log-only", logOnly, unset, true, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"cross-tenant enforce, egress log-only", enforce, logOnly, true, netbpf.ModeEnforce, netbpf.ModeLogOnly},
+		{"cross-tenant log-only, egress enforce", logOnly, enforce, true, netbpf.ModeLogOnly, netbpf.ModeEnforce},
+		{"guard off downgrades both", enforce, enforce, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"guard off downgrades a followed egress", enforce, unset, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+		{"guard off downgrades egress-only enforce", logOnly, enforce, false, netbpf.ModeLogOnly, netbpf.ModeLogOnly},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policies := map[string]netpolicy.CompiledPolicy{
+				"alice": compiled(t, &pb.NetworkPolicy{Tenant: "alice", Mode: tc.mode, EgressMode: tc.egress}),
+			}
+			views := []containerView{{Name: "alice-container", Tenant: "alice", TenantID: 1, Ifindex: 11, HasVeth: true, Running: true}}
+			cfg := planReconcile(views, policies, tc.armed).vethPolicy[11]
+			if cfg.Mode != tc.wantMode || cfg.EgressMode != tc.want {
+				t.Errorf("mode=%d egress=%d, want mode=%d egress=%d", cfg.Mode, cfg.EgressMode, tc.wantMode, tc.want)
+			}
+		})
+	}
+
+	// A container with no stored policy gets the Phase A default for both.
+	views := []containerView{{Name: "bob-container", Tenant: "bob", TenantID: 2, Ifindex: 20, HasVeth: true, Running: true}}
+	cfg := planReconcile(views, nil, true).vethPolicy[20]
+	if cfg.Mode != netbpf.ModeLogOnly || cfg.EgressMode != netbpf.ModeLogOnly {
+		t.Errorf("default cfg = %+v, want log-only for both modes", cfg)
+	}
+}
+
+// #2577 stage 1: a tenant with no stored policy is planned from the default
+// allow-list, in log-only, even when the host arms enforcement.
+func TestPlanReconcile_DefaultPolicyIsLogOnlyEvenWhenArmed(t *testing.T) {
+	def, err := netpolicy.DefaultPolicy("acme", netpolicy.DefaultEgressExtras{CIDRs: []string{"10.9.0.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := []containerView{{Name: "acme-container", Tenant: "acme", TenantID: 7, IP: [4]byte{10, 0, 0, 5}, HasIP: true, Ifindex: 11, HasVeth: true, Running: true}}
+	plan := planReconcile(views, map[string]netpolicy.CompiledPolicy{"acme": def}, true)
+	cfg := plan.vethPolicy[11]
+	if cfg.Mode != netbpf.ModeLogOnly || cfg.EgressMode != netbpf.ModeLogOnly {
+		t.Errorf("default policy under an armed host: mode=%v egress=%v, want log-only for both", cfg.Mode, cfg.EgressMode)
+	}
+	if len(plan.egress) == 0 {
+		t.Error("the default allow-list produced no egress entries")
+	}
+}
+
+func TestWithDefaultPolicies(t *testing.T) {
+	stored := netpolicy.CompiledPolicy{Tenant: "has-policy", Mode: pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE}
+	policies := map[string]netpolicy.CompiledPolicy{"has-policy": stored}
+	views := []containerView{
+		{Name: "a", Tenant: "has-policy"},
+		{Name: "b", Tenant: "no-policy"},
+		{Name: "c", Tenant: "no-policy"},
+		{Name: "d", Tenant: ""}, // unmanaged: never guessed into a tenant
+	}
+	build := func(tenant string) (netpolicy.CompiledPolicy, bool) {
+		return netpolicy.CompiledPolicy{Tenant: tenant, LogOnly: true}, true
+	}
+	got := withDefaultPolicies(policies, views, build)
+	if got["has-policy"].Mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE {
+		t.Error("a stored policy must win over the default")
+	}
+	if _, ok := got["no-policy"]; !ok {
+		t.Error("a tenant with no stored policy must get the default")
+	}
+	if _, ok := got[""]; ok {
+		t.Error("an unresolved tenant must not get a policy")
+	}
+	if _, ok := policies["no-policy"]; ok {
+		t.Error("withDefaultPolicies must not mutate its input")
+	}
+	if g := withDefaultPolicies(policies, views, nil); len(g) != 1 {
+		t.Errorf("a nil builder (default posture off) must add nothing, got %d policies", len(g))
+	}
+}
+
+func TestDefaultPolicyFor_OffAndOn(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", nil, nil, nil, nil, nil, true)
+	e.SetImplicitGateway(netip.MustParseAddr("10.0.3.1"))
+	if _, ok := e.defaultPolicyFor("acme"); ok {
+		t.Error("the default posture must be off until SetDefaultEgress")
+	}
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{CIDRs: []string{"nope"}}); err == nil {
+		t.Error("SetDefaultEgress must refuse an unparseable extra")
+	}
+	if _, ok := e.defaultPolicyFor("acme"); ok {
+		t.Error("a refused SetDefaultEgress must leave the posture off")
+	}
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{}); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := e.defaultPolicyFor("acme")
+	if !ok || !c.LogOnly {
+		t.Fatalf("defaultPolicyFor = %+v, %v; want a log-only policy", c, ok)
+	}
+	if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix("10.0.3.1/32")) {
+		t.Errorf("the DNS resolver (bridge gateway) must be implicitly allowed: %v", c.EgressCIDRs)
+	}
+}
+
+// The default posture, end to end through the enforcer: an armed host still
+// plans log-only for both modes for a tenant with no stored policy.
+func TestDefaultPosture_ThroughEnforcerStaysLogOnlyWhenArmed(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", NewMemNetworkPolicyStore(), nil, nil, nil, nil, true)
+	e.SetImplicitGateway(netip.MustParseAddr("10.0.3.1"))
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{}); err != nil {
+		t.Fatal(err)
+	}
+	views := []containerView{{Name: "acme-container", Tenant: "acme", TenantID: 7, Ifindex: 11, HasVeth: true, Running: true}}
+	plan := planReconcile(views, withDefaultPolicies(nil, views, e.defaultPolicyFor), true)
+	cfg, ok := plan.vethPolicy[11]
+	if !ok {
+		t.Fatal("no veth policy planned")
+	}
+	if cfg.Mode != netbpf.ModeLogOnly || cfg.EgressMode != netbpf.ModeLogOnly {
+		t.Errorf("mode=%v egress=%v, want log-only for both on an armed host", cfg.Mode, cfg.EgressMode)
+	}
+	if len(plan.egress) == 0 {
+		t.Error("the implicit resolver allow produced no egress entries")
+	}
+}
+
+// Extras are normalized once and the same names are resolved and looked up:
+// a mixed-case, trailing-dot extra must end up cached under the name the
+// policy looks it up by.
+func TestRefreshDomains_ResolvesDefaultAndNormalizedExtraDomains(t *testing.T) {
+	f := &fakeIPResolver{results: map[string][]netip.Addr{
+		"gateway.example.com": addrs("10.9.0.5"),
+		"github.com":          addrs("140.82.112.3"),
+	}}
+	e := NewNetworkPolicyEnforcer("", NewMemNetworkPolicyStore(), nil, nil, nil, nil, false)
+	e.ctx = context.Background()
+	e.resolver = NewDomainResolver(f)
+	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{Domains: []string{"Gateway.Example.com."}}); err != nil {
+		t.Fatal(err)
+	}
+	e.refreshDomains(true)
+	c, ok := e.defaultPolicyFor("acme")
+	if !ok {
+		t.Fatal("default policy off")
+	}
+	for _, want := range []string{"10.9.0.5/32", "140.82.112.3/32"} {
+		if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix(want)) {
+			t.Errorf("%s not folded into the default allow-list: %v", want, c.EgressCIDRs)
+		}
 	}
 }

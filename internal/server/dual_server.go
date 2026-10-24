@@ -299,6 +299,7 @@ type DualServer struct {
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
 	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
+	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
@@ -1645,6 +1646,8 @@ skipAppHosting:
 	var retentionPGStore retention.Store
 	// The pool the dry-run sweeper counts through (#2876); nil without one.
 	var retentionSweepPool *pgxpool.Pool
+	// The audit_logs prefix purge (#2878); only built once there is an audit store.
+	var retentionChainSource *retentionpg.ChainSource
 	// The startup pool, handed to the policy-store recovery retry (#2483)
 	// when a store's bootstrap failed over a pool that did connect.
 	var policyStorePool *pgxpool.Pool
@@ -2129,6 +2132,9 @@ skipAppHosting:
 	// available (IDs must be stable across restarts) and in-memory otherwise.
 	var networkPolicyEnforcer *NetworkPolicyEnforcer
 	netCfg := appconfig.LoadNetwork()
+	// GetNetworkPolicyStatus reports this host's guard whether or not an
+	// enforcer is configured.
+	npServer.SetEnforcementArmed(netCfg.PolicyEnforce)
 	if bpfObj := netCfg.PolicyBPFObject; bpfObj != "" && networkIncusClient != nil {
 		var tenantRegistry TenantRegistry
 		if postgresConnString != "" {
@@ -2151,6 +2157,9 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		// Status reads what the enforcer loaded; it reports "not running" on its
+		// own until Start succeeds, so a failed start needs no unwiring.
+		npServer.SetAppliedStateSource(networkPolicyEnforcer)
 		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
@@ -2167,6 +2176,10 @@ skipAppHosting:
 			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
 			npServer.SetPlanSources(auditStore, planGW)
 		}
+		// Default egress posture (#2577, stage 1): a tenant with no stored policy
+		// runs the default allow-list in log_only instead of an empty one, so the
+		// would-deny log shows real surprises. Observe-only; never arms drops.
+		configureDefaultEgress(networkPolicyEnforcer, netCfg.DefaultEgress, netCfg.DefaultEgressDomains, netCfg.DefaultEgressCIDRs)
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
@@ -2951,6 +2964,14 @@ skipAppHosting:
 			guardrailPolicyServer.SetAuditStore(auditStore)
 			// retention.policy.set / retention.hold.* entries (#2875).
 			retentionServer.SetAuditStore(auditStore)
+			// The hash-chained audit_logs is swept once the audit store has
+			// created its tables (#2878). The anchor that bounds a purge is
+			// wired in Start, where the anchor sinks are built; until then it
+			// purges nothing.
+			if retentionSweepPool != nil {
+				retentionChainSource = retentionpg.NewChainSource(retentionSweepPool)
+				retentionReporter.AddPrefixSource(retentionChainSource)
+			}
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
@@ -3077,6 +3098,7 @@ skipAppHosting:
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
 		retentionReporter:      retentionReporter,
+		retentionChainSource:   retentionChainSource,
 		credentialWatcher:      credentialWatcher,
 		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
 		grpcServer:             grpcServer,
@@ -3742,6 +3764,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 					}
 				}()
 			}
+			ds.wireRetentionAnchor(fileSink, bucketSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
@@ -4386,4 +4409,18 @@ func envTruthy(v string) bool {
 // an operation every backend has (#1189).
 type k8sClientsetProvider interface {
 	Clientset() kubernetes.Interface
+}
+
+// wireRetentionAnchor gives the audit_logs purge (#2878) the anchor that bounds
+// it, if there is a safe one (see retentionAnchorFunc).
+func (ds *DualServer) wireRetentionAnchor(file *audit.FileSink, bucket *audit.GCSAnchorSink, bucketURI string) {
+	if ds.retentionChainSource == nil {
+		return
+	}
+	fn, ok := retentionAnchorFunc(file, bucket, bucketURI)
+	if !ok {
+		log.Printf("[retention] the audit_logs purge is off: CONTAINARIUM_AUDIT_ANCHOR_BUCKET is set but the external anchor is unavailable")
+		return
+	}
+	ds.retentionChainSource.SetAnchor(fn)
 }

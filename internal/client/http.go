@@ -2096,6 +2096,33 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 	return out.Run, nil
 }
 
+// RunCrewGraph dispatches a typed graph through the existing crew endpoint.
+func (c *HTTPClient) RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(req.CrewId)), body)
+	if err != nil {
+		return nil, err
+	}
+	defer drainClose(resp)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(data, resp.StatusCode, "run crew graph")
+	}
+	out := &pb.RunCrewResponse{}
+	if err := protojson.Unmarshal(data, out); err != nil {
+		return nil, err
+	}
+	return out.Run, nil
+}
+
 // GetCrewRun fetches a crew run's status via HTTP.
 func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2114,6 +2141,33 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.Run, nil
+}
+
+// PlanTaskGraph runs the planner without executing graph nodes.
+func (c *HTTPClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode planner request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:plan", body)
+	if err != nil {
+		return nil, fmt.Errorf("plan task graph: %w", err)
+	}
+	defer drainClose(resp)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read planner response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(data, resp.StatusCode, "plan task graph")
+	}
+	out := &pb.PlanTaskGraphResponse{}
+	if err := protojson.Unmarshal(data, out); err != nil {
+		return nil, fmt.Errorf("decode planner response: %w", err)
+	}
+	return out, nil
 }
 
 // ValidateTaskGraph checks a task graph against the daemon's catalogs via
@@ -2489,8 +2543,19 @@ func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
 	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
 }
 
-// GetRetentionReport reads the dry-run retention report via HTTP (admin
-// only); refresh sweeps now instead of returning the last periodic report.
+// GetRetentionMode reads the retention mode via HTTP (admin only).
+func (c *HTTPClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/mode", nil, &pb.GetRetentionModeResponse{}, "get retention mode")
+}
+
+// SetRetentionMode switches the retention mode via HTTP (admin only).
+func (c *HTTPClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/mode", req, &pb.SetRetentionModeResponse{}, "set retention mode")
+}
+
+// GetRetentionReport reads the retention report via HTTP (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
 func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
 	path := "/v1/retention/report"
 	if refresh {

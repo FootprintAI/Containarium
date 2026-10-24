@@ -445,3 +445,141 @@ func TestVerifyAnchorsAgainstBucket_NonCanonicalNameIsUnrecognised(t *testing.T)
 		t.Fatalf("want OK with an unrecognised-object warning, got failures=%v warnings=%v", findingKinds(r.Failures), findingKinds(r.Warnings))
 	}
 }
+
+// --- #2878: a chain whose oldest rows were purged by retention --------------
+
+// purgedChain is a chain whose rows up to base.ID are gone: only the base
+// still holds the hash of the last purged row, as Store.RowHashAt does.
+type purgedChain struct {
+	*fakeChainStore
+	base ChainBase
+}
+
+func (p *purgedChain) ChainBase(context.Context) (ChainBase, bool, error) { return p.base, true, nil }
+
+func newPurgedFixture(t *testing.T, maxID, baseID int64) (*anchorFixture, *purgedChain) {
+	t.Helper()
+	f := newAnchorFixture(t, maxID)
+	for id := range f.chain.hashes {
+		if id < baseID {
+			delete(f.chain.hashes, id)
+		}
+	}
+	// RowHashAt of the base id is served from the base, not the table.
+	f.chain.hashes[baseID] = fmt.Sprintf("root-%d", baseID)
+	return f, &purgedChain{fakeChainStore: f.chain, base: ChainBase{ID: baseID, Hash: fmt.Sprintf("root-%d", baseID), RowsPurged: baseID}}
+}
+
+func TestVerifyAnchorsAgainstBucket_CheckpointsBelowTheChainBaseAreNotMissingRows(t *testing.T) {
+	f, chain := newPurgedFixture(t, 40, 15)
+	f.anchor(5, 10, 20, 30, 40) // 5 and 10 were purged with their rows
+
+	r, err := VerifyAnchorsAgainstBucket(context.Background(), chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !r.OK() {
+		t.Fatalf("purged checkpoints must not read as deleted rows, got failures=%v", r.Failures)
+	}
+	if r.CheckedCheckpoints != 3 || r.BelowChainBase != 2 {
+		t.Errorf("CheckedCheckpoints/BelowChainBase = %d/%d, want 3/2", r.CheckedCheckpoints, r.BelowChainBase)
+	}
+	found := false
+	for _, w := range r.Warnings {
+		if w.Kind == FindingBelowChainBase {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a FindingBelowChainBase warning, got %v", findingKinds(r.Warnings))
+	}
+}
+
+func TestVerifyAnchorsAgainstBucket_ACheckpointAtTheChainBaseIsComparedWithTheBaseHash(t *testing.T) {
+	f, chain := newPurgedFixture(t, 40, 15)
+	f.anchor(15, 30)
+	if r, err := VerifyAnchorsAgainstBucket(context.Background(), chain, f.file, f.bucket); err != nil || !r.OK() {
+		t.Fatalf("an anchor at the base that matches the base hash must pass: err=%v failures=%v", err, r.Failures)
+	}
+
+	chain.hashes[15] = "not-what-was-anchored"
+	r, err := VerifyAnchorsAgainstBucket(context.Background(), chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(r.Failures, FindingDatabaseRootDiffers, 15) {
+		t.Fatalf("a base hash that differs from the anchored root must fail, got %v", findingKinds(r.Failures))
+	}
+}
+
+func TestVerifyAnchorsAgainstBucket_BelowTheBaseTheBucketAndLocalFileStillAgree(t *testing.T) {
+	f, chain := newPurgedFixture(t, 40, 15)
+	f.anchor(5, 30)
+
+	// The database no longer holds checkpoint 5, but the two anchor copies
+	// still must agree with each other.
+	data, err := os.ReadFile(f.filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.filePath, []byte(strings.Replace(string(data), "root-5", "forged", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := VerifyAnchorsAgainstBucket(context.Background(), chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(r.Failures, FindingLocalRootDiffers, 5) {
+		t.Fatalf("a tampered local copy of a purged checkpoint must still fail, got %v", findingKinds(r.Failures))
+	}
+}
+
+// #2989: with the local anchor file empty, the bucket holds nothing but an
+// object planted below the chain base. The database cannot contradict it (the
+// rows are gone) and there is no local record to compare it with, so the
+// missing-locally rule is the only thing that can fail it.
+func TestVerifyAnchorsAgainstBucket_PlantedObjectBelowTheBaseWithAnEmptyLocalFileFails(t *testing.T) {
+	ctx := context.Background()
+	f, chain := newPurgedFixture(t, 40, 15)
+
+	// Control: nothing anchored anywhere is ErrNoAnchor, not a pass or a fail,
+	// so the failure below is caused by the planted object alone.
+	if _, err := VerifyAnchorsAgainstBucket(ctx, chain, f.file, f.bucket); !errors.Is(err, ErrNoAnchor) {
+		t.Fatalf("control: want ErrNoAnchor with nothing anchored, got %v", err)
+	}
+
+	if err := f.bucket.PublishRoot(ctx, 3, "forged-root"); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+	r, err := VerifyAnchorsAgainstBucket(ctx, chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if r.OK() {
+		t.Fatalf("an object planted below the chain base passed with an empty local file; warnings=%v", findingKinds(r.Warnings))
+	}
+	if !hasFinding(r.Failures, FindingMissingLocally, 3) {
+		t.Fatalf("want a missing-locally failure at checkpoint 3, got %v", findingKinds(r.Failures))
+	}
+}
+
+// #2989: an object planted below the base whose root is the empty string. An
+// empty root is no evidence of anything, so it must not be treated as "nothing
+// to compare"; with no local record it is the missing-locally rule that fires.
+func TestVerifyAnchorsAgainstBucket_PlantedEmptyRootBelowTheBaseFails(t *testing.T) {
+	ctx := context.Background()
+	f, chain := newPurgedFixture(t, 40, 15)
+	if err := f.bucket.PublishRoot(ctx, 3, ""); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+	r, err := VerifyAnchorsAgainstBucket(ctx, chain, f.file, f.bucket)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if r.OK() {
+		t.Fatalf("an empty-root object planted below the chain base passed; warnings=%v", findingKinds(r.Warnings))
+	}
+	if len(r.Failures) != 1 || r.Failures[0].Kind != FindingMissingLocally || r.Failures[0].Checkpoint != 3 {
+		t.Fatalf("want exactly one missing-locally failure at checkpoint 3, got %+v", r.Failures)
+	}
+}

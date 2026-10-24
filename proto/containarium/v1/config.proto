@@ -768,6 +768,17 @@ message NetworkPolicy {
   // Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly
   // as its lists say. See EgressPreset.
   EgressPreset egress_preset = 10;
+
+  // Enforcement mode for the egress allow-list ONLY. `mode` keeps governing
+  // the cross-tenant, intra-tenant, metadata, virtual-patch and signature
+  // checks; this field decides whether a flow to a destination outside the
+  // allow-list (egress_cidrs + resolved egress_domains) is dropped or only
+  // logged. It lets an operator soak a narrower allow-list in LOG_ONLY while
+  // the cross-tenant drop stays in ENFORCE. UNSPECIFIED (the default, and what
+  // every policy written before this field carries) means "follow `mode`", so
+  // existing policies behave exactly as before. The daemon-wide enforce guard
+  // downgrades ENFORCE here exactly as it does for `mode`.
+  NetworkPolicyMode egress_mode = 11;
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a

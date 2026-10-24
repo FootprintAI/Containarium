@@ -1518,6 +1518,64 @@ differs from the database), so a planted object never passes as an anchor.
 
 Nothing runs this check on a schedule; an operator or a monitor has to.
 
+#### After a retention purge
+
+Once retention is in enforce mode (see
+[DATA-FLOW-AND-RETENTION.md](DATA-FLOW-AND-RETENTION.md#the-hash-chained-audit-log)),
+the oldest `audit_logs` rows are removed and the daemon stores a **chain
+base**: the id and hash of the last purged row. What changes for the checks
+above:
+
+- `audit verify` starts from the base instead of the first row, and prints
+  that it did. A clean result means "intact since the base", not "intact since
+  the first row ever written".
+- `audit verify-anchor`, with or without `--anchor-bucket`, no longer treats a
+  checkpoint below the base as a deleted row. Those checkpoints are still
+  compared between the bucket and the local file, and the checkpoint at the
+  base is compared with the base hash; the output counts them as "below the
+  chain base". A checkpoint at or above the base is compared with the database
+  as before.
+- A purge never removes the latest anchored row or anything after it, and is
+  refused when that row no longer matches its anchor.
+
+The base records where verification starts, not why the rows before it are
+gone. A database writer who deletes the oldest rows and writes a matching base
+looks like a purge to both commands: by the database alone, a rewritten chain
+base is indistinguishable from a legitimate purge. What tells them apart is the
+anchor bucket, and the comparison is yours to make: `audit verify-anchor
+--anchor-bucket` reports how many checkpoints lie "below the chain base", and
+you compare that with the bucket's own listing. The bucket's checkpoints are
+write-once, so rows that vanished while the bucket still holds anchors for
+them, or a base far above the bucket's latest checkpoint, are not explained by
+any purge. `verify-anchor` does not flag either of those: they are manual
+judgements. If an attacker moves the base over those rows, the checkpoints sit
+below the base, the database is no longer compared with them, and the only
+automatic check left is the comparison between the bucket and the local anchor
+file, which needs a non-empty local record at the same checkpoint. What
+`verify-anchor` does fail is a bucket object below the base that the local file
+has no record of (the missing-locally rule, also for an object with an empty
+root or when the local file is empty) or whose root differs from the local
+file's. Check an unexpected base against the
+audit log (`containarium audit query --action retention.sweep` and
+`--action retention.sweep.result`): every authorised purge writes a
+`retention.sweep` entry before it deletes (with `previous_base_id`, the base it
+started from) and, if it removed rows, a `retention.sweep.result` entry after
+it with `base_id`, the new base. The `base_id` of the latest result entry
+equals the stored base, and its `previous_base_id` equals the `base_id` of the
+result before it, unless a result entry could not be written (the daemon log
+says so, and the sweep report notes it). A base with no matching entry and no
+such note is the thing to investigate.
+
+Those entries are ordinary rows of the chain and use the gateway-logs window
+(90 days by default), so a later purge removes them like any other admin event.
+The base outlives them. To keep the proof of authorisation longer than that
+window, export the `retention.sweep`, `retention.sweep.result`,
+`retention.mode.set`, `retention.policy.set`, `retention.hold.set` and
+`retention.hold.release` entries before they age out
+(`containarium audit query --action <action> --raw > <file>`) and store the
+exports with the anchor copies. Whether admin events should be kept longer
+than gateway logs is an open decision (#2979); today they are not.
+
 ### Integrity self-measurement heartbeat
 
 The daemon also emits a self-measurement digest to its log on a periodic

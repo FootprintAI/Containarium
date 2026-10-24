@@ -15,9 +15,14 @@ import (
 //
 // A mismatch between the sentinel's CONTAINARIUM_SENTINEL_AUTH_SECRET and a
 // daemon's is otherwise visible only as 401s in logs. This records, per
-// primary, whether its last request to a daemon-AUTH-gated route
-// authenticated or was rejected with 401, and when. It holds NOTHING derived
-// from the secret: only pool names, times and counts.
+// primary, whether a daemon-AUTH-gated request from its address was rejected
+// with 401 since its own last authenticated registration, heartbeat or
+// deregister, and when. It holds NOTHING derived from the secret: only pool
+// names, times and counts.
+//
+// Only primaries that register over HTTP (/sentinel/primaries) are listed.
+// A primary promoted by a tunnel handshake never makes those requests, so it
+// is never listed, whatever its secret.
 //
 // Two rules keep an unauthenticated caller from creating state or poisoning
 // a real primary:
@@ -35,16 +40,19 @@ import (
 // Residual: a client sending from the same address as a primary (the same
 // host, or the same NAT) can make that primary look failing until its next
 // heartbeat (every 30s) authenticates again. It cannot hide a real failure:
-// failures_since_success only resets on an authenticated request.
+// failures_since_success only resets on that primary's own authenticated
+// registration, heartbeat or deregister (bind), not on any other
+// authenticated request from the same address.
 
 // PrimaryAuthState is the outcome of a primary's most recent daemon-AUTH
 // request.
 type PrimaryAuthState string
 
 const (
-	// PrimaryAuthOK: the most recent request authenticated.
+	// PrimaryAuthOK: no 401 from the primary's address since its last
+	// authenticated registration, heartbeat or deregister.
 	PrimaryAuthOK PrimaryAuthState = "ok"
-	// PrimaryAuthFailing401: the most recent request was rejected with 401
+	// PrimaryAuthFailing401: a 401 from the primary's address since then
 	// (secret mismatch, or clock skew beyond auth.SentinelMaxClockSkew).
 	PrimaryAuthFailing401 PrimaryAuthState = "failing_401"
 )
@@ -138,9 +146,15 @@ func (t *primaryAuthTracker) bind(pool Pool, addr string) {
 	e.failuresSinceSuccess = 0
 }
 
-// observe records the outcome of a daemon-AUTH-gated request from addr,
-// attributing it to the one primary last authenticated from addr, if any.
+// observe records the outcome of a daemon-AUTH-gated request from addr. A
+// 401 is attributed to the one primary last bound to addr, if any. An
+// authenticated request changes nothing here: only that primary's own bind
+// clears its failures, so another daemon authenticating from the same
+// address cannot hide a primary's wrong secret.
 func (t *primaryAuthTracker) observe(addr string, authenticated bool) {
+	if authenticated {
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.clock()
@@ -152,17 +166,13 @@ func (t *primaryAuthTracker) observe(addr string, authenticated bool) {
 			n++
 		}
 	}
-	switch {
-	case n == 1 && authenticated:
-		match.lastSuccess = now
-		match.failuresSinceSuccess = 0
-	case n == 1:
+	if n == 1 {
 		match.lastFailure = now
 		match.failuresSinceSuccess++
-	case !authenticated:
-		t.unattributed++
-		t.lastUnattributed = now
+		return
 	}
+	t.unattributed++
+	t.lastUnattributed = now
 }
 
 // snapshot returns per-primary health sorted by pool, plus the unattributed
@@ -184,8 +194,9 @@ func (t *primaryAuthTracker) snapshot() ([]PrimaryAuthHealthJSON, uint64, time.T
 		if !e.lastFailure.IsZero() {
 			h.LastFailure = e.lastFailure.Format(time.RFC3339)
 		}
-		// Every authenticated request resets the count, so a non-zero count
-		// means the most recent attributed request was a 401.
+		// Only the primary's own authenticated registration, heartbeat or
+		// deregister (bind) resets the count, so a non-zero count means a 401
+		// from its address since then.
 		if e.failuresSinceSuccess > 0 {
 			h.State = PrimaryAuthFailing401
 		}

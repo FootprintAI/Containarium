@@ -1050,6 +1050,17 @@ func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 	return resp.Run, nil
 }
 
+// RunCrewGraph dispatches a typed graph through the existing crew RPC.
+func (c *GRPCClient) RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	resp, err := c.crewClient.RunCrew(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("run crew graph: %w", err)
+	}
+	return resp.Run, nil
+}
+
 // GetCrewRun fetches a crew run's status via gRPC.
 func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1059,6 +1070,17 @@ func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("failed to get crew run: %w", err)
 	}
 	return resp.Run, nil
+}
+
+// PlanTaskGraph runs the planner without executing graph nodes.
+func (c *GRPCClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	resp, err := c.crewClient.PlanTaskGraph(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("plan task graph: %w", err)
+	}
+	return resp, nil
 }
 
 // ValidateTaskGraph checks a task graph against the daemon's catalogs via
@@ -1377,8 +1399,23 @@ func (c *GRPCClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldRespons
 	})
 }
 
-// GetRetentionReport reads the dry-run retention report via gRPC (admin
-// only); refresh sweeps now instead of returning the last periodic report.
+// GetRetentionMode reads the retention mode via gRPC (admin only).
+func (c *GRPCClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionCall("get retention mode", func(ctx context.Context) (*pb.GetRetentionModeResponse, error) {
+		return c.retentionClient.GetRetentionMode(ctx, &pb.GetRetentionModeRequest{})
+	})
+}
+
+// SetRetentionMode switches the retention mode via gRPC (admin only).
+func (c *GRPCClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionCall("set retention mode", func(ctx context.Context) (*pb.SetRetentionModeResponse, error) {
+		return c.retentionClient.SetRetentionMode(ctx, req)
+	})
+}
+
+// GetRetentionReport reads the retention report via gRPC (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
 func (c *GRPCClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
 	return retentionCall("get retention report", func(ctx context.Context) (*pb.GetRetentionReportResponse, error) {
 		return c.retentionClient.GetRetentionReport(ctx, &pb.GetRetentionReportRequest{Refresh: refresh})

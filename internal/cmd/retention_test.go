@@ -19,10 +19,24 @@ type fakeRetentionAPI struct {
 	holds    []*pb.SetLegalHoldRequest
 	released []string
 	refresh  []bool
+	modes    []pb.RetentionMode  // every SetRetentionMode request
+	report   *pb.RetentionReport // overrides the canned report when set
+}
+
+func (f *fakeRetentionAPI) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return &pb.GetRetentionModeResponse{State: &pb.RetentionModeState{Mode: pb.RetentionMode_RETENTION_MODE_DRY_RUN}}, nil
+}
+
+func (f *fakeRetentionAPI) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	f.modes = append(f.modes, req.GetMode())
+	return &pb.SetRetentionModeResponse{State: &pb.RetentionModeState{Mode: req.GetMode(), UpdatedBy: "ops"}}, nil
 }
 
 func (f *fakeRetentionAPI) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
 	f.refresh = append(f.refresh, refresh)
+	if f.report != nil {
+		return &pb.GetRetentionReportResponse{Report: f.report}, nil
+	}
 	return &pb.GetRetentionReportResponse{Report: &pb.RetentionReport{
 		Mode:           pb.RetentionMode_RETENTION_MODE_DRY_RUN,
 		GeneratedAt:    timestamppb.New(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
@@ -71,7 +85,7 @@ func runRetentionCLI(t *testing.T, f *fakeRetentionAPI, args ...string) (string,
 	newRetentionAPI = func() (retentionAPI, func(), error) { return f, func() {}, nil }
 	t.Cleanup(func() { newRetentionAPI = prev })
 	// cobra keeps flag values and Changed marks across Execute calls.
-	for _, c := range []interface{ Flags() *pflag.FlagSet }{retentionPolicySetCmd, retentionHoldSetCmd, retentionReportCmd} {
+	for _, c := range []interface{ Flags() *pflag.FlagSet }{retentionPolicySetCmd, retentionHoldSetCmd, retentionReportCmd, retentionModeSetCmd} {
 		c.Flags().VisitAll(func(fl *pflag.Flag) { _ = fl.Value.Set(fl.DefValue); fl.Changed = false })
 	}
 	var out bytes.Buffer
@@ -113,7 +127,7 @@ func TestRetentionPolicyGetCLI_PrintsEveryWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("policy get: %v", err)
 	}
-	for _, want := range []string{"prompts", "7 days", "evidence-bundles", "365 days (default)", "revision 2", "Not enforced"} {
+	for _, want := range []string{"prompts", "7 days", "evidence-bundles", "365 days (default)", "revision 2", "Windows apply when the mode is enforce"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output %q missing %q", out, want)
 		}
@@ -167,5 +181,135 @@ func TestRetentionReportCLI_RefreshFlag(t *testing.T) {
 	}
 	if len(f.refresh) != 1 || !f.refresh[0] {
 		t.Errorf("refresh flags sent = %v, want one true", f.refresh)
+	}
+}
+
+func TestRetentionModeSetCLI_SendsTheTypedMode(t *testing.T) {
+	for arg, want := range map[string]pb.RetentionMode{
+		"enforce": pb.RetentionMode_RETENTION_MODE_ENFORCE,
+		"dry-run": pb.RetentionMode_RETENTION_MODE_DRY_RUN,
+	} {
+		f := &fakeRetentionAPI{}
+		out, err := runRetentionCLI(t, f, "mode", "set", "--mode", arg)
+		if err != nil {
+			t.Fatalf("mode set --mode %s: %v (%s)", arg, err, out)
+		}
+		if len(f.modes) != 1 || f.modes[0] != want {
+			t.Errorf("--mode %s sent %v, want [%v]", arg, f.modes, want)
+		}
+		if !strings.Contains(out, arg) || !strings.Contains(out, "ops") {
+			t.Errorf("--mode %s output = %q, want the mode and who set it", arg, out)
+		}
+	}
+}
+
+func TestRetentionModeSetCLI_EnforceSaysWhatItWillDelete(t *testing.T) {
+	out, err := runRetentionCLI(t, &fakeRetentionAPI{}, "mode", "set", "--mode", "enforce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "permanently deletes") || !strings.Contains(out, "legal hold") {
+		t.Errorf("enforce output = %q, want the deletion and the hold exception spelled out", out)
+	}
+}
+
+func TestRetentionModeSetCLI_RefusesAMissingOrUnknownMode(t *testing.T) {
+	for _, args := range [][]string{{"mode", "set"}, {"mode", "set", "--mode", "delete"}, {"mode", "set", "--mode", ""}} {
+		f := &fakeRetentionAPI{}
+		_, err := runRetentionCLI(t, f, args...)
+		if err == nil || !strings.Contains(err.Error(), "enforce") || !strings.Contains(err.Error(), "dry-run") {
+			t.Errorf("%v = %v, want an error naming enforce and dry-run", args, err)
+		}
+		if len(f.modes) != 0 {
+			t.Errorf("%v sent %v, want no request", args, f.modes)
+		}
+	}
+}
+
+func TestRetentionModeGetCLI_PrintsTheMode(t *testing.T) {
+	out, err := runRetentionCLI(t, &fakeRetentionAPI{}, "mode", "get")
+	if err != nil || !strings.Contains(out, "dry-run") {
+		t.Errorf("mode get = (%q, %v), want dry-run", out, err)
+	}
+}
+
+func TestRetentionReportCLI_SaysWhetherThisSweepDeleted(t *testing.T) {
+	stores := []*pb.RetentionStoreReport{
+		{Class: pb.RetentionClass_RETENTION_CLASS_PROMPTS, Store: "agent_tasks", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+			WindowDays: 30, Cutoff: timestamppb.New(time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)), OlderThanCutoff: 8, Eligible: 6, Held: 2, Removed: 6},
+	}
+	gen := timestamppb.New(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC))
+	for name, tc := range map[string]struct {
+		report *pb.RetentionReport
+		want   []string
+		not    []string
+	}{
+		"enforced sweep": {
+			&pb.RetentionReport{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE, Enforced: true, GeneratedAt: gen, Stores: stores},
+			[]string{"mode: enforce", "deleted by this sweep", "REMOVED"}, []string{"nothing is deleted"},
+		},
+		"enforce-mode preview": {
+			&pb.RetentionReport{Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE, GeneratedAt: gen, Stores: stores},
+			[]string{"mode: enforce", "this count deleted nothing", "next sweep"}, []string{"deleted by this sweep"},
+		},
+		"dry run": {
+			&pb.RetentionReport{Mode: pb.RetentionMode_RETENTION_MODE_DRY_RUN, GeneratedAt: gen, Stores: stores},
+			[]string{"mode: dry-run", "nothing is deleted"}, []string{"deleted by this sweep"},
+		},
+	} {
+		out, err := runRetentionCLI(t, &fakeRetentionAPI{report: tc.report}, "report")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: output missing %q:\n%s", name, w, out)
+			}
+		}
+		for _, n := range tc.not {
+			if strings.Contains(out, n) {
+				t.Errorf("%s: output contains %q:\n%s", name, n, out)
+			}
+		}
+	}
+}
+
+// The purged audit_logs reports where verification now starts, once per store
+// (both chained classes carry the same base), and says what a verifier does
+// with it.
+func TestRetentionReportCLI_PrintsTheChainBaseOnceForAPurgedAuditLog(t *testing.T) {
+	base := &pb.RetentionChainBase{
+		BaseId: 510, BaseHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		PurgedAt: timestamppb.New(time.Date(2026, 10, 23, 11, 0, 0, 0, time.UTC)), RowsPurged: 1234,
+	}
+	cutoff := timestamppb.New(time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC))
+	f := &fakeRetentionAPI{report: &pb.RetentionReport{
+		Mode: pb.RetentionMode_RETENTION_MODE_ENFORCE, Enforced: true,
+		GeneratedAt: timestamppb.New(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
+		Stores: []*pb.RetentionStoreReport{
+			{Class: pb.RetentionClass_RETENTION_CLASS_GATEWAY_LOGS, Store: "audit_logs", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: 90, Cutoff: cutoff, OlderThanCutoff: 9, Eligible: 7, Held: 2, Removed: 7, ChainBase: base,
+				Note: "the purge stops below the latest anchor (id 600)"},
+			{Class: pb.RetentionClass_RETENTION_CLASS_SESSION_TRANSCRIPTS, Store: "audit_logs", Status: pb.RetentionSweepStatus_RETENTION_SWEEP_STATUS_COUNTED,
+				WindowDays: 90, Cutoff: cutoff, OlderThanCutoff: 4, Eligible: 3, Held: 1, Removed: 3, ChainBase: base},
+		},
+	}}
+	out, err := runRetentionCLI(t, f, "report")
+	if err != nil {
+		t.Fatalf("report: %v (%s)", err, out)
+	}
+	for _, want := range []string{
+		"audit_logs chain base: row id 510", "0123456789abcdef", "1234 row(s) purged", "2026-10-23T11:00:00Z",
+		"audit verify", "the latest anchor (id 600)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "chain base:"); n != 1 {
+		t.Errorf("the base was printed %d times, want once per store:\n%s", n, out)
+	}
+	if strings.Contains(out, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") {
+		t.Errorf("the full hash should be abbreviated in the table output:\n%s", out)
 	}
 }

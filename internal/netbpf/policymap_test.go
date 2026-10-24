@@ -24,7 +24,7 @@ func TestCompileConfig(t *testing.T) {
 		Mode:             pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
 	})
 	got := CompileConfig(42, c)
-	want := PolicyConfig{TenantID: 42, Mode: ModeEnforce, AllowIntra: 1}
+	want := PolicyConfig{TenantID: 42, Mode: ModeEnforce, AllowIntra: 1, EgressMode: ModeEnforce} // unset egress_mode follows mode
 	if got != want {
 		t.Errorf("CompileConfig() = %+v, want %+v", got, want)
 	}
