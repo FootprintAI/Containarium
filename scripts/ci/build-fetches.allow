@@ -1,0 +1,47 @@
+# Build-time network fetch inventory, checked by scripts/ci/check-build-fetches.sh.
+# One "<path><TAB><tool>" per line, keyed by file and tool (never line number).
+# Every entry must also appear, with how it is pinned, in
+# docs/security/BUILD-SUPPLY-CHAIN.md. Add an entry only for a pinned fetch.
+.github/workflows/agent-runtime.yml	npm ci
+.github/workflows/distros-py-ci.yml	pip install
+.github/workflows/distros-py-release.yml	pip install
+.github/workflows/ebpf-load.yml	curl
+.github/workflows/fence-probe-e2e.yml	curl
+.github/workflows/gitlab-e2e.yml	curl
+.github/workflows/golangci-lint.yml	go install
+.github/workflows/helm-install-upgrade.yml	curl
+.github/workflows/k8s-e2e.yml	curl
+.github/workflows/licenses.yml	go install
+.github/workflows/proxyproto-e2e.yml	npm ci
+.github/workflows/release.yml	curl
+.github/workflows/security.yml	go install
+.github/workflows/tenant-guard-e2e.yml	curl
+.github/workflows/workflow-lint.yml	curl
+internal/runner/install_script_payload.sh	curl
+internal/runner/install_script_payload.sh	npm install
+Makefile	npm ci
+scripts/agent-skill-lease-e2e.sh	curl
+scripts/build-macos11.sh	go install
+scripts/build-webui.sh	npm ci
+scripts/bundle/download-deps.sh	curl
+scripts/bundle/download-deps.sh	wget
+scripts/ci/check-licenses.sh	go install
+scripts/ci/npm-licenses.sh	npm ci
+scripts/ci/tunnel-smoke.sh	curl
+scripts/download-swagger-ui.sh	curl
+scripts/engineer-crew-e2e.sh	curl
+scripts/install-agent-runtime.sh	curl
+scripts/install-agent-runtime.sh	npm ci
+scripts/install-buf.sh	curl
+scripts/install-lab-phase-b.sh	curl
+scripts/install-sdlc-skills.sh	curl
+scripts/install-xcaddy.sh	curl
+scripts/redeploy-workhorse.sh	curl
+scripts/setup-caddy.sh	curl
+scripts/setup-gpu-host.sh	curl
+scripts/setup-gpu-host.sh	wget
+scripts/two-engine-crew-e2e.sh	curl
+scripts/verify-agent-runtime-bundle.sh	npm ci
+sidecars/otel-sidecar/Dockerfile	go install
+sidecars/otel-sidecar/Dockerfile	wget
+web-ui/Dockerfile	npm ci
