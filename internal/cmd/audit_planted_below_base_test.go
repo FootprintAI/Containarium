@@ -61,4 +61,60 @@ func TestVerifyAnchorBucket_PlantedCheckpointBelowTheChainBaseExitsNonZero(t *te
 	if !strings.Contains(stderr, "checkpoint id=3") {
 		t.Errorf("stderr must name the planted checkpoint:\n%s", stderr)
 	}
+
+	// Which rule fired (#2989): the text above would also be produced by an
+	// unrelated failure that happens to name checkpoint 3, so ask the report
+	// itself. The planted object has no local record, which is the
+	// missing-locally rule, and no other failure may be present.
+	report, rerr := audit.VerifyAnchorsAgainstBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t, 20, 30), planted)
+	if rerr != nil {
+		t.Fatalf("report: %v", rerr)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].Kind != audit.FindingMissingLocally || report.Failures[0].Checkpoint != 3 {
+		t.Fatalf("want exactly one missing-locally failure at checkpoint 3, got %+v", report.Failures)
+	}
+	if !strings.Contains(stderr, report.Failures[0].Detail) {
+		t.Errorf("stderr must print the failing rule's detail %q:\n%s", report.Failures[0].Detail, stderr)
+	}
+}
+
+// #2989: the same, with an empty local anchor file and a bucket holding only
+// the planted object.
+func TestVerifyAnchorBucket_PlantedCheckpointBelowTheBaseWithAnEmptyLocalFileExitsNonZero(t *testing.T) {
+	bucket := &fakeAnchorBucket{lock: lockedBucket, cps: []audit.BucketCheckpoint{{Checkpoint: 3, Root: "forged-root"}}}
+	var out, errOut bytes.Buffer
+	err := verifyAnchorBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t), "anchors.jsonl", bucket, &out, &errOut)
+	if err == nil {
+		t.Fatalf("a lone planted checkpoint below the chain base exited zero:\n%s", out.String())
+	}
+	report, rerr := audit.VerifyAnchorsAgainstBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t), bucket)
+	if rerr != nil {
+		t.Fatalf("report: %v", rerr)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].Kind != audit.FindingMissingLocally || report.Failures[0].Checkpoint != 3 {
+		t.Fatalf("want exactly one missing-locally failure at checkpoint 3, got %+v", report.Failures)
+	}
+	if !strings.Contains(errOut.String(), report.Failures[0].Detail) {
+		t.Errorf("stderr must print the failing rule's detail:\n%s", errOut.String())
+	}
+}
+
+// #2989: an object below the base whose root is the empty string.
+func TestVerifyAnchorBucket_PlantedEmptyRootBelowTheBaseExitsNonZero(t *testing.T) {
+	bucket := &fakeAnchorBucket{lock: lockedBucket, cps: []audit.BucketCheckpoint{{Checkpoint: 3, Root: ""}}}
+	var out, errOut bytes.Buffer
+	err := verifyAnchorBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t), "anchors.jsonl", bucket, &out, &errOut)
+	if err == nil {
+		t.Fatalf("an empty-root object planted below the chain base exited zero:\n%s", out.String())
+	}
+	report, rerr := audit.VerifyAnchorsAgainstBucket(context.Background(), newPurgedAnchorChain(40, 15), newAnchorTestFile(t), bucket)
+	if rerr != nil {
+		t.Fatalf("report: %v", rerr)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].Kind != audit.FindingMissingLocally || report.Failures[0].Checkpoint != 3 {
+		t.Fatalf("want exactly one missing-locally failure at checkpoint 3, got %+v", report.Failures)
+	}
+	if !strings.Contains(errOut.String(), report.Failures[0].Detail) {
+		t.Errorf("stderr must print the failing rule's detail:\n%s", errOut.String())
+	}
 }
