@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/sentinel/sshban"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ func init() { sentinelCmd.AddCommand(newSSHBanPluginCommand()) }
 // newSSHBanPluginCommand isolates configuration per invocation and validates it
 // before opening the stdio protocol or its privileged control socket.
 func newSSHBanPluginCommand() *cobra.Command {
-	var listener, socket, recordsFile string
+	var listener, socket, upstreamSocket, recordsFile string
 	var maxRecords int
 	var maximum, capacity uint32
 	var duration time.Duration
@@ -33,6 +34,7 @@ func newSSHBanPluginCommand() *cobra.Command {
 	c := &cobra.Command{Use: "ssh-ban-plugin", Short: "sshpiperd plugin: enforce and inspect source-IP failure budgets", Args: cobra.NoArgs}
 	c.Flags().StringVar(&listener, "listener", "main", "Listener identity: main or anonymous")
 	c.Flags().StringVar(&socket, "control-socket", "", "Private Unix control socket (default per listener)")
+	c.Flags().StringVar(&upstreamSocket, "upstream-control-socket", "", "Shared private upstream controller socket")
 	c.Flags().Uint32Var(&maximum, "max-failures", 100, "Failed callbacks before blocking a source IP")
 	c.Flags().DurationVar(&duration, "ban-duration", 5*time.Minute, "Fixed failure window from the first connection")
 	c.Flags().Uint32Var(&capacity, "max-entries", 65536, "Maximum live source-IP entries")
@@ -96,7 +98,16 @@ func newSSHBanPluginCommand() *cobra.Command {
 			}
 		}()
 		logger.Info("ssh_ban_policy", "event", "policy_loaded", "window", duration, "ignore_cidrs", ignore, "max_entries", capacity)
-		plugin, err := libplugin.NewFromStdio(g.PluginConfig())
+		var peers []*sshcontrol.Peer
+		if upstreamSocket != "" {
+			peer, err := sshcontrol.DialPeer(upstreamSocket, kind)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = peer.Close() }()
+			peers = append(peers, peer)
+		}
+		plugin, err := libplugin.NewFromStdio(g.PluginConfig(peers...))
 		if err != nil {
 			return err
 		}

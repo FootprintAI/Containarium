@@ -39,8 +39,14 @@ restoring the dump.
 
 The dump is loaded into a throwaway database inside the --target
 container, sanity-checked, and the scratch database is dropped again. The
-source container is never touched; verification refuses to run if --target
-resolves to the container the backup came from.
+source container is never touched; the verification engine always refuses
+to use it as the restore target.
+
+Set --target to the backup's own tenant username to have the daemon create
+an isolated Postgres 16 verification container and delete it after the test.
+This mode uses daemon-generated local connection settings; --db-* flags
+apply only to an explicitly selected different target tenant. A tenant-bound
+backups-only token uses this mode without needing container permissions.
 
 A backup that fails to restore is reported as a FAILED verification with
 the engine's own error — the command exits non-zero, so it can gate a
@@ -62,7 +68,7 @@ verify the newest backup of that tenant's database.
 ` + managedHelp + `
 
 Examples:
-  containarium backup verify alice-app-20260605T130405Z --target scratch --server <host>
+  containarium backup verify alice-app-20260605T130405Z --target alice --server <host>
   containarium backup verify alice-app-20260605T130405Z --target scratch \
       --age-identity-file backup.key --server <host>
   containarium backup verify --managed --latest --user alice --database app \
@@ -75,7 +81,7 @@ Examples:
 func init() {
 	backupCmd.AddCommand(backupVerifyCmd)
 	f := backupVerifyCmd.Flags()
-	f.StringVar(&backupVerifyTarget, "target", "", "tenant whose container is used as the throwaway restore target (required)")
+	f.StringVar(&backupVerifyTarget, "target", "", "target tenant (required); use the backup's tenant for a daemon-managed isolated verifier")
 	f.StringVar(&backupVerifyDBUser, "db-user", "", "Postgres role on the target (default: postgres)")
 	f.StringVar(&backupVerifyDBPass, "db-password", "", "Postgres password on the target (omit for peer/trust auth)")
 	f.StringVar(&backupVerifyDBHost, "db-host", "", "DB host as seen inside the target container (default: 127.0.0.1)")
