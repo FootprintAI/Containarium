@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Claude and Codex runs journal how the model's turn ended** (#2513, item 1). When a run ends without a final message, or ends any way but an ordinary finish, the run journal gets one `status` row: `model ended without a final message: …` or `model ended abnormally after its final message: …`. For Claude it names the SDK's `stop_reason`, `terminal_reason` and result subtype. For Codex, which reports no stop reason, it says whether `turn.completed` arrived. The row also carries the first 200 characters of the final message and, when the message is longer, its length. This is the row the Gemini engine already writes, so a run that edited files and returned no JSON can be diagnosed from its journal on every engine. No schema change: it is the existing `status` kind.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Fixed
+
+- **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading
