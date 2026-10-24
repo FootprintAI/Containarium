@@ -34,6 +34,20 @@ func (m *Manager) SetNICGuard(g NICGuard) { m.nicGuard = g }
 // key is written by the pull-mode actuator after create; the reconciler
 // picks it up on its next pass.)
 func (m *Manager) guardNIC(containerName string, opts CreateOptions) error {
+	if opts.NetworkTenant != "" {
+		// Ordinary Prepare can be a no-op on an unsupported/off guard.
+		// Explicit security-domain assignment must never take that path.
+		strict, ok := m.nicGuard.(interface {
+			PrepareNetworkTenant(context.Context, string, string) error
+		})
+		if !ok {
+			return fmt.Errorf("%w: explicit network Tenant requires an enforced NIC guard", ErrNICGuard)
+		}
+		if err := strict.PrepareNetworkTenant(context.Background(), containerName, opts.NetworkTenant); err != nil {
+			return fmt.Errorf("%w: %v", ErrNICGuard, err)
+		}
+		return nil
+	}
 	if m.nicGuard == nil {
 		return nil
 	}
