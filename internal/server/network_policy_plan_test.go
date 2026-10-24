@@ -312,7 +312,7 @@ func TestRefreshDomains_ResolvesDefaultAndNormalizedExtraDomains(t *testing.T) {
 	if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{Domains: []string{"Gateway.Example.com."}}); err != nil {
 		t.Fatal(err)
 	}
-	e.refreshDomains()
+	e.refreshDomains(true)
 	c, ok := e.defaultPolicyFor("acme")
 	if !ok {
 		t.Fatal("default policy off")
