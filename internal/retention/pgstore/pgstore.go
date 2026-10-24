@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,9 +27,24 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-// New bootstraps the tables on a pool the daemon already owns. Idempotent.
+// bootstrapLockKey serializes concurrent bootstraps (daemons starting
+// together) so the constraint upgrade and the hold-id normalisation below
+// never race each other.
+const bootstrapLockKey = "containarium.retention.bootstrap"
+
+// New bootstraps the tables on a pool the daemon already owns. Idempotent,
+// and safe when several daemons start at once. Over a schema an earlier
+// release created, it also upgrades the data in place (see upgrade).
 func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
-	if _, err := pool.Exec(ctx, `
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin retention bootstrap: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, bootstrapLockKey); err != nil {
+		return nil, fmt.Errorf("lock retention bootstrap: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS retention_policy (
 			id         SMALLINT PRIMARY KEY CHECK (id = 1),
 			revision   BIGINT NOT NULL DEFAULT 0,
@@ -39,12 +56,13 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 			class INTEGER PRIMARY KEY,
 			days  INTEGER NOT NULL CHECK (days > 0)
 		);
-		-- The upper bound (retention.MaxDays) as a named constraint, added
-		-- only when missing so a table created before it gets it too.
+		-- The upper bound (retention.MaxDays) as a named constraint. It is
+		-- added NOT VALID, so existing rows are not checked yet: upgrade
+		-- clamps any row above the cap, then validates the constraint.
 		DO $$ BEGIN
 			IF NOT EXISTS (SELECT 1 FROM pg_constraint
 				WHERE conrelid = 'retention_windows'::regclass AND conname = 'retention_windows_days_max') THEN
-				ALTER TABLE retention_windows ADD CONSTRAINT retention_windows_days_max CHECK (days <= `+maxDaysSQL+`);
+				ALTER TABLE retention_windows ADD CONSTRAINT retention_windows_days_max CHECK (days <= `+maxDaysSQL+`) NOT VALID;
 			END IF;
 		END $$;
 		-- The daemon-wide mode: a singleton row, DRY_RUN (1) until an admin sets
@@ -65,21 +83,122 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	`); err != nil {
 		return nil, fmt.Errorf("init retention schema: %w", err)
 	}
+	if err := upgrade(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit retention bootstrap: %w", err)
+	}
 	return &Store{pool: pool}, nil
+}
+
+// upgrade brings data an earlier release stored into line with today's
+// rules, inside the bootstrap transaction. Each change is logged.
+//
+//   - A window above retention.MaxDays (possible before the cap existed) is
+//     clamped to the cap, then the cap's CHECK is validated. Failing the
+//     bootstrap instead would leave every retention call UNAVAILABLE.
+//   - A hold whose org id has surrounding whitespace (possible before ids
+//     were trimmed) is stored under the trimmed id, so it can be released
+//     by that id and the sweepers match it against record org ids. When
+//     several stored ids trim to the same org, the earliest hold is kept and
+//     each other one is logged in full and removed: the org stays held.
+func upgrade(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `WITH old AS (
+			SELECT class, days FROM retention_windows WHERE days > $1 FOR UPDATE
+		)
+		UPDATE retention_windows w SET days = $1 FROM old WHERE w.class = old.class
+		RETURNING w.class, old.days`, retention.MaxDays)
+	if err != nil {
+		return fmt.Errorf("clamp retention windows: %w", err)
+	}
+	for rows.Next() {
+		var class, days int32
+		if err := rows.Scan(&class, &days); err != nil {
+			rows.Close()
+			return fmt.Errorf("clamp retention windows: %w", err)
+		}
+		log.Printf("Retention: clamped the stored %v window from %d to %d days (the cap)", pb.RetentionClass(class), days, retention.MaxDays)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("clamp retention windows: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE retention_windows VALIDATE CONSTRAINT retention_windows_days_max`); err != nil {
+		return fmt.Errorf("validate the retention window cap: %w", err)
+	}
+	return normaliseHoldIDs(ctx, tx)
+}
+
+// normaliseHoldIDs trims stored hold org ids the way retention.NormalizeHold
+// does; see upgrade.
+func normaliseHoldIDs(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `SELECT org_id, reason, set_by, set_at FROM retention_legal_holds ORDER BY set_at, org_id`)
+	if err != nil {
+		return fmt.Errorf("read legal holds: %w", err)
+	}
+	var holds []*pb.LegalHold
+	for rows.Next() {
+		h, err := scanHold(rows)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("read legal holds: %w", err)
+		}
+		holds = append(holds, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read legal holds: %w", err)
+	}
+	// Group by trimmed id; holds are ordered by set_at, so the first of a
+	// group is the earliest and is the one kept.
+	groups := map[string][]*pb.LegalHold{}
+	var order []string
+	for _, h := range holds {
+		id := strings.TrimSpace(h.GetOrgId())
+		if id == "" {
+			log.Printf("Warning: retention: the legal hold stored as %q has an empty org id once trimmed; left as it is", h.GetOrgId())
+			continue
+		}
+		if _, seen := groups[id]; !seen {
+			order = append(order, id)
+		}
+		groups[id] = append(groups[id], h)
+	}
+	for _, id := range order {
+		g := groups[id]
+		if len(g) == 1 && g[0].GetOrgId() == id {
+			continue // already normal
+		}
+		for _, h := range g[1:] {
+			log.Printf("Retention: removed the legal hold stored as %q (reason %q, set by %s at %s): org %q is held by an earlier hold",
+				h.GetOrgId(), h.GetReason(), h.GetSetBy(), h.GetSetAt().AsTime().Format(time.RFC3339), id)
+			if _, err := tx.Exec(ctx, `DELETE FROM retention_legal_holds WHERE org_id = $1`, h.GetOrgId()); err != nil {
+				return fmt.Errorf("normalise legal hold %q: %w", h.GetOrgId(), err)
+			}
+		}
+		if g[0].GetOrgId() != id {
+			if _, err := tx.Exec(ctx, `UPDATE retention_legal_holds SET org_id = $1 WHERE org_id = $2`, id, g[0].GetOrgId()); err != nil {
+				return fmt.Errorf("normalise legal hold %q: %w", g[0].GetOrgId(), err)
+			}
+			log.Printf("Retention: the legal hold stored as %q is now stored as %q", g[0].GetOrgId(), id)
+		}
+	}
+	return nil
 }
 
 // maxDaysSQL is retention.MaxDays as SQL text for the CHECK constraint.
 var maxDaysSQL = strconv.Itoa(int(retention.MaxDays))
 
 // readPolicy reads the bookkeeping row and every window in one statement, so
-// a concurrent set can never be seen half applied. lock is appended (e.g.
-// " FOR UPDATE OF p" inside a set's transaction). The row is seeded at
-// bootstrap, so no row is a damaged table and an error.
+// a concurrent set can never be seen half applied. It never locks: SetPolicy
+// takes the row lock in a statement of its own first (see there). The row is
+// seeded at bootstrap, so no row is a damaged table and an error.
 func readPolicy(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
-}, lock string) (*pb.RetentionPolicy, map[pb.RetentionClass]int32, error) {
+}) (*pb.RetentionPolicy, map[pb.RetentionClass]int32, error) {
 	rows, err := q.Query(ctx, `SELECT p.revision, p.updated_at, p.updated_by, w.class, w.days
-		FROM retention_policy p LEFT JOIN retention_windows w ON true WHERE p.id = 1`+lock)
+		FROM retention_policy p LEFT JOIN retention_windows w ON true WHERE p.id = 1`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read retention policy: %w", err)
 	}
@@ -111,7 +230,7 @@ func readPolicy(ctx context.Context, q interface {
 }
 
 func (s *Store) GetPolicy(ctx context.Context) (*pb.RetentionPolicy, error) {
-	p, _, err := readPolicy(ctx, s.pool, "")
+	p, _, err := readPolicy(ctx, s.pool)
 	return p, err
 }
 
@@ -125,7 +244,16 @@ func (s *Store) SetPolicy(ctx context.Context, ws []*pb.RetentionWindow, updated
 		return nil, fmt.Errorf("begin retention policy set: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	prev, set, err := readPolicy(ctx, tx, " FOR UPDATE OF p")
+	// Lock the policy row in a statement of its own, then read in a second
+	// one. Under READ COMMITTED a statement that waited on a row lock
+	// re-checks only the locked row; joined window rows would still come
+	// from the snapshot taken before the wait, so a set that waited for
+	// another would report (and audit) windows without that set's changes.
+	// The second statement takes a fresh snapshot after the lock is held.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM retention_policy WHERE id = 1 FOR UPDATE`); err != nil {
+		return nil, fmt.Errorf("lock retention policy: %w", err)
+	}
+	prev, set, err := readPolicy(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
