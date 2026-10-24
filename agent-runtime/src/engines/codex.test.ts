@@ -72,7 +72,32 @@ describe("CodexEngine journal", () => {
       { kind: "tool_use", tool: "mcp__s__t", input: "{}" },
       { kind: "tool_result", tool: "mcp__s__t", text: "denied" },
       { kind: "error", text: "soft failure" },
+      { kind: "status", text: "model ended without a final message: finish_reason=turn_completed" },
     ]);
+  });
+
+  // #2513: the Codex SDK reports no stop reason, so the ending row names what
+  // the stream did carry — whether turn.completed arrived — plus a bounded
+  // preview of the final agent message.
+  it("names the ending when the turn completes after file edits with no final message", async () => {
+    const j = new CaptureJournal();
+    await new CodexEngine(
+      fakeThread([
+        { type: "item.completed", item: { id: "1", type: "file_change", changes: [{ path: "text/slug.go", kind: "add" }], status: "completed" } },
+        { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } },
+      ]),
+    ).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({ kind: "status", text: "model ended without a final message: finish_reason=turn_completed" });
+  });
+
+  it("names a stream that ends without turn.completed, with a truncated final message", async () => {
+    const j = new CaptureJournal();
+    const final = '{"files":[' + "y".repeat(300);
+    await new CodexEngine(fakeThread([{ type: "item.completed", item: { id: "1", type: "agent_message", text: final } }])).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: `model ended abnormally after its final message: finish_reason=no_turn_completed final_message=${JSON.stringify(final.slice(0, 200))} final_message_chars=${final.length}`,
+    });
   });
 
   it("throws on turn.failed, like thread.run()", async () => {

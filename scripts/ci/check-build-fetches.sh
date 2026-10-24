@@ -233,6 +233,11 @@ self_test() {
   rm "$d/lo/scripts/c3.sh"
   printf 'curl http://127.0.0.1@evil.example/y\n' >"$d/lo/scripts/c4.sh"
   fixture_fails "$d/lo" "scripts/c4.sh	curl" "userinfo host trick exempted" || return 1
+  rm "$d/lo/scripts/c4.sh"
+  # A host taken from a variable is not provably loopback, even when the same
+  # file defaults that variable to localhost (it can be overridden by env).
+  printf 'server=${E2E_SERVER:-http://localhost:8080}\ncurl --fail -sS -H "Authorization: Bearer $t" \\\n  "$server/v1/backups" > out.json\n' >"$d/lo/scripts/c5.sh"
+  fixture_fails "$d/lo" "scripts/c5.sh	curl" "variable-host curl exempted as loopback" || return 1
 
   # 5. Coverage of other fetch shapes.
   mkdir -p "$d/cov/ci"; : >"$ALW"
