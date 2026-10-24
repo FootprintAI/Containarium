@@ -21,6 +21,8 @@ import (
 // pattern for `agent run --engine`.
 
 func resetCrewRunFlags() {
+	crewRunGraphFile = ""
+	crewRunConcurrency = 0
 	crewRunBackendID = ""
 	crewRunPool = ""
 	crewRunInput = ""
@@ -28,6 +30,32 @@ func resetCrewRunFlags() {
 	crewRunGitRef = ""
 	crewRunGitCredentialFile = ""
 	crewRunEngineOverrides = nil
+}
+
+func TestCrewRun_GraphFlagsReachDaemonRequest(t *testing.T) {
+	for _, transport := range []string{"grpc", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			resetCrewRunFlags()
+			t.Cleanup(resetCrewRunFlags)
+			capture := &crewRunCaptureServer{}
+			startCrewRunDaemon(t, transport, capture)
+			crewRunGraphFile = writePlan(t, "plan.yaml", examplePlanYAML)
+			crewRunConcurrency = 2
+			if err := runCrewRun(crewRunCmd, []string{"freeform-crew"}); err != nil {
+				t.Fatal(err)
+			}
+			capture.mu.Lock()
+			got := capture.got
+			capture.mu.Unlock()
+			graph, err := loadTaskGraph(crewRunGraphFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CrewId != "freeform-crew" || got.Concurrency != 2 || !proto.Equal(got.Graph, graph) {
+				t.Fatalf("graph request did not survive %s transport: %v", transport, got)
+			}
+		})
+	}
 }
 
 // crewRunCaptureServer records the RunCrew request the daemon's handler

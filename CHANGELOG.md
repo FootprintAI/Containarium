@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Retention windows above 36,500 days are rejected, and legal-hold org ids are trimmed** (#2933, #2875 review follow-up; upgrade handling in this release's follow-up).
+  - **The cap.** `containarium retention policy set` and `SetRetentionPolicy` answer `INVALID_ARGUMENT` for a window outside 1–36,500 days (100 years). The Postgres store enforces the same bound with a `CHECK` constraint.
+  - **Trimming.** An org id is trimmed before it is stored or matched, so `" org-a"` and `"org-a"` are one hold.
+  - **What the first start after upgrading does.**
+    - Windows: a window stored above the cap by an earlier release is clamped to 36,500 days. The clamp bumps the policy revision, with `updated_by` set to `containarium-upgrade`. Startup no longer fails the constraint check, which would have left every retention call `UNAVAILABLE`.
+    - Holds: a hold stored with a padded org id is re-stored under the trimmed id, so it can be released by that id and the sweepers match it against record org ids. If several stored ids trim to the same org, the earliest hold is kept and the others are removed. The org stays held.
+    - Blank hold ids: a hold whose org id is empty once trimmed is quarantined. It stays active under `quarantined-blank-org-id-<hash>`, so an admin can see it in `retention hold list` and release it. It is not dropped, because while any hold is active, records with no org are held.
+  - **Every change is audited** (Q31). Each change made by this step is logged and recorded in a new table, `retention_upgrade_events`, in the same transaction as the change. A removed hold's record keeps its reason, setter and time. Once the daemon's audit store is wired, each record becomes an audit entry by `containarium-upgrade`:
+    - `retention.policy.clamp`
+    - `retention.hold.normalise`
+    - `retention.hold.merge`
+    - `retention.hold.quarantine`
+
+    A record whose audit write fails stays pending for the next start. On a daemon with no audit store, the records wait in the table.
+  - **Concurrent starts.** Daemons starting at the same time serialize this step, so it runs once.
+
+### Fixed
+
+- **A retention policy set that waited for another set reported stale windows** (#2875 review follow-up). On Postgres, a `SetPolicy` that waited on the policy row lock built its `Previous` and `Current` policies, and so its `retention.policy.set` audit detail, from windows read before the wait. The windows the other set had just committed were missing. The stored windows were always right. The set now takes the row lock in a statement of its own and reads the windows afterwards.
+
 ### Added
 
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.

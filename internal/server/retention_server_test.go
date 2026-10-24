@@ -191,6 +191,11 @@ func TestRetentionServer_ErrorCodes(t *testing.T) {
 		want codes.Code
 	}{
 		{"zero days", func() error { _, err := s.SetRetentionPolicy(ctx, promptsDays(0)); return err }, codes.InvalidArgument},
+		{"one day over the cap", func() error {
+			_, err := s.SetRetentionPolicy(ctx, promptsDays(retention.MaxDays+1))
+			return err
+		}, codes.InvalidArgument},
+		{"the cap itself", func() error { _, err := s.SetRetentionPolicy(ctx, promptsDays(retention.MaxDays)); return err }, codes.OK},
 		{"unknown class", func() error {
 			_, err := s.SetRetentionPolicy(ctx, &pb.SetRetentionPolicyRequest{Windows: []*pb.RetentionWindow{{Class: 99, Days: 5}}})
 			return err

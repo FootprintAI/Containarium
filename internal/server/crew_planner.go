@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -99,7 +98,7 @@ func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphReq
 			runErr = status.Errorf(codes.FailedPrecondition, "invalid planner output: %v", err)
 		} else if graph.Goal != req.Goal {
 			runErr = status.Error(codes.FailedPrecondition, "planner graph goal differs from requested goal")
-		} else if err := s.validatePlannerGraph(graph); err != nil {
+		} else if _, err := s.validateExecutableGraph(graph); err != nil {
 			runErr = status.Errorf(codes.FailedPrecondition, "invalid planner graph: %v", err)
 		}
 	}
@@ -124,27 +123,4 @@ func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphReq
 		return nil, status.Errorf(status.Code(runErr), "planner run %s: %v", runID, runErr)
 	}
 	return &pb.PlanTaskGraphResponse{Graph: graph, RunId: runID, GitCommit: record.GitCommit}, nil
-}
-
-// validatePlannerGraph enforces the planner's candidate policy after generic
-// graph validation. Excluding a skill from the prompt is not an output check.
-func (s *CrewServer) validatePlannerGraph(graph *pb.TaskGraph) error {
-	if _, err := taskgraph.Validate(graph, s.skills, s.catalog); err != nil {
-		return err
-	}
-	for _, node := range graph.Nodes {
-		if node.GetSkillId() == plannerSkillID {
-			return fmt.Errorf("node %q assigns the planner to itself", node.Id)
-		}
-		if node.GetCrewId() != "" {
-			crew, err := s.catalog.Get(node.GetCrewId())
-			if err != nil {
-				return err
-			}
-			if slices.Contains(crew.SkillIds, plannerSkillID) {
-				return fmt.Errorf("node %q crew %q contains the planner", node.Id, crew.Id)
-			}
-		}
-	}
-	return nil
 }

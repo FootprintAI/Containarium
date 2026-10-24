@@ -920,6 +920,8 @@ message CrewRun {
   // this same store with crew_id empty and skill_id set; CrewServer.runMembers
   // resolves it directly instead of through a crew's catalog lookup (#2122).
   string skill_id = 12;
+  TaskGraph graph = 13;
+  repeated TaskNodeResult node_results = 14;
 }
 
 message ListCrewsRequest {}
@@ -983,6 +985,10 @@ message RunCrewRequest {
   // authorized the end user); any other caller setting it is PermissionDenied.
   // Empty = unchanged behaviour.
   string on_behalf_of_org_id = 10;
+  // Only ORCHESTRATOR/FREEFORM support graph execution.
+  TaskGraph graph = 11;
+  // Zero defaults to 5; must not exceed the platform node cap.
+  uint32 concurrency = 12;
 }
 message RunCrewResponse {
   CrewRun run = 1;
@@ -1056,6 +1062,26 @@ message ValidateTaskGraphResponse {
   repeated string order = 1;
   // The graph's depth (see TaskGraphLimits.max_depth).
   uint32 depth = 2;
+}
+
+// TaskNodeState distinguishes execution failures from dependencies never run.
+enum TaskNodeState {
+  TASK_NODE_STATE_UNSPECIFIED = 0;
+  TASK_NODE_STATE_PENDING = 1;
+  TASK_NODE_STATE_RUNNING = 2;
+  TASK_NODE_STATE_SUCCEEDED = 3;
+  TASK_NODE_STATE_FAILED = 4;
+  TASK_NODE_STATE_BLOCKED = 5;
+  TASK_NODE_STATE_CANCELLED = 6;
+}
+message TaskNodeResult {
+  string node_id = 1;
+  string run_id = 2;
+  TaskNodeState state = 3;
+  string output_json = 4;
+  string error = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
 }
 
 // PlanTaskGraph runs only the planner skill; graph nodes are never executed.
