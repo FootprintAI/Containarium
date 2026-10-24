@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A default egress allow-list for tenants with no stored network policy** (#2577, stage 1 of the staged default-deny plan). Such a tenant used to run an empty allow-list in `log_only`, so every outbound flow was logged as a would-deny. It now runs a built-in list (git hosts, language registries, OS mirrors, and the box's DNS resolver), still `log_only` for both modes: nothing is dropped, and a stored policy always replaces it. Add the model gateway and control plane with `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`; `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty fallback. This is not "default-deny egress": arming `enforce` per tenant and the CI proof are later stages. The daemon now also resolves the list's names on each refresh, so it needs DNS reachability for them.
 
+### Fixed
+
+- **The sentinel's per-primary auth health no longer lets another daemon clear a primary's 401** (#2892 follow-up). Any authenticated request from a primary's address used to reset its `failures_since_success`, so a healthy daemon on the same host or NAT could hide a primary still signing with the wrong secret. Only the primary's own authenticated registration, heartbeat or deregister clears it now. The runbook and design doc now say that only primaries registered over HTTP are listed; a primary promoted by a tunnel handshake never is. A test now covers every daemon-AUTH route (`/sentinel/ca`, `/sentinel/peer-cert` and `/sentinel/fetch-release` were not pinned).
+
 ## [0.115.0] - 2026-10-24
 
 ### Upgrading
