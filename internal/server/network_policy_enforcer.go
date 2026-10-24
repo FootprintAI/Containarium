@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/footprintai/containarium/internal/audit"
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
@@ -89,6 +90,13 @@ type NetworkPolicyEnforcer struct {
 	// daemon could not name it and the preset adds nothing.
 	gateway netip.Addr
 
+	// defaultExtras is the operator's addition to the default egress allow-list;
+	// defaultOn is whether a tenant with no stored policy gets that list
+	// (#2577 stage 1). Set before Start.
+	defaultOn      bool
+	defaultExtras  netpolicy.DefaultEgressExtras
+	defaultDomains []string // normalized built-ins + extras: what the resolver caches and the policy looks up
+
 	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
 	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
@@ -135,6 +143,7 @@ type NetworkPolicyEnforcer struct {
 	ipTenantInstalled map[[4]byte]uint32                  // ip_tenant entries currently in the map (#923: converge deletes)
 	running           bool                                // the BPF program is loaded (Start succeeded, Stop not yet called)
 	applied           map[string]tenantApplied            // per-tenant state the last reconcile pass loaded; nil until a pass completes
+	appliedAt         time.Time                           // when the pass that produced applied ended
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -162,6 +171,68 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		denyInstalled:     make(map[netbpf.DenyKey]netbpf.DenyEntry),
 		ipTenantInstalled: make(map[[4]byte]uint32),
 	}
+}
+
+// SetDefaultEgress turns the default egress posture on for tenants with no
+// stored policy (#2577 stage 1): the built-in allow-list plus extras, always in
+// log_only. extras that do not validate are refused so a typo cannot quietly
+// narrow the list; the caller decides what to run with instead. Must be called
+// before Start.
+func (e *NetworkPolicyEnforcer) SetDefaultEgress(extras netpolicy.DefaultEgressExtras) error {
+	c, err := netpolicy.DefaultPolicy("probe", extras)
+	if err != nil {
+		return err
+	}
+	e.defaultOn, e.defaultExtras, e.defaultDomains = true, extras, c.EgressDomains
+	return nil
+}
+
+// defaultEgressState is how the default egress posture came up at startup.
+type defaultEgressState int
+
+const (
+	defaultEgressOff          defaultEgressState = iota // CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off
+	defaultEgressFull                                   // built-in list plus the operator's extras
+	defaultEgressBuiltinsOnly                           // extras refused; built-in list only
+)
+
+// configureDefaultEgress applies the CONTAINARIUM_NETWORK_DEFAULT_EGRESS*
+// settings to the enforcer and logs the outcome. Extras that do not validate
+// are refused with the reason and the built-in list runs alone, so one typo
+// cannot disable the posture or narrow it silently.
+func configureDefaultEgress(e *NetworkPolicyEnforcer, mode, domains, cidrs string) defaultEgressState {
+	on, extras := netpolicy.ParseDefaultEgress(mode, domains, cidrs)
+	if !on {
+		log.Printf("NetworkPolicy: default egress posture is off (%s=off); tenants with no stored policy run an empty allow-list in log_only", appconfig.EnvDefaultEgress)
+		return defaultEgressOff
+	}
+	if err := e.SetDefaultEgress(extras); err != nil {
+		log.Printf("NetworkPolicy: ignoring %s/%s (%v); using the built-in default allow-list only", appconfig.EnvDefaultEgressDomains, appconfig.EnvDefaultEgressCIDRs, err)
+		if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{}); err != nil {
+			// Unreachable while the built-ins are valid; say so rather than
+			// claim a list that is not applied.
+			log.Printf("NetworkPolicy: the built-in default egress allow-list did not load (%v); the default posture is off", err)
+			return defaultEgressOff
+		}
+		log.Printf("NetworkPolicy: built-in default egress allow-list (log_only, no extras) applies to tenants with no stored policy")
+		return defaultEgressBuiltinsOnly
+	}
+	log.Printf("NetworkPolicy: default egress allow-list (log_only) applies to tenants with no stored policy")
+	return defaultEgressFull
+}
+
+// defaultPolicyFor builds the default policy for a tenant, resolved the same
+// way as a stored one. The second result is false when the posture is off.
+func (e *NetworkPolicyEnforcer) defaultPolicyFor(tenant string) (netpolicy.CompiledPolicy, bool) {
+	if !e.defaultOn {
+		return netpolicy.CompiledPolicy{}, false
+	}
+	c, err := netpolicy.DefaultPolicy(tenant, e.defaultExtras)
+	if err != nil {
+		log.Printf("[netpolicy] default policy for %q: %v", tenant, err)
+		return netpolicy.CompiledPolicy{}, false
+	}
+	return e.expandPolicy(c, false), true
 }
 
 // SetImplicitGateway tells the enforcer the bridge gateway address, the
@@ -363,9 +434,13 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	// (the set is static; no per-reconcile churn). No-op unless opted in.
 	e.armSignatures()
 
-	// Resolve egress_domains once before the first reconcile so the initial
-	// allow-list already includes domain IPs.
-	e.refreshDomains()
+	// Resolve stored policies' egress_domains once before the first reconcile
+	// so the initial allow-list already includes domain IPs. The default
+	// allow-list's names (#2577) are left to the refresh loop: resolving ~15
+	// names here would hold up daemon startup on a host with slow or no DNS,
+	// and the default is log-only, so a few seconds of would-deny rows for
+	// them cost nothing.
+	e.refreshDomains(false)
 
 	if err := e.reconcile(e.ctx); err != nil {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
@@ -466,6 +541,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 func (e *NetworkPolicyEnforcer) Stop() {
 	e.mu.Lock()
 	e.running = false
+	// A later Start reports "not reconciled" until its own first pass.
+	e.applied = nil
+	e.appliedAt = time.Time{}
 	e.mu.Unlock()
 	if e.cancel != nil {
 		e.cancel()
@@ -731,7 +809,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// it needs only the container list, so a policy-store (Postgres) outage
 	// must not freeze the watched set.
 	e.reconcileExec()
-	policies, err := e.compiledPolicies(ctx)
+	policies, err := e.planPolicies(ctx, views)
 	if err != nil {
 		return err
 	}
@@ -819,17 +897,18 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass
 	// actually wrote, never from the stored request.
-	e.recordApplied(appliedFromPass(views, plan, loaded, policies, time.Now()))
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies), time.Now())
 	return nil
 }
 
 // recordApplied stores one reconcile pass's per-tenant applied state.
-func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied) {
+func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied, at time.Time) {
 	if a == nil {
 		a = map[string]tenantApplied{}
 	}
 	e.mu.Lock()
 	e.applied = a
+	e.appliedAt = at
 	e.mu.Unlock()
 }
 
@@ -840,7 +919,7 @@ func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied) {
 func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil}
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval}
 	if !snap.Running {
 		return appliedSnapshot{}
 	}
@@ -952,6 +1031,22 @@ func (e *NetworkPolicyEnforcer) resolveVeth(name string) (int, bool) {
 	return ifindex, true
 }
 
+// planPolicies is the policy set a reconcile pass plans from: every stored
+// policy, plus the default posture (#2577) for each tenant seen in views that
+// has none. A store error fails the pass before any default is applied. A
+// stored policy that no longer compiles is skipped by compiledPolicies, so its
+// tenant runs the default like a tenant with none (both are log-only).
+func (e *NetworkPolicyEnforcer) planPolicies(ctx context.Context, views []containerView) (map[string]netpolicy.CompiledPolicy, error) {
+	policies, err := e.compiledPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if e.defaultOn {
+		policies = withDefaultPolicies(policies, views, e.defaultPolicyFor)
+	}
+	return policies, nil
+}
+
 // compiledPolicies loads + compiles every stored policy, keyed by tenant.
 func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[string]netpolicy.CompiledPolicy, error) {
 	stored, err := e.store.List(ctx)
@@ -965,23 +1060,7 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 			log.Printf("[netpolicy] compile policy for %q: %v", p.GetTenant(), err)
 			continue
 		}
-		// Phase C: fold each egress_domain's currently-resolved IPs into the
-		// allow-list as /32 CIDRs. planReconcile/CompileEgress then treat them as
-		// ordinary egress entries; diffEgress prunes IPs a domain stopped
-		// resolving to on the next pass.
-		for _, dom := range c.EgressDomains {
-			for _, ip := range e.resolver.IPs(dom) {
-				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
-			}
-		}
-		// Egress preset (#2440): fold in what the preset allows implicitly (the
-		// box's DNS resolver). Not stored on the policy, so `get` still shows
-		// what the operator wrote.
-		if imp := netpolicy.ImplicitEgress(c, e.gateway); len(imp) > 0 {
-			c.EgressCIDRs = append(c.EgressCIDRs, imp...)
-		} else if c.EgressPreset != pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED {
-			log.Printf("[netpolicy] tenant %q has an egress preset but the bridge gateway is unknown; the resolver is NOT implicitly allowed", c.Tenant)
-		}
+		c = e.expandPolicy(c, true)
 		// Virtual-patch deny rules (#660): drop any whose expiry has passed so an
 		// expired patch self-removes from the kernel on the next reconcile. Done
 		// here (not in the pure netpolicy/plan layer) so those stay time-free.
@@ -991,10 +1070,42 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 	return out, nil
 }
 
+// expandPolicy folds what only the running daemon knows into a compiled
+// policy: the currently-resolved addresses of its egress_domains and what an
+// egress preset allows implicitly. warn reports a preset the unknown gateway
+// cannot honour; the default posture passes false because that is a
+// host-level condition logged once at startup, not once per tenant per pass.
+func (e *NetworkPolicyEnforcer) expandPolicy(c netpolicy.CompiledPolicy, warn bool) netpolicy.CompiledPolicy {
+	// Phase C: fold each egress_domain's currently-resolved IPs into the
+	// allow-list as /32 CIDRs. planReconcile/CompileEgress then treat them as
+	// ordinary egress entries; diffEgress prunes IPs a domain stopped
+	// resolving to on the next pass.
+	for _, dom := range c.EgressDomains {
+		for _, ip := range e.resolver.IPs(dom) {
+			c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
+		}
+	}
+	// Egress preset (#2440): fold in what the preset allows implicitly (the
+	// box's DNS resolver). Not stored on the policy, so `get` still shows
+	// what the operator wrote.
+	if imp := netpolicy.ImplicitEgress(c, e.gateway); len(imp) > 0 {
+		c.EgressCIDRs = append(c.EgressCIDRs, imp...)
+	} else if warn && c.EgressPreset != pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED {
+		log.Printf("[netpolicy] tenant %q has an egress preset but the bridge gateway is unknown; the resolver is NOT implicitly allowed", c.Tenant)
+	}
+	return c
+}
+
 // domainRefreshLoop (Phase C, #2379) wakes when the earliest cached name is due
 // and re-resolves; it runs until e.ctx is cancelled. The caller does wg.Add(1).
 func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
 	defer e.wg.Done()
+	// Start left the default allow-list's names unresolved (see Start); do it
+	// now, off the startup path, rather than after the first timer wait. The
+	// next reconcile folds the addresses into the egress map.
+	if e.defaultOn {
+		e.refreshDomains(true)
+	}
 	t := time.NewTimer(e.resolver.NextRefreshDelay())
 	defer t.Stop()
 	for {
@@ -1002,7 +1113,7 @@ func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
 		case <-e.ctx.Done():
 			return
 		case <-t.C:
-			e.refreshDomains()
+			e.refreshDomains(true)
 			t.Reset(e.resolver.NextRefreshDelay())
 		}
 	}
@@ -1010,7 +1121,10 @@ func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
 
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
-func (e *NetworkPolicyEnforcer) refreshDomains() {
+//
+// includeDefault adds the default allow-list's names (#2577) when that posture
+// is on. Start passes false so they are not resolved on the startup path.
+func (e *NetworkPolicyEnforcer) refreshDomains(includeDefault bool) {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
 		log.Printf("[netpolicy] domain refresh: list policies: %v", err)
@@ -1022,6 +1136,10 @@ func (e *NetworkPolicyEnforcer) refreshDomains() {
 	var domains []string
 	for _, p := range stored {
 		domains = append(domains, p.GetEgressDomains()...)
+	}
+	if includeDefault && e.defaultOn {
+		// The default allow-list's names are resolved too (#2577).
+		domains = append(domains, e.defaultDomains...)
 	}
 	// No early return on an empty list: Refresh with no domains prunes the
 	// cache, so a removed last domain cannot leave a stale past-due entry that

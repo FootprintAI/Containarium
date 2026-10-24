@@ -2176,6 +2176,10 @@ skipAppHosting:
 			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
 			npServer.SetPlanSources(auditStore, planGW)
 		}
+		// Default egress posture (#2577, stage 1): a tenant with no stored policy
+		// runs the default allow-list in log_only instead of an empty one, so the
+		// would-deny log shows real surprises. Observe-only; never arms drops.
+		configureDefaultEgress(networkPolicyEnforcer, netCfg.DefaultEgress, netCfg.DefaultEgressDomains, netCfg.DefaultEgressCIDRs)
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {

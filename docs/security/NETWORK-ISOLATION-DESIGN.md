@@ -248,6 +248,26 @@ traffic, so Phase A starts from the corrected per-container-veth
 - **Default OFF.** Same opt-in stance as the rest of the zero-trust
   rollouts (KMS, image digest verify). No upgrade can degrade an
   existing deployment.
+- **Default egress posture: staged default-deny (#2577).** The target is
+  deny-by-default egress with a per-tenant allow-list, reached in stages;
+  nothing is armed for a tenant until its stage has passed.
+  1. *(shipped)* A tenant with no stored policy runs the default
+     allow-list in `log_only` (DNS via the egress preset, git hosts, language
+     registries and OS mirrors of the supported base images; the model
+     gateway and control plane are added per deployment with
+     `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`).
+     `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty log-only
+     fallback. It never arms drops, so it cannot cause an outage.
+  2. Soak: review `network_policy.deny_logged` and fix the list.
+  3. Arm `enforce` per tenant, after #2618 and #2846 are fixed (inbound-serving
+     boxes also wait on #2968).
+  4. CI proof that a default-policy box cannot reach an arbitrary host and
+     can reach its allow-listed ones, with denials in the audit chain. Until
+     it exists the wording "default-deny egress" stays unusable
+     (`CLAIMS.md`).
+
+  Hosts that cannot run the eBPF enforcer report "not enforced" and do not
+  get the claim.
 
 ## Cloud extension
 
