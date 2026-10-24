@@ -156,58 +156,54 @@ At this point both schemes are accepted; ed25519 is what's actually being used.
 
 ---
 
-## Step 4 — drop the shared secret from daemons (ed25519-only)
+## Step 4 — keep the shared secret on every daemon
 
-This is the step that **closes the escalation**: once a daemon no longer holds
-`CONTAINARIUM_SENTINEL_AUTH_SECRET`, it has nothing that can forge a sentinel
-request — it can only verify with the public key.
+**Do not remove** `CONTAINARIUM_SENTINEL_AUTH_SECRET` from daemon hosts as part
+of this migration. Ed25519 changes only sentinel→daemon authentication. The
+daemon→sentinel requests below still use the shared HMAC secret:
 
-On **each** daemon host (BYOC hosts especially — that's the whole point):
+- Primary registration, heartbeat and deregistration sign requests to
+  `/sentinel/primaries` (`internal/server/primary_register.go`). If the secret
+  is missing or too short, registration is skipped; if it does not match the
+  sentinel, registration and heartbeats are rejected.
+- Peer PKI bootstrap calls `FetchPeerPKI` at daemon startup, which requires the
+  secret and signs `POST /sentinel/peer-cert`
+  (`internal/server/peer.go`, `internal/server/peer_pki.go`). Without a usable
+  secret, the daemon cannot bootstrap its peer certificate and remains on
+  plain HTTP for peer calls.
 
-```bash
-# As root on each daemon host: remove the HMAC line, keep the public key.
-sudo sed -i '/^CONTAINARIUM_SENTINEL_AUTH_SECRET=/d' /etc/containarium/env.secrets
-sudo systemctl restart containarium
-```
+Keep the AUTH secret alongside `CONTAINARIUM_SENTINEL_PUBLIC_KEY` on each
+daemon. The public key verifies sentinel signatures; it does not replace the
+secret used by daemon→sentinel requests.
 
-Verify the daemon is now ed25519-only and still authenticating:
+This means the daemon still has the shared secret, and its verifier continues
+to accept legacy HMAC while that secret is configured. This migration enables
+ed25519 for sentinel→daemon requests, but by itself does **not** remove the
+shared-secret forgery risk described above. Completing that hardening requires
+a separate change that replaces daemon→sentinel HMAC and lets daemons stop
+accepting legacy HMAC.
 
-```bash
-journalctl -u containarium --since '-3min' | grep -iE 'sentinel auth failed|signature verify failed'
-# want: nothing — ed25519 requests from the sentinel still verify
-```
+## Step 5 — keep the shared secret on the sentinel
 
----
-
-## Step 5 — (optional) drop the shared secret from the sentinel
-
-Once every daemon is ed25519-only, the sentinel no longer needs the HMAC secret
-to talk to them. Remove it for cleanliness (keep it only if some other
-daemon-→sentinel path still relies on it — the PKI bootstrap does **not** use
-this variable):
-
-```bash
-# As root on the SENTINEL host.
-sudo sed -i '/^CONTAINARIUM_SENTINEL_AUTH_SECRET=/d' /etc/containarium/env.secrets
-sudo systemctl restart containarium-sentinel
-```
+**Do not remove** `CONTAINARIUM_SENTINEL_AUTH_SECRET` from the sentinel as part
+of this migration either. The sentinel uses it to authenticate incoming
+daemon requests. In particular, `/sentinel/primaries`, `/sentinel/ca`, and
+`/sentinel/peer-cert` are behind the HMAC gate in
+`internal/sentinel/binaryserver.go`; registration and PKI bootstrap would be
+rejected if the secret were removed. The shared secret can be retired only
+after daemon→sentinel authentication is migrated separately; this runbook does
+not make that change.
 
 ---
 
 ## Rollback
 
-Because the daemons stayed dual-accept through Steps 1–3, rollback before Step 4
-is trivial — the HMAC path was never removed:
-
-- **Before Step 4:** unset `CONTAINARIUM_SENTINEL_SIGNING_KEY` on the sentinel
-  and restart it. It reverts to HMAC signing; daemons still accept HMAC. (You
-  can leave the public key on the daemons; it's inert without a signing
-  sentinel.)
-- **After Step 4 (daemons are ed25519-only):** to roll back you must re-add
-  `CONTAINARIUM_SENTINEL_AUTH_SECRET` to the daemons **before** unsetting the
-  sentinel's signing key — otherwise a daemon would accept neither scheme and
-  keysync 401s. Re-add secret to daemons → restart daemons → unset signing key
-  on sentinel → restart sentinel.
+The shared AUTH secret remains on the sentinel and every daemon throughout this
+migration, so the HMAC path stays available for rollback. Before Step 2, remove
+`CONTAINARIUM_SENTINEL_SIGNING_KEY` from the sentinel and restart it. After Step
+2, do the same to switch sentinel→daemon requests back to HMAC; daemons still
+accept HMAC. The public key can remain on daemons, where it is inert until the
+sentinel signs with ed25519 again.
 
 ## Troubleshooting
 
@@ -224,4 +220,5 @@ Env changes never take effect without a **restart** — re-check that first.
 
 [SENTINEL-AUTH-SECRET.md](./SENTINEL-AUTH-SECRET.md) remains the reference for the
 legacy scheme and the `env.secrets` / drop-in plumbing. This runbook layers the
-ed25519 keys on top of that same mechanism and then removes the shared secret.
+ed25519 keys on top of that mechanism for sentinel→daemon authentication while
+retaining the shared secret for daemon→sentinel authentication.

@@ -191,37 +191,54 @@ the holders.
 
 ## Procedure A — AUTH secret via the ed25519 bridge (no sentinel-to-daemon window)
 
-Use when every daemon in the domain can run v0.45.0 or later. The idea: while
-the sentinel signs with ed25519 and every daemon holds the public key, the HMAC
-secret is not used on the sentinel-to-daemon path, so it can be changed on each
-side independently in any order.
+Use when every daemon in the domain can run v0.45.0 or later. While the
+sentinel signs with ed25519 and every daemon holds the public key, changing the
+AUTH secret does not interrupt sentinel→daemon requests. Daemon→sentinel
+requests still use HMAC, however, so the secret must match again before a
+daemon starts and performs primary registration or peer PKI bootstrap.
 
-Prerequisite: complete steps 0 to 3 of the ed25519 runbook **and leave the
-daemons dual-accept** (do **not** run its step 4). That means: public key on
-every daemon and restarted, signing key on the sentinel and restarted, and the
-`ed25519 signing key configured` / `ed25519 public key configured` log lines
-seen on each. Customer-operated daemons need the public key too; it is safe to
-send (it cannot forge).
+Prerequisite: complete steps 0 to 3 of the ed25519 runbook and keep the shared
+AUTH secret on both the sentinel and every daemon (as its steps 4 and 5 now
+require). That means: public key on every daemon and restarted, signing key on
+the sentinel and restarted, and the `ed25519 signing key configured` /
+`ed25519 public key configured` log lines seen on each. Customer-operated
+daemons need the public key too; it is safe to send (it cannot forge).
 
 1. Confirm the bridge is live: keysync is succeeding and the sentinel logged
    `ed25519 signing key configured`.
-2. On each daemon, set the new AUTH secret in the effective file (Step 0.2) and
-   `sudo systemctl restart containarium`. Sentinel-to-daemon keysync/certsync/peers
-   keep verifying through ed25519, so no 401s there.
-3. On the sentinel, set the same value and `sudo systemctl restart containarium-sentinel`.
-4. The **daemon-to-sentinel** HMAC calls (table row 3) still mismatch between
-   step 2 and step 3 for each daemon. They retry on their own heartbeat/resync
-   cadence. Keep the gap between a daemon restart and the sentinel restart
-   under 90 seconds so primary registrations do not lapse, or accept a brief
-   lapse that heals at the next heartbeat.
+2. Stage the new AUTH secret in the effective secret file (Step 0.2) on the
+   sentinel and every daemon. Do not restart any host until all files are
+   staged; preserve the ed25519 key lines.
+3. Restart the sentinel first:
+
+   ```bash
+   sudo systemctl restart containarium-sentinel
+   ```
+
+   Sentinel→daemon requests continue over ed25519. Until each daemon restarts,
+   its daemon→sentinel HMAC requests use the old value and are rejected. The
+   sentinel's primary registry is in memory and starts empty after its restart;
+   each daemon repopulates it when its startup registration succeeds.
+4. Restart each daemon after the sentinel is back:
+
+   ```bash
+   sudo systemctl restart containarium
+   ```
+
+   On startup, the daemon performs primary registration before calling
+   `PeerPool.BootstrapPKI` (`internal/server/dual_server.go`). With the new
+   secret already active on the sentinel, registration and the HMAC-signed
+   `POST /sentinel/peer-cert` succeed. Keep the rollout in one maintenance
+   window and verify both registration and `[peer-pki] bootstrap complete` on
+   every daemon.
 5. Verify (below).
 
 Caveats from the code:
 
-- Do **not** apply the ed25519 runbook's step 5 ("drop the shared secret from
-  the sentinel") while any daemon-to-sentinel path in table row 3 is in use:
-  those endpoints are still gated by the HMAC secret on the sentinel. See
-  "Gaps found".
+- Do **not** remove the shared AUTH secret from either side by following the
+  ed25519 runbook's steps 4 or 5. This migration changes only
+  sentinel→daemon authentication; daemon registration and peer PKI bootstrap
+  still require the matching HMAC secret on both sides.
 - The anonymous-box door plugin on the sentinel signs through the same
   `SignRequest` path and reads the same environment, so it follows the sentinel
   restart with no extra step.
@@ -308,10 +325,14 @@ fixed here.
    need `SentinelHMACMiddleware` to accept an optional previous secret. Procedure
    A reaches the same result for the sentinel-to-daemon direction using what
    already ships, but not for the daemon-to-sentinel direction.
-2. **ed25519 runbook says the PKI bootstrap does not use the AUTH secret.** The
-   code disagrees: `/sentinel/ca` and `/sentinel/peer-cert` are registered behind
-   `SentinelHMACMiddleware(manager.hmacSecret, ...)` and `FetchPeerPKI` requires
-   the secret. Its Step 5 should be read with that in mind.
+2. **The ed25519 migration does not retire the AUTH secret.** Its public-key
+   verification covers sentinel→daemon requests only. Daemon→sentinel primary
+   registration remains HMAC-signed (`internal/server/primary_register.go`),
+   and peer PKI bootstrap requires the secret and signs
+   `POST /sentinel/peer-cert` (`internal/server/peer_pki.go`); the sentinel
+   gates that route with the same secret (`internal/sentinel/binaryserver.go`).
+   Keep the secret configured on both sides until daemon→sentinel
+   authentication has a separate replacement.
 3. **Terraform startup scripts overwrite `env.secrets`** (fact 8), including hand-appended
    ed25519 key lines.
 4. **The sentinel's `/status` flag reports only "secret present and long enough"**,
