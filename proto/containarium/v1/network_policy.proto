@@ -102,7 +102,7 @@ service NetworkPolicyService {
 
   // GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
   // the kernel for a tenant: the effective modes after the host's enforce
-  // guard, when it was last applied, whether enforcement is armed here, and the
+  // guard, when it was last reconciled, whether enforcement is armed here, and the
   // traffic the eBPF program does not cover. It reads the applied BPF state,
   // not the stored policy, and says unknown when it cannot tell. Read-only.
   rpc GetNetworkPolicyStatus(GetNetworkPolicyStatusRequest) returns (GetNetworkPolicyStatusResponse) {
@@ -111,7 +111,7 @@ service NetworkPolicyService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get network policy status";
-      description: "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last applied time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.";
+      description: "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last reconcile time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.";
       tags: "NetworkPolicy";
     };
   }
@@ -228,9 +228,20 @@ enum NetworkPolicyAppliedState {
   // loaded (no running boxes, or none could be attached). Effective modes are
   // UNSPECIFIED.
   NETWORK_POLICY_APPLIED_STATE_NOT_LOADED = 2;
-  // At least one of the tenant's running boxes has its policy loaded; the
-  // effective modes are what the kernel holds.
+  // Every running box of the tenant has its policy loaded; the effective
+  // modes are what the kernel holds for all of them.
   NETWORK_POLICY_APPLIED_STATE_LOADED = 3;
+  // Some, but not all, of the tenant's running boxes have the policy loaded
+  // (boxes_not_loaded > 0). The effective modes are what the kernel holds for
+  // the loaded boxes only; the traffic of the other boxes is not policed, so
+  // the tenant is NOT fully covered.
+  NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED = 4;
+  // The last completed reconcile pass is too old to trust (older than three
+  // reconcile intervals): the reconciler is stalled, e.g. every pass fails
+  // to read the containers or the policy store. What the kernel holds now is
+  // unknown, so the effective modes and box counts are UNSPECIFIED;
+  // last_reconciled_at shows how old the last good pass is.
+  NETWORK_POLICY_APPLIED_STATE_STALE = 5;
 }
 
 // NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.
@@ -251,8 +262,9 @@ enum NetworkPolicyUncoveredPath {
 // NetworkPolicyStatus is a tenant's applied network policy on this daemon.
 message NetworkPolicyStatus {
   string tenant = 1;
-  // Whether the policy is loaded here; the fields below are only meaningful
-  // when it is LOADED.
+  // Whether the policy is loaded here; the modes below are only meaningful
+  // when it is LOADED or PARTIALLY_LOADED (for PARTIALLY_LOADED they cover
+  // the loaded boxes only).
   NetworkPolicyAppliedState state = 2;
   // Mode the kernel applies to the cross-tenant, intra-tenant, metadata,
   // virtual-patch and signature checks, after the host's enforce guard.
@@ -261,9 +273,13 @@ message NetworkPolicyStatus {
   // Mode the kernel applies to the egress allow-list, after the host's
   // enforce guard. UNSPECIFIED = unknown.
   NetworkPolicyMode effective_egress_mode = 4;
-  // End of the last reconcile pass that wrote this tenant's config into the
-  // kernel. Unset when not LOADED.
-  google.protobuf.Timestamp last_applied_at = 5;
+  // End of the last successful reconcile pass on this daemon. Passes run
+  // about every 10 seconds (and on container events) and rewrite the kernel
+  // config each time, so this is refreshed continuously: it is NOT the time
+  // the policy last changed. A value older than a few reconcile intervals
+  // means the reconciler is stalled; past three intervals the daemon reports
+  // STALE. Unset when no pass has completed (or the enforcer is not running).
+  google.protobuf.Timestamp last_reconciled_at = 5;
   // Whether this host arms enforcement (CONTAINARIUM_NETWORK_POLICY_ENFORCE).
   // When false, a requested ENFORCE is loaded as LOG_ONLY.
   bool enforcement_armed = 6;

@@ -40,9 +40,20 @@ const (
 	// loaded (no running boxes, or none could be attached). Effective modes are
 	// UNSPECIFIED.
 	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED NetworkPolicyAppliedState = 2
-	// At least one of the tenant's running boxes has its policy loaded; the
-	// effective modes are what the kernel holds.
+	// Every running box of the tenant has its policy loaded; the effective
+	// modes are what the kernel holds for all of them.
 	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED NetworkPolicyAppliedState = 3
+	// Some, but not all, of the tenant's running boxes have the policy loaded
+	// (boxes_not_loaded > 0). The effective modes are what the kernel holds for
+	// the loaded boxes only; the traffic of the other boxes is not policed, so
+	// the tenant is NOT fully covered.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED NetworkPolicyAppliedState = 4
+	// The last completed reconcile pass is too old to trust (older than three
+	// reconcile intervals): the reconciler is stalled, e.g. every pass fails
+	// to read the containers or the policy store. What the kernel holds now is
+	// unknown, so the effective modes and box counts are UNSPECIFIED;
+	// last_reconciled_at shows how old the last good pass is.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE NetworkPolicyAppliedState = 5
 )
 
 // Enum value maps for NetworkPolicyAppliedState.
@@ -52,12 +63,16 @@ var (
 		1: "NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING",
 		2: "NETWORK_POLICY_APPLIED_STATE_NOT_LOADED",
 		3: "NETWORK_POLICY_APPLIED_STATE_LOADED",
+		4: "NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED",
+		5: "NETWORK_POLICY_APPLIED_STATE_STALE",
 	}
 	NetworkPolicyAppliedState_value = map[string]int32{
 		"NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED":          0,
 		"NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING": 1,
 		"NETWORK_POLICY_APPLIED_STATE_NOT_LOADED":           2,
 		"NETWORK_POLICY_APPLIED_STATE_LOADED":               3,
+		"NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED":     4,
+		"NETWORK_POLICY_APPLIED_STATE_STALE":                5,
 	}
 )
 
@@ -485,8 +500,9 @@ func (x *GetNetworkPolicyStatusResponse) GetStatus() *NetworkPolicyStatus {
 type NetworkPolicyStatus struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	// Whether the policy is loaded here; the fields below are only meaningful
-	// when it is LOADED.
+	// Whether the policy is loaded here; the modes below are only meaningful
+	// when it is LOADED or PARTIALLY_LOADED (for PARTIALLY_LOADED they cover
+	// the loaded boxes only).
 	State NetworkPolicyAppliedState `protobuf:"varint,2,opt,name=state,proto3,enum=containarium.v1.NetworkPolicyAppliedState" json:"state,omitempty"`
 	// Mode the kernel applies to the cross-tenant, intra-tenant, metadata,
 	// virtual-patch and signature checks, after the host's enforce guard.
@@ -495,9 +511,13 @@ type NetworkPolicyStatus struct {
 	// Mode the kernel applies to the egress allow-list, after the host's
 	// enforce guard. UNSPECIFIED = unknown.
 	EffectiveEgressMode NetworkPolicyMode `protobuf:"varint,4,opt,name=effective_egress_mode,json=effectiveEgressMode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"effective_egress_mode,omitempty"`
-	// End of the last reconcile pass that wrote this tenant's config into the
-	// kernel. Unset when not LOADED.
-	LastAppliedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=last_applied_at,json=lastAppliedAt,proto3" json:"last_applied_at,omitempty"`
+	// End of the last successful reconcile pass on this daemon. Passes run
+	// about every 10 seconds (and on container events) and rewrite the kernel
+	// config each time, so this is refreshed continuously: it is NOT the time
+	// the policy last changed. A value older than a few reconcile intervals
+	// means the reconciler is stalled; past three intervals the daemon reports
+	// STALE. Unset when no pass has completed (or the enforcer is not running).
+	LastReconciledAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=last_reconciled_at,json=lastReconciledAt,proto3" json:"last_reconciled_at,omitempty"`
 	// Whether this host arms enforcement (CONTAINARIUM_NETWORK_POLICY_ENFORCE).
 	// When false, a requested ENFORCE is loaded as LOG_ONLY.
 	EnforcementArmed bool `protobuf:"varint,6,opt,name=enforcement_armed,json=enforcementArmed,proto3" json:"enforcement_armed,omitempty"`
@@ -570,9 +590,9 @@ func (x *NetworkPolicyStatus) GetEffectiveEgressMode() NetworkPolicyMode {
 	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
 }
 
-func (x *NetworkPolicyStatus) GetLastAppliedAt() *timestamppb.Timestamp {
+func (x *NetworkPolicyStatus) GetLastReconciledAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.LastAppliedAt
+		return x.LastReconciledAt
 	}
 	return nil
 }
@@ -630,27 +650,29 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x1dGetNetworkPolicyStatusRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"^\n" +
 	"\x1eGetNetworkPolicyStatusResponse\x12<\n" +
-	"\x06status\x18\x01 \x01(\v2$.containarium.v1.NetworkPolicyStatusR\x06status\"\xa6\x04\n" +
+	"\x06status\x18\x01 \x01(\v2$.containarium.v1.NetworkPolicyStatusR\x06status\"\xac\x04\n" +
 	"\x13NetworkPolicyStatus\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12@\n" +
 	"\x05state\x18\x02 \x01(\x0e2*.containarium.v1.NetworkPolicyAppliedStateR\x05state\x12I\n" +
 	"\x0eeffective_mode\x18\x03 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\reffectiveMode\x12V\n" +
-	"\x15effective_egress_mode\x18\x04 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x13effectiveEgressMode\x12B\n" +
-	"\x0flast_applied_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\rlastAppliedAt\x12+\n" +
+	"\x15effective_egress_mode\x18\x04 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x13effectiveEgressMode\x12H\n" +
+	"\x12last_reconciled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastReconciledAt\x12+\n" +
 	"\x11enforcement_armed\x18\x06 \x01(\bR\x10enforcementArmed\x12!\n" +
 	"\fboxes_loaded\x18\a \x01(\rR\vboxesLoaded\x12(\n" +
 	"\x10boxes_not_loaded\x18\b \x01(\rR\x0eboxesNotLoaded\x12T\n" +
-	"\x0funcovered_paths\x18\t \x03(\x0e2+.containarium.v1.NetworkPolicyUncoveredPathR\x0euncoveredPaths*\xd6\x01\n" +
+	"\x0funcovered_paths\x18\t \x03(\x0e2+.containarium.v1.NetworkPolicyUncoveredPathR\x0euncoveredPaths*\xb1\x02\n" +
 	"\x19NetworkPolicyAppliedState\x12,\n" +
 	"(NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED\x10\x00\x125\n" +
 	"1NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING\x10\x01\x12+\n" +
 	"'NETWORK_POLICY_APPLIED_STATE_NOT_LOADED\x10\x02\x12'\n" +
-	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03*\xdf\x01\n" +
+	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03\x121\n" +
+	"-NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED\x10\x04\x12&\n" +
+	"\"NETWORK_POLICY_APPLIED_STATE_STALE\x10\x05*\xdf\x01\n" +
 	"\x1aNetworkPolicyUncoveredPath\x12-\n" +
 	")NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"NETWORK_POLICY_UNCOVERED_PATH_IPV6\x10\x01\x124\n" +
 	"0NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG\x10\x02\x124\n" +
-	"0NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED\x10\x032\xd9\x18\n" +
+	"0NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED\x10\x032\xdb\x18\n" +
 	"\x14NetworkPolicyService\x12\x8d\x02\n" +
 	"\x10SetNetworkPolicy\x12(.containarium.v1.SetNetworkPolicyRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xa3\x01\x92A\x80\x01\n" +
 	"\rNetworkPolicy\x12\x12Set network policy\x1a[Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/network-policies\x12\xee\x01\n" +
@@ -663,9 +685,9 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x1bPatchNetworkPolicyDenyRules\x123.containarium.v1.PatchNetworkPolicyDenyRulesRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xac\x01\x92A\x7f\n" +
 	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rules\x12\x91\x03\n" +
 	"\x11PlanNetworkPolicy\x12).containarium.v1.PlanNetworkPolicyRequest\x1a*.containarium.v1.PlanNetworkPolicyResponse\"\xa4\x02\x92A\xf6\x01\n" +
-	"\rNetworkPolicy\x12\x13Plan network policy\x1a\xcf\x01List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.\x82\xd3\xe4\x93\x02$\x12\"/v1/network-policies/{tenant}/plan\x12\xea\x03\n" +
-	"\x16GetNetworkPolicyStatus\x12..containarium.v1.GetNetworkPolicyStatusRequest\x1a/.containarium.v1.GetNetworkPolicyStatusResponse\"\xee\x02\x92A\xbe\x02\n" +
-	"\rNetworkPolicy\x12\x19Get network policy status\x1a\x91\x02Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last applied time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.\x82\xd3\xe4\x93\x02&\x12$/v1/network-policies/{tenant}/status\x12\xa9\x02\n" +
+	"\rNetworkPolicy\x12\x13Plan network policy\x1a\xcf\x01List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.\x82\xd3\xe4\x93\x02$\x12\"/v1/network-policies/{tenant}/plan\x12\xec\x03\n" +
+	"\x16GetNetworkPolicyStatus\x12..containarium.v1.GetNetworkPolicyStatusRequest\x1a/.containarium.v1.GetNetworkPolicyStatusResponse\"\xf0\x02\x92A\xc0\x02\n" +
+	"\rNetworkPolicy\x12\x19Get network policy status\x1a\x93\x02Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last reconcile time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.\x82\xd3\xe4\x93\x02&\x12$/v1/network-policies/{tenant}/status\x12\xa9\x02\n" +
 	"\x19SetNetworkPolicySignature\x121.containarium.v1.SetNetworkPolicySignatureRequest\x1a2.containarium.v1.SetNetworkPolicySignatureResponse\"\xa4\x01\x92Ay\n" +
 	"\rNetworkPolicy\x12\x1cSet network-policy signature\x1aJCreate or replace a global cleartext exploit signature (#661). Admin-only.\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/network-policy-signatures\x12\xa5\x02\n" +
 	"\x1bListNetworkPolicySignatures\x123.containarium.v1.ListNetworkPolicySignaturesRequest\x1a4.containarium.v1.ListNetworkPolicySignaturesResponse\"\x9a\x01\x92Ar\n" +
@@ -721,7 +743,7 @@ var file_containarium_v1_network_policy_proto_depIdxs = []int32{
 	0,  // 3: containarium.v1.NetworkPolicyStatus.state:type_name -> containarium.v1.NetworkPolicyAppliedState
 	9,  // 4: containarium.v1.NetworkPolicyStatus.effective_mode:type_name -> containarium.v1.NetworkPolicyMode
 	9,  // 5: containarium.v1.NetworkPolicyStatus.effective_egress_mode:type_name -> containarium.v1.NetworkPolicyMode
-	8,  // 6: containarium.v1.NetworkPolicyStatus.last_applied_at:type_name -> google.protobuf.Timestamp
+	8,  // 6: containarium.v1.NetworkPolicyStatus.last_reconciled_at:type_name -> google.protobuf.Timestamp
 	1,  // 7: containarium.v1.NetworkPolicyStatus.uncovered_paths:type_name -> containarium.v1.NetworkPolicyUncoveredPath
 	10, // 8: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
 	11, // 9: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
