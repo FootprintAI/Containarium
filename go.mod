@@ -5,24 +5,23 @@ go 1.26.10
 require (
 	cloud.google.com/go/compute v1.73.0
 	filippo.io/age v1.3.2
-	github.com/BurntSushi/toml v1.6.0
+	github.com/BurntSushi/toml v1.4.0
 	github.com/blang/semver/v4 v4.0.0
-	github.com/cilium/ebpf v0.22.0
+	github.com/cilium/ebpf v0.21.0
 	github.com/footprintai/go-certs v0.0.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/lxc/incus/v7 v7.5.1
 	github.com/mark3labs/mcp-go v1.3.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/tg123/sshpiper v1.6.1
+	github.com/tg123/sshpiper v1.4.8
 	github.com/ti-mo/conntrack v0.6.0
 	github.com/ti-mo/netfilter v0.5.3
 	go.opentelemetry.io/contrib/detectors/gcp v1.47.0
@@ -35,7 +34,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	go.opentelemetry.io/proto/otlp v1.11.1
+	go.opentelemetry.io/proto/otlp v1.11.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.37.0
@@ -122,7 +121,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
-	github.com/opencontainers/umoci v0.6.1-0.20251213054154-70fc5ee1f4df // indirect
+	github.com/opencontainers/umoci v0.5.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/sftp v1.13.11 // indirect
 	github.com/pkg/xattr v0.4.12 // indirect
@@ -137,9 +136,9 @@ require (
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tg123/remotesigner v0.0.3 // indirect
-	github.com/urfave/cli v1.22.17 // indirect
-	github.com/urfave/cli/v2 v2.27.7 // indirect
-	github.com/vbatts/go-mtree v0.7.0 // indirect
+	github.com/urfave/cli v1.22.16 // indirect
+	github.com/urfave/cli/v2 v2.27.6 // indirect
+	github.com/vbatts/go-mtree v0.5.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -175,3 +174,5 @@ require (
 // unreleased grpc build. Remove this replace once grpc cuts a stable
 // v1.85.0+ (or any later fixed release).
 replace google.golang.org/grpc => google.golang.org/grpc v1.83.2
+
+replace golang.org/x/text => golang.org/x/text v0.43.0
