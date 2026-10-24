@@ -59,17 +59,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Pin checker self-test
-        run: scripts/ci/check-action-pins.sh --self-test
-
-      - name: Require SHA-pinned actions
-        run: scripts/ci/check-action-pins.sh .github
-
-      - name: Release-only diff detector self-test
-        # Decides which PRs may skip the heavy jobs
-        # (.github/actions/release-only-diff); a wrong "true" skips real tests.
-        run: scripts/ci/release-only-diff.sh --self-test
-
       - name: CODEOWNERS coverage self-test (seeded gaps must fail)
         # #2792: the file must cover every path decided on #2649 with both owners.
         run: scripts/ci/check-codeowners.sh --self-test
@@ -83,6 +72,17 @@ jobs:
       - name: Action allow-list covers every third-party action in use
         # The admin script's allow-list must not lock CI out once enforced.
         run: scripts/admin/apply-repo-settings.sh --check-allow-list
+
+      - name: Pin checker self-test
+        run: scripts/ci/check-action-pins.sh --self-test
+
+      - name: Require SHA-pinned actions
+        run: scripts/ci/check-action-pins.sh .github
+
+      - name: Release-only diff detector self-test
+        # Decides which PRs may skip the heavy jobs
+        # (.github/actions/release-only-diff); a wrong "true" skips real tests.
+        run: scripts/ci/release-only-diff.sh --self-test
 
       - name: Install actionlint (pinned, checksum-verified)
         run: |
