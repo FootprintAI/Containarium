@@ -519,7 +519,7 @@ int netpolicy_ingress(struct __sk_buff *skb) {
             if (bpf_map_lookup_elem(&egress_cidr, &k))
                 allowed = 1;
             else if (cfg->egress_mode)
-                deny_mode = cfg->mode; // MUTATION #2981 (temporary, will be reverted): ignore egress_mode
+                deny_mode = cfg->egress_mode; // allow-list miss: its own mode
         }
     }
 
