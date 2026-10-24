@@ -66,6 +66,10 @@
       "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
     },
     {
+      "name": "SentinelSSHUpstreamService",
+      "description": "SentinelSSHUpstreamService is private to the local operator's Unix socket.\nIt is never registered on public gRPC or REST listeners."
+    },
+    {
       "name": "AuditService",
       "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
     },

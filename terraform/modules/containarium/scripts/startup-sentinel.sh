@@ -208,6 +208,53 @@ fi
 # values ARE fetchable live at any time via the metadata server, so this
 # function is installed as a periodic systemd timer (below) in addition to
 # running here at boot — the SAME source of truth both times, no drift.
+reconcile_ssh_upstream_control() {
+    policy="$(curl -fsS -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-upstream-policy')" || return 1
+    install -d -m 0700 /etc/containarium/ssh-upstream
+    install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
+    dropin=/etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf
+    active=/etc/containarium/ssh-upstream/policy.json
+    pending=/etc/containarium/ssh-upstream/policy.pending.json
+    changed=false
+    dropin_created=false
+    if [ ! -f "$active" ]; then
+        printf '%s' "$policy" > "$active"
+        chmod 0600 "$active"
+        changed=true
+    elif [ "$(cat "$active")" != "$policy" ]; then
+        # Keep the active policy/checkpoint pair valid even if an unrelated
+        # restart happens before the operator's maintenance window.
+        if [ ! -f "$pending" ] || [ "$(cat "$pending")" != "$policy" ]; then
+            printf '%s' "$policy" > "$pending"
+            chmod 0600 "$pending"
+            changed=true
+        fi
+        logger -t ssh-upstream-reconcile "SSH upstream policy staged in policy.pending.json; apply through the maintenance procedure"
+    elif [ -f "$pending" ]; then
+        rm -f "$pending"
+        changed=true
+    fi
+    desired_dropin="$(printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' 'ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service')"
+    if [ ! -f "$dropin" ]; then
+        dropin_created=true
+    fi
+    if [ ! -f "$dropin" ] || [ "$(cat "$dropin")" != "$desired_dropin" ]; then
+        printf '%s\n' "$desired_dropin" > "$dropin"
+        changed=true
+    fi
+    if [ "$changed" = true ]; then
+        systemctl daemon-reload
+        if [ "$dropin_created" = true ] && systemctl is-active --quiet containarium-sentinel; then
+            systemctl restart containarium-sentinel
+        fi
+    fi
+}
+
+# The periodic reconciler uses this same function before switching either router.
+declare -f reconcile_ssh_upstream_control > /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
+
 reconcile_sshpiper_service() {
     desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
         'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || {
@@ -318,6 +365,8 @@ chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
 cat > /usr/local/bin/reconcile-sshpiper-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || exit 0
 if [ -f /etc/systemd/system/sshpiper.service ] && [ "$(cat /etc/systemd/system/sshpiper.service)" = "$desired" ]; then
@@ -338,6 +387,8 @@ chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
 cat > /usr/local/bin/reconcile-sshpiper-anon-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 unit=/etc/systemd/system/sshpiper-anon.service
 code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || exit 0
