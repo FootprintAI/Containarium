@@ -8056,6 +8056,41 @@
         ]
       }
     },
+    "/v1/task-graphs:plan": {
+      "post": {
+        "summary": "Plan a task graph",
+        "description": "Run the planner skill against a goal and repository, validate the resulting TaskGraph, and return it without executing its nodes.",
+        "operationId": "CrewService_PlanTaskGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PlanTaskGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "PlanTaskGraph runs only the planner skill; graph nodes are never executed.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PlanTaskGraphRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/task-graphs:validate": {
       "post": {
         "summary": "Validate a task graph",
@@ -13018,6 +13053,16 @@
         "skillId": {
           "type": "string",
           "description": "skill_id: set only on a record for a standalone skill run (RunAgentSkill,\nno crew involved), never alongside crew_id. TailRunLog's journal lookup\n(#2096) needs a durable run -\u003e member-skill record so a finished skill\nrun's journal is still resolvable after a daemon restart — the same\ndurability crew_id + catalog already gives a crew run. Rather than add a\nsecond persistence mechanism, a standalone skill run is recorded through\nthis same store with crew_id empty and skill_id set; CrewServer.runMembers\nresolves it directly instead of through a crew's catalog lookup (#2122)."
+        },
+        "graph": {
+          "$ref": "#/definitions/TaskGraph"
+        },
+        "nodeResults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TaskNodeResult"
+          }
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -17858,6 +17903,47 @@
       },
       "description": "PlanNetworkPolicyResponse is the aggregated would-block / blocked set."
     },
+    "PlanTaskGraphRequest": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string",
+          "description": "Remote git source fetched into the planner's workspace."
+        },
+        "gitRef": {
+          "type": "string"
+        },
+        "gitCredential": {
+          "type": "string",
+          "description": "Ephemeral fetch credential, handled like RunAgentSkillRequest.git_credential."
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "description": "PlanTaskGraph runs only the planner skill; graph nodes are never executed."
+    },
+    "PlanTaskGraphResponse": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "$ref": "#/definitions/TaskGraph"
+        },
+        "runId": {
+          "type": "string",
+          "description": "Planner run; its terminal state/error is available through GetCrewRun."
+        },
+        "gitCommit": {
+          "type": "string"
+        }
+      }
+    },
     "PoolTemplateStatus": {
       "type": "object",
       "properties": {
@@ -19196,6 +19282,15 @@
         "onBehalfOfOrgId": {
           "type": "string",
           "description": "The organization every member run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
+        },
+        "graph": {
+          "$ref": "#/definitions/TaskGraph",
+          "description": "Only ORCHESTRATOR/FREEFORM support graph execution."
+        },
+        "concurrency": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Zero defaults to 5; must not exceed the platform node cap."
         }
       }
     },
@@ -21121,6 +21216,48 @@
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResult": {
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/TaskNodeState"
+        },
+        "outputJson": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "TaskNodeState": {
+      "type": "string",
+      "enum": [
+        "TASK_NODE_STATE_UNSPECIFIED",
+        "TASK_NODE_STATE_PENDING",
+        "TASK_NODE_STATE_RUNNING",
+        "TASK_NODE_STATE_SUCCEEDED",
+        "TASK_NODE_STATE_FAILED",
+        "TASK_NODE_STATE_BLOCKED",
+        "TASK_NODE_STATE_CANCELLED"
+      ],
+      "default": "TASK_NODE_STATE_UNSPECIFIED",
+      "description": "TaskNodeState distinguishes execution failures from dependencies never run."
     },
     "TerminateUserSessionsBody": {
       "type": "object",
