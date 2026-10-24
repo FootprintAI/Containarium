@@ -299,10 +299,30 @@ contains such a host.
 
 ## Rollback
 
-Restore the Step 0.3 snapshot on **every** host of the domain and restart in the
-same order as the forward procedure (daemons, then sentinel; or per Procedure A).
-The mismatch window rules are identical in reverse, so the rollback needs the same
-"all hosts in one sitting" discipline. Roll back ADMIN independently of AUTH.
+1. **Restore the Terraform source value first.** Set the deployment's
+   `sentinel_auth_secret` input back to the Step 0.3 value on every Terraform-
+   managed part of the domain, then run `terraform apply` so the instance
+   metadata and rendered startup scripts carry the rollback value. In this
+   repo, the module variable is declared in
+   `terraform/modules/containarium/variables.tf` and passed into the daemon and
+   sentinel startup scripts; the `terraform/gce-demo` consumer declares and
+   forwards its input through `variables.tf` and `main.tf`. Update the
+   deployment's actual Terraform input source (for example, its tfvars or
+   automation variable), not the variable declaration. If ADMIN is also being
+   rolled back, restore its `sentinel_admin_secret` input separately.
+2. **Restore the effective host files.** Restore the Step 0.3 snapshot on every
+   host of the domain, then restart in the same order as the forward procedure
+   (daemons, then sentinel; or sentinel, then daemons for Procedure A). The
+   Terraform startup scripts write `sentinel_auth_secret` into
+   `/etc/containarium/env.secrets` when they run. A Terraform apply updates the
+   instance metadata/startup-script input, but the repo has no live reconcile
+   for this secret; a host-only rollback can therefore be overwritten the next
+   time that host's startup script runs. The spot startup script runs on every
+   boot; the sentinel and regular-instance scripts also write the templated
+   value when executed.
+
+The mismatch window rules are identical in reverse, so complete the rollback
+in one maintenance window. Roll back ADMIN independently of AUTH.
 
 ## Converging two domains (summary)
 

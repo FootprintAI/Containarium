@@ -204,9 +204,10 @@ migration, so the HMAC path stays available for rollback.
 - **Before Step 2:** no rollback action is needed; the sentinel is still using
   HMAC.
 - **After Step 2:** remove `CONTAINARIUM_SENTINEL_SIGNING_KEY` from the sentinel
-  and restart it to switch sentinel→daemon requests back to HMAC. Daemons still
-  accept HMAC. The public key can remain on daemons, where it is inert until the
-  sentinel signs with ed25519 again.
+  and restart it. With a usable `CONTAINARIUM_SENTINEL_AUTH_SECRET` retained,
+  the sentinel's `SignRequest` calls and `/sentinel/peers` responses fall back
+  to HMAC; daemons still accept HMAC. The public key can remain on daemons,
+  where it is unused until the sentinel signs with ed25519 again.
 
 ## Troubleshooting
 
