@@ -135,15 +135,15 @@ jobs:
         with:
           path: ./bin/caddy
           # Bump the suffix to invalidate the cache when bumping Caddy.
-          key: caddy-${{ runner.os }}-amd64-v2-stable
+          key: caddy-${{ runner.os }}-amd64-v3-stable
 
       - name: Build Caddy via xcaddy
         if: steps.cache-caddy.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          scripts/install-xcaddy.sh "$RUNNER_TEMP/xcaddy"
           mkdir -p bin
-          xcaddy build --output ./bin/caddy
+          "$RUNNER_TEMP/xcaddy" build --output ./bin/caddy
 
       - name: Verify proxy_protocol module is present
         run: |
