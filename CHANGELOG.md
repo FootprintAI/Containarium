@@ -7,15 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.116.0] - 2026-10-24
+
+### Upgrading
+
+- **Retention windows above 36,500 days are rejected, and legal-hold org ids are trimmed** (#2933, #2875 review follow-up; upgrade handling in this release's follow-up).
+  - **The cap.** `containarium retention policy set` and `SetRetentionPolicy` answer `INVALID_ARGUMENT` for a window outside 1–36,500 days (100 years). The Postgres store enforces the same bound with a `CHECK` constraint.
+  - **Trimming.** An org id is trimmed before it is stored or matched, so `" org-a"` and `"org-a"` are one hold.
+  - **What the first start after upgrading does.**
+    - Windows: a window stored above the cap by an earlier release is clamped to 36,500 days. The clamp bumps the policy revision, with `updated_by` set to `containarium-upgrade`. Startup no longer fails the constraint check, which would have left every retention call `UNAVAILABLE`.
+    - Holds: a hold stored with a padded org id is re-stored under the trimmed id, so it can be released by that id and the sweepers match it against record org ids. If several stored ids trim to the same org, the earliest hold is kept and the others are removed. The org stays held.
+    - Blank hold ids: a hold whose org id is empty once trimmed is quarantined. It stays active under `quarantined-blank-org-id-<hash>`, so an admin can see it in `retention hold list` and release it. It is not dropped, because while any hold is active, records with no org are held.
+  - **Every change is audited** (Q31). Each change made by this step is logged and recorded in a new table, `retention_upgrade_events`, in the same transaction as the change. A removed hold's record keeps its reason, setter and time. Once the daemon's audit store is wired, each record becomes an audit entry by `containarium-upgrade`:
+    - `retention.policy.clamp`
+    - `retention.hold.normalise`
+    - `retention.hold.merge`
+    - `retention.hold.quarantine`
+
+    A record whose audit write fails stays pending for the next start. On a daemon with no audit store, the records wait in the table.
+  - **Concurrent starts.** Daemons starting at the same time serialize this step, so it runs once.
+
+### Fixed
+
+- **A retention policy set that waited for another set reported stale windows** (#2875 review follow-up). On Postgres, a `SetPolicy` that waited on the policy row lock built its `Previous` and `Current` policies, and so its `retention.policy.set` audit detail, from windows read before the wait. The windows the other set had just committed were missing. The stored windows were always right. The set now takes the row lock in a statement of its own and reads the windows afterwards.
+
 ### Added
 
+- **Orchestrator and freeform crews can run an explicit task graph** (#2805, #2839). `crew run <crew-id> --plan <file> --concurrency <n>` (also over gRPC and HTTP) validates the whole graph before any box is provisioned, then runs ready nodes concurrently (five by default, configurable). A node starts only after all its dependencies succeed; a failed node blocks its dependents while independent branches finish. Pipeline crews and crews without a graph behave as before.
 - **A default egress allow-list for tenants with no stored network policy** (#2577, stage 1 of the staged default-deny plan). Such a tenant used to run an empty allow-list in `log_only`, so every outbound flow was logged as a would-deny. It now runs a built-in list (git hosts, language registries, OS mirrors, and the box's DNS resolver), still `log_only` for both modes: nothing is dropped, and a stored policy always replaces it. Add the model gateway and control plane with `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`; `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty fallback. This is not "default-deny egress": arming `enforce` per tenant and the CI proof are later stages. The daemon now also resolves the list's names on each refresh, so it needs DNS reachability for them; the first resolution happens in the refresh loop, off the startup path, so a host with slow or no DNS does not delay daemon start. A stored policy that fails validation is skipped, and its tenant runs the default list.
+
+### Fixed
+
+- **The sentinel's per-primary auth health no longer lets another daemon clear a primary's 401** (#2892 follow-up). Any authenticated request from a primary's address used to reset its `failures_since_success`, so a healthy daemon on the same host or NAT could hide a primary still signing with the wrong secret. Only the primary's own authenticated registration, heartbeat or deregister clears it now. The runbook and design doc now say that only primaries registered over HTTP are listed; a primary promoted by a tunnel handshake never is. A test now covers every daemon-AUTH route (`/sentinel/ca`, `/sentinel/peer-cert` and `/sentinel/fetch-release` were not pinned).
+
+- **A data race in a sentinel failback test no longer turns the `-race` unit lane red** (#2963). `TestFailback_AFailedSwitchLeavesThePrimaryAndRetries` read its captured log buffer while a goroutine left over from an earlier tunnel test was still logging into it through the process-global logger. The test now captures into a mutex-guarded buffer. Test-only; no production code changed.
 
 ## [0.115.0] - 2026-10-24
 
 ### Upgrading
 
 - **A crew member whose `agent-runtime` doesn't start now fails the crew run instead of stalling** (#2936). Before this release a member box whose image did not ship `agent-runtime`, or whose runtime crashed on launch, left `RunCrew` waiting with no error. It now returns `FailedPrecondition` (runtime missing) or `Internal` naming the member and box, with a scrubbed tail of the box's runtime log. Before upgrading, make sure every crew member's image ships `agent-runtime`, and that callers treat a failed crew run as final rather than retrying it.
+
 - **A custom BPF object must be rebuilt for `egress_mode`** (#2970, #2987). Release builds embed a matching object, so most installs need nothing. If you set `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` to an object built before 0.115.0, it loads but ignores `egress_mode`: a policy with `egress_mode` different from `mode` is enforced as `mode`, while `network-policy status` reports the requested egress mode. Rebuild the object from this release (`make build-bpf`) before setting `egress_mode` on any policy; #2987 tracks detecting this at load time.
 
 ### Added
