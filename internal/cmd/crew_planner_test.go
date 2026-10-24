@@ -21,7 +21,7 @@ func (s *plannerCaptureServer) PlanTaskGraph(_ context.Context, req *pb.PlanTask
 	s.mu.Lock()
 	s.got = proto.Clone(req).(*pb.PlanTaskGraphRequest)
 	s.mu.Unlock()
-	return &pb.PlanTaskGraphResponse{Graph: &pb.TaskGraph{Goal: req.Goal,
+	return &pb.PlanTaskGraphResponse{RunId: "planner-run", Graph: &pb.TaskGraph{Goal: req.Goal,
 		Nodes: []*pb.TaskNode{{Id: "review", Goal: "review entry points", Assignee: &pb.TaskNode_SkillId{SkillId: "code-review"}}}}}, nil
 }
 
@@ -40,10 +40,15 @@ func TestCrewPlan_FlagsReachDaemonAndStdoutIsReusableGraph(t *testing.T) {
 				}
 			}
 			var output bytes.Buffer
+			var diagnostics bytes.Buffer
 			crewPlanCmd.SetOut(&output)
-			t.Cleanup(func() { crewPlanCmd.SetOut(nil) })
+			crewPlanCmd.SetErr(&diagnostics)
+			t.Cleanup(func() { crewPlanCmd.SetOut(nil); crewPlanCmd.SetErr(nil) })
 			if err := runCrewPlan(crewPlanCmd, nil); err != nil {
 				t.Fatal(err)
+			}
+			if diagnostics.String() != "Planner run: planner-run\n" {
+				t.Fatalf("stderr must expose the run id for status verification: %q", diagnostics.String())
 			}
 			want := &pb.PlanTaskGraphRequest{Goal: "review API", Repo: "https://example.com/repo.git", GitRef: "sha",
 				BackendId: "backend", Pool: "pool", GitCredential: "fetch-secret"}
