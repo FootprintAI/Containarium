@@ -49,7 +49,11 @@ jq -e --arg id "$backup_id" --arg tenant "$tenant" \
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
 curl --fail-with-body -sS --max-time 600 -H "Authorization: Bearer $token" \
   -H 'Content-Type: application/json' -d "$request" \
-  "$server/v1/backups/$backup_id/verify" > "$scratch_dir/verify.json"
+  "$server/v1/backups/$backup_id/verify" > "$scratch_dir/verify.json" || {
+    echo "verify request failed; response body:" >&2
+    cat "$scratch_dir/verify.json" >&2
+    exit 1
+  }
 jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/verify.json"
 target=$(jq -er '.verification.targetContainer' "$scratch_dir/verify.json")
 test "$target" != "$source_name"
