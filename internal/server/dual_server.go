@@ -418,27 +418,13 @@ func bridgeDNSRaw(baseDomain, caddyIP, sshHost string, passthroughHosts ...strin
 	return raw
 }
 
-// containerEventKick returns a channel that receives a coalesced signal for
-// every event on the bus until ctx is done, for reconcilers that wake early on
-// container changes. A pass already pending absorbs further events.
+// containerEventKick returns a channel that receives a coalesced signal after
+// each burst of container topology events (created, deleted, started, stopped,
+// state-changed) until ctx is done, for reconcilers that wake early on
+// container changes. Other bus events (metrics, traffic, findings, ...) do not
+// kick, and a burst is debounced (#3050), so passes cannot run back to back.
 func containerEventKick(ctx context.Context) <-chan struct{} {
-	sub := events.GetBus().Subscribe(nil)
-	kick := make(chan struct{}, 1)
-	go func() {
-		defer events.GetBus().Unsubscribe(sub.ID)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-sub.Events:
-				select {
-				case kick <- struct{}{}:
-				default:
-				}
-			}
-		}
-	}()
-	return kick
+	return containerTopologyKick(ctx, events.GetBus(), defaultContainerEventDebounce)
 }
 
 // NewDualServer creates a new dual server instance
@@ -2156,7 +2142,7 @@ skipAppHosting:
 		// observation-only — so an operator soaks in log_only, watches the
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
-		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -3975,42 +3961,10 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// off, and on ctx cancellation otherwise. Errors are logged inside — a
 	// guard that cannot attach must never block the daemon from serving.
 	if ds.coreGuard != nil {
-		sub := events.GetBus().Subscribe(nil)
-		kick := make(chan struct{}, 1)
-		go func() {
-			defer events.GetBus().Unsubscribe(sub.ID)
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-sub.Events:
-					select {
-					case kick <- struct{}{}:
-					default: // a pass is already pending; coalesce
-					}
-				}
-			}
-		}()
-		go ds.coreGuard.Run(ctx, kick)
+		go ds.coreGuard.Run(ctx, containerEventKick(ctx))
 	}
 	if ds.tenantGuard != nil {
-		sub := events.GetBus().Subscribe(nil)
-		kick := make(chan struct{}, 1)
-		go func() {
-			defer events.GetBus().Unsubscribe(sub.ID)
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-sub.Events:
-					select {
-					case kick <- struct{}{}:
-					default: // a pass is already pending; coalesce
-					}
-				}
-			}
-		}()
-		go ds.tenantGuard.Run(ctx, kick)
+		go ds.tenantGuard.Run(ctx, containerEventKick(ctx))
 	}
 
 	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address

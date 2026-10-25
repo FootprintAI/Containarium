@@ -1241,13 +1241,56 @@ func fetchAllConcurrently[T any](names []string, concurrency int, fetch func(nam
 // same "skip it" behavior ListContainers had inline before this was
 // split out for concurrent use.
 func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
-	{
-		// Get full instance details for each container
-		inst, _, err := c.server.GetInstance(name)
-		if err != nil {
-			return ContainerInfo{}, false // Skip containers we can't get details for
-		}
+	// Get full instance details for each container
+	inst, _, err := c.server.GetInstance(name)
+	if err != nil {
+		return ContainerInfo{}, false // Skip containers we can't get details for
+	}
+	info := containerInfoFromInstance(inst)
 
+	// Get IP address - need to get state separately
+	state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
+	if err == nil {
+		applyInstanceState(&info, state)
+	}
+	return info, true
+}
+
+// ListContainersFull returns what ListContainers returns, in one Incus request
+// (GET /1.0/instances?recursion=2, which carries every instance's state)
+// instead of one GetInstance plus one GetInstanceState per instance (#3050).
+// For a caller that lists every instance on a short cadence, such as the
+// network-policy reconcile loop. Unlike ListContainers, a failure fails the
+// whole list rather than skipping the instances it could not read.
+func (c *Client) ListContainersFull() ([]ContainerInfo, error) {
+	insts, err := c.server.GetInstancesFull(api.InstanceTypeAny)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+	out := make([]ContainerInfo, 0, len(insts))
+	for i := range insts {
+		info := containerInfoFromInstance(&insts[i].Instance)
+		if insts[i].State != nil {
+			applyInstanceState(&info, insts[i].State)
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// applyInstanceState fills the fields ListContainers takes from an instance's
+// state: its init pid and primary address.
+func applyInstanceState(info *ContainerInfo, state *api.InstanceState) {
+	info.Pid = state.Pid
+	if state.Network != nil {
+		info.IPAddress = primaryNetworkInterface(state.Network)
+	}
+}
+
+// containerInfoFromInstance maps an instance's config and devices to its
+// ListContainers entry (everything but the state fields).
+func containerInfoFromInstance(inst *api.Instance) ContainerInfo {
+	{
 		info := ContainerInfo{
 			Name:                      inst.Name,
 			State:                     inst.Status,
@@ -1316,16 +1359,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			}
 		}
 
-		// Get IP address - need to get state separately
-		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
-		if err == nil {
-			info.Pid = state.Pid
-			if state.Network != nil {
-				info.IPAddress = primaryNetworkInterface(state.Network)
-			}
-		}
-
-		return info, true
+		return info
 	}
 }
 
