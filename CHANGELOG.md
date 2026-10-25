@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **An older network-policy BPF object no longer reports a split egress mode it does not apply** (#2987). An object loaded from `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` that was built before `egress_mode` existed (#2974) reads that byte as padding and applies `mode` to the egress allow-list too. Before this fix, `network-policy status` still showed the requested egress mode. The loader now checks the object's BTF for a `policy_cfg.egress_mode` member. On an object without it, the daemon writes and reports the egress mode as `mode`, logs a warning at load, and logs a warning once for each tenant whose `egress_mode` differs from `mode`. Release builds embed a current object and are unaffected.
+- **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
+
+### Security
+
+- **Build-time downloads are pinned and inventoried** (#2795, story 5 of #2649). `xcaddy` (Makefile, `scripts/setup-caddy.sh`, proxyproto e2e) is now a checksum-verified release binary via `scripts/install-xcaddy.sh` instead of `go install ...@latest`; `govulncheck` is pinned to `v1.9.0`; the `kind` binary in the k8s and helm lanes is sha256-verified; `scripts/build-webui.sh` uses `npm ci`; the release notes' quick-install line now points at the release tag's `hacks/install.sh`, not `main`. `docs/security/BUILD-SUPPLY-CHAIN.md` lists every build-time fetch and how it is pinned, and `scripts/ci/check-build-fetches.sh` (workflow-lint lane, with a seeded self-test) fails on an unlisted fetch, any `@latest`, or a project-level `npm install`.
 
 ## [0.116.0] - 2026-10-24
 
