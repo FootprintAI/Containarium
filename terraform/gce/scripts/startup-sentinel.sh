@@ -125,6 +125,7 @@ ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
+  --login-grace-time 90s \
   /usr/local/bin/containarium sentinel ssh-authz-plugin \
   --ssh-authz-grace 5m \
   --ssh-authz-timeout 3s \
