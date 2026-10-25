@@ -830,6 +830,8 @@ message GetNetworkPolicyRequest {
 }
 message GetNetworkPolicyResponse {
   NetworkPolicy policy = 1;
+  // SHA256 of the complete observed policy for optimistic ingress edits.
+  string revision = 2;
 }
 
 message ListNetworkPoliciesRequest {}

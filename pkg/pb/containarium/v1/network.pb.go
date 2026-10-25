@@ -3206,9 +3206,9 @@ type GetNetworkTenantCapabilitiesResponse struct {
 	NativeMembershipRead bool `protobuf:"varint,2,opt,name=native_membership_read,json=nativeMembershipRead,proto3" json:"native_membership_read,omitempty"`
 	// Current local enforced Guard and create path are ready for shared creation.
 	SharedTenantCreate bool `protobuf:"varint,3,opt,name=shared_tenant_create,json=sharedTenantCreate,proto3" json:"shared_tenant_create,omitempty"`
-	// Atomic ingress-only cross-Tenant editing. Not implemented by this feature.
+	// Atomic ingress-only cross-Tenant editing support, independent of creation.
 	AtomicTenantAccess bool `protobuf:"varint,4,opt,name=atomic_tenant_access,json=atomicTenantAccess,proto3" json:"atomic_tenant_access,omitempty"`
-	// Authorization for that atomic policy contract. Always false in this feature.
+	// Current credential authorization for the atomic policy contract.
 	NetworkPolicyWrite bool `protobuf:"varint,5,opt,name=network_policy_write,json=networkPolicyWrite,proto3" json:"network_policy_write,omitempty"`
 	// Explanation when local shared creation is unavailable.
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`

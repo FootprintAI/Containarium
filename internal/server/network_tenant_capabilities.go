@@ -40,9 +40,8 @@ func (s *NetworkServer) GetNetworkTenantCapabilities(ctx context.Context, _ *pb.
 	if !ready {
 		out.Reason = "local Linux LXC, durable policy source and fresh supported enforced Tenant Guard and containers:write required"
 	}
-	// This PR implements A only. Existing allow_from_tenants remains untouched.
-	// Never advertise B merely because a legacy full-policy endpoint exists.
-	out.AtomicTenantAccess = false
-	out.NetworkPolicyWrite = false
+	out.AtomicTenantAccess = s.nativeTenantLocal && s.atomicTenantAccessReady != nil && s.atomicTenantAccessReady()
+	out.NetworkPolicyWrite = out.AtomicTenantAccess && auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite) == nil
+
 	return out, nil
 }

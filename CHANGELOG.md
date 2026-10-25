@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Atomic, revision-checked cross-Tenant ingress grants/revokes across CLI, REST, gRPC and Host MCP, preserving all other policy fields and reporting enforcement separately from TCP tests. No network stack or table migration change.
+
 - Native network Tenant creation through CLI, REST, gRPC and Host MCP, with Provider-derived membership/source queries and an authenticated capability endpoint. The existing required NIC Guard runs before first Start; failed cleanup reports the retained stopped instance. The atomic cross-Tenant policy capability remains disabled.
 
 - **A client can verify a sealed Proof Pack through the daemon: `ProofPackService.VerifyProofPack`** (part of #3064). New RPC (`POST /v1/proof-packs/verify`, admin role or explicit `audit:read` scope, as `/v1/audit/logs`; at most 4 run at once) that runs the same check as `containarium proof-pack verify` and returns `ok`, a typed verdict (`OK`, `MISMATCH`, `SEAL_PURGED`, `SEAL_NOT_FOUND`, `CHAIN_BROKEN`), the first differing step or header, and on success the chain tip id and hash to compare with the external anchor. The pack is bounded at 32 steps and 4 MiB. `containarium proof-pack verify <pack> --server <addr>` calls it; without `--server` on the command line it still reads Postgres directly, as before. A daemon's "ok" is weaker than verifying offline (see `docs/PROOF-PACK.md`). The anchor reference is not returned yet.
@@ -129,6 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
 
 ### Security
+
+- Scoped policy writes require network-policy:write, including existing full-policy and deny/signature mutation paths; legacy unrestricted admin tokens retain compatibility.
 
 - Non-admin new local Linux LXC creates use reserved account-scoped native membership to prevent username collisions with administrator-shared networks. Shared assignment and Cloud attribution require administrator authorization; existing Boxes are unchanged.
 

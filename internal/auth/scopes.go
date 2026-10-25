@@ -156,9 +156,10 @@ const (
 
 	// read-only scopes for surfaces that were admin-only, so a least-privilege
 	// (e.g. compliance/evidence) token can read one without full admin (#621).
-	ScopeAuditRead         = "audit:read"          // audit-log query
-	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
-	ScopeTokensRead        = "tokens:read"         // token listing
+	ScopeAuditRead          = "audit:read"          // audit-log query
+	ScopeNetworkPolicyRead  = "network-policy:read" // NetworkPolicyService Get/List
+	ScopeNetworkPolicyWrite = "network-policy:write"
+	ScopeTokensRead         = "tokens:read" // token listing
 
 	// audit:ingest (#2415) is the ONLY scope that may append externally
 	// sourced rows to the tamper-evident audit chain — today, the
@@ -232,7 +233,7 @@ var AllScopes = []string{
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeSSHAuthorize,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
-	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeNetworkPolicyWrite, ScopeTokensRead,
 	ScopeAuditIngest,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,

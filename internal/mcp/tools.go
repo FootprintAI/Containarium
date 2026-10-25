@@ -1876,6 +1876,7 @@ func (s *Server) registerTools() {
 	// to any token) — see TestEveryToolHasScope which
 	// enforces this in CI.
 	s.tools = append(s.tools, networkTenantCapabilityTool())
+	s.tools = append(s.tools, tenantNetworkTools()...)
 	scopeByTool := toolScopeAssignments()
 	for i := range s.tools {
 		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
@@ -1965,6 +1966,9 @@ func toolScopeAssignments() map[string]string {
 		// network guards (#2353): read-only security posture.
 		"network_guard_status":        auth.ScopeSecurityRead,
 		"network_tenant_capabilities": auth.ScopeContainersRead,
+		"list_network_policies":       auth.ScopeNetworkPolicyRead,
+		"get_network_policy":          auth.ScopeNetworkPolicyRead,
+		"patch_tenant_access":         auth.ScopeNetworkPolicyWrite,
 		"expose_port":                 auth.ScopeRoutesWrite,
 		"delete_route":                auth.ScopeRoutesWrite,
 		// collaborators (#1145) — container access control, scoped like any

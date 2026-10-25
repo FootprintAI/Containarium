@@ -82,10 +82,13 @@ a local LXC create backend, durable policy source, fresh supported enforced Guar
 and containers:write authorization. A pass older than 180 seconds or more than
 30 seconds into the future is not accepted.
 
-atomicTenantAccess and networkPolicyWrite are always false in this change.
-They describe B's revision-checked ingress-only editing contract, which is not
-implemented here. Existing full-policy methods do not imply that capability.
-BoxWeave can enable A independently without enabling B or broad policy writes.
+atomicTenantAccess reports configured local ingress-only transaction support with
+a durable policy source; networkPolicyWrite additionally requires the explicit
+network-policy:write scope. These are independent of shared creation readiness.
+Grants require fresh enforced Guard; revokes can be stored while Guard is degraded,
+with enforcement reported separately. See [Tenant access](TENANT-ACCESS.md).
+
+BoxWeave can enable A independently without implying B readiness or broad policy writes.
 
 Updated CLI/typed clients/Host MCP perform this authenticated capability check
 before an explicit create (and before CLI force preflight). An old gRPC daemon
