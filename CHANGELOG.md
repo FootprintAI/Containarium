@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-10-25
+
 ### Added
 
 - **`SubmitTrackerChangeFiles` opens a change request from a file set, with no run box** (#3005). `POST /v1/tracker/connections/{username}/{connection}/changes:files` (CLI: `containarium tracker change submit-files <username> <connection> <issue> --title ... --file <repo-path>=<local-file>`) takes whole files instead of bundling a box. The daemon fetches the base branch (`base_ref`, or the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential (same hardened git environment as the bundle path; the credential stays in a header, never a URL or argv), commits the files with the platform identity and stamp, pushes `head_branch` without force (empty: a daemon-chosen branch stable for the same username, connection, issue and title), and opens the change exactly as `SubmitTrackerChange` does. It needs `tracker:write` on the tenant, not a run-scoped token, and is audited as `tracker.submit_change_files`. Paths must be clean and repo-relative (no `..`, no leading `/`, no `.git`), the total content is capped at 50 MiB, and the head branch must differ from the base. Retrying an identical request on the same base reproduces the same commit, so the push is a no-op instead of a rejected non-fast-forward.
