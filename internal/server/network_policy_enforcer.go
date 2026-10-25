@@ -85,6 +85,14 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
+	// eventDebounce is the trailing debounce on the container-event path
+	// (#3050); the timer path (interval) is not debounced.
+	eventDebounce time.Duration
+	// meter counts reconcile passes (#3050). pass is the reconcile a pass runs;
+	// nil means e.reconcile (a test substitutes a fake).
+	meter *reconcileMeter
+	pass  func(context.Context) error
+
 	// gateway is the bridge gateway, the box's DNS resolver. A policy with an
 	// egress preset (#2440) implicitly allows it; the zero value means the
 	// daemon could not name it and the preset adds nothing.
@@ -164,6 +172,8 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		audit:             auditStore,
 		bus:               bus,
 		interval:          defaultNetPolicyReconcileInterval,
+		eventDebounce:     defaultContainerEventDebounce,
+		meter:             globalReconcileMeter(),
 		enforceEnabled:    enforceEnabled,
 		resolver:          NewDomainResolver(nil),
 		flowPoll:          defaultFlowPollInterval,
@@ -450,9 +460,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	// them cost nothing.
 	e.refreshDomainsForStartup()
 
-	if err := e.reconcile(e.ctx); err != nil {
-		log.Printf("[netpolicy] initial reconcile: %v", err)
-	}
+	e.runPass(reconcileTriggerInitial)
 
 	// Domain refresh loop (Phase C): wake when the earliest name is due —
 	// min(record TTL, 60s) per name (#2379) — and re-resolve the due ones. The
@@ -506,36 +514,11 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		log.Printf("[netpolicy] traffic-flow accounting enabled (poll=%s)", e.flowPoll)
 	}
 
-	// Reconcile loop + bus trigger.
-	var sub *events.Subscriber
-	if e.bus != nil {
-		sub = e.bus.Subscribe(nil)
-	}
+	// Reconcile loop + bus trigger: the 10 s timer, plus a debounced kick on
+	// container topology events (#3050).
+	kick := containerTopologyKick(e.ctx, e.bus, e.eventDebounce)
 	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		if sub != nil {
-			defer e.bus.Unsubscribe(sub.ID)
-		}
-		tick := time.NewTicker(e.interval)
-		defer tick.Stop()
-		busCh := subEvents(sub) // nil channel (blocks forever) when no bus
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-tick.C:
-				if err := e.reconcile(e.ctx); err != nil {
-					log.Printf("[netpolicy] reconcile: %v", err)
-				}
-			case <-busCh:
-				// Container changed — converge sooner. Errors are logged, not fatal.
-				if err := e.reconcile(e.ctx); err != nil {
-					log.Printf("[netpolicy] reconcile (event): %v", err)
-				}
-			}
-		}
-	}()
+	go e.reconcileLoop(kick)
 
 	mode := "observation-only (log_only)"
 	if e.enforceEnabled {
