@@ -55,14 +55,18 @@ type appliedStateSource interface {
 // the plan it applied and, per planned veth, whether the config write and the
 // attach both succeeded. A running box without a resolved veth never reaches
 // the plan's veth map, so it is counted as not loaded from the views.
-func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool) map[string]tenantApplied {
+//
+// egressIncomplete marks a tenant id whose allow-list write failed this pass,
+// and egressNames names it. The mark is keyed by the failed entry's tenant, not
+// by the running views (#3051): a tenant with only stopped boxes, or with no box
+// left after its policy was removed, still gets a record carrying it.
+func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool, egressNames map[uint32]string) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
 		if !v.Running {
 			continue
 		}
 		a := out[v.Tenant]
-		a.EgressIncomplete = a.EgressIncomplete || egressIncomplete[v.TenantID]
 		cfg, planned := plan.vethPolicy[v.Ifindex]
 		if v.HasVeth && planned && loaded[v.Ifindex] {
 			a.Mode, a.EgressMode = cfg.Mode, cfg.EgressMode
@@ -72,6 +76,15 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 			a.BoxesNotLoaded++
 		}
 		out[v.Tenant] = a
+	}
+	for id, bad := range egressIncomplete {
+		name, ok := egressNames[id]
+		if !bad || !ok {
+			continue
+		}
+		a := out[name]
+		a.EgressIncomplete = true
+		out[name] = a
 	}
 	return out
 }
@@ -146,6 +159,11 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	}
 	if !snap.Found || a.BoxesLoaded == 0 {
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED
+		// No box is loaded, but the tenant's allow-list entries are written
+		// regardless (#3051), so a failed write still matters.
+		if snap.Found && a.EgressIncomplete {
+			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
+		}
 		return st
 	}
 	// LOADED only when every running box is covered; otherwise the modes are
