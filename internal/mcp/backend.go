@@ -149,6 +149,10 @@ type API interface {
 	ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error)
 	CreateTrackerIssue(req CreateTrackerIssueRequest) (*TrackerIssue, error)
 
+	// Sprint board reads (hosted control plane routes; read-only).
+	ListSprints(req ListSprintsRequest) ([]SprintMirror, error)
+	GetSprintBoard(req GetSprintBoardRequest) (*SprintMirror, error)
+
 	// Host-LEVEL operations — overridden as unsupported on the cloud backend.
 	GetSystemInfo() (*GetSystemInfoResponse, error)
 	GetLatestRelease() (*LatestReleaseResponse, error)
