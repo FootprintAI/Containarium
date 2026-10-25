@@ -13,6 +13,7 @@
 .github/workflows/distros-py-release.yml	pip install	c2b68e43260f	pip install build
 .github/workflows/ebpf-load.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
 .github/workflows/fence-probe-e2e.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
+.github/workflows/fence-probe-e2e.yml	curl	bcba666dbe30	curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/r
 .github/workflows/gitlab-e2e.yml	curl	ecedff73abce	curl -s -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: ${GITLAB_E2E
 .github/workflows/golangci-lint.yml	go install	334849e94998	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1
 .github/workflows/helm-install-upgrade.yml	curl	e4b2410859fe	curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-am
@@ -52,9 +53,7 @@ scripts/agent-skill-lease-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no c
 scripts/agent-skill-lease-e2e.sh	curl	923d3f75ffa5	curl stderr ----"; read_out "$WORKDIR/during.err"
 scripts/agent-skill-lease-e2e.sh	curl	d2d8c4c75eb1	curl wrote status '$during_code') — the gateway never answered, so not
 scripts/agent-skill-lease-e2e.sh	curl	ada6320f981f	curl wrote status '$during2_code')"
-scripts/backup-scoped-token-e2e.sh	curl	86e1fe149e82	curl --fail-with-body -sS "$@" > "$out" || {
-scripts/backup-scoped-token-e2e.sh	curl	646a7b5a05c2	curl exit $status): $*" >&2
-scripts/backup-scoped-token-e2e.sh	curl	c9a6fc2a9c03	curl -sS -o "$scratch_dir/denied.json" -w '%{http_code}' -H "Authoriza
+scripts/backup-scoped-token-e2e.sh	curl	0bd8aead70c5	curl -sS -o "$out" -w '%{http_code}' "$@"); then
 scripts/build-macos11.sh	go install	3f6c78073ac9	go install cmd/link ) # rebuild the linker with the patch
 scripts/build-webui.sh	npm ci	9db3f780def6	npm ci
 scripts/bundle/download-deps.sh	curl	364927daf155	curl -fL --retry 3 --retry-delay 2 -o "$out.partial" "$url"; then

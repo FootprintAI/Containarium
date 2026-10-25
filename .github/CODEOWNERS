@@ -1,0 +1,17 @@
+# Code owners for the paths that decide what gets built, downloaded or run
+# (#2649 decision 1, #2792). Branch protection on main requires one code-owner
+# approval for a PR touching any of them. Both owners are the current
+# repository admins; a team replaces the two logins when a third maintainer
+# exists. scripts/ci/check-codeowners.sh keeps this list in step with the
+# decision. Last matching pattern wins, so keep these as one block.
+go.mod              @hsinhoyeh @hsinatfootprintai
+go.sum              @hsinhoyeh @hsinatfootprintai
+.github/**          @hsinhoyeh @hsinatfootprintai
+Makefile            @hsinhoyeh @hsinatfootprintai
+scripts/**          @hsinhoyeh @hsinatfootprintai
+install.sh          @hsinhoyeh @hsinatfootprintai
+**/Dockerfile*      @hsinhoyeh @hsinatfootprintai
+**/package*.json    @hsinhoyeh @hsinatfootprintai
+proto/**            @hsinhoyeh @hsinatfootprintai
+deploy/**           @hsinhoyeh @hsinatfootprintai
+terraform/**        @hsinhoyeh @hsinatfootprintai
