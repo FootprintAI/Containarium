@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Claude and Codex runs journal how the model's turn ended** (#2513, item 1). When a run ends without a final message, or ends any way but an ordinary finish, the run journal gets one `status` row: `model ended without a final message: …` or `model ended abnormally after its final message: …`. For Claude it names the SDK's `stop_reason`, `terminal_reason` and result subtype. For Codex, which reports no stop reason, it says whether `turn.completed` arrived. The row also carries the first 200 characters of the final message and, when the message is longer, its length. This is the row the Gemini engine already writes, so a run that edited files and returned no JSON can be diagnosed from its journal on every engine. No schema change: it is the existing `status` kind.
 - **`crew plan --goal --repo` generates a validated TaskGraph without executing its nodes** (#2804). The planner runs as a skill in a box using the daemon's primary provider; invalid output and direct or crew-mediated planner self-assignment are rejected and the failure reason is saved in the run record. Both gRPC and HTTP clients are supported.
 
+### Fixed
+
+- **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
+
+### Security
+
+- **Build-time downloads are pinned and inventoried** (#2795, story 5 of #2649). `xcaddy` (Makefile, `scripts/setup-caddy.sh`, proxyproto e2e) is now a checksum-verified release binary via `scripts/install-xcaddy.sh` instead of `go install ...@latest`; `govulncheck` is pinned to `v1.9.0`; the `kind` binary in the k8s and helm lanes is sha256-verified; `scripts/build-webui.sh` uses `npm ci`; the release notes' quick-install line now points at the release tag's `hacks/install.sh`, not `main`. `docs/security/BUILD-SUPPLY-CHAIN.md` lists every build-time fetch and how it is pinned, and `scripts/ci/check-build-fetches.sh` (workflow-lint lane, with a seeded self-test) fails on an unlisted fetch, any `@latest`, or a project-level `npm install`.
+
 ## [0.116.0] - 2026-10-24
 
 ### Upgrading

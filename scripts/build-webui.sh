@@ -16,7 +16,7 @@ fi
 if [ ! -d "$WEBUI_DIR/node_modules" ]; then
     echo "==> Installing dependencies..."
     cd "$WEBUI_DIR"
-    npm install
+    npm ci
     cd ..
 fi
 
