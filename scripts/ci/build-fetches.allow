@@ -52,10 +52,7 @@ scripts/agent-skill-lease-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no c
 scripts/agent-skill-lease-e2e.sh	curl	923d3f75ffa5	curl stderr ----"; read_out "$WORKDIR/during.err"
 scripts/agent-skill-lease-e2e.sh	curl	d2d8c4c75eb1	curl wrote status '$during_code') — the gateway never answered, so not
 scripts/agent-skill-lease-e2e.sh	curl	ada6320f981f	curl wrote status '$during2_code')"
-scripts/backup-scoped-token-e2e.sh	curl	16f7cdae2340	curl --fail-with-body -sS -H "Authorization: Bearer $ADMIN_TOKEN" -H '
-scripts/backup-scoped-token-e2e.sh	curl	639a6cafea1f	curl --fail-with-body -sS -H "Authorization: Bearer $token" "$server/v
-scripts/backup-scoped-token-e2e.sh	curl	e69b21972384	curl --fail-with-body -sS --max-time 600 -H "Authorization: Bearer $to
-scripts/backup-scoped-token-e2e.sh	curl	c9a6fc2a9c03	curl -sS -o "$scratch_dir/denied.json" -w '%{http_code}' -H "Authoriza
+scripts/backup-scoped-token-e2e.sh	curl	0bd8aead70c5	curl -sS -o "$out" -w '%{http_code}' "$@"); then
 scripts/build-macos11.sh	go install	3f6c78073ac9	go install cmd/link ) # rebuild the linker with the patch
 scripts/build-webui.sh	npm ci	9db3f780def6	npm ci
 scripts/bundle/download-deps.sh	curl	364927daf155	curl -fL --retry 3 --retry-delay 2 -o "$out.partial" "$url"; then

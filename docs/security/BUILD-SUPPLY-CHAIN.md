@@ -144,7 +144,7 @@ check with a checksum for each download.
 | `scripts/engineer-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/two-engine-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/ci/tunnel-smoke.sh` | curl | probe of a loopback test backend |
-| `scripts/backup-scoped-token-e2e.sh` | curl | calls to the daemon under test through `$server`. It defaults to `http://localhost:8080` but can be overridden by `CONTAINARIUM_BACKUP_E2E_SERVER`, so the checker cannot prove it is loopback and the four calls are listed rather than exempted |
+| `scripts/backup-scoped-token-e2e.sh` | curl | calls to the daemon under test through `$server`. It defaults to `http://localhost:8080` but can be overridden by `CONTAINARIUM_BACKUP_E2E_SERVER`, so the checker cannot prove it is loopback and the one `api` helper call that makes every request is listed rather than exempted |
 
 ## Adding a fetch
 
