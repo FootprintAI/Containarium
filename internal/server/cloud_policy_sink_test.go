@@ -166,3 +166,49 @@ func TestCloudPolicySink_ConvergesWithoutClobberingCLI(t *testing.T) {
 		t.Errorf("CLI-authored local-team must NOT be clobbered by cloud convergence: %v", err)
 	}
 }
+
+// #2994: the cloud's egress_mode reaches the stored policy, so an org that soaks
+// its allow-list in LOG_ONLY (cross-org traffic still ENFORCE) is not enforced
+// on a cloud-managed host.
+func TestCloudPolicySink_CarriesEgressMode(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mode        cloudv1.NetworkPolicyMode
+		egress      cloudv1.EgressMode
+		wantStored  pb.NetworkPolicyMode
+		wantEffMode pb.NetworkPolicyMode
+	}{
+		{"enforce with a log-only soak",
+			cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, cloudv1.EgressMode_EGRESS_MODE_LOG_ONLY,
+			pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY},
+		{"enforce with enforced egress",
+			cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, cloudv1.EgressMode_EGRESS_MODE_ENFORCE,
+			pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE},
+		{"log-only mode with enforced egress",
+			cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY, cloudv1.EgressMode_EGRESS_MODE_ENFORCE,
+			pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE},
+		{"unset follows mode",
+			cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, cloudv1.EgressMode_EGRESS_MODE_UNSPECIFIED,
+			pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE},
+		{"a value this host does not know follows mode",
+			cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, cloudv1.EgressMode(99),
+			pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := syncOne(t, &cloudv1.NetworkPolicy{OrgId: "org-e", Mode: tc.mode, EgressMode: tc.egress})
+			if got.GetMode() != pb.NetworkPolicyMode(int32(tc.mode)) {
+				t.Errorf("stored mode = %v, want %v (egress_mode must not change the cross-tenant mode)", got.GetMode(), tc.mode)
+			}
+			if got.GetEgressMode() != tc.wantStored {
+				t.Errorf("stored egress_mode = %v, want %v", got.GetEgressMode(), tc.wantStored)
+			}
+			c, err := netpolicy.Compile(got)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			if eff := c.EffectiveEgressMode(); eff != tc.wantEffMode {
+				t.Errorf("effective egress mode = %v, want %v", eff, tc.wantEffMode)
+			}
+		})
+	}
+}

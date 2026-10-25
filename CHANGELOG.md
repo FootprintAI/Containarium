@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A control-plane egress soak is no longer enforced on a cloud-managed host** (#2994). The host's sink for control-plane policy batches dropped `egress_mode`, so a tenant with `mode=ENFORCE, egress_mode=LOG_ONLY` (a narrowed allow-list under observation, cross-tenant traffic still dropped) had its egress list enforced. The vendored contract now carries `egress_mode` (field 7, same number as the control plane's) and the sink stores it; unset, or a value this host does not know, still follows `mode`. The allow-list-only preset half shipped in #3013.
 - **`network-policy status` no longer reports a tenant's egress allow-list as complete when it is not** (#2983). When a reconcile pass fails to add or remove an allow-list entry, the tenant's status now lists the new uncovered path `EGRESS_ALLOWLIST_INCOMPLETE` (the box state stays `LOADED`: the boxes are loaded, the list is not what the policy says). A failed removal counts too, since it leaves a destination allowed that the policy no longer allows. Only the tenant that owns the failed entry is marked, and the entry is retried on the next pass. `containarium network-policy status` prints it with the other uncovered paths.
 
 ### Added
