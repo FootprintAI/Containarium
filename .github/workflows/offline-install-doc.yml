@@ -1,0 +1,43 @@
+name: offline-install-doc
+
+# The air-gapped install guide names no release version (#2557): a pinned
+# version is stale as soon as the next release is cut. The seeded self-test
+# runs first, so a check that can no longer fail turns the lane red.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'hacks/offline-install/docs/**'
+      - 'scripts/ci/check-offline-install-version.sh'
+      - '.github/workflows/offline-install-doc.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215).
+  pull_request:
+    paths:
+      - 'hacks/offline-install/docs/**'
+      - 'scripts/ci/check-offline-install-version.sh'
+      - '.github/workflows/offline-install-doc.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-pinned-version:
+    name: INSTALL.md names no release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Self-test (seeded versions must fail)
+        run: scripts/ci/check-offline-install-version.sh --self-test
+
+      - name: Check hacks/offline-install/docs/INSTALL.md
+        run: scripts/ci/check-offline-install-version.sh

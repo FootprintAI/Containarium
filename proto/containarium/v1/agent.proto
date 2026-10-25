@@ -8,6 +8,7 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/recipe.proto";
 import "containarium/v1/model_gateway.proto";
+import "containarium/v1/proof_pack.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -857,6 +858,23 @@ message Crew {
   // Skill ids that make up this crew (in pipeline order when PIPELINE;
   // coordinator first when ORCHESTRATOR).
   repeated string skill_ids = 5;
+  // Role of each member, parallel to skill_ids (#2799): roles[i] is the role
+  // of skill_ids[i]. Empty means the crew declares no roles. When set it has
+  // one entry per member, and RunCrew rejects a crew whose PACK_PRODUCER is
+  // the same skill as its CODER or would run in the same box.
+  repeated CrewRole roles = 6;
+}
+
+// CrewRole is what one crew member does in a run (#2799).
+enum CrewRole {
+  CREW_ROLE_UNSPECIFIED = 0;
+  // Writes the change.
+  CREW_ROLE_CODER = 1;
+  // Runs the repository's test commands against the final files in its own
+  // box and produces the run's Proof Pack. Never the coder.
+  CREW_ROLE_PACK_PRODUCER = 2;
+  // Reviews and finalizes the coder's change.
+  CREW_ROLE_REVIEWER = 3;
 }
 
 // CrewRunState tracks the lifecycle of a single crew execution.
@@ -922,6 +940,37 @@ message CrewRun {
   string skill_id = 12;
   TaskGraph graph = 13;
   repeated TaskNodeResult node_results = 14;
+  // The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).
+  // Unset when the crew has no producer, or the run failed before its last
+  // A2A member returned the final files. The pack's status is the platform's
+  // record of the tests run on those files, and is what should gate opening a
+  // pull request; an agent's own `tests_run` claim should not. A failed or
+  // missing pack does not fail the run: whoever acts on the run reads this.
+  CrewProofPack proof_pack = 15;
+}
+
+// CrewProofPack summarizes the Proof Pack a crew's PACK_PRODUCER produced
+// (#2799). The pack itself is not stored here; sealing and attaching it is
+// #2798.
+message CrewProofPack {
+  // PASSED, FAILED or NO_COMMANDS. UNSPECIFIED when no pack was produced;
+  // error then says why.
+  ProofPackStatus status = 1;
+  // The box the test commands ran in (ProofPack.producer).
+  string producer_box = 2;
+  // The coder's box. Never equal to producer_box: RunCrew rejects such a
+  // crew, and refuses to produce a pack if the two still coincide.
+  string coder_box = 3;
+  // SHA-256 of the pack (proofpack.PackDigest), lowercase hex.
+  string pack_sha256 = 4;
+  // HEAD of the producer's checkout: the commit the final files were
+  // written onto before the commands ran.
+  string git_commit = 5;
+  // Repo-relative paths of the final files written into the producer's
+  // checkout, in artifact order.
+  repeated string applied_files = 6;
+  // Why no pack was produced. Empty when status is set.
+  string error = 7;
 }
 
 message ListCrewsRequest {}

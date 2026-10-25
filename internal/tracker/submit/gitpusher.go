@@ -68,6 +68,9 @@ type File struct {
 type PushResult struct {
 	Branch string
 	SHA    string
+	// BaseSHA is the commit the pushed one was built on; set by
+	// PushFiles, which resolves it from the remote itself.
+	BaseSHA string
 }
 
 // GitPusher pushes a bundle's commits to a daemon-chosen branch on the

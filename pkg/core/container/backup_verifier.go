@@ -58,13 +58,22 @@ func (m *Manager) CreateBackupVerifier(tenant string) (name, password string, cl
 	// The password is generated hex, never caller input. PostgreSQL listens
 	// only on loopback; verification receives these connection settings rather
 	// than caller-supplied hosts or source credentials.
+	//
+	// listen_addresses is written as a quoted conf.d drop-in, not through
+	// `pg_conftool set`: postgresql-common leaves a numeric-looking value
+	// such as 127.0.0.1 unquoted, which PostgreSQL rejects as a syntax error
+	// and then refuses to start (#3028). On a failed restart the cluster log
+	// tail goes to stderr so the cause reaches the caller.
 	script := `set -eu
 if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait; fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq postgresql-16
-pg_conftool 16 main set listen_addresses 127.0.0.1
-pg_ctlcluster 16 main restart
+printf '%s\n' "listen_addresses = '127.0.0.1'" > /etc/postgresql/16/main/conf.d/containarium-backup-verifier.conf
+if ! pg_ctlcluster 16 main restart; then
+  tail -n 20 /var/log/postgresql/postgresql-16-main.log >&2 || true
+  exit 1
+fi
 pg_isready -q
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD '` + password + `'"
 `

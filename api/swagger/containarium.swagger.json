@@ -1755,7 +1755,7 @@
       },
       "post": {
         "summary": "Create a backup",
-        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.",
+        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.",
         "operationId": "BackupService_CreateBackup",
         "responses": {
           "200": {
@@ -8653,6 +8653,52 @@
         ]
       }
     },
+    "/v1/tracker/connections/{username}/{connection}/changes:files": {
+      "post": {
+        "summary": "Submit a tracker change request from files",
+        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
+        "operationId": "TrackerService_SubmitTrackerChangeFiles",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeFilesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeFilesBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/connections/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
@@ -11191,9 +11237,23 @@
         "hookFormat": {
           "$ref": "#/definitions/HookFormat",
           "description": "For BACKUP_ENGINE_HOOK: the format the hook declared for its output\n(#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for\npg_dump records."
+        },
+        "scope": {
+          "$ref": "#/definitions/BackupScope",
+          "description": "What the backup captured (#2800). Always set on a record the daemon\nreturns: DATABASE for every database backup, including records\nwritten before this field existed."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
+    },
+    "BackupScope": {
+      "type": "string",
+      "enum": [
+        "BACKUP_SCOPE_UNSPECIFIED",
+        "BACKUP_SCOPE_DATABASE",
+        "BACKUP_SCOPE_BOX"
+      ],
+      "default": "BACKUP_SCOPE_UNSPECIFIED",
+      "description": "BackupScope names what a backup captures (#2800, slice 1 of #2372).\n\nThe zero value is today's database backup, so every client and every\nstored record that predates this enum keeps meaning exactly what it\nmeant. A BOX backup is the off-host, durable copy of a whole box; a ZFS\nsnapshot (ContainerService) is the host-local, in-place one. See\ndocs/architecture/container-snapshots.md for the split.\n\n - BACKUP_SCOPE_UNSPECIFIED: Unset: a database backup, identical to BACKUP_SCOPE_DATABASE. What\nevery request and record written before this field existed reads as.\n - BACKUP_SCOPE_DATABASE: A logical database dump (pg_dump, or a tenant backup hook): today's\nbehaviour.\n - BACKUP_SCOPE_BOX: The whole box: its root filesystem and attached volumes, minus /tmp,\n/var/tmp, /var/cache and /run, with container config and device\nmetadata in a manifest; snapshot history is not included. The box is\nthe request's `username` (the box \"\u003cusername\u003e-container\"). A BOX\nrequest carries no database `connection` and no `hook`, and must name\nan explicit encryption key_mode: plaintext is refused for BOX."
     },
     "BackupVerification": {
       "type": "object",
@@ -12668,6 +12728,10 @@
         "hookFormat": {
           "$ref": "#/definitions/HookFormat",
           "description": "Declared format of the hook's output (#2405). UNSPECIFIED means\nOPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a\n`pg_dump -Fc` archive: the record then gets a relation-count manifest\nread from the archive's table of contents (when pg_restore is\navailable in the container) and can be restore-tested. Rejected\nwithout `hook`."
+        },
+        "scope": {
+          "$ref": "#/definitions/BackupScope",
+          "description": "What to back up (#2800). UNSPECIFIED and DATABASE are today's database\nbackup, unchanged. BOX backs up the whole box named by `username`; it\nis rejected with INVALID_ARGUMENT when `connection`, `hook` or\n`hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is\nnever plaintext, so the mode is named, not defaulted). `destination`,\n`gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a\ndatabase backup."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -13007,9 +13071,64 @@
             "type": "string"
           },
           "description": "Skill ids that make up this crew (in pipeline order when PIPELINE;\ncoordinator first when ORCHESTRATOR)."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CrewRole"
+          },
+          "description": "Role of each member, parallel to skill_ids (#2799): roles[i] is the role\nof skill_ids[i]. Empty means the crew declares no roles. When set it has\none entry per member, and RunCrew rejects a crew whose PACK_PRODUCER is\nthe same skill as its CODER or would run in the same box."
         }
       },
       "description": "Crew is a collaborating set of skills bound to a task purpose."
+    },
+    "CrewProofPack": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/ProofPackStatus",
+          "description": "PASSED, FAILED or NO_COMMANDS. UNSPECIFIED when no pack was produced;\nerror then says why."
+        },
+        "producerBox": {
+          "type": "string",
+          "description": "The box the test commands ran in (ProofPack.producer)."
+        },
+        "coderBox": {
+          "type": "string",
+          "description": "The coder's box. Never equal to producer_box: RunCrew rejects such a\ncrew, and refuses to produce a pack if the two still coincide."
+        },
+        "packSha256": {
+          "type": "string",
+          "description": "SHA-256 of the pack (proofpack.PackDigest), lowercase hex."
+        },
+        "gitCommit": {
+          "type": "string",
+          "description": "HEAD of the producer's checkout: the commit the final files were\nwritten onto before the commands ran."
+        },
+        "appliedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repo-relative paths of the final files written into the producer's\ncheckout, in artifact order."
+        },
+        "error": {
+          "type": "string",
+          "description": "Why no pack was produced. Empty when status is set."
+        }
+      },
+      "description": "CrewProofPack summarizes the Proof Pack a crew's PACK_PRODUCER produced\n(#2799). The pack itself is not stored here; sealing and attaching it is\n#2798."
+    },
+    "CrewRole": {
+      "type": "string",
+      "enum": [
+        "CREW_ROLE_UNSPECIFIED",
+        "CREW_ROLE_CODER",
+        "CREW_ROLE_PACK_PRODUCER",
+        "CREW_ROLE_REVIEWER"
+      ],
+      "default": "CREW_ROLE_UNSPECIFIED",
+      "description": "CrewRole is what one crew member does in a run (#2799).\n\n - CREW_ROLE_CODER: Writes the change.\n - CREW_ROLE_PACK_PRODUCER: Runs the repository's test commands against the final files in its own\nbox and produces the run's Proof Pack. Never the coder.\n - CREW_ROLE_REVIEWER: Reviews and finalizes the coder's change."
     },
     "CrewRun": {
       "type": "object",
@@ -13067,6 +13186,10 @@
             "type": "object",
             "$ref": "#/definitions/TaskNodeResult"
           }
+        },
+        "proofPack": {
+          "$ref": "#/definitions/CrewProofPack",
+          "description": "The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).\nUnset when the crew has no producer, or the run failed before its last\nA2A member returned the final files. The pack's status is the platform's\nrecord of the tests run on those files, and is what should gate opening a\npull request; an agent's own `tests_run` claim should not. A failed or\nmissing pack does not fail the run: whoever acts on the run reads this."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -18091,6 +18214,17 @@
       "default": "PROMPT_SOURCE_UNSPECIFIED",
       "description": "PromptSource says what a skill's system_prompt is composed from (#2488).\n\n - PROMPT_SOURCE_INLINE: The catalog's own text, unchanged.\n - PROMPT_SOURCE_SDLC_PIN: The catalog's text plus the pinned open-sdlc-skills standard section."
     },
+    "ProofPackStatus": {
+      "type": "string",
+      "enum": [
+        "PROOF_PACK_STATUS_UNSPECIFIED",
+        "PROOF_PACK_STATUS_PASSED",
+        "PROOF_PACK_STATUS_FAILED",
+        "PROOF_PACK_STATUS_NO_COMMANDS"
+      ],
+      "default": "PROOF_PACK_STATUS_UNSPECIFIED",
+      "description": "ProofPackStatus is the pack's overall outcome.\n\n - PROOF_PACK_STATUS_PASSED: Every step exited 0 within its timeout.\n - PROOF_PACK_STATUS_FAILED: At least one step exited non-zero or timed out.\n - PROOF_PACK_STATUS_NO_COMMANDS: No step ran. Not a pass: there is nothing to show."
+    },
     "Protocol": {
       "type": "string",
       "enum": [
@@ -20870,6 +21004,52 @@
       },
       "description": "SubmitTrackerChangeRequest publishes the calling run's committed\nworkspace and opens a change request referencing issue — see\ndocs/architecture/agent-tracker-broker.md's \"Submit path\". Carries\nno remote, no target ref, and no credential: the daemon resolves the\nrun's box, base commit, and connection itself from the verified JWT,\nand chooses the branch (never a request field — see\ninternal/tracker/submit.BranchName)."
     },
+    "SubmitTrackerChangeFilesBody": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "type": "string",
+          "format": "int64",
+          "description": "issue this change closes/references. Required."
+        },
+        "title": {
+          "type": "string",
+          "description": "title is the change request title and the commit subject. Required."
+        },
+        "description": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "draft opens the change request as a draft/WIP."
+        },
+        "baseRef": {
+          "type": "string",
+          "description": "base_ref is the branch the change targets and is built on. Empty\nresolves the project's actual default branch from the provider."
+        },
+        "headBranch": {
+          "type": "string",
+          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Never force-pushed; must differ from base_ref."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerChangeFile"
+          },
+          "description": "files is the change: at least one, each path distinct."
+        }
+      },
+      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
+    },
+    "SubmitTrackerChangeFilesResponse": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/TrackerChange"
+        }
+      }
+    },
     "SubmitTrackerChangeResponse": {
       "type": "object",
       "properties": {
@@ -21415,6 +21595,20 @@
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
+    },
+    "TrackerChangeFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "path is repo-relative and must already be clean: no leading \"/\",\nno \".\" or \"..\" segment, no \".git\" segment, no control characters."
+        },
+        "content": {
+          "type": "string",
+          "description": "content is the file's complete new content (text). An existing file\nkeeps its executable bit; a new file is created non-executable."
+        }
+      },
+      "description": "TrackerChangeFile is one whole file of a SubmitTrackerChangeFiles\nchange: its repo-relative path and its complete new content."
     },
     "TrackerCiVerdict": {
       "type": "string",

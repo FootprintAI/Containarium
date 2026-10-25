@@ -58,6 +58,26 @@ runs:
         go-version-file: ${{ inputs.go-version-file }}
         cache: false
 
+    - name: Pin module mode and the checksum database (#2794)
+      # -mod=readonly: no build in CI may rewrite go.mod or go.sum. GOSUMDB is
+      # named explicitly so a module missing from go.sum is always checked
+      # against sum.golang.org. Both equal Go's defaults today (no vendor/
+      # directory); stating them means a runner or `go env -w` default cannot
+      # quietly change them. A job's own GOFLAGS is kept, with -mod=readonly
+      # appended unless it already sets -mod.
+      shell: bash
+      run: |
+        set -euo pipefail
+        flags="${GOFLAGS:-}"
+        case " $flags " in
+          *" -mod="*) ;;
+          *) flags="${flags:+$flags }-mod=readonly" ;;
+        esac
+        {
+          echo "GOFLAGS=$flags"
+          echo "GOSUMDB=sum.golang.org"
+        } >> "$GITHUB_ENV"
+
     - name: Resolve Go cache paths and key
       id: go-cache
       shell: bash

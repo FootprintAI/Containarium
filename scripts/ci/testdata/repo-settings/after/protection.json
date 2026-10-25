@@ -1,0 +1,5 @@
+{"required_status_checks":{"strict":true,"checks":[{"app_id":15368,"context":"Unit + default e2e"},{"app_id":57789,"context":"Trivy"}]},
+ "enforce_admins":{"enabled":true},"required_pull_request_reviews":{"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":1},
+ "required_linear_history":{"enabled":false},"allow_force_pushes":{"enabled":false},
+ "allow_deletions":{"enabled":false},"block_creations":{"enabled":false},"required_conversation_resolution":{"enabled":true},
+ "lock_branch":{"enabled":false},"allow_fork_syncing":{"enabled":false}}

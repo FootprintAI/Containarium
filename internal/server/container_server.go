@@ -377,6 +377,10 @@ type ContainerServer struct {
 	// the run's Proof Pack through (#2798); nil means s.manager. Tests only.
 	proofPackExecer proofpack.Execer
 
+	// submitFilePusher overrides SubmitTrackerChangeFiles' commit-and-push
+	// backend (#3005). Nil in production (submit.NewGitPusher()).
+	submitFilePusher submit.FilePusher
+
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
 	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND

@@ -52,15 +52,25 @@ We follow coordinated disclosure:
 
 ## Supported versions
 
+<!-- The block between the support-policy markers is kept identical to the
+     one in docs/UPGRADE-AND-ROLLBACK.md; internal/cmd/runbook_drift_test.go
+     fails if the two differ. -->
+<!-- support-policy:begin -->
 Containarium is pre-1.0; security fixes land on `main` and are
 included in the next tagged release. There is no LTS branch.
 Operators running prior releases should upgrade to the latest tag.
+
+From Partner Release 1.0 (target 2026-12-31), each Partner Release has
+a 12-month security-fix window. If v1.0 is not cut by then, the Partner
+Release is served from a release maintenance branch.
 
 | Branch / version | Supported     |
 | ---------------- | ------------- |
 | `main`           | ✅ active     |
 | Latest release   | ✅ active     |
+| Partner Release (from 1.0) | ✅ security fixes for 12 months |
 | Older releases   | ❌ upgrade    |
+<!-- support-policy:end -->
 
 ## Out of scope
 
