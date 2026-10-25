@@ -54,7 +54,7 @@ a partner operator until a different one is agreed.
 
 | Action | Needs | Enforced in |
 | --- | --- | --- |
-| `containarium backends upgrade` | admin role. No scope narrows it. Refused against the hosted control plane. | `TriggerUpgrade` in [container_server.go](../internal/server/container_server.go), `isCloudTarget` in [backends_upgrade.go](../internal/cmd/backends_upgrade.go) |
+| `containarium backends upgrade` | admin role plus the `containers:write` scope (`containers:read` for `GetUpgradeStatus`); tokens with no scopes claim stay unrestricted. Refused against the hosted control plane. | `TriggerUpgrade` in [container_server.go](../internal/server/container_server.go), `isCloudTarget` in [backends_upgrade.go](../internal/cmd/backends_upgrade.go) |
 | `containarium snapshot create` / `rollback` | `containers:write`, and you must be the tenant or an admin | `snapshotDatasetFor` in [container_snapshot.go](../internal/server/container_snapshot.go) |
 | `containarium snapshot list` | `containers:read`, and you must be the tenant or an admin | same |
 | `containarium backup create` / `restore` / `verify` / `prune` | `backups:write` | [backup_server.go](../internal/server/backup_server.go) |
