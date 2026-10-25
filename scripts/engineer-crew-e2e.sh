@@ -702,8 +702,9 @@ ok "assertion 2: run $RUN_ID is CREW_RUN_STATE_COMPLETED with a $(printf '%s' "$
 pack_producer_box="$(printf '%s' "$run_body" | jq -r '.run.proofPack.producerBox // empty')"
 pack_coder_box="$(printf '%s' "$run_body" | jq -r '.run.proofPack.coderBox // empty')"
 pack_status="$(printf '%s' "$run_body" | jq -r '.run.proofPack.status // empty')"
-[ "$pack_producer_box" = "agent-$PACK_PRODUCER-container" ] && [ "$pack_coder_box" = "agent-issue-implementer-container" ] \
-  || fail "assertion 2b: proof_pack producer_box='$pack_producer_box' coder_box='$pack_coder_box', want agent-$PACK_PRODUCER-container and agent-issue-implementer-container"
+if [ "$pack_producer_box" != "agent-$PACK_PRODUCER-container" ] || [ "$pack_coder_box" != "agent-issue-implementer-container" ]; then
+  fail "assertion 2b: proof_pack producer_box='$pack_producer_box' coder_box='$pack_coder_box', want agent-$PACK_PRODUCER-container and agent-issue-implementer-container"
+fi
 case "$pack_status" in
   PROOF_PACK_STATUS_PASSED|PROOF_PACK_STATUS_FAILED|PROOF_PACK_STATUS_NO_COMMANDS) ;;
   *) fail "assertion 2b: no Proof Pack was produced (status '$pack_status'): $(printf '%s' "$run_body" | jq -r '.run.proofPack.error // "(no proof_pack on the run)"')" ;;
