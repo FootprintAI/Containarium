@@ -1,5 +1,7 @@
 # Task planner
 
+> Status: **Implemented** (`containarium crew plan`; `internal/server/crew_planner.go`).
+
 `containarium crew plan` runs the built-in `task-planner` skill in a box.
 The skill reads the fetched repository's layout, manifests, architecture
 documentation and entry points, and proposes a TaskGraph. The daemon parses

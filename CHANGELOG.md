@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Platform MCP gains `sprint_board` and `sprint_list`**. Read-only tools over a hosted control plane's sprint board mirror (`GET /v1/orgs/{org_id}/sprints` and `/sprints/board`). `sprint_board` returns the rendered markdown plus the board summary; NO_MIRROR_YET, NOT_ENABLED and PROVIDER_NOT_SUPPORTED are normal results and REJECTED is an error. Both require `tracker:read`. A standalone daemon does not serve these routes. A `containarium sprint` CLI counterpart is a follow-up.
+- **Docs claims-hygiene gates** (#2558). `make docs-gates` and the `docs-claims` workflow now fail when a README security claim has no coverage in `docs/security/CLAIMS.md` (`scripts/ci/check-claims.sh`), when docs name public IPs, Tailscale hosts or non-generic `<name>-container` tokens (`scripts/ci/check-doc-names.sh`, exceptions in `scripts/ci/doc-names.allow`), or when a design doc has no Status line (`scripts/ci/check-design-status.sh`). Each gate has a `--self-test` with seeded failures. The two `Not verified` CLAIMS rows are resolved: denied egress is audit-logged (linked to its tests), the Kubernetes box token claim is marked design-only. README wording for tenant isolation, the eBPF egress policy and pool isolation now matches the evidence; example addresses in the scaling and deployment guides are RFC 5737 documentation addresses.
 - **A tracker-dispatched PR carries its sealed Proof Pack** (#2798, part 2 of 2). Before `SubmitTrackerChange` pushes, the daemon does three things:
   - it generates the run's Proof Pack in the run's box;
   - it checks that the pack ran at the submitted head;

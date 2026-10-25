@@ -1,6 +1,6 @@
 .PHONY: help proto build build-bpf build-macos11 clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime bundle-sdlc-skills build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
 
-.PHONY: proto-lint proto-breaking
+.PHONY: proto-lint proto-breaking docs-gates
 
 # Variables
 # BINARY_NAME is the containarium CLIENT (cmd/containarium, always built with
@@ -543,3 +543,7 @@ version: ## Show version information
 	@echo "Build platform: $(shell go env GOOS)/$(shell go env GOARCH)"
 
 .DEFAULT_GOAL := help
+
+docs-gates: ## Docs claims hygiene (#2558): README claims vs CLAIMS.md, deployment names, design Status lines
+	@scripts/ci/check-claims.sh --self-test && scripts/ci/check-doc-names.sh --self-test && scripts/ci/check-design-status.sh --self-test
+	@scripts/ci/check-claims.sh && scripts/ci/check-doc-names.sh && scripts/ci/check-design-status.sh

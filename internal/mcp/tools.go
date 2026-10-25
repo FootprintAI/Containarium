@@ -1848,6 +1848,7 @@ func (s *Server) registerTools() {
 	// — thin wrappers over the TrackerService gateway that
 	// `containarium tracker issue/change ...` also calls.
 	s.tools = append(s.tools, trackerTools()...)
+	s.tools = append(s.tools, sprintTools()...)
 
 	// Model-gateway mint (#1726, gateway_tools.go) — one thin wrapper over the
 	// ModelGatewayService gateway that `containarium gateway mint` also calls.
@@ -1892,6 +1893,8 @@ func toolScopeAssignments() map[string]string {
 		"tracker_get_issue":     auth.ScopeTrackerRead,
 		"tracker_list_issues":   auth.ScopeTrackerRead,
 		"tracker_get_change":    auth.ScopeTrackerRead,
+		"sprint_board":          auth.ScopeTrackerRead,
+		"sprint_list":           auth.ScopeTrackerRead,
 		"tracker_comment":       auth.ScopeTrackerWrite,
 		"tracker_claim":         auth.ScopeTrackerWrite,
 		"tracker_set_labels":    auth.ScopeTrackerWrite,

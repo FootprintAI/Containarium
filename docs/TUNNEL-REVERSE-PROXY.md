@@ -55,7 +55,7 @@ The sentinel's ConnMux listens on port 443 and peeks the start of each incoming 
 
 ALPN is used rather than a reserved SNI name because it cannot collide with browser or HTTP traffic. No extra port is needed — tunnel and HTTPS share port 443.
 
-In PROXY mode, HTTPS connections are forwarded as **raw TCP** to the spot VM (e.g., `10.130.0.15:443`). The TLS handshake (including SNI) is preserved end-to-end, so Caddy on the spot VM handles certificate selection and TLS termination as normal.
+In PROXY mode, HTTPS connections are forwarded as **raw TCP** to the spot VM (e.g., `<private-ip>:443`). The TLS handshake (including SNI) is preserved end-to-end, so Caddy on the spot VM handles certificate selection and TLS termination as normal.
 
 In MAINTENANCE mode, the sentinel itself terminates TLS and serves a 503 maintenance page.
 
@@ -285,7 +285,7 @@ GCP recovers                    → PROXY via GCP (failback to primary, after --
 User browser
   → sentinel:443 (TCP)
   → ConnMux peeks first byte: 0x16 (TLS) → dispatch to HTTPS proxy
-  → raw TCP proxy to 10.130.0.15:443 (GCP spot VM)
+  → raw TCP proxy to <private-ip>:443 (GCP spot VM)
   → Caddy handles TLS (SNI preserved), serves response
 ```
 

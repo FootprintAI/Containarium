@@ -86,9 +86,9 @@ After `terraform apply` completes:
 ```
 Outputs:
 
-jump_server_ip = "34.123.45.67"
-ssh_command = "ssh admin@34.123.45.67"
-daemon_endpoint = "34.123.45.67:50051"
+jump_server_ip = "198.51.100.10"
+ssh_command = "ssh admin@198.51.100.10"
+daemon_endpoint = "198.51.100.10:50051"
 ```
 
 **Save these values!** You'll need them for testing.
@@ -97,7 +97,7 @@ daemon_endpoint = "34.123.45.67:50051"
 
 ```bash
 # SSH to the server
-ssh admin@34.123.45.67
+ssh admin@198.51.100.10
 
 # Check daemon status
 sudo systemctl status containarium
@@ -129,7 +129,7 @@ brew install grpcurl
 go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
 
 # Test connection
-DAEMON_IP="34.123.45.67"  # Use your actual IP
+DAEMON_IP="198.51.100.10"  # Use your actual IP
 
 # List available services
 grpcurl -plaintext $DAEMON_IP:50051 list
@@ -202,7 +202,7 @@ import (
 
 func main() {
 	// Connect to daemon
-	conn, err := grpc.Dial("34.123.45.67:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial("198.51.100.10:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
