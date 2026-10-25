@@ -94,7 +94,7 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 		default:
 		}
 	}
-	go func() { _ = server.Serve(ctx, ln) }()
+	serveTunnelServer(t, ctx, server, ln)
 
 	client := &TunnelClient{
 		SentinelAddr: ln.Addr().String(),
@@ -152,7 +152,7 @@ func TestTunnelPinMismatchAbortsBeforeHandshake(t *testing.T) {
 		registry := NewTunnelRegistry()
 		server := NewTunnelServer("", policyAny("tok"), registry, 0)
 		tlsLn := countingListener{Listener: tls.NewListener(ln, tunnelTLSServerConfig(serverID)), n: &appBytes}
-		go func() { _ = server.Serve(ctx, tlsLn) }()
+		serveTunnelServer(t, ctx, server, tlsLn)
 
 		client := &TunnelClient{
 			SentinelAddr: ln.Addr().String(),
@@ -182,7 +182,7 @@ func TestTunnelPinMismatchAbortsBeforeHandshake(t *testing.T) {
 		server.SetTunnelIdentity(serverID)
 		var connects atomic.Int32
 		server.OnConnect = func(*TunnelSpot) { connects.Add(1) }
-		go func() { _ = server.Serve(ctx, ln) }()
+		serveTunnelServer(t, ctx, server, ln)
 
 		client := &TunnelClient{
 			SentinelAddr: ln.Addr().String(),

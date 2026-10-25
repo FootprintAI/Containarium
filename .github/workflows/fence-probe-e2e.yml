@@ -34,6 +34,9 @@ on:
       - 'internal/server/dual_server.go'
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/netpolicy/**'
+      - 'internal/server/network_policy_plan.go'
+      - 'scripts/netpolicy-split-egress-e2e.sh'
       - '.github/workflows/fence-probe-e2e.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215, same
@@ -45,6 +48,9 @@ on:
       - 'internal/server/dual_server.go'
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/netpolicy/**'
+      - 'internal/server/network_policy_plan.go'
+      - 'scripts/netpolicy-split-egress-e2e.sh'
       - '.github/workflows/fence-probe-e2e.yml'
 
 permissions:
@@ -420,6 +426,258 @@ jobs:
           /tmp/containarium --server "$SERVER" security findings --json || true
           sudo journalctl -u incus.service --no-pager -n 100 || true
           sudo zfs list -r -t all || true
+          sudo dmesg | tail -50 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          [ -f /tmp/daemon.pid ] && sudo kill "$(cat /tmp/daemon.pid)" 2>/dev/null || true
+          sudo incus delete -f alice-container bob-container 2>/dev/null || true
+
+  # #2981: the split egress mode (#2970 / #2974) end to end, with the host
+  # enforce switch ON. A separate job, not a second pass of the one above:
+  # that job runs observation-only on purpose (its deny-burst and
+  # cross-tenant steps measure log_only would-denies), and arming enforcement
+  # there would change what they measure. This job shares the same host
+  # setup — copied, like the eBPF recipe above, not shared cross-job — and
+  # runs scripts/netpolicy-split-egress-e2e.sh, which holds the assertions
+  # and documents each one. The packet-level split is also covered by the
+  # real-kernel test in ebpf-load.yml; this job adds the real daemon in the
+  # loop: policy API -> reconcile -> kernel -> deny event -> verdict byte ->
+  # audit row.
+  split-egress-e2e:
+    name: Split egress mode e2e (enforce switch on, two tenants)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: containarium
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: containarium
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U containarium"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CONTAINARIUM_LANE_IMAGE: lane-box
+      POSTGRES_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "--- before ---"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          echo "--- after ---"; df -h /
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version-file: go.mod
+          cache-name: shared
+
+      - name: Install ZFS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          if ! sudo modprobe zfs 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+          zfs version
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent — the module cannot be driven"; exit 1; }
+
+      - name: Create the ZFS pool the daemon detects
+        run: |
+          set -euo pipefail
+          sudo truncate -s 20G /mnt/incus-zfs.img
+          sudo zpool create -f -m /mnt/incus-local incus-local /mnt/incus-zfs.img
+          sudo zfs create incus-local/containers
+          sudo zpool list
+          sudo zfs list
+
+      - name: Install Incus
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends incus dnsmasq-base
+          sudo incus version
+
+      - name: Make the runner able to host containers
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo iptables -P FORWARD ACCEPT
+          grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
+          grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      - name: Pre-pull the box image
+        run: |
+          set -euo pipefail
+          pulled=""
+          for attempt in 1 2 3 4 5; do
+            if sudo incus image copy images:ubuntu/24.04 local: --alias lane-box >/dev/null 2>&1; then
+              pulled=yes; break
+            fi
+            echo "image pull attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$pulled" ]; then
+            echo "::error::could not pull images:ubuntu/24.04 — the mirror is unavailable, not the code under test"
+            exit 1
+          fi
+          sudo incus image list
+
+      - name: Verify Incus is actually usable (fail, don't skip)
+        run: |
+          set -euo pipefail
+          test -S /var/lib/incus/unix.socket || {
+            echo "::error::no Incus socket — the daemon did not come up"
+            sudo systemctl status incus.service --no-pager || true
+            sudo journalctl -u incus.service --no-pager -n 100 || true
+            exit 1
+          }
+          sudo incus info | head -30
+          command -v dnsmasq >/dev/null || { echo "::error::dnsmasq is absent"; exit 1; }
+          sudo zfs list incus-local/containers >/dev/null || { echo "::error::incus-local/containers is absent"; exit 1; }
+          echo "Incus and ZFS are usable; the lane will not skip."
+
+      - name: Install eBPF toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
+
+      - name: Compile the eBPF objects
+        run: |
+          set -euo pipefail
+          make build-bpf BPFTOOL="$BPFTOOL"
+          test -s internal/netbpf/netpolicy.bpf.o || {
+            echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
+            exit 1
+          }
+
+      - name: Wait for Postgres
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if PGPASSWORD=test psql -h 127.0.0.1 -U containarium -d containarium -c 'select 1' >/dev/null 2>&1; then
+              echo "Postgres ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Postgres never became ready"; exit 1
+
+      - name: Build the daemon (with the eBPF object available)
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containariumd
+
+      # The enforce switch: CONTAINARIUM_NETWORK_POLICY_ENFORCE=1 is read once
+      # at startup (internal/config/network.go LoadNetwork -> PolicyEnforce),
+      # passed to NewNetworkPolicyEnforcer as enforceArmed
+      # (internal/server/dual_server.go), and planReconcile
+      # (internal/server/network_policy_plan.go) downgrades ENFORCE to
+      # LOG_ONLY for both mode and egress_mode whenever it is off. --postgres
+      # gives the enforcer its audit store, where each deny event's verdict
+      # lands as network_policy.deny_logged / deny_dropped.
+      # CONTAINARIUM_TENANT_GUARD=off: the tenant guard's Incus NIC ACL drops
+      # cross-tenant ingress whatever the policy says, which would hide the
+      # reverse split's "A -> B follows mode". With it off the eBPF enforcer
+      # is the only filter between the boxes; the guard is proven in
+      # tenant-guard-e2e.yml.
+      - name: Start the daemon (real eBPF + real Postgres + enforce switch ON)
+        env:
+          JWT_SECRET: lane-only-secret-not-a-credential
+          CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT: ${{ github.workspace }}/internal/netbpf/netpolicy.bpf.o
+          CONTAINARIUM_NETWORK_POLICY_ENFORCE: '1'
+          CONTAINARIUM_TENANT_GUARD: 'off'
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" \
+            CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT="$CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT" \
+            CONTAINARIUM_NETWORK_POLICY_ENFORCE="$CONTAINARIUM_NETWORK_POLICY_ENFORCE" \
+            CONTAINARIUM_TENANT_GUARD="$CONTAINARIUM_TENANT_GUARD" \
+            /tmp/containarium daemon --standalone --rest \
+              --jwt-secret "$JWT_SECRET" \
+              --postgres "$POSTGRES_DSN" \
+              > /tmp/daemon.log 2>&1 &
+          echo $! > /tmp/daemon.pid
+
+          TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+                    --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
+          test -n "$TOKEN" || { echo "::error::could not mint a token"; exit 1; }
+          echo "CONTAINARIUM_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "CONTAINARIUM_HTTP=true" >> "$GITHUB_ENV"
+          echo "SERVER=http://localhost:8080" >> "$GITHUB_ENV"
+
+          ready=""
+          for _ in $(seq 1 60); do
+            if CONTAINARIUM_TOKEN="$TOKEN" CONTAINARIUM_HTTP=true /tmp/containarium --server http://localhost:8080 list >/tmp/probe.log 2>&1; then
+              ready=yes; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the daemon never answered the CLI"
+            echo "--- last CLI probe ---"; cat /tmp/probe.log || true
+            echo "--- daemon log tail ---"; tail -60 /tmp/daemon.log
+            exit 1
+          fi
+          # Never trust the env var alone: the daemon must say it armed drops.
+          grep -F "ENFORCE ARMED" /tmp/daemon.log || {
+            echo "::error::the daemon did not log ENFORCE ARMED — the enforce switch is not on"
+            grep -E "network-policy|NetworkPolicy|netpolicy" /tmp/daemon.log || true
+            exit 1
+          }
+
+      - name: Create two tenant containers (alice, bob)
+        run: |
+          set -euo pipefail
+          for TENANT in alice bob; do
+            /tmp/containarium --server "$SERVER" create "$TENANT" \
+              --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE"
+          done
+          /tmp/containarium --server "$SERVER" list
+
+      - name: Prove the split egress mode (scripts/netpolicy-split-egress-e2e.sh)
+        env:
+          CONTAINARIUM_POSTGRES_URL: ${{ env.POSTGRES_DSN }}
+        run: scripts/netpolicy-split-egress-e2e.sh alice bob
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        env:
+          CONTAINARIUM_POSTGRES_URL: ${{ env.POSTGRES_DSN }}
+        run: |
+          echo "--- daemon log (last 200 lines) ---"
+          tail -200 /tmp/daemon.log || true
+          echo "--- incus list ---"
+          sudo incus list --format compact || true
+          for T in alice bob; do
+            echo "--- network-policy status $T ---"
+            /tmp/containarium --server "$SERVER" network-policy status "$T" --json || true
+          done
+          echo "--- network_policy audit rows ---"
+          /tmp/containarium audit query --resource-type network_policy --limit 200 --raw || true
           sudo dmesg | tail -50 || true
 
       - name: Tear down

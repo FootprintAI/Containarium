@@ -66,7 +66,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 		connectCh <- spot
 	}
 
-	go func() { _ = server.Run(ctx) }()
+	runTunnelServer(t, ctx, server, server.Run)
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
 
 	// 3. Start tunnel client, pinning the server's tunnel identity
@@ -194,7 +194,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
 		connectCh <- spot
 	}
-	go func() { _ = tunnelServer.Serve(ctx, mux.TunnelListener()) }()
+	serveTunnelServer(t, ctx, tunnelServer, mux.TunnelListener())
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
 
 	// Start tunnel client pointing at the mux port (same as HTTPS); the
@@ -228,9 +228,14 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 // one.
 func waitForListener(t *testing.T, addr string) {
 	t.Helper()
-	if _, err := dialRetry(addr, 5*time.Second); err != nil {
+	conn, err := dialRetry(addr, 5*time.Second)
+	if err != nil {
 		t.Fatalf("listener %s never came up: %v", addr, err)
 	}
+	// Close the probe. Left open, the server's handler for it blocks reading
+	// the first byte until its 10s handshake deadline, a session goroutine
+	// that outlives the test (#3009).
+	_ = conn.Close()
 }
 
 // dialRetry dials addr until it succeeds or timeout elapses, returning the
