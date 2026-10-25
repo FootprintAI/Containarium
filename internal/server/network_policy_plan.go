@@ -290,3 +290,27 @@ func applyIPTenant(installed, desired map[[4]byte]uint32, a ipTenantApplier) {
 		delete(installed, ip)
 	}
 }
+
+// foldEgressModeForObject fits the plan to what the loaded object can apply
+// (#2987). An object built before #2974 reads the egress_mode byte as padding
+// and applies `mode` to the egress allow-list too, so for such an object every
+// split veth config is rewritten to egress_mode = mode before it is written:
+// the plan then says what the kernel will do, and the applied-state report
+// built from it shows `mode`, never the requested egress mode. Returns the
+// tenant ids whose split was folded, for the warning. A 0 egress byte already
+// means "follow mode" and is left alone.
+func foldEgressModeForObject(plan *reconcilePlan, supportsEgressMode bool) map[uint32]bool {
+	ignored := make(map[uint32]bool)
+	if supportsEgressMode {
+		return ignored
+	}
+	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.EgressMode == 0 || cfg.EgressMode == cfg.Mode {
+			continue
+		}
+		cfg.EgressMode = cfg.Mode
+		plan.vethPolicy[ifindex] = cfg
+		ignored[cfg.TenantID] = true
+	}
+	return ignored
+}
