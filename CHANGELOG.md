@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-10-25
+
 ### Added
 
 - **`BackupService` has a whole-box scope in its contract** (#2800, slice 1 of #2372). `CreateBackupRequest.scope` and `BackupRecord.scope` take a new `BackupScope` enum: unset or `DATABASE` is today's database backup, unchanged for every existing client and stored record. `BOX` names the whole box by `username`. A BOX request is refused with `INVALID_ARGUMENT` when it carries a database `connection`, a `hook` or a `hook_format`, or no explicit `key_mode`: plaintext is not allowed for BOX, so it must be MANAGED, AGE_RECIPIENT or BOTH. It reuses `BackupDestination` and `BackupKeyMode` unchanged. A valid BOX request currently answers `UNIMPLEMENTED` without touching a container; the data path lands in #2801. Records now report `scope: DATABASE`. The design note in `docs/architecture/container-snapshots.md` lists what a box backup includes and excludes. Additive field numbers only.
