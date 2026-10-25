@@ -65,6 +65,11 @@ type TunnelServer struct {
 	mu        sync.Mutex
 	proxies   map[string]proxySet
 	cancelCtx context.CancelFunc
+
+	// goroutines counts every goroutine the server starts on behalf of a
+	// tunnel session (connection handlers, session monitors, proxy loops and
+	// proxied connections), so Wait can report when none is left.
+	goroutines sync.WaitGroup
 }
 
 // proxySet is one registration's listeners plus the generation that owns them.
@@ -145,6 +150,22 @@ func (ts *TunnelServer) acceptTransport(conn net.Conn) (net.Conn, TunnelTranspor
 	return tlsConn, TunnelTransportTLS, nil
 }
 
+// spawn runs f on a goroutine tracked by Wait.
+func (ts *TunnelServer) spawn(f func()) {
+	ts.goroutines.Add(1)
+	go func() {
+		defer ts.goroutines.Done()
+		f()
+	}()
+}
+
+// Wait blocks until every goroutine the server started for a tunnel session
+// has exited. It does not stop anything: cancel the context passed to Serve
+// and close or unregister the sessions first, or it waits for them forever.
+// Tests use it on cleanup so no session goroutine (notably monitorSession,
+// whose cleanup logs and runs `ip addr del`) outlives the test that owns it.
+func (ts *TunnelServer) Wait() { ts.goroutines.Wait() }
+
 // Run starts the tunnel server on its own port. Blocks until ctx is cancelled.
 func (ts *TunnelServer) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", ts.listenAddr)
@@ -184,7 +205,7 @@ func (ts *TunnelServer) Serve(ctx context.Context, ln net.Listener) error {
 				continue
 			}
 		}
-		go ts.handleConnection(ctx, conn)
+		ts.spawn(func() { ts.handleConnection(ctx, conn) })
 	}
 }
 
@@ -280,7 +301,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// Monitor session — when it closes, clean up. The generation is what
 	// keeps this cleanup from firing against a LATER registration of the same
 	// spot (#769).
-	go ts.monitorSession(hs.SpotID, gen, session)
+	ts.spawn(func() { ts.monitorSession(hs.SpotID, gen, session) })
 }
 
 // validate checks a handshake read from a TLS tunnel session against the
@@ -362,7 +383,7 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s (remote port %d)", addr, spotID, port)
 		}
 		listeners = append(listeners, ln)
-		go ts.proxyLoop(ctx, ln, port, session, spotID)
+		ts.spawn(func() { ts.proxyLoop(ctx, ln, port, session, spotID) })
 
 		// For the health/API port (8080), also bind the per-backend API port.
 		if port == 8080 && externalPort > 0 {
@@ -377,7 +398,7 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 			} else {
 				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (per-backend API port)", extAddr, spotID)
 				listeners = append(listeners, extLn)
-				go ts.proxyLoop(ctx, extLn, port, session, spotID)
+				ts.spawn(func() { ts.proxyLoop(ctx, extLn, port, session, spotID) })
 			}
 		}
 	}
@@ -398,7 +419,7 @@ func (ts *TunnelServer) proxyLoop(ctx context.Context, ln net.Listener, port int
 				return
 			}
 		}
-		go ts.proxyConnection(localConn, port, session, spotID)
+		ts.spawn(func() { ts.proxyConnection(localConn, port, session, spotID) })
 	}
 }
 
