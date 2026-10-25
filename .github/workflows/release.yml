@@ -594,7 +594,9 @@ jobs:
   # if the bundle build is slow or flaky.
   build-bundle:
     needs: build-and-release
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the bundled .debs are only valid for the
+    # Ubuntu release that downloads them, and the bundle targets 24.04.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write   # appends the bundle to the Release
     strategy:
@@ -612,10 +614,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install apt-rdepends
-        # Needed by scripts/bundle/download-deps.sh to resolve transitive
-        # .deb dependencies. Runner is ubuntu-latest so apt is present.
-        run: sudo apt-get update && sudo apt-get install -y apt-rdepends
+      - name: Add the Zabbly Incus repo
+        # incus, incus-client and incus-extra come from Zabbly, as on a
+        # connected install; a stock runner has no such repo and Ubuntu has
+        # no incus-extra (#3061). The key is pinned by fingerprint. Also runs
+        # apt-get update, which download-deps.sh's resolver needs.
+        run: scripts/bundle/add-zabbly-repo.sh
 
       - name: Fetch the released binaries
         # The exact files build-and-release attached to the Release (eBPF
@@ -663,6 +667,17 @@ jobs:
             OS="${{ matrix.target.os }}" \
             ARCH="${{ matrix.target.arch }}" \
             ./scripts/bundle/build-bundle.sh
+
+      - name: Check bundle content
+        # Before anything is uploaded: the tarball's `tar tzf` listing must
+        # hold the binaries, toolchains and the bundled .debs, and no empty
+        # images/ (#3061). A release once shipped an empty apt/ from a green
+        # job.
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+          BUNDLE_OS: ${{ matrix.target.os }}
+          BUNDLE_ARCH: ${{ matrix.target.arch }}
+        run: scripts/bundle/check-bundle-content.sh "dist/containarium-bundle-${RELEASE_REF}-${BUNDLE_OS}-${BUNDLE_ARCH}.tar.gz"
 
       - name: List bundle outputs
         run: ls -lh dist/

@@ -1,0 +1,81 @@
+name: offline-bundle
+
+# The air-gapped bundle's gates (#3061). A release once shipped an empty apt/
+# and an empty images/ from a green job: download-deps.sh swallowed every
+# apt error, build-bundle.sh copied apt/ with `|| true`, and the installer
+# only warned. `gates` runs the stubbed tests of each gate (every negative is
+# a seeded failure, so a gate that can no longer fail turns the lane red).
+# `apt-download` runs the real apt step on the bundle's target Ubuntu and
+# fails unless every requested package and its whole dependency closure land
+# in apt/.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/bundle/**'
+      - 'scripts/buf-version.env'
+      - 'hacks/offline-install/install.sh'
+      - 'scripts/ci/test-offline-bundle.sh'
+      - '.github/workflows/offline-bundle.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215).
+  pull_request:
+    paths:
+      - 'scripts/bundle/**'
+      - 'scripts/buf-version.env'
+      - 'hacks/offline-install/install.sh'
+      - 'scripts/ci/test-offline-bundle.sh'
+      - '.github/workflows/offline-bundle.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: Bundle gates (stubbed apt)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run scripts/ci/test-offline-bundle.sh
+        run: scripts/ci/test-offline-bundle.sh
+
+  apt-download:
+    name: Real apt download (ubuntu-24.04)
+    # Same runner image as release.yml's build-bundle job.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Add the Zabbly Incus repo
+        run: scripts/bundle/add-zabbly-repo.sh
+
+      - name: Download the bundle's .debs
+        env:
+          DEPS_ONLY: apt
+          STAGING_DIR: ${{ runner.temp }}/bundle-cache
+        run: scripts/bundle/download-deps.sh
+
+      - name: Show what landed
+        env:
+          APT_DIR: ${{ runner.temp }}/bundle-cache/apt
+        run: |
+          set -euo pipefail
+          n=$(find "$APT_DIR" -maxdepth 1 -name '*.deb' | wc -l)
+          echo "$n .deb files, $(du -sh "$APT_DIR" | cut -f1)"
+          for pkg in incus incus-client incus-extra zfsutils-linux jq curl; do
+            debs=("$APT_DIR/${pkg}_"*.deb)
+            [ -f "${debs[0]}" ] || { echo "missing ${pkg}_*.deb" >&2; exit 1; }
+            basename "${debs[0]}"
+          done
