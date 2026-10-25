@@ -1164,7 +1164,7 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 			}
 		}
 		st := boxlxc.StatusFromInfo(info)
-		return name + "-container", toProtoContainer(&st), false, nil
+		return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
 	}
 
 	// First provision. Pass the daemon's version as the agent-runtime
@@ -1182,8 +1182,13 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	if derr != nil {
 		return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
 	}
-	return name + "-container", dep.Container, true, nil
+	return skillBoxName(skill.Id), dep.Container, true, nil
 }
+
+// skillBoxName is the container a skill's runs use: one box per skill id,
+// shared across that skill's runs. validateCrewRoles compares these, so a crew
+// can never name two roles that would land in one box (#2799).
+func skillBoxName(skillID string) string { return "agent-" + skillID + "-container" }
 
 func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string, opts provisionOptions) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, engineRes agentengine.Resolved, err error) {
 	var noLease runlease.Lease

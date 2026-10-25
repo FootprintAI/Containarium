@@ -13071,9 +13071,27 @@
             "type": "string"
           },
           "description": "Skill ids that make up this crew (in pipeline order when PIPELINE;\ncoordinator first when ORCHESTRATOR)."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CrewRole"
+          },
+          "description": "Role of each member, parallel to skill_ids (#2799): roles[i] is the role\nof skill_ids[i]. Empty means the crew declares no roles. When set it has\none entry per member, and RunCrew rejects a crew whose PACK_PRODUCER is\nthe same skill as its CODER or would run in the same box."
         }
       },
       "description": "Crew is a collaborating set of skills bound to a task purpose."
+    },
+    "CrewRole": {
+      "type": "string",
+      "enum": [
+        "CREW_ROLE_UNSPECIFIED",
+        "CREW_ROLE_CODER",
+        "CREW_ROLE_PACK_PRODUCER",
+        "CREW_ROLE_REVIEWER"
+      ],
+      "default": "CREW_ROLE_UNSPECIFIED",
+      "description": "CrewRole is what one crew member does in a run (#2799).\n\n - CREW_ROLE_CODER: Writes the change.\n - CREW_ROLE_PACK_PRODUCER: Runs the repository's test commands against the final files in its own\nbox and produces the run's Proof Pack. Never the coder.\n - CREW_ROLE_REVIEWER: Reviews and finalizes the coder's change."
     },
     "CrewRun": {
       "type": "object",
