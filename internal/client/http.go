@@ -3326,6 +3326,21 @@ func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 	return out.Change, nil
 }
 
+// SubmitTrackerChangeFiles opens a change request from a file set over
+// the connection's broker credential (#3005), via REST.
+func (c *HTTPClient) SubmitTrackerChangeFiles(req *pb.SubmitTrackerChangeFilesRequest) (*pb.TrackerChange, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SubmitTrackerChangeFilesResponse{}
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes:files", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if err := c.trackerDo(http.MethodPost, path, "submit tracker change files", body, out); err != nil {
+		return nil, err
+	}
+	return out.Change, nil
+}
+
 // CommentOnTrackerIssue posts a stamped, sanitized comment on an issue
 // or change request, via REST.
 func (c *HTTPClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest) (*pb.TrackerComment, error) {

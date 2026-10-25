@@ -711,6 +711,55 @@ message SubmitTrackerChangeResponse {
   TrackerChange change = 1;
 }
 
+// TrackerChangeFile is one whole file of a SubmitTrackerChangeFiles
+// change: its repo-relative path and its complete new content.
+message TrackerChangeFile {
+  // path is repo-relative and must already be clean: no leading "/",
+  // no "." or ".." segment, no ".git" segment, no control characters.
+  string path = 1;
+  // content is the file's complete new content (text). An existing file
+  // keeps its executable bit; a new file is created non-executable.
+  string content = 2;
+}
+
+// SubmitTrackerChangeFilesRequest opens a change request from a file
+// set instead of a run's box (#3005): the daemon fetches base_ref from
+// the connection's remote on the host with the broker credential,
+// commits files on top of it, pushes head_branch, and opens the change.
+// No run-scoped token is needed — the caller's tenant authority on the
+// connection is the authorisation, as for CommentOnTrackerIssue.
+message SubmitTrackerChangeFilesRequest {
+  string username = 1;
+  string connection = 2;
+
+  // issue this change closes/references. Required.
+  int64 issue = 3;
+
+  // title is the change request title and the commit subject. Required.
+  string title = 4;
+  string description = 5;
+
+  // draft opens the change request as a draft/WIP.
+  bool draft = 6;
+
+  // base_ref is the branch the change targets and is built on. Empty
+  // resolves the project's actual default branch from the provider.
+  string base_ref = 7;
+
+  // head_branch is the branch the commit is pushed to. Empty lets the
+  // daemon choose one that is stable for (username, connection, issue,
+  // title), so a retry of the same request lands on the same branch and
+  // the same commit. Never force-pushed; must differ from base_ref.
+  string head_branch = 8;
+
+  // files is the change: at least one, each path distinct.
+  repeated TrackerChangeFile files = 9;
+}
+
+message SubmitTrackerChangeFilesResponse {
+  TrackerChange change = 1;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -952,6 +1001,20 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Submit a tracker change request";
       description: "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.";
+      tags: "Tracker";
+    };
+  }
+
+  // SubmitTrackerChangeFiles opens a change request from a file set over
+  // the connection's broker credential, with no run box (#3005).
+  rpc SubmitTrackerChangeFiles(SubmitTrackerChangeFilesRequest) returns (SubmitTrackerChangeFilesResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/connections/{username}/{connection}/changes:files"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Submit a tracker change request from files";
+      description: "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.";
       tags: "Tracker";
     };
   }

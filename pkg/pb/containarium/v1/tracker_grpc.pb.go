@@ -19,24 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TrackerService_SetTrackerConnection_FullMethodName    = "/containarium.v1.TrackerService/SetTrackerConnection"
-	TrackerService_GetTrackerConnection_FullMethodName    = "/containarium.v1.TrackerService/GetTrackerConnection"
-	TrackerService_ListTrackerConnections_FullMethodName  = "/containarium.v1.TrackerService/ListTrackerConnections"
-	TrackerService_DeleteTrackerConnection_FullMethodName = "/containarium.v1.TrackerService/DeleteTrackerConnection"
-	TrackerService_SetTrackerRoute_FullMethodName         = "/containarium.v1.TrackerService/SetTrackerRoute"
-	TrackerService_ListTrackerRoutes_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerRoutes"
-	TrackerService_DeleteTrackerRoute_FullMethodName      = "/containarium.v1.TrackerService/DeleteTrackerRoute"
-	TrackerService_DispatchTrackerIssues_FullMethodName   = "/containarium.v1.TrackerService/DispatchTrackerIssues"
-	TrackerService_ListTrackerDispatches_FullMethodName   = "/containarium.v1.TrackerService/ListTrackerDispatches"
-	TrackerService_GetTrackerStatus_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerStatus"
-	TrackerService_GetTrackerIssue_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerIssue"
-	TrackerService_ListTrackerIssues_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerIssues"
-	TrackerService_GetTrackerChange_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerChange"
-	TrackerService_CommentOnTrackerIssue_FullMethodName   = "/containarium.v1.TrackerService/CommentOnTrackerIssue"
-	TrackerService_ClaimTrackerIssue_FullMethodName       = "/containarium.v1.TrackerService/ClaimTrackerIssue"
-	TrackerService_SetTrackerIssueLabels_FullMethodName   = "/containarium.v1.TrackerService/SetTrackerIssueLabels"
-	TrackerService_CreateTrackerIssue_FullMethodName      = "/containarium.v1.TrackerService/CreateTrackerIssue"
-	TrackerService_SubmitTrackerChange_FullMethodName     = "/containarium.v1.TrackerService/SubmitTrackerChange"
+	TrackerService_SetTrackerConnection_FullMethodName     = "/containarium.v1.TrackerService/SetTrackerConnection"
+	TrackerService_GetTrackerConnection_FullMethodName     = "/containarium.v1.TrackerService/GetTrackerConnection"
+	TrackerService_ListTrackerConnections_FullMethodName   = "/containarium.v1.TrackerService/ListTrackerConnections"
+	TrackerService_DeleteTrackerConnection_FullMethodName  = "/containarium.v1.TrackerService/DeleteTrackerConnection"
+	TrackerService_SetTrackerRoute_FullMethodName          = "/containarium.v1.TrackerService/SetTrackerRoute"
+	TrackerService_ListTrackerRoutes_FullMethodName        = "/containarium.v1.TrackerService/ListTrackerRoutes"
+	TrackerService_DeleteTrackerRoute_FullMethodName       = "/containarium.v1.TrackerService/DeleteTrackerRoute"
+	TrackerService_DispatchTrackerIssues_FullMethodName    = "/containarium.v1.TrackerService/DispatchTrackerIssues"
+	TrackerService_ListTrackerDispatches_FullMethodName    = "/containarium.v1.TrackerService/ListTrackerDispatches"
+	TrackerService_GetTrackerStatus_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerStatus"
+	TrackerService_GetTrackerIssue_FullMethodName          = "/containarium.v1.TrackerService/GetTrackerIssue"
+	TrackerService_ListTrackerIssues_FullMethodName        = "/containarium.v1.TrackerService/ListTrackerIssues"
+	TrackerService_GetTrackerChange_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerChange"
+	TrackerService_CommentOnTrackerIssue_FullMethodName    = "/containarium.v1.TrackerService/CommentOnTrackerIssue"
+	TrackerService_ClaimTrackerIssue_FullMethodName        = "/containarium.v1.TrackerService/ClaimTrackerIssue"
+	TrackerService_SetTrackerIssueLabels_FullMethodName    = "/containarium.v1.TrackerService/SetTrackerIssueLabels"
+	TrackerService_CreateTrackerIssue_FullMethodName       = "/containarium.v1.TrackerService/CreateTrackerIssue"
+	TrackerService_SubmitTrackerChange_FullMethodName      = "/containarium.v1.TrackerService/SubmitTrackerChange"
+	TrackerService_SubmitTrackerChangeFiles_FullMethodName = "/containarium.v1.TrackerService/SubmitTrackerChangeFiles"
 )
 
 // TrackerServiceClient is the client API for TrackerService service.
@@ -92,6 +93,9 @@ type TrackerServiceClient interface {
 	// and opens a change request, without a push credential ever
 	// entering the box.
 	SubmitTrackerChange(ctx context.Context, in *SubmitTrackerChangeRequest, opts ...grpc.CallOption) (*SubmitTrackerChangeResponse, error)
+	// SubmitTrackerChangeFiles opens a change request from a file set over
+	// the connection's broker credential, with no run box (#3005).
+	SubmitTrackerChangeFiles(ctx context.Context, in *SubmitTrackerChangeFilesRequest, opts ...grpc.CallOption) (*SubmitTrackerChangeFilesResponse, error)
 }
 
 type trackerServiceClient struct {
@@ -282,6 +286,16 @@ func (c *trackerServiceClient) SubmitTrackerChange(ctx context.Context, in *Subm
 	return out, nil
 }
 
+func (c *trackerServiceClient) SubmitTrackerChangeFiles(ctx context.Context, in *SubmitTrackerChangeFilesRequest, opts ...grpc.CallOption) (*SubmitTrackerChangeFilesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitTrackerChangeFilesResponse)
+	err := c.cc.Invoke(ctx, TrackerService_SubmitTrackerChangeFiles_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TrackerServiceServer is the server API for TrackerService service.
 // All implementations must embed UnimplementedTrackerServiceServer
 // for forward compatibility.
@@ -335,6 +349,9 @@ type TrackerServiceServer interface {
 	// and opens a change request, without a push credential ever
 	// entering the box.
 	SubmitTrackerChange(context.Context, *SubmitTrackerChangeRequest) (*SubmitTrackerChangeResponse, error)
+	// SubmitTrackerChangeFiles opens a change request from a file set over
+	// the connection's broker credential, with no run box (#3005).
+	SubmitTrackerChangeFiles(context.Context, *SubmitTrackerChangeFilesRequest) (*SubmitTrackerChangeFilesResponse, error)
 	mustEmbedUnimplementedTrackerServiceServer()
 }
 
@@ -398,6 +415,9 @@ func (UnimplementedTrackerServiceServer) CreateTrackerIssue(context.Context, *Cr
 }
 func (UnimplementedTrackerServiceServer) SubmitTrackerChange(context.Context, *SubmitTrackerChangeRequest) (*SubmitTrackerChangeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitTrackerChange not implemented")
+}
+func (UnimplementedTrackerServiceServer) SubmitTrackerChangeFiles(context.Context, *SubmitTrackerChangeFilesRequest) (*SubmitTrackerChangeFilesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitTrackerChangeFiles not implemented")
 }
 func (UnimplementedTrackerServiceServer) mustEmbedUnimplementedTrackerServiceServer() {}
 func (UnimplementedTrackerServiceServer) testEmbeddedByValue()                        {}
@@ -744,6 +764,24 @@ func _TrackerService_SubmitTrackerChange_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_SubmitTrackerChangeFiles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitTrackerChangeFilesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).SubmitTrackerChangeFiles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_SubmitTrackerChangeFiles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).SubmitTrackerChangeFiles(ctx, req.(*SubmitTrackerChangeFilesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TrackerService_ServiceDesc is the grpc.ServiceDesc for TrackerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -822,6 +860,10 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitTrackerChange",
 			Handler:    _TrackerService_SubmitTrackerChange_Handler,
+		},
+		{
+			MethodName: "SubmitTrackerChangeFiles",
+			Handler:    _TrackerService_SubmitTrackerChangeFiles_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

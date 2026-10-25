@@ -1991,6 +1991,19 @@ func (c *GRPCClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 	return resp.Change, nil
 }
 
+// SubmitTrackerChangeFiles opens a change request from a file set over
+// the connection's broker credential (#3005). Same timeout as
+// SubmitTrackerChange: a fetch, a push and an upstream call.
+func (c *GRPCClient) SubmitTrackerChangeFiles(req *pb.SubmitTrackerChangeFilesRequest) (*pb.TrackerChange, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.SubmitTrackerChangeFiles(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("submit tracker change files: %w", err)
+	}
+	return resp.Change, nil
+}
+
 // CommentOnTrackerIssue posts a stamped, sanitized comment on an issue
 // or change request.
 func (c *GRPCClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest) (*pb.TrackerComment, error) {
