@@ -411,7 +411,7 @@ jobs:
           backup_dir=$(mktemp -d)
           # pkill in the preceding step sends a signal; wait for shutdown
           # before another daemon can bind the same ports.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if ! pgrep -f '^/tmp/containarium daemon' >/dev/null; then
               break
             fi
@@ -432,7 +432,7 @@ jobs:
           }
           trap cleanup EXIT
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail -sS -H "Authorization: Bearer $ADMIN_TOKEN" \
               http://localhost:8080/v1/backups >/dev/null 2>&1; then
               ready=yes; break
