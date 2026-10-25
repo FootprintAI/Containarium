@@ -132,6 +132,14 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 		}
 		return s.agents.SendAgentTask(ctx, copy)
 	}, wiper: s.agents.boxWiper(),
+		// #2799: a crew node's PACK_PRODUCER gets this node's own instance
+		// box, distinct from its coder's as every member's instance is.
+		provisionProducer: func(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
+			instance := proto.Clone(skill).(*pb.AgentSkill)
+			instance.Id, instance.AllowedPeers = peers[skill.Id].instance, nil
+			return s.provisionProducerBox(ctx, instance, req, runID)
+		},
+		producePack: s.producePackIn,
 		provision: func(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
 			instance := proto.Clone(skill).(*pb.AgentSkill)
 			instance.Id = peers[skill.Id].instance
