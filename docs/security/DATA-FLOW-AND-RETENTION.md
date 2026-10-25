@@ -11,11 +11,15 @@ It is the data-flow document that #2576 asks for.
 > nothing is deleted because of a window. An admin can switch it to
 > **enforce** mode, and then the sweep deletes the eligible records of the
 > stores outside the hash chain, and the *oldest rows* of the hash-chained
-> audit log (a prefix only, see below). Evidence bundles are never deleted
-> yet. The "Kept today" column is what happens without enforce mode; the
-> "Enforced default" column is what happens with it. Later slice:
+> audit log (a prefix only, see below). The "Kept today" column is what
+> happens without enforce mode; the "Enforced default" column is what
+> happens with it.
 >
-> - #2879: evidence bundles.
+> **Evidence bundles are not stored by the daemon.** The maintainer decided
+> on 2026-10-25 (recorded on #2879) that the Proof Pack stays in the PR
+> branch and only its digest goes in the audit chain (#2798). No daemon-side
+> evidence-bundle store will be built, so there is no bundle body for the
+> sweeper to delete.
 >
 > This document is updated as each slice ships.
 
@@ -31,6 +35,9 @@ Retention is set per daemon, with one window per class. The window is a
 | Gateway and API access logs | 90 days | `--gateway-logs` |
 | Session transcripts and session records | 90 days | `--session-transcripts` |
 | Evidence bundles | 365 days | `--evidence-bundles` |
+
+The evidence-bundles window can be set and read, but no daemon store holds
+evidence bundles, so it removes nothing (see the inventory).
 
 These defaults were accepted on the sprint umbrella (#2727, Q6). Defaults
 are not written to the database: `containarium retention policy get` marks
@@ -229,7 +236,9 @@ Listed as **not swept**, with the reason:
   transcripts), only on a daemon with no audit store (it needs Postgres with
   REST enabled). With one they are counted and purged as a prefix; see
   below.
-- Evidence bundles: no bundle store exists yet; #2879.
+- Evidence bundles: the daemon stores none (decision on #2879). Once #2798
+  lands, a bundle's digest is a row of the hash-chained `audit_logs` and is
+  purged with it.
 
 On a daemon with no database every Postgres-backed store is listed as not
 swept, because there is nothing to count. A store whose table does not exist
@@ -305,7 +314,7 @@ chain.
 | Gateway logs | Model-gateway detections and blocks, and the API access log, in `audit_logs` (Postgres). Metadata only: the model gateway never stores prompt or response bodies. Every action that is not an SSH session action counts as this class | `org_id`, often empty | No automatic deletion | 90 days in enforce mode, as a prefix below the latest anchor (see below) | **yes** |
 | Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | 90 days in enforce mode, as a prefix below the latest anchor (see below) | **yes** |
 | Session transcripts | Front-door session log file on the sentinel VM | none | 90 days after rotation (configurable) | none: a file on the sentinel VM, rotated by logrotate | no |
-| Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names; the platform does not store them yet (#2798) | n/a | Kept as long as the operator keeps the file | not yet: no store, slice #2879 | n/a |
+| Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names, or kept in the PR branch (#2798). The daemon does not store them (decision of 2026-10-25 on #2879); only the digest goes in the audit chain | n/a | Kept as long as the operator or the repository keeps the file | none: no daemon-side store | n/a |
 | (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl` | n/a | No automatic deletion; required to verify the chain | none: required to verify the chain | anchors it |
 
 The model gateway holds token counts in memory only, so they are gone after
