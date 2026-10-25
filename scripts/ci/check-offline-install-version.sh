@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fail when the air-gapped install guide hardcodes a release version (#2557).
+# Fail when the air-gapped install guide (and README) hardcodes a release version (#2557).
 #
 # hacks/offline-install/docs/INSTALL.md pinned one release in its commands
 # and kept it long after newer releases shipped. A pinned version is older than
@@ -10,13 +10,14 @@
 # numbers (v0.1, v1.2.3); placeholders such as vX.Y.Z do not match.
 #
 # Usage:
-#   scripts/ci/check-offline-install-version.sh              # check the guide
+#   scripts/ci/check-offline-install-version.sh              # check the guide and README
 #   scripts/ci/check-offline-install-version.sh FILE...      # check FILEs
 #   scripts/ci/check-offline-install-version.sh --self-test  # seeded fixtures
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DEFAULT_DOC="$ROOT/hacks/offline-install/docs/INSTALL.md"
+# The README carried a pinned build example too (#3063), so it is gated with the guide.
+DEFAULT_DOCS=("$ROOT/hacks/offline-install/docs/INSTALL.md" "$ROOT/hacks/offline-install/README.md")
 
 # check FILE... prints every offending line and returns 1 if there is one.
 check() {
@@ -51,6 +52,12 @@ self_test() {
   # shellcheck disable=SC2016
   printf 'VERSION=<release tag>\ntar xzf containarium-bundle-vX.Y.Z-linux-amd64.tar.gz\n${VERSION}\n' > "$dir/placeholders.md"
 
+  # The default set must cover the README, or a pin there goes unseen.
+  if ! printf '%s\n' "${DEFAULT_DOCS[@]}" | grep -q 'offline-install/README.md$'; then
+    echo "self-test FAIL: README.md is not in the default doc set"
+    rc=1
+  fi
+
   local f
   for f in pinned-var pinned-image two-part in-url; do
     if check "$dir/$f.md" > /dev/null; then
@@ -71,5 +78,5 @@ if [ "${1:-}" = "--self-test" ]; then
 elif [ "$#" -gt 0 ]; then
   check "$@"
 else
-  check "$DEFAULT_DOC"
+  check "${DEFAULT_DOCS[@]}"
 fi

@@ -12,7 +12,7 @@ install bundle** specified in
 | `README.md` | This file. Copied into the bundle root as the user's first read. |
 | `docs/INSTALL.md` | Customer-facing install procedure (mirrored in the bundle's `docs/`). |
 | `docs/VERIFY.md` | Bundle SHA256 verification walkthrough. |
-| `docs/GHES.md` | GitHub Enterprise Server runner-kit setup, using the `GH_BASE_URL` env var added in this PR. |
+| `docs/GHES.md` | GitHub Enterprise Server runner-kit setup, using the `GH_BASE_URL` environment variable. |
 
 ## How customers use the bundle
 
@@ -32,6 +32,15 @@ cd containarium-bundle-vX.Y.Z-linux-amd64/
 sudo ./offline-install.sh
 ```
 
+The installer leaves 50051/tcp closed in ufw: the daemon serves an external
+gRPC listener only when it runs with `--mtls`. Pass `--mtls` to
+`offline-install.sh` to open the port (the daemon must also be started with
+`--mtls`).
+
+`BUNDLE_VERSION` defaults to the version in `pkg/version/version.go`, and
+`BUNDLE_OS` / `BUNDLE_ARCH` default to `linux` / `amd64`, so a plain
+`make build-bundle` builds the current version for that target.
+
 The installer's first step is to re-verify the inner
 `CHECKSUMS.sha256` file, catching any in-transit corruption.
 
@@ -42,8 +51,8 @@ documentation. Short version:
 
 ```bash
 make build-release                # binaries
-make build-bundle VERSION=v0.19.0 OS=linux ARCH=amd64
-ls dist/containarium-bundle-v0.19.0-linux-amd64.tar.gz
+make build-bundle BUNDLE_VERSION=vX.Y.Z BUNDLE_OS=linux BUNDLE_ARCH=amd64
+ls dist/containarium-bundle-vX.Y.Z-linux-amd64.tar.gz
 ```
 
 CI (`.github/workflows/release.yml`) runs the same target on tag pushes
@@ -61,14 +70,14 @@ containarium-bundle-vX.Y.Z-linux-amd64/
     containarium
     mcp-server
     agent-box
-    actions-runner-linux-x64-2.319.1.tar.gz
+    actions-runner-linux-x64-<version>.tar.gz
   sidecars/
     otel-sidecar.tar
   toolchains/
-    go1.25.10.linux-amd64.tar.gz
+    go<version>.linux-amd64.tar.gz
     node-v22.x-linux-x64.tar.xz
     pnpm-9.x-linux-x64
-    buf-1.38.0-linux-amd64
+    buf-<version>-linux-amd64
     golangci-lint-2.x-linux-amd64.tar.gz
   apt/
     *.deb
