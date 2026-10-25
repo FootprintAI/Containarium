@@ -360,7 +360,7 @@ jobs:
           ### Quick install (Linux host)
 
           ```bash
-          curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh | sudo bash
+          curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/__RELEASE_REF__/hacks/install.sh | sudo bash
           ```
 
           ### Manual install (any binary, any platform)
