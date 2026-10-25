@@ -212,13 +212,6 @@ type denyApplier interface {
 	DeleteDeny(netbpf.DenyKey) error
 }
 
-// applyDeny converges the kernel deny_cidr map from installed to desired via the
-// applier, updating installed in place (#660). Upserts apply BEFORE deletes;
-// diffDeny guarantees the two sets never share a key, so an entry that was just
-// upserted is never immediately deleted (a port-only change is one upsert of the
-// same slot, not add+del). A failed op is logged and skipped WITHOUT touching
-// installed, so the next reconcile retries it rather than recording a state the
-// kernel doesn't actually hold.
 // egressApplier is the slice of the loader applyEgress writes through.
 type egressApplier interface {
 	AddEgress(netbpf.EgressEntry) error
@@ -252,6 +245,13 @@ func applyEgress(installed map[netbpf.EgressEntry]bool, toAdd, toDel []netbpf.Eg
 	return incomplete
 }
 
+// applyDeny converges the kernel deny_cidr map from installed to desired via the
+// applier, updating installed in place (#660). Upserts apply BEFORE deletes;
+// diffDeny guarantees the two sets never share a key, so an entry that was just
+// upserted is never immediately deleted (a port-only change is one upsert of the
+// same slot, not add+del). A failed op is logged and skipped WITHOUT touching
+// installed, so the next reconcile retries it rather than recording a state the
+// kernel doesn't actually hold.
 func applyDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.DenyEntry, a denyApplier) {
 	upsert, del := diffDeny(installed, desired)
 	for _, de := range upsert {
