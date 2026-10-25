@@ -1,5 +1,7 @@
 # Sentinel Design
 
+> Status: **Implemented** (`internal/sentinel`, `containarium sentinel`). Kept for the design rationale; where this note and the code differ, the code is authoritative.
+
 The sentinel is a tiny always-on VM (e2-micro, GCP free tier) that sits in front of one or more spot VMs. It owns the static public IP, forwards traffic transparently during normal operation, and provides automatic recovery when spot VMs are preempted.
 
 ## Architecture

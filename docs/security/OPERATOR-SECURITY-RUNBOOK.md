@@ -465,7 +465,7 @@ Daemon startup log should show:
 Detected PostgreSQL at: <auto-detect skipped, URL was provided>
 ```
 
-If you see `Detected PostgreSQL at: 10.100.0.2 (password
+If you see `Detected PostgreSQL at: <private-ip> (password
 source: default)` instead, the URL didn't take — check the
 unit for stray `CONTAINARIUM_POSTGRES_*` overrides.
 

@@ -46,10 +46,10 @@ curl https://blog.example.com → hello world
 
 AI agents are increasingly the primary user of dev infrastructure. They
 want to build, install, deploy, and verify — not on the human's laptop
-(too noisy, too risky, too local) but on a persistent, isolated runtime that's:
+(too noisy, too risky, too local) but on a persistent runtime that's:
 
 - **Persistent**: state survives between agent runs.
-- **Isolated**: a misbehaving install doesn't touch your machine or your cluster.
+- **Separate from your machine**: a misbehaving install doesn't touch your laptop or your cluster. (Tenant-to-tenant isolation is not on by default; see [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).)
 - **Real**: a full Linux environment with `systemd`, real networking,
   and the ability to host things on the open internet.
 - **Driven by structured tools**: not by an agent typing commands into a
@@ -440,7 +440,7 @@ design.
 ```
 
 A single sentinel can front multiple backend VMs — a "pool" — and a
-single deployment can run multiple pools (each isolated). See
+single deployment can run multiple pools (each with its own backends). See
 [docs/MULTI-POOL.md](docs/MULTI-POOL.md).
 
 **Security control surface** (all opt-in via env, default-off for
@@ -448,7 +448,7 @@ upgrade safety; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security
 
 | Env var | Layer | Effect |
 | --- | --- | --- |
-| `CONTAINARIUM_REQUIRE_IMAGE_DIGEST=true` | API | refuse images without `@sha256:<64hex>` |
+| `CONTAINARIUM_REQUIRE_IMAGE_DIGEST=true` | API | refuse images without `@sha256:<64hex>` | <!-- claim-row: Image-registry allow-list and digest verification. -->
 | `CONTAINARIUM_VERIFY_IMAGE_DIGEST=true` | API | verify digest against the registry index (pre- + post-pull) |
 | `CONTAINARIUM_ALLOWED_IMAGE_REGISTRIES` | API | restrict which simplestreams remotes the daemon will pull from |
 | `CONTAINARIUM_KMS_BACKEND={none,inproc,vault,gcp}` | Secrets | envelope-encrypt DEKs through an external KMS |
@@ -484,6 +484,7 @@ Docker's `sbx run claude` and Containarium both call themselves
   (microVM, host-isolation). Containarium runs the sandbox on a VM
   you host (LXC, multi-tenant, public-internet reachable via the
   sentinel).
+  <!-- claim-exempt: describes another product's locality, not a Containarium claim -->
 - **Persistence**: `sbx` is session-shaped (workspace mount, no
   documented "give me a box that survives reboot and has a
   hostname"). Containarium containers persist indefinitely, with
@@ -523,8 +524,9 @@ closest open-source peers on Kubernetes:
 - **LXC + K8s, one CLI**: Containarium runs on either Incus/LXC or
   Kubernetes behind the same `containarium` CLI and `--runtime` flag. You
   switch backends without changing anything for the agent.
-- **eBPF egress policy**: Containarium enforces per-tenant egress
-  allowlists at the kernel level via TC_INGRESS eBPF programs.
+- **eBPF egress policy**: Containarium can enforce per-tenant egress
+  allowlists at the kernel level via TC_INGRESS eBPF programs once an
+  operator arms them (opt-in; see [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md)).
   agent-sandbox has NetworkPolicy; OpenShell has eBPF but is
   NVIDIA-stack-specific. Neither offers a portable, per-tenant eBPF
   allowlist across LXC and K8s backends.
@@ -599,6 +601,9 @@ an LXC box, so an agent can't tell which substrate it landed on. The
 daemon reconciles a per-tenant namespace + StatefulSet + headless Service
 + default-deny NetworkPolicy, and programs the sshpiper gateway (the
 `Pipe` CRD) so `ssh <tenant>@<gateway>` routes to the right pod.
+What the NetworkPolicy does and does not guarantee is in
+[`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).
+<!-- claim-row: Kubernetes boxes get a default-deny NetworkPolicy. -->
 
 The pitch isn't "another way to run pods" — it's giving an agent a
 hardened, SSH-native foothold in your cluster **without handing it a
@@ -654,6 +659,7 @@ VictoriaMetrics + Grafana auto-provisioned. Per-container CPU,
 memory, disk, network. Alerting via webhooks. SSH audit logs per
 user (LXC backend; the Kubernetes backend records control-plane API
 audit but not in-box SSH sessions — see #1189).
+<!-- claim-row: SSH session audit logs per user. -->
 
 ### Security primitives
 
@@ -795,6 +801,7 @@ containarium token generate \
 See [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)
 for the full token lifecycle, leak-response playbook, and the agent
 least-privilege scope catalog.
+<!-- claim-exempt: points to the runbook, asserts no property of the product -->
 
 ---
 
@@ -843,6 +850,7 @@ See [`terraform/gce/README.md`](terraform/gce/README.md) for variables.
   ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881));
   use the [Zabbly Incus repository](https://pkgs.zabbly.com/) for
   current builds.
+  <!-- claim-exempt: names a vendor CVE that affects installs, asserts no Containarium property -->
 - **ZFS kernel module** (for disk quotas).
 - Kernel modules: `overlay`, `br_netfilter`, `nf_nat` (Docker in
   containers needs these).
@@ -886,6 +894,7 @@ access could mint admin tokens.
 
 - Each user gets their own keypair. **Never** share keys between users
   — sharing breaks revocation, audit, and per-user fail2ban.
+  <!-- claim-exempt: key-handling advice, asserts no property of the product -->
 - The same key can authenticate to both the sentinel proxy account and
   the container. That's the supported flow: simpler for users, no
   security loss because the proxy account is `nologin` and only routes
@@ -908,6 +917,7 @@ agent-box   # all file ops now constrained to /srv/project
 boundary itself — by design, that's the tool's contract. If you need
 tighter isolation, run agent-box in a more restrictive container (e.g.
 nested LXC, or chroot the user account further).
+<!-- claim-exempt: disclaims isolation for shell_exec rather than claiming it -->
 
 ### Network
 
@@ -971,7 +981,8 @@ and your data on your infra.
 - **AI-agent sandboxes** (the lead): Cursor, Claude Code, Cline,
   OpenCode, custom agents — all reach the same MCP surface.
 - **Shared developer environments**: many developers, one host, SSH
-  jump server with per-user isolation.
+  jump server with per-user accounts and containers (isolation
+  caveats: [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md)).
 - **ML / GPU experimentation**: GPU passthrough into LXC.
 - **Education, bootcamps, workshops**: per-student isolated Linux
   with no per-student VM.
@@ -1015,6 +1026,7 @@ Demoed Containarium somewhere? Open a PR and add it here.
 ## Roadmap
 
 - **Shipped (2026-06)**: **[Kubernetes backend](#kubernetes-backend-experimental)**
+  <!-- claim-row: Kubernetes boxes get a default-deny NetworkPolicy. -->
   — run a box as a pod in a cluster you operate, reached over SSH like an LXC
   box, with the sshpiper gateway, default-deny NetworkPolicy, CSI storage, and
   `nvidia.com/gpu` passthrough. Selected at runtime via `--runtime=k8s` (no
