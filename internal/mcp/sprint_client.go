@@ -42,14 +42,17 @@ type SprintIssueRef struct {
 
 // SprintItem is one issue on a board.
 type SprintItem struct {
-	Number       int64    `json:"number,string"`
-	Title        string   `json:"title"`
-	URL          string   `json:"url,omitempty"`
-	Rank         int32    `json:"rank,omitempty"`
-	State        string   `json:"state"`
-	Blockers     []int64  `json:"blockers,omitempty"`
-	OpenBlockers []int64  `json:"openBlockers,omitempty"`
-	RunStatus    string   `json:"runStatus,omitempty"`
+	Number       int64   `json:"number,string"`
+	Title        string  `json:"title"`
+	URL          string  `json:"url,omitempty"`
+	Rank         int32   `json:"rank,omitempty"`
+	State        string  `json:"state"`
+	Blockers     []int64 `json:"blockers,omitempty"`
+	OpenBlockers []int64 `json:"openBlockers,omitempty"`
+	RunStatus    string  `json:"runStatus,omitempty"`
+	// RunStartedAt and WaitSince are RFC 3339 timestamps, empty when unset.
+	RunStartedAt string   `json:"runStartedAt,omitempty"`
+	WaitSince    string   `json:"waitSince,omitempty"`
 	PRURL        string   `json:"prUrl,omitempty"`
 	PRState      string   `json:"prState,omitempty"`
 	Attention    []string `json:"attention,omitempty"`
@@ -96,6 +99,9 @@ func parseInt64s(in []json.Number) ([]int64, error) {
 
 // SprintBoard is the typed board. Set only when the state is PRESENT.
 type SprintBoard struct {
+	SprintID           string       `json:"sprintId,omitempty"`
+	Provider           string       `json:"provider,omitempty"`
+	ContentHash        string       `json:"contentHash,omitempty"`
 	Project            string       `json:"project"`
 	Umbrella           int64        `json:"umbrella,string"`
 	UmbrellaTitle      string       `json:"umbrellaTitle"`
