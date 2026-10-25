@@ -240,6 +240,7 @@ tool-access clear
 tool-access get
 tool-access set
 tracker change submit
+tracker change submit-files
 tracker change view
 tracker connect
 tracker disconnect

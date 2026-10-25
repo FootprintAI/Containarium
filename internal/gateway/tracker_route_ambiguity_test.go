@@ -114,6 +114,11 @@ func (r *recordingTracker) SubmitTrackerChange(_ context.Context, q *pb.SubmitTr
 	return &pb.SubmitTrackerChangeResponse{}, nil
 }
 
+func (r *recordingTracker) SubmitTrackerChangeFiles(_ context.Context, q *pb.SubmitTrackerChangeFilesRequest) (*pb.SubmitTrackerChangeFilesResponse, error) {
+	r.rec("SubmitTrackerChangeFiles u=%s c=%s", q.GetUsername(), q.GetConnection())
+	return &pb.SubmitTrackerChangeFilesResponse{}, nil
+}
+
 func newTrackerRouteMux(t *testing.T) (*runtime.ServeMux, *recordingTracker) {
 	t.Helper()
 	srv := grpc.NewServer(
@@ -177,6 +182,7 @@ func TestTrackerRoutes_NoAmbiguity(t *testing.T) {
 				{"POST", base + "/issues/7/labels", `{}`, fmt.Sprintf("SetTrackerIssueLabels u=%s c=%s n=7", u, c)},
 				{"GET", base + "/changes/9", "", fmt.Sprintf("GetTrackerChange u=%s c=%s n=9", u, c)},
 				{"POST", base + "/changes", `{"issue":1,"title":"t"}`, fmt.Sprintf("SubmitTrackerChange u=%s c=%s", u, c)},
+				{"POST", base + "/changes:files", `{"issue":1,"title":"t"}`, fmt.Sprintf("SubmitTrackerChangeFiles u=%s c=%s", u, c)},
 			}
 			for _, tc := range cases {
 				code, got := do(tc.method, tc.path, tc.body)
