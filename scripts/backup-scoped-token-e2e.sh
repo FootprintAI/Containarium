@@ -17,16 +17,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# call runs curl with --fail-with-body into $1 and, on failure, prints the
-# response body so a rejected request names its reason in the lane log.
-call() {
-  out=$1; shift
-  curl --fail-with-body -sS "$@" > "$out" || {
-    status=$?
-    echo "request failed (curl exit $status): $*" >&2
-    cat "$out" >&2
-    return "$status"
-  }
+# api <expected-status> <out-file> <curl args...> <url>
+# Runs one request, keeps the response body in <out-file>, and fails unless
+# the HTTP status equals <expected-status>. On a mismatch it prints the
+# URL, the status, and the response body, so a failure in CI shows
+# its cause (#3028). Authorization headers are never echoed.
+api() {
+  local want=$1 out=$2 code url
+  shift 2
+  url=${*: -1}
+  if ! code=$(curl -sS -o "$out" -w '%{http_code}' "$@"); then
+    echo "request failed before a response: $url" >&2
+    return 1
+  fi
+  if [ "$code" != "$want" ]; then
+    echo "Expected HTTP $want from $url, received $code; response body:" >&2
+    cat "$out" >&2 || true
+    echo >&2
+    return 1
+  fi
 }
 printf '%s' "$JWT_SECRET" > "$scratch_dir/jwt.secret"
 chmod 600 "$scratch_dir/jwt.secret"
@@ -44,7 +53,7 @@ incus exec "$source_name" -- sh -c '
 '
 
 request=$(jq -n --arg tenant "$tenant" '{username:$tenant,destination:"BACKUP_DESTINATION_LOCAL",connection:{database:"postgres",password:"lane-source-password"}}')
-call "$scratch_dir/create.json" -H "Authorization: Bearer $ADMIN_TOKEN" \
+api 200 "$scratch_dir/create.json" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d "$request" "$server/v1/backups"
 backup_id=$(jq -er '.record.id' "$scratch_dir/create.json")
 
@@ -53,16 +62,20 @@ token=$("$bin" token generate --username "$tenant" --roles user \
   --scopes backups:read,backups:write --expiry 720h \
   --secret-file "$scratch_dir/jwt.secret" --raw)
 
-call "$scratch_dir/list.json" -H "Authorization: Bearer $token" \
+api 200 "$scratch_dir/list.json" -H "Authorization: Bearer $token" \
   "$server/v1/backups?username=$tenant"
 jq -e --arg id "$backup_id" --arg tenant "$tenant" \
   '(.records | length) == 1 and .records[0].id == $id and .records[0].username == $tenant' "$scratch_dir/list.json"
 
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
-call "$scratch_dir/verify.json" --max-time 600 -H "Authorization: Bearer $token" \
+api 200 "$scratch_dir/verify.json" --max-time 600 -H "Authorization: Bearer $token" \
   -H 'Content-Type: application/json' -d "$request" \
   "$server/v1/backups/$backup_id/verify"
-jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/verify.json"
+if ! jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/verify.json"; then
+  echo "Verification did not pass; response body:" >&2
+  cat "$scratch_dir/verify.json" >&2
+  exit 1
+fi
 target=$(jq -er '.verification.targetContainer' "$scratch_dir/verify.json")
 test "$target" != "$source_name"
 if incus info "$target" >/dev/null 2>&1; then
@@ -71,13 +84,7 @@ if incus info "$target" >/dev/null 2>&1; then
 fi
 
 for path in '/v1/backups?username=other-tenant' '/v1/containers' "/v1/secrets/$tenant/db"; do
-  code=$(curl -sS -o "$scratch_dir/denied.json" -w '%{http_code}' \
-    -H "Authorization: Bearer $token" "$server$path")
-  if [ "$code" != 403 ]; then
-    echo "Expected 403 for $path, received $code" >&2
-    cat "$scratch_dir/denied.json" >&2
-    exit 1
-  fi
+  api 403 "$scratch_dir/denied.json" -H "Authorization: Bearer $token" "$server$path"
 done
 
 # Verification must leave the source database intact.
