@@ -220,20 +220,28 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	}
 	defer func() { _ = os.Remove(bundle.BundlePath) }()
 
+	// #2798: the change carries its sealed Proof Pack, or is not opened.
+	sealed, packFile, err := s.sealSubmitProofPack(ctx, req.Username, runID, info, bundle.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+
 	id := s.identityFromContext(ctx)
 	closingRef := fmt.Sprintf("Closes #%d", req.Issue)
 	description := tracker.Sanitize(req.Description)
-	fullDescription := closingRef + "\n\n" + description + "\n\n" + tracker.Stamp(id, tracker.KindChange)
+	fullDescription := closingRef + "\n\n" + description + "\n\n" + proofPackDescription(sealed) + "\n\n" + tracker.Stamp(id, tracker.KindChange)
 
 	pushResult, err := s.gitPusherForSubmit().PushBundle(ctx, submit.PushSpec{
-		BundlePath:  bundle.BundlePath,
-		BaseSHA:     info.GitCommit,
-		HeadSHA:     bundle.HeadSHA,
-		RemoteURL:   remoteURL,
-		Credential:  conn.Credential,
-		RunID:       runID,
-		IssueNumber: req.Issue,
-		Title:       req.Title,
+		BundlePath:   bundle.BundlePath,
+		BaseSHA:      info.GitCommit,
+		HeadSHA:      bundle.HeadSHA,
+		RemoteURL:    remoteURL,
+		Credential:   conn.Credential,
+		RunID:        runID,
+		IssueNumber:  req.Issue,
+		Title:        req.Title,
+		Files:        []submit.File{packFile},
+		FilesMessage: "Add Containarium Proof Pack sha256:" + sealed.GetSeal().GetPackSha256(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "push bundle: %v", err)

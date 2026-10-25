@@ -167,6 +167,20 @@ Sealing (#2798) writes the pack's digests into the audit hash chain as one ordin
 
 `proofpack.Seal` writes the row and returns a `SealedProofPack`: the pack plus its seal, which also carries `audit_row_id`, the id of that row. That is the file attached to the PR. A pack whose stored log digests are already wrong is refused, not sealed.
 
+## Attaching it to the PR
+
+When a tracker-dispatched run submits its change (`SubmitTrackerChange`, see [the tracker broker design](architecture/agent-tracker-broker.md)), the daemon does the following before anything is pushed:
+
+1. It generates the pack in the run's box, from the run's workspace.
+2. It checks that the pack ran at the commit being submitted.
+3. It seals the pack.
+
+The pushed branch then gets one more commit on top of the agent's commits. That commit adds the sealed pack as `.containarium/proof-pack.json`. A file the agent put at that path is replaced. The PR description carries the pack digest (`sha256:…`), its status, its step count and the seal's audit row.
+
+The change is not opened without its pack. If the pack cannot be generated, the workspace moved while it ran, or the daemon has no audit store to seal into, the submit fails and nothing is pushed. A pack whose status is `FAILED` or `NO_COMMANDS` is still attached: the pack is the evidence, not a gate.
+
+The pack is generated while the submit call is in progress, so the submit takes as long as the repository's tests, up to the default step timeout of 10 minutes per step. For now the pack is produced in the run's own box; #2799 moves it to a box other than the coder's.
+
 ## Verifying a sealed pack
 
 ```bash

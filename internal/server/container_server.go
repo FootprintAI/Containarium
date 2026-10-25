@@ -29,6 +29,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/poolcapacity"
+	"github.com/footprintai/containarium/internal/proofpack"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
@@ -372,6 +373,9 @@ type ContainerServer struct {
 	// back to submit.NewGitPusher(). Tests substitute a fake so a unit
 	// test never shells out to real git or touches the network.
 	submitPusher submit.GitPusher
+	// proofPackExecer overrides the backend SubmitTrackerChange generates
+	// the run's Proof Pack through (#2798); nil means s.manager. Tests only.
+	proofPackExecer proofpack.Execer
 
 	// submitFilePusher overrides SubmitTrackerChangeFiles' commit-and-push
 	// backend (#3005). Nil in production (submit.NewGitPusher()).

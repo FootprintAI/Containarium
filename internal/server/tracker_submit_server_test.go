@@ -207,6 +207,10 @@ func setUpSubmitConnection(t *testing.T, user string, provider *fakeWriterProvid
 	// passing nil really means "leave it unset".
 	if box != nil {
 		s.submitBoxRunner = box
+		// #2798: a submit seals a Proof Pack generated in the run's box
+		// into the audit chain before it pushes.
+		s.proofPackExecer = &fakeProofBox{commit: box.headSHA, probeRC: 12}
+		s.auditStore = mustTestAuditStore(t)
 	}
 	if pusher != nil {
 		s.submitPusher = pusher

@@ -26,6 +26,10 @@ const (
 	// HeaderPart is TamperedPart.Step for the pack's non-step fields.
 	HeaderPart = -1
 
+	// AttachPath is where the sealed pack is committed in an agent-opened
+	// PR's branch.
+	AttachPath = ".containarium/proof-pack.json"
+
 	// verifyBatch is the rows per VerifyChainSinceID call, as `audit verify`.
 	verifyBatch = 1000
 )
