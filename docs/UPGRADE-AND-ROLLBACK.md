@@ -22,7 +22,7 @@ CI checks the commands and links on this page against the real CLI
 | Sentinel auto-update | When the daemon has a sentinel URL, it checks the sentinel every 5 minutes (first check 2 minutes after start) and installs a changed binary. | [autoupdate.go](../internal/server/autoupdate.go), [dual_server.go](../internal/server/dual_server.go) |
 | On-demand upgrade | `containarium backends upgrade [backend-id]` runs the same check now. `--github-tag` installs a named GitHub release tag instead. `--force` re-installs a matching binary. | [backends_upgrade.go](../internal/cmd/backends_upgrade.go), [github_upgrade.go](../internal/server/github_upgrade.go) |
 | Pre-swap checks | The SHA-256 is checked, then the new binary must run `version`. The running binary is renamed to `.old` and the new one moved in. | [autoupdate.go](../internal/server/autoupdate.go) |
-| Upgrade watchdog | `containariumd upgrade-watchdog` (hidden) is started by the daemon before it restarts. It waits 10 s, then polls `/health` every 5 s for 90 s. On success it deletes `.old`. On timeout it moves `.old` back and runs `systemctl restart containarium`. | [upgrade_watchdog.go](../internal/cmd/upgrade_watchdog.go), [autoupdate.go](../internal/server/autoupdate.go) |
+| Upgrade watchdog | `containariumd upgrade-watchdog` (hidden) is started by the daemon before it restarts. It waits 10 s, then polls `/health` every 5 s for 90 s. Its output is appended to `upgrade-watchdog.log` in the binary's directory (mode 0600). On success it renames `.old` to `.prev`, replacing the `.prev` of the earlier upgrade. On timeout it moves `.old` back and runs `systemctl restart containarium`. | [upgrade_watchdog.go](../internal/cmd/upgrade_watchdog.go), [autoupdate.go](../internal/server/autoupdate.go) |
 | Version overview | `containarium backends versions` lists each backend's version against the latest release. | [backends_versions.go](../internal/cmd/backends_versions.go) |
 | Container snapshots | `containarium snapshot create`, `list` and `rollback`. ZFS backends only. | [snapshot.go](../internal/cmd/snapshot.go), [container_rollback.go](../internal/server/container_rollback.go) |
 | Database backups | `containarium backup create`, `verify` and `restore`. These are logical Postgres dumps of tenant databases only (#2372). | [backup_restore.go](../internal/cmd/backup_restore.go), [DB-BACKUP-OPERATIONS.md](DB-BACKUP-OPERATIONS.md) |
@@ -32,12 +32,9 @@ CI checks the commands and links on this page against the real CLI
 
 Limits a reader needs to know before relying on these:
 
-- **Watchdog output is discarded.** It is started with no stdout or stderr
-  (`launchWatchdog` in [autoupdate.go](../internal/server/autoupdate.go)), so
-  the only sign of an automatic rollback is that the old version is still
-  running (`containarium backends versions`).
 - **The watchdog only checks `/health`.** A release that answers `/health`
-  but is broken in some other way stays installed, and its `.old` is deleted.
+  but is broken in some other way stays installed. Its predecessor is kept
+  as `.prev` (see Rollback), but nothing restores it automatically.
 - **`deploy-binary.sh` keeps no `.old` and starts no watchdog.** It copies
   over the binary in place. To roll back, deploy the previous binary again.
 - **The Helm lane does not test rollback**, only install and upgrade.
@@ -125,7 +122,21 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 
 **Automatic.** If `/health` does not return 200 within the watchdog window,
 the watchdog restores `.old` and restarts the daemon. If there is no `.old`,
-it gives up with "manual intervention required".
+it gives up with "manual intervention required". The watchdog's output,
+including the reason for a rollback, is in `upgrade-watchdog.log` beside the
+binary (for example `/usr/local/bin/upgrade-watchdog.log`). Read it with
+`sudo cat`; the file is appended to across upgrades.
+
+**Manual, release passed `/health` but is broken.** After a healthy check
+the previous binary is kept as `/usr/local/bin/containariumd.prev` (path is
+the binary path plus `.prev`). It lives until the next upgrade's healthy
+check replaces it. Restore it (`mv` swaps the file atomically; `cp` over a
+running binary fails with "text file busy"):
+
+```bash
+sudo mv /usr/local/bin/containariumd.prev /usr/local/bin/containariumd
+sudo systemctl restart containarium
+```
 
 **Manual, daemon still up.** Install the previous tag, then check again:
 
