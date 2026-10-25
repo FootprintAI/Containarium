@@ -29,6 +29,8 @@ no code to diff; checked for links only).
 | README.md | Status · Roadmap · Contributing · License · Acknowledgments · Support | `CLAUDE.md`, `LICENSE`, `CONTRIBUTING.md` | — | `106a18b3` | ✎ |
 | docs/security/CLAIMS.md | Claim → evidence table | `internal/audit/**`, `internal/modelgateway/**`, `internal/server/privileged_policy.go`, `internal/server/image_digest.go`, `internal/server/network_policy_enforcer.go`, `docs/security/multi-tenant-isolation.md` | — | `f78fa547` | 🟡 |
 | docs/security/DATA-FLOW-AND-RETENTION.md | Retention classes, legal holds, the dry-run report, audit trail, known limits, store inventory | `proto/containarium/v1/retention.proto`, `internal/retention/**`, `internal/server/retention_server.go`, `internal/cmd/retention.go`, `internal/server/agent_task_store.go`, `internal/server/crew_run_store.go`, `internal/server/run_journal_reaper.go`, `internal/traffic/**`, `internal/audit/**`, `docs/PROOF-PACK.md` | — | — | 🔴 unverified (new page, #2875) |
+| docs/UPGRADE-AND-ROLLBACK.md | Mechanisms, who can do what, upgrade, checks, rollback, RTO/RPO, supported-release policy | `internal/cmd/backends_upgrade.go`, `internal/cmd/backends_versions.go`, `internal/cmd/upgrade_watchdog.go`, `internal/server/autoupdate.go`, `internal/server/github_upgrade.go`, `internal/server/container_rollback.go`, `internal/server/container_snapshot.go`, `internal/server/backup_server.go`, `internal/cmd/backup_restore.go`, `scripts/deploy-binary.sh`, `scripts/containarium-backup.timer`, `scripts/ci/helm-install-upgrade.sh`, `SECURITY.md` | — | — | 🔴 unverified (new page, #2563; flags and links CI-checked, no drill run) |
+| docs/DRILL-RECORD-TEMPLATE.md | Drill record template | `docs/UPGRADE-AND-ROLLBACK.md` | — | — | ✎ |
 
 ## Run evidence
 

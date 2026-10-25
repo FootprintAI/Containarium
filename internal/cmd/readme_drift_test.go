@@ -88,6 +88,16 @@ func fenceInfo(line string) (bool, string) {
 // document's shell fences, with backslash continuations joined, comments
 // dropped, and pipelines / `&&` / `;` / `$(…)` split into separate commands.
 func extractCLIInvocations(markdown string) []cliInvocation {
+	return extractInvocationsFor(markdown, readmeBinaries)
+}
+
+// readmeBinaries are the binary names whose invocations the README check
+// reads. The upgrade runbook (runbook_drift_test.go) also reads containariumd.
+var readmeBinaries = map[string]bool{"containarium": true}
+
+// extractInvocationsFor is extractCLIInvocations for any set of binary names
+// that resolve against the same cobra tree.
+func extractInvocationsFor(markdown string, binaries map[string]bool) []cliInvocation {
 	var out []cliInvocation
 	inFence, shell := false, false
 	var logical strings.Builder
@@ -116,7 +126,7 @@ func extractCLIInvocations(markdown string) []cliInvocation {
 		}
 		logical.WriteString(trimmed)
 		for _, words := range splitShell(logical.String()) {
-			if args, ok := containariumArgs(words); ok {
+			if args, ok := containariumArgs(words, binaries); ok {
 				out = append(out, cliInvocation{Line: start, Args: args})
 			}
 		}
@@ -127,7 +137,7 @@ func extractCLIInvocations(markdown string) []cliInvocation {
 
 // containariumArgs strips the prefixes a README puts before the binary
 // (`sudo`, `VAR=value`, `env`) and returns the words after `containarium`.
-func containariumArgs(words []string) ([]string, bool) {
+func containariumArgs(words []string, binaries map[string]bool) ([]string, bool) {
 	i := 0
 	for i < len(words) {
 		w := words[i]
@@ -139,7 +149,7 @@ func containariumArgs(words []string) ([]string, bool) {
 		case isEnvAssignment(w):
 			i++
 		default:
-			if w == "containarium" {
+			if binaries[w] {
 				return words[i+1:], true
 			}
 			return nil, false
@@ -368,10 +378,34 @@ func githubSlug(heading string) string {
 // whose target is not a heading (or explicit <a id/name>) in the document.
 func checkAnchors(markdown string) []driftProblem {
 	lines := strings.Split(markdown, "\n")
+	targets := anchorTargets(markdown)
+
+	var out []driftProblem
+	inFence := false
+	for i, line := range lines {
+		if isFence, _ := fenceInfo(line); isFence {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		for _, m := range anchorLinkRE.FindAllStringSubmatch(line, -1) {
+			if !targets[strings.ToLower(m[1])] {
+				out = append(out, driftProblem{i + 1, fmt.Sprintf("link to #%s has no matching heading", m[1])})
+			}
+		}
+	}
+	return out
+}
+
+// anchorTargets returns every anchor a document defines: GitHub heading slugs
+// (with -1, -2 suffixes for repeats) and explicit <a id/name> anchors.
+func anchorTargets(markdown string) map[string]bool {
 	targets := map[string]bool{}
 	seen := map[string]int{}
 	inFence := false
-	for _, line := range lines {
+	for _, line := range strings.Split(markdown, "\n") {
 		if isFence, _ := fenceInfo(line); isFence {
 			inFence = !inFence
 			continue
@@ -392,24 +426,7 @@ func checkAnchors(markdown string) []driftProblem {
 			targets[m[1]] = true
 		}
 	}
-
-	var out []driftProblem
-	inFence = false
-	for i, line := range lines {
-		if isFence, _ := fenceInfo(line); isFence {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		for _, m := range anchorLinkRE.FindAllStringSubmatch(line, -1) {
-			if !targets[strings.ToLower(m[1])] {
-				out = append(out, driftProblem{i + 1, fmt.Sprintf("link to #%s has no matching heading", m[1])})
-			}
-		}
-	}
-	return out
+	return targets
 }
 
 // checkMarkdown runs both checks over one document.
