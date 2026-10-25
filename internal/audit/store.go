@@ -174,6 +174,13 @@ const auditChainLockKey int64 = 0x0A0D17C4A1
 const defaultVerifyBatch = 1000
 
 func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
+	_, err := s.Append(ctx, entry)
+	return err
+}
+
+// Append is Log, returning the id of the row it appended. A Proof Pack seal
+// (#2798) records that id so `proof-pack verify` can find its row.
+func (s *Store) Append(ctx context.Context, entry *AuditEntry) (int64, error) {
 	ts := entry.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
@@ -194,7 +201,7 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("audit: begin tx: %w", err)
+		return 0, fmt.Errorf("audit: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
 
@@ -216,16 +223,17 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	// load is not tamper-evident, only tamper-suggestive.
 	prevHash, err := lockChainTail(ctx, tx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, _, err := insertChained(ctx, tx, entry, prevHash, ""); err != nil {
-		return err
+	_, id, _, err := insertChained(ctx, tx, entry, prevHash, "")
+	if err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("audit: commit: %w", err)
+		return 0, fmt.Errorf("audit: commit: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 // lockChainTail takes the chain's advisory lock for the rest of tx and
@@ -255,15 +263,16 @@ func lockChainTail(ctx context.Context, tx pgx.Tx) (string, error) {
 // the insert ON CONFLICT DO NOTHING and reports inserted=false when the key
 // already exists, in which case nothing is written and the caller must keep
 // prevHash unchanged, so a skipped duplicate never becomes anyone's
-// predecessor. The caller must hold the chain lock.
-func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, dedupeKey string) (rowHash string, inserted bool, err error) {
+// predecessor. The caller must hold the chain lock. id is the inserted row's
+// id (0 when nothing was inserted).
+func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, dedupeKey string) (rowHash string, id int64, inserted bool, err error) {
 	// #1678 — every newly-written row uses CurrentHashVersion; a row's
 	// hash_version is what VerifyChain later replays it under, so old
 	// rows (backfilled to HashVersion1 by initSchema's column default)
 	// stay verifiable without this write path ever touching them.
 	rowHash, err = computeRowHash(entry, prevHash, CurrentHashVersion)
 	if err != nil {
-		return "", false, fmt.Errorf("audit: compute hash: %w", err)
+		return "", 0, false, fmt.Errorf("audit: compute hash: %w", err)
 	}
 
 	var key any // nil -> NULL
@@ -272,12 +281,13 @@ func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, 
 		key = dedupeKey
 		conflict = ` ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`
 	}
-	tag, err := tx.Exec(ctx, `
+	// A skipped duplicate (ON CONFLICT DO NOTHING) returns no row.
+	err = tx.QueryRow(ctx, `
 		INSERT INTO audit_logs (
 			timestamp, username, action, resource_type, resource_id,
 			detail, source_ip, status_code, actor, delegation_chain,
 			token_id, org_id, run_id, row_hash, prev_hash, hash_version, dedupe_key
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`+conflict,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`+conflict+` RETURNING id`,
 		entry.Timestamp,
 		entry.Username,
 		entry.Action,
@@ -295,11 +305,14 @@ func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, 
 		prevHash,
 		CurrentHashVersion,
 		key,
-	)
-	if err != nil {
-		return "", false, fmt.Errorf("audit: insert: %w", err)
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return rowHash, 0, false, nil
 	}
-	return rowHash, tag.RowsAffected() == 1, nil
+	if err != nil {
+		return "", 0, false, fmt.Errorf("audit: insert: %w", err)
+	}
+	return rowHash, id, true, nil
 }
 
 // BatchEntry is one row of a LogBatch call. DedupeKey must be non-empty:
@@ -356,7 +369,7 @@ func (s *Store) LogBatch(ctx context.Context, entries []BatchEntry) ([]BatchOutc
 		// Truncate to what Postgres stores before hashing (see Log).
 		e.Timestamp = e.Timestamp.Truncate(time.Microsecond)
 
-		rowHash, inserted, err := insertChained(ctx, tx, &e, prevHash, entries[i].DedupeKey)
+		rowHash, _, inserted, err := insertChained(ctx, tx, &e, prevHash, entries[i].DedupeKey)
 		if err != nil {
 			return nil, fmt.Errorf("batch entry %d: %w", i, err)
 		}
@@ -626,6 +639,28 @@ func (s *Store) RowHashAt(ctx context.Context, id int64) (hash string, found boo
 		return "", false, fmt.Errorf("audit: row hash at id=%d: %w", id, err)
 	}
 	return hash, true, nil
+}
+
+// ChainEntryAt returns audit-log row id with its hash-chain columns, and
+// whether it exists. A purged or deleted row is found=false.
+func (s *Store) ChainEntryAt(ctx context.Context, id int64) (ChainEntry, bool, error) {
+	var c ChainEntry
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, timestamp, username, action, resource_type,
+		       resource_id, detail, source_ip, status_code,
+		       actor, delegation_chain, token_id, org_id, run_id,
+		       row_hash, prev_hash, hash_version
+		FROM audit_logs WHERE id = $1`, id).Scan(&c.ID, &c.Timestamp, &c.Username, &c.Action,
+		&c.ResourceType, &c.ResourceID, &c.Detail, &c.SourceIP, &c.StatusCode,
+		&c.Actor, &c.DelegationChain, &c.TokenID, &c.OrgID, &c.RunID,
+		&c.RowHash, &c.PrevHash, &c.HashVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ChainEntry{}, false, nil
+	}
+	if err != nil {
+		return ChainEntry{}, false, fmt.Errorf("audit: chain entry at id=%d: %w", id, err)
+	}
+	return c, true, nil
 }
 
 // AnchorVerifyResult is VerifyChainAgainstAnchor's outcome. Two independent

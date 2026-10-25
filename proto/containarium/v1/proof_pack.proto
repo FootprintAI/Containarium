@@ -116,3 +116,38 @@ message ProofPack {
   // The per-step timeout the steps ran under.
   int64 step_timeout_seconds = 13;
 }
+
+// ProofPartDigest is the digest of one step of a sealed pack: SHA-256
+// (lowercase hex) of the step's deterministic proto encoding, the same
+// digest PackDigest takes of the whole pack (#2798).
+message ProofPartDigest {
+  // The step's declared name.
+  string name = 1;
+  string sha256 = 2;
+}
+
+// ProofPackSeal is what sealing a pack records. Its body, without
+// audit_row_id, is the detail of one audit_logs row (action
+// "proof_pack.seal"), so the existing audit hash chain covers it. No new
+// hashing scheme: every digest here is a SHA-256 of a deterministic proto
+// encoding, and the chain row is hashed by internal/audit like any other.
+message ProofPackSeal {
+  // PackDigest of the whole pack.
+  string pack_sha256 = 1;
+  // PackDigest of the pack with its steps removed: everything that is not a
+  // step (producer, commit, counts, status, times, bounds).
+  string header_sha256 = 2;
+  // One per step, in the pack's step order.
+  repeated ProofPartDigest parts = 3;
+  // The audit_logs row that holds this seal. Not part of the row's own
+  // detail, which is written before the row has an id.
+  int64 audit_row_id = 4;
+}
+
+// SealedProofPack is the file attached to an agent-opened PR: the pack and
+// the seal that points at its audit chain row. `containarium proof-pack
+// verify` reads it.
+message SealedProofPack {
+  ProofPack pack = 1;
+  ProofPackSeal seal = 2;
+}
