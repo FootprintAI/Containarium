@@ -121,4 +121,39 @@ A command's own output can still echo what it runs. `make`, for example, prints 
 - **`log_sha256`** covers the stored log bytes, after truncation. This lets a verifier recompute it from the pack alone. `proofpack.CheckPartDigests` does this and names the first step that does not match.
 - **`proofpack.PackDigest`** is the SHA-256 of the pack's deterministic proto encoding. It is the digest `generate` prints. Like the guardrail attestation's policy hash, it is computed over the binary encoding, not the JSON file.
 
-Sealing the pack into the audit chain, and `proof-pack verify`, are #2798.
+## Sealing
+
+Sealing (#2798) writes the pack's digests into the audit hash chain as one ordinary `audit_logs` row. It goes through the same append path as every other audit row, so the chain's own row hash covers it. No new hashing scheme is involved. The row has:
+
+- action `proof_pack.seal`, resource type `proof_pack`, and resource id the pack digest;
+- the username and run id the pack was sealed for;
+- as its detail, a `ProofPackSeal` (JSON) holding:
+  - `pack_sha256`: `PackDigest` of the whole pack;
+  - `header_sha256`: `PackDigest` of the pack with its steps removed, so it covers every field that is not a step;
+  - `parts`: for each step, its name and the SHA-256 of its deterministic proto encoding.
+
+`proofpack.Seal` writes the row and returns a `SealedProofPack`: the pack plus its seal, which also carries `audit_row_id`, the id of that row. That is the file attached to the PR. A pack whose stored log digests are already wrong is refused, not sealed.
+
+## Verifying a sealed pack
+
+```bash
+containarium proof-pack verify proof-pack.json
+```
+
+Like `audit verify`, this is a server-side command that reads the audit chain straight from Postgres, configured the same way. It checks, in order:
+
+1. each step's `log_sha256` against its log;
+2. that `audit_row_id` is this pack's seal row (action, resource type and pack digest);
+3. the hash chain from that row to the tip, as `audit verify` does;
+4. each step's digest and the header digest against the seal **in the chain row**, not the copy in the file.
+
+The first part that does not match is named, for example `step 1 ("lint"): digest ... does not match sealed ...`, or `pack header: ...` for a field that is not a step. A step that was dropped or added is named too. Exit status is 0 when everything matches and non-zero otherwise.
+
+The chain walk proves the chain is internally consistent. To rule out someone with database write access rewriting the chain and recomputing every hash after the edit, also run `audit verify-anchor`.
+
+### After a retention purge
+
+The audit log is one chain, and retention in enforce mode purges its oldest rows as a prefix ([data flow and retention](security/DATA-FLOW-AND-RETENTION.md)). A seal row is an ordinary row of the gateway-logs class (90 days by default). The 365-day evidence-bundles window does not apply to it.
+
+- **Rows below the seal row purged:** the pack still verifies. The chain walk starts from the stored chain base, as `audit verify` does.
+- **The seal row itself purged:** this happens once the row is past the gateway-logs window, below the latest anchor, and not kept by a legal hold or by an unexpired row ahead of it. From then on the pack cannot be checked against the chain, and `verify` says the seal row was purged by retention. That is a different message from a seal row that is missing without a purge, which is reported as tampering.

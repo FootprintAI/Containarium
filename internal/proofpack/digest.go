@@ -27,12 +27,13 @@ func PackDigest(pack *pb.ProofPack) (string, error) {
 	return LogDigest(b), nil
 }
 
-// CheckPartDigests recomputes each step's log digest and returns an error
-// naming the first step whose stored log does not match it.
+// CheckPartDigests recomputes each step's log digest and returns a
+// *TamperedPart naming the first step whose stored log does not match it.
 func CheckPartDigests(pack *pb.ProofPack) error {
 	for i, s := range pack.GetSteps() {
 		if got := LogDigest(s.GetLog()); got != s.GetLogSha256() {
-			return fmt.Errorf("proofpack: step %d (%q): log digest %s does not match recorded %s", i, s.GetName(), got, s.GetLogSha256())
+			return &TamperedPart{Step: i, Name: s.GetName(),
+				Reason: fmt.Sprintf("log digest %s does not match recorded %s", got, s.GetLogSha256())}
 		}
 	}
 	return nil
