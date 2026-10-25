@@ -100,7 +100,7 @@ func TestAppliedFromPass_MarksEgressIncomplete(t *testing.T) {
 	plan := planReconcile(views, policies, true)
 	loaded := map[int]bool{11: true, 21: true}
 
-	got := appliedFromPass(views, plan, loaded, policies, map[uint32]bool{1: true})
+	got := appliedFromPass(views, plan, loaded, policies, map[uint32]bool{1: true}, map[uint32]string{1: "acme"})
 
 	if !got["acme"].EgressIncomplete {
 		t.Errorf("acme = %+v, want EgressIncomplete", got["acme"])
