@@ -356,11 +356,6 @@ func TestEmbeddedEngineerCrewValidatesAndDrives(t *testing.T) {
 	if got := crew.GetRoles(); len(got) != 3 || got[0] != pb.CrewRole_CREW_ROLE_CODER || got[1] != pb.CrewRole_CREW_ROLE_REVIEWER || got[2] != pb.CrewRole_CREW_ROLE_PACK_PRODUCER {
 		t.Fatalf("engineer-crew roles = %v, want [CODER REVIEWER PACK_PRODUCER]", got)
 	}
-	// #2799: the coder is a declared, typed role, so a pack producer can be
-	// checked against it.
-	if got := crew.GetRoles(); len(got) != 2 || got[0] != pb.CrewRole_CREW_ROLE_CODER || got[1] != pb.CrewRole_CREW_ROLE_REVIEWER {
-		t.Fatalf("engineer-crew roles = %v, want [CODER REVIEWER]", got)
-	}
 
 	sk := skills.GetDefault()
 	getSkill := func(id string) (*pb.AgentSkill, bool) {
