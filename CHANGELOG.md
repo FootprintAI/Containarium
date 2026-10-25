@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`network-policy status` no longer reports a tenant's egress allow-list as complete when it is not** (#2983). When a reconcile pass fails to add or remove an allow-list entry, the tenant's status now lists the new uncovered path `EGRESS_ALLOWLIST_INCOMPLETE` (the box state stays `LOADED`: the boxes are loaded, the list is not what the policy says). A failed removal counts too, since it leaves a destination allowed that the policy no longer allows. Only the tenant that owns the failed entry is marked, and the entry is retried on the next pass. `containarium network-policy status` prints it with the other uncovered paths.
+
 ### Added
 
 - **Platform MCP gains `sprint_board` and `sprint_list`**. Read-only tools over a hosted control plane's sprint board mirror (`GET /v1/orgs/{org_id}/sprints` and `/sprints/board`). `sprint_board` returns the rendered markdown plus the board summary; NO_MIRROR_YET, NOT_ENABLED and PROVIDER_NOT_SUPPORTED are normal results and REJECTED is an error. Both require `tracker:read`. A standalone daemon does not serve these routes. A `containarium sprint` CLI counterpart is a follow-up.

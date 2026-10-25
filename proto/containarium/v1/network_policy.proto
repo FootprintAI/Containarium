@@ -257,6 +257,12 @@ enum NetworkPolicyUncoveredPath {
   // The host kernel cannot run egress enforcement. Reserved: not reported
   // yet; the host kernel check that sets it is tracked separately (#2972).
   NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED = 3;
+  // The tenant's egress allow-list in the kernel is not what its policy says:
+  // the last reconcile pass failed to add or remove at least one entry. In
+  // enforce mode a missing entry denies traffic the policy allows, and an entry
+  // that could not be removed keeps allowing traffic the policy no longer does.
+  // The failed entries are retried on the next pass.
+  NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE = 4;
 }
 
 // NetworkPolicyStatus is a tenant's applied network policy on this daemon.

@@ -86,9 +86,10 @@ var appliedStateText = map[pb.NetworkPolicyAppliedState]string{
 }
 
 var uncoveredPathText = map[pb.NetworkPolicyUncoveredPath]string{
-	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_IPV6:               "ipv6: the eBPF program checks IPv4 only; IPv6 traffic is not policed",
-	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: "domain refresh lag: egress domains are re-resolved at most every 60s, so an address change takes effect only after the next refresh",
-	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: "kernel unsupported: this host's kernel cannot run egress enforcement",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_IPV6:                        "ipv6: the eBPF program checks IPv4 only; IPv6 traffic is not policed",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG:          "domain refresh lag: egress domains are re-resolved at most every 60s, so an address change takes effect only after the next refresh",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED:          "kernel unsupported: this host's kernel cannot run egress enforcement",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: "egress allow-list incomplete: the last pass failed to add or remove an entry, so the kernel list differs from the policy; it is retried every pass",
 }
 
 // printStatus renders a tenant's applied state. Anything the daemon did not

@@ -162,3 +162,17 @@ func TestPrintStatus_UnarmedSuffixOnlyWhenLoaded(t *testing.T) {
 		}
 	}
 }
+
+// Every uncovered path the API can report has a human-readable line, so the
+// CLI never falls back to the bare enum name for one (#2983 added one).
+func TestUncoveredPathText_CoversEveryReportedPath(t *testing.T) {
+	for v, name := range pb.NetworkPolicyUncoveredPath_name {
+		path := pb.NetworkPolicyUncoveredPath(v)
+		if path == pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED {
+			continue
+		}
+		if strings.TrimSpace(uncoveredPathText[path]) == "" {
+			t.Errorf("uncovered path %s has no line in uncoveredPathText", name)
+		}
+	}
+}

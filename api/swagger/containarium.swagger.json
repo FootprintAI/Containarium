@@ -17510,10 +17510,11 @@
         "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
         "NETWORK_POLICY_UNCOVERED_PATH_IPV6",
         "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
-        "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED"
+        "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED",
+        "NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE"
       ],
       "default": "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
-      "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel cannot run egress enforcement. Reserved: not reported\nyet; the host kernel check that sets it is tracked separately (#2972)."
+      "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel cannot run egress enforcement. Reserved: not reported\nyet; the host kernel check that sets it is tracked separately (#2972).\n - NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: The tenant's egress allow-list in the kernel is not what its policy says:\nthe last reconcile pass failed to add or remove at least one entry. In\nenforce mode a missing entry denies traffic the policy allows, and an entry\nthat could not be removed keeps allowing traffic the policy no longer does.\nThe failed entries are retried on the next pass."
     },
     "NetworkTopology": {
       "type": "object",

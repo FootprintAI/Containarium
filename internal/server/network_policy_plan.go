@@ -212,6 +212,39 @@ type denyApplier interface {
 	DeleteDeny(netbpf.DenyKey) error
 }
 
+// egressApplier is the slice of the loader applyEgress writes through.
+type egressApplier interface {
+	AddEgress(netbpf.EgressEntry) error
+	DeleteEgress(netbpf.EgressEntry) error
+}
+
+// applyEgress converges the kernel egress allow-list: add the entries in toAdd,
+// delete those in toDel, updating installed in place. A failed op is logged and
+// skipped WITHOUT touching installed, so the next pass retries it. It returns
+// the tenants whose allow-list is not what their policy says after this pass
+// (an add or a removal failed), so the status can say so instead of reporting
+// the tenant as fully loaded (#2983).
+func applyEgress(installed map[netbpf.EgressEntry]bool, toAdd, toDel []netbpf.EgressEntry, a egressApplier) map[uint32]bool {
+	incomplete := make(map[uint32]bool)
+	for _, ee := range toAdd {
+		if err := a.AddEgress(ee); err != nil {
+			log.Printf("[netpolicy] add egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		installed[ee] = true
+	}
+	for _, ee := range toDel {
+		if err := a.DeleteEgress(ee); err != nil {
+			log.Printf("[netpolicy] delete egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		delete(installed, ee)
+	}
+	return incomplete
+}
+
 // applyDeny converges the kernel deny_cidr map from installed to desired via the
 // applier, updating installed in place (#660). Upserts apply BEFORE deletes;
 // diffDeny guarantees the two sets never share a key, so an entry that was just
