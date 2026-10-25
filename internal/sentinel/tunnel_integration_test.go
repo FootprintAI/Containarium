@@ -124,7 +124,7 @@ func TestTunnelIntegration(t *testing.T) {
 		}
 	}
 
-	go func() { _ = tunnelServer.Serve(ctx, connMux.TunnelListener()) }()
+	serveTunnelServer(t, ctx, tunnelServer, connMux.TunnelListener())
 
 	time.Sleep(100 * time.Millisecond)
 

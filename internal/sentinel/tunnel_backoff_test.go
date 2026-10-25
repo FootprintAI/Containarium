@@ -88,7 +88,7 @@ func TestTunnelClient_SessionLastedCountsOnlyAnEstablishedSession(t *testing.T) 
 		require.NoError(t, err)
 		server := NewTunnelServer("", policyAny("tok"), NewTunnelRegistry(), 0)
 		server.SetTunnelIdentity(serverID)
-		go func() { _ = server.Serve(ctx, ln) }()
+		serveTunnelServer(t, ctx, server, ln)
 
 		client := &TunnelClient{SentinelAddr: ln.Addr().String(), SentinelPins: []TunnelPin{pinnedID.Pin()},
 			Token: "tok", SpotID: "never-up", Ports: []int{22}}
@@ -106,7 +106,7 @@ func TestTunnelClient_SessionLastedCountsOnlyAnEstablishedSession(t *testing.T) 
 		registry := NewTunnelRegistry()
 		server := NewTunnelServer("", policyAny("tok"), registry, 0)
 		server.SetTunnelIdentity(serverID)
-		go func() { _ = server.Serve(ctx, ln) }()
+		serveTunnelServer(t, ctx, server, ln)
 
 		client := &TunnelClient{SentinelAddr: ln.Addr().String(), SentinelPins: []TunnelPin{serverID.Pin()},
 			Token: "tok", SpotID: "is-up", Ports: []int{22}}

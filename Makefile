@@ -348,7 +348,7 @@ build-macos11: ## Build containarium client for macOS 11 (amd64 + arm64), append
 CADDY_VERSION=v2.11.4
 build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
 	@echo "==> Installing xcaddy..."
-	@GOBIN=$$(go env GOPATH)/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+	@scripts/install-xcaddy.sh $$(go env GOPATH)/bin/xcaddy
 	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
 	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
 	    --with github.com/mholt/caddy-l4 \

@@ -16,6 +16,10 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - 'scripts/**'
+      - 'Makefile'
+      - '**/Dockerfile*'
+      - 'docs/security/BUILD-SUPPLY-CHAIN.md'
   pull_request:
     paths:
       - '.github/**'
@@ -23,6 +27,10 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - 'scripts/**'
+      - 'Makefile'
+      - '**/Dockerfile*'
+      - 'docs/security/BUILD-SUPPLY-CHAIN.md'
 
 permissions:
   contents: read
@@ -57,6 +65,13 @@ jobs:
         # Decides which PRs may skip the heavy jobs
         # (.github/actions/release-only-diff); a wrong "true" skips real tests.
         run: scripts/ci/release-only-diff.sh --self-test
+
+      - name: Build-fetch inventory self-test (seeded unlisted fetches must fail)
+        run: scripts/ci/check-build-fetches.sh --self-test
+
+      - name: Require every build-time fetch to be inventoried and pinned
+        # Also rejects any `@latest` tool install and project-level `npm install`.
+        run: scripts/ci/check-build-fetches.sh
 
       - name: Install actionlint (pinned, checksum-verified)
         run: |
