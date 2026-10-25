@@ -45,6 +45,10 @@ func (s *ContainerServer) SetContainerAttribution(ctx context.Context, req *pb.S
 		}
 	}
 
+	if err := authorizeNetworkTenantLabels(ctx, req.Labels); err != nil {
+		return nil, err
+	}
+
 	username := req.Name
 	if err := auth.AuthorizeTenant(ctx, username); err != nil {
 		return nil, err

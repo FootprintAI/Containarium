@@ -189,23 +189,25 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 
 // Container response types matching the protobuf JSON output
 type containerResponse struct {
-	Name                 string            `json:"name"`
-	Username             string            `json:"username"`
-	SshHost              string            `json:"sshHost"`
-	State                string            `json:"state"`
-	Resources            *resourceLimits   `json:"resources"`
-	Network              *networkInfo      `json:"network"`
-	CreatedAt            string            `json:"createdAt"`
-	Labels               map[string]string `json:"labels"`
-	Image                string            `json:"image"`
-	PodmanEnabled        bool              `json:"podmanEnabled"`
-	GpuDevice            string            `json:"gpuDevice"`
-	GpuDevices           []string          `json:"gpuDevices"`
-	Isolation            string            `json:"isolation"`  // protojson enum name, e.g. ISOLATION_TYPE_VM
-	ToolAccess           string            `json:"toolAccess"` // protojson enum name, e.g. BOX_TOOL_ACCESS_NONE
-	MonitoringEnabled    bool              `json:"monitoringEnabled"`
-	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
-	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
+	Name                 string                    `json:"name"`
+	Username             string                    `json:"username"`
+	SshHost              string                    `json:"sshHost"`
+	State                string                    `json:"state"`
+	Resources            *resourceLimits           `json:"resources"`
+	Network              *networkInfo              `json:"network"`
+	CreatedAt            string                    `json:"createdAt"`
+	Labels               map[string]string         `json:"labels"`
+	NetworkTenant        string                    `json:"networkTenant"`
+	NetworkTenantSource  incus.NetworkTenantSource `json:"networkTenantSource"`
+	Image                string                    `json:"image"`
+	PodmanEnabled        bool                      `json:"podmanEnabled"`
+	GpuDevice            string                    `json:"gpuDevice"`
+	GpuDevices           []string                  `json:"gpuDevices"`
+	Isolation            string                    `json:"isolation"`  // protojson enum name, e.g. ISOLATION_TYPE_VM
+	ToolAccess           string                    `json:"toolAccess"` // protojson enum name, e.g. BOX_TOOL_ACCESS_NONE
+	MonitoringEnabled    bool                      `json:"monitoringEnabled"`
+	AutoSleepEnabled     bool                      `json:"autoSleepEnabled"`
+	IdleThresholdMinutes int32                     `json:"idleThresholdMinutes"`
 }
 
 type resourceLimits struct {
@@ -262,11 +264,12 @@ type systemInfo struct {
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
-		Name:                 c.Name,
-		Username:             c.Username,
-		SSHHost:              c.SshHost,
-		State:                c.State,
-		Labels:               c.Labels,
+		Name:     c.Name,
+		Username: c.Username,
+		SSHHost:  c.SshHost,
+		State:    c.State,
+		Labels:   c.Labels,
+		Tenant:   c.NetworkTenant, NetworkTenantSource: c.NetworkTenantSource,
 		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
@@ -366,7 +369,17 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) (*incus.ContainerInfo, error) {
+	if len(networkTenant) > 0 && networkTenant[0] != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -393,6 +406,9 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Encrypted:    enc.Encrypted,
 		TenantID:     enc.TenantID,
 		Region:       region,
+	}
+	if len(networkTenant) > 0 {
+		req.NetworkTenant = networkTenant[0]
 	}
 	if len(labels) > 0 {
 		req.Labels = labels
@@ -447,6 +463,16 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 // request message itself (protojson, the camelCase names grpc-gateway accepts),
 // not a second hand-written copy of the create fields.
 func (c *HTTPClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	if req.GetNetworkTenant() != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

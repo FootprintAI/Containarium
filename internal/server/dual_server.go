@@ -2241,6 +2241,15 @@ skipAppHosting:
 	}
 	if networkServer != nil {
 		networkServer.SetGuards(coreGuard, tenantGuard)
+		networkServer.nativeTenantLocal = containerServer.nativeTenantLocalLXC()
+		ready := func() bool {
+			if !containerServer.nativeTenantLocalLXC() || tenantGuard == nil || !policyStoreDurable.Load() {
+				return false
+			}
+			return nativeTenantGuardReady(tenantGuardStatusToProto(tenantGuard.Status()), time.Now())
+		}
+		networkServer.nativeTenantReady = ready
+		containerServer.nativeTenantReady = ready
 	}
 
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`

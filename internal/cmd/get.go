@@ -62,6 +62,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	containers := []incus.ContainerInfo{*info}
 	switch containerGetFormat {
 	case "table":
+		if info.NetworkTenantSource != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "Network Tenant: %s (%s)\n", info.Tenant, info.NetworkTenantSource)
+		}
 		printTableFormat(containers, boolToCount(info.State == "Running"), boolToCount(info.State != "Running"), false)
 	case "json":
 		return printJSONFormat(containers)

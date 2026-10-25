@@ -54,6 +54,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -82,6 +83,7 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
+	nativeTenantReady func() bool
 	pb.UnimplementedContainerServiceServer
 	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
 	// Nil in production; a test seam for a wedged local incusd (#2318).
@@ -595,6 +597,17 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	// Namespace normalization must not turn a caller's reused dry-run request
+	// into an apparently explicit assignment on the next call.
+	if req.NetworkTenant == "" && auth.RequireRole(ctx, auth.RoleAdmin) != nil && s.nativeTenantLocalLXC() {
+		req = proto.Clone(req).(*pb.CreateContainerRequest)
+	}
+	if err := authorizeNetworkTenantCreate(ctx, req, s.nativeTenantLocalLXC()); err != nil {
+		return nil, err
+	}
+	if req.NetworkTenant != "" && (s.nativeTenantReady == nil || !s.nativeTenantReady()) {
+		return nil, status.Error(codes.FailedPrecondition, "native network Tenant requires ready enforced local LXC Guard")
+	}
 	// Audit B-MED-1 / B-MED-2 / B-LOW-1: cap the unbounded
 	// repeated-string / map fields before any allocation-heavy
 	// work runs. Done after the tenant check (don't enumerate
@@ -781,6 +794,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// Build the runtime-neutral box spec
 	spec := box.BoxSpec{
 		Ref:                    box.BoxRef{Tenant: req.Username},
+		NetworkTenant:          req.NetworkTenant,
 		Image:                  req.Image,
 		SSHKeys:                req.SshKeys,
 		Labels:                 req.Labels,
@@ -4387,9 +4401,11 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	}
 
 	pc := &pb.Container{
-		Name:     st.Ref.Name,
-		Username: st.Ref.Tenant,
-		State:    st.State,
+		Name:                st.Ref.Name,
+		NetworkTenant:       st.NetworkTenant,
+		NetworkTenantSource: st.NetworkTenantSource,
+		Username:            st.Ref.Tenant,
+		State:               st.State,
 		Resources: &pb.ResourceLimits{
 			Cpu:           st.Resources.CPU,
 			Memory:        st.Resources.Memory,

@@ -25,6 +25,8 @@ import (
 
 // NetworkServer implements the NetworkService gRPC service
 type NetworkServer struct {
+	nativeTenantLocal bool
+	nativeTenantReady func() bool
 	pb.UnimplementedNetworkServiceServer
 	incusClient        *incus.Client
 	proxyManager       *app.ProxyManager

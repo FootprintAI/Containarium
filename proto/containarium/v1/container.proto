@@ -358,6 +358,11 @@ message Container {
   // The tool-access level recorded for platform-started runs (#2944), read
   // back from the instance config. UNSPECIFIED when none is recorded.
   BoxToolAccess tool_access = 30;
+
+  // Resolved from current local Provider config, not the create request.
+  string network_tenant = 31;
+  // Which current Provider identity input selected network_tenant.
+  NetworkTenantSource network_tenant_source = 32;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -409,6 +414,14 @@ message ContainerMetrics {
 
   // Total time the container spent throttled, in microseconds
   int64 cpu_throttled_usec = 11;
+}
+
+// NetworkTenantSource identifies the authoritative Provider resolution input.
+enum NetworkTenantSource {
+  NETWORK_TENANT_SOURCE_UNSPECIFIED = 0;
+  NETWORK_TENANT_SOURCE_NATIVE = 1;
+  NETWORK_TENANT_SOURCE_CLOUD_ORG_ID = 2;
+  NETWORK_TENANT_SOURCE_NAME = 3;
 }
 
 // CreateContainerRequest is the request to create a new container
@@ -612,6 +625,11 @@ message CreateContainerRequest {
   // against that peer's own catalog (#2952), read with an ordinary
   // GET /v1/stacks; the response says the peer's other checks were not run.
   bool dry_run = 29;
+
+  // Administrator-authorized native NIC security domain, independent of the
+  // encryption tenant_id. Local Linux LXC only; required Guard before Start.
+  // Empty retains the default identity resolution (subject to authorization).
+  string network_tenant = 30;
 }
 
 // CreateContainerResponse is the response from creating a container

@@ -164,12 +164,14 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:         container.Name,
-			Username:     container.Username,
-			SSHHost:      container.SshHost,
-			State:        container.State.String(),
-			Labels:       container.Labels,
-			InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+			Name:                container.Name,
+			Username:            container.Username,
+			SSHHost:             container.SshHost,
+			State:               container.State.String(),
+			Tenant:              container.NetworkTenant,
+			NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+			Labels:              container.Labels,
+			InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
 		applyProtoLifecycle(&info, container)
 
@@ -196,10 +198,20 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) (*incus.ContainerInfo, error) {
+	if len(networkTenant) > 0 && networkTenant[0] != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
-	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels, networkTenant...)
 	resp, err := c.client.CreateContainer(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -208,12 +220,14 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:         container.Name,
-		Username:     container.Username,
-		SSHHost:      container.SshHost,
-		State:        container.State.String(),
-		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
-		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
+		Name:                container.Name,
+		Username:            container.Username,
+		SSHHost:             container.SshHost,
+		State:               container.State.String(),
+		InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
+		Tenant:              container.NetworkTenant,
+		NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+		Labels:              container.Labels, // what the daemon stored, incl. --labels (#2358)
 	}
 
 	if container.Network != nil {
@@ -244,6 +258,16 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 // so only a response that echoes dry_run counts. Anything else is an error:
 // treating it as "validated" would delete the box on an unchecked request.
 func (c *GRPCClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	if req.GetNetworkTenant() != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
@@ -268,7 +292,7 @@ var errDryRunNotHonoured = errors.New("the daemon did not honour the dry run (it
 // NewCreateContainerRequest builds the wire request for CreateContainer;
 // pure, so what the CLI flags turn into is unit-testable (#2358 — labels
 // used to be dropped between the CLI and this request).
-func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
+func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -302,6 +326,9 @@ func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKey
 		Region:                    region,
 	}
 
+	if len(networkTenant) > 0 {
+		req.NetworkTenant = networkTenant[0]
+	}
 	if len(labels) > 0 {
 		req.Labels = labels
 	}
@@ -616,10 +643,12 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:     container.Name,
-		Username: container.Username,
-		State:    container.State.String(),
-		Labels:   container.Labels,
+		Name:                container.Name,
+		Username:            container.Username,
+		State:               container.State.String(),
+		Tenant:              container.NetworkTenant,
+		NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+		Labels:              container.Labels,
 	}
 	applyProtoLifecycle(info, container)
 

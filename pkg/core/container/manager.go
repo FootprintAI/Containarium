@@ -379,13 +379,11 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// Guard the NIC before the first start (tenant network guard): a box
 	// that cannot be guarded is deleted rather than started reachable.
 	if err := m.guardNIC(containerName, opts); err != nil {
-		_ = m.incus.DeleteContainer(containerName)
-		return nil, err
+		return nil, m.cleanupGuardedCreate(containerName, err)
 	}
 	if opts.NetworkTenant != "" && opts.AutoStart {
 		if err := m.incus.SetConfig(containerName, "boot.autostart", "true"); err != nil {
-			_ = m.incus.DeleteContainer(containerName)
-			return nil, fmt.Errorf("guarded autostart: %w", err)
+			return nil, m.cleanupGuardedCreate(containerName, fmt.Errorf("%w: guarded autostart: %v", ErrNICGuard, err))
 		}
 	}
 

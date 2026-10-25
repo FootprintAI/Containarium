@@ -30,3 +30,18 @@ func TestExplicitTenantRequiresEnforcedSupportedGuard(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitTenantAttachesComputedACLToNewNIC(t *testing.T) {
+	f := twoTenantHost()
+	r := NewReconciler(f, enforceCfg())
+	if err := r.PrepareNetworkTenant(context.Background(), "new-container", "team-a"); err != nil {
+		t.Fatal(err)
+	}
+	acl := ACLName("team-a")
+	if _, ok := f.acls[acl]; !ok {
+		t.Fatal("required Tenant ACL not created")
+	}
+	if f.devices["new-container"]["eth0"]["security.acls"] != acl {
+		t.Fatalf("wrong birth NIC ACL: %v", f.devices["new-container"])
+	}
+}

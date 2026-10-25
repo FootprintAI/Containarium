@@ -582,6 +582,16 @@ message NetworkGuardStatus {
 
 // NetworkService provides network and firewall management
 service NetworkService {
+  // Reports native creation separately from atomic cross-Tenant policy writes.
+  rpc GetNetworkTenantCapabilities(GetNetworkTenantCapabilitiesRequest) returns (GetNetworkTenantCapabilitiesResponse) {
+    option (google.api.http) = {get: "/v1/network-tenants/capabilities"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get native network Tenant capabilities"
+      description: "Authenticated admin capability query; policy writes are not implied by shared creation."
+      tags: "Network"
+    };
+  }
+
   // GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
   rpc GetNetworkGuardStatus(GetNetworkGuardStatusRequest) returns (NetworkGuardStatus) {
     option (google.api.http) = {
@@ -818,4 +828,24 @@ message StopEgressProxyRequest {
 // StopEgressProxyResponse is the (empty) ack for a teardown.
 message StopEgressProxyResponse {
   bool stopped = 1;
+}
+
+// GetNetworkTenantCapabilitiesRequest requests the local native contract.
+message GetNetworkTenantCapabilitiesRequest {}
+// GetNetworkTenantCapabilitiesResponse is compatible with the BoxWeave handshake.
+message GetNetworkTenantCapabilitiesResponse {
+  // Stable contract identifier; never infer capabilities from a version string.
+  string contract = 1;
+  // Provider list/get exposes resolved native membership and source.
+  bool native_membership_read = 2;
+  // Current local enforced Guard and create path are ready for shared creation.
+  bool shared_tenant_create = 3;
+  // Atomic ingress-only cross-Tenant editing. Not implemented by this feature.
+  bool atomic_tenant_access = 4;
+  // Authorization for that atomic policy contract. Always false in this feature.
+  bool network_policy_write = 5;
+  // Explanation when local shared creation is unavailable.
+  string reason = 6;
+  // Scope of verified creation and membership evidence: local-lxc.
+  string backend_scope = 7;
 }

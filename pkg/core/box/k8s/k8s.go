@@ -303,6 +303,9 @@ func (b *Backend) validateTenantName(tenant string) error {
 // Sandbox. Each step is idempotent (AlreadyExists is success) so re-create
 // reuses the box rather than erroring (#669).
 func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
+	if spec.NetworkTenant != "" {
+		return nil, fmt.Errorf("native network Tenant requires local Linux LXC")
+	}
 	// A pod is a container. Refuse a VM request outright rather than hand
 	// back a shared-kernel box the caller believed was VM-isolated (#2196).
 	if spec.Isolation == pb.IsolationType_ISOLATION_TYPE_VM {

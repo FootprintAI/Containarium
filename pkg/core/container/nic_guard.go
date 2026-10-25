@@ -18,7 +18,7 @@ type NICGuard interface {
 }
 
 // ErrNICGuard wraps a Prepare failure. Create fails closed on it: the
-// instance is deleted and the error surfaces as FAILED_PRECONDITION, the
+// instance deletion is attempted and the error surfaces as FAILED_PRECONDITION, the
 // same shape as an --encrypted create with no key provider.
 var ErrNICGuard = errors.New("tenant network guard could not guard the container's NIC")
 
@@ -28,11 +28,9 @@ var ErrNICGuard = errors.New("tenant network guard could not guard the container
 func (m *Manager) SetNICGuard(g NICGuard) { m.nicGuard = g }
 
 // guardNIC runs the NICGuard hook for a just-created container. The tenant
-// is resolved from what Create knows: the cloud_org_id attribution label
-// when the hosted control plane created the box, else the
-// <tenant>-container name. (The explicit user.containarium.tenant config
-// key is written by the pull-mode actuator after create; the reconciler
-// picks it up on its next pass.)
+// uses explicit native membership when supplied, otherwise the existing
+// cloud_org_id / instance-name resolver. Required native membership is persisted
+// before this call and must never use the legacy optional/no-op hook.
 func (m *Manager) guardNIC(containerName string, opts CreateOptions) error {
 	if opts.NetworkTenant != "" {
 		// Ordinary Prepare can be a no-op on an unsupported/off guard.
@@ -56,4 +54,13 @@ func (m *Manager) guardNIC(containerName string, opts CreateOptions) error {
 		return fmt.Errorf("%w: %v", ErrNICGuard, err)
 	}
 	return nil
+}
+
+// cleanupGuardedCreate retains both causes when cleanup fails. The caller must
+// inspect the original stopped instance before retrying; never start it as repair.
+func (m *Manager) cleanupGuardedCreate(name string, cause error) error {
+	if err := m.incus.DeleteContainer(name); err != nil {
+		return errors.Join(cause, fmt.Errorf("cleanup failed for %q; instance retained stopped, inspect before retry: %w", name, err))
+	}
+	return cause
 }
