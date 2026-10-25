@@ -38,7 +38,10 @@ jobs:
           version: v3.16.2
       - name: Install kind
         run: |
+          # kind v0.24.0; sha256 from the published kind-linux-amd64.sha256sum.
+          KIND_SHA256=b89aada5a39d620da3fcd16435b7f28d858927dd53f92cbac77686b0588b600d
           curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
       - name: Wait for the exact release images

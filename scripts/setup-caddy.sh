@@ -100,7 +100,8 @@ install_xcaddy() {
     log_info "Installing xcaddy..."
 
     # Install xcaddy
-    GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+    # Pinned, checksum-verified release binary (scripts/xcaddy-version.env).
+    "$(dirname "${BASH_SOURCE[0]}")/install-xcaddy.sh" /usr/local/bin/xcaddy
 
     if ! command -v xcaddy &> /dev/null; then
         log_error "xcaddy installation failed"

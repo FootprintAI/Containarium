@@ -34,7 +34,8 @@ Containarium uses Caddy to:
 
 1. Install xcaddy (Caddy build tool):
 ```bash
-go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+# Pinned, checksum-verified release binary (version and sha256 in scripts/xcaddy-version.env)
+./scripts/install-xcaddy.sh /usr/local/bin/xcaddy
 ```
 
 2. Build Caddy with your DNS provider plugin:
