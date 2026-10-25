@@ -138,6 +138,26 @@ func TestDriveCrew(t *testing.T) {
 		}
 	})
 
+	// #2799: the PACK_PRODUCER is not an A2A peer; the pipeline ends at the
+	// reviewer and the producer is never handed a task.
+	t.Run("pipeline skips the pack producer", func(t *testing.T) {
+		var to []string
+		send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+			to = append(to, req.ToPeerId)
+			return completed("out-of-" + req.ToPeerId), nil
+		}
+		crew := &pb.Crew{Id: "c", Topology: pb.CrewTopology_CREW_TOPOLOGY_PIPELINE,
+			SkillIds: []string{"coder", "reviewer", "runner"},
+			Roles:    []pb.CrewRole{pb.CrewRole_CREW_ROLE_CODER, pb.CrewRole_CREW_ROLE_REVIEWER, pb.CrewRole_CREW_ROLE_PACK_PRODUCER}}
+		out, err := driveCrew(context.Background(), crew, trace, "seed-input", send)
+		if err != nil {
+			t.Fatalf("driveCrew: %v", err)
+		}
+		if strings.Join(to, ",") != "coder,reviewer" || out != "out-of-reviewer" {
+			t.Errorf("hops = %v, output = %q; want coder,reviewer and the reviewer's output", to, out)
+		}
+	})
+
 	t.Run("failed hop surfaces the peer error", func(t *testing.T) {
 		send := func(_ context.Context, _ *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
 			return &pb.SendAgentTaskResponse{Artifact: &pb.AgentArtifact{
@@ -332,6 +352,11 @@ func TestEmbeddedEngineerCrewValidatesAndDrives(t *testing.T) {
 	if got := crew.SkillIds; len(got) != 2 || got[0] != "issue-implementer" || got[1] != "diff-reviewer" {
 		t.Fatalf("engineer-crew skill_ids = %v, want [issue-implementer diff-reviewer] in order", got)
 	}
+	// #2799: the coder is a declared, typed role, so a pack producer can be
+	// checked against it.
+	if got := crew.GetRoles(); len(got) != 2 || got[0] != pb.CrewRole_CREW_ROLE_CODER || got[1] != pb.CrewRole_CREW_ROLE_REVIEWER {
+		t.Fatalf("engineer-crew roles = %v, want [CODER REVIEWER]", got)
+	}
 
 	sk := skills.GetDefault()
 	getSkill := func(id string) (*pb.AgentSkill, bool) {
@@ -478,6 +503,56 @@ func TestValidateCrewTopology(t *testing.T) {
 			t.Errorf("freeform implies no required edges; want nil, got %v", err)
 		}
 	})
+}
+
+// TestValidateCrewTopology_Roles pins the #2799 rule that the member which
+// produces the Proof Pack is never the coder: not the same skill, and so not
+// the same box (a skill's box is agent-<skill-id>).
+func TestValidateCrewTopology_Roles(t *testing.T) {
+	coder := &pb.AgentSkill{Id: "coder", AllowedPeers: []string{"reviewer"}}
+	reviewer := &pb.AgentSkill{Id: "reviewer"}
+	runner := &pb.AgentSkill{Id: "runner"}
+	get := skillSet(coder, reviewer, runner)
+
+	const (
+		C = pb.CrewRole_CREW_ROLE_CODER
+		P = pb.CrewRole_CREW_ROLE_PACK_PRODUCER
+		R = pb.CrewRole_CREW_ROLE_REVIEWER
+	)
+	pipeline := pb.CrewTopology_CREW_TOPOLOGY_PIPELINE
+	cases := []struct {
+		name     string
+		topology pb.CrewTopology
+		skills   []string
+		roles    []pb.CrewRole
+		wantErr  string // substring; "" = valid
+	}{
+		{name: "no roles declared", topology: pipeline, skills: []string{"coder", "reviewer"}},
+		// The producer is not an A2A peer: no reviewer->runner edge is needed.
+		{name: "independent producer last", topology: pipeline, skills: []string{"coder", "reviewer", "runner"}, roles: []pb.CrewRole{C, R, P}},
+		{name: "producer is the coder skill", topology: pipeline, skills: []string{"coder", "reviewer", "coder"}, roles: []pb.CrewRole{C, R, P}, wantErr: "same box"},
+		{name: "coder skill listed again as producer", topology: pipeline, skills: []string{"coder", "coder"}, roles: []pb.CrewRole{C, P}, wantErr: "same box"},
+		{name: "roles shorter than members", topology: pipeline, skills: []string{"coder", "reviewer", "runner"}, roles: []pb.CrewRole{C, R}, wantErr: "one role per member"},
+		{name: "producer without a coder", topology: pipeline, skills: []string{"reviewer", "runner"}, roles: []pb.CrewRole{R, P}, wantErr: "no CODER"},
+		{name: "two producers", topology: pipeline, skills: []string{"coder", "reviewer", "runner", "runner"}, roles: []pb.CrewRole{C, R, P, P}, wantErr: "more than one"},
+		{name: "producer before the reviewer", topology: pipeline, skills: []string{"coder", "runner", "reviewer"}, roles: []pb.CrewRole{C, P, R}, wantErr: "last member"},
+		{name: "producer outside a pipeline", topology: pb.CrewTopology_CREW_TOPOLOGY_FREEFORM, skills: []string{"coder", "reviewer", "runner"}, roles: []pb.CrewRole{C, R, P}, wantErr: "PIPELINE"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			crew := &pb.Crew{Id: "c", Topology: tc.topology, SkillIds: tc.skills, Roles: tc.roles}
+			err := validateCrewTopology(crew, get)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want valid, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
 }
 
 // TestRunCrew_GitFieldsRoundTrip pins RunCrewRequest.git_source/git_ref/

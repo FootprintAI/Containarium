@@ -32,6 +32,13 @@ var topologyByName = map[string]pb.CrewTopology{
 	"freeform":     pb.CrewTopology_CREW_TOPOLOGY_FREEFORM,
 }
 
+// roleByName maps the YAML role string to the proto enum (#2799).
+var roleByName = map[string]pb.CrewRole{
+	"coder":         pb.CrewRole_CREW_ROLE_CODER,
+	"pack_producer": pb.CrewRole_CREW_ROLE_PACK_PRODUCER,
+	"reviewer":      pb.CrewRole_CREW_ROLE_REVIEWER,
+}
+
 // crewDef is the YAML shape of a crew.
 type crewDef struct {
 	ID          string   `yaml:"id"`
@@ -39,16 +46,23 @@ type crewDef struct {
 	Description string   `yaml:"description,omitempty"`
 	Topology    string   `yaml:"topology"`
 	SkillIDs    []string `yaml:"skill_ids"`
+	// Roles is parallel to SkillIDs: Roles[i] is the role of SkillIDs[i].
+	Roles []string `yaml:"roles,omitempty"`
 }
 
 // ToProto converts a crewDef to its pb.Crew representation.
 func (c *crewDef) ToProto() *pb.Crew {
+	var roles []pb.CrewRole
+	for _, r := range c.Roles {
+		roles = append(roles, roleByName[r])
+	}
 	return &pb.Crew{
 		Id:          c.ID,
 		Name:        c.Name,
 		Description: c.Description,
 		Topology:    topologyByName[c.Topology],
 		SkillIds:    c.SkillIDs,
+		Roles:       roles,
 	}
 }
 
@@ -126,6 +140,16 @@ func validate(c *crewDef) error {
 	}
 	if len(c.SkillIDs) < 2 {
 		return fmt.Errorf("crew %q must reference at least two skills", c.ID)
+	}
+	// Which role combinations are allowed is RunCrew's check
+	// (validateCrewRoles); loading only guarantees a typed role per member.
+	if len(c.Roles) > 0 && len(c.Roles) != len(c.SkillIDs) {
+		return fmt.Errorf("crew %q declares %d roles for %d skills; want one role per skill", c.ID, len(c.Roles), len(c.SkillIDs))
+	}
+	for _, r := range c.Roles {
+		if _, ok := roleByName[r]; !ok {
+			return fmt.Errorf("crew %q has unknown role %q (want coder|reviewer|pack_producer)", c.ID, r)
+		}
 	}
 	return nil
 }

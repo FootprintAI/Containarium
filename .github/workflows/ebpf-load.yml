@@ -125,6 +125,26 @@ jobs:
             exit 1
           }
 
+      # A netpolicy object from before #2974, whose policy_cfg's last byte was
+      # padding (#2987): the loader must detect that it ignores egress_mode.
+      # Built from the netpolicy.bpf.c at #2974's parent commit, fetched by
+      # sha (the checkout is shallow), with the same flags as `make build-bpf`.
+      - name: Compile the pre-egress_mode network-policy object
+        run: |
+          set -euo pipefail
+          OLD_SHA=85b5919fdfda6314a841b88a8861666042404848
+          git fetch --no-tags --depth=1 origin "$OLD_SHA"
+          OLD_SRC="$RUNNER_TEMP/netpolicy-pre-egress-mode.bpf.c"
+          OLD_OBJ="$RUNNER_TEMP/netpolicy-pre-egress-mode.bpf.o"
+          git show "$OLD_SHA:experimental/ebpf-phaseA/netpolicy.bpf.c" > "$OLD_SRC"
+          if grep -q egress_mode "$OLD_SRC"; then
+            echo "::error::the pinned pre-#2974 source already declares egress_mode"
+            exit 1
+          fi
+          clang -O2 -g -target bpfel -I/usr/include/"$(uname -m)"-linux-gnu -c "$OLD_SRC" -o "$OLD_OBJ"
+          test -s "$OLD_OBJ"
+          echo "NETBPF_PRE_EGRESS_MODE_OBJECT=$OLD_OBJ" >> "$GITHUB_ENV"
+
       # sudo -E env "PATH=$PATH" is incus-create.yml's own fix for #1614:
       # plain `sudo go test` drops $PATH (no `go` binary found) and, if it
       # DOES find go some other way, leaves $HOME pointing at the invoking

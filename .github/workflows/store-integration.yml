@@ -36,6 +36,7 @@ on:
       - 'internal/tracker/**'
       - 'internal/guardrailpolicy/**'
       - 'internal/retention/**'
+      - 'internal/proofpack/**'
       - 'internal/cmd/**'
       - 'internal/sentinel/**'
       - 'internal/client/**'
@@ -63,6 +64,7 @@ on:
       - 'internal/tracker/**'
       - 'internal/guardrailpolicy/**'
       - 'internal/retention/**'
+      - 'internal/proofpack/**'
       - 'internal/cmd/**'
       - 'internal/sentinel/**'
       - 'internal/client/**'
@@ -123,7 +125,7 @@ jobs:
           # Each package process uses its own schema, including independent
           # concurrent runs of the same package (#2749).
           go test -tags=integration -count=1 -timeout 5m -v \
-            ./internal/testsupport/postgres/ ./internal/audit/ ./internal/threatdetect/ 2>&1 | tee -a integration.log
+            ./internal/testsupport/postgres/ ./internal/audit/ ./internal/threatdetect/ ./internal/proofpack/ 2>&1 | tee -a integration.log
 
           # The sentinel SSH session shipper's end-to-end test (#2415) drives the
           # real shipper -> REST gateway -> gRPC AuditService -> hash chain ->

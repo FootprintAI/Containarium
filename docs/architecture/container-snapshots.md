@@ -25,7 +25,9 @@ A container snapshot's subject is a container. The caller holds a username; the 
 
 **Not `VolumeService`.** That service is **CephFS shared multi-writer volumes** (#384), capability-gated on a CephFS pool. Adding ZFS container-dataset snapshots there produces a service spanning two substrates with two capability gates, where every RPC must disambiguate *which kind of thing am I snapshotting*.
 
-**Not `BackupService`**, despite the name. That is **logical database backup** — `pg_dump`-shaped, into GCS, restorable into a *different* container. A ZFS snapshot is physical, host-local and instantaneous. The two answer different questions ("can I get this data somewhere else?" vs "can I return this container to how it was ten minutes ago?").
+**Not `BackupService`**, despite the name. `BackupService` answers "can I get this data somewhere else?": a durable, off-host copy, restorable into a *different* container. A ZFS snapshot answers "can I return this container to how it was ten minutes ago?": physical, host-local and instantaneous. Snapshot RPCs stay on `ContainerService`.
+
+*Amended 2026-10-25 (#2800).* This paragraph used to describe `BackupService` as database-only. It now has two scopes: `DATABASE` (logical dump, `pg_dump` or a tenant hook) and `BOX` (the whole box, off-host). A BOX backup is the one place where the two meet: per the decision on #2801 it **takes** a snapshot as its consistent source, then copies it off-host. That reuse goes in one direction only. `BackupService` consumes the snapshot primitive, and snapshots do not move into `BackupService`. The split is still "where does the copy live?", not "how much of the box?". See [Whole-box backups](#whole-box-backups-backup_scope_box) below.
 
 **Not both.** If CephFS volume snapshots are wanted later they belong on `VolumeService`, over the same primitive underneath.
 
@@ -104,6 +106,24 @@ The daemon now creates snapshots two ways on the same dataset:
 
 Filed separately rather than folded into #1160c: it is a defect in shipped code, not a clone decision.
 
+## Whole-box backups (`BACKUP_SCOPE_BOX`)
+
+Slice 1 of #2372 (#2800) adds the contract. The data path is #2801, and verify-by-restore is #2802.
+
+**Contract.** `CreateBackupRequest.scope` and `BackupRecord.scope` (`BackupScope`: `UNSPECIFIED` = `DATABASE`, `DATABASE`, `BOX`), both additive field numbers. The box is the request's `username`, the box `<username>-container`, so `AuthorizeTenant` keys on it as it does for every other backup. A BOX request is refused with `INVALID_ARGUMENT` when it sets `connection` (even an empty one), `hook` or `hook_format`, or names no `key_mode`. Until #2801 lands, a valid BOX request answers `UNIMPLEMENTED` and touches no container.
+
+**Decision: reuse the destination and the encryption.** A BOX backup uses `BackupDestination` (LOCAL / GCS, with `gcs_bucket`) and `BackupKeyMode` (the #2402 key-wrap seam: MANAGED KMS envelope, AGE_RECIPIENT, or BOTH) unchanged. There is no second destination or key machinery to keep in step. One difference is deliberate: **plaintext is forbidden for BOX** (decision of 2026-10-25). A database request may leave `key_mode` unset and take the daemon default, which can be plaintext. A BOX request must name the mode, and the daemon then checks it can honour it: MANAGED or BOTH without a key wrapper is `FAILED_PRECONDITION`, and AGE_RECIPIENT or BOTH without a recipient is `INVALID_ARGUMENT`.
+
+| A BOX backup includes | A BOX backup excludes |
+|---|---|
+| The box's root filesystem | `/tmp`, `/var/tmp`, `/var/cache`, `/run` |
+| Volumes attached to the box | Snapshot history (earlier ZFS / Incus snapshots of the box) |
+| Container config and device metadata, in a manifest inside the encrypted backup (#2801) | Anything outside the box: host state, other tenants' boxes |
+
+The size cap (256 GiB by default for BOX, configurable per daemon, with a pre-flight free-space check) and the file-digest manifest are #2801's. Verification against that manifest is #2802's.
+
+**Overlap with #1157.** #1157 proposes replacing `CreateBackupRequest.connection` with an engine `oneof`. This slice does not touch `connection`. It adds `scope` alongside it, so either #1157 option still applies, and BOX simply requires the connection, whatever its shape, to be absent.
+
 ## Test strategy
 
 | Component | Tests |
@@ -133,7 +153,7 @@ The clone row deliberately puts a lane test **before** the implementation. That 
 
 **Add to `VolumeService`** (as #1160 proposes) — two substrates, two capability gates, one service; every RPC would need to disambiguate its subject.
 
-**Add to `BackupService`** — logical, portable, off-host backups are a different operation from physical, host-local snapshots; the naming similarity is all they share.
+**Add to `BackupService`**: portable, off-host backups are a different operation from physical, host-local snapshots. A BOX backup (#2800) *uses* a snapshot as its source but does not expose snapshot RPCs, so this stays rejected.
 
 **A new `SnapshotService`** — the right answer the day a second substrate needs snapshotting. Today it is a service, its registration, its client and its CLI namespace for one consumer.
 
@@ -145,3 +165,4 @@ The clone row deliberately puts a lane test **before** the implementation. That 
 |---|---|---|
 | 2026-08-16 | drafted with Claude (`agent-c9aced4b`) | Initial draft, answering #1160's service-ownership question so #1202 could be unblocked. Status: proposed. |
 | 2026-08-16 | revised with Claude (`agent-c9aced4b`) | Ownership **accepted** — implemented and merged (#1381, #1383); #1202 closed. **Clone section rewritten**: the lane (#1384) disproved this doc's premise that ZFS confines a clone to its origin's encryptionroot, so clone moves from `zfs clone` to `incus copy` and the cross-tenant refusal moves to the daemon. Added the two-snapshot-registry finding against merged code. Corrected the CLI namespace to `containarium snapshot`. |
+| 2026-10-25 | revised with Claude (`agent-48362e6a`) | #2800: `BackupService` is no longer database-only. Amended "Not `BackupService`" and added the whole-box section: the `BackupScope` contract, destination and key-mode reuse, plaintext forbidden for BOX, and what a BOX backup includes and excludes. |

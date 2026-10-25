@@ -7,6 +7,9 @@
 # this repo.
 #
 # topology: pipeline | orchestrator | freeform
+# roles (optional, #2799): one per skill_id, in the same order, each
+# coder | reviewer | pack_producer. A pack_producer is never the coder's skill
+# or box, and runs last in a pipeline.
 # RunCrew validates that every A2A edge the topology implies is permitted by
 # the members' allowed_peers (and thus by the Phase 2 network policy) before
 # provisioning anything — so a crew's wiring can never ask for a hop the trust
@@ -88,3 +91,6 @@ crews:
     skill_ids:
       - issue-implementer  # issue-implementer.allowed_peers includes
       - diff-reviewer      # diff-reviewer, so this pipeline edge is permitted.
+    # #2799: roles are parallel to skill_ids. Declaring the coder lets RunCrew
+    # reject a pack producer that is the coder's skill or box.
+    roles: [coder, reviewer]
