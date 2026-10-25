@@ -1,5 +1,7 @@
 # Task graph execution
 
+> Status: **Implemented** (`pkg/core/taskgraph`, `internal/server/crew_graph_test.go`, `containarium crew run --plan`).
+
 ORCHESTRATOR and FREEFORM crews accept an explicit TaskGraph. The daemon
 validates the whole graph before starting any node. PIPELINE rejects a graph;
 all existing runs without a graph retain their existing behavior.

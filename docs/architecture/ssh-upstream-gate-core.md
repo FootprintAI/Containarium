@@ -1,5 +1,7 @@
 # Shared SSH admission core (#1138)
 
+> Status: **Historical** milestone note, superseded by [the integration design](ssh-upstream-integration.md) for the shipped listener, RPC and restart contract.
+
 **Historical core milestone:** this document describes the independent #2582
 increment. The shipped listener/RPC, durable checkpoint and restart contract is
 in [the integration design](ssh-upstream-integration.md). Statements below about
