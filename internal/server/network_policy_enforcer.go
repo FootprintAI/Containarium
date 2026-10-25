@@ -841,20 +841,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// removed CIDRs is what makes a tightened policy actually take effect in
 	// enforce mode.
 	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
-	for _, ee := range toAdd {
-		if err := e.loader.AddEgress(ee); err != nil {
-			log.Printf("[netpolicy] add egress: %v", err)
-			continue
-		}
-		e.egressInstalled[ee] = true
-	}
-	for _, ee := range toDel {
-		if err := e.loader.DeleteEgress(ee); err != nil {
-			log.Printf("[netpolicy] delete egress: %v", err)
-			continue
-		}
-		delete(e.egressInstalled, ee)
-	}
+	egressIncomplete := applyEgress(e.egressInstalled, toAdd, toDel, e.loader)
 	// Virtual-patch deny rules (#660): converge the deny_cidr map the same way —
 	// upsert desired entries, delete keys no longer desired (a removed/expired
 	// rule must actually stop blocking). Only when the loaded object carries the
@@ -908,7 +895,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass
 	// actually wrote, never from the stored request.
-	e.recordApplied(appliedFromPass(views, plan, loaded, policies), time.Now())
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies, egressIncomplete), time.Now())
 	return nil
 }
 

@@ -24,6 +24,9 @@ type tenantApplied struct {
 	BoxesLoaded    int   // running boxes whose config was written and program attached
 	BoxesNotLoaded int   // running boxes with no loaded config (no veth, write or attach failed)
 	HasDomains     bool  // the loaded allow-list includes resolved egress_domains
+	// EgressIncomplete: an add or removal in the tenant's egress allow-list
+	// failed this pass, so the kernel list differs from the policy (#2983).
+	EgressIncomplete bool
 }
 
 // appliedSnapshot is the enforcer's answer for one tenant.
@@ -52,13 +55,14 @@ type appliedStateSource interface {
 // the plan it applied and, per planned veth, whether the config write and the
 // attach both succeeded. A running box without a resolved veth never reaches
 // the plan's veth map, so it is counted as not loaded from the views.
-func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy) map[string]tenantApplied {
+func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
 		if !v.Running {
 			continue
 		}
 		a := out[v.Tenant]
+		a.EgressIncomplete = a.EgressIncomplete || egressIncomplete[v.TenantID]
 		cfg, planned := plan.vethPolicy[v.Ifindex]
 		if v.HasVeth && planned && loaded[v.Ifindex] {
 			a.Mode, a.EgressMode = cfg.Mode, cfg.EgressMode
@@ -160,6 +164,9 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	st.EffectiveEgressMode = bpfModeToProto(egress)
 	if a.HasDomains {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG)
+	}
+	if a.EgressIncomplete {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
 	}
 	return st
 }

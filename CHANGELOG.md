@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`network-policy status` no longer reports a tenant's egress allow-list as complete when it is not** (#2983). When a reconcile pass fails to add or remove an allow-list entry, the tenant's status now lists the new uncovered path `EGRESS_ALLOWLIST_INCOMPLETE` (the box state stays `LOADED`: the boxes are loaded, the list is not what the policy says). A failed removal counts too, since it leaves a destination allowed that the policy no longer allows. Only the tenant that owns the failed entry is marked, and the entry is retried on the next pass. `containarium network-policy status` prints it with the other uncovered paths.
+
 ### Added
 
 - **A tracker-dispatched PR carries its sealed Proof Pack** (#2798, part 2 of 2). Before `SubmitTrackerChange` pushes, the daemon does three things:

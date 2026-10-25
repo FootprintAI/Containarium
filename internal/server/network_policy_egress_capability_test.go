@@ -20,7 +20,7 @@ func appliedPassOnObject(t *testing.T, views []containerView, policies map[strin
 	for ifindex := range plan.vethPolicy {
 		loaded[ifindex] = true
 	}
-	return appliedFromPass(views, plan, loaded, policies), ignored
+	return appliedFromPass(views, plan, loaded, policies, nil), ignored
 }
 
 // An object built before #2974 ignores egress_mode and applies `mode` to the

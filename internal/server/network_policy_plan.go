@@ -219,6 +219,39 @@ type denyApplier interface {
 // same slot, not add+del). A failed op is logged and skipped WITHOUT touching
 // installed, so the next reconcile retries it rather than recording a state the
 // kernel doesn't actually hold.
+// egressApplier is the slice of the loader applyEgress writes through.
+type egressApplier interface {
+	AddEgress(netbpf.EgressEntry) error
+	DeleteEgress(netbpf.EgressEntry) error
+}
+
+// applyEgress converges the kernel egress allow-list: add the entries in toAdd,
+// delete those in toDel, updating installed in place. A failed op is logged and
+// skipped WITHOUT touching installed, so the next pass retries it. It returns
+// the tenants whose allow-list is not what their policy says after this pass
+// (an add or a removal failed), so the status can say so instead of reporting
+// the tenant as fully loaded (#2983).
+func applyEgress(installed map[netbpf.EgressEntry]bool, toAdd, toDel []netbpf.EgressEntry, a egressApplier) map[uint32]bool {
+	incomplete := make(map[uint32]bool)
+	for _, ee := range toAdd {
+		if err := a.AddEgress(ee); err != nil {
+			log.Printf("[netpolicy] add egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		installed[ee] = true
+	}
+	for _, ee := range toDel {
+		if err := a.DeleteEgress(ee); err != nil {
+			log.Printf("[netpolicy] delete egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		delete(installed, ee)
+	}
+	return incomplete
+}
+
 func applyDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.DenyEntry, a denyApplier) {
 	upsert, del := diffDeny(installed, desired)
 	for _, de := range upsert {
