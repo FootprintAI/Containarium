@@ -56,9 +56,11 @@ count suggests. These paths are the ones we read most closely:
 
 Keep such a change in its own PR, separate from feature work, and say in
 the description what it changes and why. A maintainer reviews these paths
-before merging. A required code-owner approval for them (a `CODEOWNERS`
-file plus branch protection) is planned and not in place yet; it is
-tracked in [#2792](https://github.com/FootprintAI/Containarium/issues/2792).
+before merging. A `CODEOWNERS` file now lists these paths. Making a
+code-owner approval required is a branch-protection setting that a repository
+admin applies; see
+[`docs/security/REPO-SETTINGS-RUNBOOK.md`](docs/security/REPO-SETTINGS-RUNBOOK.md)
+(tracked in [#2792](https://github.com/FootprintAI/Containarium/issues/2792)).
 
 ### Proposing a new dependency
 

@@ -414,7 +414,7 @@ func withRunID(send taskSender, runID string) taskSender {
 //     its artifact — the agent self-delegates to the rest within its
 //     allowed_peers.
 func driveCrew(ctx context.Context, crew *pb.Crew, trace, input string, send taskSender) (string, error) {
-	ids := crew.SkillIds
+	ids := crewA2AMembers(crew)
 	if len(ids) == 0 {
 		return "", fmt.Errorf("crew %q has no skills", crew.Id)
 	}
@@ -489,6 +489,9 @@ func validateCrewTopology(crew *pb.Crew, getSkill func(id string) (*pb.AgentSkil
 			return fmt.Errorf("crew %q references unknown skill %q", crew.Id, sid)
 		}
 	}
+	if err := validateCrewRoles(crew); err != nil {
+		return err
+	}
 	for _, edge := range crewRequiredEdges(crew) {
 		from, _ := getSkill(edge[0])
 		if !peersContain(from.AllowedPeers, edge[1]) {
@@ -500,9 +503,75 @@ func validateCrewTopology(crew *pb.Crew, getSkill func(id string) (*pb.AgentSkil
 	return nil
 }
 
+// validateCrewRoles checks a crew's declared roles (#2799). The member that
+// produces the Proof Pack must not be the coder: not the same skill, and not
+// the same box, so the pack never comes from the box that wrote the change.
+// It runs last in a PIPELINE so it tests the reviewer's final files. A crew
+// that declares no roles passes unchanged.
+func validateCrewRoles(crew *pb.Crew) error {
+	roles := crew.GetRoles()
+	if len(roles) == 0 {
+		return nil
+	}
+	ids := crew.GetSkillIds()
+	if len(roles) != len(ids) {
+		return fmt.Errorf("crew %q declares %d roles for %d members; want one role per member", crew.Id, len(roles), len(ids))
+	}
+	coder, producer := -1, -1
+	for i, r := range roles {
+		var slot *int
+		switch r {
+		case pb.CrewRole_CREW_ROLE_CODER:
+			slot = &coder
+		case pb.CrewRole_CREW_ROLE_PACK_PRODUCER:
+			slot = &producer
+		default:
+			continue
+		}
+		if *slot >= 0 {
+			return fmt.Errorf("crew %q has more than one %s member", crew.Id, r)
+		}
+		*slot = i
+	}
+	if producer < 0 {
+		return nil
+	}
+	if coder < 0 {
+		return fmt.Errorf("crew %q has a PACK_PRODUCER but no CODER for it to be independent of", crew.Id)
+	}
+	if crew.Topology != pb.CrewTopology_CREW_TOPOLOGY_PIPELINE {
+		return fmt.Errorf("crew %q: a PACK_PRODUCER needs PIPELINE topology, so it runs after every other member", crew.Id)
+	}
+	if producer != len(ids)-1 {
+		return fmt.Errorf("crew %q: the PACK_PRODUCER %q must be the last member, so it tests the final files", crew.Id, ids[producer])
+	}
+	if skillBoxName(ids[producer]) == skillBoxName(ids[coder]) {
+		return fmt.Errorf("crew %q: PACK_PRODUCER %q and CODER %q run in the same box %s; the pack must come from a box other than the coder's",
+			crew.Id, ids[producer], ids[coder], skillBoxName(ids[coder]))
+	}
+	return nil
+}
+
+// crewA2AMembers is the crew's members that take part in its A2A hops, in
+// order. The PACK_PRODUCER is not one (#2799): the daemon runs the test
+// commands in its box itself, so no agent hands it a task.
+func crewA2AMembers(crew *pb.Crew) []string {
+	roles := crew.GetRoles()
+	if len(roles) != len(crew.GetSkillIds()) {
+		return crew.GetSkillIds()
+	}
+	out := make([]string, 0, len(roles))
+	for i, sid := range crew.GetSkillIds() {
+		if roles[i] != pb.CrewRole_CREW_ROLE_PACK_PRODUCER {
+			out = append(out, sid)
+		}
+	}
+	return out
+}
+
 // crewRequiredEdges returns the directed A2A edges a topology implies.
 func crewRequiredEdges(crew *pb.Crew) [][2]string {
-	ids := crew.SkillIds
+	ids := crewA2AMembers(crew)
 	var edges [][2]string
 	switch crew.Topology {
 	case pb.CrewTopology_CREW_TOPOLOGY_PIPELINE:

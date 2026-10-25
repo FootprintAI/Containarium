@@ -1755,7 +1755,7 @@
       },
       "post": {
         "summary": "Create a backup",
-        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.",
+        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.",
         "operationId": "BackupService_CreateBackup",
         "responses": {
           "200": {
@@ -11237,9 +11237,23 @@
         "hookFormat": {
           "$ref": "#/definitions/HookFormat",
           "description": "For BACKUP_ENGINE_HOOK: the format the hook declared for its output\n(#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for\npg_dump records."
+        },
+        "scope": {
+          "$ref": "#/definitions/BackupScope",
+          "description": "What the backup captured (#2800). Always set on a record the daemon\nreturns: DATABASE for every database backup, including records\nwritten before this field existed."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
+    },
+    "BackupScope": {
+      "type": "string",
+      "enum": [
+        "BACKUP_SCOPE_UNSPECIFIED",
+        "BACKUP_SCOPE_DATABASE",
+        "BACKUP_SCOPE_BOX"
+      ],
+      "default": "BACKUP_SCOPE_UNSPECIFIED",
+      "description": "BackupScope names what a backup captures (#2800, slice 1 of #2372).\n\nThe zero value is today's database backup, so every client and every\nstored record that predates this enum keeps meaning exactly what it\nmeant. A BOX backup is the off-host, durable copy of a whole box; a ZFS\nsnapshot (ContainerService) is the host-local, in-place one. See\ndocs/architecture/container-snapshots.md for the split.\n\n - BACKUP_SCOPE_UNSPECIFIED: Unset: a database backup, identical to BACKUP_SCOPE_DATABASE. What\nevery request and record written before this field existed reads as.\n - BACKUP_SCOPE_DATABASE: A logical database dump (pg_dump, or a tenant backup hook): today's\nbehaviour.\n - BACKUP_SCOPE_BOX: The whole box: its root filesystem and attached volumes, minus /tmp,\n/var/tmp, /var/cache and /run, with container config and device\nmetadata in a manifest; snapshot history is not included. The box is\nthe request's `username` (the box \"\u003cusername\u003e-container\"). A BOX\nrequest carries no database `connection` and no `hook`, and must name\nan explicit encryption key_mode: plaintext is refused for BOX."
     },
     "BackupVerification": {
       "type": "object",
@@ -12714,6 +12728,10 @@
         "hookFormat": {
           "$ref": "#/definitions/HookFormat",
           "description": "Declared format of the hook's output (#2405). UNSPECIFIED means\nOPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a\n`pg_dump -Fc` archive: the record then gets a relation-count manifest\nread from the archive's table of contents (when pg_restore is\navailable in the container) and can be restore-tested. Rejected\nwithout `hook`."
+        },
+        "scope": {
+          "$ref": "#/definitions/BackupScope",
+          "description": "What to back up (#2800). UNSPECIFIED and DATABASE are today's database\nbackup, unchanged. BOX backs up the whole box named by `username`; it\nis rejected with INVALID_ARGUMENT when `connection`, `hook` or\n`hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is\nnever plaintext, so the mode is named, not defaulted). `destination`,\n`gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a\ndatabase backup."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -13053,9 +13071,27 @@
             "type": "string"
           },
           "description": "Skill ids that make up this crew (in pipeline order when PIPELINE;\ncoordinator first when ORCHESTRATOR)."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CrewRole"
+          },
+          "description": "Role of each member, parallel to skill_ids (#2799): roles[i] is the role\nof skill_ids[i]. Empty means the crew declares no roles. When set it has\none entry per member, and RunCrew rejects a crew whose PACK_PRODUCER is\nthe same skill as its CODER or would run in the same box."
         }
       },
       "description": "Crew is a collaborating set of skills bound to a task purpose."
+    },
+    "CrewRole": {
+      "type": "string",
+      "enum": [
+        "CREW_ROLE_UNSPECIFIED",
+        "CREW_ROLE_CODER",
+        "CREW_ROLE_PACK_PRODUCER",
+        "CREW_ROLE_REVIEWER"
+      ],
+      "default": "CREW_ROLE_UNSPECIFIED",
+      "description": "CrewRole is what one crew member does in a run (#2799).\n\n - CREW_ROLE_CODER: Writes the change.\n - CREW_ROLE_PACK_PRODUCER: Runs the repository's test commands against the final files in its own\nbox and produces the run's Proof Pack. Never the coder.\n - CREW_ROLE_REVIEWER: Reviews and finalizes the coder's change."
     },
     "CrewRun": {
       "type": "object",

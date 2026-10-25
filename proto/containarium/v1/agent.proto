@@ -857,6 +857,23 @@ message Crew {
   // Skill ids that make up this crew (in pipeline order when PIPELINE;
   // coordinator first when ORCHESTRATOR).
   repeated string skill_ids = 5;
+  // Role of each member, parallel to skill_ids (#2799): roles[i] is the role
+  // of skill_ids[i]. Empty means the crew declares no roles. When set it has
+  // one entry per member, and RunCrew rejects a crew whose PACK_PRODUCER is
+  // the same skill as its CODER or would run in the same box.
+  repeated CrewRole roles = 6;
+}
+
+// CrewRole is what one crew member does in a run (#2799).
+enum CrewRole {
+  CREW_ROLE_UNSPECIFIED = 0;
+  // Writes the change.
+  CREW_ROLE_CODER = 1;
+  // Runs the repository's test commands against the final files in its own
+  // box and produces the run's Proof Pack. Never the coder.
+  CREW_ROLE_PACK_PRODUCER = 2;
+  // Reviews and finalizes the coder's change.
+  CREW_ROLE_REVIEWER = 3;
 }
 
 // CrewRunState tracks the lifecycle of a single crew execution.

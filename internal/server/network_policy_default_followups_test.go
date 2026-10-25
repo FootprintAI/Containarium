@@ -126,7 +126,7 @@ func TestRefreshDomains_DefaultsAreOffTheStartupPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e.refreshDomains(false)
+	e.refreshDomainsForStartup()
 	if n := f.calls["github.com"]; n != 0 {
 		t.Fatalf("the startup refresh resolved a default name %d time(s); defaults must be left to the loop", n)
 	}
