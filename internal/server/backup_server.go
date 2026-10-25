@@ -151,6 +151,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	scope, err := scopeFromProto(req.Scope)
+	if err != nil {
+		return nil, err
+	}
+	if scope == pb.BackupScope_BACKUP_SCOPE_BOX {
+		return s.createBoxBackup(ctx, req)
+	}
+
 	dest, err := destFromProto(req.Destination)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -240,6 +248,48 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		Record:  recordToProto(rec),
 		Records: []*pb.BackupRecord{recordToProto(rec)},
 	}, nil
+}
+
+// createBoxBackup validates a BOX-scope create (#2800, slice 1 of #2372).
+// The caller has already passed the scope and tenant checks; the box is
+// the tenant's own container, addressed by username as everywhere else.
+//
+// Every refusal precedes any container command. A request that passes
+// stops at the data path, which is #2801: until it lands the answer is
+// Unimplemented, never a database backup taken by mistake.
+func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
+	// A BOX request names a box, not a database. A connection — even an
+	// empty one — or a hook means the caller built a database request and
+	// set the wrong scope; guessing which they meant is not our call.
+	if req.Connection != nil {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup takes no database connection: unset connection, or use scope DATABASE")
+	}
+	if req.Hook != "" || req.HookFormat != pb.HookFormat_HOOK_FORMAT_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup takes no hook or hook_format: unset them, or use scope DATABASE")
+	}
+	if _, err := destFromProto(req.Destination); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	// Plaintext is forbidden for BOX (decision of 2026-10-25 on #2800). The
+	// database default can resolve to plaintext, so BOX does not take a
+	// default at all: the caller names MANAGED, AGE_RECIPIENT or BOTH, and
+	// keyModeFromProto then checks this daemon can honour it.
+	if req.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup must be encrypted: set key_mode to MANAGED, AGE_RECIPIENT or BOTH")
+	}
+	ageRecipient, err := resolveAgeRecipient(ctx, backupSecretsReader(s.containers), req.Username, req.AgeRecipient)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	if _, err := keyModeFromProto(req.KeyMode, s.mgr.HasWrapper(), ageRecipient != ""); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.containers.manager.Get(req.Username); err != nil {
+		return nil, status.Errorf(codes.NotFound, "box for user %s not found: %v", req.Username, err)
+	}
+	return nil, status.Error(codes.Unimplemented, "whole-box backup is not implemented yet: the request is valid, the snapshot-and-export data path lands in #2801")
 }
 
 // ListBackups returns stored records. Admins see all tenants; a non-admin
@@ -539,6 +589,29 @@ func backupAllRequested(req *pb.CreateBackupRequest) bool {
 
 // --- proto <-> core mapping ---
 
+// scopeFromProto normalises a create request's scope (#2800). UNSPECIFIED
+// is DATABASE, so a client that predates the field behaves exactly as
+// before; a value this daemon does not know is refused, never read as
+// either scope.
+func scopeFromProto(s pb.BackupScope) (pb.BackupScope, error) {
+	switch s {
+	case pb.BackupScope_BACKUP_SCOPE_UNSPECIFIED, pb.BackupScope_BACKUP_SCOPE_DATABASE:
+		return pb.BackupScope_BACKUP_SCOPE_DATABASE, nil
+	case pb.BackupScope_BACKUP_SCOPE_BOX:
+		return pb.BackupScope_BACKUP_SCOPE_BOX, nil
+	default:
+		return pb.BackupScope_BACKUP_SCOPE_UNSPECIFIED, status.Errorf(codes.InvalidArgument, "unknown scope %d", s)
+	}
+}
+
+// scopeToProto reports what a stored record captured. Every record the
+// core writes today is a database backup (pg_dump or hook), including
+// every record written before the field existed; #2801 adds BOX records
+// and extends this mapping from the record's own field.
+func scopeToProto(*backup.Record) pb.BackupScope {
+	return pb.BackupScope_BACKUP_SCOPE_DATABASE
+}
+
 func destFromProto(d pb.BackupDestination) (backup.Destination, error) {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:
@@ -727,5 +800,6 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		KekId:      r.KEKID,
 		KeyMode:    keyModeToProto(r),
 		HookFormat: hookFormatToProto(r.HookFormat),
+		Scope:      scopeToProto(r),
 	}
 }
