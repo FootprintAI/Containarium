@@ -81,7 +81,7 @@ check with a checksum for each download.
 | `scripts/install-xcaddy.sh` | curl | xcaddy release tarball for `make build-caddy`, `scripts/setup-caddy.sh`, `proxyproto-e2e.yml` | version + sha256 per platform in `scripts/xcaddy-version.env` (replaces `go install ...@latest`) |
 | `scripts/install-buf.sh` | curl | buf release binary | version + sha256 per platform in `scripts/buf-version.env` |
 | `.github/workflows/ebpf-load.yml` | curl | bpftool release tarball | version + sha256 (`BPFTOOL_VERSION`, `BPFTOOL_SHA256`) |
-| `.github/workflows/fence-probe-e2e.yml` | curl | bpftool release tarball | version + sha256 |
+| `.github/workflows/fence-probe-e2e.yml` | curl | bpftool release tarball (twice: the observation-only job and the split-egress job each fetch it) | version + sha256 |
 | `.github/workflows/release.yml` | curl | bpftool release tarball | version + sha256. The `curl` commands inside the release-notes heredoc are text shown to users, not fetches the build runs |
 | `.github/workflows/k8s-e2e.yml` | curl | kind v0.24.0 binary | version + sha256 (`KIND_SHA256`, from the published `kind-linux-amd64.sha256sum`) |
 | `.github/workflows/helm-install-upgrade.yml` | curl | kind v0.24.0 binary | version + sha256 |
