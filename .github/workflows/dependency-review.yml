@@ -1,0 +1,39 @@
+name: dependency-review
+
+# Supply-chain gate (#2794, story 3 of #2649): fail a PR that introduces a
+# dependency with a known vulnerability of severity high or critical, in any
+# ecosystem GitHub's dependency graph understands (Go modules, npm, Actions,
+# ...). The licence summary is informational only: no allow or deny list is
+# set here, because the licence policy already lives in licenses.yml
+# (scripts/ci/check-licenses.sh, docs/security/DEPENDENCY-LICENSES.md) and a
+# second list would drift from it.
+#
+# pull_request only, never pull_request_target: a fork PR gets a read-only
+# token, which is all this needs. The summary goes to the job summary rather
+# than a PR comment, so the job never holds a write scope.
+
+on:
+  # No `branches:` filter (#1215) and no `paths:` filter: a check that is
+  # absent on some PRs cannot be made required.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Review dependency changes against the advisory database
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          vulnerability-check: true
+          # Report licences, enforce none here (see the header).
+          license-check: true
+          comment-summary-in-pr: never
