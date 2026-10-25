@@ -16,6 +16,18 @@ cleanup() {
   rm -rf "$scratch_dir"
 }
 trap cleanup EXIT
+
+# call runs curl with --fail-with-body into $1 and, on failure, prints the
+# response body so a rejected request names its reason in the lane log.
+call() {
+  out=$1; shift
+  curl --fail-with-body -sS "$@" > "$out" || {
+    status=$?
+    echo "request failed (curl exit $status): $*" >&2
+    cat "$out" >&2
+    return "$status"
+  }
+}
 printf '%s' "$JWT_SECRET" > "$scratch_dir/jwt.secret"
 chmod 600 "$scratch_dir/jwt.secret"
 
@@ -32,8 +44,8 @@ incus exec "$source_name" -- sh -c '
 '
 
 request=$(jq -n --arg tenant "$tenant" '{username:$tenant,destination:"BACKUP_DESTINATION_LOCAL",connection:{database:"postgres",password:"lane-source-password"}}')
-curl --fail-with-body -sS -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d "$request" "$server/v1/backups" > "$scratch_dir/create.json"
+call "$scratch_dir/create.json" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d "$request" "$server/v1/backups"
 backup_id=$(jq -er '.record.id' "$scratch_dir/create.json")
 
 # The exact documented invocation, including the non-admin role and 720h TTL.
@@ -41,15 +53,15 @@ token=$("$bin" token generate --username "$tenant" --roles user \
   --scopes backups:read,backups:write --expiry 720h \
   --secret-file "$scratch_dir/jwt.secret" --raw)
 
-curl --fail-with-body -sS -H "Authorization: Bearer $token" \
-  "$server/v1/backups?username=$tenant" > "$scratch_dir/list.json"
+call "$scratch_dir/list.json" -H "Authorization: Bearer $token" \
+  "$server/v1/backups?username=$tenant"
 jq -e --arg id "$backup_id" --arg tenant "$tenant" \
   '(.records | length) == 1 and .records[0].id == $id and .records[0].username == $tenant' "$scratch_dir/list.json"
 
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
-curl --fail-with-body -sS --max-time 600 -H "Authorization: Bearer $token" \
+call "$scratch_dir/verify.json" --max-time 600 -H "Authorization: Bearer $token" \
   -H 'Content-Type: application/json' -d "$request" \
-  "$server/v1/backups/$backup_id/verify" > "$scratch_dir/verify.json"
+  "$server/v1/backups/$backup_id/verify"
 jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/verify.json"
 target=$(jq -er '.verification.targetContainer' "$scratch_dir/verify.json")
 test "$target" != "$source_name"
