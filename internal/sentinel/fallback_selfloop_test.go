@@ -42,6 +42,11 @@ func (c *acceptCountListener) Accept() (net.Conn, error) {
 // Here 127.0.0.1 plays the alias and the mux's own port plays :443. The handler
 // must refuse to dial it, so the one client connection stays one connection.
 func TestFallbackToOwnListenerIsRefused(t *testing.T) {
+	// Goroutines other tests started and have not finished stopping are not
+	// this test's to account for, and a fixed ceiling grows with every -count
+	// repetition. Measure what THIS test adds on top of where it began.
+	baseline := settledGoroutines()
+
 	rawLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	ln := &acceptCountListener{Listener: rawLn}
@@ -73,11 +78,36 @@ func TestFallbackToOwnListenerIsRefused(t *testing.T) {
 		"one client connection produced %d accepted connections: the fallback is looping back into the sentinel's own listener",
 		ln.accepted.Load())
 
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > 60 && time.Now().Before(deadline) {
+	// Tear down everything this test started, then require the process to
+	// return to where it began. A fallback that leaked a goroutine per hop
+	// (or kept the looped connections open) would stay above the baseline.
+	_ = client.Close()
+	_ = mux.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.LessOrEqual(t, runtime.NumGoroutine(), 60, "goroutines did not settle after the refused fallback")
+	assert.LessOrEqual(t, runtime.NumGoroutine(), baseline, "goroutines did not settle back to the count at the start of the test after the refused fallback")
+}
+
+// settledGoroutines returns runtime.NumGoroutine() once it has stopped
+// falling, so goroutines still winding down from an earlier test do not
+// inflate a baseline.
+func settledGoroutines() int {
+	prev := runtime.NumGoroutine()
+	stable := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for stable < 5 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		cur := runtime.NumGoroutine()
+		if cur >= prev {
+			stable++
+		} else {
+			stable = 0
+		}
+		prev = cur
+	}
+	return prev
 }
 
 // TestIsOwnHTTPSListener pins which targets count as "ourselves".

@@ -112,7 +112,7 @@ func TestConsoleRouterIntegration(t *testing.T) {
 		}
 	}
 
-	go func() { _ = tunnelServer.Serve(ctx, connMux.TunnelListener()) }()
+	serveTunnelServer(t, ctx, tunnelServer, connMux.TunnelListener())
 	time.Sleep(100 * time.Millisecond)
 
 	// The hypervisor host's tunnel client — reused completely unmodified,
