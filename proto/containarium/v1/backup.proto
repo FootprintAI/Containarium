@@ -99,6 +99,31 @@ enum HookFormat {
   HOOK_FORMAT_PG_CUSTOM = 2;
 }
 
+// BackupScope names what a backup captures (#2800, slice 1 of #2372).
+//
+// The zero value is today's database backup, so every client and every
+// stored record that predates this enum keeps meaning exactly what it
+// meant. A BOX backup is the off-host, durable copy of a whole box; a ZFS
+// snapshot (ContainerService) is the host-local, in-place one. See
+// docs/architecture/container-snapshots.md for the split.
+enum BackupScope {
+  // Unset: a database backup, identical to BACKUP_SCOPE_DATABASE. What
+  // every request and record written before this field existed reads as.
+  BACKUP_SCOPE_UNSPECIFIED = 0;
+
+  // A logical database dump (pg_dump, or a tenant backup hook): today's
+  // behaviour.
+  BACKUP_SCOPE_DATABASE = 1;
+
+  // The whole box: its root filesystem and attached volumes, minus /tmp,
+  // /var/tmp, /var/cache and /run, with container config and device
+  // metadata in a manifest; snapshot history is not included. The box is
+  // the request's `username` (the box "<username>-container"). A BOX
+  // request carries no database `connection` and no `hook`, and must name
+  // an explicit encryption key_mode: plaintext is refused for BOX.
+  BACKUP_SCOPE_BOX = 2;
+}
+
 // BackupRecord is the metadata index entry for one stored dump. The dump
 // itself lives at `location`; this record is persisted as a small JSON
 // sidecar in the daemon's backup directory so `ListBackups` works without
@@ -187,6 +212,11 @@ message BackupRecord {
   // (#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for
   // pg_dump records.
   HookFormat hook_format = 18;
+
+  // What the backup captured (#2800). Always set on a record the daemon
+  // returns: DATABASE for every database backup, including records
+  // written before this field existed.
+  BackupScope scope = 19;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -343,6 +373,15 @@ message CreateBackupRequest {
   // available in the container) and can be restore-tested. Rejected
   // without `hook`.
   HookFormat hook_format = 9;
+
+  // What to back up (#2800). UNSPECIFIED and DATABASE are today's database
+  // backup, unchanged. BOX backs up the whole box named by `username`; it
+  // is rejected with INVALID_ARGUMENT when `connection`, `hook` or
+  // `hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is
+  // never plaintext, so the mode is named, not defaulted). `destination`,
+  // `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
+  // database backup.
+  BackupScope scope = 10;
 }
 
 message CreateBackupResponse {
@@ -528,7 +567,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Create a backup";
-      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.";
+      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.";
       tags: "Backups";
     };
   }

@@ -129,6 +129,11 @@ type NetworkPolicyEnforcer struct {
 	// loop is single-goroutine), so it needs no lock.
 	vethCache map[string]string
 
+	// egressModeWarned holds the tenant ids already warned that the loaded
+	// object ignores their egress_mode (#2987), so the warning is not repeated
+	// every pass. Only touched from reconcile.
+	egressModeWarned map[uint32]bool
+
 	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
@@ -413,6 +418,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		return err
 	}
 	e.loader = loader
+	if !loader.SupportsEgressMode() {
+		log.Printf("[netpolicy] loaded BPF object predates egress_mode (#2974): a tenant's egress_mode is applied and reported as its mode; rebuild netpolicy.bpf.o to apply it")
+	}
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.mu.Lock()
 	e.running = true
@@ -440,7 +448,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	// names here would hold up daemon startup on a host with slow or no DNS,
 	// and the default is log-only, so a few seconds of would-deny rows for
 	// them cost nothing.
-	e.refreshDomains(false)
+	e.refreshDomainsForStartup()
 
 	if err := e.reconcile(e.ctx); err != nil {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
@@ -814,6 +822,9 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+	// An older object ignores the egress_mode byte (#2987): fold it into mode
+	// before writing, so what is written and reported is what the kernel does.
+	e.warnEgressModeIgnored(foldEgressModeForObject(&plan, e.loader.SupportsEgressMode()), idName)
 
 	// Tier 2 (#661 PR-B): pick up operator signature add/remove/toggle. A no-op
 	// when the set is unchanged, so this is cheap every pass.
@@ -1119,11 +1130,20 @@ func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
 	}
 }
 
+// refreshDomainsForStartup is the synchronous pre-reconcile refresh Start runs:
+// stored policies' domains only, never the default allow-list's names (#2997).
+// It is a named method so a test can pin that contract without a loaded BPF
+// object, which Start itself needs.
+func (e *NetworkPolicyEnforcer) refreshDomainsForStartup() {
+	e.refreshDomains(false)
+}
+
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
 //
 // includeDefault adds the default allow-list's names (#2577) when that posture
-// is on. Start passes false so they are not resolved on the startup path.
+// is on. refreshDomainsForStartup passes false so they are not resolved on the
+// startup path.
 func (e *NetworkPolicyEnforcer) refreshDomains(includeDefault bool) {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
@@ -1177,4 +1197,27 @@ func tenantOf(containerName string) string {
 		return ""
 	}
 	return strings.TrimSuffix(containerName, containerSuffix)
+}
+
+// warnEgressModeIgnored logs, once per tenant, that the loaded BPF object cannot
+// apply the tenant's separate egress mode and enforces `mode` instead (#2987).
+// ignored is this pass's set from foldEgressModeForObject; a tenant that drops
+// out of it is forgotten, so a later split is warned about again. Only called
+// from reconcile, which runs on one goroutine.
+func (e *NetworkPolicyEnforcer) warnEgressModeIgnored(ignored map[uint32]bool, idName map[uint32]string) {
+	for id := range e.egressModeWarned {
+		if !ignored[id] {
+			delete(e.egressModeWarned, id)
+		}
+	}
+	for id := range ignored {
+		if e.egressModeWarned[id] {
+			continue
+		}
+		if e.egressModeWarned == nil {
+			e.egressModeWarned = make(map[uint32]bool)
+		}
+		e.egressModeWarned[id] = true
+		log.Printf("[netpolicy] WARNING: tenant %q sets egress_mode different from mode, but the loaded BPF object predates egress_mode (#2974) and applies mode to the egress allow-list; enforcing and reporting mode. Rebuild netpolicy.bpf.o (or use the embedded object) to apply egress_mode", idName[id])
+	}
 }
