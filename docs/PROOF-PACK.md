@@ -116,6 +116,39 @@ The pack has no field for a step's command line or for the environment. Generati
 
 A command's own output can still echo what it runs. `make`, for example, prints each recipe line. That text is log content and is kept as printed. A repository whose test output prints secrets should fix that output; the pack will not redact it.
 
+## Who produces the pack in a crew
+
+In a crew, the pack comes from a member whose role is `pack_producer`, never from the coder (#2799). Roles are declared per member in `crews.yaml`:
+
+```yaml
+- id: engineer-crew
+  topology: pipeline
+  skill_ids: [issue-implementer, diff-reviewer, test-runner]
+  roles: [coder, reviewer, pack_producer]
+```
+
+`RunCrew` rejects a crew whose `pack_producer` is the same skill as its `coder`, or would run in the same box. It also rejects a producer that is not the last member of a `pipeline` crew, and a producer with no coder.
+
+The producer is not an agent and is sent no A2A task. Its run goes like this:
+
+1. Its box is provisioned with the run's git checkout. It gets no platform token and no model gateway token.
+2. The pipeline's last agent (the reviewer) returns the final files.
+3. The daemon writes the whole content of each file into the producer's checkout. If any path is outside the checkout, no file is written.
+4. The daemon runs the repository's test commands in the producer's box, as `proof-pack generate` does.
+
+The run result carries the outcome as `CrewRun.proof_pack`:
+
+| Field | Meaning |
+|---|---|
+| `status` | the pack's status; unset when no pack was produced |
+| `producer_box`, `coder_box` | where the commands ran, and the coder's box; never equal |
+| `pack_sha256` | `proofpack.PackDigest` of the pack |
+| `git_commit` | the commit the final files were written onto |
+| `applied_files` | the files written before the commands ran |
+| `error` | why no pack was produced |
+
+A failed or missing pack does not fail the crew run. The pack's `status` is what should gate opening a pull request; the coder's `tests_run` should not. The pull request is opened by the managed control plane, outside this repository.
+
 ## Digests
 
 - **`log_sha256`** covers the stored log bytes, after truncation. This lets a verifier recompute it from the pack alone. `proofpack.CheckPartDigests` does this and names the first step that does not match.
@@ -133,6 +166,20 @@ Sealing (#2798) writes the pack's digests into the audit hash chain as one ordin
   - `parts`: for each step, its name and the SHA-256 of its deterministic proto encoding.
 
 `proofpack.Seal` writes the row and returns a `SealedProofPack`: the pack plus its seal, which also carries `audit_row_id`, the id of that row. That is the file attached to the PR. A pack whose stored log digests are already wrong is refused, not sealed.
+
+## Attaching it to the PR
+
+When a tracker-dispatched run submits its change (`SubmitTrackerChange`, see [the tracker broker design](architecture/agent-tracker-broker.md)), the daemon does the following before anything is pushed:
+
+1. It generates the pack in the run's box, from the run's workspace.
+2. It checks that the pack ran at the commit being submitted.
+3. It seals the pack.
+
+The pushed branch then gets one more commit on top of the agent's commits. That commit adds the sealed pack as `.containarium/proof-pack.json`. A file the agent put at that path is replaced. The PR description carries the pack digest (`sha256:…`), its status, its step count and the seal's audit row.
+
+The change is not opened without its pack. If the pack cannot be generated, the workspace moved while it ran, or the daemon has no audit store to seal into, the submit fails and nothing is pushed. A pack whose status is `FAILED` or `NO_COMMANDS` is still attached: the pack is the evidence, not a gate.
+
+The pack is generated while the submit call is in progress, so the submit takes as long as the repository's tests, up to the default step timeout of 10 minutes per step. For now the pack is produced in the run's own box; #2799 moves it to a box other than the coder's.
 
 ## Verifying a sealed pack
 

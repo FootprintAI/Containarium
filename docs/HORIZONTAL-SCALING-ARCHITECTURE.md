@@ -24,7 +24,7 @@ This document explains horizontal scaling architectures and how SSH jumping work
         ▼                   ▼                   ▼
   ┌──────────┐        ┌──────────┐        ┌──────────┐
   │ Jump-1   │        │ Jump-2   │        │ Jump-3   │
-  │ 35.1.1.1 │        │ 35.2.2.2 │        │ 35.3.3.3 │
+  │192.0.2.1 │        │192.0.2.2 │        │192.0.2.3 │
   ├──────────┤        ├──────────┤        ├──────────┤
   │ LXC      │        │ LXC      │        │ LXC      │
   │ alice    │        │ bob      │        │ charlie  │
@@ -46,12 +46,12 @@ This document explains horizontal scaling architectures and how SSH jumping work
 
 **Alice (on Jump-1)**:
 ```
-Alice's laptop → Jump-1 (35.1.1.1) → alice-container (10.0.3.100 on Jump-1)
+Alice's laptop → Jump-1 (192.0.2.1) → alice-container (10.0.3.100 on Jump-1)
 ```
 
 **Bob (on Jump-2)**:
 ```
-Bob's laptop → Jump-2 (35.2.2.2) → bob-container (10.0.3.100 on Jump-2)
+Bob's laptop → Jump-2 (192.0.2.2) → bob-container (10.0.3.100 on Jump-2)
 ```
 
 Note: Same IP (10.0.3.100) can exist on different jump servers - they're isolated networks.
@@ -77,12 +77,12 @@ Load balancer maintains session affinity (same user → same jump server).
 ```ssh-config
 # Team A members use Jump-1
 Host containarium-jump
-    HostName 35.1.1.1  # Jump-1 IP
+    HostName 192.0.2.1  # Jump-1 IP
     User admin
 
 # Team B members use Jump-2
 Host containarium-jump
-    HostName 35.2.2.2  # Jump-2 IP
+    HostName 192.0.2.2  # Jump-2 IP
     User admin
 ```
 
@@ -91,12 +91,12 @@ Host containarium-jump
 **Manual Assignment** (simplest):
 ```bash
 # Create containers on Jump-1 for Team A
-ssh admin@35.1.1.1
+ssh admin@192.0.2.1
 containarium create alice
 containarium create dave
 
 # Create containers on Jump-2 for Team B
-ssh admin@35.2.2.2
+ssh admin@192.0.2.2
 containarium create bob
 containarium create eve
 ```

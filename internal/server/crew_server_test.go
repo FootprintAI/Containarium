@@ -349,13 +349,12 @@ func TestEmbeddedEngineerCrewValidatesAndDrives(t *testing.T) {
 	if crew.Topology != pb.CrewTopology_CREW_TOPOLOGY_PIPELINE {
 		t.Fatalf("engineer-crew topology = %v, want PIPELINE", crew.Topology)
 	}
-	if got := crew.SkillIds; len(got) != 2 || got[0] != "issue-implementer" || got[1] != "diff-reviewer" {
-		t.Fatalf("engineer-crew skill_ids = %v, want [issue-implementer diff-reviewer] in order", got)
+	// #2799: test-runner joins as the PACK_PRODUCER, last, after the reviewer.
+	if got := crew.SkillIds; len(got) != 3 || got[0] != "issue-implementer" || got[1] != "diff-reviewer" || got[2] != "test-runner" {
+		t.Fatalf("engineer-crew skill_ids = %v, want [issue-implementer diff-reviewer test-runner] in order", got)
 	}
-	// #2799: the coder is a declared, typed role, so a pack producer can be
-	// checked against it.
-	if got := crew.GetRoles(); len(got) != 2 || got[0] != pb.CrewRole_CREW_ROLE_CODER || got[1] != pb.CrewRole_CREW_ROLE_REVIEWER {
-		t.Fatalf("engineer-crew roles = %v, want [CODER REVIEWER]", got)
+	if got := crew.GetRoles(); len(got) != 3 || got[0] != pb.CrewRole_CREW_ROLE_CODER || got[1] != pb.CrewRole_CREW_ROLE_REVIEWER || got[2] != pb.CrewRole_CREW_ROLE_PACK_PRODUCER {
+		t.Fatalf("engineer-crew roles = %v, want [CODER REVIEWER PACK_PRODUCER]", got)
 	}
 
 	sk := skills.GetDefault()

@@ -1,0 +1,37 @@
+# Security-claim phrases for scripts/ci/check-claims.sh. One extended regex per
+# line, matched case-insensitively against README prose. The first group comes
+# from the rows of docs/security/CLAIMS.md; the second is the wider vocabulary
+# #2558 named. Add a phrase here when a new kind of claim appears.
+
+# From CLAIMS.md rows
+unprivileged
+isolat(ed|ion|es)
+tamper[a-z-]*
+default-deny
+egress polic(y|ies)
+audit(ed|-logged| log)
+(envelope[ -])?encrypt(ed|ion)
+hash chain
+fail2ban
+apparmor
+clamav
+malware
+trivy
+gosec
+govulncheck
+digest verification
+signed
+sbom
+sha-?256
+air-?gap(ped)?
+
+# Wider vocabulary
+zero-trust
+cross-tenant
+no (cross-tenant )?leak[a-z]*
+hardened|hardening
+immutable
+least[ -]privilege
+keeps? [^.]*keys? out
+kms envelope
+jwt with

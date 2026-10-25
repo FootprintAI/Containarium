@@ -1,5 +1,7 @@
 # Deployment modes: hosted, BYOC, on-prem / air-gapped
 
+> Status: **Implemented** (describes the daemon, sentinel and `internal/cloud/` client in this repository; any linked page marked "draft design" is not implemented).
+
 This page shows the three ways the open-source code can be deployed. For each
 mode it shows the trust boundaries, the control-plane and data-plane traffic,
 and what crosses the network. It describes only what the code in this

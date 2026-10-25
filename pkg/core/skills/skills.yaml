@@ -402,6 +402,34 @@ skills:
         - code-editing
         - issue-to-pr
 
+  # test-runner (#2799) is engineer-crew's PACK_PRODUCER: the member that runs
+  # the repository's test commands on the crew's final files and produces the
+  # Proof Pack (docs/PROOF-PACK.md), in a box other than the coder's. It is not
+  # an agent. In a crew, the daemon provisions its box with the run's checkout
+  # and NO credentials (no platform token, no model gateway token), writes the
+  # reviewer's final files into it and runs proofpack.Generate there; no model
+  # is called and system_prompt is never used. recipe_id gives it the same
+  # image the coder runs in, so the same toolchain is available. The prompt
+  # below only answers a direct `skill run`, which this skill does not support.
+  - id: test-runner
+    name: Test Runner
+    description: Runs a repository's declared test commands on a crew's final files in its own box and produces the Proof Pack. Used as a crew's pack_producer; takes no tasks of its own.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are not used as an agent. Make no changes and run no commands.
+      Reply with only this JSON object: {"error": "test-runner runs only as
+      a crew's pack_producer; the platform runs the test commands itself"}.
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    agent_card:
+      id: test-runner
+      name: Test Runner
+      description: A crew's pack producer; the platform runs the repository's test commands in this box.
+      capabilities:
+        - test-execution
+        - proof-pack
+
   # deploy-branch is a generic provisioning skill: stand up a live, reachable
   # instance of a git ref. It has no knowledge of what's calling it or why —
   # verification, demos, and preview environments are all just "deploy this

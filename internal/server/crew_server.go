@@ -191,9 +191,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	// lease (#2100) — have no unit-testable form at all. The wiper is a
 	// parameter for exactly the reason endRunLease already takes one.
 	return s.runCrew(ctx, req, crew, runID, crewRunDeps{
-		provision: s.provisionMemberBox,
-		send:      s.agents.SendAgentTask,
-		wiper:     s.agents.boxWiper(),
+		provision:         s.provisionMemberBox,
+		send:              s.agents.SendAgentTask,
+		wiper:             s.agents.boxWiper(),
+		provisionProducer: s.provisionProducerBox,
+		producePack:       s.producePackIn,
 	})
 }
 
@@ -208,7 +210,17 @@ type crewRunDeps struct {
 	provision provisionMemberFunc
 	send      taskSender
 	wiper     runlease.Wiper
+	// provisionProducer and producePack serve a crew's PACK_PRODUCER member
+	// (#2799): its box is provisioned with no credentials, and the pack is
+	// generated in it by the daemon. s.provisionProducerBox and
+	// s.producePackIn in production.
+	provisionProducer provisionMemberFunc
+	producePack       producePackFunc
 }
+
+// producePackFunc writes a crew's final files (artifactJSON) into repoDir in
+// box and runs the repository's test commands there, returning the pack.
+type producePackFunc func(ctx context.Context, box, repoDir, artifactJSON string) (*pb.ProofPack, error)
 
 // provisionMemberBox is the production provisionMemberFunc: provision the
 // member's box (scoped token + per-box allowed_peers policy) and start it in
@@ -325,14 +337,32 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 	// provisioning failure, where the members already up are serving with live
 	// gateway tokens and a checkout of the caller's repo (#2100).
 	leases := make([]runlease.Lease, 0, len(crew.SkillIds))
+	// #2799: the coder's box, and the PACK_PRODUCER's lease when the crew has
+	// one. validateCrewRoles has already checked the roles' shape.
+	roles := crew.GetRoles()
+	var coderBox string
+	var producer *runlease.Lease
 
-	for _, sid := range crew.SkillIds {
+	for i, sid := range crew.SkillIds {
 		skill, _ := s.skillByID(sid) // existence already checked by validateCrewTopology
+		role := pb.CrewRole_CREW_ROLE_UNSPECIFIED
+		if i < len(roles) {
+			role = roles[i]
+		}
+		provision := deps.provision
+		if role == pb.CrewRole_CREW_ROLE_PACK_PRODUCER {
+			provision = deps.provisionProducer
+		}
 		// The crew run's own id IS the run id (#1817): every member box's
 		// credentials carry it in their `run_id` claim, and the lease's issue
 		// audit row resolves back to this one handle — as, now, does its
 		// matching agent.run_lease_end row.
-		lease, gitCommit, err := deps.provision(ctx, skill, req, run.Id)
+		var lease runlease.Lease
+		var gitCommit string
+		err := errors.New("this daemon cannot provision a PACK_PRODUCER")
+		if provision != nil {
+			lease, gitCommit, err = provision(ctx, skill, req, run.Id)
+		}
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
@@ -357,6 +387,12 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 			return nil, status.Errorf(code, "crew %q: %s", crew.Id, run.Error)
 		}
 		leases = append(leases, lease)
+		switch role {
+		case pb.CrewRole_CREW_ROLE_CODER:
+			coderBox = lease.Box
+		case pb.CrewRole_CREW_ROLE_PACK_PRODUCER:
+			producer = &leases[len(leases)-1]
+		}
 		// Record the commit the FIRST member's fetch resolved to — every
 		// member fetches the same git_source/git_ref, so they resolve to the
 		// same commit barring a concurrent push mid-run (accepted, same as a
@@ -378,6 +414,10 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 	} else {
 		run.State = pb.CrewRunState_CREW_RUN_STATE_COMPLETED
 		run.ArtifactJson = out
+		// The producer tests the final files: the last A2A member's artifact.
+		if producer != nil {
+			run.ProofPack = crewProofPack(ctx, deps.producePack, coderBox, *producer, out)
+		}
 	}
 
 	if err := s.runs.Put(ctx, run); err != nil {
