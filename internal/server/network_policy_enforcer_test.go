@@ -80,7 +80,7 @@ func TestDomainRefreshLoop_FollowsTTL(t *testing.T) {
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	dns := &countingTTLResolver{ttl: 0}
 	e.resolver = newDomainResolver(dns, time.Now)
-	e.refreshDomains(false) // what Start does before launching the loop
+	e.refreshDomainsForStartup() // what Start does before launching the loop
 
 	e.wg.Add(1)
 	go e.domainRefreshLoop()

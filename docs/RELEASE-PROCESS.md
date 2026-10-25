@@ -288,6 +288,8 @@ published:
   and the script's inline comments for current flags and known gotchas
   (host daemon service unit naming has drifted between hosts before;
   verify the live unit before scripting a restart).
+- For the step-by-step upgrade, the post-upgrade checks and rollback, see
+  [UPGRADE-AND-ROLLBACK.md](UPGRADE-AND-ROLLBACK.md).
 - Never scp an ad hoc binary built from an untagged commit onto a host
   that serves real traffic. If a fix needs to reach production, cut a
   release for it first — that's the whole point of this document.
