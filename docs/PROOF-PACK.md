@@ -116,6 +116,39 @@ The pack has no field for a step's command line or for the environment. Generati
 
 A command's own output can still echo what it runs. `make`, for example, prints each recipe line. That text is log content and is kept as printed. A repository whose test output prints secrets should fix that output; the pack will not redact it.
 
+## Who produces the pack in a crew
+
+In a crew, the pack comes from a member whose role is `pack_producer`, never from the coder (#2799). Roles are declared per member in `crews.yaml`:
+
+```yaml
+- id: engineer-crew
+  topology: pipeline
+  skill_ids: [issue-implementer, diff-reviewer, test-runner]
+  roles: [coder, reviewer, pack_producer]
+```
+
+`RunCrew` rejects a crew whose `pack_producer` is the same skill as its `coder`, or would run in the same box. It also rejects a producer that is not the last member of a `pipeline` crew, and a producer with no coder.
+
+The producer is not an agent and is sent no A2A task. Its run goes like this:
+
+1. Its box is provisioned with the run's git checkout. It gets no platform token and no model gateway token.
+2. The pipeline's last agent (the reviewer) returns the final files.
+3. The daemon writes the whole content of each file into the producer's checkout. If any path is outside the checkout, no file is written.
+4. The daemon runs the repository's test commands in the producer's box, as `proof-pack generate` does.
+
+The run result carries the outcome as `CrewRun.proof_pack`:
+
+| Field | Meaning |
+|---|---|
+| `status` | the pack's status; unset when no pack was produced |
+| `producer_box`, `coder_box` | where the commands ran, and the coder's box; never equal |
+| `pack_sha256` | `proofpack.PackDigest` of the pack |
+| `git_commit` | the commit the final files were written onto |
+| `applied_files` | the files written before the commands ran |
+| `error` | why no pack was produced |
+
+A failed or missing pack does not fail the crew run. The pack's `status` is what should gate opening a pull request; the coder's `tests_run` should not. The pull request is opened by the managed control plane, outside this repository.
+
 ## Digests
 
 - **`log_sha256`** covers the stored log bytes, after truncation. This lets a verifier recompute it from the pack alone. `proofpack.CheckPartDigests` does this and names the first step that does not match.
