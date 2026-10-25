@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-10-25
+
 ### Added
 
 - **`.github/CODEOWNERS` and an admin script for the supply-chain repository settings** (#2792, part of #2649). CODEOWNERS names the two repository admins on the 11 build and dependency paths decided on #2649. `scripts/admin/apply-repo-settings.sh` (dry run by default, `--apply` for an admin) sets code-owner review, stale-review dismissal, conversation resolution, a read-only default token, the action allow-list with SHA pinning, secret scanning, push protection and Dependabot security updates, preserving the required status checks and enforce-admins; the runbook is `docs/security/REPO-SETTINGS-RUNBOOK.md`. CI checks CODEOWNERS coverage and the script. Nothing is changed on the live repository until an admin runs `--apply`.
