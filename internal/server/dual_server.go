@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,6 +49,7 @@ import (
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/retention"
 	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	"github.com/footprintai/containarium/internal/runlease"
@@ -206,6 +206,10 @@ type DualServerConfig struct {
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
+	// PoolHeadroomFloors is each storage pool's floor in percent used, past
+	// which creates and snapshots are refused (#3128). Unlisted pools use
+	// poolcapacity.DefaultFloorPercent.
+	PoolHeadroomFloors poolcapacity.Floors
 	// CPUOvercommitFactor is the max CPU overcommit ceiling (committed cores /
 	// physical cores) for create-time admission (#1029). <= 0 disables the gate.
 	CPUOvercommitFactor float64
@@ -1612,14 +1616,14 @@ skipAppHosting:
 	// on any failure we keep the in-memory store (policies won't survive a
 	// restart, but the service stays up). Swap happens before grpcServer.Serve,
 	// so it races with no live RPCs.
-	// policyStoreDurable says whether npServer's store is the source of truth
+	// npServer's durable flag says whether its store is the source of truth
 	// for network policies: true with no Postgres configured (the in-memory
 	// store IS the store) or once the Postgres store is installed; false
 	// while Postgres was configured but could not be reached, because the
 	// in-memory fallback is then empty and must not be read as "no policies"
 	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
-	var policyStoreDurable atomic.Bool
-	policyStoreDurable.Store(postgresConnString == "")
+	// While false, the operator mutation RPCs refuse with UNAVAILABLE (#3131).
+	npServer.SetDurable(postgresConnString == "")
 	// The coding-tool egress policy store (#2378) gets the same guard: with
 	// Postgres configured it refuses every RPC until its Postgres store is
 	// installed below, instead of answering "unrestricted" from the empty
@@ -1683,8 +1687,7 @@ skipAppHosting:
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
 				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
 			} else {
-				npServer.SetStore(pgStore)
-				policyStoreDurable.Store(true)
+				npServer.InstallDurableStore(pgStore)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
@@ -1870,6 +1873,13 @@ skipAppHosting:
 	// Storage pool capacity log + gauges, on every daemon (#2823).
 	if m := startStoragePoolMonitor(context.Background(), metricsCollector, config.LocalBackendID); m != nil {
 		containerServer.SetStoragePoolSource(m.Snapshot)
+		// Headroom floor (#3128), checked against the same snapshot.
+		containerServer.SetPoolHeadroomGuard(poolcapacity.NewGuard(config.PoolHeadroomFloors, m.Snapshot, incus.ConfiguredStoragePool, nil))
+		if len(config.PoolHeadroomFloors) > 0 {
+			log.Printf("[storage] pool headroom floors: %s (other pools: %d%%)", config.PoolHeadroomFloors, poolcapacity.DefaultFloorPercent)
+		}
+	} else {
+		log.Printf("WARN: storage pool headroom floor disabled: pool sizes cannot be read, so creates and snapshots are not checked (#3128)")
 	}
 
 	// Set monitoring URLs on container server so GetMonitoringInfo works.
@@ -2213,7 +2223,7 @@ skipAppHosting:
 			// read through npServer each pass because the store is swapped to
 			// Postgres after construction.
 			Policies: tenantguard.PolicySourceFunc(func(ctx context.Context) ([]*pb.NetworkPolicy, error) {
-				if !policyStoreDurable.Load() {
+				if !npServer.Durable() {
 					// An empty fallback is not "no policies": fail the pass
 					// so the ACLs from the last good pass stay in force.
 					return nil, fmt.Errorf("network-policy store is the in-memory fallback (Postgres unavailable at startup); keeping existing ACLs")
