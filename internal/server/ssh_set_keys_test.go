@@ -1,18 +1,21 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/sentinel"
+	"github.com/footprintai/containarium/internal/sshauthz"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -173,5 +176,83 @@ func TestSetSSHKeys_NotifiesSentinel(t *testing.T) {
 	}
 	if hits.Load() != 1 || reasons.Load() != "set_ssh_keys alice" {
 		t.Fatalf("hits=%d reason=%v", hits.Load(), reasons.Load())
+	}
+}
+
+// Registry work happens inside the file layer's critical section, so two
+// concurrent Sets cannot interleave a Register after the other's Revoke.
+type sectionRegistry struct {
+	recordingRegistry
+	fs          *fakeAuthorizedKeys
+	outsideCall bool
+}
+
+func (r *sectionRegistry) Register(ctx context.Context, rec sshauthz.KeyRecord) error {
+	if !r.fs.inReplace {
+		r.outsideCall = true
+	}
+	return r.recordingRegistry.Register(ctx, rec)
+}
+
+func (r *sectionRegistry) Revoke(ctx context.Context, rec sshauthz.KeyRecord, at time.Time) error {
+	if !r.fs.inReplace {
+		r.outsideCall = true
+	}
+	return r.recordingRegistry.Revoke(ctx, rec, at)
+}
+
+func TestSetSSHKeys_RegistryWorkRunsInsideCriticalSection(t *testing.T) {
+	fs := newFakeAuthorizedKeys()
+	reg := &sectionRegistry{fs: fs}
+	s := &ContainerServer{authorizedKeys: fs.ops(), sshKeyNow: func() time.Time { return caseClock }}
+	s.SetSSHKeyRegistry(reg)
+	a, b := newTestPubKey(t), newTestPubKey(t)
+	fs.files["alice"] = []string{a}
+
+	if _, err := s.SetSSHKeys(tenantWithScopes("alice", auth.ScopeSSHWrite), &pb.SetSSHKeysRequest{Username: "alice", SshPublicKeys: []string{b}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.registered) != 1 || len(reg.revoked) != 1 {
+		t.Fatalf("registered=%d revoked=%d", len(reg.registered), len(reg.revoked))
+	}
+	if reg.outsideCall {
+		t.Fatal("registry called outside the per-user critical section")
+	}
+}
+
+// A slow registry is cut off, so it cannot hold the per-user lock forever.
+type blockingRegistry struct{ recordingRegistry }
+
+func (blockingRegistry) Register(ctx context.Context, _ sshauthz.KeyRecord) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (blockingRegistry) Revoke(ctx context.Context, _ sshauthz.KeyRecord, _ time.Time) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestSetSSHKeys_RegistryCallsAreTimeBounded(t *testing.T) {
+	prev := setSSHKeysRegistryTimeout
+	setSSHKeysRegistryTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { setSSHKeysRegistryTimeout = prev })
+
+	fs := newFakeAuthorizedKeys()
+	s := &ContainerServer{authorizedKeys: fs.ops(), sshKeyNow: func() time.Time { return caseClock }}
+	s.SetSSHKeyRegistry(blockingRegistry{})
+	a, b := newTestPubKey(t), newTestPubKey(t)
+	fs.files["alice"] = []string{a}
+	ctx := tenantWithScopes("alice", auth.ScopeSSHWrite)
+
+	for name, keys := range map[string][]string{"revoke": {b}, "register": {a}} {
+		start := time.Now()
+		_, err := s.SetSSHKeys(ctx, &pb.SetSSHKeysRequest{Username: "alice", SshPublicKeys: keys})
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s: err = %v, want deadline exceeded", name, err)
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Errorf("%s: took %v", name, time.Since(start))
+		}
 	}
 }

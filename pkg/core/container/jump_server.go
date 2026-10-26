@@ -471,6 +471,9 @@ func parseAuthorizedKeys(content string) []string {
 
 // setupUserSSHKey sets up SSH key for a user
 func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
+	// Same lock as Add/Remove/Replace: this overwrites the file.
+	defer LockAuthorizedKeys(username)()
+
 	homeDir := filepath.Join("/home", username)
 	sshDir := filepath.Join(homeDir, ".ssh")
 	authKeysFile := filepath.Join(sshDir, "authorized_keys")
@@ -503,6 +506,9 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 
 // updateUserSSHKey updates SSH key for existing user
 func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
+	// Same lock as Add/Remove/Replace: this is a read-then-append.
+	defer LockAuthorizedKeys(username)()
+
 	homeDir := filepath.Join("/home", username)
 	sshDir := filepath.Join(homeDir, ".ssh")
 	authKeysFile := filepath.Join(sshDir, "authorized_keys")
@@ -922,7 +928,7 @@ func AddAuthorizedKey(username, pubKey string) error {
 		return fmt.Errorf("host user %q does not exist (was the container created?)", username)
 	}
 
-	defer lockAuthorizedKeys(username)()
+	defer LockAuthorizedKeys(username)()
 
 	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
 	akPath := filepath.Join(sshDir, "authorized_keys")
@@ -1005,7 +1011,7 @@ func RemoveAuthorizedKey(username, pubKey string) error {
 		return fmt.Errorf("host user %q does not exist", username)
 	}
 
-	defer lockAuthorizedKeys(username)()
+	defer LockAuthorizedKeys(username)()
 
 	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
 	existing, err := os.ReadFile(akPath)

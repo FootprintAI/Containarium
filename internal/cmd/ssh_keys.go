@@ -37,6 +37,10 @@ itself are always kept. Running the same command twice gives the same result.
 Every key must be a single-line public key with no options (command=, from=):
 one invalid key fails the whole call and changes nothing.
 
+Revocation is registry-wide: a key dropped here is revoked in the daemon's
+key registry for every account holding it, so it is also revoked for your
+other boxes where it remains in the file.
+
 An empty list removes every key you manage and must be asked for with --empty.
 
 Examples:

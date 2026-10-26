@@ -46,10 +46,10 @@ func readFile(t *testing.T, p string) string {
 
 func TestReplaceAuthorizedKeys_SetThenShrink(t *testing.T) {
 	user, path := replaceFixture(t, "")
-	if _, err := ReplaceAuthorizedKeys(user, []string{validTestKey1, validTestKey2}, nil); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, []string{validTestKey1, validTestKey2}, ReplaceHooks{}); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := ReplaceAuthorizedKeys(user, []string{validTestKey2}, nil)
+	removed, err := ReplaceAuthorizedKeys(user, []string{validTestKey2}, ReplaceHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestReplaceAuthorizedKeys_SetThenShrink(t *testing.T) {
 
 func TestReplaceAuthorizedKeys_EmptyKeepsPlatformKey(t *testing.T) {
 	user, path := replaceFixture(t, validTestKey1+"\n"+validTestKey2+"\n\n"+sentinelBlock)
-	removed, err := ReplaceAuthorizedKeys(user, nil, nil)
+	removed, err := ReplaceAuthorizedKeys(user, nil, ReplaceHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +83,11 @@ func TestReplaceAuthorizedKeys_EmptyKeepsPlatformKey(t *testing.T) {
 func TestReplaceAuthorizedKeys_Idempotent(t *testing.T) {
 	user, path := replaceFixture(t, validTestKey3Seed()+"\n\n"+sentinelBlock)
 	want := []string{validTestKey1, validTestKey2, validTestKey1} // duplicate collapses
-	if _, err := ReplaceAuthorizedKeys(user, want, nil); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, want, ReplaceHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	first := readFile(t, path)
-	removed, err := ReplaceAuthorizedKeys(user, want, nil)
+	removed, err := ReplaceAuthorizedKeys(user, want, ReplaceHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestReplaceAuthorizedKeys_InvalidKeyChangesNothing(t *testing.T) {
 	}
 	for name, keys := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ReplaceAuthorizedKeys(user, keys, nil); err == nil {
+			if _, err := ReplaceAuthorizedKeys(user, keys, ReplaceHooks{}); err == nil {
 				t.Fatal("want error")
 			}
 			if got := readFile(t, path); got != orig {
@@ -166,12 +166,12 @@ func TestReplaceAuthorizedKeys_HookFailureLeavesFileAndRetrySeesKeys(t *testing.
 	orig := a + "\n" + b + "\n"
 	user, path := replaceFixture(t, orig)
 
-	_, err := ReplaceAuthorizedKeys(user, []string{b}, func(removed []string) error {
+	_, err := ReplaceAuthorizedKeys(user, []string{b}, ReplaceHooks{BeforeWrite: func(removed []string) error {
 		if len(removed) != 1 || removed[0] != a {
 			t.Errorf("hook removed = %v", removed)
 		}
 		return fmt.Errorf("registry down")
-	})
+	}})
 	if err == nil {
 		t.Fatal("hook error not returned")
 	}
@@ -179,7 +179,7 @@ func TestReplaceAuthorizedKeys_HookFailureLeavesFileAndRetrySeesKeys(t *testing.
 		t.Fatalf("file changed after failed hook: %q", got)
 	}
 	var seen []string
-	if _, err := ReplaceAuthorizedKeys(user, []string{b}, func(r []string) error { seen = r; return nil }); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, []string{b}, ReplaceHooks{BeforeWrite: func(r []string) error { seen = r; return nil }}); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 1 || seen[0] != a || strings.Contains(readFile(t, path), a) {
@@ -187,38 +187,7 @@ func TestReplaceAuthorizedKeys_HookFailureLeavesFileAndRetrySeesKeys(t *testing.
 	}
 }
 
-// Replace and Add share one lock: neither may be lost. Run with -race.
-func TestReplaceAuthorizedKeys_ConcurrentAddAndSetLoseNothing(t *testing.T) {
-	for round := 0; round < 30; round++ {
-		keep, added := genKey(t, "keep"), genKey(t, "added")
-		user, path := replaceFixture(t, "")
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); _ = AddAuthorizedKey(user, added) }()
-		go func() { defer wg.Done(); _, _ = ReplaceAuthorizedKeys(user, []string{keep}, nil) }()
-		wg.Wait()
-		got := readFile(t, path)
-		if !strings.Contains(got, keep) {
-			t.Fatalf("round %d: Set's key lost: %q", round, got)
-		}
-		// Add either ran before Set (then Set legitimately dropped it) or
-		// after (then it must be present). A torn file contains neither
-		// whole line or a partial one.
-		for _, l := range strings.Split(strings.TrimSpace(got), "\n") {
-			if l != keep && l != added {
-				t.Fatalf("round %d: torn line %q in %q", round, l, got)
-			}
-		}
-		if err := AddAuthorizedKey(user, added); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(readFile(t, path), added) {
-			t.Fatalf("round %d: Add lost", round)
-		}
-	}
-}
-
-// Concurrent Adds and a Remove interleaved with Sets must never corrupt.
+// Many concurrent Adds must all land (a lost update would drop one).
 func TestReplaceAuthorizedKeys_ConcurrentAddsAllSurvive(t *testing.T) {
 	user, path := replaceFixture(t, "")
 	var wg sync.WaitGroup
@@ -246,7 +215,7 @@ func TestReplaceAuthorizedKeys_WritesRegeneratedCanonicalLine(t *testing.T) {
 		"unicode-sep":   "a\u2028b\u0085c",
 		"control":       "a\x07b",
 	} {
-		if _, err := ReplaceAuthorizedKeys(user, []string{base + " " + comment}, nil); err != nil {
+		if _, err := ReplaceAuthorizedKeys(user, []string{base + " " + comment}, ReplaceHooks{}); err != nil {
 			// A key whose comment holds a control char may be rejected;
 			// that is also safe.
 			continue
@@ -260,7 +229,7 @@ func TestReplaceAuthorizedKeys_WritesRegeneratedCanonicalLine(t *testing.T) {
 		}
 	}
 	// A key with no comment, and a plain comment, keep their form.
-	if _, err := ReplaceAuthorizedKeys(user, []string{base, genKey(t, "ci@host")}, nil); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, []string{base, genKey(t, "ci@host")}, ReplaceHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, path); !strings.HasPrefix(got, base+"\n") || !strings.Contains(got, " ci@host\n") {
@@ -274,13 +243,13 @@ func TestReplaceAuthorizedKeys_Bounds(t *testing.T) {
 	for i := 0; i <= MaxAuthorizedKeys; i++ {
 		many = append(many, genKey(t, ""))
 	}
-	if _, err := ReplaceAuthorizedKeys(user, many, nil); err == nil {
+	if _, err := ReplaceAuthorizedKeys(user, many, ReplaceHooks{}); err == nil {
 		t.Fatal("over-count accepted")
 	}
-	if _, err := ReplaceAuthorizedKeys(user, []string{genKey(t, strings.Repeat("x", MaxAuthorizedKeyBytes))}, nil); err == nil {
+	if _, err := ReplaceAuthorizedKeys(user, []string{genKey(t, strings.Repeat("x", MaxAuthorizedKeyBytes))}, ReplaceHooks{}); err == nil {
 		t.Fatal("oversize key accepted")
 	}
-	if _, err := ReplaceAuthorizedKeys(user, many[:MaxAuthorizedKeys], nil); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, many[:MaxAuthorizedKeys], ReplaceHooks{}); err != nil {
 		t.Fatalf("exactly the limit rejected: %v", err)
 	}
 	if got := readFile(t, path); strings.Count(got, "\n") != MaxAuthorizedKeys {
@@ -296,7 +265,7 @@ func TestReplaceAuthorizedKeys_LegacyFileGarbageAndOptions(t *testing.T) {
 	sent := genKey(t, "sentinel")
 	user, path := replaceFixture(t, "garbage line\n# a comment\n\x00\x01junk\n"+
 		`command="/bin/true",no-pty `+legacy+"\n"+keep+"\n\n"+SentinelKeyMarker+"\n"+sent+"\n")
-	removed, err := ReplaceAuthorizedKeys(user, []string{keep}, nil)
+	removed, err := ReplaceAuthorizedKeys(user, []string{keep}, ReplaceHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +283,7 @@ func TestReplaceAuthorizedKeys_LegacyFileGarbageAndOptions(t *testing.T) {
 func TestReplaceAuthorizedKeys_SentinelKeySubmittedAsCallerKey(t *testing.T) {
 	sent := genKey(t, "sentinel")
 	user, path := replaceFixture(t, SentinelKeyMarker+"\n"+sent+"\n")
-	if _, err := ReplaceAuthorizedKeys(user, []string{sent}, nil); err != nil {
+	if _, err := ReplaceAuthorizedKeys(user, []string{sent}, ReplaceHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, path); strings.Count(got, sent) != 1 || !strings.Contains(got, SentinelKeyMarker+"\n"+sent) {
@@ -324,7 +293,7 @@ func TestReplaceAuthorizedKeys_SentinelKeySubmittedAsCallerKey(t *testing.T) {
 	if err := os.WriteFile(path, []byte(sent+"\n\n"+SentinelKeyMarker+"\n"+sent+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := ReplaceAuthorizedKeys(user, nil, nil)
+	removed, err := ReplaceAuthorizedKeys(user, nil, ReplaceHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +308,7 @@ func TestReplaceAuthorizedKeys_HoldsLockAgainstConcurrentAdd(t *testing.T) {
 	keep, added := genKey(t, "keep"), genKey(t, "added")
 	user, path := replaceFixture(t, "")
 	done := make(chan struct{})
-	_, err := ReplaceAuthorizedKeys(user, []string{keep}, func([]string) error {
+	_, err := ReplaceAuthorizedKeys(user, []string{keep}, ReplaceHooks{BeforeWrite: func([]string) error {
 		go func() { defer close(done); _ = AddAuthorizedKey(user, added) }()
 		select {
 		case <-done:
@@ -347,7 +316,7 @@ func TestReplaceAuthorizedKeys_HoldsLockAgainstConcurrentAdd(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 		return nil
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,5 +324,100 @@ func TestReplaceAuthorizedKeys_HoldsLockAgainstConcurrentAdd(t *testing.T) {
 	got := readFile(t, path)
 	if !strings.Contains(got, keep) || !strings.Contains(got, added) {
 		t.Fatalf("lost an update: %q", got)
+	}
+}
+
+// A Remove that starts while a Replace is mid-flight must wait and land
+// afterwards, not be overwritten (which would resurrect the removed key).
+func TestReplaceAuthorizedKeys_HoldsLockAgainstConcurrentRemove(t *testing.T) {
+	victim := genKey(t, "victim")
+	user, path := replaceFixture(t, "")
+	done := make(chan struct{})
+	_, err := ReplaceAuthorizedKeys(user, []string{victim}, ReplaceHooks{BeforeWrite: func([]string) error {
+		go func() { defer close(done); _ = RemoveAuthorizedKey(user, victim) }()
+		select {
+		case <-done:
+			t.Error("Remove completed while Replace held the lock")
+		case <-time.After(200 * time.Millisecond):
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if got := readFile(t, path); strings.Contains(got, victim) {
+		t.Fatalf("removed key resurrected: %q", got)
+	}
+}
+
+// The legacy account helpers overwrite or append to the same file, so they
+// take the same lock. They hard-code /home, so the check is that they block
+// while the lock is held (without it they would return at once).
+func TestLegacyAccountKeyWritersTakeTheLock(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("would create /home entries as root")
+	}
+	for name, fn := range map[string]func(string) error{
+		"setupUserSSHKey":  func(u string) error { return setupUserSSHKey(u, validTestKey1, false) },
+		"updateUserSSHKey": func(u string) error { return updateUserSSHKey(u, validTestKey1, false) },
+	} {
+		user := "lockprobe-" + name
+		unlock := LockAuthorizedKeys(user)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = fn(user) }()
+		select {
+		case <-done:
+			t.Errorf("%s ran while the per-user lock was held", name)
+		case <-time.After(150 * time.Millisecond):
+		}
+		unlock()
+		<-done
+	}
+}
+
+func TestReplaceAuthorizedKeys_KeySizeBoundary(t *testing.T) {
+	user, _ := replaceFixture(t, "")
+	base := genKey(t, "")
+	pad := func(total int) string { return base + " " + strings.Repeat("c", total-len(base)-1) }
+	if _, err := ReplaceAuthorizedKeys(user, []string{pad(MaxAuthorizedKeyBytes)}, ReplaceHooks{}); err != nil {
+		t.Fatalf("exactly %d bytes rejected: %v", MaxAuthorizedKeyBytes, err)
+	}
+	if _, err := ReplaceAuthorizedKeys(user, []string{pad(MaxAuthorizedKeyBytes + 1)}, ReplaceHooks{}); err == nil {
+		t.Fatal("one byte over accepted")
+	}
+}
+
+// A chown failure must abort before the rename, leaving the live file alone.
+func TestReplaceAuthorizedKeys_ChownFailureLeavesFile(t *testing.T) {
+	orig := genKey(t, "orig")
+	user, path := replaceFixture(t, orig+"\n")
+	// Fail only for the temp file: the directory chown alone must not hide a
+	// missing, unchecked temp-file chown.
+	authorizedKeysChown = func(_, p string) error {
+		if strings.Contains(p, ".authorized_keys.tmp.") {
+			return fmt.Errorf("chown denied")
+		}
+		return nil
+	}
+	if _, err := ReplaceAuthorizedKeys(user, []string{genKey(t, "new")}, ReplaceHooks{}); err == nil {
+		t.Fatal("chown failure swallowed")
+	}
+	if got := readFile(t, path); got != orig+"\n" {
+		t.Fatalf("file changed: %q", got)
+	}
+}
+
+func TestReplaceAuthorizedKeys_AfterWriteRunsAfterRenameAndErrorKeepsFile(t *testing.T) {
+	user, path := replaceFixture(t, "")
+	k := genKey(t, "k")
+	_, err := ReplaceAuthorizedKeys(user, []string{k}, ReplaceHooks{AfterWrite: func() error {
+		if !strings.Contains(readFile(t, path), k) {
+			t.Error("AfterWrite ran before the file was in place")
+		}
+		return fmt.Errorf("register failed")
+	}})
+	if err == nil || !strings.Contains(readFile(t, path), k) {
+		t.Fatalf("err=%v file=%q", err, readFile(t, path))
 	}
 }

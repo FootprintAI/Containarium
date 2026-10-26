@@ -18,6 +18,31 @@ import (
 // session) out.
 const SentinelKeyMarker = "# sshpiper sentinel upstream key"
 
+// authorizedKeysChown gives path to the box's host user. A var so tests,
+// which run without such a user, can stub it.
+var authorizedKeysChown = func(username, path string) error {
+	// #nosec G204 -- username passed isValidUsername; the command is fixed.
+	if out, err := exec.Command("chown", username+":"+username, path).CombinedOutput(); err != nil {
+		return fmt.Errorf("chown %s: %w: %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ReplaceHooks lets the caller run work inside ReplaceAuthorizedKeys's
+// critical section (the per-user lock), so related state changes are ordered
+// against concurrent replaces.
+type ReplaceHooks struct {
+	// BeforeWrite is called with the caller-managed keys about to be dropped
+	// (by key material; platform keys are never in the list), after the file
+	// is read and before anything is written. If it fails nothing is written
+	// and its error is returned, so a retry sees the same keys: the caller
+	// revokes there, failing closed.
+	BeforeWrite func(removed []string) error
+	// AfterWrite is called once the new file is in place. If it fails the file
+	// stays replaced and the error is returned; the call is safe to retry.
+	AfterWrite func() error
+}
+
 // Bounds on a replace-all so a caller cannot make the daemon rewrite an
 // arbitrarily large file.
 const (
@@ -25,13 +50,16 @@ const (
 	MaxAuthorizedKeyBytes = 8 * 1024
 )
 
-// authorizedKeysLocks serializes every read-modify-write of one user's host
+// authorizedKeysLocks backs LockAuthorizedKeys. It serializes every read-modify-write of one user's host
 // authorized_keys (Add, Remove, Replace), so a concurrent Add cannot be lost
 // to a Replace's rename or the reverse. The daemon is a single process, so a
 // process-local mutex is enough.
 var authorizedKeysLocks sync.Map // username -> *sync.Mutex
 
-func lockAuthorizedKeys(username string) (unlock func()) {
+// LockAuthorizedKeys takes the per-user lock. Every writer of a user's host
+// authorized_keys in this process (including the gateway's sentinel-key
+// rewrite) must hold it across its read-modify-write. It is not reentrant.
+func LockAuthorizedKeys(username string) (unlock func()) {
 	m, _ := authorizedKeysLocks.LoadOrStore(username, &sync.Mutex{})
 	mu := m.(*sync.Mutex)
 	mu.Lock()
@@ -113,14 +141,9 @@ func keyMaterial(line string) (string, bool) {
 // canonical line (see canonicalKeyLine), and comment lines, unparseable lines
 // and option-bearing legacy lines that are not in the new set are dropped.
 //
-// beforeWrite, when non-nil, is called with the caller-managed keys about to
-// be dropped (by key material; platform keys are never in the list) after the
-// file has been read and before anything is written. If it fails, nothing is
-// written and its error is returned, so a retry sees the same keys. That lets
-// the caller revoke them first, failing closed. It runs under the per-user
-// lock, so it must not call back into this package for the same user.
-// The same list is returned.
-func ReplaceAuthorizedKeys(username string, keys []string, beforeWrite func(removed []string) error) (removed []string, err error) {
+// hooks run under the per-user lock, so they must not call back into this
+// package for the same user. The dropped caller-managed keys are returned.
+func ReplaceAuthorizedKeys(username string, keys []string, hooks ReplaceHooks) (removed []string, err error) {
 	if !isValidUsername(username) {
 		return nil, fmt.Errorf("invalid username: %s", username)
 	}
@@ -149,7 +172,7 @@ func ReplaceAuthorizedKeys(username string, keys []string, beforeWrite func(remo
 		return nil, fmt.Errorf("host user %q does not exist (was the container created?)", username)
 	}
 
-	defer lockAuthorizedKeys(username)()
+	defer LockAuthorizedKeys(username)()
 
 	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
 	akPath := filepath.Join(sshDir, "authorized_keys")
@@ -196,8 +219,8 @@ func ReplaceAuthorizedKeys(username string, keys []string, beforeWrite func(remo
 		}
 	}
 
-	if beforeWrite != nil {
-		if err := beforeWrite(removed); err != nil {
+	if hooks.BeforeWrite != nil {
+		if err := hooks.BeforeWrite(removed); err != nil {
 			return nil, err
 		}
 	}
@@ -242,11 +265,37 @@ func ReplaceAuthorizedKeys(username string, keys []string, beforeWrite func(remo
 	if err := tmp.Close(); err != nil {
 		return nil, fmt.Errorf("close tmp: %w", err)
 	}
+	// Ownership is fixed before the rename, and checked, so a failed chown
+	// cannot leave the live file root-owned.
+	if err := authorizedKeysChown(username, sshDir); err != nil {
+		return nil, err
+	}
+	if err := authorizedKeysChown(username, tmpPath); err != nil {
+		return nil, err
+	}
 	if err := os.Rename(tmpPath, akPath); err != nil {
 		return nil, fmt.Errorf("rename tmp -> %s: %w", akPath, err)
 	}
-	// Best-effort, as in AddAuthorizedKey.
-	// #nosec G204 -- username passed isValidUsername; the command is fixed.
-	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+	if err := syncDir(sshDir); err != nil {
+		return nil, err
+	}
+	if hooks.AfterWrite != nil {
+		if err := hooks.AfterWrite(); err != nil {
+			return nil, err
+		}
+	}
 	return removed, nil
+}
+
+// syncDir fsyncs a directory so a rename into it survives a crash.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- built from a validated username
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
 }

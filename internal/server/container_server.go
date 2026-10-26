@@ -2777,6 +2777,10 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	}, nil
 }
 
+// setSSHKeysRegistryTimeout bounds the registry work SetSSHKeys does while
+// holding the per-user authorized_keys lock. A var so tests can shorten it.
+var setSSHKeysRegistryTimeout = 10 * time.Second
+
 // SetSSHKeys makes the user's host-side authorized_keys hold exactly the
 // requested keys (#2945). Authorization is AddSSHKey's: ssh:write plus
 // tenant access to the box.
@@ -2828,25 +2832,39 @@ func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequ
 		}
 	}
 
-	// Revoke before the file changes: the file layer calls this with the keys it
-	// is about to drop and writes nothing if it fails, so a registry outage
-	// leaves the file as it was and a retry still sees those keys. (Revoked
-	// but still in the file, if the write then fails, is the safe direction.)
-	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys, func(drop []string) error {
-		for _, k := range drop {
-			if err := s.revokeSSHKey(ctx, req.Username, k); err != nil {
-				return registryError("set ssh keys", err)
+	// Both registry steps run inside the file layer's per-user critical
+	// section, so concurrent Sets are ordered end to end (a later Set's
+	// revocation can never be undone by an earlier Set's registration), and
+	// each is bounded so a slow registry cannot hold the lock indefinitely.
+	//
+	// Revoke first: if it fails nothing is written and a retry still sees the
+	// keys. (Revoked but still in the file, if the write then fails, is the
+	// safe direction.) Register after the write; it is idempotent, so a
+	// failure here is retried by repeating the call.
+	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys, container.ReplaceHooks{
+		BeforeWrite: func(drop []string) error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range drop {
+				if err := s.revokeSSHKey(rctx, req.Username, k); err != nil {
+					return registryError("set ssh keys", err)
+				}
 			}
-		}
-		return nil
+			return nil
+		},
+		AfterWrite: func() error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range req.SshPublicKeys {
+				if err := s.registerSSHKey(rctx, req.Username, k, sshauthz.SourceAPI); err != nil {
+					return registryError("set ssh keys", err)
+				}
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("replace authorized keys: %w", err)
-	}
-	for _, k := range req.SshPublicKeys {
-		if err := s.registerSSHKey(ctx, req.Username, k, sshauthz.SourceAPI); err != nil {
-			return nil, registryError("set ssh keys", err)
-		}
 	}
 
 	// Revoked keys left in sshpiper's table would stay working credentials.
