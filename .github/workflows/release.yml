@@ -627,7 +627,7 @@ jobs:
         # reads only these three from bin/. No Go toolchain or buf is needed
         # in this job any more: download-deps.sh fetches its toolchains as
         # tarballs.
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bundle-binaries-${{ matrix.target.os }}-${{ matrix.target.arch }}
           path: bin
@@ -852,7 +852,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -924,7 +924,7 @@ jobs:
 
       - name: Run Trivy vulnerability scanner (image)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0 # master
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
@@ -936,7 +936,7 @@ jobs:
 
       - name: Upload Trivy SARIF results
         if: always() && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
         with:
           sarif_file: trivy-model-gateway-results.sarif
 

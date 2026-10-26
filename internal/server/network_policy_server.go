@@ -45,7 +45,10 @@ type NetworkPolicyServer struct {
 	// CONTAINARIUM_NETWORK_POLICY_ENFORCE.
 	applied      appliedStateSource
 	enforceArmed bool
-	clock        func() time.Time // nil = time.Now; tests inject a fixed clock
+	// kernelUnsupported says whether this host's kernel is known to be too old
+	// for the egress program (#2972); nil asks the host. Tests inject it.
+	kernelUnsupported func() bool
+	clock             func() time.Time // nil = time.Now; tests inject a fixed clock
 }
 
 // denyAuditQuerier is the slice of *audit.Store PlanNetworkPolicy needs.
