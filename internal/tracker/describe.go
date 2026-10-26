@@ -56,6 +56,40 @@ func (b CredentialBreadth) String() string {
 	}
 }
 
+// CredentialKind is the provider-native kind of a credential, when the
+// provider's own introspection reveals it. It complements
+// CredentialBreadth: breadth ranks a credential against the preferred
+// type, kind says which type it is (a GitLab group token and a personal
+// token are both broad, but are different kinds).
+type CredentialKind int
+
+const (
+	// KindUnspecified means the kind could not be determined: the probe
+	// that would classify it failed, or the provider's introspection does
+	// not reveal it for this credential.
+	KindUnspecified CredentialKind = iota
+	// KindProject is a GitLab project access token.
+	KindProject
+	// KindGroup is a GitLab group access token.
+	KindGroup
+	// KindPersonal is a credential owned by a real user account: a
+	// GitLab personal access token or a GitHub classic PAT.
+	KindPersonal
+)
+
+func (k CredentialKind) String() string {
+	switch k {
+	case KindProject:
+		return "project"
+	case KindGroup:
+		return "group"
+	case KindPersonal:
+		return "personal"
+	default:
+		return "unspecified"
+	}
+}
+
 // CredentialInfo is what DescribeCredential reports about a tracker
 // credential, asked of the upstream rather than the operator (both
 // providers let a token describe itself).
@@ -74,6 +108,9 @@ type CredentialInfo struct {
 	// preferred type. BreadthUnspecified if classification itself
 	// requires a probe that failed.
 	Breadth CredentialBreadth
+	// Kind is the provider-native kind of the credential.
+	// KindUnspecified if it cannot be determined.
+	Kind CredentialKind
 }
 
 // ErrCredentialInvalid is returned by DescribeCredential when the
