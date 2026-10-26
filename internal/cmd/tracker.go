@@ -351,6 +351,7 @@ func printTrackerStatus(resp *pb.GetTrackerStatusResponse) {
 		return
 	}
 	fmt.Printf("breadth:          %s\n", trackerBreadthLabel(resp.GetCredentialBreadth()))
+	fmt.Printf("kind:             %s\n", trackerKindLabel(resp.GetCredentialKind()))
 	if len(resp.GetCredentialScopes()) > 0 {
 		fmt.Printf("scopes:           %s\n", strings.Join(resp.GetCredentialScopes(), ", "))
 	}
@@ -385,6 +386,20 @@ func trackerBreadthLabel(b pb.TrackerCredentialBreadth) string {
 		return "preferred"
 	case pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD:
 		return "broad"
+	default:
+		return "unknown"
+	}
+}
+
+// trackerKindLabel renders the credential kind enum for tracker status output.
+func trackerKindLabel(k pb.TrackerCredentialKind) string {
+	switch k {
+	case pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT:
+		return "project"
+	case pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP:
+		return "group"
+	case pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL:
+		return "personal"
 	default:
 		return "unknown"
 	}
