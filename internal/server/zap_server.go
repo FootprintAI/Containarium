@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ZapServer implements the ZapService gRPC service
@@ -43,6 +46,9 @@ func (s *ZapServer) TriggerZapScan(ctx context.Context, req *pb.TriggerZapScanRe
 	}
 
 	scanRunID, err := s.manager.RunScan(ctx, "manual", req.ContainerName)
+	if errors.Is(err, zapscanner.ErrZapNotInstalled) {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to trigger ZAP scan: %w", err)
 	}
