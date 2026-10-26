@@ -256,7 +256,7 @@ func TestVerify_Rotation(t *testing.T) {
 	if err := guardrail.Sign(oldAtt, f.priv); err != nil {
 		t.Fatal(err)
 	}
-	_, err :=guardrailpolicy.VerifyAttestation(oldAtt, f.server, f.dir, nil)
+	_, err := guardrailpolicy.VerifyAttestation(oldAtt, f.server, f.dir, nil)
 	if !errors.Is(err, guardrailpolicy.ErrRevokedSigner) {
 		t.Fatalf("attestation by the revoked key = %v, want ErrRevokedSigner", err)
 	}
