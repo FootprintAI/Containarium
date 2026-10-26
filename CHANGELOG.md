@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tenant sshpiperd units raise the login grace to 90 seconds** (part of #2526). `sshpiper.service.tmpl` and the GCE sentinel startup script pass `--login-grace-time 90s` to sshpiperd, whose default of 30 seconds is shorter than the 60-second device-approval cap of the enforcing `ssh-authz-plugin`; without it sshpiperd would drop a login while the user approves the device.
+
 ## [0.118.0] - 2026-10-26
 
 ### Fixed
