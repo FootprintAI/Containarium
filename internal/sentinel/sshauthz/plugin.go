@@ -67,7 +67,9 @@ type Config struct {
 	Recorder sshsession.Recorder
 	Target   *sshsession.TargetResolver // routed target on session records
 	Now      func() time.Time           // nil uses time.Now().UTC()
-	Sleep    func(time.Duration)        // device-approval poll wait; nil uses time.Sleep
+	// Sleep replaces the device-approval poll wait (tests). Nil waits for
+	// the interval or until the poll is cancelled, whichever comes first.
+	Sleep func(time.Duration)
 }
 
 type Plugin struct {
@@ -80,6 +82,11 @@ type Plugin struct {
 	// approvals holds the device approval of the key a connection offered
 	// last, until keyboard-interactive consumes it (approval.go).
 	approvals map[string]pendingApproval
+	// polls cancels the running approval poll of a client address; the
+	// slots count connections in the approval stage per login and per IP.
+	polls        map[string]context.CancelFunc
+	slotsByLogin map[string]int
+	slotsByIP    map[string]int
 }
 
 func New(cfg Config) (*Plugin, error) {
@@ -104,14 +111,12 @@ func New(cfg Config) (*Plugin, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	if cfg.Sleep == nil {
-		cfg.Sleep = time.Sleep
-	}
 	// This private record builder only ever sees connections pipeStart hands
 	// it, so it skips nothing: a session whose decision was evicted from the
 	// stash is still recorded (without credential or decision).
 	session := &sshsession.Plugin{Recorder: cfg.Recorder, Target: cfg.Target, Now: cfg.Now}
-	return &Plugin{cfg: cfg, session: session, pending: map[string]pendingConn{}, open: map[string]map[string]string{}, approvals: map[string]pendingApproval{}}, nil
+	return &Plugin{cfg: cfg, session: session, pending: map[string]pendingConn{}, open: map[string]map[string]string{}, approvals: map[string]pendingApproval{},
+		polls: map[string]context.CancelFunc{}, slotsByLogin: map[string]int{}, slotsByIP: map[string]int{}}, nil
 }
 
 // PluginConfig returns the callbacks sshpiperd drives. Only publickey is
@@ -135,6 +140,9 @@ func (p *Plugin) PluginConfig() libplugin.SshPiperPluginConfig {
 	}
 	if p.cfg.Enforce {
 		cfg.PipeStartCallback, cfg.PipeErrorCallback = p.pipeStart, p.pipeError
+		// A connection that ends without a pipe may hold a device approval
+		// or a running poll (approval.go).
+		cfg.PipeCreateErrorCallback = p.pipeCreateError
 	}
 	return cfg
 }
@@ -283,17 +291,23 @@ func (p *Plugin) stash(meta map[string]string, conn libplugin.ConnMetadata, wire
 // recordDenied writes the ssh_session_denied record for an enforced denial.
 // Like ssh-session-plugin, a sink failure never changes the auth outcome.
 func (p *Plugin) recordDenied(conn libplugin.ConnMetadata, fp string, res *pb.AuthorizeSSHResponse) {
+	p.recordDeniedFor(conn.UniqueID(), conn.RemoteAddr(), conn.User(), fp, res)
+}
+
+// recordDeniedFor is recordDenied for a connection known only by the fields
+// kept with its approval, after the connection itself has gone.
+func (p *Plugin) recordDeniedFor(session, addr, login, fp string, res *pb.AuthorizeSSHResponse) {
 	if p.cfg.Recorder == nil {
 		return
 	}
-	ip, port := hostport.Split(conn.RemoteAddr(), 0)
+	ip, port := hostport.Split(addr, 0)
 	rec := sshsession.Record{
-		SessionID:     conn.UniqueID(),
+		SessionID:     session,
 		Phase:         sshsession.SessionPhaseDenied,
 		OccurredAt:    p.cfg.Now(),
 		ClientIP:      ip,
 		ClientPort:    port,
-		Login:         conn.User(),
+		Login:         login,
 		AuthMethod:    sshsession.AuthMethodPublicKey,
 		Credential:    sshsession.Credential{KeyFingerprint: fp},
 		UserID:        res.GetUserId(),
@@ -302,7 +316,7 @@ func (p *Plugin) recordDenied(conn libplugin.ConnMetadata, fp string, res *pb.Au
 		Enforced:      true,
 	}
 	if err := p.cfg.Recorder.Record(rec); err != nil {
-		p.cfg.Logf("[ssh-authz] login=%q: write denied record: %v", conn.User(), err)
+		p.cfg.Logf("[ssh-authz] login=%q: write denied record: %v", login, err)
 	}
 }
 

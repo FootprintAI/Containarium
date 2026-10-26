@@ -102,8 +102,9 @@ anyway; it's the only thing a non-release build has to go on.
    sha256sum -c --ignore-missing SHA256SUMS.txt`, that
    `helm pull oci://ghcr.io/<org>/charts/containarium-k8s --version <version>`
    succeeds, and that the pulled chart is stamped `version: <version>` and
-   `appVersion: v<version>`. Check that the `sign-release` job ran and
-   that every file on the Release has a `<file>.sigstore.json`
+   `appVersion: v<version>`. Check that the `sign-release`,
+   `sign-bundle` and `verify-release` jobs ran (the first signs all but
+   the air-gapped bundle and does not wait for it) and that every file on the Release has a `<file>.sigstore.json`
    (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
    documented `cosign verify-blob` command. Check that each image job's
    `Sign and verify the image` step passed and verify one image by digest
