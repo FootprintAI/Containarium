@@ -70,6 +70,13 @@ func TestAttachedProgram_InboundConnectionToEnforcedBox(t *testing.T) {
 	if err := loader.AttachVeth(ifindex); err != nil {
 		t.Fatalf("AttachVeth: %v", err)
 	}
+	// The daemon attaches BOTH hooks (reconcile loop); the egress hook is where
+	// a flow opened toward the box is recorded (#2618), so the sender hook can
+	// recognise the box's answers. Without it the box's reply is judged as a new
+	// outbound flow — which is the very bug under test.
+	if err := loader.AttachVethEgress(ifindex); err != nil {
+		t.Fatalf("AttachVethEgress: %v", err)
+	}
 	t.Cleanup(func() { _ = loader.DetachVeth(ifindex) })
 
 	// A service in the box: python3's stdlib HTTP server (on the runner image).
@@ -308,35 +315,24 @@ for _ in range(count):
     s.sendto(ip + tcp, (dst, 0))
 `
 
-// connectFromPortScript connects to dst:dport from a fixed source port, so the
-// dial's 5-tuple is the exact reverse of the forged seed. Exits 0 on connect.
-const connectFromPortScript = `
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("", int(sys.argv[3])))
-s.settimeout(3)
-try:
-    s.connect((sys.argv[1], int(sys.argv[2])))
-except Exception:
-    sys.exit(1)
-sys.exit(0)
-`
-
 // TestAttachedProgram_SpoofedInboundSeedDoesNotOpenEgress is the source-validation
 // guard (#2618 decision, option (a)) on a real kernel. Topology: a bridge with
 // two managed veths, abox (enforce, empty allow-list) and a neighbour box nbox
 // (log_only — the worst case, since nbox's own hook only logs its forgery). nbox
-// forges a TCP SYN whose source is an external address P, destined to abox. If
-// the program seeded the inbound-flow map from that forgery (no source
-// validation), abox's egress to P:9999 from the matching source port would be
-// treated as a reply and allowed. Source validation at abox's receiving veth
-// rejects the seed (the frame entered on nbox's veth but carries P, not nbox's
-// own address), so abox -> P stays dropped under enforce.
+// forges a TCP SYN whose source is an external address P, destined to abox, so
+// that — if the program seeded the inbound-flow map from that forgery — the
+// reverse tuple P:9999 <-> abox:7777 would look like an open flow. abox then
+// exfiltrates by sending ACK-only segments to P:9999 from source port 7777
+// (the exact reverse of the forged seed): an ACK is not a fresh SYN, so it is
+// exactly the segment inbound_reply would wave through on a seeded flow — and
+// it is the channel #3070's forged-ACK finding identified. Source validation at
+// abox's receiving veth rejects the seed (the frame entered on nbox's veth but
+// carries P, not nbox's own address), so the ACK is judged as egress and
+// dropped under enforce, never reaching P.
 //
-// Remove the source-validation check in track_inbound and this test connects,
-// i.e. it fails — which is the point: it is the mutation guard the decision asks
-// for.
+// Remove the source-validation check in track_inbound and the forged ACK
+// reaches P, i.e. this test fails — which is the point: it is the mutation guard
+// the decision asks for.
 func TestAttachedProgram_SpoofedInboundSeedDoesNotOpenEgress(t *testing.T) {
 	loader, err := Load(ebpfLoadObjPath)
 	if err != nil {
@@ -380,17 +376,17 @@ func TestAttachedProgram_SpoofedInboundSeedDoesNotOpenEgress(t *testing.T) {
 	})
 
 	// P: an external address on the bridge host, routed from both boxes via the
-	// bridge, with a listener so a connection that reaches it actually completes.
+	// bridge. A raw IP socket on it sees every TCP segment delivered, including
+	// ACK-only ones no TCP stack would answer — the exfil channel's receiver.
 	run("ip", "addr", "add", spoofExfilAddr+"/32", "dev", spoofBridge)
 	t.Cleanup(func() {
 		_ = exec.Command("ip", "addr", "del", spoofExfilAddr+"/32", "dev", spoofBridge).Run() // #nosec G204 -- fixed argv
 	})
-	ln, err := net.Listen("tcp4", net.JoinHostPort(spoofExfilAddr, fmt.Sprint(spoofExfilPort)))
+	raw, err := net.ListenIP("ip4:tcp", &net.IPAddr{IP: net.ParseIP(spoofExfilAddr)})
 	if err != nil {
-		t.Fatalf("listen on P %s: %v", spoofExfilAddr, err)
+		t.Fatalf("raw listen on P %s: %v", spoofExfilAddr, err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go acceptAndClose(ln)
+	t.Cleanup(func() { _ = raw.Close() })
 
 	aIf, err := VethIndex(spoofAHostV)
 	if err != nil {
@@ -432,24 +428,45 @@ func TestAttachedProgram_SpoofedInboundSeedDoesNotOpenEgress(t *testing.T) {
 		t.Cleanup(func() { _ = loader.DetachVeth(idx) })
 	}
 
-	// abox dials P from the fixed source port, the exact reverse of the seed the
-	// forgery would plant. Returns true if it connected.
-	aboxConnectsToP := func() bool {
+	// aboxExfilsToP sends ACK-only segments abox -> P from source port 7777 to
+	// 9999 (the reverse of the forged seed), tagged with marker, and reports
+	// whether any reached P's raw socket.
+	aboxExfilsToP := func(marker string) bool {
 		t.Helper()
-		err := exec.Command("ip", "netns", "exec", spoofANetns, // #nosec G204 -- fixed argv, constant script
-			"python3", "-c", connectFromPortScript,
-			spoofExfilAddr, fmt.Sprint(spoofExfilPort), fmt.Sprint(spoofBoxPort)).Run()
-		return err == nil
+		out, err := exec.Command("ip", "netns", "exec", spoofANetns, // #nosec G204 -- fixed argv, constant script
+			"python3", "-c", forgeACKScript,
+			spoofAAddr, spoofExfilAddr, fmt.Sprint(spoofBoxPort), fmt.Sprint(spoofExfilPort), marker).CombinedOutput()
+		if err != nil {
+			t.Fatalf("send ACK from abox: %v\n%s", err, out)
+		}
+		buf := make([]byte, 2048)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if err := raw.SetReadDeadline(deadline); err != nil {
+				t.Fatalf("raw SetReadDeadline: %v", err)
+			}
+			n, _, err := raw.ReadFrom(buf)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return false
+			}
+			if err != nil {
+				t.Fatalf("raw read: %v", err)
+			}
+			if bytes.Contains(buf[:n], []byte(marker)) {
+				return true
+			}
+		}
 	}
 
-	// Baseline: with no seed at all, abox cannot reach P (empty allow-list,
-	// enforce). If this already connected, the rest would prove nothing.
-	if aboxConnectsToP() {
+	// Precondition: with no seed at all, abox's ACK to P is judged as egress and
+	// dropped (empty allow-list, enforce). If it already reached P, the rest
+	// would prove nothing.
+	if aboxExfilsToP("spoof-2618-baseline") {
 		t.Fatal("precondition: abox reached P with an empty allow-list under enforce and no seed — enforcement is not active")
 	}
 
 	// nbox forges SYNs from P to abox:spoofBoxPort (sport = spoofExfilPort), so a
-	// seed, if planted, would match abox's dial 5-tuple exactly.
+	// seed, if planted, would match abox's exfil 5-tuple exactly.
 	out, err := exec.Command("ip", "netns", "exec", spoofNNetns, // #nosec G204 -- fixed argv, constant script
 		"python3", "-c", forgeSYNScript,
 		spoofExfilAddr, spoofAAddr, fmt.Sprint(spoofExfilPort), fmt.Sprint(spoofBoxPort), "5").CombinedOutput()
@@ -458,9 +475,10 @@ func TestAttachedProgram_SpoofedInboundSeedDoesNotOpenEgress(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond) // let the forged frames traverse the bridge and hit abox's egress hook
 
-	// The seed must have been rejected: abox still cannot reach P. Removing the
-	// source-validation check makes this connect and the test fail.
-	if aboxConnectsToP() {
+	// The seed must have been rejected: abox's ACK still cannot reach P. Removing
+	// the source-validation check in track_inbound makes the ACK arrive and this
+	// test fail.
+	if aboxExfilsToP("spoof-2618-after-forged-seed") {
 		t.Error("a neighbour's forged SYN from an external address opened the enforced box's egress to it — source validation (#2618) is not holding")
 	}
 }
