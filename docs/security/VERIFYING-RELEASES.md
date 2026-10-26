@@ -151,7 +151,7 @@ and uploads the bundles. It does not wait for the air-gapped bundle, so the
 daemon binary and `SHA256SUMS.txt` are verifiable even while the bundle is
 still building. Job `sign-bundle` signs the bundle and its `.sha256` the same
 way once `build-bundle` has uploaded them, and job `verify-release` then runs
-the whole-release check above against what was published. If a job a signing
+the whole-release check above against what was published. `verify-release` is the job a rollout should gate on: it cannot start unless both signing jobs succeeded, and a failure in it does not fail `sign-release`. If a job a signing
 job depends on fails, the files it covers have no `.sigstore.json`, which is a
 visible failure. Signing runs on tag
 pushes only: a `workflow_dispatch` rehearsal builds everything but signs
