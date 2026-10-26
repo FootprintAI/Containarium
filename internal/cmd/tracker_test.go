@@ -181,3 +181,33 @@ func TestPrintTrackerStatus_HostGitMissing(t *testing.T) {
 		t.Errorf("output = %q, want a 'not found' line for empty HostGitVersion", out)
 	}
 }
+
+func TestTrackerKindLabel(t *testing.T) {
+	tests := []struct {
+		in   pb.TrackerCredentialKind
+		want string
+	}{
+		{pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT, "project"},
+		{pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP, "group"},
+		{pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL, "personal"},
+		{pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED, "unknown"},
+	}
+	for _, tt := range tests {
+		if got := trackerKindLabel(tt.in); got != tt.want {
+			t.Errorf("trackerKindLabel(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestPrintTrackerStatus_ShowsKind(t *testing.T) {
+	out := captureStdout(t, func() {
+		printTrackerStatus(&pb.GetTrackerStatusResponse{
+			Reachable:       true,
+			CredentialValid: true,
+			CredentialKind:  pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP,
+		})
+	})
+	if !strings.Contains(out, "kind:             group") {
+		t.Errorf("output = %q, want kind: group", out)
+	}
+}

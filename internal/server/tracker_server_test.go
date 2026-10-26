@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -563,5 +564,37 @@ func TestGetTrackerStatus_Unreachable(t *testing.T) {
 	}
 	if resp.Detail == "" {
 		t.Error("Detail is empty, want an explanation")
+	}
+}
+
+func TestGetTrackerStatus_CredentialKind(t *testing.T) {
+	tests := []struct {
+		name string
+		kind tracker.CredentialKind
+		want pb.TrackerCredentialKind
+	}{
+		{"project", tracker.KindProject, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT},
+		{"group", tracker.KindGroup, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP},
+		{"personal", tracker.KindPersonal, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL},
+		{"unspecified", tracker.KindUnspecified, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			describer := &fakeReaderProvider{credInfo: tracker.CredentialInfo{
+				Scopes: []string{"api"}, Breadth: tracker.BreadthBroad, Kind: tt.kind,
+			}}
+			user := fmt.Sprintf("tracker-rpc-status-kind-%d", i)
+			s, adminCtx := setUpBrokerConnection(t, user, describer)
+			resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+			if err != nil {
+				t.Fatalf("GetTrackerStatus: %v", err)
+			}
+			if resp.CredentialKind != tt.want {
+				t.Errorf("CredentialKind = %v, want %v", resp.CredentialKind, tt.want)
+			}
+			if resp.CredentialBreadth != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
+				t.Errorf("CredentialBreadth = %v, want BROAD (unchanged)", resp.CredentialBreadth)
+			}
+		})
 	}
 }

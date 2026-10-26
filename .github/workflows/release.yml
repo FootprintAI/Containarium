@@ -195,6 +195,13 @@ jobs:
           chmod +x bin/containariumd-linux-amd64
           scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64
 
+      - name: Tunnel gate fails against a sentinel with no tunnel identity (#2469)
+        # Proves the step above can go red on the failure it exists for: a stub
+        # sentinel that provides no tunnel identity, against this build's real
+        # tunnel client. The gate must fail with the client's mandatory-pin
+        # error, as v0.101.0/.1 did on a real upgrade.
+        run: scripts/ci/test-tunnel-smoke.sh bin/containariumd-linux-amd64
+
       - name: Previous release's tunnel client still registers (#2469)
         # The upgrade path: a tunnel host on the last release talking to the
         # NEW sentinel. A rollout upgrades sentinels and hosts at different

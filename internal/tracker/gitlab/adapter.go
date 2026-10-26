@@ -77,7 +77,7 @@ func (a *Adapter) DescribeCredential(ctx context.Context, conn tracker.Conn) (tr
 	// Breadth is best-effort on top of an already-successful describe —
 	// a scope narrow enough to read the token's own metadata but not
 	// call /user must not turn a successful describe into an error.
-	info.Breadth = a.classifyBreadth(ctx, apiBase, conn.Credential)
+	info.Breadth, info.Kind = a.classifyBreadth(ctx, apiBase, conn.Credential)
 	return info, nil
 }
 
@@ -143,31 +143,38 @@ type userResponse struct {
 // documented prefix ("project_<id>_bot..." / "group_<id>_bot...");
 // anything else (bot=false, or an unrecognized bot username shape) is
 // treated as broad — never a false "preferred".
-func (a *Adapter) classifyBreadth(ctx context.Context, apiBase, token string) tracker.CredentialBreadth {
+//
+// The same /user response also yields the credential kind (project /
+// group / personal); an unrecognized bot shape stays KindUnspecified
+// rather than being guessed.
+func (a *Adapter) classifyBreadth(ctx context.Context, apiBase, token string) (tracker.CredentialBreadth, tracker.CredentialKind) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/user", nil)
 	if err != nil {
-		return tracker.BreadthUnspecified
+		return tracker.BreadthUnspecified, tracker.KindUnspecified
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return tracker.BreadthUnspecified
+		return tracker.BreadthUnspecified, tracker.KindUnspecified
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return tracker.BreadthUnspecified
+		return tracker.BreadthUnspecified, tracker.KindUnspecified
 	}
 
 	var parsed userResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return tracker.BreadthUnspecified
+		return tracker.BreadthUnspecified, tracker.KindUnspecified
 	}
 	if !parsed.Bot {
-		return tracker.BreadthBroad // a real personal account's own PAT
+		return tracker.BreadthBroad, tracker.KindPersonal // a real personal account's own PAT
 	}
 	if strings.HasPrefix(parsed.Username, "project_") {
-		return tracker.BreadthPreferred
+		return tracker.BreadthPreferred, tracker.KindProject
 	}
-	return tracker.BreadthBroad // group_<id>_bot… or an unrecognized bot shape
+	if strings.HasPrefix(parsed.Username, "group_") {
+		return tracker.BreadthBroad, tracker.KindGroup
+	}
+	return tracker.BreadthBroad, tracker.KindUnspecified // unrecognized bot shape
 }

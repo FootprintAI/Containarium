@@ -67,6 +67,7 @@ func (a *Adapter) DescribeCredential(ctx context.Context, conn tracker.Conn) (tr
 		base = defaultAPIBase
 	}
 	breadth := breadthFromTokenPrefix(conn.Credential)
+	kind := kindFromTokenPrefix(conn.Credential)
 
 	if strings.HasPrefix(conn.Credential, "ghs_") {
 		// Installation tokens aren't tied to a user identity — /user
@@ -74,16 +75,16 @@ func (a *Adapter) DescribeCredential(ctx context.Context, conn tracker.Conn) (tr
 		// endpoint every credential type can call with no scope
 		// requirement, so it's the reachability+validity probe here.
 		if err := a.probeRateLimit(ctx, base, conn.Credential); err != nil {
-			return tracker.CredentialInfo{Breadth: breadth}, err
+			return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, err
 		}
-		return tracker.CredentialInfo{Breadth: breadth}, nil
+		return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, nil
 	}
 
 	scopes, err := a.describeViaUser(ctx, base, conn.Credential)
 	if err != nil {
-		return tracker.CredentialInfo{Breadth: breadth}, err
+		return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, err
 	}
-	return tracker.CredentialInfo{Scopes: scopes, Breadth: breadth}, nil
+	return tracker.CredentialInfo{Scopes: scopes, Breadth: breadth, Kind: kind}, nil
 }
 
 // breadthFromTokenPrefix classifies a GitHub credential by its
@@ -99,6 +100,18 @@ func breadthFromTokenPrefix(token string) tracker.CredentialBreadth {
 		// false "preferred" would hide a real one.
 		return tracker.BreadthBroad
 	}
+}
+
+// kindFromTokenPrefix reports only what the token prefix proves: a
+// ghp_ classic PAT is always owned by a user (KindPersonal). Fine-grained
+// PATs and App installation tokens may be scoped to one repository or
+// many, which the prefix does not reveal, so they stay KindUnspecified
+// rather than being guessed as KindProject.
+func kindFromTokenPrefix(token string) tracker.CredentialKind {
+	if strings.HasPrefix(token, "ghp_") {
+		return tracker.KindPersonal
+	}
+	return tracker.KindUnspecified
 }
 
 func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]string, error) {

@@ -265,6 +265,71 @@ func (TrackerCredentialBreadth) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{3}
 }
 
+// TrackerCredentialKind is the provider-native kind of a tracker
+// credential, when the provider's own introspection reveals it. It is
+// reported alongside TrackerCredentialBreadth (not instead of it): breadth
+// ranks a credential against the preferred type, kind says which type it
+// is — e.g. a GitLab group token and a personal token are both BROAD but
+// are different kinds.
+type TrackerCredentialKind int32
+
+const (
+	// The kind could not be determined: the probe that would classify it
+	// failed, or the provider's introspection does not reveal it for this
+	// credential.
+	TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED TrackerCredentialKind = 0
+	// A GitLab project access token (a project-owned bot account).
+	TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT TrackerCredentialKind = 1
+	// A GitLab group access token (a group-owned bot account).
+	TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP TrackerCredentialKind = 2
+	// A credential owned by a real user account: a GitLab personal access
+	// token, or a GitHub classic PAT.
+	TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL TrackerCredentialKind = 3
+)
+
+// Enum value maps for TrackerCredentialKind.
+var (
+	TrackerCredentialKind_name = map[int32]string{
+		0: "TRACKER_CREDENTIAL_KIND_UNSPECIFIED",
+		1: "TRACKER_CREDENTIAL_KIND_PROJECT",
+		2: "TRACKER_CREDENTIAL_KIND_GROUP",
+		3: "TRACKER_CREDENTIAL_KIND_PERSONAL",
+	}
+	TrackerCredentialKind_value = map[string]int32{
+		"TRACKER_CREDENTIAL_KIND_UNSPECIFIED": 0,
+		"TRACKER_CREDENTIAL_KIND_PROJECT":     1,
+		"TRACKER_CREDENTIAL_KIND_GROUP":       2,
+		"TRACKER_CREDENTIAL_KIND_PERSONAL":    3,
+	}
+)
+
+func (x TrackerCredentialKind) Enum() *TrackerCredentialKind {
+	p := new(TrackerCredentialKind)
+	*p = x
+	return p
+}
+
+func (x TrackerCredentialKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TrackerCredentialKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_tracker_proto_enumTypes[4].Descriptor()
+}
+
+func (TrackerCredentialKind) Type() protoreflect.EnumType {
+	return &file_containarium_v1_tracker_proto_enumTypes[4]
+}
+
+func (x TrackerCredentialKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TrackerCredentialKind.Descriptor instead.
+func (TrackerCredentialKind) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{4}
+}
+
 // TrackerDispatchState is the durable state of one dispatch row.
 // queued/running are "active" — at most one active row exists per
 // (username, connection, issue) by a partial unique index, which is
@@ -309,11 +374,11 @@ func (x TrackerDispatchState) String() string {
 }
 
 func (TrackerDispatchState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_tracker_proto_enumTypes[4].Descriptor()
+	return file_containarium_v1_tracker_proto_enumTypes[5].Descriptor()
 }
 
 func (TrackerDispatchState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_tracker_proto_enumTypes[4]
+	return &file_containarium_v1_tracker_proto_enumTypes[5]
 }
 
 func (x TrackerDispatchState) Number() protoreflect.EnumNumber {
@@ -322,7 +387,7 @@ func (x TrackerDispatchState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TrackerDispatchState.Descriptor instead.
 func (TrackerDispatchState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{5}
 }
 
 // TrackerDispatchFailure is WHY a dispatch ended FAILED (#2026). It
@@ -377,11 +442,11 @@ func (x TrackerDispatchFailure) String() string {
 }
 
 func (TrackerDispatchFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_tracker_proto_enumTypes[5].Descriptor()
+	return file_containarium_v1_tracker_proto_enumTypes[6].Descriptor()
 }
 
 func (TrackerDispatchFailure) Type() protoreflect.EnumType {
-	return &file_containarium_v1_tracker_proto_enumTypes[5]
+	return &file_containarium_v1_tracker_proto_enumTypes[6]
 }
 
 func (x TrackerDispatchFailure) Number() protoreflect.EnumNumber {
@@ -390,7 +455,7 @@ func (x TrackerDispatchFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TrackerDispatchFailure.Descriptor instead.
 func (TrackerDispatchFailure) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{6}
 }
 
 // TrackerConnection is a tenant-scoped record naming where a tracker is
@@ -2039,8 +2104,14 @@ type GetTrackerStatusResponse struct {
 	// on the daemon host's PATH at all.
 	HostGitVersion    string `protobuf:"bytes,8,opt,name=host_git_version,json=hostGitVersion,proto3" json:"host_git_version,omitempty"`
 	HostGitSufficient bool   `protobuf:"varint,9,opt,name=host_git_sufficient,json=hostGitSufficient,proto3" json:"host_git_sufficient,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Provider-native kind of the credential (project / group / personal).
+	// UNSPECIFIED when reachable && credential_valid are not both true, when
+	// the probe that classifies it failed, or when the provider's
+	// introspection does not reveal it. Additive: credential_breadth is
+	// unchanged.
+	CredentialKind TrackerCredentialKind `protobuf:"varint,10,opt,name=credential_kind,json=credentialKind,proto3,enum=containarium.v1.TrackerCredentialKind" json:"credential_kind,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetTrackerStatusResponse) Reset() {
@@ -2134,6 +2205,13 @@ func (x *GetTrackerStatusResponse) GetHostGitSufficient() bool {
 		return x.HostGitSufficient
 	}
 	return false
+}
+
+func (x *GetTrackerStatusResponse) GetCredentialKind() TrackerCredentialKind {
+	if x != nil {
+		return x.CredentialKind
+	}
+	return TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED
 }
 
 // TrackerComment is one normalized issue or change-request comment.
@@ -3844,7 +3922,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"dispatches\"I\n" +
 	"\x17GetTrackerStatusRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\xf0\x03\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\xc1\x04\n" +
 	"\x18GetTrackerStatusResponse\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".containarium.v1.TrackerConnectionR\n" +
@@ -3856,7 +3934,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x15credential_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x13credentialExpiresAt\x12\x16\n" +
 	"\x06detail\x18\a \x01(\tR\x06detail\x12(\n" +
 	"\x10host_git_version\x18\b \x01(\tR\x0ehostGitVersion\x12.\n" +
-	"\x13host_git_sufficient\x18\t \x01(\bR\x11hostGitSufficient\"w\n" +
+	"\x13host_git_sufficient\x18\t \x01(\bR\x11hostGitSufficient\x12O\n" +
+	"\x0fcredential_kind\x18\n" +
+	" \x01(\x0e2&.containarium.v1.TrackerCredentialKindR\x0ecredentialKind\"w\n" +
 	"\x0eTrackerComment\x12\x16\n" +
 	"\x06author\x18\x01 \x01(\tR\x06author\x129\n" +
 	"\n" +
@@ -3999,7 +4079,12 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x18TrackerCredentialBreadth\x12*\n" +
 	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
 	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
-	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x02*\xc9\x01\n" +
+	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x02*\xae\x01\n" +
+	"\x15TrackerCredentialKind\x12'\n" +
+	"#TRACKER_CREDENTIAL_KIND_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fTRACKER_CREDENTIAL_KIND_PROJECT\x10\x01\x12!\n" +
+	"\x1dTRACKER_CREDENTIAL_KIND_GROUP\x10\x02\x12$\n" +
+	" TRACKER_CREDENTIAL_KIND_PERSONAL\x10\x03*\xc9\x01\n" +
 	"\x14TrackerDispatchState\x12&\n" +
 	"\"TRACKER_DISPATCH_STATE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dTRACKER_DISPATCH_STATE_QUEUED\x10\x01\x12\"\n" +
@@ -4064,146 +4149,148 @@ func file_containarium_v1_tracker_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tracker_proto_rawDescData
 }
 
-var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
 var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_containarium_v1_tracker_proto_goTypes = []any{
 	(TrackerProvider)(0),                     // 0: containarium.v1.TrackerProvider
 	(TrackerIssueState)(0),                   // 1: containarium.v1.TrackerIssueState
 	(TrackerCiVerdict)(0),                    // 2: containarium.v1.TrackerCiVerdict
 	(TrackerCredentialBreadth)(0),            // 3: containarium.v1.TrackerCredentialBreadth
-	(TrackerDispatchState)(0),                // 4: containarium.v1.TrackerDispatchState
-	(TrackerDispatchFailure)(0),              // 5: containarium.v1.TrackerDispatchFailure
-	(*TrackerConnection)(nil),                // 6: containarium.v1.TrackerConnection
-	(*SetTrackerConnectionRequest)(nil),      // 7: containarium.v1.SetTrackerConnectionRequest
-	(*SetTrackerConnectionResponse)(nil),     // 8: containarium.v1.SetTrackerConnectionResponse
-	(*GetTrackerConnectionRequest)(nil),      // 9: containarium.v1.GetTrackerConnectionRequest
-	(*GetTrackerConnectionResponse)(nil),     // 10: containarium.v1.GetTrackerConnectionResponse
-	(*ListTrackerConnectionsRequest)(nil),    // 11: containarium.v1.ListTrackerConnectionsRequest
-	(*ListTrackerConnectionsResponse)(nil),   // 12: containarium.v1.ListTrackerConnectionsResponse
-	(*DeleteTrackerConnectionRequest)(nil),   // 13: containarium.v1.DeleteTrackerConnectionRequest
-	(*DeleteTrackerConnectionResponse)(nil),  // 14: containarium.v1.DeleteTrackerConnectionResponse
-	(*TrackerRoute)(nil),                     // 15: containarium.v1.TrackerRoute
-	(*SetTrackerRouteRequest)(nil),           // 16: containarium.v1.SetTrackerRouteRequest
-	(*SetTrackerRouteResponse)(nil),          // 17: containarium.v1.SetTrackerRouteResponse
-	(*ListTrackerRoutesRequest)(nil),         // 18: containarium.v1.ListTrackerRoutesRequest
-	(*ListTrackerRoutesResponse)(nil),        // 19: containarium.v1.ListTrackerRoutesResponse
-	(*DeleteTrackerRouteRequest)(nil),        // 20: containarium.v1.DeleteTrackerRouteRequest
-	(*DeleteTrackerRouteResponse)(nil),       // 21: containarium.v1.DeleteTrackerRouteResponse
-	(*TrackerDispatch)(nil),                  // 22: containarium.v1.TrackerDispatch
-	(*TrackerDispatchInput)(nil),             // 23: containarium.v1.TrackerDispatchInput
-	(*DispatchTrackerIssuesRequest)(nil),     // 24: containarium.v1.DispatchTrackerIssuesRequest
-	(*DispatchTrackerIssuesResponse)(nil),    // 25: containarium.v1.DispatchTrackerIssuesResponse
-	(*ListTrackerDispatchesRequest)(nil),     // 26: containarium.v1.ListTrackerDispatchesRequest
-	(*ListTrackerDispatchesResponse)(nil),    // 27: containarium.v1.ListTrackerDispatchesResponse
-	(*GetTrackerStatusRequest)(nil),          // 28: containarium.v1.GetTrackerStatusRequest
-	(*GetTrackerStatusResponse)(nil),         // 29: containarium.v1.GetTrackerStatusResponse
-	(*TrackerComment)(nil),                   // 30: containarium.v1.TrackerComment
-	(*TrackerIssue)(nil),                     // 31: containarium.v1.TrackerIssue
-	(*TrackerChange)(nil),                    // 32: containarium.v1.TrackerChange
-	(*GetTrackerIssueRequest)(nil),           // 33: containarium.v1.GetTrackerIssueRequest
-	(*GetTrackerIssueResponse)(nil),          // 34: containarium.v1.GetTrackerIssueResponse
-	(*ListTrackerIssuesRequest)(nil),         // 35: containarium.v1.ListTrackerIssuesRequest
-	(*ListTrackerIssuesResponse)(nil),        // 36: containarium.v1.ListTrackerIssuesResponse
-	(*GetTrackerChangeRequest)(nil),          // 37: containarium.v1.GetTrackerChangeRequest
-	(*GetTrackerChangeResponse)(nil),         // 38: containarium.v1.GetTrackerChangeResponse
-	(*CommentOnTrackerIssueRequest)(nil),     // 39: containarium.v1.CommentOnTrackerIssueRequest
-	(*CommentOnTrackerIssueResponse)(nil),    // 40: containarium.v1.CommentOnTrackerIssueResponse
-	(*ClaimTrackerIssueRequest)(nil),         // 41: containarium.v1.ClaimTrackerIssueRequest
-	(*ClaimTrackerIssueResponse)(nil),        // 42: containarium.v1.ClaimTrackerIssueResponse
-	(*SetTrackerIssueLabelsRequest)(nil),     // 43: containarium.v1.SetTrackerIssueLabelsRequest
-	(*SetTrackerIssueLabelsResponse)(nil),    // 44: containarium.v1.SetTrackerIssueLabelsResponse
-	(*TrackerPolicy)(nil),                    // 45: containarium.v1.TrackerPolicy
-	(*CreateTrackerIssueRequest)(nil),        // 46: containarium.v1.CreateTrackerIssueRequest
-	(*CreateTrackerIssueResponse)(nil),       // 47: containarium.v1.CreateTrackerIssueResponse
-	(*SubmitTrackerChangeRequest)(nil),       // 48: containarium.v1.SubmitTrackerChangeRequest
-	(*SubmitTrackerChangeResponse)(nil),      // 49: containarium.v1.SubmitTrackerChangeResponse
-	(*TrackerChangeFile)(nil),                // 50: containarium.v1.TrackerChangeFile
-	(*SubmitTrackerChangeFilesRequest)(nil),  // 51: containarium.v1.SubmitTrackerChangeFilesRequest
-	(*SubmitTrackerChangeFilesResponse)(nil), // 52: containarium.v1.SubmitTrackerChangeFilesResponse
-	(*timestamppb.Timestamp)(nil),            // 53: google.protobuf.Timestamp
+	(TrackerCredentialKind)(0),               // 4: containarium.v1.TrackerCredentialKind
+	(TrackerDispatchState)(0),                // 5: containarium.v1.TrackerDispatchState
+	(TrackerDispatchFailure)(0),              // 6: containarium.v1.TrackerDispatchFailure
+	(*TrackerConnection)(nil),                // 7: containarium.v1.TrackerConnection
+	(*SetTrackerConnectionRequest)(nil),      // 8: containarium.v1.SetTrackerConnectionRequest
+	(*SetTrackerConnectionResponse)(nil),     // 9: containarium.v1.SetTrackerConnectionResponse
+	(*GetTrackerConnectionRequest)(nil),      // 10: containarium.v1.GetTrackerConnectionRequest
+	(*GetTrackerConnectionResponse)(nil),     // 11: containarium.v1.GetTrackerConnectionResponse
+	(*ListTrackerConnectionsRequest)(nil),    // 12: containarium.v1.ListTrackerConnectionsRequest
+	(*ListTrackerConnectionsResponse)(nil),   // 13: containarium.v1.ListTrackerConnectionsResponse
+	(*DeleteTrackerConnectionRequest)(nil),   // 14: containarium.v1.DeleteTrackerConnectionRequest
+	(*DeleteTrackerConnectionResponse)(nil),  // 15: containarium.v1.DeleteTrackerConnectionResponse
+	(*TrackerRoute)(nil),                     // 16: containarium.v1.TrackerRoute
+	(*SetTrackerRouteRequest)(nil),           // 17: containarium.v1.SetTrackerRouteRequest
+	(*SetTrackerRouteResponse)(nil),          // 18: containarium.v1.SetTrackerRouteResponse
+	(*ListTrackerRoutesRequest)(nil),         // 19: containarium.v1.ListTrackerRoutesRequest
+	(*ListTrackerRoutesResponse)(nil),        // 20: containarium.v1.ListTrackerRoutesResponse
+	(*DeleteTrackerRouteRequest)(nil),        // 21: containarium.v1.DeleteTrackerRouteRequest
+	(*DeleteTrackerRouteResponse)(nil),       // 22: containarium.v1.DeleteTrackerRouteResponse
+	(*TrackerDispatch)(nil),                  // 23: containarium.v1.TrackerDispatch
+	(*TrackerDispatchInput)(nil),             // 24: containarium.v1.TrackerDispatchInput
+	(*DispatchTrackerIssuesRequest)(nil),     // 25: containarium.v1.DispatchTrackerIssuesRequest
+	(*DispatchTrackerIssuesResponse)(nil),    // 26: containarium.v1.DispatchTrackerIssuesResponse
+	(*ListTrackerDispatchesRequest)(nil),     // 27: containarium.v1.ListTrackerDispatchesRequest
+	(*ListTrackerDispatchesResponse)(nil),    // 28: containarium.v1.ListTrackerDispatchesResponse
+	(*GetTrackerStatusRequest)(nil),          // 29: containarium.v1.GetTrackerStatusRequest
+	(*GetTrackerStatusResponse)(nil),         // 30: containarium.v1.GetTrackerStatusResponse
+	(*TrackerComment)(nil),                   // 31: containarium.v1.TrackerComment
+	(*TrackerIssue)(nil),                     // 32: containarium.v1.TrackerIssue
+	(*TrackerChange)(nil),                    // 33: containarium.v1.TrackerChange
+	(*GetTrackerIssueRequest)(nil),           // 34: containarium.v1.GetTrackerIssueRequest
+	(*GetTrackerIssueResponse)(nil),          // 35: containarium.v1.GetTrackerIssueResponse
+	(*ListTrackerIssuesRequest)(nil),         // 36: containarium.v1.ListTrackerIssuesRequest
+	(*ListTrackerIssuesResponse)(nil),        // 37: containarium.v1.ListTrackerIssuesResponse
+	(*GetTrackerChangeRequest)(nil),          // 38: containarium.v1.GetTrackerChangeRequest
+	(*GetTrackerChangeResponse)(nil),         // 39: containarium.v1.GetTrackerChangeResponse
+	(*CommentOnTrackerIssueRequest)(nil),     // 40: containarium.v1.CommentOnTrackerIssueRequest
+	(*CommentOnTrackerIssueResponse)(nil),    // 41: containarium.v1.CommentOnTrackerIssueResponse
+	(*ClaimTrackerIssueRequest)(nil),         // 42: containarium.v1.ClaimTrackerIssueRequest
+	(*ClaimTrackerIssueResponse)(nil),        // 43: containarium.v1.ClaimTrackerIssueResponse
+	(*SetTrackerIssueLabelsRequest)(nil),     // 44: containarium.v1.SetTrackerIssueLabelsRequest
+	(*SetTrackerIssueLabelsResponse)(nil),    // 45: containarium.v1.SetTrackerIssueLabelsResponse
+	(*TrackerPolicy)(nil),                    // 46: containarium.v1.TrackerPolicy
+	(*CreateTrackerIssueRequest)(nil),        // 47: containarium.v1.CreateTrackerIssueRequest
+	(*CreateTrackerIssueResponse)(nil),       // 48: containarium.v1.CreateTrackerIssueResponse
+	(*SubmitTrackerChangeRequest)(nil),       // 49: containarium.v1.SubmitTrackerChangeRequest
+	(*SubmitTrackerChangeResponse)(nil),      // 50: containarium.v1.SubmitTrackerChangeResponse
+	(*TrackerChangeFile)(nil),                // 51: containarium.v1.TrackerChangeFile
+	(*SubmitTrackerChangeFilesRequest)(nil),  // 52: containarium.v1.SubmitTrackerChangeFilesRequest
+	(*SubmitTrackerChangeFilesResponse)(nil), // 53: containarium.v1.SubmitTrackerChangeFilesResponse
+	(*timestamppb.Timestamp)(nil),            // 54: google.protobuf.Timestamp
 }
 var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.TrackerConnection.provider:type_name -> containarium.v1.TrackerProvider
-	53, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
-	45, // 2: containarium.v1.TrackerConnection.policy:type_name -> containarium.v1.TrackerPolicy
+	54, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
+	46, // 2: containarium.v1.TrackerConnection.policy:type_name -> containarium.v1.TrackerPolicy
 	0,  // 3: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
-	45, // 4: containarium.v1.SetTrackerConnectionRequest.policy:type_name -> containarium.v1.TrackerPolicy
-	6,  // 5: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	6,  // 6: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	6,  // 7: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
-	15, // 8: containarium.v1.SetTrackerRouteResponse.route:type_name -> containarium.v1.TrackerRoute
-	15, // 9: containarium.v1.ListTrackerRoutesResponse.routes:type_name -> containarium.v1.TrackerRoute
-	4,  // 10: containarium.v1.TrackerDispatch.state:type_name -> containarium.v1.TrackerDispatchState
-	53, // 11: containarium.v1.TrackerDispatch.created_at:type_name -> google.protobuf.Timestamp
-	53, // 12: containarium.v1.TrackerDispatch.started_at:type_name -> google.protobuf.Timestamp
-	53, // 13: containarium.v1.TrackerDispatch.ended_at:type_name -> google.protobuf.Timestamp
-	5,  // 14: containarium.v1.TrackerDispatch.failure:type_name -> containarium.v1.TrackerDispatchFailure
-	53, // 15: containarium.v1.TrackerDispatch.oldest_lineage_reservation_at:type_name -> google.protobuf.Timestamp
-	22, // 16: containarium.v1.DispatchTrackerIssuesResponse.started:type_name -> containarium.v1.TrackerDispatch
-	22, // 17: containarium.v1.DispatchTrackerIssuesResponse.timed_out:type_name -> containarium.v1.TrackerDispatch
-	22, // 18: containarium.v1.DispatchTrackerIssuesResponse.failed:type_name -> containarium.v1.TrackerDispatch
-	4,  // 19: containarium.v1.ListTrackerDispatchesRequest.state:type_name -> containarium.v1.TrackerDispatchState
-	22, // 20: containarium.v1.ListTrackerDispatchesResponse.dispatches:type_name -> containarium.v1.TrackerDispatch
-	6,  // 21: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
+	46, // 4: containarium.v1.SetTrackerConnectionRequest.policy:type_name -> containarium.v1.TrackerPolicy
+	7,  // 5: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	7,  // 6: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	7,  // 7: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
+	16, // 8: containarium.v1.SetTrackerRouteResponse.route:type_name -> containarium.v1.TrackerRoute
+	16, // 9: containarium.v1.ListTrackerRoutesResponse.routes:type_name -> containarium.v1.TrackerRoute
+	5,  // 10: containarium.v1.TrackerDispatch.state:type_name -> containarium.v1.TrackerDispatchState
+	54, // 11: containarium.v1.TrackerDispatch.created_at:type_name -> google.protobuf.Timestamp
+	54, // 12: containarium.v1.TrackerDispatch.started_at:type_name -> google.protobuf.Timestamp
+	54, // 13: containarium.v1.TrackerDispatch.ended_at:type_name -> google.protobuf.Timestamp
+	6,  // 14: containarium.v1.TrackerDispatch.failure:type_name -> containarium.v1.TrackerDispatchFailure
+	54, // 15: containarium.v1.TrackerDispatch.oldest_lineage_reservation_at:type_name -> google.protobuf.Timestamp
+	23, // 16: containarium.v1.DispatchTrackerIssuesResponse.started:type_name -> containarium.v1.TrackerDispatch
+	23, // 17: containarium.v1.DispatchTrackerIssuesResponse.timed_out:type_name -> containarium.v1.TrackerDispatch
+	23, // 18: containarium.v1.DispatchTrackerIssuesResponse.failed:type_name -> containarium.v1.TrackerDispatch
+	5,  // 19: containarium.v1.ListTrackerDispatchesRequest.state:type_name -> containarium.v1.TrackerDispatchState
+	23, // 20: containarium.v1.ListTrackerDispatchesResponse.dispatches:type_name -> containarium.v1.TrackerDispatch
+	7,  // 21: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
 	3,  // 22: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
-	53, // 23: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
-	53, // 24: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 25: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
-	30, // 26: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
-	1,  // 27: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
-	2,  // 28: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
-	31, // 29: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
-	1,  // 30: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
-	31, // 31: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
-	32, // 32: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	30, // 33: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
-	31, // 34: containarium.v1.CreateTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
-	32, // 35: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	50, // 36: containarium.v1.SubmitTrackerChangeFilesRequest.files:type_name -> containarium.v1.TrackerChangeFile
-	32, // 37: containarium.v1.SubmitTrackerChangeFilesResponse.change:type_name -> containarium.v1.TrackerChange
-	7,  // 38: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
-	9,  // 39: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
-	11, // 40: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
-	13, // 41: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
-	16, // 42: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
-	18, // 43: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
-	20, // 44: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
-	24, // 45: containarium.v1.TrackerService.DispatchTrackerIssues:input_type -> containarium.v1.DispatchTrackerIssuesRequest
-	26, // 46: containarium.v1.TrackerService.ListTrackerDispatches:input_type -> containarium.v1.ListTrackerDispatchesRequest
-	28, // 47: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
-	33, // 48: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
-	35, // 49: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
-	37, // 50: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
-	39, // 51: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
-	41, // 52: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
-	43, // 53: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
-	46, // 54: containarium.v1.TrackerService.CreateTrackerIssue:input_type -> containarium.v1.CreateTrackerIssueRequest
-	48, // 55: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
-	51, // 56: containarium.v1.TrackerService.SubmitTrackerChangeFiles:input_type -> containarium.v1.SubmitTrackerChangeFilesRequest
-	8,  // 57: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	10, // 58: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	12, // 59: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	14, // 60: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	17, // 61: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
-	19, // 62: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
-	21, // 63: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
-	25, // 64: containarium.v1.TrackerService.DispatchTrackerIssues:output_type -> containarium.v1.DispatchTrackerIssuesResponse
-	27, // 65: containarium.v1.TrackerService.ListTrackerDispatches:output_type -> containarium.v1.ListTrackerDispatchesResponse
-	29, // 66: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
-	34, // 67: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
-	36, // 68: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
-	38, // 69: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
-	40, // 70: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
-	42, // 71: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
-	44, // 72: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
-	47, // 73: containarium.v1.TrackerService.CreateTrackerIssue:output_type -> containarium.v1.CreateTrackerIssueResponse
-	49, // 74: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
-	52, // 75: containarium.v1.TrackerService.SubmitTrackerChangeFiles:output_type -> containarium.v1.SubmitTrackerChangeFilesResponse
-	57, // [57:76] is the sub-list for method output_type
-	38, // [38:57] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	54, // 23: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	4,  // 24: containarium.v1.GetTrackerStatusResponse.credential_kind:type_name -> containarium.v1.TrackerCredentialKind
+	54, // 25: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
+	1,  // 26: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
+	31, // 27: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
+	1,  // 28: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
+	2,  // 29: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
+	32, // 30: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	1,  // 31: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
+	32, // 32: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
+	33, // 33: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	31, // 34: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
+	32, // 35: containarium.v1.CreateTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	33, // 36: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	51, // 37: containarium.v1.SubmitTrackerChangeFilesRequest.files:type_name -> containarium.v1.TrackerChangeFile
+	33, // 38: containarium.v1.SubmitTrackerChangeFilesResponse.change:type_name -> containarium.v1.TrackerChange
+	8,  // 39: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
+	10, // 40: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
+	12, // 41: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
+	14, // 42: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
+	17, // 43: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
+	19, // 44: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
+	21, // 45: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
+	25, // 46: containarium.v1.TrackerService.DispatchTrackerIssues:input_type -> containarium.v1.DispatchTrackerIssuesRequest
+	27, // 47: containarium.v1.TrackerService.ListTrackerDispatches:input_type -> containarium.v1.ListTrackerDispatchesRequest
+	29, // 48: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
+	34, // 49: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
+	36, // 50: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
+	38, // 51: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
+	40, // 52: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
+	42, // 53: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
+	44, // 54: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
+	47, // 55: containarium.v1.TrackerService.CreateTrackerIssue:input_type -> containarium.v1.CreateTrackerIssueRequest
+	49, // 56: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
+	52, // 57: containarium.v1.TrackerService.SubmitTrackerChangeFiles:input_type -> containarium.v1.SubmitTrackerChangeFilesRequest
+	9,  // 58: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	11, // 59: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	13, // 60: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	15, // 61: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	18, // 62: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
+	20, // 63: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
+	22, // 64: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
+	26, // 65: containarium.v1.TrackerService.DispatchTrackerIssues:output_type -> containarium.v1.DispatchTrackerIssuesResponse
+	28, // 66: containarium.v1.TrackerService.ListTrackerDispatches:output_type -> containarium.v1.ListTrackerDispatchesResponse
+	30, // 67: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	35, // 68: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
+	37, // 69: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
+	39, // 70: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
+	41, // 71: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
+	43, // 72: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
+	45, // 73: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
+	48, // 74: containarium.v1.TrackerService.CreateTrackerIssue:output_type -> containarium.v1.CreateTrackerIssueResponse
+	50, // 75: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
+	53, // 76: containarium.v1.TrackerService.SubmitTrackerChangeFiles:output_type -> containarium.v1.SubmitTrackerChangeFilesResponse
+	58, // [58:77] is the sub-list for method output_type
+	39, // [39:58] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tracker_proto_init() }
@@ -4216,7 +4303,7 @@ func file_containarium_v1_tracker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tracker_proto_rawDesc), len(file_containarium_v1_tracker_proto_rawDesc)),
-			NumEnums:      6,
+			NumEnums:      7,
 			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
