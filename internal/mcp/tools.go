@@ -618,6 +618,14 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Upgrade even if the sentinel-served binary already matches the running one. Default false.",
 					},
+					"github_tag": map[string]interface{}{
+						"type":        "string",
+						"description": "Install this release (e.g. v0.82.0) directly from GitHub Releases instead of the sentinel-served binary. Empty = sentinel path.",
+					},
+					"allow_downgrade": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Permit github_tag to be older than the running version (a deliberate rollback). Default false: an older tag is refused.",
+					},
 				},
 			},
 			Handler: handleUpgradeBackend,
@@ -2732,7 +2740,11 @@ func handleCheckForUpdates(client API, args map[string]interface{}) (string, err
 func handleUpgradeBackend(client API, args map[string]interface{}) (string, error) {
 	backendID, _ := args["backend_id"].(string)
 	force, _ := args["force"].(bool)
-	resp, err := client.TriggerUpgrade(backendID, force)
+	githubTag, _ := args["github_tag"].(string)
+	allowDowngrade, _ := args["allow_downgrade"].(bool)
+	resp, err := client.TriggerUpgrade(TriggerUpgradeRequest{
+		BackendID: backendID, Force: force, GithubTag: githubTag, AllowDowngrade: allowDowngrade,
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to trigger upgrade: %w", err)
 	}
