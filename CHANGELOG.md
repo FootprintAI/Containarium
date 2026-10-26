@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The sentinel unit does not pass `--sshpiper-config` to `ssh-authz-plugin` in enforce mode** (#2843, clarifies #2741). The 0.110.0 entry for #2815 says enforce mode reads `--sshpiper-config`; the flag defaults to `/etc/sshpiper/config.yaml`, the file the yaml plugin reads, so the Terraform unit leaves it out and needs no change when you turn `ssh_authz_enforce` on. An older binary accepts that unit and keeps the old deferring enforcement until it is upgraded.
 
+### Fixed
+
+- **A whole-box backup no longer loses a file whose first name is in an excluded directory** (part of #2801, follow-up to #3099). In a tar the first name carries the content and later names are hard links. When that first name was under `/tmp`, `/var/tmp`, `/var/cache` or `/run`, the filter dropped the kept name's link too, so the file disappeared from the backup and from the manifest. Dropped regular files are now set aside in a spill file in the backup directory. Each file is a separate age segment, encrypted to an identity held only in memory, and the spill is deleted when the backup ends. The first kept name is written as a regular file and listed in the manifest's `files`. Later kept names link to it and are listed in `links`. A link inside an excluded directory is still dropped. The `backup create --box` help now says that the one 256 GiB limit bounds both the uncompressed content and the stored archive. The real-Incus lane's export/import and box-backup tests now wait for the box to finish booting before writing probes. `systemd-tmpfiles` empties `/tmp` at boot (Ubuntu's `tmp.conf` marks it `D`), so a probe written during boot could vanish before the export, which made the #3072 test flaky.
+
 ## [0.119.0] - 2026-10-26
 
 ### Added
