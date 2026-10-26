@@ -228,3 +228,89 @@ func TestGenerate_RealShell_SymlinkedDeclarationIsRead(t *testing.T) {
 		t.Errorf("source=%v log=%q", pack.GetCommandSource(), pack.GetSteps()[0].GetLog())
 	}
 }
+
+// A step that deletes the capture file must still have its outcome and
+// exit code recorded: the wrapper must not depend on the temp path after
+// the step starts.
+func TestGenerate_RealShell_StepRemovingItsCaptureFile(t *testing.T) {
+	for _, tool := range []string{"sh", "timeout", "mktemp", "wc", "tail", "head"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not available: %v", tool, err)
+		}
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, DeclarationPath), `test:
+  - name: rm-capture
+    run: 'echo before; rm -f "$TMPDIR"/*; echo after; exit 7'
+`)
+	pack, err := Generate(context.Background(), localExecer{}, "local", Options{RepoDir: repo, StepTimeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := pack.GetSteps()[0]
+	if s.GetExitCode() != 7 || string(s.GetLog()) != "before\nafter\n" || s.GetLogOriginalBytes() != 13 {
+		t.Errorf("exit=%d log=%q original=%d", s.GetExitCode(), s.GetLog(), s.GetLogOriginalBytes())
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "*")); len(left) != 0 {
+		t.Errorf("capture file left behind: %v", left)
+	}
+}
+
+// With no `timeout` on the box's PATH, a repository with nothing to run
+// still yields a NO_COMMANDS pack; one with a step to run is an error.
+func TestGenerate_RealShell_NoTimeoutBinary(t *testing.T) {
+	var bin string
+	bindir := t.TempDir()
+	for _, tool := range []string{"sh", "head"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("%s not available: %v", tool, err)
+		}
+		if err := os.Symlink(p, filepath.Join(bindir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin = filepath.Join(bindir, "sh")
+	ex := restrictedPathExecer{sh: bin, path: bindir}
+
+	empty := t.TempDir()
+	pack, err := Generate(context.Background(), ex, "local", Options{RepoDir: empty})
+	if err != nil {
+		t.Fatalf("nothing to run: %v", err)
+	}
+	if pack.GetStatus() != pb.ProofPackStatus_PROOF_PACK_STATUS_NO_COMMANDS {
+		t.Errorf("status = %v", pack.GetStatus())
+	}
+
+	withStep := t.TempDir()
+	writeFile(t, filepath.Join(withStep, DeclarationPath), "test: true-cmd\n")
+	if _, err := Generate(context.Background(), ex, "local", Options{RepoDir: withStep}); err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("step with no timeout binary: err = %v", err)
+	}
+}
+
+// restrictedPathExecer runs argv with a PATH holding only the given dir,
+// resolving "sh" to an absolute path.
+type restrictedPathExecer struct{ sh, path string }
+
+func (r restrictedPathExecer) ExecWithExitCode(_ string, argv []string) (string, string, int, error) {
+	if argv[0] == "sh" {
+		argv = append([]string{r.sh}, argv[1:]...)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- test runs Generate's own fixed wrappers
+	cmd.Env = []string{"PATH=" + r.path}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return stdout.String(), stderr.String(), exitErr.ExitCode(), nil
+	}
+	if err != nil {
+		// git is absent from the restricted PATH: report it as a failed run.
+		return "", err.Error(), 127, nil
+	}
+	return stdout.String(), stderr.String(), 0, nil
+}
