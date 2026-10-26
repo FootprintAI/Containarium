@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The cloud actuation REST client drops its pooled connection after 3 consecutive 5xx responses** (part of #3077). A heartbeat every ~30s keeps one HTTP/2 connection permanently busy, so when the control plane's origin moved behind the same hostname the connection could stay pinned to the old origin and every heartbeat and status post failed with 502 until the daemon restarted or the connection was dropped by hand. The client now closes its idle connections after the third 5xx in a row (logged once), so the next request redials; a success resets the count and a 4xx neither counts nor resets. A bounded connection lifetime is not included.
+- **The cloud actuation REST client drops its pooled connection after 3 consecutive 5xx responses** (part of #3077). A heartbeat every ~30s keeps one HTTP/2 connection permanently busy, so when the control plane's origin moved behind the same hostname the connection could stay pinned to the old origin and every heartbeat and status post failed with 502 until the daemon restarted or the connection was dropped by hand. The client now closes its idle connections after the third 5xx in a row (logged once), so the next request redials; a success resets the count and a 4xx neither counts nor resets. `CloseIdleConnections` does not close an HTTP/2 connection with a stream in flight; the connection is recycled once the failing request has completed, and with the usual 30s heartbeat it is idle between beats, so the scenario above is covered. A bounded connection lifetime is not included.
 
 ## [0.119.0] - 2026-10-26
 

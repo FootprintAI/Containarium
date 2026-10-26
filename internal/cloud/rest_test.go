@@ -2,6 +2,8 @@ package cloud
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -203,16 +206,76 @@ func TestRESTActuation_4xxBetween5xxDoesNotResetOrCount(t *testing.T) {
 func TestRESTActuation_RecycleConcurrent(t *testing.T) {
 	srv, _ := connCountingServer(t, 502)
 	r := newRESTActuation(srv.URL, "tok")
+	const workers, iters = 16, 5
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 5; j++ {
+			for j := 0; j < iters; j++ {
 				_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
 				_, _ = r.ReportHostStatus(context.Background(), &cloudv1.ReportHostStatusRequest{})
 			}
 		}()
 	}
 	wg.Wait()
+	// Every call is a 502, so the counter cycles 1,2,0,...: after N calls it
+	// must be N mod K. A lost update (missing lock) breaks this.
+	total := workers * iters * 2
+	r.mu.Lock()
+	got := r.consecutive5xx
+	r.mu.Unlock()
+	if want := total % recycleAfter5xx; got != want {
+		t.Errorf("consecutive5xx after %d 502s = %d, want %d", total, got, want)
+	}
+}
+
+func TestRESTActuation_RecyclesHTTP2Connection(t *testing.T) {
+	var n, conns atomic.Int32
+	var nonH2 atomic.Bool
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.ProtoMajor != 2 {
+			nonH2.Store(true)
+		}
+		if n.Add(1) <= recycleAfter5xx {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.EnableHTTP2 = true
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	r := newRESTActuation(srv.URL, "tok")
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	r.hc.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: pool}
+
+	ctx := context.Background()
+	for i := 0; i < recycleAfter5xx; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err == nil {
+			t.Fatalf("call %d: want 502 error", i)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections before recycle = %d, want 1", got)
+	}
+	// The h2 client releases a finished stream asynchronously; a real
+	// heartbeat tick is 30s later, so give it a moment like the tick would.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+		t.Fatalf("heartbeat after recycle: %v", err)
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections after recycle = %d, want 2", got)
+	}
+	if nonH2.Load() {
+		t.Error("a request was not HTTP/2; the test no longer pins the h2 path")
+	}
 }
