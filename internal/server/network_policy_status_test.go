@@ -44,7 +44,7 @@ func appliedPass(t *testing.T, views []containerView, policies map[string]netpol
 	for ifindex := range plan.vethPolicy {
 		loaded[ifindex] = !slices.Contains(failed, ifindex)
 	}
-	return appliedFromPass(views, plan, loaded, policies, nil)
+	return appliedFromPass(views, plan, loaded, policies, nil, nil)
 }
 
 func npStatusFor(t *testing.T, src appliedStateSource, armed bool, tenant string) *pb.NetworkPolicyStatus {
