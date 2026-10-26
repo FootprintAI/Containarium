@@ -79,21 +79,32 @@ for _ in $(seq 1 50); do
 done
 grep -q 'multiplexing on' "$work/sentinel.log" || fail "sentinel did not start"
 
-# The pin, read the way an operator reads it.
-PIN="$($SUDO "$work/sentinel-bin" sentinel tunnel-identity --tunnel-tls-identity "$work/identity.pem" | tail -n 1)"
-[[ "$PIN" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "sentinel tunnel-identity printed no usable pin: '$PIN'"
+# The pin, read the way an operator reads it. A sentinel with no tunnel
+# identity has none to print; the client still gets whatever was printed, so
+# the gate fails with the client's own error, as an operator's upgrade would
+# (the v0.101.0/.1 failure). scripts/ci/test-tunnel-smoke.sh proves this.
+PIN="$($SUDO "$work/sentinel-bin" sentinel tunnel-identity --tunnel-tls-identity "$work/identity.pem" 2>>"$work/sentinel.log" | tail -n 1 || true)"
+[[ "$PIN" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || echo "::warning::sentinel tunnel-identity printed no usable pin: '$PIN'; starting the client with it anyway"
 
-"$CLIENT_BIN" tunnel --sentinel-addr "127.0.0.1:$SENTINEL_PORT" --sentinel-pin "$PIN" \
+# The env fallback is cleared so only the pin the sentinel supplied counts.
+env -u CONTAINARIUM_TUNNEL_SENTINEL_PIN \
+  "$CLIENT_BIN" tunnel --sentinel-addr "127.0.0.1:$SENTINEL_PORT" --sentinel-pin "$PIN" \
   --token "$TOKEN" --spot-id smoke-spot --ports "$BACKEND_PORT" >"$work/client.log" 2>&1 &
 pids+=($!)
+client_pid=$!
 
 # (a) the sentinel registered the spot over TLS. Asserted on the sentinel's
 # log: it is the side that decides the transport.
 for _ in $(seq 1 100); do
   grep -q 'registered spot "smoke-spot".*transport=tls' "$work/sentinel.log" 2>/dev/null && break
-  kill -0 "${pids[-1]}" 2>/dev/null || break
+  kill -0 "$client_pid" 2>/dev/null || break
   sleep 0.2
 done
+if ! grep -q 'registered spot "smoke-spot".*transport=tls' "$work/sentinel.log" \
+  && ! kill -0 "$client_pid" 2>/dev/null; then
+  fail "the tunnel client exited before registering: $(grep -m1 -E '^Error:' "$work/client.log" || tail -n 1 "$work/client.log")"
+fi
 grep -q 'registered spot "smoke-spot".*transport=tls' "$work/sentinel.log" \
   || fail "the tunnel client did not register with the sentinel over TLS"
 
