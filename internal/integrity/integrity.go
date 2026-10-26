@@ -59,6 +59,10 @@ type ProgramObject struct {
 	// Path is where to read the object bytes from. When empty, Name is used as
 	// the path.
 	Path string
+	// Data, when non-nil, holds the object bytes in memory (the object embedded
+	// in the binary has no file on disk, #3079). It takes precedence over Path
+	// and Name; the digest is the same SHA-256 of the object bytes either way.
+	Data []byte
 }
 
 // Inputs is the snapshot the measurement compute consumes. The caller (the
@@ -153,11 +157,20 @@ func Compute(in Inputs) (Measurement, error) {
 	// measurement (and its signature) is deterministic regardless of the
 	// caller's slice ordering.
 	for _, p := range in.Programs {
-		path := p.Path
-		if path == "" {
-			path = p.Name
+		var d string
+		var err error
+		// Data decides the source by nil-ness: a non-nil empty slice digests as
+		// the empty-input hash, while nil falls back to Path (or Name).
+		if p.Data != nil {
+			sum := sha256.Sum256(p.Data)
+			d = hex.EncodeToString(sum[:])
+		} else {
+			path := p.Path
+			if path == "" {
+				path = p.Name
+			}
+			d, err = digestFile(path)
 		}
-		d, err := digestFile(path)
 		if err != nil {
 			return Measurement{}, fmt.Errorf("digest program object %q: %w", p.Name, err)
 		}

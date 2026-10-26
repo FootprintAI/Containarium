@@ -28,6 +28,7 @@ import (
 	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/proofpack"
 	"github.com/footprintai/containarium/internal/releasecheck"
@@ -4118,10 +4119,13 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
-	// at an object on disk; that object's bytes are exactly what we attest.
-	if bpfObj := strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyBPFObject)); bpfObj != "" {
-		in.Programs = append(in.Programs, integrity.ProgramObject{Name: bpfObj, Path: bpfObj})
+	// at an object (a path on disk, or the one embedded in the binary); those
+	// loaded bytes are exactly what we attest.
+	progs, err := integrityProgramObjects(os.Getenv(appconfig.EnvNetworkPolicyBPFObject), netbpf.EmbeddedObject())
+	if err != nil {
+		return integrity.Measurement{}, err
 	}
+	in.Programs = append(in.Programs, progs...)
 
 	// Node identity signer: the sentinel-issued peer leaf key.
 	if s.peerPool != nil {
@@ -4133,6 +4137,25 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	}
 
 	return integrity.Compute(in)
+}
+
+// integrityProgramObjects maps the network-policy object setting to the program
+// objects the self-measurement digests. A path is digested from disk under its
+// own name. The embedded selector (netbpf.IsEmbeddedValue) has no file, so the
+// bytes the enforcer actually loads (netbpf.EmbeddedObject) are digested under
+// the stable name "embedded" whichever alias was configured (#3079).
+func integrityProgramObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	if netbpf.IsEmbeddedValue(setting) {
+		if len(embedded) == 0 {
+			return nil, fmt.Errorf("network-policy object %q selects the embedded BPF object but this build has none", setting)
+		}
+		return []integrity.ProgramObject{{Name: "embedded", Data: embedded}}, nil
+	}
+	return []integrity.ProgramObject{{Name: setting, Path: setting}}, nil
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this

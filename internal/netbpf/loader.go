@@ -57,8 +57,8 @@ type Loader struct {
 // This lets release builds enable the feature with a single env flag while a
 // custom/locally-built object can still be pointed at by path.
 func Resolve(value string) (*Loader, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "embedded", "1", "true", "yes", "on":
+	switch {
+	case IsEmbeddedValue(value):
 		obj := EmbeddedObject()
 		if len(obj) == 0 {
 			return nil, fmt.Errorf("netbpf: no embedded BPF object in this build " +
@@ -69,6 +69,18 @@ func Resolve(value string) (*Loader, error) {
 	default:
 		return Load(value)
 	}
+}
+
+// IsEmbeddedValue reports whether a CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT value
+// selects the object compiled into the binary rather than a file path. Resolve
+// and the integrity self-measurement (#3079) share it so they agree on which
+// object is loaded.
+func IsEmbeddedValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "embedded", "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // Load reads the compiled BPF object at objPath and loads the collection. Build
