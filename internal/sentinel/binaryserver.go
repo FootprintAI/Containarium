@@ -44,7 +44,6 @@ type StatusJSON struct {
 	// (#2892). Counts only: this endpoint is unauthenticated, so it never
 	// names a pool; the per-pool detail is on the AUTH-gated
 	// /sentinel/primary-auth-health (#3004). Never secret-derived.
-	// Replaces the per-pool primary_auth_health list.
 	PrimaryAuthCounts PrimaryAuthCountsJSON `json:"primary_auth_counts"`
 	// UnattributedAuthFailures counts daemon-AUTH 401s that could not be
 	// tied to exactly one primary by source address (scanners, a daemon

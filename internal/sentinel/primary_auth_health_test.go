@@ -1,6 +1,7 @@
 package sentinel
 
 import (
+	"crypto/hmac"
 	"crypto/md5"  // #nosec G501 -- test only: proves no MD5 of the secret leaks
 	"crypto/sha1" // #nosec G505 -- test only: proves no SHA-1 of the secret leaks
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -394,7 +396,7 @@ func TestStatus_PrimaryAuthHealth_AuthenticatedNonBindRequestDoesNotClear(t *tes
 func TestStatus_UnauthenticatedCarriesCountsNeverPoolNames(t *testing.T) {
 	const marker = "zz-marker-pool"
 	srv := newAuthHealthTestServer(t)
-	for _, p := range []string{marker + "-ok", marker + "-failing", marker + "-ok2"} {
+	for _, p := range []string{marker + "-ok", marker + "-second", marker + "-third"} {
 		registerPool(t, srv, p)
 	}
 	st, body := getStatus(t, srv)
@@ -498,6 +500,53 @@ func TestPrimaryAuthHealthRoute_NeverContainsSecret(t *testing.T) {
 			if strings.Contains(body, v) {
 				t.Errorf("detail route contains %q: %s", v, body)
 			}
+		}
+	}
+}
+
+// The detail route's method and signature handling, on the real route table
+// (same pattern as TestPrimariesHandler_UnsignedRequestRejected).
+func TestPrimaryAuthHealthRoute_MethodAndSignature(t *testing.T) {
+	srv := newAuthHealthTestServer(t)
+	for _, tc := range []struct {
+		method string
+		signed bool
+		want   int
+	}{
+		{http.MethodGet, false, http.StatusUnauthorized},
+		{http.MethodPost, false, http.StatusUnauthorized},
+		{http.MethodDelete, false, http.StatusUnauthorized},
+		{http.MethodGet, true, http.StatusOK},
+		{http.MethodPost, true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, true, http.StatusMethodNotAllowed},
+	} {
+		code, body := doPrimaries(t, srv, tc.method, primaryAuthHealthPath, testPrimariesSecret, tc.signed, nil)
+		if code != tc.want {
+			t.Errorf("%s signed=%v: status = %d, body = %q; want %d", tc.method, tc.signed, code, body, tc.want)
+		}
+	}
+}
+
+// A correctly keyed signature outside the replay window is refused.
+func TestPrimaryAuthHealthRoute_StaleTimestampRefused(t *testing.T) {
+	srv := newAuthHealthTestServer(t)
+	for _, skew := range []time.Duration{-(auth.SentinelMaxClockSkew + time.Minute), auth.SentinelMaxClockSkew + time.Minute} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+primaryAuthHealthPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts := strconv.FormatInt(time.Now().Add(skew).Unix(), 10)
+		mac := hmac.New(sha256.New, []byte(testPrimariesSecret))
+		mac.Write([]byte("GET\n" + primaryAuthHealthPath + "\n" + ts))
+		req.Header.Set(auth.SentinelHeaderTimestamp, ts)
+		req.Header.Set(auth.SentinelHeaderSignature, hex.EncodeToString(mac.Sum(nil)))
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("skew %v: status = %d, want 401", skew, resp.StatusCode)
 		}
 	}
 }
