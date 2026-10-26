@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.118.0] - 2026-10-26
+
 ### Fixed
 
 - **An upgrade rollback leaves a log, and a passing `/health` no longer deletes the only rollback binary** (#3058). The detached upgrade watchdog had no stdout or stderr, so an automatic rollback left no trace; it now appends to `upgrade-watchdog.log` in the binary's directory (mode 0600). After a healthy `/health` the previous binary is renamed from `.old` to `.prev` instead of deleted, and stays until the next upgrade's healthy check replaces it. `docs/UPGRADE-AND-ROLLBACK.md` drops the two matching limits and gains a manual restore from `.prev`. The automatic rollback on a failed check still restores `.old`.
