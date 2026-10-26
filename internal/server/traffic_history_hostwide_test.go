@@ -24,10 +24,24 @@ func TestTrafficQueryHistory_HostWideRequiresAdmin(t *testing.T) {
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("tenant host-wide query: got %v want PermissionDenied", err)
 	}
-	// An admin passes authz and reaches the store check.
+	// An admin passes authz and reaches the store check: this server has no
+	// collector, so FailedPrecondition is exactly "got past authorization".
 	_, err = srv.QueryTrafficHistory(adminCtx(), req)
-	if status.Code(err) == codes.PermissionDenied {
-		t.Fatalf("admin host-wide query was denied: %v", err)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("admin host-wide query: got %v, want FailedPrecondition (reached the store check)", err)
+	}
+}
+
+// A whitespace-only container_name is not "empty": it stays on the per-box
+// path, where a tenant is refused, so it cannot be used to widen the scope.
+func TestTrafficQueryHistory_WhitespaceContainerNameIsNotHostWide(t *testing.T) {
+	srv := &TrafficServer{}
+	_, err := srv.QueryTrafficHistory(tenantCtx("alice"), &pb.QueryTrafficHistoryRequest{
+		ContainerName: "  ",
+		StartTime:     timestamppb.New(time.Now().Add(-time.Hour)),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v want PermissionDenied", err)
 	}
 }
 

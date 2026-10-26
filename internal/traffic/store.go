@@ -233,9 +233,14 @@ type QueryParams struct {
 // caller distinguish "no matching traffic" from "nothing collected" (#2884).
 func (s *Store) OldestRecord(ctx context.Context, containerName string) (*time.Time, error) {
 	var oldest *time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT MIN(started_at) FROM traffic_connections WHERE $1 = '' OR container_name = $1`,
-		containerName).Scan(&oldest)
+	var err error
+	if containerName == "" {
+		err = s.pool.QueryRow(ctx, `SELECT MIN(started_at) FROM traffic_connections`).Scan(&oldest)
+	} else {
+		err = s.pool.QueryRow(ctx,
+			`SELECT MIN(started_at) FROM traffic_connections WHERE container_name = $1`,
+			containerName).Scan(&oldest)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read oldest record: %w", err)
 	}
