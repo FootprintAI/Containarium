@@ -26,6 +26,7 @@ on:
       - 'Makefile'
       - '**/Dockerfile*'
       - 'docs/security/BUILD-SUPPLY-CHAIN.md'
+      - 'terraform/**/startup-sentinel.sh'
   pull_request:
     paths:
       - '.github/**'
@@ -43,6 +44,7 @@ on:
       - 'Makefile'
       - '**/Dockerfile*'
       - 'docs/security/BUILD-SUPPLY-CHAIN.md'
+      - 'terraform/**/startup-sentinel.sh'
 
 permissions:
   contents: read
@@ -98,6 +100,13 @@ jobs:
       - name: Require every build-time fetch to be inventoried and pinned
         # Also rejects any `@latest` tool install and project-level `npm install`.
         run: scripts/ci/check-build-fetches.sh
+
+      - name: Sentinel sshpiperd checksum gate self-test (seeded broken copies must fail)
+        run: scripts/ci/check-sentinel-sshpiper-checksum.sh --self-test
+
+      - name: Require both sentinel startup scripts to verify the sshpiperd sha256
+        # Same value as ssh-ban.yml; terraform/* is outside the build-fetch inventory (#3103).
+        run: scripts/ci/check-sentinel-sshpiper-checksum.sh
 
       - name: Install actionlint (pinned, checksum-verified)
         run: |
