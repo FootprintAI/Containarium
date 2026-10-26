@@ -274,7 +274,14 @@ record with the full field set. `TestIntegrationEnforceDeviceApproval` has
 the stub daemon answer `APPROVAL_PENDING`, then `PENDING` again on the first
 poll and `ALLOW` on the second. A stock OpenSSH client, answering through
 `SSH_ASKPASS_REQUIRE=force`, gets partial success, the instruction, one
-prompt and a session. A `BatchMode=yes` client is refused.
+prompt and a session. A `BatchMode=yes` client is refused. The refusals are
+pinned on the same chain: `TestIntegrationEnforceDeviceApprovalDenied`
+(`APPROVAL_DENIED` stops polling), `...Expires` (polling ends at
+`expires_at`), `...SignedNeverAnswered` (an unanswered prompt never polls and
+ends in a `denied` record) and `...FakeAgentCannotBorrow` (an agent that lists
+a victim's key but refuses to sign gets no prompt once another key is
+denied). The unit tests add the full approval store, `userinfo` in the
+approval URL and the cache write on a polled `ALLOW`.
 `TestIntegrationEnforceAllowThenDeny`, `TestIntegrationEnforcePasswordFirst`
 and `TestIntegrationEnforceDeviceApproval` drive the stock OpenSSH client and
 skip without it (the CI lane fails on a skip):
