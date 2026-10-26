@@ -48,8 +48,8 @@ session cannot put the `open` row on one backend and the `close` row on
 another. The one exception is a session whose pending decision was evicted
 from the plugin's bounded stash (see
 [SENTINEL-SSH-SESSION-AUDIT.md](./SENTINEL-SSH-SESSION-AUDIT.md)): it has no
-recorded route, so its `target` comes from a fresh read of the config. Each refusal appends a `denied`
-JSONL record (`enforced=true`, `user_id` when the daemon knows it,
+recorded route, so its `target` comes from a fresh read of the config. Each
+refusal appends a `denied` JSONL record (`enforced=true`, `user_id` when the daemon knows it,
 `deny_reason`, key fingerprint) to `--records-file`. The shipper delivers
 it as an `ssh_session_denied` audit row. The backend keeps one row per
 session and phase, so a connection that is refused several times (a client
