@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.119.0] - 2026-10-26
+
 ### Added
 
 - **`--github-tag` refuses a release older than the running daemon unless `--allow-downgrade`** (#3059). `TriggerUpgrade` has a new `allow_downgrade` field; `containarium backends upgrade --github-tag` has the matching `--allow-downgrade` flag, and the `upgrade_backend` MCP tool now takes `github_tag` and `allow_downgrade`. An older tag is refused on the RPC with `FAILED_PRECONDITION` before any download. Only a comparison where both the running version and the tag parse as semver can refuse: `latest`, dev builds and unparseable versions are not blocked, and a pre-release is older than its release. The sentinel-served path is unchanged. Rolling back with an older tag now needs `--allow-downgrade`; `docs/UPGRADE-AND-ROLLBACK.md` is updated.
