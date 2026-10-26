@@ -27,6 +27,10 @@
 #                  builder
 #   APT_PACKAGES   space-separated packages to bundle with their dependency
 #                  closure (default: the list below)
+#   APT_BATCH_SIZE packages per `apt-get download` call (default 25); each
+#                  batch is logged, so a stall shows which batch it is in
+#   GITHUB_STEP_SUMMARY  when set (GitHub Actions), the step's result,
+#                  duration and package count are appended to it
 #
 # Outputs (under $STAGING_DIR):
 #
@@ -68,9 +72,21 @@ case "$DEPS_ONLY" in
   *) echo "DEPS_ONLY must be all, toolchains or apt (got: $DEPS_ONLY)" >&2; exit 1 ;;
 esac
 
+APT_BATCH_SIZE="${APT_BATCH_SIZE:-25}"
+if ! [[ "$APT_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+  echo "APT_BATCH_SIZE must be a positive integer (got: $APT_BATCH_SIZE)" >&2
+  exit 1
+fi
+
 # What install.sh would apt-get install on a connected host: runner-kit deps,
 # ZFS, and incus/incus-client/incus-extra from the Zabbly stable repo.
 APT_PACKAGES="${APT_PACKAGES:-curl wget gnupg ca-certificates software-properties-common jq zfsutils-linux build-essential libicu-dev git incus incus-client incus-extra}"
+
+# Network bounds for every apt call (#3118). Without them one stalled HTTPS
+# connection held `apt-get download` silent for 46 minutes. A connection idle
+# for 30s now fails and is retried 3 times; apt's error then names the URL.
+APT_NET_OPTS=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+APT_PKG_COUNT=""   # resolved package count, for the job summary
 
 # Colors
 GREEN='\033[0;32m'
@@ -241,7 +257,7 @@ download_apt_packages() {
   : >"$work/status"   # empty dpkg status: resolve as for a host with nothing installed
 
   log_info "Resolving the install set of: ${pkgs[*]}"
-  if ! sim="$(apt-get install -s --no-install-recommends \
+  if ! sim="$(apt-get install -s --no-install-recommends "${APT_NET_OPTS[@]}" \
                 -o Dir::State::status="$work/status" -o Debug::NoLocking=1 \
                 "${pkgs[@]}")"; then
     log_error "apt could not resolve the package set (see the apt error above)."
@@ -255,11 +271,20 @@ download_apt_packages() {
     return 1
   fi
 
-  log_info "Downloading ${#fetch[@]} .deb packages into $apt_dir/"
-  if ! (cd "$apt_dir" && apt-get download "${fetch[@]}"); then
-    log_error "apt-get download failed"
-    return 1
-  fi
+  # Batched (#3118): the log shows which batch is in flight, so a stall is
+  # placed to a few packages instead of the whole set.
+  APT_PKG_COUNT="${#fetch[@]}"
+  local batches=$(( (${#fetch[@]} + APT_BATCH_SIZE - 1) / APT_BATCH_SIZE ))
+  local b i batch=()
+  log_info "Resolved ${#fetch[@]} packages; downloading into $apt_dir/ in $batches batch(es) of up to $APT_BATCH_SIZE"
+  for (( b = 1, i = 0; i < ${#fetch[@]}; b++, i += APT_BATCH_SIZE )); do
+    batch=("${fetch[@]:i:APT_BATCH_SIZE}")
+    log_info "batch $b/$batches: ${#batch[@]} packages (${batch[0]%%=*} .. ${batch[-1]%%=*})"
+    if ! (cd "$apt_dir" && apt-get download "${APT_NET_OPTS[@]}" "${batch[@]}"); then
+      log_error "apt-get download failed in batch $b/$batches (apt's error above names the host)"
+      return 1
+    fi
+  done
 
   check_apt_closure "$apt_dir" "${pkgs[@]}"
   log_success "apt packages downloaded: $(find "$apt_dir" -maxdepth 1 -name '*.deb' | wc -l) .deb files"
@@ -341,7 +366,21 @@ dep_name() {
   echo "${a%%:*}"
 }
 
+# write_summary EXIT_STATUS: one line in the GitHub job summary, so a slow or
+# failed step is visible without opening the log (#3118).
+write_summary() {
+  local rc="$1" result pkgs=""
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  if [ "$rc" -eq 0 ]; then result="ok in ${SECONDS}s"; else result="failed after ${SECONDS}s (exit $rc)"; fi
+  [ -n "$APT_PKG_COUNT" ] && pkgs=", $APT_PKG_COUNT apt packages in batches of $APT_BATCH_SIZE"
+  echo "**Download bundle dependencies** ($DEPS_ONLY): $result$pkgs." \
+       "Expected: a few minutes on a healthy run; build-bundle times out at 30 minutes." \
+       >>"$GITHUB_STEP_SUMMARY" || true
+}
+
 main() {
+  SECONDS=0
+  trap 'write_summary $?' EXIT
   log_info "Staging dir: $STAGING_DIR"
   log_info "Target:      $OS/$ARCH"
   log_info "Steps:       $DEPS_ONLY"

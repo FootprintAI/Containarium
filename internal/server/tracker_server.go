@@ -326,6 +326,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		resp.Reachable = true
 		resp.CredentialValid = true
 		resp.CredentialBreadth = breadthToProto(info.Breadth)
+		resp.CredentialKind = kindToProto(info.Kind)
 		resp.CredentialScopes = info.Scopes
 		if !info.ExpiresAt.IsZero() {
 			resp.CredentialExpiresAt = timestamppb.New(info.ExpiresAt)
@@ -522,4 +523,18 @@ func validateTrackerPolicy(p *pb.TrackerPolicy) error {
 		}
 	}
 	return nil
+}
+
+// kindToProto converts the Go-level credential kind to its proto enum.
+func kindToProto(k tracker.CredentialKind) pb.TrackerCredentialKind {
+	switch k {
+	case tracker.KindProject:
+		return pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT
+	case tracker.KindGroup:
+		return pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP
+	case tracker.KindPersonal:
+		return pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL
+	default:
+		return pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED
+	}
 }
