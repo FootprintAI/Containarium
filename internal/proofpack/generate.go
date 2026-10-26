@@ -49,31 +49,37 @@ type Options struct {
 
 // probeScript reports, in one exec, what Generate needs before running
 // anything: whether the repo dir exists, whether `timeout` is available,
-// the declaration file's content (stdout, bounded) and whether a Makefile
-// exists. Anything at the declaration path counts as present, including a
+// the declaration file's content (stdout, bounded), whether a Makefile
+// exists and whether `timeout` is missing. A missing `timeout` is only
+// reported, not refused here: it matters once a step has to run. Anything at the declaration path counts as present, including a
 // dangling symlink or a directory, so an unusable declaration is refused
 // (95) rather than mistaken for none. The exit status is 10 + 1
-// (declaration present) + 2 (Makefile present); 95, 96 and 97 are the
-// refusals.
+// (declaration present) + 2 (Makefile present) + 4 (`timeout` missing);
+// 95 and 97 are the refusals.
 const probeScript = `cd -- "$1" || exit 97
-command -v timeout >/dev/null 2>&1 || exit 96
 rc=10
+command -v timeout >/dev/null 2>&1 || rc=$((rc + 4))
 if [ -e "$2" ] || [ -L "$2" ]; then head -c "$3" -- "$2" || exit 95; rc=$((rc + 1)); fi
 if [ -f Makefile ] || [ -f makefile ] || [ -f GNUmakefile ]; then rc=$((rc + 2)); fi
 exit "$rc"`
 
 // stepScript runs one step with its output captured to a temp file in the
-// box, then prints the output's full size on stderr and its last $4 bytes
+// box. The file is opened for writing (fd 3) and reading (fd 4 for the size, fd 5 for the
+// tail, each with its own offset) and
+// unlinked before the step starts, so a step that deletes or replaces the
+// path cannot lose its own outcome and no file is left behind. The wrapper then prints the output's full size on stderr
+// and its last $4 bytes
 // on stdout, and exits with the step's status. The command line arrives as
 // $3 and is executed, never echoed. $2 is the timeout and $5 the SIGKILL
 // grace, both in seconds.
 const stepScript = `cd -- "$1" || exit 97
 f=$(mktemp) || exit 98
-timeout -k "$5" "$2" sh -c "$3" >"$f" 2>&1 </dev/null
-rc=$?
-wc -c <"$f" >&2
-tail -c "$4" -- "$f"
+exec 3>"$f" 4<"$f" 5<"$f" || exit 98
 rm -f -- "$f"
+timeout -k "$5" "$2" sh -c "$3" >&3 2>&3 </dev/null 3>&- 4<&- 5<&-
+rc=$?
+wc -c <&4 >&2
+tail -c "$4" <&5
 exit "$rc"`
 
 // Generate runs the repository's test command set in box and returns the
@@ -143,14 +149,25 @@ func resolveSteps(ex Execer, box, dir string, pack *pb.ProofPack) ([]Step, error
 		// A declaration that exists but cannot be read must not fall back
 		// to `make test`: the repository declared something else.
 		return nil, fmt.Errorf("proofpack: cannot read %s in %s: %s", DeclarationPath, box, strings.TrimSpace(stderr))
-	case 96:
-		return nil, fmt.Errorf("proofpack: %s has no `timeout` command (coreutils); steps cannot be bounded", box)
-	case 10, 11, 12, 13:
+	case 10, 11, 12, 13, 14, 15, 16, 17:
 	default:
 		return nil, fmt.Errorf("proofpack: probe %s exited %d: %s", box, rc, strings.TrimSpace(stderr))
 	}
 	hasDecl := (rc-10)&1 != 0
 	hasMakefile := (rc-10)&2 != 0
+	noTimeout := (rc-10)&4 != 0
+	steps, err := pickSteps(stdout, hasDecl, hasMakefile, pack)
+	if err != nil {
+		return nil, err
+	}
+	if noTimeout && len(steps) > 0 {
+		return nil, fmt.Errorf("proofpack: %s has no `timeout` command (coreutils); steps cannot be bounded", box)
+	}
+	return steps, nil
+}
+
+// pickSteps chooses the declared steps, the `make test` fallback, or none.
+func pickSteps(stdout string, hasDecl, hasMakefile bool, pack *pb.ProofPack) ([]Step, error) {
 
 	if hasDecl {
 		if len(stdout) > MaxDeclarationBytes {
