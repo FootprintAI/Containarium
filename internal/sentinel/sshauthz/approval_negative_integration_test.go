@@ -179,7 +179,9 @@ func TestIntegrationEnforceDeviceApprovalExpires(t *testing.T) {
 		t.Fatalf("an expired approval must refuse the client: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 	// Polled at least once, never past the expiry: at most lifetime/poll polls,
-	// plus one for a wait cut short at the deadline. The 60-second cap would
+	// plus one for a wait cut short at the deadline. The +2 slack absorbs that
+	// extra poll and one landing just after the deadline (the daemon sees the
+	// request a moment after the plugin checked the clock), so it is not flaky. The 60-second cap would
 	// poll about 240 times.
 	if n := polls.Load(); n < 1 || n > int32(lifetime/poll)+2 {
 		t.Fatalf("polls = %d, want 1..%d", n, int32(lifetime/poll)+2)

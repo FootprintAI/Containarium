@@ -282,9 +282,9 @@ ends in a `denied` record) and `...FakeAgentCannotBorrow` (an agent that lists
 a victim's key but refuses to sign gets no prompt once another key is
 denied). The unit tests add the full approval store, `userinfo` in the
 approval URL and the cache write on a polled `ALLOW`.
-`TestIntegrationEnforceAllowThenDeny`, `TestIntegrationEnforcePasswordFirst`
-and `TestIntegrationEnforceDeviceApproval` drive the stock OpenSSH client and
-skip without it (the CI lane fails on a skip):
+`TestIntegrationEnforceAllowThenDeny`, `TestIntegrationEnforcePasswordFirst`,
+`TestIntegrationEnforceDeviceApproval` and the four `TestIntegrationEnforceDeviceApproval*`
+tests above drive the stock OpenSSH client and skip without it (the CI lane fails on a skip):
 
 ```sh
 go build -o /tmp/containariumd ./cmd/containariumd
