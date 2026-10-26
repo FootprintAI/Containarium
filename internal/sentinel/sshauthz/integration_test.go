@@ -42,6 +42,9 @@ type integrationChain struct {
 	allowKey, denyKey     ssh.Signer
 	outage                *atomic.Bool
 	calls                 *atomic.Int32
+	// respond, when set, answers every authorize request instead of the
+	// allowKey/denyKey rule.
+	respond *atomic.Pointer[func(*pb.AuthorizeSSHRequest) *pb.AuthorizeSSHResponse]
 }
 
 func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain {
@@ -107,6 +110,7 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 
 	var outage atomic.Bool
 	var calls atomic.Int32
+	var respond atomic.Pointer[func(*pb.AuthorizeSSHRequest) *pb.AuthorizeSSHResponse]
 	secret := []byte("integration-sentinel-secret-32-bytes")
 	verifier := auth.NewSentinelVerifier(nil, secret)
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +144,9 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 		res := &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY, DenyReason: pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY}
 		if req.GetCredential().GetPublicKey().GetFingerprintSha256() == allowFP {
 			res = allowed("user-allow")
+		}
+		if fn := respond.Load(); fn != nil {
+			res = (*fn)(req)
 		}
 		raw, _ := protojson.Marshal(res)
 		_, _ = w.Write(raw)
@@ -195,7 +202,7 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return &integrationChain{address: address, records: records, dir: dir, upstream: upstream, allowKey: allowKey, denyKey: denyKey, outage: &outage, calls: &calls}
+	return &integrationChain{address: address, records: records, dir: dir, upstream: upstream, allowKey: allowKey, denyKey: denyKey, outage: &outage, calls: &calls, respond: &respond}
 }
 
 // dial authenticates as alice offering keys in order and runs one command.
