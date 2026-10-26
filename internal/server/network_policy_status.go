@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -55,14 +56,18 @@ type appliedStateSource interface {
 // the plan it applied and, per planned veth, whether the config write and the
 // attach both succeeded. A running box without a resolved veth never reaches
 // the plan's veth map, so it is counted as not loaded from the views.
-func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool) map[string]tenantApplied {
+//
+// egressIncomplete marks a tenant id whose allow-list write failed this pass,
+// and egressNames names it. The mark is keyed by the failed entry's tenant, not
+// by the running views (#3051): a tenant with only stopped boxes, or with no box
+// left after its policy was removed, still gets a record carrying it.
+func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool, egressNames map[uint32]string) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
 		if !v.Running {
 			continue
 		}
 		a := out[v.Tenant]
-		a.EgressIncomplete = a.EgressIncomplete || egressIncomplete[v.TenantID]
 		cfg, planned := plan.vethPolicy[v.Ifindex]
 		if v.HasVeth && planned && loaded[v.Ifindex] {
 			a.Mode, a.EgressMode = cfg.Mode, cfg.EgressMode
@@ -72,6 +77,15 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 			a.BoxesNotLoaded++
 		}
 		out[v.Tenant] = a
+	}
+	for id, bad := range egressIncomplete {
+		name, ok := egressNames[id]
+		if !bad || !ok {
+			continue
+		}
+		a := out[name]
+		a.EgressIncomplete = true
+		out[name] = a
 	}
 	return out
 }
@@ -108,15 +122,28 @@ func (s *NetworkPolicyServer) GetNetworkPolicyStatus(ctx context.Context, req *p
 	if s.applied != nil {
 		snap = s.applied.AppliedState(tenant)
 	}
-	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed, s.now())}, nil
+	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed, s.now(), s.hostKernelUnsupported())}, nil
 }
 
-func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time.Time) *pb.NetworkPolicyStatus {
+// hostKernelUnsupported asks the injected probe, or the host itself.
+func (s *NetworkPolicyServer) hostKernelUnsupported() bool {
+	if s.kernelUnsupported != nil {
+		return s.kernelUnsupported()
+	}
+	return hostcheck.EgressKernelUnsupported()
+}
+
+func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time.Time, kernelUnsupported bool) *pb.NetworkPolicyStatus {
 	st := &pb.NetworkPolicyStatus{
 		Tenant:           tenant,
 		EnforcementArmed: armed,
 		// The program parses IPv4 only, whatever is loaded.
 		UncoveredPaths: []pb.NetworkPolicyUncoveredPath{pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_IPV6},
+	}
+	// A kernel below 6.6 cannot attach the egress program at all, whatever the
+	// enforcer reports (#2972); said in every state, including enforcer-not-running.
+	if kernelUnsupported {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED)
 	}
 	switch {
 	case !snap.Running:
@@ -146,6 +173,11 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	}
 	if !snap.Found || a.BoxesLoaded == 0 {
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED
+		// No box is loaded, but the tenant's allow-list entries are written
+		// regardless (#3051), so a failed write still matters.
+		if snap.Found && a.EgressIncomplete {
+			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
+		}
 		return st
 	}
 	// LOADED only when every running box is covered; otherwise the modes are

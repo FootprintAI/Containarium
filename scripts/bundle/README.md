@@ -7,8 +7,10 @@ For the customer-facing side, see `hacks/offline-install/README.md`.
 
 | Script | Purpose |
 |---|---|
-| `download-deps.sh` | Pulls toolchain tarballs (Go, Node, pnpm, buf, golangci-lint, actions-runner) and `.deb` packages into `dist/bundle-cache/`. Idempotent. |
-| `build-bundle.sh` | Assembles the bundle tarball from `bin/` outputs + the cache, computes SHA256 manifest, tars + gzips. |
+| `download-deps.sh` | Pulls toolchain tarballs (Go, Node, pnpm, buf, golangci-lint, actions-runner) and `.deb` packages into `dist/bundle-cache/`. `DEPS_ONLY=toolchains` or `DEPS_ONLY=apt` runs one half. Fails on any download or apt error. |
+| `add-zabbly-repo.sh` | Configures the Zabbly Incus stable apt repo (key pinned by fingerprint) on the Ubuntu builder, for `incus`, `incus-client` and `incus-extra`. |
+| `build-bundle.sh` | Assembles the bundle tarball from `bin/` outputs + the cache, computes SHA256 manifest, tars + gzips. Fails when the cache holds no `.deb`. |
+| `check-bundle-content.sh` | Checks a built tarball's `tar tzf` listing: binaries, installer, toolchains, the required `.deb`s, no `images/`. The release workflow runs it before upload. |
 
 ## Local build (test the pipeline)
 
@@ -50,20 +52,35 @@ GO_VERSION=1.26.0 make bundle-download-deps OS=linux ARCH=amd64
 
 ## APT package handling
 
-`download-deps.sh` uses `apt-get download` + `apt-rdepends` to resolve
-transitive deps from the same Ubuntu version the customer will install
-on. **The host running the bundle build must be Ubuntu 24.04** (or
-the same major version the customer targets) for the `.deb`s to be
-compatible. On non-Debian hosts (e.g. a macOS dev laptop) the script
-emits a warning and leaves `dist/bundle-cache/apt/` empty — drop in
-pre-downloaded .debs from a separate Ubuntu host.
+`download-deps.sh` asks apt's own resolver for the install set
+(`apt-get install -s --no-install-recommends` against an empty dpkg status,
+so it resolves as for a host with nothing installed, providers of virtual
+packages included), downloads exactly those `name=version` pairs with
+`apt-get download`, and then checks the result itself: a `.deb` for every
+requested package, and every `Depends`/`Pre-Depends` of every `.deb` met
+inside the bundle. Any apt error fails the script. It used to filter apt's
+errors away, and release bundles shipped an empty `apt/` (#3061).
 
-Bootstrap on a fresh Ubuntu builder:
+**The host running the apt step must be Ubuntu 24.04** (the release the
+customer installs on) for the `.deb`s to be compatible, and needs the Zabbly
+repo for Incus. Bootstrap on a fresh Ubuntu builder:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y apt-rdepends curl
+scripts/bundle/add-zabbly-repo.sh          # also runs apt-get update
+DEPS_ONLY=apt scripts/bundle/download-deps.sh
 ```
+
+On a non-Debian host (e.g. a macOS dev laptop) the apt step fails: run
+`DEPS_ONLY=toolchains` there and copy the `.deb`s from an Ubuntu builder
+into `dist/bundle-cache/apt/`.
+
+`build-bundle.sh` fails when `dist/bundle-cache/apt/` holds no `.deb`. For a
+dev build that only exercises the installer's other steps, set
+`BUNDLE_ALLOW_EMPTY_APT=1`; such a bundle needs `offline-install.sh
+--skip-apt`. The release workflow never sets it.
+
+The closure check is by package name; whether the `.deb`s install cleanly on
+a fresh air-gapped Ubuntu 24.04 host is not something CI checks.
 
 ## Sidecar images
 
@@ -81,22 +98,16 @@ the customer loses the corresponding observability feature.
 ## Containarium base image
 
 The PRD calls for a `containarium-base-vX.Y.Z.tar.gz` Incus image
-pre-baked with the runner-kit toolchains. **v0 does NOT include this**
-— it's deferred to v0.1 because building a custom Incus image
-requires an Incus host (extra build infrastructure). v0 bundles the
-toolchain tarballs separately under `toolchains/` and lets the
-runner kit unpack them into a vanilla Ubuntu container at first use.
+pre-baked with the runner-kit toolchains. **The bundle does not include
+one**: building a custom Incus image needs an Incus host, and nothing in
+this repo produces it yet. The bundle ships the toolchain tarballs under
+`toolchains/` instead.
 
-To add the base image in v0.1:
-
-```bash
-# (future)
-make build-base-image VERSION=v0.19.0
-ls dist/bundle-cache/images/containarium-base-v0.19.0.tar.gz
-```
-
-`build-bundle.sh` already looks at `dist/bundle-cache/images/` and
-copies any files it finds into the bundle's `images/` directory.
+Until a producer exists the bundle has **no `images/` directory** and the
+offline installer has no base-image import step (#3061); the directory used
+to ship empty. `check-bundle-content.sh` fails on an `images/` entry, so
+adding the producer means adding the directory, the installer step and the
+content check together.
 
 ## Bundle size budget
 
@@ -122,9 +133,14 @@ linking from the GH release notes.
 ## CI
 
 `.github/workflows/release.yml` runs `build-bundle.sh` on every `v*`
-tag push, for `linux/amd64` and `linux/arm64`. The bundle uploads
-alongside the per-platform binaries on the GitHub release. See the
+tag push (and on a publish-free `workflow_dispatch` rehearsal), for
+`linux/amd64` on `ubuntu-24.04`, then `check-bundle-content.sh` on the
+tarball before it uploads alongside the per-platform binaries. See the
 `build-bundle` job for details.
+
+`.github/workflows/offline-bundle.yml` runs on changes to these scripts:
+`scripts/ci/test-offline-bundle.sh` (every gate against stubbed apt tools,
+each negative a seeded failure) and the real apt step on `ubuntu-24.04`.
 
 ## v0 limitations
 
@@ -134,8 +150,7 @@ alongside the per-platform binaries on the GitHub release. See the
 - **No OCI artifact mirror.** v0.1 publishes bundles to
   `ghcr.io/footprintai/containarium-bundle:vX.Y.Z` via `oras push`.
 - **No SBOM.** v0.1 ships `bundle.sbom.json` via `syft sbom`.
-- **No base Incus image.** v0 ships toolchain tarballs only; v0.1
-  pre-bakes them into `containarium-base-vX.Y.Z.tar.gz`.
+- **No base Incus image** and no `images/` directory (see above).
 - **No --runner-from-ghes flag** in the runner kit. v0.1 adds it for
   GHES admins who want their own runner-binary distribution.
 

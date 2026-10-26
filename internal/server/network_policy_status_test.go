@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -44,7 +45,7 @@ func appliedPass(t *testing.T, views []containerView, policies map[string]netpol
 	for ifindex := range plan.vethPolicy {
 		loaded[ifindex] = !slices.Contains(failed, ifindex)
 	}
-	return appliedFromPass(views, plan, loaded, policies, nil)
+	return appliedFromPass(views, plan, loaded, policies, nil, nil)
 }
 
 func npStatusFor(t *testing.T, src appliedStateSource, armed bool, tenant string) *pb.NetworkPolicyStatus {
@@ -378,13 +379,63 @@ func TestNetworkPolicyEnforcer_AppliedStateConcurrent(t *testing.T) {
 // it is reported as the effective mode, not as unknown.
 func TestBuildPolicyStatus_EgressModeZeroFollowsMode(t *testing.T) {
 	snap := fresh(tenantApplied{Mode: 2, EgressMode: 0, BoxesLoaded: 1})
-	st := buildPolicyStatus("acme", snap, true, statusNow)
+	st := buildPolicyStatus("acme", snap, true, statusNow, false)
 	if st.GetEffectiveMode() != stEnforce || st.GetEffectiveEgressMode() != stEnforce {
 		t.Errorf("effective mode=%v egress=%v, want ENFORCE/ENFORCE", st.GetEffectiveMode(), st.GetEffectiveEgressMode())
 	}
 	snap.Tenant.Mode = 7 // a byte the program would not act on
-	st = buildPolicyStatus("acme", snap, true, statusNow)
+	st = buildPolicyStatus("acme", snap, true, statusNow, false)
 	if st.GetEffectiveMode() != stUnset || st.GetEffectiveEgressMode() != stUnset {
 		t.Errorf("unknown byte: effective mode=%v egress=%v, want UNSPECIFIED for both", st.GetEffectiveMode(), st.GetEffectiveEgressMode())
+	}
+}
+
+// #2972: a host whose kernel cannot attach TCX says so in every state, notably
+// when the enforcer never ran (the usual shape of such a host), and a capable
+// host never does.
+func TestBuildPolicyStatus_KernelUnsupportedIsAnUncoveredPath(t *testing.T) {
+	const kernel = pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED
+	has := func(st *pb.NetworkPolicyStatus) bool {
+		for _, p := range st.GetUncoveredPaths() {
+			if p == kernel {
+				return true
+			}
+		}
+		return false
+	}
+	snaps := map[string]appliedSnapshot{
+		"enforcer not running": {},
+		"no pass yet":          {Running: true},
+		"not loaded":           {Running: true, Reconciled: true, ReconciledAt: statusNow, Interval: defaultNetPolicyReconcileInterval},
+		"loaded":               fresh(tenantApplied{Mode: netbpf.ModeEnforce, BoxesLoaded: 1}),
+	}
+	for name, snap := range snaps {
+		t.Run(name, func(t *testing.T) {
+			if st := buildPolicyStatus("acme", snap, true, statusNow, true); !has(st) {
+				t.Errorf("kernel unsupported: uncovered paths = %v, want %v", st.GetUncoveredPaths(), kernel)
+			}
+			if st := buildPolicyStatus("acme", snap, true, statusNow, false); has(st) {
+				t.Errorf("kernel fine: uncovered paths = %v, must not list %v", st.GetUncoveredPaths(), kernel)
+			}
+		})
+	}
+}
+
+// The RPC asks the host probe, so a server on an old kernel reports it.
+func TestGetNetworkPolicyStatus_ReportsAnUnsupportedKernel(t *testing.T) {
+	const kernel = pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED
+	s := newNPServer()
+	s.clock = func() time.Time { return statusNow }
+	s.kernelUnsupported = func() bool { return true }
+	resp, err := s.GetNetworkPolicyStatus(npAdminCtx(), &pb.GetNetworkPolicyStatusRequest{Tenant: "acme"})
+	if err != nil {
+		t.Fatalf("GetNetworkPolicyStatus: %v", err)
+	}
+	found := false
+	for _, p := range resp.GetStatus().GetUncoveredPaths() {
+		found = found || p == kernel
+	}
+	if !found {
+		t.Errorf("uncovered paths = %v, want %v", resp.GetStatus().GetUncoveredPaths(), kernel)
 	}
 }
