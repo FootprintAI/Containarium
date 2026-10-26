@@ -71,13 +71,13 @@ Exit status:
 
 - `0` when the pack's status is `PASSED`.
 - `1` when the status is `FAILED` or `NO_COMMANDS`. The pack is written either way.
-- Non-zero with no pack when the commands could not be run at all. Causes include an unreachable box, a missing `--dir`, a box without coreutils `timeout`, or a declaration that cannot be read or does not parse.
+- Non-zero with no pack when the commands could not be run at all. Causes include an unreachable box, a missing `--dir`, a box without coreutils `timeout` when at least one step has to run (a repository with nothing to run still yields a `NO_COMMANDS` pack), or a declaration that cannot be read or does not parse.
 
 ## How a step runs
 
 Each step runs as root in the box. It runs from `--dir`, with stdin closed, under `timeout`. The step gets SIGTERM at the limit and SIGKILL 10 s later.
 
-Combined stdout and stderr go to a temporary file in the box, and only the last 256 KiB of it leave the box. Keeping the end of the output keeps the summary and failures of a test run. The pack records:
+Combined stdout and stderr go to a temporary file in the box that is unlinked before the step starts, so a step that deletes files cannot lose its own outcome, and only the last 256 KiB of it leave the box. Keeping the end of the output keeps the summary and failures of a test run. The pack records:
 
 | Field | Meaning |
 |---|---|

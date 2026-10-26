@@ -71,6 +71,18 @@ type stepYAML struct {
 	Run  string `yaml:"run"`
 }
 
+// requireStrings rejects a step field whose value is not a YAML string
+// (a bool or int that yaml.v3 would coerce), naming the line.
+func requireStrings(n *yaml.Node) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		v := n.Content[i+1]
+		if v.Kind != yaml.ScalarNode || v.ShortTag() != "!!str" {
+			return fmt.Errorf("line %d: step %s must be a string", v.Line, n.Content[i].Value)
+		}
+	}
+	return nil
+}
+
 // parseTest reads the `test:` value: either one command line, or a list of
 // {name, kind, run} steps.
 func parseTest(n *yaml.Node) ([]Step, error) {
@@ -78,6 +90,12 @@ func parseTest(n *yaml.Node) ([]Step, error) {
 	case yaml.ScalarNode:
 		if n.ShortTag() == "!!null" {
 			return nil, fmt.Errorf("line %d: test: is empty", n.Line)
+		}
+		// `test: false` or `test: 123` is a YAML bool or int that yaml.v3
+		// would quietly turn into a string; the author did not write a
+		// command.
+		if n.ShortTag() != "!!str" {
+			return nil, fmt.Errorf("line %d: test: must be a string command, got %s", n.Line, n.ShortTag())
 		}
 		var run string
 		if err := n.Decode(&run); err != nil {
@@ -123,6 +141,9 @@ func decodeStep(n *yaml.Node) (Step, error) {
 		default:
 			return Step{}, fmt.Errorf("line %d: unknown step field %q", n.Content[i].Line, key)
 		}
+	}
+	if err := requireStrings(n); err != nil {
+		return Step{}, err
 	}
 	var raw stepYAML
 	if err := n.Decode(&raw); err != nil {
