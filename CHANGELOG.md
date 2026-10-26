@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The sentinel's unauthenticated `/status` shows primary auth health as counts, never pool names** (#3004). This changes a shipped response shape: the `primary_auth_health` list (added in #2892, with a `pool` per entry) is gone, replaced by `primary_auth_counts` with `ok`, `failing_401` and `unknown` counts. `unknown` is a live registered primary with no auth record (for example after a sentinel restart). `unattributed_auth_failures` is unchanged. Which primary is failing is on the new `GET /sentinel/primary-auth-health`, which needs a request signed with the daemon AUTH secret and answers 401 without one. A refused read of it is not counted as a primary's 401. Anything that read pool names from `/status` must move to that route. Attribution is unchanged. The code comment and the rotation runbook now say plainly that `failing_401` can be a false alarm caused by any bad-signature request from the primary's address, and must be confirmed in the logs before a secret is rotated.
+
 ## [0.119.0] - 2026-10-26
 
 ### Added

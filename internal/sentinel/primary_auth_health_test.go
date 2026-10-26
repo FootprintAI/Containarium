@@ -40,17 +40,39 @@ func newAuthHealthTestServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func getStatus(t *testing.T, srv *httptest.Server) (StatusJSON, string) {
+// statusView is /status plus, for the assertions that need to know WHICH
+// primary is failing, the per-pool detail from the auth-gated route. The
+// detail is fetched with a valid signature; /status itself never carries it.
+type statusView struct {
+	StatusJSON
+	PrimaryAuthHealth []PrimaryAuthHealthJSON
+}
+
+func getStatus(t *testing.T, srv *httptest.Server) (statusView, string) {
 	t.Helper()
 	code, body := doPrimaries(t, srv, http.MethodGet, "/status", "", false, nil)
 	if code != http.StatusOK {
 		t.Fatalf("/status: code %d body %q", code, body)
 	}
-	var st StatusJSON
-	if err := json.Unmarshal([]byte(body), &st); err != nil {
+	var v statusView
+	if err := json.Unmarshal([]byte(body), &v.StatusJSON); err != nil {
 		t.Fatalf("/status: decode %q: %v", body, err)
 	}
-	return st, body
+	v.PrimaryAuthHealth, _ = getAuthHealthDetail(t, srv)
+	return v, body
+}
+
+func getAuthHealthDetail(t *testing.T, srv *httptest.Server) ([]PrimaryAuthHealthJSON, string) {
+	t.Helper()
+	code, body := doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, testPrimariesSecret, true, nil)
+	if code != http.StatusOK {
+		t.Fatalf("%s: code %d body %q", primaryAuthHealthPath, code, body)
+	}
+	var rep PrimaryAuthHealthReportJSON
+	if err := json.Unmarshal([]byte(body), &rep); err != nil {
+		t.Fatalf("%s: decode %q: %v", primaryAuthHealthPath, body, err)
+	}
+	return rep.Primaries, body
 }
 
 func registerPool(t *testing.T, srv *httptest.Server, pool string) {
@@ -61,7 +83,7 @@ func registerPool(t *testing.T, srv *httptest.Server, pool string) {
 	}
 }
 
-func healthFor(st StatusJSON, pool string) *PrimaryAuthHealthJSON {
+func healthFor(st statusView, pool string) *PrimaryAuthHealthJSON {
 	for i := range st.PrimaryAuthHealth {
 		if st.PrimaryAuthHealth[i].Pool == pool {
 			return &st.PrimaryAuthHealth[i]
@@ -139,8 +161,8 @@ func TestStatus_PrimaryAuthHealth_UnauthenticatedCreatesNoPrimaryState(t *testin
 			strings.NewReader(fmt.Sprintf(`{"pool":%q,"hostname":"x.example.com","port":443}`, pool)))
 	}
 	st, _ := getStatus(t, srv)
-	if len(st.PrimaryAuthHealth) != 0 {
-		t.Fatalf("primary_auth_health = %+v, want empty: unauthenticated requests must not create entries", st.PrimaryAuthHealth)
+	if len(st.PrimaryAuthHealth) != 0 || st.PrimaryAuthCounts != (PrimaryAuthCountsJSON{}) {
+		t.Fatalf("primary_auth_health = %+v counts %+v, want empty: unauthenticated requests must not create entries", st.PrimaryAuthHealth, st.PrimaryAuthCounts)
 	}
 	if st.UnattributedAuthFailures != 100 || st.LastUnattributedAuthFailure == "" {
 		t.Fatalf("unattributed = %d (last %q), want 100 with a timestamp", st.UnattributedAuthFailures, st.LastUnattributedAuthFailure)
@@ -364,5 +386,118 @@ func TestStatus_PrimaryAuthHealth_AuthenticatedNonBindRequestDoesNotClear(t *tes
 	st, _ := getStatus(t, srv)
 	if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthFailing401 || h.FailuresSinceSuccess != 1 {
 		t.Fatalf("health = %+v, want failing_401 kept", h)
+	}
+}
+
+// Q29 (#3004): the unauthenticated /status shows a count per state and never a
+// pool name; the per-pool detail lives only behind the AUTH gate.
+func TestStatus_UnauthenticatedCarriesCountsNeverPoolNames(t *testing.T) {
+	const marker = "zz-marker-pool"
+	srv := newAuthHealthTestServer(t)
+	for _, p := range []string{marker + "-ok", marker + "-failing", marker + "-ok2"} {
+		registerPool(t, srv, p)
+	}
+	st, body := getStatus(t, srv)
+	if strings.Contains(body, marker) {
+		t.Fatalf("/status contains a pool name: %s", body)
+	}
+	if strings.Contains(body, "primary_auth_health") {
+		t.Errorf("/status still carries the per-pool list: %s", body)
+	}
+	if want := (PrimaryAuthCountsJSON{OK: 3}); st.PrimaryAuthCounts != want {
+		t.Fatalf("counts = %+v, want %+v", st.PrimaryAuthCounts, want)
+	}
+}
+
+func TestStatus_CountsPerState(t *testing.T) {
+	const marker = "zz-marker-pool"
+	m := &Manager{
+		backends:   NewBackendPool(),
+		primaries:  NewPrimaryRegistry(),
+		certStore:  NewCertStore(),
+		hmacSecret: []byte(testPrimariesSecret),
+	}
+	m.state.Store(StateProxy)
+	srv := httptest.NewServer(buildBinaryServerMux("/nonexistent/containarium", m))
+	t.Cleanup(srv.Close)
+
+	// failing: authenticated, then 401 from the same (only) address.
+	registerPool(t, srv, marker+"-failing")
+	doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/"+marker+"-failing", wrongPrimariesSecret, true, nil)
+	// unknown: live in the registry, never seen authenticating by the tracker
+	// (e.g. sentinel restarted since).
+	m.primaries.Register(Primary{Pool: Pool(marker + "-unknown"), Hostname: "u.example.com", Port: 443})
+
+	st, body := getStatus(t, srv)
+	if strings.Contains(body, marker) {
+		t.Fatalf("/status contains a pool name: %s", body)
+	}
+	if want := (PrimaryAuthCountsJSON{Failing401: 1, Unknown: 1}); st.PrimaryAuthCounts != want {
+		t.Fatalf("counts = %+v, want %+v", st.PrimaryAuthCounts, want)
+	}
+
+	// A second primary from the same address makes the address ambiguous, so
+	// the failing one is still counted (its record is kept).
+	registerPool(t, srv, marker+"-ok")
+	st, _ = getStatus(t, srv)
+	if st.PrimaryAuthCounts.Failing401 != 1 || st.PrimaryAuthCounts.OK != 1 || st.PrimaryAuthCounts.Unknown != 1 {
+		t.Fatalf("counts = %+v, want 1 ok / 1 failing_401 / 1 unknown", st.PrimaryAuthCounts)
+	}
+	if h := healthFor(st, marker+"-unknown"); h == nil || h.State != PrimaryAuthUnknown {
+		t.Errorf("detail for the untracked live primary = %+v, want state unknown", h)
+	}
+}
+
+func TestPrimaryAuthHealthRoute_RefusedWithoutValidSignature(t *testing.T) {
+	const marker = "zz-marker-pool"
+	srv := newAuthHealthTestServer(t)
+	registerPool(t, srv, marker)
+
+	for name, tc := range map[string]struct {
+		secret string
+		signed bool
+	}{
+		"unsigned":     {"", false},
+		"wrong secret": {wrongPrimariesSecret, true},
+	} {
+		code, body := doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, tc.secret, tc.signed, nil)
+		if code != http.StatusUnauthorized {
+			t.Errorf("%s: code %d, want 401", name, code)
+		}
+		if strings.Contains(body, marker) {
+			t.Errorf("%s: refused response leaks the pool name: %q", name, body)
+		}
+	}
+	detail, body := getAuthHealthDetail(t, srv)
+	if len(detail) != 1 || detail[0].Pool != marker || detail[0].State != PrimaryAuthOK {
+		t.Fatalf("signed detail = %+v (%s), want the one ok pool", detail, body)
+	}
+}
+
+// Reading the detail is not a primary's daemon-AUTH request: a refused read
+// must not be attributed to a primary as failing_401.
+func TestPrimaryAuthHealthRoute_RefusedReadIsNotAttributed(t *testing.T) {
+	srv := newAuthHealthTestServer(t)
+	registerPool(t, srv, "pool-a")
+	doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, wrongPrimariesSecret, true, nil)
+	st, _ := getStatus(t, srv)
+	if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthOK {
+		t.Fatalf("health = %+v, want ok: a refused read of the detail route is not a primary's 401", h)
+	}
+}
+
+// The detail route also carries nothing derived from the secret.
+func TestPrimaryAuthHealthRoute_NeverContainsSecret(t *testing.T) {
+	srv := newAuthHealthTestServer(t)
+	registerPool(t, srv, "pool-a")
+	doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/pool-a", wrongPrimariesSecret, true, nil)
+	_, body := getAuthHealthDetail(t, srv)
+	for _, s := range []string{testPrimariesSecret, wrongPrimariesSecret} {
+		sum := sha256.Sum256([]byte(s))
+		for _, v := range []string{s, hex.EncodeToString(sum[:]), hex.EncodeToString(sum[:])[:8]} {
+			if strings.Contains(body, v) {
+				t.Errorf("detail route contains %q: %s", v, body)
+			}
+		}
 	}
 }

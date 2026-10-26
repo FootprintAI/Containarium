@@ -217,21 +217,22 @@ curl http://<sentinel-ip>:8888/status
   "last_preemption": "2026-02-27T15:30:00Z",
   "cert_sync_count": 5,
   "cert_sync_last": "2026-02-27T21:30:00Z",
-  "primary_auth_health": [
-    {"pool": "<pool>", "state": "ok", "last_success": "2026-02-27T21:30:10Z", "failures_since_success": 0}
-  ],
+  "primary_auth_counts": {"ok": 1, "failing_401": 0, "unknown": 0},
   "unattributed_auth_failures": 0
 }
 ```
 
-`primary_auth_health` (#2892) reports, per primary, whether a request from its
-address to a daemon-AUTH route (`/sentinel/primaries`, `/ca`, `/peer-cert`,
-`/fetch-release`, `/keys/resync`) got 401 (`failing_401`) since the primary's
-own last authenticated registration, heartbeat or deregister (`ok`). Only those
-three requests list a primary and clear its failures, so a primary promoted by
-a tunnel handshake is never listed. A 401 is attributed by source address,
-never by the pool name in the request; other 401s count in
-`unattributed_auth_failures`. Nothing in it is derived from the secret.
+`primary_auth_counts` (#2892, #3004) counts primaries per state and never names
+a pool, because `/status` is unauthenticated. `failing_401` means a request from
+the primary's address to a daemon-AUTH route (`/sentinel/primaries`, `/ca`,
+`/peer-cert`, `/fetch-release`, `/keys/resync`) got 401 since the primary's own
+last authenticated registration, heartbeat or deregister (`ok`); `unknown` is a
+live registered primary with no auth record yet. A 401 is attributed by source
+address, never by the pool name in the request, so `failing_401` can be a false
+alarm from any bad-signature request from that address: confirm in the logs
+before rotating a secret. Other 401s count in `unattributed_auth_failures`.
+Per-pool detail is `GET /sentinel/primary-auth-health`, which requires a request
+signed with the daemon AUTH secret. Nothing in either is derived from the secret.
 
 ## Management SSH (Port 2222)
 
