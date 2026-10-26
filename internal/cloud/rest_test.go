@@ -2,10 +2,19 @@ package cloud
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -117,4 +126,217 @@ func TestEnrollREST_ReEnroll(t *testing.T) {
 	if bearer != "existing-host-999.secret" {
 		t.Errorf("bearer = %q, want existing-host-999.secret (rebuilt from the returned id, not the token's own throwaway id)", bearer)
 	}
+}
+
+// connCountingServer replies with the next status from statuses (the last one
+// repeats) and counts distinct TCP connections via ConnState.
+func connCountingServer(t *testing.T, statuses ...int) (srv *httptest.Server, conns *atomic.Int32) {
+	t.Helper()
+	conns = new(atomic.Int32)
+	var n atomic.Int32
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		i := int(n.Add(1)) - 1
+		if i >= len(statuses) {
+			i = len(statuses) - 1
+		}
+		w.WriteHeader(statuses[i])
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv, conns
+}
+
+func TestRESTActuation_RecyclesConnectionAfterRepeated5xx(t *testing.T) {
+	srv, conns := connCountingServer(t, 502, 502, 502, 200)
+	var logs syncBuf
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r := newRESTActuation(srv.URL, "tok")
+	ctx := context.Background()
+	for i := 0; i < recycleAfter5xx; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err == nil {
+			t.Fatalf("call %d: want 502 error", i)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections before recycle = %d, want 1 (pooled)", got)
+	}
+	if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+		t.Fatalf("heartbeat after recycle: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat %d after redial: %v", i, err)
+		}
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections after recycle + 3 more requests = %d, want 2 (one fresh dial, no repeated close)", got)
+	}
+	r.mu.Lock()
+	pending := r.recyclePending
+	r.mu.Unlock()
+	if pending {
+		t.Error("recyclePending still set after the recycle was honoured")
+	}
+	if got := strings.Count(logs.String(), "closing pooled connections"); got != 1 {
+		t.Errorf("recycle log lines = %d, want 1", got)
+	}
+}
+
+func TestRESTActuation_NoRecycleBelowThreshold(t *testing.T) {
+	srv, conns := connCountingServer(t, 502, 502, 200, 502, 502, 200)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < 6; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1: a success must reset the 5xx count", got)
+	}
+}
+
+func TestRESTActuation_4xxDoesNotRecycle(t *testing.T) {
+	srv, conns := connCountingServer(t, 401)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < recycleAfter5xx*3; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1: 401 must not recycle", got)
+	}
+}
+
+func TestRESTActuation_4xxBetween5xxDoesNotResetOrCount(t *testing.T) {
+	// 502,502,401,502 is still 3 5xx in a row as far as the connection goes.
+	srv, conns := connCountingServer(t, 502, 502, 401, 502, 200)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < 5; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections = %d, want 2", got)
+	}
+}
+
+func TestRESTActuation_RecycleConcurrent(t *testing.T) {
+	srv, _ := connCountingServer(t, 502)
+	r := newRESTActuation(srv.URL, "tok")
+	const workers, iters = 16, 5
+	var badErrs atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				_, e1 := r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+				_, e2 := r.ReportHostStatus(context.Background(), &cloudv1.ReportHostStatusRequest{})
+				for _, e := range []error{e1, e2} {
+					if e == nil || !strings.Contains(e.Error(), "502") {
+						badErrs.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if n := badErrs.Load(); n != 0 {
+		t.Errorf("%d calls did not return the 502 error", n)
+	}
+	// Every call is a 502, so the counter cycles 1,2,0,...: after N calls it
+	// must be N mod K. A lost update (missing lock) breaks this.
+	total := workers * iters * 2
+	r.mu.Lock()
+	got := r.consecutive5xx
+	r.mu.Unlock()
+	if want := total % recycleAfter5xx; got != want {
+		t.Errorf("consecutive5xx after %d 502s = %d, want %d", total, got, want)
+	}
+}
+
+func TestRESTActuation_RecyclesHTTP2Connection(t *testing.T) {
+	var n, conns atomic.Int32
+	var nonH2 atomic.Bool
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.ProtoMajor != 2 {
+			nonH2.Store(true)
+		}
+		if n.Add(1) <= recycleAfter5xx {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.EnableHTTP2 = true
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	r := newRESTActuation(srv.URL, "tok")
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	r.hc.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: pool}
+
+	ctx := context.Background()
+	for i := 0; i < recycleAfter5xx; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err == nil {
+			t.Fatalf("call %d: want 502 error", i)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections before recycle = %d, want 1", got)
+	}
+	// The h2 client releases a finished stream asynchronously (a real
+	// heartbeat tick is 30s later), so the close may find the connection
+	// still busy. Re-arm the recycle and retry until a redial, bounded.
+	deadline := time.Now().Add(2 * time.Second)
+	for conns.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no redial within 2s; connections = %d", conns.Load())
+		}
+		r.mu.Lock()
+		r.recyclePending = true
+		r.mu.Unlock()
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat after recycle: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat %d after redial: %v", i, err)
+		}
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections after redial + 3 more requests = %d, want 2", got)
+	}
+	if nonH2.Load() {
+		t.Error("a request was not HTTP/2; the test no longer pins the h2 path")
+	}
+}
+
+// syncBuf is a goroutine-safe log sink.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
