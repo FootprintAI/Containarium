@@ -42,6 +42,9 @@ QUICKSTART_SSH_KEY=""
 QUICKSTART_SSH_PUBKEY=""
 QUICKSTART_STACK="fullstack"
 
+# --mtls: open 50051/tcp in ufw for the external mTLS gRPC listener (0 = off)
+ENABLE_MTLS=0
+
 # Helper functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -321,7 +324,11 @@ setup_firewall() {
         ufw allow 22/tcp comment 'SSH' || true
 
         # Allow gRPC
-        ufw allow 50051/tcp comment 'Containarium gRPC' || true
+        # The daemon serves an external gRPC listener only with --mtls; without
+        # it 50051 has nothing behind it, so leave the port closed (#3063).
+        if [ "${ENABLE_MTLS:-0}" = "1" ]; then
+            ufw allow 50051/tcp comment 'Containarium gRPC (mTLS)' || true
+        fi
 
         # Allow REST API
         ufw allow 8080/tcp comment 'Containarium REST API' || true
@@ -417,12 +424,15 @@ print_usage() {
 Containarium installer
 
 Usage: install.sh [--quickstart <name> (--ssh-key <path> | --ssh-pubkey "<key>")]
-                  [--stack <stack>]
+                  [--stack <stack>] [--mtls]
 
   --quickstart <name>     After installing, create a first box named <name>.
   --ssh-key <path>        Optional. Path (on THIS host) to the SSH public key.
   --ssh-pubkey "<key>"    Optional. SSH public key contents inline (one-liners).
   --stack <stack>         Box software stack (default: fullstack).
+  --mtls                  Open 50051/tcp in ufw for the external gRPC listener.
+                          Without it the port stays closed; the daemon serves
+                          external gRPC only when started with --mtls.
   -h, --help              Show this help.
 
 With no flags the installer just installs Containarium + Incus and sets up the
@@ -446,6 +456,7 @@ parse_args() {
             --ssh-pubkey=*)   QUICKSTART_SSH_PUBKEY="${1#*=}"; shift ;;
             --stack)          QUICKSTART_STACK="$2"; shift 2 ;;
             --stack=*)        QUICKSTART_STACK="${1#*=}"; shift ;;
+            --mtls)           ENABLE_MTLS=1; shift ;;
             -h|--help)        print_usage; exit 0 ;;
             *)                log_warn "Ignoring unknown argument: $1"; shift ;;
         esac

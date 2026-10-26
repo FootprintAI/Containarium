@@ -224,7 +224,7 @@ enforced and warned items.
 | Kernel | 6.6 or later, for TCX attach | Warned | `internal/hostcheck/egress_prereq.go` |
 | Kernel | cgroup v2, with an effective `cpu.weight` of at least 1000 for the Incus and Containarium units (`service install` sets it) | Warned | `internal/hostcheck/cpu_weight.go`, `internal/cmd/service.go` |
 | CPU, RAM, disk | No minimum is checked in code; see sizing below | Not checked | — |
-| Network | TCP 8080 (REST); 50051 only if the daemon runs with `--mtls`. The installer opens 22, 50051 and 8080 when ufw is present | Installed | `internal/cmd/daemon.go`, `hacks/install.sh` |
+| Network | TCP 8080 (REST); 50051 only if the daemon runs with `--mtls`. The installer opens 22 and 8080 when ufw is present, and 50051 only when run with `--mtls` | Installed | `internal/cmd/daemon.go`, `hacks/install.sh` |
 | Network | Host ports 80 and 443 are forwarded to the Caddy core container when app hosting is on and `iptables` works | Warned | `pkg/core/network/portforward.go` |
 | Network | The cloud metadata address is unreachable from boxes; sshd has `PasswordAuthentication no` and does not allow root login | Warned | `internal/hostcheck/posture.go` |
 | DNS | Routes are `<subdomain>.<base-domain>` (`--base-domain`); a public wildcard record is not checked in code | Not checked | `internal/cmd/daemon.go`, `internal/app/proxy.go` |
