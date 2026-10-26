@@ -241,7 +241,11 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
 6. **TLS:** wildcard cert on the GLB (`*.example.com`) already covers it. If using per-subdomain certs, add a managed cert.
 7. **Verify:**
    ```
-   curl -s https://<cluster>.example.com/sentinel/peers?pool=lab | jq
+   # `pool` and `?pool=` only take effect on a request signed with the daemon
+   # secret (HMAC over "GET\n/sentinel/peers\n<ts>", same scheme as
+   # /sentinel/primaries); an unsigned request lists peers without `pool`.
+   curl -s "https://<cluster>.example.com/sentinel/peers?pool=lab" \
+     -H "X-Containarium-Sentinel-Ts: $TS" -H "X-Containarium-Sentinel-Sig: $SIG" | jq
    # → confirms peers are tagged correctly
    curl -sI https://<lab-pool>.example.com/      # → 200 from lab primary
    ```
