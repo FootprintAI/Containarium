@@ -41,9 +41,9 @@ func TestReportModelTrafficScanning(t *testing.T) {
 	})
 	t.Run("gateway, inbound block rule", func(t *testing.T) {
 		fake := withFakeGuardrailPolicyAPI(t)
-		_, err := fake.store.Set(context.Background(), &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{
+		_, err := fake.store.Set(context.Background(), &pb.SetGuardrailPolicyRequest{Policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{
 			{Kind: pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, Action: pb.GuardrailAction_GUARDRAIL_ACTION_BLOCK},
-		}}, nil, "ops")
+		}}}, "ops")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -71,6 +71,45 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestValidateSetRequest: the revoked keys (#2729) on top of Validate. Every
+// revoked key carries a well-formed key_id and a reason, appears once, and
+// is not also a trusted signer.
+func TestValidateSetRequest(t *testing.T) {
+	good := storetest.Signer(t, 1, "release key")
+	old := storetest.Signer(t, 2, "old key")
+	revoked := func(keyID, reason string) *pb.GuardrailRevokedKey {
+		return &pb.GuardrailRevokedKey{KeyId: keyID, Reason: reason}
+	}
+	cases := []struct {
+		name    string
+		req     *pb.SetGuardrailPolicyRequest
+		wantErr string // substring; empty = valid
+	}{
+		{name: "valid with a revoked key", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), TrustedSigners: []*pb.GuardrailTrustedSigner{good}, RevokedSigners: []*pb.GuardrailRevokedKey{revoked(old.GetKeyId(), "leaked")}}},
+		{name: "rules are still validated", req: &pb.SetGuardrailPolicyRequest{}, wantErr: "policy is required"},
+		{name: "revoked key without a reason", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), RevokedSigners: []*pb.GuardrailRevokedKey{revoked(old.GetKeyId(), "  ")}}, wantErr: "reason"},
+		{name: "revoked key_id is not a SHA-256 hex", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), RevokedSigners: []*pb.GuardrailRevokedKey{revoked("abc", "leaked")}}, wantErr: "64 lowercase hex"},
+		{name: "revoked key_id in upper case", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), RevokedSigners: []*pb.GuardrailRevokedKey{revoked(strings.ToUpper(old.GetKeyId()), "leaked")}}, wantErr: "64 lowercase hex"},
+		{name: "revoked twice", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), RevokedSigners: []*pb.GuardrailRevokedKey{revoked(old.GetKeyId(), "a"), revoked(old.GetKeyId(), "b")}}, wantErr: "revoked twice"},
+		{name: "revoked key still trusted", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), TrustedSigners: []*pb.GuardrailTrustedSigner{good, old}, RevokedSigners: []*pb.GuardrailRevokedKey{revoked(old.GetKeyId(), "leaked")}}, wantErr: "is revoked"},
+		{name: "nil revoked entry", req: &pb.SetGuardrailPolicyRequest{Policy: storetest.Policy(0), RevokedSigners: []*pb.GuardrailRevokedKey{nil}}, wantErr: "64 lowercase hex"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := guardrailpolicy.ValidateSetRequest(tc.req)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateSetRequest = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateSetRequest = %v, want an error mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestParseSetRequest: the CLI's --file format is the protojson of
 // SetGuardrailPolicyRequest, with enum names, and an unknown field is an
 // error rather than silently dropped (a typo must not weaken a policy).

@@ -4582,7 +4582,7 @@
       },
       "put": {
         "summary": "Set the server guardrail policy",
-        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.",
+        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.",
         "operationId": "GuardrailPolicyService_SetGuardrailPolicy",
         "responses": {
           "200": {
@@ -15955,6 +15955,25 @@
       },
       "description": "GuardrailPolicy is the whole policy for one run. Its canonical encoding\nis hashed into the attestation so a verifier knows which policy a PASS\nwas measured against."
     },
+    "GuardrailRevokedKey": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "SHA-256 of the revoked Ed25519 public key, hex (as GuardrailTrustedSigner.key_id)."
+        },
+        "revokedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-assigned by the Set that adds the entry; a value in the request is\nignored."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Required. Reviewer-readable, no personal data. Named by every refused verify."
+        }
+      },
+      "description": "GuardrailRevokedKey is a signing key an admin revoked (#2729;\ndocs/architecture/guardrail-inbound-and-server-policy.md, \"Signer rotation\nand revocation\"). Every attestation the key signed fails verification,\nwhatever its attested_at: the signer sets that timestamp, so whoever stole\nthe key could backdate it. Revocation is permanent: a Set that drops or\nchanges a stored entry is refused."
+    },
     "GuardrailRule": {
       "type": "object",
       "properties": {
@@ -20085,6 +20104,14 @@
         "updatedBy": {
           "type": "string",
           "description": "Authenticated subject that made the last Set."
+        },
+        "revokedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRevokedKey"
+          },
+          "description": "Revoked signing keys (#2729). Outside `policy`, so revoking a key leaves\npolicy_hash unchanged. Never shrinks."
         }
       },
       "description": "ServerGuardrailPolicy is the stored policy plus the server's bookkeeping."
@@ -20216,6 +20243,19 @@
             "type": "object",
             "$ref": "#/definitions/GuardrailTrustedSigner"
           }
+        },
+        "revokedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRevokedKey"
+          },
+          "description": "Must keep every stored revoked key (same key_id and reason), or the Set\nis FAILED_PRECONDITION. No trusted signer may be revoked."
+        },
+        "expectedRevision": {
+          "type": "string",
+          "format": "int64",
+          "description": "When set, the Set applies only if the stored revision equals it (0 = not\nconfigured); otherwise ABORTED and nothing changes. A read-edit-write\nsets it so a concurrent Set cannot be overwritten silently."
         }
       }
     },

@@ -95,7 +95,7 @@ func setServerPolicy(t *testing.T, fake *fakeGuardrailPolicyAPI, policy *pb.Guar
 		must(t, err)
 		signers = append(signers, &pb.GuardrailTrustedSigner{KeyId: guardrail.KeyID(pub), PublicKey: pub, Label: filepath.Base(p)})
 	}
-	if _, err := fake.store.Set(context.Background(), policy, signers, "ops"); err != nil {
+	if _, err := fake.store.Set(context.Background(), &pb.SetGuardrailPolicyRequest{Policy: policy, TrustedSigners: signers}, "ops"); err != nil {
 		t.Fatal(err)
 	}
 	h, err := guardrail.PolicyHash(policy)

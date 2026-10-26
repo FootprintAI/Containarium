@@ -218,6 +218,31 @@ message GuardrailTrustedSigner {
   string label = 3;
 }
 
+// GuardrailRevokedKey is a signing key an admin revoked (#2729;
+// docs/architecture/guardrail-inbound-and-server-policy.md, "Signer rotation
+// and revocation"). Every attestation the key signed fails verification,
+// whatever its attested_at: the signer sets that timestamp, so whoever stole
+// the key could backdate it. Revocation is permanent: a Set that drops or
+// changes a stored entry is refused.
+message GuardrailRevokedKey {
+  // SHA-256 of the revoked Ed25519 public key, hex (as GuardrailTrustedSigner.key_id).
+  string key_id = 1;
+  // Server-assigned by the Set that adds the entry; a value in the request is
+  // ignored.
+  google.protobuf.Timestamp revoked_at = 2;
+  // Required. Reviewer-readable, no personal data. Named by every refused verify.
+  string reason = 3;
+}
+
+// GuardrailTrustBundle is the trust a verifier needs without a server: the
+// trusted signers and the revoked keys. `guardrail verify --trust-bundle`
+// reads it as protojson. A key in `revoked` is refused even if it is also
+// listed in `signers`.
+message GuardrailTrustBundle {
+  repeated GuardrailTrustedSigner signers = 1;
+  repeated GuardrailRevokedKey revoked = 2;
+}
+
 // ServerGuardrailPolicy is the stored policy plus the server's bookkeeping.
 message ServerGuardrailPolicy {
   // The rules. GuardrailAttestation.policy_hash covers THIS message only, so
@@ -229,6 +254,9 @@ message ServerGuardrailPolicy {
   google.protobuf.Timestamp updated_at = 4;
   // Authenticated subject that made the last Set.
   string updated_by = 5;
+  // Revoked signing keys (#2729). Outside `policy`, so revoking a key leaves
+  // policy_hash unchanged. Never shrinks.
+  repeated GuardrailRevokedKey revoked_signers = 6;
 }
 
 message GetGuardrailPolicyRequest {}
@@ -248,6 +276,13 @@ message SetGuardrailPolicyRequest {
   // Required. An empty rule list is a valid policy (it clears every rule).
   GuardrailPolicy policy = 1;
   repeated GuardrailTrustedSigner trusted_signers = 2;
+  // Must keep every stored revoked key (same key_id and reason), or the Set
+  // is FAILED_PRECONDITION. No trusted signer may be revoked.
+  repeated GuardrailRevokedKey revoked_signers = 3;
+  // When set, the Set applies only if the stored revision equals it (0 = not
+  // configured); otherwise ABORTED and nothing changes. A read-edit-write
+  // sets it so a concurrent Set cannot be overwritten silently.
+  optional int64 expected_revision = 4;
 }
 
 message SetGuardrailPolicyResponse {
@@ -354,7 +389,7 @@ service GuardrailPolicyService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set the server guardrail policy";
-      description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.";
+      description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.";
       tags: "Guardrail";
     };
   }

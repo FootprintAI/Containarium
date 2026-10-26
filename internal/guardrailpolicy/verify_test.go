@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
@@ -67,6 +70,13 @@ func (f *verifyFixture) attest(t *testing.T, policy *pb.GuardrailPolicy, kinds [
 	return att
 }
 
+// revoke adds the fixture's signing key to the server's revoked keys.
+func (f *verifyFixture) revoke() {
+	f.server.RevokedSigners = append(f.server.RevokedSigners, &pb.GuardrailRevokedKey{
+		KeyId: f.att.GetKeyId(), RevokedAt: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)), Reason: "key leaked in a build log",
+	})
+}
+
 // signingBytesForTest is what guardrail.Sign signs: the attestation with the
 // signature cleared, deterministically encoded.
 func signingBytesForTest(t *testing.T, att *pb.GuardrailAttestation) []byte {
@@ -95,6 +105,15 @@ func TestVerifyAttestation(t *testing.T) {
 			return nil
 		}},
 		{name: "no trusted signer", wantErr: guardrailpolicy.ErrNoTrustedSigner, mutate: func(_ *testing.T, f *verifyFixture) []pb.GuardrailKind {
+			f.server.TrustedSigners = nil
+			return nil
+		}},
+		{name: "revoked signer, still listed as trusted", wantErr: guardrailpolicy.ErrRevokedSigner, mutate: func(_ *testing.T, f *verifyFixture) []pb.GuardrailKind {
+			f.revoke()
+			return nil
+		}},
+		{name: "revoked signer, no trusted signer left", wantErr: guardrailpolicy.ErrRevokedSigner, mutate: func(_ *testing.T, f *verifyFixture) []pb.GuardrailKind {
+			f.revoke()
 			f.server.TrustedSigners = nil
 			return nil
 		}},
@@ -203,5 +222,50 @@ func TestVerifyAttestation_DoesNotMutateInputs(t *testing.T) {
 	}
 	if !proto.Equal(att, f.att) || !proto.Equal(server, f.server) {
 		t.Fatal("VerifyAttestation changed its inputs")
+	}
+}
+
+// TestVerify_Rotation: rotating the signing key means adding the new signer
+// and keeping the old one. Attestations by either key verify; once the old
+// key is revoked, every attestation it signed fails and the error names the
+// revocation, whatever the attestation's own timestamp says (#2729, Q4).
+func TestVerify_Rotation(t *testing.T) {
+	f := newVerifyFixture(t)
+	oldAtt := f.att
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	f.server.TrustedSigners = append(f.server.TrustedSigners, &pb.GuardrailTrustedSigner{KeyId: guardrail.KeyID(newPub), PublicKey: newPub, Label: "release key 2"})
+	newAtt := f.attest(t, f.server.GetPolicy(), oldAtt.GetKindsScanned(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, newPriv)
+
+	hashBefore, _ := guardrailpolicy.Hash(f.server)
+	if _, err := guardrailpolicy.VerifyAttestation(oldAtt, f.server, f.dir, nil); err != nil {
+		t.Fatalf("attestation by the previous key after rotation: %v", err)
+	}
+	if s, err := guardrailpolicy.VerifyAttestation(newAtt, f.server, f.dir, nil); err != nil || s.GetLabel() != "release key 2" {
+		t.Fatalf("attestation by the new key = (%v, %v)", s, err)
+	}
+
+	f.att = oldAtt
+	f.revoke()
+	f.server.TrustedSigners = f.server.TrustedSigners[1:]
+	if hashAfter, _ := guardrailpolicy.Hash(f.server); hashAfter != hashBefore {
+		t.Fatalf("revoking a key changed policy_hash: %s -> %s", hashBefore, hashAfter)
+	}
+	// Backdated: the attestation claims a time long before the revocation.
+	// Re-signed, so the signature is valid and only the revocation refuses it.
+	oldAtt.AttestedAt = timestamppb.New(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := guardrail.Sign(oldAtt, f.priv); err != nil {
+		t.Fatal(err)
+	}
+	_, err :=guardrailpolicy.VerifyAttestation(oldAtt, f.server, f.dir, nil)
+	if !errors.Is(err, guardrailpolicy.ErrRevokedSigner) {
+		t.Fatalf("attestation by the revoked key = %v, want ErrRevokedSigner", err)
+	}
+	for _, want := range []string{oldAtt.GetKeyId(), "2026-10-01T00:00:00Z", "key leaked in a build log"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+	if _, err := guardrailpolicy.VerifyAttestation(newAtt, f.server, f.dir, nil); err != nil {
+		t.Fatalf("attestation by the new key after revoking the old one: %v", err)
 	}
 }

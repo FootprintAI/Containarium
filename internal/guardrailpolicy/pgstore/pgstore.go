@@ -87,7 +87,7 @@ func (s *Store) Get(ctx context.Context) (*pb.ServerGuardrailPolicy, error) {
 	return p, nil
 }
 
-func (s *Store) Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*guardrailpolicy.SetResult, error) {
+func (s *Store) Set(ctx context.Context, req *pb.SetGuardrailPolicyRequest, updatedBy string) (*guardrailpolicy.SetResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin guardrail policy set: %w", err)
@@ -105,7 +105,10 @@ func (s *Store) Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*
 	if err != nil {
 		return nil, err
 	}
-	cur := guardrailpolicy.Next(prev, policy, signers, updatedBy, time.Now())
+	if err := guardrailpolicy.CheckTransition(prev, revision, req); err != nil {
+		return nil, err
+	}
+	cur := guardrailpolicy.Next(prev, req, updatedBy, time.Now())
 	if prev == nil {
 		cur.Revision = revision + 1
 	}

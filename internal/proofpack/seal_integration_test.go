@@ -113,6 +113,30 @@ func TestSealIntegration_VerifyOnRealChain(t *testing.T) {
 	}
 }
 
+// TestSealIntegration_VerifyAfterSignerRotation (#2729): a pack sealed before
+// a guardrail signing key is rotated and then revoked still verifies after
+// both. Those changes are guardrail.policy.set rows appended after the seal
+// (the shape the policy server writes); the seal holds digests only.
+func TestSealIntegration_VerifyAfterSignerRotation(t *testing.T) {
+	s, _ := sealTestStore(t)
+	sealed := sealOnRealChain(t, s)
+	for _, detail := range []string{
+		`{"previous_revision":1,"revision":2,"policy_hash":"p","trusted_signer_key_ids":["old","new"]}`,
+		`{"previous_revision":2,"revision":3,"policy_hash":"p","trusted_signer_key_ids":["new"],"revoked_signer_key_ids":["old"]}`,
+	} {
+		if err := s.Log(context.Background(), &audit.AuditEntry{Username: "admin", Action: "guardrail.policy.set", ResourceType: "guardrail_policy", ResourceID: "cluster", Detail: detail, StatusCode: 200}); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	}
+	res, err := Verify(context.Background(), s, sealed)
+	if err != nil {
+		t.Fatalf("Verify after rotation and revocation: %v", err)
+	}
+	if res.ChainCheckedThrough != 13 {
+		t.Errorf("chain checked through %d, want the tip 13 (past both policy rows)", res.ChainCheckedThrough)
+	}
+}
+
 func TestSealIntegration_Tampering(t *testing.T) {
 	ctx := context.Background()
 	t.Run("one log byte in the pack", func(t *testing.T) {
