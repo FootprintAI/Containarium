@@ -27,17 +27,14 @@ CI checks the commands and links on this page against the real CLI
 | Container snapshots | `containarium snapshot create`, `list` and `rollback`. ZFS backends only. | [snapshot.go](../internal/cmd/snapshot.go), [container_rollback.go](../internal/server/container_rollback.go) |
 | Database backups | `containarium backup create`, `verify` and `restore`. These are logical Postgres dumps of tenant databases only (#2372). | [backup_restore.go](../internal/cmd/backup_restore.go), [DB-BACKUP-OPERATIONS.md](DB-BACKUP-OPERATIONS.md) |
 | Host recovery | `containariumd recover` rebuilds the network, pool and profile from a surviving ZFS disk. | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) |
-| Fleet deploy script | Copies one binary to the sentinel, the primary and the peers. | [deploy-binary.sh](../scripts/deploy-binary.sh) |
-| Helm upgrade lane | CI installs the previous published chart, then upgrades it to the target version. | [helm-install-upgrade.yml](../.github/workflows/helm-install-upgrade.yml), [helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh) |
+| Fleet deploy script | Copies one binary to the sentinel, the primary and the peers. On the sentinel and primary it keeps the replaced binary as `containariumd.old`, checks health after the restart, and on failure restores `.old` and stops the deploy. It starts no watchdog. | [deploy-binary.sh](../scripts/deploy-binary.sh) |
+| Helm upgrade lane | CI installs the previous published chart, upgrades it to the target version, then runs `helm rollback` to the first revision and checks that revision serves again. | [helm-install-upgrade.yml](../.github/workflows/helm-install-upgrade.yml), [helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh) |
 
 Limits a reader needs to know before relying on these:
 
 - **The watchdog only checks `/health`.** A release that answers `/health`
   but is broken in some other way stays installed. Its predecessor is kept
   as `.prev` (see Rollback), but nothing restores it automatically.
-- **`deploy-binary.sh` keeps no `.old` and starts no watchdog.** It copies
-  over the binary in place. To roll back, deploy the previous binary again.
-- **The Helm lane does not test rollback**, only install and upgrade.
 - **The downgrade guard is conservative.** `--github-tag` refuses a tag
   older than the running version unless `--allow-downgrade` is given. It
   refuses only when both versions parse as semver: `latest`, a dev build

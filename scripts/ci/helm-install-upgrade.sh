@@ -109,6 +109,27 @@ if [ -n "$candidate" ]; then
   assert_running_release "$version"
 fi
 
+# Roll back to revision 1, the published baseline, and require it to serve
+# again (#3060). Revision 1 differs from the upgraded revisions in daemon and
+# gateway image, so assert_running_release proves the old pods came back, not
+# merely that the command succeeded.
+latest="$(helm history "$release" --namespace "$namespace" -o json |
+  python3 -c 'import json,sys; print(max(r["revision"] for r in json.load(sys.stdin)))')"
+helm rollback "$release" 1 --namespace "$namespace" --wait --timeout "$timeout"
+assert_running_release "$base" latest-stable
+# Rollback is a new revision, not a rewind: it must be latest+1 and deployed.
+helm history "$release" --namespace "$namespace" -o json |
+  python3 -c '
+import json, sys
+latest = int(sys.argv[1])
+rows = json.load(sys.stdin)
+last = max(rows, key=lambda r: r["revision"])
+assert last["revision"] == latest + 1, (last, latest)
+assert last["status"] == "deployed", last
+assert "Rollback to 1" in last["description"], last
+print("rollback recorded as revision", last["revision"])
+' "$latest"
+
 # A second clean install proves the target also works without an old release.
 helm uninstall "$release" --namespace "$namespace" --wait --timeout "$timeout"
 prepare_gateway
