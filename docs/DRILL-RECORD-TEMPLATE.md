@@ -49,7 +49,7 @@ Derived figures:
 | Upgrade (`containarium backends upgrade`) | | | | |
 | Post-upgrade checklist | | | | |
 | Forced watchdog rollback: install a build that fails `/health`, then confirm `.old` came back | | | | |
-| Manual rollback (`--github-tag <previous-tag>`) | | | | |
+| Manual rollback (`--github-tag <previous-tag> --allow-downgrade`) | | | | |
 | Post-rollback checklist | | | | |
 
 Derived figures:
