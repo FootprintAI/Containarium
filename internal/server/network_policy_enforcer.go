@@ -142,6 +142,12 @@ type NetworkPolicyEnforcer struct {
 	// every pass. Only touched from reconcile.
 	egressModeWarned map[uint32]bool
 
+	// egressNames maps a tenant id to its name for every tenant seen this pass
+	// or still holding allow-list entries, so a failed write is attributed to
+	// its tenant even when the tenant has no box left (#3051). Only touched from
+	// reconcile.
+	egressNames map[uint32]string
+
 	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
@@ -179,6 +185,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		flowPoll:          defaultFlowPollInterval,
 		flowIdleTimeout:   defaultFlowIdleTimeout,
 		vethCache:         make(map[string]string),
+		egressNames:       make(map[uint32]string),
 		attached:          make(map[int]string),
 		idName:            make(map[uint32]string),
 		enforced:          make(map[uint32]bool),
@@ -823,8 +830,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// egress allow-list: converge the map (add new, delete stale). Deleting
 	// removed CIDRs is what makes a tightened policy actually take effect in
 	// enforce mode.
-	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
-	egressIncomplete := applyEgress(e.egressInstalled, toAdd, toDel, e.loader)
+	egressIncomplete, egressNames := e.applyEgressPass(plan, idName, e.loader)
 	// Virtual-patch deny rules (#660): converge the deny_cidr map the same way —
 	// upsert desired entries, delete keys no longer desired (a removed/expired
 	// rule must actually stop blocking). Only when the loaded object carries the
@@ -878,8 +884,32 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass
 	// actually wrote, never from the stored request.
-	e.recordApplied(appliedFromPass(views, plan, loaded, policies, egressIncomplete), time.Now())
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies, egressIncomplete, egressNames), time.Now())
 	return nil
+}
+
+// applyEgressPass converges the egress allow-list map with the plan via a. It
+// returns the tenant ids whose allow-list is incomplete after this pass and a
+// name for each of them (#3051).
+func (e *NetworkPolicyEnforcer) applyEgressPass(plan reconcilePlan, idName map[uint32]string, a egressApplier) (map[uint32]bool, map[uint32]string) {
+	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
+	incomplete := applyEgress(e.egressInstalled, toAdd, toDel, a)
+	// idName holds only tenants with a box this pass. A failed removal can belong
+	// to a tenant with no box left, so remember the name of every tenant that
+	// still has entries installed, and forget it once they are all gone.
+	for id, name := range idName {
+		e.egressNames[id] = name
+	}
+	held := make(map[uint32]bool, len(e.egressNames))
+	for ee := range e.egressInstalled {
+		held[ee.TenantID] = true
+	}
+	for id := range e.egressNames {
+		if _, seen := idName[id]; !seen && !held[id] && !incomplete[id] {
+			delete(e.egressNames, id)
+		}
+	}
+	return incomplete, e.egressNames
 }
 
 // recordApplied stores one reconcile pass's per-tenant applied state.
