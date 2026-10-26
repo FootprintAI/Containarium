@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -56,6 +57,11 @@ var boxExcludedDirs = []string{"tmp", "var/tmp", "var/cache", "run"}
 // ErrInsufficientSpace is the free-space pre-flight refusing a whole-box
 // backup before it starts.
 var ErrInsufficientSpace = errors.New("not enough free space for a whole-box backup")
+
+// ErrBoxBackupInProgress means another whole-box backup of the same box is
+// still running. Backups of one box are serialized: a second one is refused,
+// not queued, so the caller sees it and retries (#3116).
+var ErrBoxBackupInProgress = errors.New("a whole-box backup of this box is already in progress")
 
 // ErrBoxUnavailable means this daemon cannot export a box at all.
 var ErrBoxUnavailable = errors.New("whole-box backup is not available on this daemon (no Incus export)")
@@ -191,9 +197,13 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	if _, err := os.Stat(m.sidecarPath(id)); err == nil {
 		return nil, fmt.Errorf("backup %s already exists: retry in a second", id)
 	}
-	if err := m.boxPreflight(opts.ContainerName); err != nil {
+	release, err := m.boxPreflight(opts.ContainerName)
+	if err != nil {
 		return nil, err
 	}
+	// The claim and the space it reserved last until the backup is stored
+	// or has failed.
+	defer release()
 	plan, err := m.planEncryption(mode, opts.AgeRecipient)
 	if err != nil {
 		return nil, err
@@ -254,7 +264,35 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	return record, nil
 }
 
-// boxPreflight refuses a backup that cannot fit before the export starts.
+// boxClaims is the daemon's record of whole-box backups in flight: which
+// boxes, and how many bytes each reserved on each filesystem. The pre-flight
+// reads the free space and takes its claim under one lock, so two backups
+// cannot both pass the same reading (#3116).
+type boxClaims struct {
+	mu       sync.Mutex
+	inFlight map[string]map[uint64]uint64 // box -> device -> reserved bytes
+}
+
+// reserved is the bytes other in-flight backups hold on dev. Call with mu held.
+func (c *boxClaims) reserved(dev uint64) uint64 {
+	var n uint64
+	for _, byDev := range c.inFlight {
+		n += byDev[dev]
+	}
+	return n
+}
+
+// boxPreflight refuses a backup that cannot fit before the export starts,
+// and claims the box and the space for the caller. The returned release
+// gives both back; call it when the backup is done, whatever the outcome.
+//
+// Backups of one box are serialized: a second while one runs is
+// ErrBoxBackupInProgress. Backups of different boxes run concurrently, but
+// each reserves its estimate on the filesystems it uses, and a later
+// pre-flight subtracts what is reserved, so two boxes cannot both be
+// promised the same free space. The reservation is held until the backup
+// ends, so it also counts bytes the running backup has already written:
+// conservative, never optimistic.
 //
 // The estimate is the box's disk usage. Incus may stage one compressed copy
 // in each of boxStagingDirs (on 6.0 LTS, before the first byte streams),
@@ -262,16 +300,23 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 // compressed sizes are not known up front, so each staging area is asked
 // for the uncompressed usage: conservative, never optimistic. Two areas on
 // one filesystem are counted together.
-func (m *Manager) boxPreflight(containerName string) error {
+func (m *Manager) boxPreflight(containerName string) (release func(), err error) {
 	usage, err := m.box.BoxDiskUsage(containerName)
 	if err != nil {
-		return fmt.Errorf("read disk usage of %s for the free-space pre-flight: %w", containerName, err)
+		return nil, fmt.Errorf("read disk usage of %s for the free-space pre-flight: %w", containerName, err)
 	}
 	if usage <= 0 {
-		return fmt.Errorf("disk usage of %s is unknown, so the free-space pre-flight cannot run", containerName)
+		return nil, fmt.Errorf("disk usage of %s is unknown, so the free-space pre-flight cannot run", containerName)
 	}
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
-		return err
+		return nil, err
+	}
+	// Check-and-claim is atomic: the statfs calls are quick, and holding
+	// the lock across them is what closes the race.
+	m.boxClaims.mu.Lock()
+	defer m.boxClaims.mu.Unlock()
+	if _, busy := m.boxClaims.inFlight[containerName]; busy {
+		return nil, fmt.Errorf("%w: %s (retry when it finishes)", ErrBoxBackupInProgress, containerName)
 	}
 	ours := min(usage, m.maxBoxBytes)
 	type area struct {
@@ -297,7 +342,7 @@ func (m *Manager) boxPreflight(containerName string) error {
 		return nil
 	}
 	if err := add(m.dir, ours); err != nil {
-		return err
+		return nil, err
 	}
 	for _, dir := range m.boxStagingDirs {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -305,17 +350,28 @@ func (m *Manager) boxPreflight(containerName string) error {
 			continue
 		}
 		if err := add(dir, usage); err != nil {
-			return err
+			return nil, err
 		}
 	}
+	claim := map[uint64]uint64{}
 	for _, dev := range order {
 		a := byDevice[dev]
-		if a.free < a.need {
-			return fmt.Errorf("%w: %s needs %d bytes free for a box using %d bytes, has %d",
-				ErrInsufficientSpace, strings.Join(a.paths, " and "), a.need, usage, a.free)
+		held := m.boxClaims.reserved(dev)
+		if a.free < a.need+held {
+			return nil, fmt.Errorf("%w: %s needs %d bytes free for a box using %d bytes (plus %d reserved by backups in progress), has %d",
+				ErrInsufficientSpace, strings.Join(a.paths, " and "), a.need, usage, held, a.free)
 		}
+		claim[dev] = a.need
 	}
-	return nil
+	if m.boxClaims.inFlight == nil {
+		m.boxClaims.inFlight = map[string]map[uint64]uint64{}
+	}
+	m.boxClaims.inFlight[containerName] = claim
+	return func() {
+		m.boxClaims.mu.Lock()
+		delete(m.boxClaims.inFlight, containerName)
+		m.boxClaims.mu.Unlock()
+	}, nil
 }
 
 // filterBoxArchive copies an Incus instance backup from src to dst, gzip in
