@@ -40,9 +40,11 @@ type StatusJSON struct {
 	// it without scraping logs — alert on this being true. #341.
 	SentinelAuthMisconfigured bool   `json:"sentinel_auth_misconfigured"`
 	SentinelAuthDetail        string `json:"sentinel_auth_detail,omitempty"`
-	// PrimaryAuthHealth is, per primary, whether its last daemon-AUTH
-	// request authenticated or got 401 (#2892). Never secret-derived.
-	PrimaryAuthHealth []PrimaryAuthHealthJSON `json:"primary_auth_health"`
+	// PrimaryAuthCounts is how many primaries are in each daemon-AUTH state
+	// (#2892). Counts only: this endpoint is unauthenticated, so it never
+	// names a pool; the per-pool detail is on the ADMIN-secret-gated
+	// /sentinel/primary-auth-health (#3004). Never secret-derived.
+	PrimaryAuthCounts PrimaryAuthCountsJSON `json:"primary_auth_counts"`
 	// UnattributedAuthFailures counts daemon-AUTH 401s that could not be
 	// tied to exactly one primary by source address (scanners, a daemon
 	// that never authenticated, several primaries behind one address).
@@ -112,6 +114,12 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// per-primary auth-health recording for /status (#2892).
 	mux.Handle("/sentinel/primaries", manager.daemonAuthGate(manager.PrimariesHandler()))
 	mux.Handle("/sentinel/primaries/", manager.daemonAuthGate(manager.PrimariesHandler()))
+
+	// Per-pool auth health (#3004): names pools, so it sits behind the ADMIN
+	// secret, which daemons do not hold (the daemon AUTH secret cannot read the
+	// pool inventory). Deliberately NOT daemonAuthGate (see
+	// primaryAuthHealthHandler).
+	mux.Handle(primaryAuthHealthPath, auth.SentinelHMACMiddleware(manager.adminSecret, manager.primaryAuthHealthHandler()))
 
 	// Phase 0.5: peer-CA distribution + leaf-cert issuance. Both
 	// gated by the existing HMAC middleware — the same secret that
@@ -217,7 +225,8 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 				auth.SentinelMinSecretLen)
 		}
 		var lastUnattributed time.Time
-		status.PrimaryAuthHealth, status.UnattributedAuthFailures, lastUnattributed = manager.authHealth.snapshot()
+		_, status.PrimaryAuthCounts = manager.primaryAuthReport()
+		_, status.UnattributedAuthFailures, lastUnattributed = manager.authHealth.snapshot()
 		if !lastUnattributed.IsZero() {
 			status.LastUnattributedAuthFailure = lastUnattributed.Format(time.RFC3339)
 		}
