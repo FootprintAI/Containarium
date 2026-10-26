@@ -1,7 +1,9 @@
 # Sentinel secrets — rotation and convergence runbook (#1365)
 
-How to **rotate** or **converge** the two sentinel secret domains without
-tenant-visible impact. This is the operator procedure; the background
+How to **rotate** or **converge** the two sentinel secret domains with the
+least impact on tenants. It is not impact-free: a sentinel restart drops BYOC
+tunnels and the sessions carried over them, and restarting the anonymous-box
+door drops its sessions. This is the operator procedure; the background
 (what the secrets are, how they are provisioned) is in
 [SENTINEL-AUTH-SECRET.md](./SENTINEL-AUTH-SECRET.md), and the asymmetric
 successor is in [SENTINEL-ED25519-MIGRATION-RUNBOOK.md](./SENTINEL-ED25519-MIGRATION-RUNBOOK.md).
@@ -46,7 +48,7 @@ Everything below was read from the tree, not assumed:
    | --- | --- | --- |
    | sentinel to daemon | `/authorized-keys`, `/authorized-keys/sentinel`, `/certs` (keysync every 2m, certsync every 6h) | 401; sshpiper config stops being refreshed |
    | sentinel to daemon | signed `/sentinel/peers` response | daemon logs `signature verify failed; refusing to update peer map`; keeps its existing map |
-   | daemon to sentinel | `/sentinel/primaries` (register + heartbeat), `/sentinel/keys/resync`, `/sentinel/ca`, `/sentinel/peer-cert`, `/sentinel/fetch-release` | 401; the primary registration TTL is 90s with a 30s heartbeat, so a window longer than about 90s lets the registration lapse until the next successful heartbeat |
+   | daemon to sentinel | `/sentinel/primaries` (register + heartbeat), `/sentinel/keys/resync`, `/sentinel/ca`, `/sentinel/peer-cert`, `/sentinel/fetch-release` | 401; the primary registration TTL is 90s with a 30s heartbeat. A daemon deregisters on SIGTERM and its re-register is refused (401) until the first heartbeat that authenticates after the sentinel has the matching secret, so the registration is gone from the daemon stop until up to 30s after that, whatever the TTL |
 
 4. **Established tenant SSH keeps working during a window.** sshpiper serves
    from the config already on disk. What degrades is *new* state: a box created
@@ -118,27 +120,51 @@ Do this on the sentinel and **every** daemon in the target domain.
    ```bash
    # Which EnvironmentFile= entries (later wins)
    systemctl show -p EnvironmentFiles containarium-sentinel   # or: containarium
-   sudo grep -l 'CONTAINARIUM_SENTINEL_' /etc/containarium/*.env /etc/containarium/env.secrets 2>/dev/null
+   # (the glob must expand as root: /etc/containarium can be 0700)
+   sudo sh -c "grep -l 'CONTAINARIUM_SENTINEL_' /etc/containarium/*.env /etc/containarium/env.secrets" 2>/dev/null
 
-   # Effective value, as a short fingerprint only (never print the secret)
+   # Effective value, as a short fingerprint only (never print the secret).
+   # `sudo cat` reads as root; a `< /proc/$pid/environ` redirect would run as you.
    pid=$(systemctl show -p MainPID --value containarium-sentinel)   # or: containarium
-   sudo tr '\0' '\n' < /proc/$pid/environ \
+   fp=$(sudo cat "/proc/$pid/environ" | tr '\0' '\n' \
      | sed -n 's/^CONTAINARIUM_SENTINEL_AUTH_SECRET=//p' \
-     | tr -d '\n' | sha256sum | cut -c1-8
+     | tr -d '\n' | sha256sum | cut -c1-8)
+   case "$fp" in
+     e3b0c442) echo "FAIL: no process (MainPID=$pid) or no secret in its environment" ;;
+     *) echo "$fp" ;;
+   esac
    ```
 
-   Run the fingerprint on every host. Hosts in one domain must print the same
-   value. Record fingerprints and lengths, not values.
+   `e3b0c442` is the SHA-256 of the empty string: it means the read failed or
+   the variable is not set, not that the hosts match. Run the fingerprint on
+   every host. Hosts in one domain must print the same value, and none may print
+   `FAIL`. Record fingerprints and lengths, not values.
 
 3. **Snapshot the current pair** on every host, dated, root-only, before
    changing anything. This is your rollback source.
 
    ```bash
-   sudo install -d -m 0700 /root/sentinel-secret-backup
-   for f in /etc/containarium/env.secrets /etc/containarium/sentinel-auth.env; do
-     [ -f "$f" ] && sudo cp -p "$f" "/root/sentinel-secret-backup/$(basename "$f").$(date +%Y%m%d%H%M)"
-   done
+   # Run as root throughout: /etc/containarium can be 0700 (the documented
+   # manual setup, and `pool join`), so an unprivileged glob or `[ -f ]` sees nothing.
+   sudo sh -c '
+     set -e
+     install -d -m 0700 /root/sentinel-secret-backup
+     n=0
+     for f in /etc/containarium/env.secrets /etc/containarium/sentinel-auth.env; do
+       if [ -f "$f" ]; then
+         cp -p "$f" "/root/sentinel-secret-backup/$(basename "$f").$(date +%Y%m%d%H%M)"
+         n=$((n + 1))
+       fi
+     done
+     [ "$n" -gt 0 ] || { echo "FAIL: no secret file found to snapshot; stop here" >&2; exit 1; }
+     ls -l /root/sentinel-secret-backup
+   '
    ```
+
+   Do not continue on a host where this prints `FAIL`: there is no rollback
+   source. If Step 0.2 showed the value comes from a file not listed here,
+   add it to the loop. The snapshot holds secrets: delete the directory once
+   the rotation is verified and the rollback window has closed (see Rollback).
 
    Do not rely on a pre-existing `*.bak` in `/etc/containarium/`: such a file
    may hold the *target* value, not the current one.
@@ -159,6 +185,39 @@ Do this on the sentinel and **every** daemon in the target domain.
    the source domain's existing value, which you read from its host file; do not
    mint a new one.
 
+## Setting a secret without putting it on a command line
+
+Never put a secret in `sed -i 's|...=<secret>|...'`, `VAR=<secret> command`, or
+any other argument or inline assignment: it lands in `ps`, shell history and
+sudo's `COMMAND=` syslog line. Use this flow instead. The value goes in through
+the terminal or a pipe, and only a variable *name* appears in the command:
+
+```bash
+# On the host, as an operator with sudo. VAR is the name only.
+read -rs -p 'new secret: ' NEW_SECRET; echo        # `read` is a shell builtin: not in ps or history
+printf '%s\n' "$NEW_SECRET" | sudo VAR=CONTAINARIUM_SENTINEL_AUTH_SECRET sh -c '
+  set -e
+  f=/etc/containarium/env.secrets              # the file Step 0.2 showed is effective
+  IFS= read -r v
+  tmp=$(mktemp -p /etc/containarium)
+  chown --reference="$f" "$tmp"; chmod --reference="$f" "$tmp"
+  { grep -v "^$VAR=" "$f" || true; printf "%s=%s\n" "$VAR" "$v"; } > "$tmp"
+  mv "$tmp" "$f"
+'
+unset NEW_SECRET
+```
+
+`printf` is also a builtin, so the value never appears in an argument list.
+Use `VAR=CONTAINARIUM_SENTINEL_ADMIN_SECRET` for the ADMIN secret. If the host
+also has `/etc/containarium/sentinel-auth.env` and Step 0.2 showed it is loaded,
+repeat with `f=` set to that file.
+
+**Converging.** The value to carry is the source domain's, and it exists only in
+a file on a source host. Pipe it host to host rather than copying it through a
+terminal or a file on your workstation: replace the `read`/`printf` pair with
+`ssh <source-host> "sudo sed -n 's/^CONTAINARIUM_SENTINEL_AUTH_SECRET=//p' /etc/containarium/env.secrets" | ssh <target-host> "sudo VAR=... sh -c '...'"`
+(the second `ssh` runs the same block as above, reading the value from stdin).
+
 ## Procedure 1 — ADMIN secret (no mismatch window on the platform)
 
 1. Identify every holder of the ADMIN secret **besides the sentinel**: the join
@@ -167,8 +226,9 @@ Do this on the sentinel and **every** daemon in the target domain.
    anything that drives `/peer/<backend>/...` through the sentinel. These are
    the only things that can break.
 2. On the sentinel, set the new `CONTAINARIUM_SENTINEL_ADMIN_SECRET` in the file
-   that Step 0.2 showed is effective (mirror it into the other file if both
-   exist, so they cannot disagree).
+   that Step 0.2 showed is effective, using the flow in "Setting a secret
+   without putting it on a command line". If the sentinel also loads a second
+   file that sets it, set that too, so they cannot disagree.
 3. Restart: `sudo systemctl restart containarium-sentinel`. The sentinel unit is
    `Restart=always` and comes straight back (the time to settle was not measured
    by the author). BYOC tunnels reconnect on their own, and runtime-registered tunnel tokens and
@@ -178,12 +238,14 @@ Do this on the sentinel and **every** daemon in the target domain.
 5. Verify with a read-only call using the new secret:
 
    ```bash
-   CONTAINARIUM_SENTINEL_ADMIN_SECRET=<new> \
-     containarium sentinel pprof --url http://<sentinel-host>:8888 --list
+   read -rs -p 'ADMIN secret to test: ' CONTAINARIUM_SENTINEL_ADMIN_SECRET; echo
+   export CONTAINARIUM_SENTINEL_ADMIN_SECRET
+   containarium sentinel pprof --url http://<sentinel-host>:8888 --list
+   unset CONTAINARIUM_SENTINEL_ADMIN_SECRET
    ```
 
-   and confirm the old value is now refused (same command with the old secret
-   returns 401).
+   and confirm the old value is now refused (repeat with the old secret: 401).
+   The `read` keeps the value out of shell history.
 6. Update `sentinel_admin_secret` in Terraform (fact 8).
 
 Rollback: restore the Step 0.3 snapshot on the sentinel and restart it; revert
@@ -204,11 +266,26 @@ the sentinel and restarted, and the `ed25519 signing key configured` /
 `ed25519 public key configured` log lines seen on each. Customer-operated
 daemons need the public key too; it is safe to send (it cannot forge).
 
-1. Confirm the bridge is live: keysync is succeeding and the sentinel logged
-   `ed25519 signing key configured`.
+1. Confirm the bridge is live **in the running processes**, not in a log line
+   from an earlier boot: a Terraform-driven reboot rewrites `env.secrets` and
+   drops hand-appended ed25519 lines (fact 8), after which step 2 would quietly
+   be Procedure B. On the sentinel and on every daemon check the effective
+   environment:
+
+   ```bash
+   pid=$(systemctl show -p MainPID --value containarium-sentinel)   # or: containarium
+   sudo cat "/proc/$pid/environ" | tr '\0' '\n' \
+     | grep -c -E '^CONTAINARIUM_SENTINEL_(SIGNING|PUBLIC)_KEY='    # sentinel: SIGNING; daemon: PUBLIC; want 1
+   ```
+
+   and confirm the log line (`ed25519 signing key configured` on the sentinel,
+   `Sentinel ed25519 public key configured` on a daemon) is newer than the
+   process start (`systemctl show -p ActiveEnterTimestamp <unit>`). Any host
+   that fails this is not on the bridge: use Procedure B for it.
 2. Stage the new AUTH secret in the effective secret file (Step 0.2) on the
-   sentinel and every daemon. Do not restart any host until all files are
-   staged; preserve the ed25519 key lines.
+   sentinel and every daemon, using "Setting a secret without putting it on a
+   command line" (it leaves the ed25519 key lines in place). Do not restart any
+   host until all files are staged.
 3. Restart the sentinel first:
 
    ```bash
@@ -239,9 +316,13 @@ Caveats from the code:
   ed25519 runbook's steps 4 or 5. This migration changes only
   sentinel→daemon authentication; daemon registration and peer PKI bootstrap
   still require the matching HMAC secret on both sides.
-- The anonymous-box door plugin on the sentinel signs through the same
-  `SignRequest` path and reads the same environment, so it follows the sentinel
-  restart with no extra step.
+- The anonymous-box door runs under its **own** unit, `sshpiper-anon.service`
+  (`terraform/modules/containarium/scripts/sshpiper-anon.service.tmpl`), which
+  loads `/etc/containarium/env.secrets` itself. Restarting the sentinel does not
+  change its environment, so restart it too after the sentinel:
+  `sudo systemctl restart sshpiper-anon`. Until then every `ssh new.<domain>`
+  login signs with the old secret and fails. The restart drops established door
+  sessions, so do it in the same maintenance window.
 
 ## Procedure B — AUTH secret, direct (short window)
 
@@ -251,31 +332,35 @@ last, so do all hosts of the domain **in one sitting** with the commands ready.
 1. Complete Step 0 on every host. Have the new value in a file or secrets
    manager entry on the workstation you will paste from.
 2. **Stage, do not restart.** On every daemon and the sentinel, write the new
-   value into the effective file, in a way that is easy to review before the
-   restart (no restart yet, so nothing changes):
-
-   ```bash
-   # As root. Replace the line in place; keep mode 0600.
-   sudo sed -i 's|^CONTAINARIUM_SENTINEL_AUTH_SECRET=.*|CONTAINARIUM_SENTINEL_AUTH_SECRET=<new-secret>|' /etc/containarium/env.secrets
-   sudo chmod 0600 /etc/containarium/env.secrets
-   # If the host also has /etc/containarium/sentinel-auth.env, apply the same edit there.
-   ```
+   value into the effective file with "Setting a secret without putting it on a
+   command line" (no restart yet, so nothing changes; if the host also loads
+   `/etc/containarium/sentinel-auth.env`, apply it there too).
 
    Re-run the Step 0.2 file listing to confirm only the files you meant to
    change contain the new value and nothing later in the `EnvironmentFile=` order
    overrides it.
-3. **Restart daemons, then the sentinel**, back to back (the order from
-   [SENTINEL-AUTH-SECRET.md](./SENTINEL-AUTH-SECRET.md#restart-order)):
+3. **Restart the sentinel first, then the daemons**, back to back. This is the
+   opposite of the ordinary restart order in
+   [SENTINEL-AUTH-SECRET.md](./SENTINEL-AUTH-SECRET.md#restart-order), on purpose
+   for a *secret change*: at startup each daemon posts to `/sentinel/peer-cert`
+   with its secret once (`PeerPool.BootstrapPKI`,
+   `internal/server/dual_server.go`, `internal/server/peer.go`). A daemon that
+   starts with the new secret while the sentinel still has the old one gets 401,
+   logs `[peer-pki] bootstrap failed`, is never retried, and stays on plain-HTTP
+   peer-to-peer until its next restart.
 
    ```bash
-   sudo systemctl restart containarium            # each daemon host: primary, peers, BYOC
-   sudo systemctl restart containarium-sentinel   # sentinel, last
+   sudo systemctl restart containarium-sentinel   # sentinel, first
+   sudo systemctl restart sshpiper-anon           # the anonymous-box door (own unit); drops door sessions
+   sudo systemctl restart containarium            # then each daemon host: primary, peers, BYOC
    ```
 
-   The window is the time between the first daemon restart and the sentinel
-   restart. With several daemons, start the sentinel restart as soon as the
-   last daemon is back, not after a verification pause.
-4. Verify (below) immediately.
+   The window is the time between the sentinel restart and the last daemon
+   restart. Start the daemon restarts as soon as the sentinel is back, not after
+   a verification pause. If a daemon was restarted before the sentinel by
+   mistake, restart that daemon again once the sentinel has the new secret.
+4. Verify (below) immediately, including `[peer-pki] bootstrap complete` on every
+   daemon.
 
 If a customer-operated host cannot restart in the same sitting, it will 401
 until it does. That is the reason to prefer Procedure A for any domain that
@@ -292,7 +377,9 @@ contains such a host.
   ```
 
   with the same user count as the baseline. A `rejected the signed /authorized-keys request with 401` line (the keysync message that names the secret mismatch) means that backend still disagrees.
-- Daemons quiet: `journalctl -u containarium --since '-5min' | grep -iE 'sentinel-hmac|sentinel auth failed|signature verify failed'` prints nothing.
+- Daemons quiet: `journalctl -u containarium --since '-5min' | grep -iE 'sentinel-hmac|sentinel auth failed|signature verify failed|\[primary-register\].*failed|\[peer-pki\] bootstrap failed'` prints nothing. The last two cover the daemon-to-sentinel direction.
+- Peer PKI came up on every daemon: `journalctl -u containarium -b | grep '\[peer-pki\] bootstrap complete'` prints a line newer than the daemon's restart. A daemon without it is on plain-HTTP peer calls until restarted again.
+- The anonymous-box door follows the new secret: `ssh new.<domain>` logs in.
 - Fingerprints (Step 0.2) are now identical on the sentinel and every daemon of the domain, and equal to the intended value.
 - An existing tenant can still SSH in, and a freshly created box gets a pipe on the next sync.
 - Update the Terraform variables (`sentinel_auth_secret`, and `sentinel_admin_secret` if you rotated it) so a reboot does not revert the host (fact 8).
@@ -312,7 +399,20 @@ contains such a host.
    rolled back, restore its `sentinel_admin_secret` input separately.
 2. **Restore the effective host files.** Restore the Step 0.3 snapshot on every
    host of the domain, then restart in the same order as the forward procedure
-   (daemons, then sentinel; or sentinel, then daemons for Procedure A). The
+   (sentinel, then `sshpiper-anon`, then daemons, for either procedure).
+   Restore as root, picking the snapshot stamp you took in Step 0.3:
+
+   ```bash
+   sudo sh -c '
+     set -e
+     stamp=<YYYYMMDDHHMM>
+     for f in env.secrets sentinel-auth.env; do
+       b="/root/sentinel-secret-backup/$f.$stamp"
+       [ -f "$b" ] && cp -p "$b" "/etc/containarium/$f"
+     done
+   '
+   ```
+ The
    Terraform startup scripts write `sentinel_auth_secret` into
    `/etc/containarium/env.secrets` when they run. A Terraform apply updates the
    instance metadata/startup-script input, but the repo has no live reconcile
@@ -323,6 +423,10 @@ contains such a host.
 
 The mismatch window rules are identical in reverse, so complete the rollback
 in one maintenance window. Roll back ADMIN independently of AUTH.
+
+**Clean up.** Once the rotation (or rollback) is verified and you will not need
+the old value again, delete the snapshots on every host:
+`sudo rm -rf /root/sentinel-secret-backup`. They hold the previous secret.
 
 ## Converging two domains (summary)
 
@@ -345,7 +449,10 @@ fixed here.
    need `SentinelHMACMiddleware` to accept an optional previous secret. Procedure
    A reaches the same result for the sentinel-to-daemon direction using what
    already ships, but not for the daemon-to-sentinel direction.
-2. **The ed25519 migration does not retire the AUTH secret.** Its public-key
+2. **The ed25519 migration does not retire the AUTH secret.** Its Step 4
+   ("keep the shared secret on every daemon") exists for this reason, and
+   following the runbook without it breaks registration and PKI on daemons
+   (`internal/server/primary_register.go`, `internal/server/peer.go`). Its public-key
    verification covers sentinel→daemon requests only. Daemon→sentinel primary
    registration remains HMAC-signed (`internal/server/primary_register.go`),
    and peer PKI bootstrap requires the secret and signs
