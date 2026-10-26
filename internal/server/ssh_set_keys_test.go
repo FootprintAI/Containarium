@@ -221,7 +221,7 @@ func TestSetSSHKeys_RegistryWorkRunsInsideCriticalSection(t *testing.T) {
 }
 
 // A slow registry is cut off, so it cannot hold the per-user lock forever.
-type blockingRegistry struct{ recordingRegistry }
+type blockingRegistry struct{}
 
 func (blockingRegistry) Register(ctx context.Context, _ sshauthz.KeyRecord) error {
 	<-ctx.Done()
