@@ -87,6 +87,26 @@ func kernelTCXCheck(release func() (string, error)) Check {
 	return c
 }
 
+// EgressKernelUnsupported reports whether this host's kernel is KNOWN to be too
+// old for TCX attach (< 6.6), which is what the network-policy status reports as
+// the KERNEL_UNSUPPORTED uncovered path (#2972). A release that cannot be read
+// or parsed (including any non-Linux host) is unknown, not unsupported: false.
+func EgressKernelUnsupported() bool {
+	return kernelUnsupportedFrom(defaultEgressPrereqProbes().kernelRelease)
+}
+
+func kernelUnsupportedFrom(release func() (string, error)) bool {
+	if release == nil {
+		return false
+	}
+	rel, err := release()
+	if err != nil {
+		return false
+	}
+	supported, known := KernelSupportsTCX(rel)
+	return known && !supported
+}
+
 // KernelSupportsTCX reports whether a kernel release string (as printed by
 // `uname -r`, e.g. "6.8.0-45-generic", "6.6.12+", "5.15.0-1050-gcp") is new
 // enough for TCX attach (kernel >= 6.6). known is false when the release
