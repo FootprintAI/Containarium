@@ -288,7 +288,7 @@ is parsed and validated in `seed.ts`, not cast.
 | Boundary | Contract | Source of truth | Generated |
 | --- | --- | --- | --- |
 | Any caller ↔ daemon | `TrackerService`: `Create/Get/List/DeleteTrackerConnection`, `GetTrackerStatus`, `GetTrackerIssue`, `ListTrackerIssues`, `GetTrackerChange`, `CommentOnTrackerIssue`, `ClaimTrackerIssue`, `SetTrackerIssueLabels`, `SubmitTrackerChange` | `proto/containarium/v1/tracker.proto` with `google.api.http` + OpenAPI annotations | `pkg/pb`, `.pb.gw.go`, swagger via `make proto` |
-| Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`) | same | same |
+| Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`), `TrackerCredentialKind` (`PROJECT`, `GROUP`, `PERSONAL`) | same | same |
 | Secrets | `SECRET_DELIVERY_BROKER_ONLY = 4` | `secrets.proto` | same |
 | Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claims `tracker_conn` + `run_tenant` on `auth.Claims` (minted together as `auth.RunBinding`) | `agent.proto`; `internal/auth/token.go` | — |
 | Scopes | `tracker:read`, `tracker:write`, `tracker:admin` (connection CRUD) | `internal/auth/scopes.go` | — |

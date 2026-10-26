@@ -15560,6 +15560,10 @@
         },
         "hostGitSufficient": {
           "type": "boolean"
+        },
+        "credentialKind": {
+          "$ref": "#/definitions/TrackerCredentialKind",
+          "description": "Provider-native kind of the credential (project / group / personal).\nUNSPECIFIED when reachable \u0026\u0026 credential_valid are not both true, when\nthe probe that classifies it failed, or when the provider's\nintrospection does not reveal it. Additive: credential_breadth is\nunchanged."
         }
       }
     },
@@ -21687,6 +21691,17 @@
       ],
       "default": "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
       "description": "TrackerCredentialBreadth classifies a tracker credential against the\nprovider's narrowest (\"preferred\") type — see the design note's\n\"Preferred credential types\" table. It bounds what a DAEMON compromise\ncan do, as distinct from the broker's verb set (tracker:read /\ntracker:write), which bounds what a BOX can do.\n\n - TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED: Breadth could not be determined — the probe that would classify it\nfailed (e.g. the tracker was unreachable) before classification was\npossible.\n - TRACKER_CREDENTIAL_BREADTH_PREFERRED: The narrowest type for the provider: a GitLab project access token,\nor a GitHub App installation token / single-repository fine-grained\nPAT.\n - TRACKER_CREDENTIAL_BREADTH_BROAD: Wider than preferred: a GitLab group or personal access token, or a\nGitHub classic PAT. Still accepted — this is a warning, not a\nrejection."
+    },
+    "TrackerCredentialKind": {
+      "type": "string",
+      "enum": [
+        "TRACKER_CREDENTIAL_KIND_UNSPECIFIED",
+        "TRACKER_CREDENTIAL_KIND_PROJECT",
+        "TRACKER_CREDENTIAL_KIND_GROUP",
+        "TRACKER_CREDENTIAL_KIND_PERSONAL"
+      ],
+      "default": "TRACKER_CREDENTIAL_KIND_UNSPECIFIED",
+      "description": "TrackerCredentialKind is the provider-native kind of a tracker\ncredential, when the provider's own introspection reveals it. It is\nreported alongside TrackerCredentialBreadth (not instead of it): breadth\nranks a credential against the preferred type, kind says which type it\nis — e.g. a GitLab group token and a personal token are both BROAD but\nare different kinds.\n\n - TRACKER_CREDENTIAL_KIND_UNSPECIFIED: The kind could not be determined: the probe that would classify it\nfailed, or the provider's introspection does not reveal it for this\ncredential.\n - TRACKER_CREDENTIAL_KIND_PROJECT: A GitLab project access token (a project-owned bot account).\n - TRACKER_CREDENTIAL_KIND_GROUP: A GitLab group access token (a group-owned bot account).\n - TRACKER_CREDENTIAL_KIND_PERSONAL: A credential owned by a real user account: a GitLab personal access\ntoken, or a GitHub classic PAT."
     },
     "TrackerDispatch": {
       "type": "object",

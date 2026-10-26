@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`GetTrackerStatus` reports the credential kind as a typed enum** (#2993). `GetTrackerStatusResponse` has a new `credential_kind` field (`TrackerCredentialKind`: `PROJECT`, `GROUP`, `PERSONAL`, or `UNSPECIFIED`), next to the unchanged `credential_breadth`. A GitLab group token and a personal token are both `BROAD` but now tell apart. GitLab fills it from the `GET /user` call the adapter already makes: a bot named `project_*` is `PROJECT`, a bot named `group_*` is `GROUP`, a non-bot account is `PERSONAL`. It is `UNSPECIFIED` when that call fails or the bot name has neither prefix. GitHub reports `PERSONAL` for a `ghp_` classic PAT only; fine-grained PATs and App installation tokens stay `UNSPECIFIED` because the token does not show whether they cover one repository or many. `containarium tracker status` prints a `kind:` line.
+
 ### Fixed
 
 - **The cloud actuation REST client drops its pooled connection after 3 consecutive 5xx responses** (part of #3077). A heartbeat every ~30s keeps one HTTP/2 connection permanently busy, so when the control plane's origin moved behind the same hostname the connection could stay pinned to the old origin and every heartbeat and status post failed with 502 until the daemon restarted or the connection was dropped by hand. The client now flags a recycle at the third 5xx in a row (logged once, when the connections are closed); the next request closes the idle connections and redials; a success resets the count and a 4xx neither counts nor resets. `CloseIdleConnections` does not close an HTTP/2 connection with a stream in flight; the connection is recycled once the failing request has completed, and with the usual 30s heartbeat it is idle between beats, so the scenario above is covered. A bounded connection lifetime is not included.

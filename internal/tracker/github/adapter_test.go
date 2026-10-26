@@ -197,3 +197,23 @@ func TestSplitScopes(t *testing.T) {
 		t.Errorf("splitScopes(\"\") = %v, want nil", got)
 	}
 }
+
+func TestKindFromTokenPrefix(t *testing.T) {
+	tests := []struct {
+		token string
+		want  tracker.CredentialKind
+	}{
+		{"ghp_classic", tracker.KindPersonal},
+		// Fine-grained PATs and installation tokens can span one or many
+		// repositories, which the token prefix does not reveal: not guessed.
+		{"github_pat_finegrained", tracker.KindUnspecified},
+		{"ghs_installation", tracker.KindUnspecified},
+		{"gho_oauth", tracker.KindUnspecified},
+		{"some-unrecognized-shape", tracker.KindUnspecified},
+	}
+	for _, tt := range tests {
+		if got := kindFromTokenPrefix(tt.token); got != tt.want {
+			t.Errorf("kindFromTokenPrefix(%q) = %v, want %v", tt.token, got, tt.want)
+		}
+	}
+}
