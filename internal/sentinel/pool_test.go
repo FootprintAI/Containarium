@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"encoding/json"
+	"github.com/footprintai/containarium/internal/auth"
 	"net/http/httptest"
 	"testing"
 
@@ -21,6 +22,7 @@ type testPeer struct {
 // correctly while preserving back-compat (no param = return everything).
 func TestPeersHandlerPoolFilter(t *testing.T) {
 	m := &Manager{backends: NewBackendPool()}
+	m.SetHMACSecret([]byte(peersTestSecret))
 
 	m.backends.Add(&Backend{ID: "tunnel-a", Type: BackendTunnel, Healthy: true, Pool: "prod"})
 	m.backends.Add(&Backend{ID: "tunnel-b", Type: BackendTunnel, Healthy: true, Pool: "dev"})
@@ -30,6 +32,7 @@ func TestPeersHandlerPoolFilter(t *testing.T) {
 	call := func(query string) []testPeer {
 		t.Helper()
 		req := httptest.NewRequest("GET", "/sentinel/peers"+query, nil)
+		auth.SignSentinelRequest(req, []byte(peersTestSecret)) // pool data is daemon-only (#3119)
 		rec := httptest.NewRecorder()
 		m.PeersHandler()(rec, req)
 		assert.Equal(t, 200, rec.Code)
