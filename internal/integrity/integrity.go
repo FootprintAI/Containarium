@@ -159,6 +159,8 @@ func Compute(in Inputs) (Measurement, error) {
 	for _, p := range in.Programs {
 		var d string
 		var err error
+		// Data decides the source by nil-ness: a non-nil empty slice digests as
+		// the empty-input hash, while nil falls back to Path (or Name).
 		if p.Data != nil {
 			sum := sha256.Sum256(p.Data)
 			d = hex.EncodeToString(sum[:])

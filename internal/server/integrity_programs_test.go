@@ -26,7 +26,7 @@ func TestIntegrityProgramObjects(t *testing.T) {
 			t.Fatalf("got %+v, %v", got, err)
 		}
 	})
-	for _, v := range []string{"embedded", "1", "true", " ON "} {
+	for _, v := range []string{"embedded", "1", "true", "yes", "YES", "Embedded", "TRUE", " ON "} {
 		t.Run("embedded "+v, func(t *testing.T) {
 			got, err := integrityProgramObjects(v, blob)
 			if err != nil || len(got) != 1 {
