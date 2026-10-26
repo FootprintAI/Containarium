@@ -1576,6 +1576,94 @@ window, export the `retention.sweep`, `retention.sweep.result`,
 exports with the anchor copies. Whether admin events should be kept longer
 than gateway logs is an open decision (#2979); today they are not.
 
+### Anchoring to a timestamp authority
+
+Where no object store with a retention lock is available, the daemon can
+have each anchor stamped by an RFC 3161 timestamp authority (TSA) instead,
+or as well. There is no built-in TSA: choose one, and give the daemon its URL
+and a PEM bundle of the root (and any intermediate) certificates its tokens
+chain to:
+
+```bash
+CONTAINARIUM_AUDIT_ANCHOR_TSA_URL=https://<tsa-host>/<path>
+CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE=/etc/containarium/tsa-roots.pem
+```
+
+Both are required; one without the other disables TSA anchoring and logs an
+error at startup. Plain `http://` is accepted, because the token is signed and
+checked against the bundle, not trusted for the channel it came over; any
+credentials in the URL are redacted in logs.
+
+On each anchoring tick the daemon writes the local file first (as without a
+TSA), then sends the TSA a request over the SHA-256 of the canonical record
+`{"checkpoint":<id>,"root":"<root>"}` with a random 64-bit nonce and
+`certReq` set. It stores the reply's token only after checking it: valid
+signature, a signing certificate with the timeStamping extended key usage that
+chains to the bundle at the token's time, the hash it sent, and the nonce it
+sent. Tokens are stored one per checkpoint as
+`<anchor-path>.tsa/<20-digit checkpoint>.tsr` (DER). If the TSA is
+unreachable, refuses, or returns a token that fails any of those checks,
+nothing is stored, the error is logged, and the next tick retries; there is no
+fallback TSA and no unstamped "success". The TSA can be combined with
+`CONTAINARIUM_AUDIT_ANCHOR_BUCKET`; the bucket and the TSA are written
+independently after the file, so one failing does not hold up the other.
+
+Check the database and the local file against the tokens:
+
+```bash
+containarium audit verify-anchor --anchor-tsa-trust-bundle /etc/containarium/tsa-roots.pem
+```
+
+`--anchor-tsa-trust-bundle` defaults to
+`CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE`. The check is offline: it needs the
+bundle, not the TSA. It can be combined with `--anchor-bucket`; the run fails if
+either check fails.
+
+| Result | Meaning | Exit |
+| --- | --- | --- |
+| ✗ | A token does not parse, its signature does not verify, or it carries no TSA certificate. | non-zero |
+| ✗ | A token's signing certificate does not chain to the bundle at the token's time, or lacks the timeStamping extended key usage. | non-zero |
+| ✗ | A token covers a different record than the local file holds for its checkpoint: the line was edited after it was stamped. | non-zero |
+| ✗ | A token exists for a checkpoint the local file has no record of. | non-zero |
+| ✗ | A local checkpoint's root differs from the database row's hash, or the row no longer exists. Every local checkpoint is checked, stamped or not. | non-zero |
+| ✗ | The chain is internally inconsistent after the latest local checkpoint. | non-zero |
+| ⚠ | Local checkpoints have no token (anchored before the TSA was configured, or a stamp still being retried). They are checked against the database only. | 0 |
+| ⚠ | A file in the token directory is not named like a token; it is ignored. | 0 |
+
+#### What a TSA timestamp does and does not prove
+
+A valid token proves that the TSA saw the SHA-256 of that exact anchor record
+no later than the token's time. Because the TSA signs it and the signature is
+checked against a bundle the host does not control, a host-root attacker who
+later edits a stamped line in the local anchor file, together with the
+database, is caught: the edited record no longer matches the token.
+
+It does **not** prove or protect against:
+
+- **Deletion.** Tokens are stored on the same host as the anchor file. A
+  host-root attacker can delete token files, or the whole directory, and the
+  check can only warn that those checkpoints have no token. Copy the token
+  directory off the host if deletion is in your threat model, or use the
+  bucket with a locked retention policy, which does stop deletes.
+- **A rewrite before the next stamp.** As with the other sinks, rows after the
+  latest stamped checkpoint are protected only once the next tick stamps a
+  newer one (15 minutes by default).
+- **Revocation.** No CRL or OCSP check is made. A token signed with a TSA key
+  that was later revoked still verifies. The chain is checked at the token's
+  time, not now, so tokens stay verifiable after the TSA certificate expires.
+- **A compromised or misissuing TSA,** or a bundle that trusts more than the
+  TSA you meant: anything that chains to the bundle is accepted. Keep the
+  bundle to the TSA's own root.
+- **The TSA's policy and accuracy.** The token's policy OID and accuracy are
+  not checked; the time is the TSA's claim.
+- **An altered `containarium` binary** on the host that performs the check.
+  Run it from a machine you trust, with a copy of the anchor file and tokens.
+
+The TSA library verifies the CMS signature with the certificates carried in the
+token; it does not check the ESS signing-certificate attribute that binds the
+signer to a specific certificate. The trust-bundle check above is what ties the
+signer to your TSA.
+
 ### Integrity self-measurement heartbeat
 
 The daemon also emits a self-measurement digest to its log on a periodic

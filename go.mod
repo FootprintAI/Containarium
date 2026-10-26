@@ -8,6 +8,8 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/blang/semver/v4 v4.0.0
 	github.com/cilium/ebpf v0.22.0
+	github.com/digitorus/pkcs7 v0.0.0-20250730155240-ffadbf3f398c
+	github.com/digitorus/timestamp v0.0.0-20250524132541-c45532741eea
 	github.com/footprintai/go-certs v0.0.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
