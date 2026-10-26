@@ -3043,6 +3043,12 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
+	// #3057: enforce the same scope the MCP layer maps this tool to, so a
+	// scoped admin token cannot bypass it over REST/gRPC. A nil scope claim
+	// stays unrestricted (legacy tokens), per RequireScope.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 
 	// Remote backend → forward to the owning peer (it upgrades its own daemon).
 	if req.BackendId != "" && req.BackendId != s.localBackendID() {
@@ -3177,6 +3183,12 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 // #354.
 func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgradeStatusRequest) (*pb.GetUpgradeStatusResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	// #3057: enforce the same scope the MCP layer maps this tool to, so a
+	// scoped admin token cannot bypass it over REST/gRPC. A nil scope claim
+	// stays unrestricted (legacy tokens), per RequireScope.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
 		return nil, err
 	}
 	if req.UpgradeId == "" {
