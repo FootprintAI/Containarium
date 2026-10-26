@@ -58,21 +58,23 @@ stubs=$tmp/stubs; mkdir -p "$stubs"
 # system: the union of FAKE/resolve/PKG, as `Inst` lines; an unknown PKG
 # fails like apt does. FAKE_RESOLVE_RC makes it exit non-zero AFTER printing
 # the Inst lines, so only the exit status shows the failure.
+# Every call appends "<mode> <-o values>" to $FAKE/apt-get.opts.
 # apt-get download NAME=VER...: records the args; FAKE_APT_RC makes it exit
 # non-zero AFTER writing every .deb (a partial-failure shape only the exit
 # status reveals); FAKE_NO_WRITE pretends success without writing anything.
 cat >"$stubs/apt-get" <<'EOF'
 #!/bin/bash
-mode=; pkgs=()
+mode=; pkgs=(); opts=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -o) shift ;;
+    -o) shift; opts+=("$1") ;;
     -*) ;;
     install|download) mode=$1 ;;
     *) pkgs+=("$1") ;;
   esac
   shift
 done
+echo "$mode ${opts[*]}" >>"$FAKE/apt-get.opts"
 case "$mode" in
   install)
     echo "install ${pkgs[*]}" >>"$FAKE/apt-get.log"
@@ -151,6 +153,58 @@ if deps closure APT_PACKAGES="alpha broken"; then t "download-deps: unsatisfied 
 else
   grep -q libmissing "$tmp/closure.out" && pass "download-deps: unsatisfied dependency fails, named" \
     || t "download-deps: unsatisfied dependency not named"; fi
+
+# #3118: a stalled mirror must fail fast, and the log must show progress.
+for mode in install download; do
+  for o in Acquire::http::Timeout=30 Acquire::https::Timeout=30 Acquire::Retries=3; do
+    if grep -E "^$mode " "$tmp/ok.fake/apt-get.opts" | grep -qwF -- "$o"; then :
+    else t "download-deps: apt-get $mode runs without -o $o"; fi
+  done
+done
+pass "download-deps: resolver and download carry the apt network bounds"
+grep -q 'Resolved 3 packages' "$tmp/ok.out" && pass "download-deps: logs the resolved package count" \
+  || t "download-deps: resolved package count not logged"
+grep -q 'batch 1/1' "$tmp/ok.out" && pass "download-deps: default batch size fits 3 packages in one batch" \
+  || t "download-deps: default batch progress not logged"
+
+if deps batched APT_BATCH_SIZE=2; then
+  if [ "$(grep -c '^download ' "$tmp/batched.fake/apt-get.log")" -eq 2 ] \
+     && grep -qx 'download alpha=1.0 beta=1.0' "$tmp/batched.fake/apt-get.log" \
+     && grep -qx 'download libx=1.0' "$tmp/batched.fake/apt-get.log"; then
+    pass "download-deps: APT_BATCH_SIZE=2 downloads 3 packages in 2 batches"
+  else t "download-deps: batches differ from APT_BATCH_SIZE=2"; cat "$tmp/batched.fake/apt-get.log"; fi
+  grep -q 'batch 1/2' "$tmp/batched.out" && grep -q 'batch 2/2' "$tmp/batched.out" \
+    && pass "download-deps: per-batch progress logged" || { t "download-deps: per-batch progress missing"; cat "$tmp/batched.out"; }
+  n=$(find "$tmp/batched.stage/apt" -name '*.deb' | wc -l)
+  [ "$n" -eq 3 ] && pass "download-deps: batched run downloads the whole closure" || t "download-deps: batched run got $n debs"
+else t "download-deps: batched run failed"; cat "$tmp/batched.out"; fi
+
+if deps batchfail APT_BATCH_SIZE=2 FAKE_APT_RC=100; then t "download-deps: failing batch exited 0"
+else
+  grep -q 'apt-get download failed in batch 1/2' "$tmp/batchfail.out" \
+    && pass "download-deps: failing batch named" || { t "download-deps: failing batch not named"; cat "$tmp/batchfail.out"; }
+  [ "$(grep -c '^download ' "$tmp/batchfail.fake/apt-get.log")" -eq 1 ] \
+    && pass "download-deps: stops at the first failing batch" || t "download-deps: kept downloading after a failed batch"
+fi
+
+for bad in 0 -1 abc; do
+  if deps badbatch APT_BATCH_SIZE="$bad"; then t "download-deps: APT_BATCH_SIZE=$bad accepted"
+  else grep -q 'APT_BATCH_SIZE' "$tmp/badbatch.out" && pass "download-deps: APT_BATCH_SIZE=$bad rejected" \
+    || t "download-deps: APT_BATCH_SIZE=$bad failed without naming it"; fi
+done
+
+# The job summary records how long the step took, on success and failure.
+if deps summary GITHUB_STEP_SUMMARY="$tmp/summary.md"; then
+  grep -qE 'Download bundle dependencies.*[0-9]+s' "$tmp/summary.md" 2>/dev/null \
+    && grep -q '3 apt packages' "$tmp/summary.md" \
+    && pass "download-deps: duration and package count in the job summary" \
+    || { t "download-deps: job summary lacks duration or package count"; cat "$tmp/summary.md" 2>/dev/null || true; }
+else t "download-deps: summary run failed"; cat "$tmp/summary.out"; fi
+if deps summaryfail GITHUB_STEP_SUMMARY="$tmp/summaryfail.md" FAKE_APT_RC=100; then t "download-deps: failing summary run exited 0"
+else grep -qiE 'failed after [0-9]+s' "$tmp/summaryfail.md" 2>/dev/null \
+  && pass "download-deps: a failed step's duration is in the job summary" \
+  || { t "download-deps: failed step left no duration in the job summary"; cat "$tmp/summaryfail.md" 2>/dev/null || true; }
+fi
 
 mv "$stubs/apt-get" "$stubs/apt-get.off"
 if deps noaptget; then t "download-deps: ran without apt-get"
