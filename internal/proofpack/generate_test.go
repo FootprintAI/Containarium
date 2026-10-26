@@ -20,6 +20,7 @@ import (
 type fakeBox struct {
 	declaration *string // nil = no .github/containarium.yml
 	makefile    bool
+	noTimeout   bool // the box has no coreutils `timeout`
 	missingDir  bool
 	commit      string
 	// steps maps a command line to its result.
@@ -54,6 +55,9 @@ func (f *fakeBox) ExecWithExitCode(_ string, argv []string) (string, string, int
 		}
 		if f.makefile {
 			rc += 2
+		}
+		if f.noTimeout {
+			rc += 4
 		}
 		return out, "", rc, nil
 	case len(argv) > 0 && argv[0] == "git":
@@ -341,5 +345,26 @@ func TestPartDigests(t *testing.T) {
 	}
 	if d3, _ := PackDigest(&back); d3 == d1 {
 		t.Errorf("PackDigest did not change after a log byte changed")
+	}
+}
+
+// A box without `timeout` can still report that there is nothing to run;
+// it is an error only when a step would have to be bounded.
+func TestGenerate_MissingTimeoutOnlyMattersWhenAStepRuns(t *testing.T) {
+	box := &fakeBox{noTimeout: true}
+	pack, err := Generate(context.Background(), box, "b", Options{Now: fixedClock()})
+	if err != nil {
+		t.Fatalf("no commands and no timeout: %v", err)
+	}
+	if pack.GetStatus() != pb.ProofPackStatus_PROOF_PACK_STATUS_NO_COMMANDS {
+		t.Errorf("status = %v", pack.GetStatus())
+	}
+	for name, b := range map[string]*fakeBox{
+		"fallback": {noTimeout: true, makefile: true, steps: map[string]fakeResult{"make test": {}}},
+		"declared": {noTimeout: true, declaration: strp("test: x\n"), steps: map[string]fakeResult{"x": {}}},
+	} {
+		if _, err := Generate(context.Background(), b, "b", Options{}); err == nil || !strings.Contains(err.Error(), "timeout") || len(b.ran) != 0 {
+			t.Errorf("%s: err=%v ran=%v, want a timeout error and nothing run", name, err, b.ran)
+		}
 	}
 }
