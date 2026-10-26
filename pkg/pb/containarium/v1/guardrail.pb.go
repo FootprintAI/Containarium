@@ -104,6 +104,10 @@ const (
 	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY CodeModelTrafficScanning = 2
 	// The tenant's own key: traffic does not cross the gateway.
 	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY CodeModelTrafficScanning = 3
+	// Gateway credential and no admin policy was ever set: responses get the
+	// built-in baseline scan (#2736), log-only unless the baseline mode says
+	// otherwise (#2738).
+	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_BASELINE CodeModelTrafficScanning = 4
 )
 
 // Enum value maps for CodeModelTrafficScanning.
@@ -113,12 +117,14 @@ var (
 		1: "CODE_MODEL_TRAFFIC_SCANNING_SCANNED",
 		2: "CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY",
 		3: "CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY",
+		4: "CODE_MODEL_TRAFFIC_SCANNING_BASELINE",
 	}
 	CodeModelTrafficScanning_value = map[string]int32{
 		"CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED":          0,
 		"CODE_MODEL_TRAFFIC_SCANNING_SCANNED":              1,
 		"CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY":  2,
 		"CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY": 3,
+		"CODE_MODEL_TRAFFIC_SCANNING_BASELINE":             4,
 	}
 )
 
@@ -1765,12 +1771,13 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x12GUARDRAIL_KIND_PII\x10\x01\x12\x19\n" +
 	"\x15GUARDRAIL_KIND_SECRET\x10\x02\x12\x1e\n" +
 	"\x1aGUARDRAIL_KIND_UNSAFE_CODE\x10\x03\x12#\n" +
-	"\x1fGUARDRAIL_KIND_PROMPT_INJECTION\x10\x04*\xdb\x01\n" +
+	"\x1fGUARDRAIL_KIND_PROMPT_INJECTION\x10\x04*\x85\x02\n" +
 	"\x18CodeModelTrafficScanning\x12+\n" +
 	"'CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED\x10\x00\x12'\n" +
 	"#CODE_MODEL_TRAFFIC_SCANNING_SCANNED\x10\x01\x123\n" +
 	"/CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY\x10\x02\x124\n" +
-	"0CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY\x10\x03*\x88\x01\n" +
+	"0CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY\x10\x03\x12(\n" +
+	"$CODE_MODEL_TRAFFIC_SCANNING_BASELINE\x10\x04*\x88\x01\n" +
 	"\x0fGuardrailAction\x12 \n" +
 	"\x1cGUARDRAIL_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GUARDRAIL_ACTION_ALLOW\x10\x01\x12\x1b\n" +

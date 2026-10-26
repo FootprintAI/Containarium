@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `containarium code run` now reports `model traffic: BASELINE` when no guardrail policy is configured, instead of
+  `NOT SCANNED`: those responses get the built-in baseline scan (#2736). A configured policy with no inbound BLOCK
+  rule still reports `NOT SCANNED`. New `CODE_MODEL_TRAFFIC_SCANNING_BASELINE` value in `CodeModelTrafficScanning`; the
+  status now comes from the same effective-policy answer as `containarium guardrail status` (#2851).
+
 - **`GetTrackerStatus` reports the credential kind as a typed enum** (#2993). `GetTrackerStatusResponse` has a new `credential_kind` field (`TrackerCredentialKind`: `PROJECT`, `GROUP`, `PERSONAL`, or `UNSPECIFIED`), next to the unchanged `credential_breadth`. A GitLab group token and a personal token are both `BROAD` but now tell apart. GitLab fills it from the `GET /user` call the adapter already makes: a bot named `project_*` is `PROJECT`, a bot named `group_*` is `GROUP`, a non-bot account is `PERSONAL`. It is `UNSPECIFIED` when that call fails or the bot name has neither prefix. GitHub reports `PERSONAL` for a `ghp_` classic PAT only; fine-grained PATs and App installation tokens stay `UNSPECIFIED` because the token does not show whether they cover one repository or many. `containarium tracker status` prints a `kind:` line.
 
 ### Fixed

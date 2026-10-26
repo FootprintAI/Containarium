@@ -329,6 +329,7 @@ enum CodeModelTrafficScanning {
   CODE_MODEL_TRAFFIC_SCANNING_SCANNED = 1;              // gateway credential, inbound policy active
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY = 2;  // gateway credential, no inbound rule
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY = 3; // tenant's own key, traffic does not cross the gateway
+  CODE_MODEL_TRAFFIC_SCANNING_BASELINE = 4;             // gateway credential, no policy ever set: built-in baseline scan (#2851)
 }
 ```
 
@@ -337,7 +338,11 @@ plus the current server policy; it is computed once at run start and printed
 on stderr by `containarium code run` (and shown by the `code_run` MCP tool,
 which only runs the tenant-key path). If the policy cannot be read the value
 is `UNSPECIFIED` and the line says the status is unknown; the run is never
-blocked by that read. `guardrail.InboundBlockKinds` is the one definition of
+blocked by that read. For a gateway run the value follows the daemon's
+effective policy (the one `containarium guardrail status` reports, #2737): no
+policy set is `BASELINE`, a policy with an inbound BLOCK rule is `SCANNED`, and
+a policy with no inbound BLOCK rule stays `UNSCANNED_NO_POLICY` (#2851).
+`guardrail.InboundBlockKinds` is the one definition of
 "an inbound BLOCK rule is in force", shared with the gateway.
 
 ### Scanned by default: the baseline, and how to read the effective policy (#2575)
