@@ -234,7 +234,7 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 // applySentinelKey uses this marker to find and replace stale entries on
 // rotation (sentinel VM replacement → new upstream keypair → old marker
 // block must go, new one must take its place).
-const sentinelKeyMarker = "# sshpiper sentinel upstream key"
+const sentinelKeyMarker = container.SentinelKeyMarker
 
 // ServeSentinelKey returns an HTTP handler that accepts a POST with the
 // sentinel's current upstream public key and installs it in every jump

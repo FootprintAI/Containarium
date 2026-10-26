@@ -480,6 +480,19 @@ service ContainerService {
     };
   }
 
+  // SetSSHKeys replaces the caller-managed SSH public keys of a container
+  rpc SetSSHKeys(SetSSHKeysRequest) returns (SetSSHKeysResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/ssh-keys"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set SSH keys (replace all)";
+      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
+      tags: "SSH Management";
+    };
+  }
+
   // RemoveSSHKey removes an SSH public key from a container
   rpc RemoveSSHKey(RemoveSSHKeyRequest) returns (RemoveSSHKeyResponse) {
     option (google.api.http) = {

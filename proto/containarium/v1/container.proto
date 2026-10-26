@@ -985,6 +985,35 @@ message AddSSHKeyResponse {
   int32 total_keys = 2;
 }
 
+// SetSSHKeysRequest is the request to replace a container user's SSH keys
+message SetSSHKeysRequest {
+  // Username of the container
+  string username = 1;
+
+  // The complete desired list of SSH public keys. Each entry must be one line
+  // with no authorized_keys options (command=, from=, ...). Duplicates are
+  // collapsed.
+  repeated string ssh_public_keys = 2;
+
+  // Must be true to send an empty ssh_public_keys list (removing every
+  // caller-managed key). An empty list without it is rejected, so an omitted
+  // field cannot wipe a box's keys. Must be false when keys are given.
+  bool allow_empty = 3;
+}
+
+// SetSSHKeysResponse is the response from replacing SSH keys
+message SetSSHKeysResponse {
+  // Success message
+  string message = 1;
+
+  // Number of keys removed by this call
+  int32 removed_keys = 2;
+
+  // Number of distinct caller-managed keys now authorized (the deduplicated
+  // request list). Platform-managed keys, which are preserved, are not counted.
+  int32 total_keys = 3;
+}
+
 // RemoveSSHKeyRequest is the request to remove an SSH key from a container
 message RemoveSSHKeyRequest {
   // Username of the container

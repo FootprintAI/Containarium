@@ -4200,6 +4200,45 @@
         "tags": [
           "SSH Management"
         ]
+      },
+      "put": {
+        "summary": "Set SSH keys (replace all)",
+        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
+        "operationId": "ContainerService_SetSSHKeys",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetSSHKeysResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetSSHKeysBody"
+            }
+          }
+        ],
+        "tags": [
+          "SSH Management"
+        ]
       }
     },
     "/v1/containers/{username}/ssh-keys/{sshPublicKey}": {
@@ -20414,6 +20453,43 @@
           "$ref": "#/definitions/RetentionPolicy"
         }
       }
+    },
+    "SetSSHKeysBody": {
+      "type": "object",
+      "properties": {
+        "sshPublicKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The complete desired list of SSH public keys. Each entry must be one line\nwith no authorized_keys options (command=, from=, ...). Duplicates are\ncollapsed."
+        },
+        "allowEmpty": {
+          "type": "boolean",
+          "description": "Must be true to send an empty ssh_public_keys list (removing every\ncaller-managed key). An empty list without it is rejected, so an omitted\nfield cannot wipe a box's keys. Must be false when keys are given."
+        }
+      },
+      "title": "SetSSHKeysRequest is the request to replace a container user's SSH keys"
+    },
+    "SetSSHKeysResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Success message"
+        },
+        "removedKeys": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of keys removed by this call"
+        },
+        "totalKeys": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of distinct caller-managed keys now authorized (the deduplicated\nrequest list). Platform-managed keys, which are preserved, are not counted."
+        }
+      },
+      "title": "SetSSHKeysResponse is the response from replacing SSH keys"
     },
     "SetSecretRequest": {
       "type": "object",

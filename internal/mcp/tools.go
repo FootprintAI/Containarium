@@ -1846,6 +1846,9 @@ func (s *Server) registerTools() {
 	// Guardrail policy read (#2368, guardrail_tools.go); no write tool.
 	s.tools = append(s.tools, guardrailTools()...)
 
+	// Replace-all SSH keys (#2945, ssh_keys_tools.go).
+	s.tools = append(s.tools, sshKeysTools()...)
+
 	// Process policy get/set/release (#2666, process_policy_tools.go) —
 	// thin wrappers over the routes `containarium security process-policy`
 	// also calls.
@@ -2040,6 +2043,7 @@ func toolScopeAssignments() map[string]string {
 		"sync":            auth.ScopeCodeWrite,
 		"sync_ssh_config": auth.ScopeSSHWrite,
 		"connect":         auth.ScopeSSHWrite,
+		"set_ssh_keys":    auth.ScopeSSHWrite,
 		// #2522: ending a user's SSH sessions; the daemon also limits a
 		// non-admin caller to its own sessions.
 		"terminate_user_sessions": auth.ScopeSSHWrite,

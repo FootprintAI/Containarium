@@ -67,6 +67,9 @@ func newTestPubKey(t *testing.T) string {
 type fakeAuthorizedKeys struct {
 	files  map[string][]string
 	addErr map[string]error // by key
+
+	platform     string // platform-managed line the fake replace preserves
+	replaceCalls int
 }
 
 func newFakeAuthorizedKeys() *fakeAuthorizedKeys {
@@ -93,6 +96,23 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 			return nil
 		},
 		count: func(u string) (int32, error) { return safecast.I32(len(f.files[u])), nil },
+		replace: func(u string, keys []string) ([]string, error) {
+			f.replaceCalls++
+			var removed []string
+			for _, l := range f.files[u] {
+				keep := false
+				for _, k := range keys {
+					if k == l {
+						keep = true
+					}
+				}
+				if !keep && l != f.platform {
+					removed = append(removed, l)
+				}
+			}
+			f.files[u] = append(append([]string{}, keys...), f.platform)
+			return removed, nil
+		},
 	}
 }
 

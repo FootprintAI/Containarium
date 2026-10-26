@@ -2777,6 +2777,81 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	}, nil
 }
 
+// SetSSHKeys makes the user's host-side authorized_keys hold exactly the
+// requested keys (#2945). Authorization is AddSSHKey's: ssh:write plus
+// tenant access to the box.
+//
+// Every key is validated before any write, so one bad entry fails the call
+// with no change. Platform-managed lines (the sentinel's upstream key) are
+// preserved by the file layer and never revoked, so a caller cannot lock the
+// platform out. Keys dropped by the call are revoked in the ssh_keys
+// registry exactly as RemoveSSHKey does (for every account holding them);
+// kept keys are registered like AddSSHKey does. An empty list is accepted
+// only with allow_empty, so an omitted field cannot wipe a box.
+func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
+		return nil, err
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	switch {
+	case len(req.SshPublicKeys) == 0 && !req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "ssh_public_keys is empty: set allow_empty=true to remove every key")
+	case len(req.SshPublicKeys) > 0 && req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "allow_empty must be false when ssh_public_keys is given")
+	}
+	fingerprints := make(map[string]bool, len(req.SshPublicKeys))
+	for i, k := range req.SshPublicKeys {
+		if err := container.ValidateStrictSSHPublicKey(k); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		rec, err := sshauthz.NewKeyRecord(k, req.Username, sshauthz.SourceAPI, s.sshKeyClock())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		fingerprints[rec.Fingerprint] = true
+	}
+
+	// Same heal as AddSSHKey for a box created without a host account.
+	if s.manager != nil {
+		if _, gerr := s.manager.Get(req.Username); gerr == nil {
+			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+				return nil, fmt.Errorf("ensure host account: %w", err)
+			}
+		}
+	}
+
+	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys)
+	if err != nil {
+		return nil, fmt.Errorf("replace authorized keys: %w", err)
+	}
+	// The file is already replaced; a registry failure is reported so the
+	// caller retries (registration is idempotent).
+	for _, k := range req.SshPublicKeys {
+		if err := s.registerSSHKey(ctx, req.Username, k, sshauthz.SourceAPI); err != nil {
+			return nil, registryError("set ssh keys", err)
+		}
+	}
+	for _, k := range removed {
+		if err := s.revokeSSHKey(ctx, req.Username, k); err != nil {
+			return nil, registryError("set ssh keys", err)
+		}
+	}
+
+	// Revoked keys left in sshpiper's table would stay working credentials.
+	s.notifySentinelKeyChange(ctx, "set_ssh_keys "+req.Username)
+
+	return &pb.SetSSHKeysResponse{
+		Message:     fmt.Sprintf("SSH keys set for %s", req.Username),
+		RemovedKeys: safecast.I32(len(removed)),
+		TotalKeys:   safecast.I32(len(fingerprints)),
+	}, nil
+}
+
 // RemoveSSHKey removes a specific SSH public key from the user's
 // host-side authorized_keys file. No-op if the key isn't present.
 func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKeyRequest) (*pb.RemoveSSHKeyResponse, error) {
