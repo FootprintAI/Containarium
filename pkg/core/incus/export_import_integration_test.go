@@ -302,18 +302,39 @@ func inspectArchive(t *testing.T, path string, probes []string) {
 // gone by the export (/var/tmp is not "D" and survives). That race made
 // TestIntegrationIncusExportImport report "/tmp probe NOT in the archive"
 // on one lane run and "INCLUDED" on the next.
+//
+// It polls `systemctl is-system-running` (no --wait) once a second for up
+// to three minutes. An empty answer is retried: right after StartContainer
+// the exec can reach the box before systemd's bus is up, and the first lane
+// run of a single `--wait` call got exactly that (state "").
 func waitForBoot(t *testing.T, client *incus.Client, name string) {
 	t.Helper()
-	// is-system-running --wait returns once the boot job queue is empty;
-	// it exits non-zero for "degraded", which a container often is, so
-	// the state it prints is what counts.
-	out, _, _ := client.ExecWithOutput(name, []string{"timeout", "180", "systemctl", "is-system-running", "--wait"})
-	state := strings.TrimSpace(out)
-	switch state {
-	case "running", "degraded":
-		t.Logf("%s booted (systemd %s)", name, state)
-	default:
-		t.Fatalf("%s did not finish booting: systemd state %q", name, state)
+	const timeout = 3 * time.Minute
+	deadline := time.Now().Add(timeout)
+	var stdout, stderr string
+	var err error
+	for attempt := 1; ; attempt++ {
+		stdout, stderr, err = client.ExecWithOutput(name, []string{"systemctl", "is-system-running"})
+		switch bootState(stdout) {
+		case bootDone:
+			state := strings.TrimSpace(stdout)
+			if state == "degraded" {
+				// Common in a container (a unit that needs real hardware);
+				// the boot jobs, tmpfiles included, have still finished.
+				out, _, _ := client.ExecWithOutput(name, []string{"systemctl", "--failed", "--no-legend", "--plain"})
+				t.Logf("%s booted degraded after %d checks; failed units: %s", name, attempt, strings.TrimSpace(out))
+			} else {
+				t.Logf("%s booted (systemd %s) after %d checks", name, state, attempt)
+			}
+			return
+		case bootFailed:
+			t.Fatalf("%s is not booting: systemd state %q (stderr %q, err %v)", name, strings.TrimSpace(stdout), strings.TrimSpace(stderr), err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not finish booting within %s: last systemd state %q, stderr %q, err %v",
+				name, timeout, strings.TrimSpace(stdout), strings.TrimSpace(stderr), err)
+		}
+		time.Sleep(time.Second)
 	}
 }
 
