@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The sentinel unit does not pass `--sshpiper-config` to `ssh-authz-plugin` in enforce mode** (#2843, clarifies #2741). The 0.110.0 entry for #2815 says enforce mode reads `--sshpiper-config`; the flag defaults to `/etc/sshpiper/config.yaml`, the file the yaml plugin reads, so the Terraform unit leaves it out and needs no change when you turn `ssh_authz_enforce` on. An older binary accepts that unit and keeps the old deferring enforcement until it is upgraded.
+
 ## [0.119.0] - 2026-10-26
 
 ### Added
