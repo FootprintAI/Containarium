@@ -25,11 +25,13 @@ var (
 	backupCreateKeyMode string
 	// #2405
 	backupCreateHookFormat string
+	// #2801
+	backupCreateBox bool
 )
 
 var backupCreateCmd = &cobra.Command{
 	Use:   "create <username>",
-	Short: "Dump a container's database(s) and store them off-host",
+	Short: "Dump a container's database(s), or the whole box, and store them off-host",
 	Long: `Run pg_dump inside the tenant's container and store the compressed
 dump(s) at the chosen destination.
 
@@ -79,8 +81,19 @@ default (managed/both when a key is configured, otherwise as above);
 'age-recipient' opts a single backup out of wrapping. A mode the daemon
 cannot provide is refused, never silently downgraded.
 
+Whole-box backup (--box): back up the tenant's entire box instead of a
+database. The box is exported through Incus (on ZFS, from a point-in-time
+snapshot Incus takes, so a running box is fine), the contents of /tmp,
+/var/tmp, /var/cache and /run are left out, a manifest of file digests is
+added, and the archive is encrypted before it is stored. A whole-box
+backup is never plaintext: --key-mode is required. The database and hook
+flags do not apply. The daemon caps a box backup at 256 GiB by default
+(CONTAINARIUM_BACKUP_BOX_MAX_BYTES) and checks free space before starting.
+
 Examples:
   containarium backup create alice --dest local --server <host>
+  containarium backup create alice --box --key-mode managed --dest gcs \
+      --gcs-bucket gs://my-backups/boxes --server <host>
   containarium backup create alice --database app --dest gcs \
       --gcs-bucket gs://my-backups/pg --db-password "$PGPW" --server <host>
   containarium backup create alice --hook /opt/backup/db-dump.sh --dest gcs \
@@ -107,6 +120,7 @@ func init() {
 	f.StringVar(&backupCreateLabel, "label", "", "label for a --hook backup, used in the backup id (default: the hook's basename)")
 	f.StringVar(&backupCreateHookFormat, "hook-format", "", "declared format of the --hook output: 'opaque' (default) or 'pg_custom' (a pg_dump -Fc archive, restore-testable)")
 	f.StringVar(&backupCreateAgeRecipient, "age-recipient", "", "age public key (age1...) to encrypt the dump to before it is stored; restore needs the matching identity")
+	f.BoolVar(&backupCreateBox, "box", false, "back up the whole box instead of a database; needs --key-mode (#2801)")
 	f.StringVar(&backupCreateKeyMode, "key-mode", "", "who holds the key: 'managed' (KMS-wrapped per-backup key), 'both' (managed plus --age-recipient), 'age-recipient' (no wrapping); omit for the daemon default (#2402)")
 }
 
@@ -126,6 +140,10 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	hookFormat, err := parseHookFormat(backupCreateHookFormat)
 	if err != nil {
 		return err
+	}
+
+	if backupCreateBox {
+		return runBackupCreateBox(username, dest, keyMode)
 	}
 
 	c, err := newBackupClientFn()
@@ -166,9 +184,67 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	printCreatedBackups(resp)
+	return nil
+}
+
+// runBackupCreateBox sends a BOX-scope create (#2801). The flags that only
+// mean something for a database backup are refused rather than ignored, and
+// so is a missing key mode: the daemon would refuse it too, and saying so
+// here names the flag.
+func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.BackupKeyMode) error {
+	for _, f := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--database", backupCreateDatabase != ""},
+		{"--hook", backupCreateHook != ""},
+		{"--hook-format", backupCreateHookFormat != ""},
+		{"--label", backupCreateLabel != ""},
+		{"--db-user", backupCreateDBUser != ""},
+		{"--db-password", backupCreateDBPass != ""},
+		{"--db-host", backupCreateDBHost != ""},
+		{"--db-port", backupCreateDBPort != 0},
+	} {
+		if f.set {
+			return fmt.Errorf("%s does not apply to a whole-box backup (--box)", f.flag)
+		}
+	}
+	if keyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+		return fmt.Errorf("--box needs --key-mode (managed, both or age-recipient): a whole-box backup is never plaintext")
+	}
+
+	c, err := newBackupClientFn()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+
+	fmt.Printf("Backing up the whole box of %s to %s (key mode %s)...\n", username, backupCreateDest, keyModeLabel(keyMode))
+	resp, err := c.CreateBackup(&pb.CreateBackupRequest{
+		Username:     username,
+		Scope:        pb.BackupScope_BACKUP_SCOPE_BOX,
+		Destination:  dest,
+		GcsBucket:    backupCreateBucket,
+		AgeRecipient: backupCreateAgeRecipient,
+		KeyMode:      keyMode,
+	})
+	if err != nil {
+		return err
+	}
+	printCreatedBackups(resp)
+	return nil
+}
+
+// printCreatedBackups renders a CreateBackup response.
+func printCreatedBackups(resp *pb.CreateBackupResponse) {
 	fmt.Printf("\n✓ %s\n", resp.Message)
 	for _, r := range resp.Records {
-		fmt.Printf("  - %s (db: %s)\n", r.Id, r.Database)
+		if r.Scope == pb.BackupScope_BACKUP_SCOPE_BOX {
+			fmt.Printf("  - %s (box: %s)\n", r.Id, r.Database)
+		} else {
+			fmt.Printf("  - %s (db: %s)\n", r.Id, r.Database)
+		}
 		fmt.Printf("      Size:     %s\n", humanBytes(r.SizeBytes))
 		fmt.Printf("      SHA-256:  %s\n", r.Sha256)
 		fmt.Printf("      Location: %s\n", r.Location)
@@ -182,7 +258,6 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	for _, f := range resp.Failures {
 		fmt.Printf("  ✗ %s\n", f)
 	}
-	return nil
 }
 
 // humanBytes renders a byte count in a compact, human-readable form.
