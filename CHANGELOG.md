@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A client can verify a sealed Proof Pack through the daemon: `ProofPackService.VerifyProofPack`** (part of #3064). New RPC (`POST /v1/proof-packs/verify`, `audit:read` scope) that runs the same check as `containarium proof-pack verify` and returns `ok`, a typed verdict (`OK`, `MISMATCH`, `SEAL_PURGED`, `SEAL_NOT_FOUND`, `CHAIN_BROKEN`), the first differing step or header, and on success the chain tip id and hash to compare with the external anchor. The pack is bounded at 32 steps and 4 MiB. `containarium proof-pack verify <pack> --server <addr>` calls it; without `--server` on the command line it still reads Postgres directly, as before. A daemon's "ok" is weaker than verifying offline (see `docs/PROOF-PACK.md`). The anchor reference is not returned yet.
+
 - **`GetTrackerStatus` reports the credential kind as a typed enum** (#2993). `GetTrackerStatusResponse` has a new `credential_kind` field (`TrackerCredentialKind`: `PROJECT`, `GROUP`, `PERSONAL`, or `UNSPECIFIED`), next to the unchanged `credential_breadth`. A GitLab group token and a personal token are both `BROAD` but now tell apart. GitLab fills it from the `GET /user` call the adapter already makes: a bot named `project_*` is `PROJECT`, a bot named `group_*` is `GROUP`, a non-bot account is `PERSONAL`. It is `UNSPECIFIED` when that call fails or the bot name has neither prefix. GitHub reports `PERSONAL` for a `ghp_` classic PAT only; fine-grained PATs and App installation tokens stay `UNSPECIFIED` because the token does not show whether they cover one repository or many. `containarium tracker status` prints a `kind:` line.
 
 ### Fixed

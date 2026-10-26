@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/proofpack"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -25,6 +26,29 @@ var proofPackVerifyChain = func(ctx context.Context) (proofpack.SealChain, func(
 		return nil, nil, err
 	}
 	return store, cleanup, nil
+}
+
+// proofPackVerifyAPI is the one call --server makes; both client.GRPCClient
+// and client.HTTPClient satisfy it (#3064).
+type proofPackVerifyAPI interface {
+	VerifyProofPack(ctx context.Context, sealed *pb.SealedProofPack) (*pb.VerifyProofPackResponse, error)
+}
+
+// newProofPackVerifyAPI dials the daemon named by the global --server/--http
+// flags; tests replace it.
+var newProofPackVerifyAPI = func() (proofPackVerifyAPI, func(), error) {
+	if httpMode {
+		h, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		return h, func() { _ = h.Close() }, nil
+	}
+	g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g, func() { _ = g.Close() }, nil
 }
 
 var proofPackVerifyCmd = &cobra.Command{
@@ -44,10 +68,18 @@ chain. Once retention purges the seal row itself, verify says so and exits
 non-zero. The chain walk proves internal consistency only; run
 'audit verify-anchor' to rule out a rewrite-and-recompute of the chain.
 
-Direct Postgres access, configured as for 'audit verify'.`,
-	Example: `  containarium proof-pack verify proof-pack.json`,
-	Args:    cobra.ExactArgs(1),
-	RunE:    runProofPackVerify,
+Direct Postgres access, configured as for 'audit verify'.
+
+With --server on the command line, the pack is sent to that daemon's
+VerifyProofPack API instead (needs the audit:read scope), so it works from
+any machine; no Postgres is read. A daemon's "ok" is only as trustworthy as
+the daemon: for stronger assurance compare the chain tip hash it prints with
+the external anchor, or verify on the daemon host. A server address from the
+environment or config does not switch modes; only --server does.`,
+	Example: `  containarium proof-pack verify proof-pack.json
+  containarium proof-pack verify proof-pack.json --server https://daemon.example.com --http`,
+	Args: cobra.ExactArgs(1),
+	RunE: runProofPackVerify,
 }
 
 func init() {
@@ -67,6 +99,11 @@ func runProofPackVerify(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// InheritedFlags merges the root's persistent flags into cmd.Flags().
+	cmd.InheritedFlags()
+	if cmd.Flags().Changed("server") {
+		return verifyProofPackViaServer(ctx, cmd, &sealed)
+	}
 	chain, cleanup, err := proofPackVerifyChain(ctx)
 	if err != nil {
 		return err
@@ -80,4 +117,35 @@ func runProofPackVerify(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "proof pack %s: %d step(s) match the seal at audit row %d; audit chain intact through id %d\n",
 		res.PackSHA256, res.Steps, res.AuditRowID, res.ChainCheckedThrough)
 	return nil
+}
+
+// verifyProofPackViaServer sends the pack to the daemon and reports its
+// verdict; anything but OK is an error, so the exit status is non-zero.
+func verifyProofPackViaServer(ctx context.Context, cmd *cobra.Command, sealed *pb.SealedProofPack) error {
+	api, cleanup, err := newProofPackVerifyAPI()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	resp, err := api.VerifyProofPack(ctx, sealed)
+	if err != nil {
+		return err
+	}
+	switch resp.GetVerdict() {
+	case pb.ProofPackVerdict_PROOF_PACK_VERDICT_OK:
+		fmt.Fprintf(cmd.OutOrStdout(), "proof pack %s: %d step(s) match the seal at audit row %d, according to the daemon; audit chain intact through id %d (tip hash %s)\n"+
+			"compare the tip hash with the external anchor: a daemon's ok is weaker than verifying offline\n",
+			resp.GetPackSha256(), resp.GetStepsChecked(), resp.GetAuditRowId(), resp.GetChainTipId(), resp.GetChainTipHash())
+		return nil
+	case pb.ProofPackVerdict_PROOF_PACK_VERDICT_MISMATCH:
+		m := resp.GetFirstMismatch()
+		if m.GetHeader() {
+			return fmt.Errorf("pack header does not match the seal: %s", m.GetReason())
+		}
+		return fmt.Errorf("step %d (%q) does not match the seal: %s", m.GetStepIndex(), m.GetName(), m.GetReason())
+	case pb.ProofPackVerdict_PROOF_PACK_VERDICT_SEAL_PURGED:
+		return fmt.Errorf("the seal's audit row was purged by retention; the pack can no longer be checked against the chain: %s", resp.GetMessage())
+	default:
+		return fmt.Errorf("daemon verdict %s: %s", resp.GetVerdict(), resp.GetMessage())
+	}
 }

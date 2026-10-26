@@ -38,6 +38,14 @@ const (
 // audit row: the pack can no longer be checked against the chain.
 var ErrSealPurged = errors.New("proofpack: the seal's audit row was purged by retention")
 
+// ErrSealNotFound is returned by Verify when the seal's audit row does not
+// exist (and was not purged), or is not the seal of the pack.
+var ErrSealNotFound = errors.New("proofpack: seal audit row not found")
+
+// ErrChainBroken is returned by Verify when the audit chain from the seal
+// row to the tip does not verify.
+var ErrChainBroken = errors.New("proofpack: audit chain broken")
+
 // TamperedPart names the part of a pack that does not match its seal.
 type TamperedPart struct {
 	// Step is the step's index, or HeaderPart.
@@ -130,6 +138,9 @@ type VerifyResult struct {
 	Steps      int
 	// ChainCheckedThrough is the highest row id the chain walk covered.
 	ChainCheckedThrough int64
+	// ChainTipHash is the row_hash of that row, for comparison with the
+	// external anchor; empty when the tip row could not be read back.
+	ChainTipHash string
 }
 
 // Verify recomputes a sealed pack's digests and checks them against its seal
@@ -162,10 +173,10 @@ func Verify(ctx context.Context, chain SealChain, sealed *pb.SealedProofPack) (V
 			return VerifyResult{}, fmt.Errorf("%w: row %d is at or below the chain base id %d (purged %s)",
 				ErrSealPurged, id, base.ID, base.PurgedAt.UTC().Format("2006-01-02"))
 		}
-		return VerifyResult{}, fmt.Errorf("proofpack: seal audit row %d does not exist and was not purged by retention", id)
+		return VerifyResult{}, fmt.Errorf("%w: row %d does not exist and was not purged by retention", ErrSealNotFound, id)
 	}
 	if row.Action != SealAction || row.ResourceType != SealResourceType || row.ResourceID != fileSeal.GetPackSha256() {
-		return VerifyResult{}, fmt.Errorf("proofpack: audit row %d is not the seal of pack %s", id, fileSeal.GetPackSha256())
+		return VerifyResult{}, fmt.Errorf("%w: audit row %d is not the seal of pack %s", ErrSealNotFound, id, fileSeal.GetPackSha256())
 	}
 
 	maxID, err := chain.MaxRowID(ctx)
@@ -176,7 +187,7 @@ func Verify(ctx context.Context, chain SealChain, sealed *pb.SealedProofPack) (V
 		// A break comes back as its row id, usually with an error saying why.
 		bad, err := chain.VerifyChainSinceID(ctx, from, verifyBatch)
 		if bad > 0 {
-			return VerifyResult{}, fmt.Errorf("proofpack: audit chain broken at row %d (seal row %d): %v", bad, id, err)
+			return VerifyResult{}, fmt.Errorf("%w at row %d (seal row %d): %v", ErrChainBroken, bad, id, err)
 		}
 		if err != nil {
 			return VerifyResult{}, fmt.Errorf("proofpack: verify audit chain from row %d: %w", id, err)
@@ -190,7 +201,11 @@ func Verify(ctx context.Context, chain SealChain, sealed *pb.SealedProofPack) (V
 	if err := compareSeal(pack, &recorded); err != nil {
 		return VerifyResult{}, err
 	}
-	return VerifyResult{PackSHA256: recorded.GetPackSha256(), AuditRowID: id, Steps: len(pack.GetSteps()), ChainCheckedThrough: maxID}, nil
+	res := VerifyResult{PackSHA256: recorded.GetPackSha256(), AuditRowID: id, Steps: len(pack.GetSteps()), ChainCheckedThrough: maxID}
+	if tip, ok, err := chain.ChainEntryAt(ctx, maxID); err == nil && ok {
+		res.ChainTipHash = tip.RowHash
+	}
+	return res, nil
 }
 
 // compareSeal recomputes pack's seal and names the first part that differs

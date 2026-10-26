@@ -108,6 +108,10 @@ func TestSealIntegration_VerifyOnRealChain(t *testing.T) {
 	if res.AuditRowID != 6 || res.ChainCheckedThrough != 11 {
 		t.Errorf("result = %+v, want seal row 6 checked through tip 11", res)
 	}
+	// #3064: the tip hash is the real row_hash of the last row.
+	if tip, ok, err := s.ChainEntryAt(context.Background(), 11); err != nil || !ok || tip.RowHash == "" || res.ChainTipHash != tip.RowHash {
+		t.Errorf("ChainTipHash = %q, want row 11's row_hash %q (%v)", res.ChainTipHash, tip.RowHash, err)
+	}
 	if first, err := s.VerifyChainSinceID(context.Background(), 0, 0); err != nil || first != 0 {
 		t.Errorf("whole chain after sealing: first bad %d, err %v", first, err)
 	}
@@ -132,7 +136,7 @@ func TestSealIntegration_Tampering(t *testing.T) {
 			sealed.Seal.Parts[1].Sha256, strings.Repeat("0", 64)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Verify(ctx, s, sealed); err == nil || !strings.Contains(err.Error(), "broken at row 6") {
+		if _, err := Verify(ctx, s, sealed); err == nil || !strings.Contains(err.Error(), "broken at row 6") || !errors.Is(err, ErrChainBroken) {
 			t.Fatalf("err = %v, want the chain broken at the seal row", err)
 		}
 	})
@@ -143,8 +147,8 @@ func TestSealIntegration_Tampering(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := Verify(ctx, s, sealed)
-		if err == nil || errors.Is(err, ErrSealPurged) {
-			t.Fatalf("err = %v, want a missing seal row that is not a purge", err)
+		if err == nil || errors.Is(err, ErrSealPurged) || !errors.Is(err, ErrSealNotFound) {
+			t.Fatalf("err = %v, want a missing seal row (ErrSealNotFound) that is not a purge", err)
 		}
 	})
 }
