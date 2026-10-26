@@ -293,26 +293,57 @@ func (c *blockingChain) MaxRowID(ctx context.Context) (int64, error) {
 }
 
 func TestVerifyProofPack_ConcurrencyIsCapped(t *testing.T) {
+	// The documented cap, written out so raising or lowering it fails here.
+	const n = 4
 	inner, sealed := sealedFixture(t)
-	c := &blockingChain{fakeSealChain: inner, entered: make(chan struct{}, maxConcurrentVerifies+1), release: make(chan struct{})}
+	c := &blockingChain{fakeSealChain: inner, entered: make(chan struct{}, n+2), release: make(chan struct{})}
 	s := NewProofPackServer(c)
-	done := make(chan error, maxConcurrentVerifies)
-	for i := 0; i < maxConcurrentVerifies; i++ {
+	call := func() <-chan error {
+		ch := make(chan error, 1)
 		go func() {
 			_, err := s.VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed})
-			done <- err
+			ch <- err
 		}()
+		return ch
 	}
-	for i := 0; i < maxConcurrentVerifies; i++ {
-		<-c.entered
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(c.release)
+		}
 	}
-	_, err := s.VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed})
-	if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "retry") {
-		t.Errorf("excess call: %v, want ResourceExhausted with a retry hint", err)
+	defer release()
+
+	// n verifies in flight, each parked inside the chain walk.
+	inflight := make([]<-chan error, n)
+	for i := range inflight {
+		inflight[i] = call()
 	}
-	close(c.release)
-	for i := 0; i < maxConcurrentVerifies; i++ {
-		if err := <-done; err != nil {
+	for i := 0; i < n; i++ {
+		select {
+		case <-c.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d verifies started", i, n)
+		}
+	}
+
+	// The (n+1)th is refused with a retry hint and never reaches the chain.
+	extra := call()
+	select {
+	case err := <-extra:
+		if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "retry") {
+			t.Fatalf("call %d: %v, want ResourceExhausted with a retry hint", n+1, err)
+		}
+	case <-c.entered:
+		t.Fatalf("call %d was admitted past the cap of %d", n+1, n)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("call %d neither refused nor started", n+1)
+	}
+
+	release()
+	for _, ch := range inflight {
+		if err := <-ch; err != nil {
 			t.Errorf("in-flight verify: %v", err)
 		}
 	}

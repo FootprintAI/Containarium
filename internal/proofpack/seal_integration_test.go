@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/testsupport/postgres"
@@ -129,23 +130,54 @@ func TestSealIntegration_Tampering(t *testing.T) {
 			t.Fatalf("err = %v, want step \"unit\" named", err)
 		}
 	})
-	t.Run("one byte of the seal row in the database", func(t *testing.T) {
+	t.Run("seal row edited, pack untouched: the edited part is named", func(t *testing.T) {
 		s, pool := sealTestStore(t)
 		sealed := sealOnRealChain(t, s)
 		if _, err := pool.Exec(ctx, `UPDATE audit_logs SET detail = replace(detail, $1, $2) WHERE id = 6`,
 			sealed.Seal.Parts[1].Sha256, strings.Repeat("0", 64)); err != nil {
 			t.Fatal(err)
 		}
+		// The pack is compared with the seal row before the chain is walked,
+		// so the pack no longer matching the edited row is what fires.
 		_, err := Verify(ctx, s, sealed)
-		if err == nil {
-			t.Fatal("Verify passed a seal row edited in the database")
-		}
-		// The pack is compared with the (edited) seal row before the chain is
-		// walked, so this surfaces as a mismatch of the edited part; either
-		// way it fails.
 		var tp *TamperedPart
-		if !errors.Is(err, ErrChainBroken) && !errors.As(err, &tp) {
-			t.Fatalf("err = %v, want the chain broken or the edited part named", err)
+		if !errors.As(err, &tp) || tp.Step != 1 || tp.Name != "lint" || errors.Is(err, ErrChainBroken) {
+			t.Fatalf("err = %v, want step 1 \"lint\" named as a mismatch, not a broken chain", err)
+		}
+	})
+	t.Run("seal row and pack edited to agree: the chain breaks at the seal row", func(t *testing.T) {
+		s, pool := sealTestStore(t)
+		sealed := sealOnRealChain(t, s)
+		// The attacker rewrites the pack and the seal row's detail
+		// consistently, so the comparison passes and the walk is reached.
+		sealed.Pack.Steps[1].Log = []byte("FAIL\n")
+		sealed.Pack.Steps[1].LogSha256 = LogDigest(sealed.Pack.Steps[1].Log)
+		forged, err := NewSeal(sealed.Pack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		detail, err := protojson.Marshal(forged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE audit_logs SET detail = $1 WHERE id = 6`, string(detail)); err != nil {
+			t.Fatal(err)
+		}
+		_, err = Verify(ctx, s, sealed)
+		var tp *TamperedPart
+		if err == nil || !errors.Is(err, ErrChainBroken) || errors.As(err, &tp) || !strings.Contains(err.Error(), "broken at row 6") {
+			t.Fatalf("err = %v, want the chain broken at row 6 and no part mismatch", err)
+		}
+	})
+	t.Run("a chain row after the seal edited, pack matches: the chain breaks there", func(t *testing.T) {
+		s, pool := sealTestStore(t)
+		sealed := sealOnRealChain(t, s)
+		if _, err := pool.Exec(ctx, `UPDATE audit_logs SET username = 'x' WHERE id = 9`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Verify(ctx, s, sealed)
+		if !errors.Is(err, ErrChainBroken) {
+			t.Fatalf("err = %v, want ErrChainBroken", err)
 		}
 	})
 	t.Run("seal row deleted", func(t *testing.T) {
