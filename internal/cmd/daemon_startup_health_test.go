@@ -148,7 +148,7 @@ func TestBindStartupHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer taken.Close()
+	defer func() { _ = taken.Close() }()
 	sp := bindStartupHealth(true, "127.0.0.1", taken.Addr().(*net.TCPAddr).Port)
 	if sp.listener != nil {
 		sp.Close()
