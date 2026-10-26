@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ type fakeSealChain struct {
 
 func (f *fakeSealChain) Append(_ context.Context, e *audit.AuditEntry) (int64, error) {
 	f.next++
-	r := audit.ChainEntry{AuditEntry: *e, RowHash: "hash-" + string(rune('a'+f.next))}
+	r := audit.ChainEntry{AuditEntry: *e, RowHash: fmt.Sprintf("hash-%d", f.next)}
 	r.ID = f.next
 	f.rows[f.next] = r
 	return f.next, nil
