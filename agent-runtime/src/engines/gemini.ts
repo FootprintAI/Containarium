@@ -1,4 +1,10 @@
-import { GoogleGenAI, mcpToTool, type GenerateContentResponse } from "@google/genai";
+import {
+  GoogleGenAI,
+  mcpToTool,
+  type Content,
+  type GenerateContentParameters,
+  type GenerateContentResponse,
+} from "@google/genai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
@@ -90,11 +96,60 @@ export class GeminiEngine implements Engine {
         },
       });
       journalGeminiResponse(response, journal);
-      return { outputJson: (response.text ?? "").trim(), usage: response.usageMetadata };
+      return {
+        outputJson: (response.text ?? "").trim(),
+        usage: response.usageMetadata,
+        followUp: geminiFollowUp(
+          (params) => ai.models.generateContent(params),
+          { model: cfg.model || "gemini-2.5-flash", systemPrompt: cfg.systemPrompt, task },
+          response,
+        ),
+      };
     } finally {
       await Promise.allSettled(mcpClients.map((c) => c.close()));
     }
   }
+}
+
+// GeminiGenerate is ai.models.generateContent; a seam for tests.
+export type GeminiGenerate = (params: GenerateContentParameters) => Promise<GenerateContentResponse>;
+
+// GeminiTurn is what the first call was made with.
+export interface GeminiTurn {
+  readonly model: string;
+  readonly systemPrompt: string;
+  readonly task: string;
+}
+
+// geminiFollowUp continues a finished generateContent call (#2513).
+// generateContent is stateless, so the follow-up replays the conversation:
+// the automatic function-calling history (which starts with the task; just the
+// task when there was no tool loop), then the model's last turn, then the
+// follow-up prompt. The MCP clients are closed by then, so no tools are
+// mounted and the reply is text. Function calls left without a response (a
+// loop cut off at maximumRemoteCalls) are dropped from the last turn: the API
+// rejects a call that no response follows.
+export function geminiFollowUp(
+  generate: GeminiGenerate,
+  turn: GeminiTurn,
+  response: Partial<Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "candidates">>,
+): (prompt: string, journal: JournalSink) => Promise<EngineResult> {
+  const history: Content[] = response.automaticFunctionCallingHistory?.length
+    ? [...response.automaticFunctionCallingHistory]
+    : [{ role: "user", parts: [{ text: turn.task }] }];
+  const last = response.candidates?.[0]?.content;
+  const lastParts = (last?.parts ?? []).filter((p) => !p.functionCall);
+  if (lastParts.length > 0) history.push({ role: last?.role ?? "model", parts: lastParts });
+  return async (prompt, journal) => {
+    const reply = await generate({
+      model: turn.model,
+      contents: [...history, { role: "user", parts: [{ text: prompt }] }],
+      config: turn.systemPrompt ? { systemInstruction: turn.systemPrompt } : {},
+    });
+    // No tools are mounted, so the reply carries no function-calling history.
+    journalGeminiResponse(reply, journal);
+    return { outputJson: (reply.text ?? "").trim(), usage: reply.usageMetadata };
+  };
 }
 
 // journalGeminiResponse journals a generateContent response: the model's
