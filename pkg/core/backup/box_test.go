@@ -496,6 +496,62 @@ func TestCreateBox_SizeCap(t *testing.T) {
 	assertNothingStaged(t, m.dir)
 }
 
+// The cap also bounds the uncompressed content, as DefaultMaxDumpBytes does
+// for a dump: a box of zeros (or a sparse file) compresses to almost
+// nothing, and must not make the daemon decompress without limit.
+func TestCreateBox_CapBoundsUncompressedContent(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	entries := append(incusLikeEntries(), tarEntry{name: "backup/container/rootfs/srv/zeros", typ: tar.TypeReg, body: strings.Repeat("\x00", 1<<20)})
+	archive := buildArchive(t, entries)
+	if len(archive) > 64<<10 {
+		t.Fatalf("fixture archive is %d bytes; it must be far below the cap to test the uncompressed bound", len(archive))
+	}
+	box := newFakeBox(archive)
+	m := newBoxManager(t, box, WithMaxBoxBytes(256<<10))
+	_, err := m.CreateBox(boxOpts(id.Recipient().String()))
+	if !errors.Is(err, ErrDumpTooLarge) {
+		t.Fatalf("err = %v, want ErrDumpTooLarge for 1 MiB of content under a 256 KiB cap", err)
+	}
+	assertNothingStaged(t, m.dir)
+}
+
+// After the tar end marker only zero padding may follow, and only so much.
+func TestCreateBox_TrailingData(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	for _, tc := range []struct {
+		name    string
+		tail    []byte
+		wantErr bool
+	}{
+		{"zero padding is accepted", make([]byte, 64<<10), false},
+		{"a little non-zero data is refused", bytes.Repeat([]byte{0xAA}, 100), true},
+		{"too much zero padding is refused", make([]byte, 2<<20), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gz)
+			_ = tw.WriteHeader(&tar.Header{Name: "backup/index.yaml", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1})
+			_, _ = tw.Write([]byte("x"))
+			_ = tw.Close()
+			_, _ = gz.Write(tc.tail)
+			_ = gz.Close()
+			m := newBoxManager(t, newFakeBox(buf.Bytes()))
+			_, err := m.CreateBox(boxOpts(id.Recipient().String()))
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("CreateBox: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "trailing") {
+				t.Fatalf("err = %v, want a trailing-data refusal", err)
+			}
+			assertNothingStaged(t, m.dir)
+		})
+	}
+}
+
 // A broken or unexpected export fails the backup and leaves nothing behind.
 func TestCreateBox_BadExports(t *testing.T) {
 	id, _ := age.GenerateX25519Identity()

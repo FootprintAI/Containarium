@@ -207,7 +207,7 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := filterBoxArchive(export, pw, opts.ContainerName, m.now().UTC())
+		err := filterBoxArchive(export, pw, opts.ContainerName, m.now().UTC(), m.maxBoxBytes)
 		pw.CloseWithError(err)
 		done <- err
 	}()
@@ -324,7 +324,12 @@ func (m *Manager) boxPreflight(containerName string) error {
 // Memory is independent of the archive's size: file contents stream
 // through. The manifest itself is held until the end, so it grows with the
 // number of files (about a hundred bytes each), not with their size.
-func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time) error {
+//
+// limit bounds the uncompressed stream as well as (in stageDump) the stored
+// archive, as DefaultMaxDumpBytes does for a dump: a box of zeros or a
+// sparse file compresses to almost nothing and must not be decompressed
+// without bound.
+func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, limit int64) error {
 	br := bufio.NewReader(src)
 	magic, err := br.Peek(2)
 	if err != nil {
@@ -337,7 +342,8 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time) e
 	if err != nil {
 		return fmt.Errorf("read export: %w", err)
 	}
-	tr := tar.NewReader(gzr)
+	plain := &boundedReader{r: gzr, limit: limit}
+	tr := tar.NewReader(plain)
 	// BestSpeed: the stream is recompressed on the daemon, single-threaded,
 	// on the backup's critical path; storage is cheaper than hours.
 	gzw, err := gzip.NewWriterLevel(dst, gzip.BestSpeed)
@@ -384,7 +390,7 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time) e
 			continue
 		}
 		h.Reset()
-		n, err := io.Copy(io.MultiWriter(tw, h), tr)
+		n, err := io.CopyN(io.MultiWriter(tw, h), tr, hdr.Size)
 		if err != nil {
 			return fmt.Errorf("copy %s: %w", name, err)
 		}
@@ -397,9 +403,14 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time) e
 			mf.Config = append(mf.Config, entry)
 		}
 	}
-	// The gzip stream must end cleanly: a truncated export is a failed
-	// backup, never a short one.
-	if _, err := io.Copy(io.Discard, gzr); err != nil {
+	// After the tar end marker only zero padding may follow, and the gzip
+	// stream must end cleanly: a truncated export is a failed backup, never
+	// a short one.
+	trailing, err := io.CopyN(zeroOnly{}, plain, maxBoxTrailingBytes+1)
+	switch {
+	case errors.Is(err, errNonZeroTrailing) || trailing > maxBoxTrailingBytes:
+		return fmt.Errorf("read export: trailing data after the end of the archive")
+	case err != nil && !errors.Is(err, io.EOF):
 		return fmt.Errorf("read export: %w", err)
 	}
 
@@ -419,6 +430,24 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time) e
 		return err
 	}
 	return gzw.Close()
+}
+
+// maxBoxTrailingBytes bounds the zero padding accepted after the tar end
+// marker (a tar writer pads to its record size, 10 KiB for GNU tar).
+const maxBoxTrailingBytes = 1 << 20
+
+var errNonZeroTrailing = errors.New("non-zero trailing data")
+
+// zeroOnly accepts zero bytes and refuses anything else.
+type zeroOnly struct{}
+
+func (zeroOnly) Write(p []byte) (int, error) {
+	for i, b := range p {
+		if b != 0 {
+			return i, errNonZeroTrailing
+		}
+	}
+	return len(p), nil
 }
 
 // boxExcluded reports whether a rootfs-relative path is inside one of the
