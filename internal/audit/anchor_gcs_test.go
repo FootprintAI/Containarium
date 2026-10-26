@@ -257,7 +257,22 @@ func TestGCSAnchorSink_CheckRetentionLock(t *testing.T) {
 		{
 			name:       "camelCase top-level key",
 			describe:   `{"retentionPolicy":{"isLocked":true,"retentionPeriod":"60"}}`,
-			wantPolicy: true, wantLocked: true, wantPeriod: "60",
+			wantPolicy: true, wantLocked: true, wantPeriod: "60", wantWarn: true, // locked, but 60s < the 365-day minimum
+		},
+		{
+			name:       "locked but shorter than the minimum",
+			describe:   `{"retention_policy":{"isLocked":true,"retentionPeriod":"86400"}}`,
+			wantPolicy: true, wantLocked: true, wantPeriod: "86400", wantWarn: true,
+		},
+		{
+			name:       "locked one second over the minimum",
+			describe:   `{"retention_policy":{"isLocked":true,"retentionPeriod":"31536001"}}`,
+			wantPolicy: true, wantLocked: true, wantPeriod: "31536001",
+		},
+		{
+			name:       "locked with unparsable period",
+			describe:   `{"retention_policy":{"isLocked":true,"retentionPeriod":"abc"}}`,
+			wantPolicy: true, wantLocked: true, wantPeriod: "abc", wantWarn: true,
 		},
 		{name: "unreachable", down: true, wantErr: true, wantWarn: true},
 		{name: "unparseable", describe: "not json", wantErr: true, wantWarn: true},
@@ -281,7 +296,7 @@ func TestGCSAnchorSink_CheckRetentionLock(t *testing.T) {
 			if (warn != "") != tc.wantWarn {
 				t.Fatalf("RetentionLockWarning = %q, want warning=%v", warn, tc.wantWarn)
 			}
-			if tc.wantWarn && !strings.Contains(warn, "NOT immutable") && !strings.Contains(warn, "could not check") {
+			if tc.wantWarn && !strings.Contains(warn, "NOT immutable") && !strings.Contains(warn, "could not check") && !strings.Contains(warn, "shorter than") && !strings.Contains(warn, "unparsable") {
 				t.Fatalf("warning %q does not say the copy may not be immutable", warn)
 			}
 			if !tc.wantErr {
@@ -291,6 +306,22 @@ func TestGCSAnchorSink_CheckRetentionLock(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRetentionLockWarning_NamesPeriodAndMinimum(t *testing.T) {
+	w := RetentionLockWarning("gs://example-bucket/", RetentionLockStatus{HasPolicy: true, Locked: true, RetentionPeriod: "86400"}, nil)
+	for _, want := range []string{"86400", "31536000"} {
+		if !strings.Contains(w, want) {
+			t.Fatalf("warning %q does not name %q", w, want)
+		}
+	}
+}
+
+func TestRetentionLockWarning_UnparsablePeriodSaysSo(t *testing.T) {
+	w := RetentionLockWarning("gs://example-bucket/", RetentionLockStatus{HasPolicy: true, Locked: true, RetentionPeriod: "abc"}, nil)
+	if !strings.Contains(w, "unparsable") || !strings.Contains(w, `"abc"`) {
+		t.Fatalf("warning %q does not report the unparsable period", w)
 	}
 }
 
