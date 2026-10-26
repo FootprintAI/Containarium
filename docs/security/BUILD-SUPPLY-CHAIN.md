@@ -90,6 +90,7 @@ check with a checksum for each download.
 | `scripts/install-sdlc-skills.sh` | curl | skills tarball and its `.sha256` from the same release | sha256 verified against the release sidecar file (integrity, not independent authenticity) |
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
 | `scripts/bundle/add-zabbly-repo.sh` | curl | Incus (Zabbly) apt repository signing key, so the offline-bundle builder can download incus, incus-client and incus-extra | primary-key fingerprint (`ZABBLY_KEY_FPR`) checked before the key is installed; apt then verifies the downloaded `.deb`s against it |
+| `scripts/lib/deploy-install.sh` | curl | none downloaded: a health probe the deploy runs on the target host against the daemon's own `/health` (default `http://localhost:8080/health`), and discards the body | not a fetch of third-party content; listed because the gate matches the tool name |
 | `.github/workflows/ssh-ban.yml` | gh release download | sshpiperd v1.6.1 release tarball (three jobs) | sha256 from the release `checksums.txt`, checked with `sha256sum -c` before extraction (#3085). The inventory gate has no `gh release download` pattern, so it does not see these sites and cannot catch a regression; the pin is a convention kept in the workflow |
 
 ### Pinned by lockfile or module version
