@@ -164,7 +164,7 @@ func TestComputeSelfMeasurement_ExecWatchOnlyWhenLoaded(t *testing.T) {
 		probe func() bool
 		want  int
 	}{
-		{"no watcher wired", nil, 1},
+		{"no watcher wired", nil, 1}, // the 1 digest is the netpolicy object
 		{"constructed, never started (enforcer nil)", NewExecWatcher(nil).Running, 1},
 		{"constructed but unavailable", unavailable.Running, 1},
 		{"loaded", loaded.Running, 2},
@@ -187,15 +187,47 @@ func TestComputeSelfMeasurement_ExecWatchOnlyWhenLoaded(t *testing.T) {
 	}
 }
 
-// The wiring line in NewDualServer connects the constructed watcher to the
-// measurement; deleting it must fail a test (the line lives in a function too
-// large to construct in a unit test).
-func TestDualServerWiresExecWatcherIntoMeasurement(t *testing.T) {
+func TestWireExecWatcherIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	netObj := filepath.Join(dir, "netpolicy.bpf.o")
+	for name, b := range map[string]string{netObj: "n", filepath.Join(dir, netbpf.ExecObjectName): "e"} {
+		if err := os.WriteFile(name, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(appconfig.EnvNetworkPolicyBPFObject, netObj)
+	digests := func(w *ExecWatcher) int {
+		s := &ContainerServer{}
+		wireExecWatcherIntegrity(s, w)
+		m, err := s.computeSelfMeasurement()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(m.ProgramDigests)
+	}
+	if got := digests(nil); got != 1 {
+		t.Errorf("nil watcher: %d digests, want 1 (netpolicy only)", got)
+	}
+	ok := NewExecWatcher(nil)
+	ok.setStatus(execTelemetryOK)
+	if got := digests(ok); got != 2 {
+		t.Errorf("running watcher: %d digests, want 2", got)
+	}
+	bad := NewExecWatcher(nil)
+	bad.setStatus(execTelemetryUnavailable(errors.New("no BTF")))
+	if got := digests(bad); got != 1 {
+		t.Errorf("unavailable watcher: %d digests, want 1", got)
+	}
+}
+
+// Guard that NewDualServer calls the helper (the function is too large to
+// construct in a unit test).
+func TestDualServerCallsWireExecWatcherIntegrity(t *testing.T) {
 	src, err := os.ReadFile("dual_server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "containerServer.SetIntegrityExecWatch(execWatcher.Running)") {
-		t.Fatal("NewDualServer no longer wires execWatcher.Running into the integrity self-measurement (#3120)")
+	if !strings.Contains(string(src), "wireExecWatcherIntegrity(") {
+		t.Fatal("NewDualServer no longer calls wireExecWatcherIntegrity (#3120)")
 	}
 }

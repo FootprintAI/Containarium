@@ -4134,7 +4134,9 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 
 	// The exec-watch object (#2637) is loaded from the same setting, but only
 	// when the exec watcher actually loaded it (read live each measurement); an
-	// object that never loaded is not attested (#3120).
+	// object that never loaded is not attested (#3120). Running is a snapshot:
+	// a watcher that stops right after the probe can leave one heartbeat's
+	// attestation stale.
 	if s.integrityExecWatch != nil && s.integrityExecWatch() {
 		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
 		if err != nil {
@@ -4206,6 +4208,15 @@ func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.Pro
 		return nil, nil
 	}
 	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
+}
+
+// wireExecWatcherIntegrity connects a constructed exec watcher to the
+// self-measurement; a nil watcher (sentry off) leaves it unwired.
+func wireExecWatcherIntegrity(cs *ContainerServer, w *ExecWatcher) {
+	if w == nil {
+		return
+	}
+	cs.SetIntegrityExecWatch(w.Running)
 }
 
 // SetIntegrityExecWatch wires a live probe of whether the exec watcher loaded

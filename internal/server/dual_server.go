@@ -2480,7 +2480,7 @@ skipAppHosting:
 		// The watcher loads the exec-watch object from the network-policy
 		// setting, so the self-measurement attests it too while it is loaded
 		// (#3120); Running is read live, so a failed load attests nothing.
-		containerServer.SetIntegrityExecWatch(execWatcher.Running)
+		wireExecWatcherIntegrity(containerServer, execWatcher)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)

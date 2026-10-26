@@ -1593,8 +1593,8 @@ named by that path and digests the file.
 
 When the exec watcher has actually loaded and attached its object (the
 threat-detection sentry is enabled and the exec telemetry status is `ok`), the
-daemon runs a second object from the same setting, and `programDigests` carries one more entry for it: `execwatch-embedded`
-(the bundled exec-watch object) for the same aliases, or, with a file path, an
+daemon runs a second object from the same setting, and `programDigests`
+carries one more entry for it: `execwatch-embedded` (the bundled exec-watch object) for the same aliases, or, with a file path, an
 entry named by the sibling `execwatch.bpf.o` path in the same directory. It is
 checked on every heartbeat and left out whenever the watcher is not running
 (load or attach failed, status `unavailable`, or the enforcer did not start).
