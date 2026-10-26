@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -339,4 +340,191 @@ func (s *syncBuf) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// fakeClock is a manually advanced clock for the transport-age tests.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// h2CountingServer is a TLS HTTP/2 server that counts distinct connections
+// and optionally blocks handlers on release.
+func h2CountingServer(t *testing.T, release <-chan struct{}) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	conns := new(atomic.Int32)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if release != nil {
+			<-release
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.EnableHTTP2 = true
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, conns
+}
+
+func newH2Client(t *testing.T, srv *httptest.Server, clk *fakeClock) *restActuation {
+	t.Helper()
+	r := newRESTActuation(srv.URL, "tok")
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	r.hc.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: pool}
+	r.now = clk.now
+	r.transportBorn = clk.now()
+	return r
+}
+
+func TestRESTActuation_SwapsTransportAfterMaxAge(t *testing.T) {
+	srv, conns := h2CountingServer(t, nil)
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	r := newH2Client(t, srv, clk)
+	ctx := context.Background()
+	hb := func() {
+		t.Helper()
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat: %v", err)
+		}
+	}
+	hb()
+	clk.advance(maxTransportAge - time.Second)
+	hb()
+	hb()
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections before max age = %d, want 1", got)
+	}
+	clk.advance(2 * time.Second)
+	hb()
+	if got := conns.Load(); got != 2 {
+		t.Fatalf("connections after max age = %d, want 2 (fresh transport)", got)
+	}
+	hb()
+	hb()
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections = %d, want 2: the new transport must be pooled again", got)
+	}
+}
+
+// A connection kept continuously busy is the case CloseIdleConnections cannot
+// close: the swap must not touch the in-flight request, route new requests to
+// the fresh transport, and release the old one once it drains.
+func TestRESTActuation_SwapLeavesInflightAndDrainsOld(t *testing.T) {
+	release := make(chan struct{})
+	srv, conns := h2CountingServer(t, release)
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	r := newH2Client(t, srv, clk)
+	ctx := context.Background()
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{})
+		errc <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for conns.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("first request never reached the server")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clk.advance(maxTransportAge + time.Second)
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{})
+		second <- err
+	}()
+	for conns.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("new request did not use a fresh connection; connections = %d", conns.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.mu.Lock()
+	retired := len(r.retired)
+	r.mu.Unlock()
+	if retired != 1 {
+		t.Fatalf("retired transports while old request in flight = %d, want 1", retired)
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Errorf("in-flight request across the swap failed: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Errorf("request on fresh transport failed: %v", err)
+	}
+	// Retired transports are dropped by sweeps on later requests, bounded.
+	for i := 0; ; i++ {
+		r.mu.Lock()
+		retired = len(r.retired)
+		r.mu.Unlock()
+		if retired == 0 {
+			break
+		}
+		if i > 10 {
+			t.Fatalf("retired transports not released after drain: %d", retired)
+		}
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat: %v", err)
+		}
+	}
+}
+
+func TestRESTActuation_SwapConcurrentNoLeak(t *testing.T) {
+	srv, _ := h2CountingServer(t, nil)
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	r := newH2Client(t, srv, clk)
+	before := runtime.NumGoroutine()
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				clk.advance(maxTransportAge)
+				if _, err := r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{}); err != nil {
+					t.Errorf("heartbeat: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	// Settle: sweeps need two idle passes, then close everything.
+	for i := 0; i < 3; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	r.mu.Lock()
+	retired := len(r.retired)
+	r.mu.Unlock()
+	if retired > 1 {
+		t.Errorf("retired transports left = %d, want at most 1 (the one just swapped)", retired)
+	}
+	r.hc.CloseIdleConnections()
+	srv.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > before+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines %d -> %d: leak", before, runtime.NumGoroutine())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
