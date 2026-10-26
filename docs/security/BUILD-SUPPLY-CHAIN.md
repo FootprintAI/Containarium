@@ -66,6 +66,7 @@ follow-ups.
 | --- | --- | --- |
 | `hacks/install.sh`, `hacks/install-cli.sh`, `hacks/runner/` | The operator install path: daemon and CLI binaries from a release (or the newest one by default), a package-repository signing key, the actions runner | Release tag when one is passed; no checksum; unpinned signing key |
 | `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only |
+| `terraform/modules/containarium/scripts/startup-sentinel.sh` (line 172), `terraform/gce/scripts/startup-sentinel.sh` (line 90) | curl | The same sshpiperd tarball the CI workflow now checks against its release sha256 | Version only, no checksum: a known gap, same fetch as the row above it |
 | `pkg/core/stacks/stacks.yaml`, `pkg/core/recipes/recipes.yaml` (YAML outside `.github/`) | Tenant dev-stack and recipe installs, including `@latest` Go tools and a NodeSource `curl \| bash`, run inside a tenant container at the tenant's request | Unpinned |
 | `benchmark/`, `examples/`, `experimental/` | Lab and demo scripts | Unpinned |
 
@@ -90,6 +91,7 @@ check with a checksum for each download.
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
 | `scripts/bundle/add-zabbly-repo.sh` | curl | Incus (Zabbly) apt repository signing key, so the offline-bundle builder can download incus, incus-client and incus-extra | primary-key fingerprint (`ZABBLY_KEY_FPR`) checked before the key is installed; apt then verifies the downloaded `.deb`s against it |
 | `scripts/lib/deploy-install.sh` | curl | none downloaded: a health probe the deploy runs on the target host against the daemon's own `/health` (default `http://localhost:8080/health`), and discards the body | not a fetch of third-party content; listed because the gate matches the tool name |
+| `.github/workflows/ssh-ban.yml` | gh release download | sshpiperd v1.6.1 release tarball (three jobs) | sha256 from the release `checksums.txt`, checked with `sha256sum -c` before extraction (#3085). The inventory gate has no `gh release download` pattern, so it does not see these sites and cannot catch a regression; the pin is a convention kept in the workflow |
 
 ### Pinned by lockfile or module version
 
