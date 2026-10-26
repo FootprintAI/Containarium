@@ -416,3 +416,31 @@ func TestContainsFile(t *testing.T) {
 		})
 	}
 }
+
+// TestNodeJSDetector_DefaultVersionIsPatched pins the default Node.js major to
+// a release with the CVE-2026-111497 (Brotli) fix. Node 20 has no fix.
+func TestNodeJSDetector_DefaultVersionIsPatched(t *testing.T) {
+	d := &NodeJSDetector{}
+
+	ok, version := d.Detect([]string{"package.json", "index.js"})
+	if !ok {
+		t.Fatal("Detect() did not detect a package.json project")
+	}
+	if version != "22" {
+		t.Errorf("Detect() default version = %q, want %q", version, "22")
+	}
+
+	dockerfile, err := d.GenerateDockerfile(GenerateOptions{
+		Port:  3000,
+		Files: []string{"package.json", "index.js"},
+	})
+	if err != nil {
+		t.Fatalf("GenerateDockerfile() error = %v", err)
+	}
+	if !strings.Contains(dockerfile, "FROM node:22-alpine") {
+		t.Errorf("default Dockerfile does not use node:22-alpine:\n%s", dockerfile)
+	}
+	if strings.Contains(dockerfile, "node:20") {
+		t.Errorf("default Dockerfile still references EOL node:20:\n%s", dockerfile)
+	}
+}

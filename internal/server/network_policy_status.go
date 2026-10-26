@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -121,15 +122,28 @@ func (s *NetworkPolicyServer) GetNetworkPolicyStatus(ctx context.Context, req *p
 	if s.applied != nil {
 		snap = s.applied.AppliedState(tenant)
 	}
-	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed, s.now())}, nil
+	return &pb.GetNetworkPolicyStatusResponse{Status: buildPolicyStatus(tenant, snap, s.enforceArmed, s.now(), s.hostKernelUnsupported())}, nil
 }
 
-func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time.Time) *pb.NetworkPolicyStatus {
+// hostKernelUnsupported asks the injected probe, or the host itself.
+func (s *NetworkPolicyServer) hostKernelUnsupported() bool {
+	if s.kernelUnsupported != nil {
+		return s.kernelUnsupported()
+	}
+	return hostcheck.EgressKernelUnsupported()
+}
+
+func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time.Time, kernelUnsupported bool) *pb.NetworkPolicyStatus {
 	st := &pb.NetworkPolicyStatus{
 		Tenant:           tenant,
 		EnforcementArmed: armed,
 		// The program parses IPv4 only, whatever is loaded.
 		UncoveredPaths: []pb.NetworkPolicyUncoveredPath{pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_IPV6},
+	}
+	// A kernel below 6.6 cannot attach the egress program at all, whatever the
+	// enforcer reports (#2972); said in every state, including enforcer-not-running.
+	if kernelUnsupported {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED)
 	}
 	switch {
 	case !snap.Running:
