@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -150,4 +152,97 @@ message ProofPackSeal {
 message SealedProofPack {
   ProofPack pack = 1;
   ProofPackSeal seal = 2;
+}
+
+// ProofPackService verifies a sealed Proof Pack from a client (#3064), so a
+// caller that is not on the daemon host (where `containarium proof-pack
+// verify` reads Postgres directly) can check one.
+service ProofPackService {
+  // VerifyProofPack recomputes the pack's digests, compares them with the
+  // seal row in this daemon's audit hash chain, and walks the chain from that
+  // row to the tip: the same check as `containarium proof-pack verify`, the
+  // same code. A pack that does not verify is a normal response (ok=false,
+  // with a verdict and the first differing part), not a gRPC error. A
+  // malformed or oversized pack is InvalidArgument.
+  //
+  // Trust: the answer is only as good as the daemon that gives it. A client
+  // that needs more than "this daemon says ok" compares chain_tip_id and
+  // chain_tip_hash with the external anchor, or verifies offline.
+  //
+  // Requires the admin role or an explicit audit:read scope, the same gate
+  // as GET /v1/audit/logs; a token with no scopes claim does not pass by
+  // being unrestricted. At most 4 verifications run at once; more get
+  // ResourceExhausted, retry shortly. Messages never name an audit row, id
+  // or date: the audit chain is global.
+  //
+  // Size: the request is bounded at 32 steps and 4 MiB encoded. The gRPC
+  // receive limit applies first on that transport; on REST the body is
+  // decoded by the gateway before this check, so put a body limit on the
+  // reverse proxy in front of the daemon.
+  rpc VerifyProofPack(VerifyProofPackRequest) returns (VerifyProofPackResponse) {
+    option (google.api.http) = {
+      post: "/v1/proof-packs/verify"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Verify a sealed Proof Pack";
+      description: "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the admin role or the audit:read scope.";
+      tags: "Proof Pack";
+    };
+  }
+}
+
+message VerifyProofPackRequest {
+  // The file attached to the PR, as `containarium proof-pack verify` reads
+  // it. Bounded: at most 32 steps and 4 MiB encoded.
+  SealedProofPack sealed = 1;
+}
+
+// ProofPackVerdict is the outcome of verifying a sealed pack.
+enum ProofPackVerdict {
+  PROOF_PACK_VERDICT_UNSPECIFIED = 0;
+  // Every digest matches the seal and the chain is intact from the seal row
+  // to the tip.
+  PROOF_PACK_VERDICT_OK = 1;
+  // A part of the pack does not match its seal; first_mismatch names it.
+  PROOF_PACK_VERDICT_MISMATCH = 2;
+  // Retention purged the seal's audit row, so the pack can no longer be
+  // checked against the chain. Not tampering. The daemon cannot tell an id
+  // below the chain base from a fabricated one, so a pack with an invented
+  // audit_row_id also gets this verdict.
+  PROOF_PACK_VERDICT_SEAL_PURGED = 3;
+  // The seal's audit row does not exist (and was not purged) or is not the
+  // seal of this pack.
+  PROOF_PACK_VERDICT_SEAL_NOT_FOUND = 4;
+  // The audit chain from the seal row to the tip does not verify.
+  PROOF_PACK_VERDICT_CHAIN_BROKEN = 5;
+}
+
+// ProofMismatch names the first part of a pack that differs from its seal.
+message ProofMismatch {
+  // True when the difference is in the pack's non-step fields; step_index
+  // and name are then unset.
+  bool header = 1;
+  int32 step_index = 2;
+  // The step's name as sealed.
+  string name = 3;
+  string reason = 4;
+}
+
+message VerifyProofPackResponse {
+  // True only for PROOF_PACK_VERDICT_OK.
+  bool ok = 1;
+  ProofPackVerdict verdict = 2;
+  // Set for MISMATCH.
+  ProofMismatch first_mismatch = 3;
+  // Human-readable detail for any verdict other than OK.
+  string message = 4;
+  // Set for OK: the pack digest, the seal's audit row, the steps checked,
+  // and the chain tip the walk covered. A client compares the tip's hash
+  // with the external anchor.
+  string pack_sha256 = 5;
+  int64 audit_row_id = 6;
+  int32 steps_checked = 7;
+  int64 chain_tip_id = 8;
+  string chain_tip_hash = 9;
 }
