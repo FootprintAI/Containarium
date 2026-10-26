@@ -221,6 +221,8 @@ snapshot create
 snapshot delete
 snapshot list
 snapshot rollback
+sprint board
+sprint list
 ssh list
 ssh propagate
 ssh remove

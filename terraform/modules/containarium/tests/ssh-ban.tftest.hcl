@@ -68,6 +68,14 @@ run "invalid_prefix" {
   expect_failures = [var.ssh_ban_ignore_cidrs]
 }
 
+run "ssh_authz_login_grace" {
+  command = plan
+  assert {
+    condition     = strcontains(local.sshpiper_service_unit, "--login-grace-time 90s \\\n  /usr/local/bin/containarium sentinel ssh-authz-plugin")
+    error_message = "sshpiperd's login grace must outlast the 60s device-approval cap (#2526)."
+  }
+}
+
 run "ssh_authz_audit_only_by_default" {
   command = plan
   assert {
