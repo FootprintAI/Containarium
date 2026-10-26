@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -152,14 +154,22 @@ func TestVerifyProofPack_BrokenChain(t *testing.T) {
 func TestVerifyProofPack_ScopeGate(t *testing.T) {
 	chain, sealed := sealedFixture(t)
 	s := NewProofPackServer(chain)
+	sub := func(roles, scopes []string) context.Context {
+		return auth.ContextWithTestSubjectScopes(context.Background(), "a", roles, scopes)
+	}
 	for _, tc := range []struct {
 		name string
 		ctx  context.Context
 		want codes.Code
 	}{
 		{"no subject", context.Background(), codes.Unauthenticated},
-		{"wrong scope", auth.ContextWithTestSubjectScopes(context.Background(), "a", []string{"user"}, []string{auth.ScopeAuditIngest}), codes.PermissionDenied},
-		{"empty scopes", auth.ContextWithTestSubjectScopes(context.Background(), "a", []string{"user"}, []string{}), codes.PermissionDenied},
+		{"wrong scope", sub([]string{"user"}, []string{auth.ScopeAuditIngest}), codes.PermissionDenied},
+		{"empty scopes", sub([]string{"user"}, []string{}), codes.PermissionDenied},
+		// Same gate as /v1/audit/logs: a token with no scopes claim does not
+		// pass by being unrestricted.
+		{"non-admin, no scopes claim", sub([]string{"user"}, nil), codes.PermissionDenied},
+		{"admin", sub([]string{"admin"}, nil), codes.OK},
+		{"explicit audit:read", sub([]string{"user"}, []string{auth.ScopeAuditRead}), codes.OK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := s.VerifyProofPack(tc.ctx, &pb.VerifyProofPackRequest{Sealed: sealed})
@@ -167,6 +177,148 @@ func TestVerifyProofPack_ScopeGate(t *testing.T) {
 				t.Errorf("code = %v, want %v (%v)", status.Code(err), tc.want, err)
 			}
 		})
+	}
+}
+
+// The audit chain is global: what the response says must not depend on which
+// row, base id or purge date is behind the verdict.
+func TestVerifyProofPack_MessagesAreFixedPerVerdict(t *testing.T) {
+	msg := func(mutate func(c *fakeSealChain, sealed *pb.SealedProofPack)) *pb.VerifyProofPackResponse {
+		chain, sealed := sealedFixture(t)
+		mutate(chain, sealed)
+		return verify(t, NewProofPackServer(chain), auditReadCtx(), sealed)
+	}
+	purged := func(base int64) *pb.VerifyProofPackResponse {
+		return msg(func(c *fakeSealChain, s *pb.SealedProofPack) {
+			delete(c.rows, s.Seal.AuditRowId)
+			c.purged, c.base = true, audit.ChainBase{ID: base, PurgedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)}
+		})
+	}
+	a, b := purged(1), purged(900)
+	if a.Verdict != pb.ProofPackVerdict_PROOF_PACK_VERDICT_SEAL_PURGED || a.Message != b.Message {
+		t.Errorf("purged messages differ: %q vs %q", a.Message, b.Message)
+	}
+	missing := msg(func(c *fakeSealChain, s *pb.SealedProofPack) { delete(c.rows, s.Seal.AuditRowId) })
+	notSeal := msg(func(c *fakeSealChain, s *pb.SealedProofPack) {
+		s.Seal.AuditRowId = 3 // a real row, not the seal of this pack
+	})
+	if missing.Verdict != pb.ProofPackVerdict_PROOF_PACK_VERDICT_SEAL_NOT_FOUND || missing.Message != notSeal.Message {
+		t.Errorf("not-found messages differ: %q vs %q", missing.Message, notSeal.Message)
+	}
+	for _, r := range []*pb.VerifyProofPackResponse{a, missing, notSeal} {
+		if strings.ContainsAny(r.Message, "0123456789") || strings.Contains(r.Message, "2026") {
+			t.Errorf("message %q carries an id or date", r.Message)
+		}
+	}
+}
+
+type failingChain struct{ *fakeSealChain }
+
+func (failingChain) MaxRowID(context.Context) (int64, error) {
+	return 0, errors.New(`ERROR: relation "audit_logs" does not exist (SQLSTATE 42P01): audit: begin verify snapshot`)
+}
+
+func TestVerifyProofPack_NoInternalTextInResponses(t *testing.T) {
+	inner, sealed := sealedFixture(t)
+	_, err := NewProofPackServer(failingChain{inner}).VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v, want Unavailable", status.Code(err))
+	}
+	for _, leak := range []string{"SQLSTATE", "audit_logs", "snapshot", "relation"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error %q leaks %q", err, leak)
+		}
+	}
+
+	inner, sealed = sealedFixture(t)
+	inner.bad = 3
+	resp := verify(t, NewProofPackServer(inner), auditReadCtx(), sealed)
+	if resp.Verdict != pb.ProofPackVerdict_PROOF_PACK_VERDICT_CHAIN_BROKEN || strings.ContainsAny(resp.Message, "0123456789") || strings.Contains(resp.Message, "row") {
+		t.Errorf("chain-broken message %q names a row or carries detail", resp.Message)
+	}
+
+	// A mismatch names the part but carries no digest values.
+	inner, sealed = sealedFixture(t)
+	sealed.Pack.GitCommit = "changed"
+	resp = verify(t, NewProofPackServer(inner), auditReadCtx(), sealed)
+	if strings.Contains(resp.Message+resp.FirstMismatch.GetReason(), hexOf(sealed)) {
+		t.Errorf("mismatch carries a digest: %v", resp)
+	}
+	if resp.FirstMismatch.GetReason() == "" || len(resp.FirstMismatch.GetReason()) > 80 {
+		t.Errorf("reason = %q, want a short fixed text", resp.FirstMismatch.GetReason())
+	}
+}
+
+func hexOf(sealed *pb.SealedProofPack) string { return sealed.Seal.HeaderSha256 }
+
+// A pack that does not match its seal is answered without walking the chain.
+type countingChain struct {
+	*fakeSealChain
+	walks int
+}
+
+func (c *countingChain) VerifyChainSinceID(ctx context.Context, from int64, n int) (int64, error) {
+	c.walks++
+	return c.fakeSealChain.VerifyChainSinceID(ctx, from, n)
+}
+
+func TestVerifyProofPack_MismatchSkipsTheChainWalk(t *testing.T) {
+	inner, sealed := sealedFixture(t)
+	sealed.Pack.GitCommit = "changed"
+	c := &countingChain{fakeSealChain: inner}
+	resp := verify(t, NewProofPackServer(c), auditReadCtx(), sealed)
+	if resp.Verdict != pb.ProofPackVerdict_PROOF_PACK_VERDICT_MISMATCH || c.walks != 0 {
+		t.Errorf("verdict %v after %d walks, want MISMATCH after 0", resp.Verdict, c.walks)
+	}
+	inner2, sealed2 := sealedFixture(t)
+	c2 := &countingChain{fakeSealChain: inner2}
+	verify(t, NewProofPackServer(c2), auditReadCtx(), sealed2)
+	if c2.walks == 0 {
+		t.Error("a matching pack was not walked against the chain")
+	}
+}
+
+// Chain walks are linear in the chain, so only a few run at once; the rest
+// are refused with a retry hint rather than queued.
+type blockingChain struct {
+	*fakeSealChain
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingChain) MaxRowID(ctx context.Context) (int64, error) {
+	c.entered <- struct{}{}
+	<-c.release
+	return c.fakeSealChain.MaxRowID(ctx)
+}
+
+func TestVerifyProofPack_ConcurrencyIsCapped(t *testing.T) {
+	inner, sealed := sealedFixture(t)
+	c := &blockingChain{fakeSealChain: inner, entered: make(chan struct{}, maxConcurrentVerifies+1), release: make(chan struct{})}
+	s := NewProofPackServer(c)
+	done := make(chan error, maxConcurrentVerifies)
+	for i := 0; i < maxConcurrentVerifies; i++ {
+		go func() {
+			_, err := s.VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed})
+			done <- err
+		}()
+	}
+	for i := 0; i < maxConcurrentVerifies; i++ {
+		<-c.entered
+	}
+	_, err := s.VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed})
+	if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "retry") {
+		t.Errorf("excess call: %v, want ResourceExhausted with a retry hint", err)
+	}
+	close(c.release)
+	for i := 0; i < maxConcurrentVerifies; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("in-flight verify: %v", err)
+		}
+	}
+	// Slots are returned.
+	if _, err := s.VerifyProofPack(auditReadCtx(), &pb.VerifyProofPackRequest{Sealed: sealed}); err != nil {
+		t.Errorf("after release: %v", err)
 	}
 }
 

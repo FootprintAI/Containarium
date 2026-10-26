@@ -136,8 +136,15 @@ func TestSealIntegration_Tampering(t *testing.T) {
 			sealed.Seal.Parts[1].Sha256, strings.Repeat("0", 64)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Verify(ctx, s, sealed); err == nil || !strings.Contains(err.Error(), "broken at row 6") || !errors.Is(err, ErrChainBroken) {
-			t.Fatalf("err = %v, want the chain broken at the seal row", err)
+		if _, err := Verify(ctx, s, sealed); err == nil {
+			t.Fatal("Verify passed a seal row edited in the database")
+		}
+		// The pack is compared with the (edited) seal row before the chain is
+		// walked, so this surfaces as a mismatch of the edited part; either
+		// way it fails.
+		var tp *TamperedPart
+		if !errors.Is(err, ErrChainBroken) && !errors.As(err, &tp) {
+			t.Fatalf("err = %v, want the chain broken or the edited part named", err)
 		}
 	})
 	t.Run("seal row deleted", func(t *testing.T) {

@@ -41,7 +41,16 @@ type ProofPackServiceClient interface {
 	// that needs more than "this daemon says ok" compares chain_tip_id and
 	// chain_tip_hash with the external anchor, or verifies offline.
 	//
-	// Requires the audit:read scope (or the admin role's unscoped token).
+	// Requires the admin role or an explicit audit:read scope, the same gate
+	// as GET /v1/audit/logs; a token with no scopes claim does not pass by
+	// being unrestricted. At most 4 verifications run at once; more get
+	// ResourceExhausted, retry shortly. Messages never name an audit row, id
+	// or date: the audit chain is global.
+	//
+	// Size: the request is bounded at 32 steps and 4 MiB encoded. The gRPC
+	// receive limit applies first on that transport; on REST the body is
+	// decoded by the gateway before this check, so put a body limit on the
+	// reverse proxy in front of the daemon.
 	VerifyProofPack(ctx context.Context, in *VerifyProofPackRequest, opts ...grpc.CallOption) (*VerifyProofPackResponse, error)
 }
 
@@ -82,7 +91,16 @@ type ProofPackServiceServer interface {
 	// that needs more than "this daemon says ok" compares chain_tip_id and
 	// chain_tip_hash with the external anchor, or verifies offline.
 	//
-	// Requires the audit:read scope (or the admin role's unscoped token).
+	// Requires the admin role or an explicit audit:read scope, the same gate
+	// as GET /v1/audit/logs; a token with no scopes claim does not pass by
+	// being unrestricted. At most 4 verifications run at once; more get
+	// ResourceExhausted, retry shortly. Messages never name an audit row, id
+	// or date: the audit chain is global.
+	//
+	// Size: the request is bounded at 32 steps and 4 MiB encoded. The gRPC
+	// receive limit applies first on that transport; on REST the body is
+	// decoded by the gateway before this check, so put a body limit on the
+	// reverse proxy in front of the daemon.
 	VerifyProofPack(context.Context, *VerifyProofPackRequest) (*VerifyProofPackResponse, error)
 	mustEmbedUnimplementedProofPackServiceServer()
 }

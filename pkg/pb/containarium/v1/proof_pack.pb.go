@@ -212,7 +212,9 @@ const (
 	// A part of the pack does not match its seal; first_mismatch names it.
 	ProofPackVerdict_PROOF_PACK_VERDICT_MISMATCH ProofPackVerdict = 2
 	// Retention purged the seal's audit row, so the pack can no longer be
-	// checked against the chain. Not tampering.
+	// checked against the chain. Not tampering. The daemon cannot tell an id
+	// below the chain base from a fabricated one, so a pack with an invented
+	// audit_row_id also gets this verdict.
 	ProofPackVerdict_PROOF_PACK_VERDICT_SEAL_PURGED ProofPackVerdict = 3
 	// The seal's audit row does not exist (and was not purged) or is not the
 	// seal of this pack.
@@ -1121,11 +1123,11 @@ const file_containarium_v1_proof_pack_proto_rawDesc = "" +
 	"\x1bPROOF_PACK_VERDICT_MISMATCH\x10\x02\x12\"\n" +
 	"\x1ePROOF_PACK_VERDICT_SEAL_PURGED\x10\x03\x12%\n" +
 	"!PROOF_PACK_VERDICT_SEAL_NOT_FOUND\x10\x04\x12#\n" +
-	"\x1fPROOF_PACK_VERDICT_CHAIN_BROKEN\x10\x052\xe9\x03\n" +
-	"\x10ProofPackService\x12\xd4\x03\n" +
-	"\x0fVerifyProofPack\x12'.containarium.v1.VerifyProofPackRequest\x1a(.containarium.v1.VerifyProofPackResponse\"\xed\x02\x92A\xc8\x02\n" +
+	"\x1fPROOF_PACK_VERDICT_CHAIN_BROKEN\x10\x052\xfb\x03\n" +
+	"\x10ProofPackService\x12\xe6\x03\n" +
+	"\x0fVerifyProofPack\x12'.containarium.v1.VerifyProofPackRequest\x1a(.containarium.v1.VerifyProofPackResponse\"\xff\x02\x92A\xda\x02\n" +
 	"\n" +
-	"Proof Pack\x12\x1aVerify a sealed Proof Pack\x1a\x9d\x02Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the audit:read scope.\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/v1/proof-packs/verifyBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"Proof Pack\x12\x1aVerify a sealed Proof Pack\x1a\xaf\x02Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the admin role or the audit:read scope.\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/v1/proof-packs/verifyBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_proof_pack_proto_rawDescOnce sync.Once

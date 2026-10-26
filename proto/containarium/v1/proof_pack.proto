@@ -169,7 +169,16 @@ service ProofPackService {
   // that needs more than "this daemon says ok" compares chain_tip_id and
   // chain_tip_hash with the external anchor, or verifies offline.
   //
-  // Requires the audit:read scope (or the admin role's unscoped token).
+  // Requires the admin role or an explicit audit:read scope, the same gate
+  // as GET /v1/audit/logs; a token with no scopes claim does not pass by
+  // being unrestricted. At most 4 verifications run at once; more get
+  // ResourceExhausted, retry shortly. Messages never name an audit row, id
+  // or date: the audit chain is global.
+  //
+  // Size: the request is bounded at 32 steps and 4 MiB encoded. The gRPC
+  // receive limit applies first on that transport; on REST the body is
+  // decoded by the gateway before this check, so put a body limit on the
+  // reverse proxy in front of the daemon.
   rpc VerifyProofPack(VerifyProofPackRequest) returns (VerifyProofPackResponse) {
     option (google.api.http) = {
       post: "/v1/proof-packs/verify"
@@ -177,7 +186,7 @@ service ProofPackService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Verify a sealed Proof Pack";
-      description: "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the audit:read scope.";
+      description: "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the admin role or the audit:read scope.";
       tags: "Proof Pack";
     };
   }
@@ -198,7 +207,9 @@ enum ProofPackVerdict {
   // A part of the pack does not match its seal; first_mismatch names it.
   PROOF_PACK_VERDICT_MISMATCH = 2;
   // Retention purged the seal's audit row, so the pack can no longer be
-  // checked against the chain. Not tampering.
+  // checked against the chain. Not tampering. The daemon cannot tell an id
+  // below the chain base from a fabricated one, so a pack with an invented
+  // audit_row_id also gets this verdict.
   PROOF_PACK_VERDICT_SEAL_PURGED = 3;
   // The seal's audit row does not exist (and was not purged) or is not the
   // seal of this pack.

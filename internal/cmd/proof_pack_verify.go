@@ -144,7 +144,7 @@ func verifyProofPackViaServer(ctx context.Context, cmd *cobra.Command, sealed *p
 		}
 		return fmt.Errorf("step %d (%q) does not match the seal: %s", m.GetStepIndex(), m.GetName(), m.GetReason())
 	case pb.ProofPackVerdict_PROOF_PACK_VERDICT_SEAL_PURGED:
-		return fmt.Errorf("the seal's audit row was purged by retention; the pack can no longer be checked against the chain: %s", resp.GetMessage())
+		return fmt.Errorf("the seal's audit row was purged by retention (or never issued: the daemon cannot tell the two apart); the pack can no longer be checked against the chain")
 	default:
 		return fmt.Errorf("daemon verdict %s: %s", resp.GetVerdict(), resp.GetMessage())
 	}

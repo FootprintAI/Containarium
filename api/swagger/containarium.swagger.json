@@ -6267,7 +6267,7 @@
     "/v1/proof-packs/verify": {
       "post": {
         "summary": "Verify a sealed Proof Pack",
-        "description": "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the audit:read scope.",
+        "description": "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the admin role or the audit:read scope.",
         "operationId": "ProofPackService_VerifyProofPack",
         "responses": {
           "200": {
@@ -18423,7 +18423,7 @@
         "PROOF_PACK_VERDICT_CHAIN_BROKEN"
       ],
       "default": "PROOF_PACK_VERDICT_UNSPECIFIED",
-      "description": "ProofPackVerdict is the outcome of verifying a sealed pack.\n\n - PROOF_PACK_VERDICT_OK: Every digest matches the seal and the chain is intact from the seal row\nto the tip.\n - PROOF_PACK_VERDICT_MISMATCH: A part of the pack does not match its seal; first_mismatch names it.\n - PROOF_PACK_VERDICT_SEAL_PURGED: Retention purged the seal's audit row, so the pack can no longer be\nchecked against the chain. Not tampering.\n - PROOF_PACK_VERDICT_SEAL_NOT_FOUND: The seal's audit row does not exist (and was not purged) or is not the\nseal of this pack.\n - PROOF_PACK_VERDICT_CHAIN_BROKEN: The audit chain from the seal row to the tip does not verify."
+      "description": "ProofPackVerdict is the outcome of verifying a sealed pack.\n\n - PROOF_PACK_VERDICT_OK: Every digest matches the seal and the chain is intact from the seal row\nto the tip.\n - PROOF_PACK_VERDICT_MISMATCH: A part of the pack does not match its seal; first_mismatch names it.\n - PROOF_PACK_VERDICT_SEAL_PURGED: Retention purged the seal's audit row, so the pack can no longer be\nchecked against the chain. Not tampering. The daemon cannot tell an id\nbelow the chain base from a fabricated one, so a pack with an invented\naudit_row_id also gets this verdict.\n - PROOF_PACK_VERDICT_SEAL_NOT_FOUND: The seal's audit row does not exist (and was not purged) or is not the\nseal of this pack.\n - PROOF_PACK_VERDICT_CHAIN_BROKEN: The audit chain from the seal row to the tip does not verify."
     },
     "ProofPartDigest": {
       "type": "object",

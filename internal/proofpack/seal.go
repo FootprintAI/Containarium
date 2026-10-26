@@ -54,6 +54,9 @@ type TamperedPart struct {
 	// seal does not have); empty for the header.
 	Name   string
 	Reason string
+	// Public is Reason without any digest value, safe to return to an API
+	// caller (#3064); Reason is for the operator's own terminal and logs.
+	Public string
 }
 
 func (e *TamperedPart) Error() string {
@@ -139,7 +142,7 @@ type VerifyResult struct {
 	// ChainCheckedThrough is the highest row id the chain walk covered.
 	ChainCheckedThrough int64
 	// ChainTipHash is the row_hash of that row, for comparison with the
-	// external anchor; empty when the tip row could not be read back.
+	// external anchor; empty only when the tip row was purged meanwhile.
 	ChainTipHash string
 }
 
@@ -179,6 +182,16 @@ func Verify(ctx context.Context, chain SealChain, sealed *pb.SealedProofPack) (V
 		return VerifyResult{}, fmt.Errorf("%w: audit row %d is not the seal of pack %s", ErrSealNotFound, id, fileSeal.GetPackSha256())
 	}
 
+	var recorded pb.ProofPackSeal
+	if err := protojson.Unmarshal([]byte(row.Detail), &recorded); err != nil {
+		return VerifyResult{}, fmt.Errorf("%w: seal audit row %d detail: %v", ErrChainBroken, id, err)
+	}
+	if err := compareSeal(pack, &recorded); err != nil {
+		return VerifyResult{}, err
+	}
+	// The comparison is cheap and the walk is linear in the chain: a pack that
+	// does not match its seal row is reported without walking. A pack that
+	// does match is then still checked against an intact chain below.
 	maxID, err := chain.MaxRowID(ctx)
 	if err != nil {
 		return VerifyResult{}, err
@@ -194,15 +207,12 @@ func Verify(ctx context.Context, chain SealChain, sealed *pb.SealedProofPack) (V
 		}
 	}
 
-	var recorded pb.ProofPackSeal
-	if err := protojson.Unmarshal([]byte(row.Detail), &recorded); err != nil {
-		return VerifyResult{}, fmt.Errorf("proofpack: seal audit row %d detail: %w", id, err)
-	}
-	if err := compareSeal(pack, &recorded); err != nil {
-		return VerifyResult{}, err
-	}
 	res := VerifyResult{PackSHA256: recorded.GetPackSha256(), AuditRowID: id, Steps: len(pack.GetSteps()), ChainCheckedThrough: maxID}
-	if tip, ok, err := chain.ChainEntryAt(ctx, maxID); err == nil && ok {
+	tip, ok, err := chain.ChainEntryAt(ctx, maxID)
+	if err != nil {
+		return VerifyResult{}, fmt.Errorf("proofpack: read chain tip row %d: %w", maxID, err)
+	}
+	if ok {
 		res.ChainTipHash = tip.RowHash
 	}
 	return res, nil
@@ -219,20 +229,24 @@ func compareSeal(pack *pb.ProofPack, recorded *pb.ProofPackSeal) error {
 	for i := 0; i < len(want) || i < len(got.Parts); i++ {
 		switch {
 		case i >= len(got.Parts):
-			return &TamperedPart{Step: i, Name: want[i].GetName(), Reason: "sealed step is missing from the pack"}
+			return &TamperedPart{Step: i, Name: want[i].GetName(), Reason: "sealed step is missing from the pack", Public: "sealed step is missing from the pack"}
 		case i >= len(want):
-			return &TamperedPart{Step: i, Name: got.Parts[i].GetName(), Reason: "step is not in the seal"}
+			return &TamperedPart{Step: i, Name: got.Parts[i].GetName(), Reason: "step is not in the seal", Public: "step is not in the seal"}
 		case got.Parts[i].GetSha256() != want[i].GetSha256():
 			return &TamperedPart{Step: i, Name: want[i].GetName(),
-				Reason: fmt.Sprintf("digest %s does not match sealed %s", got.Parts[i].GetSha256(), want[i].GetSha256())}
+				Reason: fmt.Sprintf("digest %s does not match sealed %s", got.Parts[i].GetSha256(), want[i].GetSha256()),
+				Public: "digest does not match the seal"}
 		}
 	}
 	if got.GetHeaderSha256() != recorded.GetHeaderSha256() {
 		return &TamperedPart{Step: HeaderPart,
-			Reason: fmt.Sprintf("digest %s does not match sealed %s", got.GetHeaderSha256(), recorded.GetHeaderSha256())}
+			Reason: fmt.Sprintf("digest %s does not match sealed %s", got.GetHeaderSha256(), recorded.GetHeaderSha256()),
+			Public: "digest does not match the seal"}
 	}
 	if got.GetPackSha256() != recorded.GetPackSha256() {
-		return fmt.Errorf("proofpack: pack digest %s does not match sealed %s", got.GetPackSha256(), recorded.GetPackSha256())
+		return &TamperedPart{Step: HeaderPart,
+			Reason: fmt.Sprintf("pack digest %s does not match sealed %s", got.GetPackSha256(), recorded.GetPackSha256()),
+			Public: "digest does not match the seal"}
 	}
 	return nil
 }
