@@ -2,6 +2,7 @@ package sshauthz
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func TestCheckParentLoginGrace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var warns []string
 			CheckParentLoginGrace(func() ([]byte, error) { return tc.cmdline, tc.err }, func(f string, a ...any) {
-				warns = append(warns, strings.TrimSpace(fmtSprintf(f, a...)))
+				warns = append(warns, strings.TrimSpace(fmt.Sprintf(f, a...)))
 			})
 			var got []string
 			for _, w := range warns {

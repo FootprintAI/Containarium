@@ -16,8 +16,6 @@ const LoginGraceMargin = 10 * time.Second
 // MinLoginGrace is the smallest --login-grace-time the check accepts.
 const MinLoginGrace = MaxApprovalWait + LoginGraceMargin
 
-var fmtSprintf = fmt.Sprintf
-
 // ParentCmdline returns the NUL-separated command line of this process's
 // parent (sshpiperd when run as its plugin). It is Linux only; elsewhere or
 // when /proc is unreadable it returns an error.
@@ -31,6 +29,11 @@ func ParentCmdline() ([]byte, error) {
 // binary-only rollout leaves an old unit in place, so this is the runtime
 // sign that the unit needs re-rendering (#3125). It never fails: an
 // unreadable command line is only noted as a debug line, no alarm.
+//
+// A value of 0 or below is reported too: it is not a duration of at least
+// MinLoginGrace (whether sshpiperd treats 0 as unlimited was not verified).
+// The scan covers the whole parent command line, so a plugin argument
+// literally named --login-grace-time would be misread (theoretical).
 func CheckParentLoginGrace(read func() ([]byte, error), logf func(string, ...any)) {
 	raw, err := read()
 	if err != nil || len(raw) == 0 {

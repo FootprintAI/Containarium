@@ -112,6 +112,15 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 
 ## After the upgrade: check
 
+- [ ] `containarium backends versions --server http://<host>:8080` shows the target version on every backend.
+- [ ] `containarium service status` on each host shows the unit active.
+- [ ] `sudo containarium doctor` passes on each host.
+- [ ] `containarium list --server <host>` shows the containers in the state they were in before.
+- [ ] `containarium debug <username>` is clean for a sample tenant.
+- [ ] On a BYOC backend, run the checks in [BYOC-BACKEND-BRINGUP.md](BYOC-BACKEND-BRINGUP.md#verify).
+
+### Sentinel sshpiperd unit
+
 Sentinel units are not part of the binary. The sshpiperd unit comes from
 `sshpiper.service.tmpl` or the sentinel startup script, so a binary-only
 rollout (`containarium backends upgrade`, `deploy-binary.sh`) does not change
@@ -130,13 +139,6 @@ The line must contain `--login-grace-time 90s`. When `--ssh-authz-enforce` is
 on, the plugin also logs a `WARN ssh-authz: parent sshpiperd ...` line at
 startup if the flag is missing or shorter than 70 s (the 60 s cap plus a 10 s
 margin). Re-rendering the unit on self-update is not done (#3125).
-
-- [ ] `containarium backends versions --server http://<host>:8080` shows the target version on every backend.
-- [ ] `containarium service status` on each host shows the unit active.
-- [ ] `sudo containarium doctor` passes on each host.
-- [ ] `containarium list --server <host>` shows the containers in the state they were in before.
-- [ ] `containarium debug <username>` is clean for a sample tenant.
-- [ ] On a BYOC backend, run the checks in [BYOC-BACKEND-BRINGUP.md](BYOC-BACKEND-BRINGUP.md#verify).
 
 ## Rollback
 
