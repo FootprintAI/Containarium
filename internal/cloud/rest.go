@@ -89,7 +89,8 @@ type retiredClient struct {
 // connection could stay pinned to a moved origin. After this age the next
 // request goes to a fresh transport (a new dial); the old one finishes its
 // in-flight requests undisturbed and is then closed. A connection therefore
-// lives at most maxTransportAge plus the duration of its longest request.
+// lives at most maxTransportAge plus the duration of its longest request;
+// the client's 30s Timeout bounds that, so the real worst case is ~15m30s.
 // Swapping, rather than closing the connection from a dialer wrapper, never
 // aborts an in-flight request.
 const maxTransportAge = 15 * time.Minute
@@ -162,6 +163,8 @@ func (r *restActuation) acquire() (*http.Client, func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
+	// A transport that is not an *http.Transport cannot be cloned, so the swap
+	// is skipped for it; newRESTActuation always installs an *http.Transport.
 	if tr, ok := r.hc.Transport.(*http.Transport); ok && now.Sub(r.transportBorn) >= maxTransportAge {
 		r.retired = append(r.retired, &retiredClient{hc: r.hc})
 		r.hc = &http.Client{Timeout: r.hc.Timeout, Transport: tr.Clone()}

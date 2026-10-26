@@ -362,11 +362,17 @@ func (c *fakeClock) advance(d time.Duration) {
 
 // h2CountingServer is a TLS HTTP/2 server that counts distinct connections
 // and optionally blocks handlers on release.
-func h2CountingServer(t *testing.T, release <-chan struct{}) (*httptest.Server, *atomic.Int32) {
+func h2CountingServer(t *testing.T, release <-chan struct{}) (*httptest.Server, *atomic.Int32, *atomic.Bool) {
 	t.Helper()
 	conns := new(atomic.Int32)
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if release != nil {
+	var nonH2 atomic.Bool
+	served := new(atomic.Bool)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.ProtoMajor != 2 || req.TLS == nil || req.TLS.NegotiatedProtocol != "h2" {
+			nonH2.Store(true)
+		}
+		// Only the first request blocks; later ones answer immediately.
+		if release != nil && !served.Swap(true) {
 			<-release
 		}
 		_, _ = w.Write([]byte("{}"))
@@ -378,8 +384,15 @@ func h2CountingServer(t *testing.T, release <-chan struct{}) (*httptest.Server, 
 		}
 	}
 	srv.StartTLS()
+	// Registered before srv.Close so it runs after it (LIFO): no handler is
+	// still running when the flag is read.
+	t.Cleanup(func() {
+		if nonH2.Load() {
+			t.Error("a request was not HTTP/2 (ALPN fell back); the test no longer pins the h2 path")
+		}
+	})
 	t.Cleanup(srv.Close)
-	return srv, conns
+	return srv, conns, served
 }
 
 func newH2Client(t *testing.T, srv *httptest.Server, clk *fakeClock) *restActuation {
@@ -394,7 +407,7 @@ func newH2Client(t *testing.T, srv *httptest.Server, clk *fakeClock) *restActuat
 }
 
 func TestRESTActuation_SwapsTransportAfterMaxAge(t *testing.T) {
-	srv, conns := h2CountingServer(t, nil)
+	srv, conns, _ := h2CountingServer(t, nil)
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	r := newH2Client(t, srv, clk)
 	ctx := context.Background()
@@ -428,7 +441,7 @@ func TestRESTActuation_SwapsTransportAfterMaxAge(t *testing.T) {
 // the fresh transport, and release the old one once it drains.
 func TestRESTActuation_SwapLeavesInflightAndDrainsOld(t *testing.T) {
 	release := make(chan struct{})
-	srv, conns := h2CountingServer(t, release)
+	srv, conns, served := h2CountingServer(t, release)
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	r := newH2Client(t, srv, clk)
 	ctx := context.Background()
@@ -439,9 +452,9 @@ func TestRESTActuation_SwapLeavesInflightAndDrainsOld(t *testing.T) {
 		errc <- err
 	}()
 	deadline := time.Now().Add(2 * time.Second)
-	for conns.Load() < 1 {
+	for !served.Load() {
 		if time.Now().After(deadline) {
-			t.Fatal("first request never reached the server")
+			t.Fatal("first request never reached the server handler")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -463,6 +476,19 @@ func TestRESTActuation_SwapLeavesInflightAndDrainsOld(t *testing.T) {
 	r.mu.Unlock()
 	if retired != 1 {
 		t.Fatalf("retired transports while old request in flight = %d, want 1", retired)
+	}
+	// The retiree still has a request in flight: any number of sweeps (one
+	// per extra request) must keep it, not drop it.
+	for i := 0; i < 4; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("extra heartbeat %d: %v", i, err)
+		}
+		r.mu.Lock()
+		retired = len(r.retired)
+		r.mu.Unlock()
+		if retired != 1 {
+			t.Fatalf("after extra heartbeat %d retired = %d, want 1: a client with an in-flight request must not be dropped", i, retired)
+		}
 	}
 	close(release)
 	if err := <-errc; err != nil {
@@ -489,7 +515,7 @@ func TestRESTActuation_SwapLeavesInflightAndDrainsOld(t *testing.T) {
 }
 
 func TestRESTActuation_SwapConcurrentNoLeak(t *testing.T) {
-	srv, _ := h2CountingServer(t, nil)
+	srv, _, _ := h2CountingServer(t, nil)
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	r := newH2Client(t, srv, clk)
 	before := runtime.NumGoroutine()
