@@ -2360,9 +2360,15 @@ type TriggerUpgradeRequest struct {
 	// straight to a tag without upgrading the sentinel first. Not for
 	// air-gapped hosts, which have no GitHub egress and must keep the
 	// sentinel path regardless — this field existing changes nothing for them.
-	GithubTag     string `protobuf:"bytes,3,opt,name=github_tag,json=githubTag,proto3" json:"github_tag,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	GithubTag string `protobuf:"bytes,3,opt,name=github_tag,json=githubTag,proto3" json:"github_tag,omitempty"`
+	// Permit github_tag to name a release older than the running daemon
+	// version (a deliberate rollback). Default false: such a tag is refused
+	// with FAILED_PRECONDITION. Only both-parse-as-semver comparisons can
+	// refuse; "latest", dev builds and unparseable versions are not blocked.
+	// Has no effect on the sentinel-served path.
+	AllowDowngrade bool `protobuf:"varint,4,opt,name=allow_downgrade,json=allowDowngrade,proto3" json:"allow_downgrade,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TriggerUpgradeRequest) Reset() {
@@ -2414,6 +2420,13 @@ func (x *TriggerUpgradeRequest) GetGithubTag() string {
 		return x.GithubTag
 	}
 	return ""
+}
+
+func (x *TriggerUpgradeRequest) GetAllowDowngrade() bool {
+	if x != nil {
+		return x.AllowDowngrade
+	}
+	return false
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
@@ -5751,13 +5764,14 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16GPU_STATUS_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rGPU_STATUS_OK\x10\x01\x12\x1a\n" +
 	"\x16GPU_STATUS_UNAVAILABLE\x10\x02\x12\x17\n" +
-	"\x13GPU_STATUS_DEGRADED\x10\x03\"k\n" +
+	"\x13GPU_STATUS_DEGRADED\x10\x03\"\x94\x01\n" +
 	"\x15TriggerUpgradeRequest\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12\x1d\n" +
 	"\n" +
-	"github_tag\x18\x03 \x01(\tR\tgithubTag\"\xd8\x01\n" +
+	"github_tag\x18\x03 \x01(\tR\tgithubTag\x12'\n" +
+	"\x0fallow_downgrade\x18\x04 \x01(\bR\x0eallowDowngrade\"\xd8\x01\n" +
 	"\x16TriggerUpgradeResponse\x12\x1d\n" +
 	"\n" +
 	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\x12\x16\n" +
