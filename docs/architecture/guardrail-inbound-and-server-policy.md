@@ -220,7 +220,7 @@ Fail-closed scope, stated precisely:
 | Policy store reports **not configured** (the explicit, stored "no policy" state), or has no inbound BLOCK rule | Passes through, unchanged |
 | Policy store **cannot be read** (database error, timeout) | Treated as an error, **not** as "no policy": blocked for a tenant that last had an active inbound rule (the gateway keeps the last known policy revision for this decision), and logged and counted. A transient outage never turns an active policy off |
 | **Cold start**: a policy provider is wired but the **first read has not succeeded** (no cached revision, so the gateway cannot know whether any tenant has an active rule) | The gateway does not guess in either direction. It is **not ready** (its health check fails) and answers model calls with a typed `PolicyUnavailable` 503 until the first read returns a policy or `ErrNotConfigured`. This applies only when a provider is wired; the no-provider case is the standalone row below. The wait is bounded by the daemon's own startup, not by a timeout that falls back to passing traffic |
-| Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so at startup; runs report `UNSCANNED_NO_POLICY`. This is a visible state, not a silent one |
+| Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so in its startup log. `code run` asks the daemon, not this binary, so it cannot see this state; the startup log is the signal. This is a visible state, not a silent one |
 | Finding of a BLOCK kind | Blocked |
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
@@ -279,7 +279,7 @@ Because a wired gateway refuses model calls until its first policy read
 succeeds, a daemon whose configured policy store is unreachable at start
 refuses model calls until it recovers; a daemon with no database uses the
 in-memory store and starts ready. The standalone `model-gateway` binary has no
-policy source and stays unscanned, as `UNSCANNED_NO_POLICY` says.
+policy source and stays unscanned. `code run` asks the daemon, which reports `BASELINE` when no policy is stored, and `UNSCANNED_NO_POLICY` now means a policy is configured with no inbound BLOCK rule; for the standalone binary the startup log is the signal (see the caveat under `guardrail status`).
 
 ### Audit entry
 
@@ -733,11 +733,11 @@ fake engine
   and after it returns a policy it enforces. No timeout path passes traffic.
 - Policy-read rows: `ErrNotConfigured` passes through; a store error blocks
   for a tenant with an active rule and does not turn the policy off; a
-  standalone gateway with no provider reports `UNSCANNED_NO_POLICY` and logs
-  that at startup.
+  standalone gateway with no provider logs that it is unscanned at startup
+  (`code run` cannot see that binary).
 - Audit assertion: the recorded `InboundBlock` has kinds and counts and the
   fixture's flagged string appears nowhere in it or in logs.
-- `code run` scan-status: three rows, one per enum value.
+- `code run` scan-status: four states (`SCANNED`, `BASELINE`, `UNSCANNED_NO_POLICY`, `UNSCANNED_TENANT_KEY`) plus unknown (`UNSPECIFIED`), each pinned by a row; a failed dial or read reports unknown and never blocks the run.
 
 **Gate (PR C)**
 - `TestDeployGate`: async refused; no server policy refused; no signer

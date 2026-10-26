@@ -105,8 +105,8 @@ const (
 	// The tenant's own key: traffic does not cross the gateway.
 	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY CodeModelTrafficScanning = 3
 	// Gateway credential and no admin policy was ever set: responses get the
-	// built-in baseline scan (#2736), log-only unless the baseline mode says
-	// otherwise (#2738).
+	// built-in baseline scan (#2736). Whether it only logs or also blocks is
+	// set by the baseline mode (#2738; see `guardrail status`).
 	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_BASELINE CodeModelTrafficScanning = 4
 )
 

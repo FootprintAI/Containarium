@@ -97,4 +97,14 @@ func TestReportModelTrafficScanning(t *testing.T) {
 			t.Errorf("got %q", out.String())
 		}
 	})
+	t.Run("gateway, status API cannot be dialed is unknown and not fatal", func(t *testing.T) {
+		prev := newGuardrailStatusAPI
+		newGuardrailStatusAPI = func() (guardrailStatusAPI, func(), error) { return nil, func() {}, errors.New("dial failed") }
+		t.Cleanup(func() { newGuardrailStatusAPI = prev })
+		var out bytes.Buffer
+		reportModelTrafficScanning(scanningEngine(t, gw), &out)
+		if !strings.Contains(out.String(), "status unknown") {
+			t.Errorf("got %q", out.String())
+		}
+	})
 }
