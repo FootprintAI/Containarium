@@ -85,10 +85,15 @@ done
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
 SSHPIPER_VERSION="v1.6.1"
+# sha256 from the v1.6.1 release checksums.txt; keep in step with
+# .github/workflows/ssh-ban.yml (scripts/ci/check-sentinel-sshpiper-checksum.sh).
+SSHPIPER_SHA256="95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
       -o sshpiper.tar.gz
+    # A mismatch fails the boot step (set -e) before anything is extracted.
+    echo "$${SSHPIPER_SHA256}  sshpiper.tar.gz" | sha256sum -c -
     tar xzf sshpiper.tar.gz
     mv sshpiperd /usr/local/bin/sshpiperd
     chmod +x /usr/local/bin/sshpiperd
