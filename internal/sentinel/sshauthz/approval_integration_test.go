@@ -15,6 +15,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -100,5 +101,69 @@ func TestIntegrationEnforceDeviceApproval(t *testing.T) {
 		if _, ok := c.tryPhase(sshsession.SessionPhaseOpen, 1); ok {
 			t.Fatal("batch client opened a session")
 		}
+		// The key signed and the prompt was never attempted (#3084): sshpiperd's
+		// connection-end notice turns the stored approval into a denied record.
+		rec := c.phase(t, sshsession.SessionPhaseDenied, 0)
+		if rec.DenyReason != pb.SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING || !rec.Enforced || rec.Login != "alice" || rec.KeyFingerprint != ssh.FingerprintSHA256(c.denyKey.PublicKey()) || rec.ClientIP == "" {
+			t.Fatalf("denied record for the unanswered prompt: %+v", rec)
+		}
 	})
+}
+
+// A client that drops while the plugin polls (#3084): the stub daemon answers
+// PENDING for ever with a 250 ms poll. Once polling is under way the OpenSSH
+// process is killed. The zero-prompt liveness request the plugin sends before
+// each re-poll fails in sshpiperd, whose connection-end notice stops the poll:
+// a few more polls at most, not the 30 seconds to expires_at (about 120 polls).
+func TestIntegrationEnforceDeviceApprovalClientDropStopsPolling(t *testing.T) {
+	c := startIntegrationChain(t, "--ssh-authz-enforce")
+	var polls atomic.Int32
+	respond := func(req *pb.AuthorizeSSHRequest) *pb.AuthorizeSSHResponse {
+		if req.GetApprovalId() == "" {
+			return approvalPending("appr-drop", 250*time.Millisecond, time.Now().Add(30*time.Second))
+		}
+		polls.Add(1)
+		return &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY, DenyReason: pb.SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING}
+	}
+	c.respond.Store(&respond)
+	a := &approvalClient{c: c}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd, _, errOut := a.command(ctx, t)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	deadline := time.Now().Add(10 * time.Second)
+	for polls.Load() < 3 {
+		select {
+		case err := <-done:
+			t.Fatalf("client exited before polling: %v\n%s", err, errOut)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("polling never started: %s", errOut)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel() // the client drops mid-poll
+	<-done
+	atDrop := polls.Load()
+	time.Sleep(2 * time.Second)
+	after := polls.Load()
+	time.Sleep(2 * time.Second)
+	if later := polls.Load(); later != after {
+		t.Fatalf("polls still running after the drop: %d at drop, %d after 2s, %d after 4s", atDrop, after, later)
+	}
+	// One poll may be in flight when the probe fails, plus the one issued
+	// right after the probe before the notice lands.
+	if after-atDrop > 3 {
+		t.Fatalf("%d polls after the drop, want at most 3", after-atDrop)
+	}
+	rec := c.phase(t, sshsession.SessionPhaseDenied, 0)
+	if rec.DenyReason != pb.SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING || !rec.Enforced || rec.KeyFingerprint != ssh.FingerprintSHA256(c.denyKey.PublicKey()) {
+		t.Fatalf("denied record: %+v", rec)
+	}
+	assertNoSession(t, c)
 }

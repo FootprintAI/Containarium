@@ -199,7 +199,46 @@ Fail closed:
   key are not asked again. The client address is sent for audit only.
 - Certificates never enter this path, and neither does audit-only mode: it
   logs `reason=APPROVAL_PENDING` and defers like any other decision.
-- Neither the approval id nor the code is logged.
+- Neither the approval id nor the code is logged. The approval URL's host
+  is logged with the pending decision (`approval_host=`); the path is not.
+  There is no allow-list for the host: the daemon's answer decides where
+  the user is sent.
+
+Bounds on the approval stage (#3084):
+
+- A key that signed holds at most 3 connections in the approval stage per
+  login and 10 per source IP at once. Past a cap the login is refused at
+  once as `APPROVAL_PENDING` with a `denied` record, and the log names the
+  cap (`3 device approvals already in progress for this login (cap 3)`).
+  Nothing waits for a slot. A slot is held from the prompt until the stage
+  ends, so an unanswered prompt counts.
+- sshpiperd neither reads nor writes the client connection while a plugin
+  callback runs, so a client that drops during the poll is invisible until
+  the connection is used. Before each re-poll the plugin therefore sends a
+  keyboard-interactive request with no prompts, which the client answers
+  with no responses (RFC 4256); OpenSSH shows nothing for an empty name and
+  instruction, and the user still sees one prompt. A dropped client makes
+  that request fail in sshpiperd, which reports the connection's end to the
+  plugin, and the poll for that client address stops: at most one more
+  `Authorize` call after the drop, not the rest of the 60 seconds. The wait
+  for Enter itself is bounded by sshpiperd's login grace (below).
+- A connection that offered the pending key and ended without answering the
+  prompt (a `BatchMode=yes` client, which cannot do keyboard-interactive,
+  or a user who walked away) gets a `denied` record with `APPROVAL_PENDING`
+  when sshpiperd reports the connection's end, or when the stored approval
+  expires unanswered, whichever comes first. The record carries the login,
+  client address and key fingerprint.
+- The `open` record of an approved session reports `auth_method=publickey`:
+  the key is the credential that was checked, and keyboard-interactive only
+  carried the approval prompt. The record's `authz_decision=ALLOW` and
+  `user_id` show the daemon approved it.
+- A client that offers the key again after a refused approval gets a new
+  approval and a fresh 60-second window, counted from that offer's
+  `PENDING`. sshpiperd sets no `MaxAuthTries` of its own, so crypto/ssh's
+  default of 6 authentication attempts per connection bounds the re-offers,
+  and the caps above and the login grace bound what one client can hold.
+- The daemon and the cloud keep their own bounds on pending approvals; this
+  plugin bounds only what the sentinel does.
 
 sshpiperd closes any connection whose pipe is not established within
 `--login-grace-time`, by default 30 seconds, shorter than the cap. The
@@ -281,9 +320,16 @@ pinned on the same chain: `TestIntegrationEnforceDeviceApprovalDenied`
 ends in a `denied` record) and `...FakeAgentCannotBorrow` (an agent that lists
 a victim's key but refuses to sign gets no prompt once another key is
 denied). The unit tests add the full approval store, `userinfo` in the
-approval URL and the cache write on a polled `ALLOW`.
+approval URL and the cache write on a polled `ALLOW`. The bounds (#3084)
+are covered by `TestDeviceApprovalPollStopsWhenClientDrops`,
+`TestDeviceApprovalProbesClientEachPoll`, `TestDeviceApprovalConcurrencyCaps`
+(one more connection than each cap), `TestDeviceApprovalUnansweredPromptIsRecorded`
+and `TestDeviceApprovalLogsApprovalHost`; on the real chain,
+`TestIntegrationEnforceDeviceApprovalClientDropStopsPolling` kills OpenSSH
+mid-poll and checks that polling stops within a few polls, and the
+`BatchMode=yes` case checks the `denied` record of the prompt never attempted.
 `TestIntegrationEnforceAllowThenDeny`, `TestIntegrationEnforcePasswordFirst`,
-`TestIntegrationEnforceDeviceApproval` and the four `TestIntegrationEnforceDeviceApproval*`
+`TestIntegrationEnforceDeviceApproval` and the five `TestIntegrationEnforceDeviceApproval*`
 tests above drive the stock OpenSSH client and skip without it (the CI lane fails on a skip):
 
 ```sh

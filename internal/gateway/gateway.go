@@ -557,6 +557,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register audit service gateway: %w", err)
 	}
 
+	// ProofPackService (#3064): verify a sealed Proof Pack.
+	if err := pb.RegisterProofPackServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register proof pack service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)

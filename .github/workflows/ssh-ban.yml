@@ -224,7 +224,8 @@ jobs:
           for t in TestIntegrationAuditOnlyChain TestIntegrationEnforceChain TestIntegrationEnforceMultiOfferGap \
             TestIntegrationEnforceAllowThenDeny TestIntegrationEnforcePasswordFirst TestIntegrationEnforceSessionRecords \
             TestIntegrationEnforceDeviceApproval TestIntegrationEnforceDeviceApprovalDenied TestIntegrationEnforceDeviceApprovalExpires \
-            TestIntegrationEnforceDeviceApprovalSignedNeverAnswered TestIntegrationEnforceDeviceApprovalFakeAgentCannotBorrow; do
+            TestIntegrationEnforceDeviceApprovalSignedNeverAnswered TestIntegrationEnforceDeviceApprovalFakeAgentCannotBorrow \
+            TestIntegrationEnforceDeviceApprovalClientDropStopsPolling; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
               || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
           done

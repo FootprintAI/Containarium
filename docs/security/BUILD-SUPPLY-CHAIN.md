@@ -65,8 +65,8 @@ follow-ups.
 | Tree | What it fetches | Pinned how |
 | --- | --- | --- |
 | `hacks/install.sh`, `hacks/install-cli.sh`, `hacks/runner/` | The operator install path: daemon and CLI binaries from a release (or the newest one by default), a package-repository signing key, the actions runner | Release tag when one is passed; no checksum; unpinned signing key |
-| `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only |
-| `terraform/modules/containarium/scripts/startup-sentinel.sh` (line 172), `terraform/gce/scripts/startup-sentinel.sh` (line 90) | curl | The same sshpiperd tarball the CI workflow now checks against its release sha256 | Version only, no checksum: a known gap, same fetch as the row above it |
+| `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only, except the sshpiperd tarball (row below) |
+| `terraform/modules/containarium/scripts/startup-sentinel.sh`, `terraform/gce/scripts/startup-sentinel.sh` | curl | The sshpiperd v1.6.1 release tarball | sha256 (the value `ssh-ban.yml` pins), checked with `sha256sum -c` before extraction under `set -e`, so a mismatch fails the boot step (#3103). `scripts/ci/check-sentinel-sshpiper-checksum.sh`, run in the `workflow-lint` lane, fails if either script loses the check or the three values differ. Not a real boot test |
 | `pkg/core/stacks/stacks.yaml`, `pkg/core/recipes/recipes.yaml` (YAML outside `.github/`) | Tenant dev-stack and recipe installs, including `@latest` Go tools and a NodeSource `curl \| bash`, run inside a tenant container at the tenant's request | Unpinned |
 | `benchmark/`, `examples/`, `experimental/` | Lab and demo scripts | Unpinned |
 
