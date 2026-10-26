@@ -453,6 +453,9 @@ type ContainerServer struct {
 	// storagePools returns the pool capacity monitor's last snapshot (#2823).
 	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
 	storagePools func() poolcapacity.Snapshot
+	// headroom refuses creates and snapshots on a pool past its floor
+	// (#3128). Nil admits everything.
+	headroom *poolcapacity.Guard
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -859,6 +862,16 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// the Box-CR/sync paths (the top-level defer), inside the goroutine for
 	// async, matching exactly how asyncHandledInline already splits
 	// platformStats reporting between those two completion shapes.
+	// Pool headroom floor (#3128): refuse before anything is allocated on a
+	// pool past its floor. encPool is the tenant's pool for an encrypted
+	// create and "" (the daemon's default pool) otherwise. An encrypted dry
+	// run has not resolved its tenant pool, so there is no pool to check.
+	if !req.GetEncrypted() || encPool != "" {
+		if err := s.admitPoolHeadroom(encPool, poolcapacity.OperationCreate); err != nil {
+			return nil, err
+		}
+	}
+
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr

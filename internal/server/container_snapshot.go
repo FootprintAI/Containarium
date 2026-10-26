@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/pkg/core/zfscrypt"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -120,6 +121,16 @@ func (s *ContainerServer) SetSnapshotStorage(zfs *zfscrypt.Manager, datasetFor f
 // datasetOf resolves the dataset backing a container, honouring the pool it
 // was placed on.
 func (o *snapshotOps) datasetOf(containerName string) (string, error) {
+	pool, err := o.poolOf(containerName)
+	if err != nil {
+		return "", err
+	}
+	return o.datasetFor(containerName, pool)
+}
+
+// poolOf reports the storage pool a container was placed on; "" means the
+// daemon's default pool.
+func (o *snapshotOps) poolOf(containerName string) (string, error) {
 	pool := ""
 	if o.poolFor != nil {
 		var err error
@@ -133,7 +144,7 @@ func (o *snapshotOps) datasetOf(containerName string) (string, error) {
 					"safely: %w", containerName, err)
 		}
 	}
-	return o.datasetFor(containerName, pool)
+	return pool, nil
 }
 
 // snapshotDatasetFor is the shared preamble: authorize the caller for this
@@ -179,6 +190,18 @@ func (s *ContainerServer) CreateContainerSnapshot(ctx context.Context, req *pb.C
 		return nil, status.Errorf(codes.InvalidArgument,
 			"snapshot names beginning with %q are reserved for Incus's own snapshots (#1390); "+
 				"choose another name", incusSnapshotPrefix)
+	}
+
+	// Headroom floor (#3128): a snapshot pins blocks the live dataset would
+	// otherwise free, and nightly backup-* snapshots filling a pool to 0 B is
+	// how #3043 took a host down. The pool record was already read without
+	// error by snapshotDatasetFor.
+	pool, err := ops.poolOf(req.GetUsername() + "-container")
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+	}
+	if err := s.admitPoolHeadroom(pool, poolcapacity.OperationSnapshot); err != nil {
+		return nil, err
 	}
 
 	// The rest of name validation lives in zfscrypt, which rejects anything

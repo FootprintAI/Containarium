@@ -49,6 +49,7 @@ import (
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/retention"
 	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	"github.com/footprintai/containarium/internal/runlease"
@@ -205,6 +206,10 @@ type DualServerConfig struct {
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
+	// PoolHeadroomFloors is each storage pool's floor in percent used, past
+	// which creates and snapshots are refused (#3128). Unlisted pools use
+	// poolcapacity.DefaultFloorPercent.
+	PoolHeadroomFloors poolcapacity.Floors
 	// CPUOvercommitFactor is the max CPU overcommit ceiling (committed cores /
 	// physical cores) for create-time admission (#1029). <= 0 disables the gate.
 	CPUOvercommitFactor float64
@@ -1868,6 +1873,13 @@ skipAppHosting:
 	// Storage pool capacity log + gauges, on every daemon (#2823).
 	if m := startStoragePoolMonitor(context.Background(), metricsCollector, config.LocalBackendID); m != nil {
 		containerServer.SetStoragePoolSource(m.Snapshot)
+		// Headroom floor (#3128), checked against the same snapshot.
+		containerServer.SetPoolHeadroomGuard(poolcapacity.NewGuard(config.PoolHeadroomFloors, m.Snapshot, incus.ConfiguredStoragePool, nil))
+		if len(config.PoolHeadroomFloors) > 0 {
+			log.Printf("[storage] pool headroom floors: %s (other pools: %d%%)", config.PoolHeadroomFloors, poolcapacity.DefaultFloorPercent)
+		}
+	} else {
+		log.Printf("WARN: storage pool headroom floor disabled: pool sizes cannot be read, so creates and snapshots are not checked (#3128)")
 	}
 
 	// Set monitoring URLs on container server so GetMonitoringInfo works.
