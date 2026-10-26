@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// defaultNodeVersion is the Node.js major used when the app does not pick one.
+// Node 20 is end-of-life and gets no fix for CVE-2026-111497 (Brotli decoder
+// out-of-bounds write); 22.23.4+ is patched.
+const defaultNodeVersion = "22"
+
 // NodeJSDetector detects Node.js applications
 type NodeJSDetector struct{}
 
@@ -19,8 +24,7 @@ func (d *NodeJSDetector) Detect(files []string) (bool, string) {
 		return false, ""
 	}
 
-	// Default version
-	version := "20"
+	version := defaultNodeVersion
 
 	// Try to detect version from package.json engines field
 	// In practice, we'd parse package.json here
@@ -32,7 +36,7 @@ func (d *NodeJSDetector) Detect(files []string) (bool, string) {
 func (d *NodeJSDetector) GenerateDockerfile(opts GenerateOptions) (string, error) {
 	nodeVersion := opts.NodeVersion
 	if nodeVersion == "" {
-		nodeVersion = "20"
+		nodeVersion = defaultNodeVersion
 	}
 
 	port := opts.Port

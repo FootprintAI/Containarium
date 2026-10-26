@@ -28,7 +28,7 @@ If multiple marker files exist, the first matching language in this list is used
 ### Standard Node.js App
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
@@ -44,18 +44,18 @@ CMD ["npm", "start"]
 For Next.js projects, a multi-stage build is generated:
 
 ```dockerfile
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV production
 COPY --from=builder /app/public ./public
