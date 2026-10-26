@@ -116,6 +116,7 @@ var ownedElsewhere = map[string]string{
 	"deletes sooner (7 / 28 days)":       "internal/traffic collector RetentionDays x aggregateRetentionMultiplier",
 	"90 days after rotation":             "terraform ssh_session_log_retention_days, gated by internal/sentinel/logrotate_scripts_test.go",
 	"kept 30 days":                       "terraform/modules/containarium/spot-instance.tf max_retention_days",
+	"at least 365 days":                  "internal/audit/anchor_gcs.go MinAnchorRetentionSeconds",
 }
 
 // spaced turns a literal or pattern into one that allows any whitespace,

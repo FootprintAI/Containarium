@@ -252,8 +252,15 @@ func (g *GCSAnchorSink) CheckRetentionLock(ctx context.Context) (RetentionLockSt
 	return RetentionLockStatus{HasPolicy: true, Locked: p.IsLocked, RetentionPeriod: p.RetentionPeriod}, nil
 }
 
+// MinAnchorRetentionSeconds is the shortest locked retention period (365
+// days) that does not trigger a startup warning. A locked policy shorter
+// than this still makes anchors immutable, but only for a window shorter
+// than the audit-retention horizon. Decision Q31 on #2957; see
+// docs/security/DATA-FLOW-AND-RETENTION.md.
+const MinAnchorRetentionSeconds int64 = 365 * 24 * 3600
+
 // RetentionLockWarning turns a CheckRetentionLock result into the loud
-// warning the daemon logs, or "" when the bucket is locked. Decision Q18.3
+// warning the daemon logs, or "" when the bucket is locked for at least MinAnchorRetentionSeconds. Decision Q18.3
 // on #2727: an unlocked bucket is still used, with this warning.
 func RetentionLockWarning(uri string, st RetentionLockStatus, err error) string {
 	switch {
@@ -263,6 +270,13 @@ func RetentionLockWarning(uri string, st RetentionLockStatus, err error) string 
 		return fmt.Sprintf("WARNING: %s has no retention policy — anchors are still published, but the external copy is NOT immutable: anyone with delete rights on the bucket can remove them", uri)
 	case !st.Locked:
 		return fmt.Sprintf("WARNING: %s has a retention policy (%ss) that is not locked — anchors are still published, but the external copy is NOT immutable until the policy is locked", uri, st.RetentionPeriod)
+	}
+	secs, perr := strconv.ParseInt(strings.TrimSpace(st.RetentionPeriod), 10, 64)
+	switch {
+	case perr != nil:
+		return fmt.Sprintf("WARNING: %s has a locked retention policy but its period %q is unparsable — cannot confirm it meets the %d-second (365-day) minimum", uri, st.RetentionPeriod, MinAnchorRetentionSeconds)
+	case secs < MinAnchorRetentionSeconds:
+		return fmt.Sprintf("WARNING: %s has a locked retention policy of %d seconds, shorter than the %d-second (365-day) minimum — anchors are immutable only for that window", uri, secs, MinAnchorRetentionSeconds)
 	}
 	return ""
 }
