@@ -25,6 +25,7 @@ import (
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -142,6 +143,10 @@ Examples:
 	RunE: runDaemon,
 }
 
+// poolHeadroomFloors is --pool-headroom-floor, filled and validated by pflag
+// (#3128).
+var poolHeadroomFloors = poolcapacity.Floors{}
+
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 
@@ -226,6 +231,7 @@ func init() {
 
 	// Runtime selection
 	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
+	daemonCmd.Flags().Var(poolHeadroomFloors, "pool-headroom-floor", "Refuse container creates and snapshots on an Incus storage pool once it is this percent used, as <pool>=<percent>. Repeatable, one pool each; whole percent 86-99 (above the 85% \"pool nearly full\" mark). Pools not named use 95. Host status and the built-in alert keep 85/95 (#3128).")
 	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
 	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
@@ -690,6 +696,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		LocalBackendID:             resolveBackendID(localBackendID),
 		Pool:                       pool,
 		Region:                     region,
+		PoolHeadroomFloors:         poolHeadroomFloors,
 		CPUOvercommitFactor:        cpuOvercommitFactor,
 		CPUOvercommitEnforce:       cpuOvercommitEnforce,
 		PlacementCPUAware:          placementCPUAware,
