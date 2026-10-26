@@ -27,8 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Release verifier regression tests
-        run: python3 -m unittest discover -s scripts/release -p 'test_verify_assets.py' -v
+      - name: Release verifier and release.yml structure tests
+        # test_release_workflow.py (#3118) reads release.yml with PyYAML,
+        # which the runner image's python3 ships.
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
 
   published-release:
     if: github.event_name == 'workflow_dispatch'
