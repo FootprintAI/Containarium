@@ -187,11 +187,20 @@ else
     && pass "download-deps: stops at the first failing batch" || t "download-deps: kept downloading after a failed batch"
 fi
 
-for bad in 0 -1 abc; do
+for bad in 0 -1 abc 08 1e3 " 5" 501 1000 18446744073709551616 9223372036854775807; do
   if deps badbatch APT_BATCH_SIZE="$bad"; then t "download-deps: APT_BATCH_SIZE=$bad accepted"
   else grep -q 'APT_BATCH_SIZE' "$tmp/badbatch.out" && pass "download-deps: APT_BATCH_SIZE=$bad rejected" \
     || t "download-deps: APT_BATCH_SIZE=$bad failed without naming it"; fi
 done
+
+for ok in 500 1; do
+  if deps okbatch APT_BATCH_SIZE="$ok"; then pass "download-deps: APT_BATCH_SIZE=$ok accepted"
+  else t "download-deps: APT_BATCH_SIZE=$ok rejected"; cat "$tmp/okbatch.out"; fi
+done
+if deps emptybatch APT_BATCH_SIZE=; then
+  grep -q 'batch 1/1' "$tmp/emptybatch.out" && pass "download-deps: empty APT_BATCH_SIZE keeps the default" \
+    || t "download-deps: empty APT_BATCH_SIZE did not use the default"
+else t "download-deps: empty APT_BATCH_SIZE rejected"; cat "$tmp/emptybatch.out"; fi
 
 # The job summary records how long the step took, on success and failure.
 if deps summary GITHUB_STEP_SUMMARY="$tmp/summary.md"; then
