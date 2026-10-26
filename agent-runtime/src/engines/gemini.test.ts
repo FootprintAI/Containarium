@@ -170,4 +170,38 @@ describe("geminiFollowUp", () => {
     ]);
     expect((seen[0] as { config: unknown }).config).toEqual({});
   });
+
+  // #3107: a history that ends on a function response, with a last model turn
+  // that holds only calls (dropped), replays as two consecutive user turns.
+  // Pinned as it is: the follow-up does not merge them, because the API's
+  // handling of this shape is checked on dev (#3107 item 7), not here.
+  it("replays two consecutive user turns when the model's last turn left nothing to replay", async () => {
+    const seen: unknown[] = [];
+    await geminiFollowUp(fakeGenerate("{}", seen), { model: "m", systemPrompt: "", task: "task" }, {
+      automaticFunctionCallingHistory: [taskContent, callContent, resultContent],
+      candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "write_file", args: {} } }] } }],
+    })("ask", new CaptureJournal());
+    const contents = (seen[0] as { contents: { role: string }[] }).contents;
+    expect(contents.map((c) => c.role)).toEqual(["user", "model", "user", "user"]);
+    expect(contents.at(-2)).toEqual(resultContent);
+    expect(contents.at(-1)).toEqual({ role: "user", parts: [{ text: "ask" }] });
+  });
+
+  // #3107: Gemini 3 requires a function call's thoughtSignature to come back
+  // with it. The history is replayed as the SDK returned it, signatures intact,
+  // and so is a signature on the last turn's text part.
+  it("replays thought signatures on function calls and on the last turn's text", async () => {
+    const seen: unknown[] = [];
+    const signedCall = {
+      role: "model",
+      parts: [{ functionCall: { name: "write_file", args: { path: "a.go" } }, thoughtSignature: "sig-call" }],
+    };
+    await geminiFollowUp(fakeGenerate("{}", seen), { model: "m", systemPrompt: "", task: "task" }, {
+      automaticFunctionCallingHistory: [taskContent, signedCall, resultContent],
+      candidates: [{ content: { role: "model", parts: [{ text: "Done.", thoughtSignature: "sig-text" }] } }],
+    })("ask", new CaptureJournal());
+    const contents = (seen[0] as { contents: unknown[] }).contents;
+    expect(contents[1]).toEqual(signedCall);
+    expect(contents[3]).toEqual({ role: "model", parts: [{ text: "Done.", thoughtSignature: "sig-text" }] });
+  });
 });
