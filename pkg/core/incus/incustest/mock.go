@@ -2,7 +2,10 @@
 package incustest
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -77,6 +80,48 @@ type MockBackend struct {
 	// Baked base images (#1037).
 	PublishImageFunc            func(containerName, alias string, properties map[string]string) (string, error)
 	GetImageAliasPropertiesFunc func(alias string) (map[string]string, bool, error)
+
+	// Whole-box export/import (#2801). Archives is the default behaviour's
+	// state: the bytes each instance exports as. An import stores what it
+	// read under the new name and adds that instance, stopped.
+	Archives           map[string][]byte
+	ExportInstanceFunc func(name string) (io.ReadCloser, error)
+	ImportInstanceFunc func(name, pool string, r io.Reader, opts incus.ImportOptions) error
+}
+
+// ExportInstance returns the instance's Archives entry; a name not in
+// Containers is a not-found error, as from Incus.
+func (m *MockBackend) ExportInstance(name string) (io.ReadCloser, error) {
+	if m.ExportInstanceFunc != nil {
+		return m.ExportInstanceFunc(name)
+	}
+	if _, ok := m.Containers[name]; !ok {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Instance not found")
+	}
+	return io.NopCloser(bytes.NewReader(m.Archives[name])), nil
+}
+
+// ImportInstance refuses an existing name, as Incus does.
+func (m *MockBackend) ImportInstance(name, pool string, r io.Reader, opts incus.ImportOptions) error {
+	if m.ImportInstanceFunc != nil {
+		return m.ImportInstanceFunc(name, pool, r, opts)
+	}
+	if _, ok := m.Containers[name]; ok {
+		return fmt.Errorf("import %s: instance already exists", name)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("import %s: %w", name, err)
+	}
+	if m.Archives == nil {
+		m.Archives = make(map[string][]byte)
+	}
+	if m.Containers == nil {
+		m.Containers = make(map[string]*incus.ContainerInfo)
+	}
+	m.Archives[name] = b
+	m.Containers[name] = &incus.ContainerInfo{Name: name, State: "Stopped"}
+	return nil
 }
 
 // NewMockBackend returns a ready-to-use MockBackend with an initialized

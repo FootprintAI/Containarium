@@ -33,6 +33,9 @@ on:
       - 'internal/server/**'
       - 'internal/cmd/backup_verify.go'
       - 'proto/containarium/v1/backup.proto'
+      # Whole-box backup (#2801) streams through the Incus export/import
+      # seam; the backup package is where that stream is staged and sent.
+      - 'pkg/core/backup/**'
       - 'scripts/backup-scoped-token-e2e.sh'
       # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
       - 'pkg/core/network/**'
@@ -54,6 +57,9 @@ on:
       - 'internal/server/**'
       - 'internal/cmd/backup_verify.go'
       - 'proto/containarium/v1/backup.proto'
+      # Whole-box backup (#2801) streams through the Incus export/import
+      # seam; the backup package is where that stream is staged and sent.
+      - 'pkg/core/backup/**'
       - 'scripts/backup-scoped-token-e2e.sh'
       # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
       - 'pkg/core/network/**'

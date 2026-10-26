@@ -32,7 +32,7 @@ the existing open/close records:
 | `user_id` | Resolved user identity when known; distinct from the SSH target login |
 | `authz_decision` | Typed `SSHAuthzDecision` value from the authorization check |
 | `deny_reason` | Typed `SSHDenyReason` value, such as unknown key or inactive user |
-| `enforced` | Whether `ssh-authz-plugin` ran in enforce mode for this record. An `open`/`close` row can carry `enforced=true` with an `UNSPECIFIED` decision: the plugin admitted the session without asking the daemon (a certificate) |
+| `enforced` | Whether `ssh-authz-plugin` ran in enforce mode for this record. An `open`/`close` row can carry `enforced=true` with an `UNSPECIFIED` decision for either of two reasons: (1) the plugin admitted the session without asking the daemon (a certificate); or (2) the session's pending decision was evicted from the plugin's bounded stash (10,000 entries) by a flood of routed queries between the connection's query and its pipe. Case 2 has an empty auth method and no credential, and its `target` is a fresh read of the sshpiper config, not the route taken at accept time. Neither reads as an allow: the decision is `UNSPECIFIED` (0), not `ALLOW`. The plugin logs `no pending decision (evicted from the bounded stash)` for case 2 |
 
 The JSONL sink and audit detail encode the protobuf enums as numeric JSON
 values; generated protobuf JSON transports may use the symbolic enum names.

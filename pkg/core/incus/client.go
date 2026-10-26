@@ -228,6 +228,13 @@ type Backend interface {
 	// the create fast-path can check what a baked image contains.
 	PublishImage(containerName, alias string, properties map[string]string) (string, error)
 	GetImageAliasProperties(alias string) (map[string]string, bool, error)
+
+	// Whole-box export/import (#2801), streamed both ways. ExportInstance
+	// works on a running instance and returns an Incus backup tarball
+	// (point-in-time on ZFS); the caller must Close it. ImportInstance
+	// creates a new, stopped instance on pool from such a tarball.
+	ExportInstance(name string) (io.ReadCloser, error)
+	ImportInstance(name, pool string, r io.Reader, opts ImportOptions) error
 }
 
 // DiskDevice represents a disk device configuration
