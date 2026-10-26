@@ -350,3 +350,42 @@ it("falls back to init provenance if optional account metadata is unavailable", 
  const result=await new ClaudeEngine(query).run("task",cfg,new CaptureJournal());
  expect(result.authenticationSource).toBe("key");expect(result.authenticationSucceeded).toBe(true);
 });
+
+// #2513 item 2: a follow-up resumes the same SDK session, so the model answers
+// the re-prompt with the run it just had in context.
+describe("ClaudeEngine follow-up", () => {
+  it("resumes the run's session with the follow-up prompt and returns its text", async () => {
+    const seen: Parameters<ClaudeQuery>[0][] = [];
+    const turns: unknown[][] = [
+      [
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__write_file", input: { path: "text/slug.go" } }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: "bytes_written: 649" }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1" },
+      ],
+      [
+        assistant({ type: "text", text: '{"files":["text/slug.go"]}' }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1" },
+      ],
+    ];
+    const engine = new ClaudeEngine(async function* (params) {
+      seen.push(params);
+      for (const m of turns.shift() ?? []) yield m as SDKMessage;
+    });
+    const j = new CaptureJournal();
+    const first = await engine.run("task", cfg, j);
+    expect(first.outputJson).toBe("");
+    const second = await first.followUp!("give me the JSON", j);
+    expect(second.outputJson).toBe('{"files":["text/slug.go"]}');
+    expect(seen.map((p) => p.prompt)).toEqual(["task", "give me the JSON"]);
+    expect(seen[0]!.options?.resume).toBeUndefined();
+    expect(seen[1]!.options?.resume).toBe("sess-1");
+    expect(seen[1]!.options?.mcpServers).toEqual(seen[0]!.options?.mcpServers);
+  });
+
+  it("offers no follow-up when the SDK never named a session", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([{ type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn" }]),
+    ).run("task", cfg, new CaptureJournal());
+    expect(res.followUp).toBeUndefined();
+  });
+});
