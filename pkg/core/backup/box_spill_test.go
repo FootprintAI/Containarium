@@ -109,9 +109,9 @@ func TestSweepBoxSpills(t *testing.T) {
 		touchOld(t, p, 72*time.Hour)
 	}
 	touchOld(t, staleDirName, 72*time.Hour)
-	// Lchtimes is not in the standard library; a symlink's own age is
-	// whatever it was created with (now), so the sweep must skip it by
-	// type, not by age. Age its target instead to catch a follow.
+	// The symlink keeps its creation time (there is no Lchtimes in the
+	// standard library), so it is skipped here by TYPE, not by age. Its
+	// target is aged above so that following the link would be caught.
 	activeSpills.Store(inFlight, struct{}{})
 	defer activeSpills.Delete(inFlight)
 
@@ -178,5 +178,32 @@ func TestCreateBox_SweepsStaleSpillsFirst(t *testing.T) {
 	}
 	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
 		t.Errorf("the stale spill survived a backup: %v", err)
+	}
+}
+
+// The in-flight guard must hold when the backup directory is not in clean
+// form (double slash, trailing slash, ./): the spill is registered under one
+// spelling of the path and found under another. Its mtime is made stale so
+// only the guard can save it.
+func TestSweepBoxSpills_InFlightGuardWithUncleanDir(t *testing.T) {
+	base := t.TempDir()
+	for _, dir := range []string{base + "//", base + "/./sub/", base + "//sub2//"} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		s := &boxSpill{dir: dir}
+		if err := s.add("a", &tar.Header{Name: "a", Size: 1}, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+		touchOld(t, s.f.Name(), 72*time.Hour)
+		m := NewManager(newFakeOps(nil), nil, dir)
+		n, err := m.SweepStaleBoxSpills()
+		if err != nil || n != 0 {
+			t.Errorf("dir %q: swept %d, %v; want the in-flight spill left alone", dir, n, err)
+		}
+		if _, err := os.Stat(s.f.Name()); err != nil {
+			t.Errorf("dir %q: in-flight spill removed: %v", dir, err)
+		}
+		s.close()
 	}
 }

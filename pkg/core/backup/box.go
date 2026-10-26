@@ -529,7 +529,7 @@ func (s *boxSpill) add(name string, hdr *tar.Header, body io.Reader) error {
 		if err != nil {
 			return err
 		}
-		activeSpills.Store(f.Name(), struct{}{})
+		activeSpills.Store(filepath.Clean(f.Name()), struct{}{})
 		s.f, s.identity, s.entries = f, id, map[string]boxSpillEntry{}
 	}
 	cw := &countingWriter{w: s.f}
@@ -567,7 +567,7 @@ func (s *boxSpill) close() {
 	if s.f != nil {
 		_ = s.f.Close()
 		_ = os.Remove(s.f.Name())
-		activeSpills.Delete(s.f.Name())
+		activeSpills.Delete(filepath.Clean(s.f.Name()))
 	}
 }
 
@@ -576,13 +576,20 @@ func (s *boxSpill) close() {
 const boxSpillPattern = ".box-spill-*.tmp"
 
 // boxSpillStaleAfter is how long a spill file must sit untouched before a
-// sweep treats it as a leftover. A running backup writes its spill as it
-// reads the export and is also protected by activeSpills, so this is a
-// second guard, generous for a 256 GiB export.
+// sweep treats it as a leftover. Within this process a running backup's
+// spill is protected by activeSpills. Against ANOTHER process sharing the
+// backup directory this age check is the only protection (activeSpills is
+// per-process). A backup that goes quiet for longer than this between
+// excluded-file writes could therefore lose its spill to a sweep by the other
+// process: that backup then fails when it reads the spill back (the staged
+// archive is discarded and nothing in the box is touched), and the next
+// attempt succeeds. 24 hours is generous for a 256 GiB export.
 const boxSpillStaleAfter = 24 * time.Hour
 
-// activeSpills holds the paths of the spill files of backups running in
-// this process, which a sweep must never remove.
+// activeSpills holds the cleaned paths of the spill files of backups running
+// in this process, which a sweep must never remove. Keys and lookups both go
+// through filepath.Clean, since the backup directory may be spelled uncleanly
+// (a//b, ./x, a trailing slash).
 var activeSpills sync.Map
 
 // SweepStaleBoxSpills removes spill files that a daemon killed mid-backup
@@ -608,7 +615,7 @@ func (m *Manager) SweepStaleBoxSpills() (int, error) {
 		if ok, _ := filepath.Match(boxSpillPattern, e.Name()); !ok || !e.Type().IsRegular() {
 			continue
 		}
-		path := filepath.Join(m.dir, e.Name())
+		path := filepath.Clean(filepath.Join(m.dir, e.Name()))
 		if _, active := activeSpills.Load(path); active {
 			continue
 		}
