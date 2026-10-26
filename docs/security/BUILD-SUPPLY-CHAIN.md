@@ -88,6 +88,7 @@ check with a checksum for each download.
 | `.github/workflows/workflow-lint.yml` | curl | actionlint and zizmor release tarballs | version + sha256 |
 | `scripts/install-sdlc-skills.sh` | curl | skills tarball and its `.sha256` from the same release | sha256 verified against the release sidecar file (integrity, not independent authenticity) |
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
+| `scripts/bundle/add-zabbly-repo.sh` | curl | Incus (Zabbly) apt repository signing key, so the offline-bundle builder can download incus, incus-client and incus-extra | primary-key fingerprint (`ZABBLY_KEY_FPR`) checked before the key is installed; apt then verifies the downloaded `.deb`s against it |
 
 ### Pinned by lockfile or module version
 
