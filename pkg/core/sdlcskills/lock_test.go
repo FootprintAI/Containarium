@@ -36,3 +36,72 @@ func TestParse_RejectsPartialPins(t *testing.T) {
 		}
 	}
 }
+
+const pin = "repo=a/b\nref=" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + "\nsha256=" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" + "\n"
+
+// The lock carries the skill sets (#3048): which namespaces each set id selects.
+func TestParse_SetsAreReadAndValidated(t *testing.T) {
+	l, err := Parse(pin + "set.sdlc=architect,engineer\nset.qa=qa\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := strings.Join(l.Sets["qa"], ","); got != "qa" {
+		t.Errorf("qa = %q", got)
+	}
+	if got := strings.Join(l.Sets["sdlc"], ","); got != "architect,engineer" {
+		t.Errorf("sdlc = %q", got)
+	}
+	if _, err := Parse(pin); err != nil {
+		t.Errorf("a lock with no sets (the pre-#3048 format) must still parse: %v", err)
+	}
+	for name, sets := range map[string]string{
+		"bad id":           "set.Bad=qa\n",
+		"empty namespaces": "set.qa=\n",
+		"bad namespace":    "set.qa=q a\n",
+		"namespace in two": "set.a=qa\nset.b=qa\n",
+		"duplicate set id": "set.a=x\nset.a=y\n",
+	} {
+		if _, err := Parse(pin + sets); err == nil {
+			t.Errorf("%s: parsed, want an error", name)
+		}
+	}
+}
+
+func TestEmbeddedLockDefinesSDLCAndQASets(t *testing.T) {
+	l, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"sdlc", "qa"} {
+		if len(l.Sets[id]) == 0 {
+			t.Errorf("embedded lock has no set %q", id)
+		}
+	}
+}
+
+func TestParseSkillSets(t *testing.T) {
+	ok := map[string]string{
+		"":            "all",
+		"all":         "all",
+		"none":        "none",
+		"sdlc":        "sdlc",
+		"sdlc,qa":     "sdlc,qa",
+		" qa , sdlc ": "qa,sdlc",
+		"qa,qa":       "qa",
+	}
+	for in, want := range ok {
+		got, err := ParseSkillSets(in)
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if got.String() != want {
+			t.Errorf("%q = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"QA", "qa;rm", "$(x)", "a b", "qa,,sdlc", ",qa", "qa,", "none,qa", "all,qa", "q_a"} {
+		if _, err := ParseSkillSets(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+}

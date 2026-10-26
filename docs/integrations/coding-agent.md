@@ -40,10 +40,16 @@ containarium recipe deploy coding-agent my-box --param release=v0.89.0
 | `claude_code_version` | Passed to the Claude Code installer. Empty = latest. |
 | `bootstrap_url` | Optional URL of a `tar.gz` bundle. Extracted under the box user's home; its `apply.sh` is run as that user. A failed download fails the deploy. Empty skips. |
 | `box_user` | Unprivileged user to install for. Default `ubuntu`; must exist in the image. |
-| `sdlc_skills` | Install the pinned SDLC role skills into the box user's `~/.claude/skills`. Default `true`; `false` skips. A `release` cut before the skills asset existed is skipped with a message. |
+| `skill_sets` | Which pinned skill sets to install into the box user's `~/.claude/skills`: a comma-separated list of set ids (`sdlc`, `qa`), `all`, or the literal `none`. Empty means unset: it falls back to `sdlc_skills`, whose default installs everything. An unknown id fails the deploy and names the known ids. Narrowing the list on a redeploy removes the dropped sets; an unchanged list leaves the tree identical. `_shared/` is installed whenever at least one set is. A `release` cut before skill sets existed fails the deploy for any value other than `all`, rather than installing everything. |
+| `sdlc_skills` | Deprecated alias, removed after one release: `true` is `skill_sets=all`, `false` is `skill_sets=none`. `skill_sets` wins when both are set. A `release` cut before the skills asset existed is skipped with a message. |
 
 For an existing box, use `containarium code install` instead (it installs the
-same skills for the Claude engine; pass `--no-sdlc-skills` to skip them).
+same skills for the Claude engine; `--skill-sets qa` or `--skill-sets sdlc,qa`
+selects sets, `--skill-sets none` installs none and removes what the installer
+owned, and `--no-sdlc-skills` is a deprecated alias for `--skill-sets none`).
+Which namespaces a set covers is defined next to the pin, in the `set.<id>=`
+lines of `pkg/core/sdlcskills/sdlc-skills.lock`, so a caller sends set ids and
+never has to track upstream namespaces.
 A team's own skill overrides layer on top: set `SDLC_SKILLS_OVERLAY_DIR` for
 `scripts/install-sdlc-skills.sh` and its directories win over the public set.
 Skills the installer wrote are listed in `~/.claude/skills/.sdlc-skills-manifest`,

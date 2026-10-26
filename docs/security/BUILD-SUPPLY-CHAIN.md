@@ -88,6 +88,7 @@ check with a checksum for each download.
 | `.github/workflows/helm-install-upgrade.yml` | curl | kind v0.24.0 binary | version + sha256 |
 | `.github/workflows/workflow-lint.yml` | curl | actionlint and zizmor release tarballs | version + sha256 |
 | `scripts/install-sdlc-skills.sh` | curl | skills tarball and its `.sha256` from the same release | sha256 verified against the release sidecar file (integrity, not independent authenticity) |
+| `scripts/install-sdlc-skills.sh` | curl | `pkg/core/sdlcskills/sdlc-skills.lock` at the release tag, only when an explicit `SKILL_SETS` list is given | its `sha256=` must equal the digest of the already-verified tarball, else nothing is installed; it only maps set ids to namespaces |
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
 | `scripts/bundle/add-zabbly-repo.sh` | curl | Incus (Zabbly) apt repository signing key, so the offline-bundle builder can download incus, incus-client and incus-extra | primary-key fingerprint (`ZABBLY_KEY_FPR`) checked before the key is installed; apt then verifies the downloaded `.deb`s against it |
 | `scripts/lib/deploy-install.sh` | curl | none downloaded: a health probe the deploy runs on the target host against the daemon's own `/health` (default `http://localhost:8080/health`), and discards the body | not a fetch of third-party content; listed because the gate matches the tool name |

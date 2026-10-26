@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -568,6 +569,86 @@ func TestCodingAgentRecipe_InstallsSDLCSkills(t *testing.T) {
 	}
 	if param.Default != "true" {
 		t.Errorf("sdlc_skills default = %q, want \"true\" (skills on first boot is the point of #2065)", param.Default)
+	}
+}
+
+// TestCodingAgentRecipe_SkillSetsParam (#3048): skill_sets selects set ids, empty
+// defers to the deprecated sdlc_skills alias, and the step hands the installer
+// a SKILL_SETS value.
+func TestCodingAgentRecipe_SkillSetsParam(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("coding-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var param *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "skill_sets" {
+			param = p
+		}
+	}
+	if param == nil {
+		t.Fatal("coding-agent missing parameter skill_sets")
+	}
+	if param.Required || param.Default != "" {
+		t.Errorf("skill_sets must be optional with an empty default (empty = fall back to the sdlc_skills alias, then all); got required=%v default=%q", param.Required, param.Default)
+	}
+	for _, p := range r.Parameters {
+		if p.Name == "sdlc_skills" && !strings.Contains(strings.ToLower(p.Description), "deprecated") {
+			t.Errorf("sdlc_skills description must carry the deprecation note: %q", p.Description)
+		}
+	}
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	for _, want := range []string{"CONTAINARIUM_PARAM_SKILL_SETS", `SKILL_SETS="$SETS"`, "predates skill sets"} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the SDLC skills step lacks %q", want)
+		}
+	}
+}
+
+// TestCodingAgentRecipe_SkillSetsResolution runs the step's selection logic:
+// skill_sets wins; otherwise sdlc_skills=false means none and anything else all.
+func TestCodingAgentRecipe_SkillSetsResolution(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := m.Get("coding-agent")
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	// Everything up to the runuser line is the selection logic.
+	logic := step[:strings.Index(step, "runuser")]
+	start := strings.Index(logic, `SETS="${CONTAINARIUM_PARAM_SKILL_SETS`)
+	if start < 0 {
+		t.Fatal("the SDLC skills step does not resolve SETS from skill_sets")
+	}
+	logic = logic[start:]
+	for _, tc := range []struct{ skillSets, alias, want string }{
+		{"", "true", "all"}, {"", "", "all"}, {"", "false", "none"},
+		{"qa", "true", "qa"}, {"qa,sdlc", "false", "qa,sdlc"}, {"none", "true", "none"},
+	} {
+		out, err := exec.Command("bash", "-c", "set -e\n"+
+			"CONTAINARIUM_PARAM_SKILL_SETS='"+tc.skillSets+"' CONTAINARIUM_PARAM_SDLC_SKILLS='"+tc.alias+"'\n"+
+			"export CONTAINARIUM_PARAM_SKILL_SETS CONTAINARIUM_PARAM_SDLC_SKILLS\n"+
+			logic+"\necho \"RESULT=$SETS\"").CombinedOutput() //nolint:gosec // test-only, embedded recipe text
+		if err != nil {
+			t.Fatalf("%+v: %v\n%s", tc, err, out)
+		}
+		if !strings.Contains(string(out), "RESULT="+tc.want+"\n") {
+			t.Errorf("skill_sets=%q sdlc_skills=%q: %s, want RESULT=%s", tc.skillSets, tc.alias, out, tc.want)
+		}
 	}
 }
 
