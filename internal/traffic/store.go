@@ -220,12 +220,12 @@ type QueryParams struct {
 	// (host-wide, #2884): callers must have authorized that before setting it.
 	ContainerName string
 	// StartTime and EndTime bound started_at, both inclusive.
-	StartTime     time.Time
-	EndTime       time.Time
-	DestIP        string
-	DestPort      int
-	Offset        int
-	Limit         int
+	StartTime time.Time
+	EndTime   time.Time
+	DestIP    string
+	DestPort  int
+	Offset    int
+	Limit     int
 }
 
 // OldestRecord returns started_at of the oldest connection held for a box (all
