@@ -46,6 +46,10 @@
       "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
     },
     {
+      "name": "ProofPackService",
+      "description": "ProofPackService verifies a sealed Proof Pack from a client (#3064), so a\ncaller that is not on the daemon host (where `containarium proof-pack\nverify` reads Postgres directly) can check one."
+    },
+    {
       "name": "AgentSkillService",
       "description": "AgentSkillService manages and runs individual packaged agents."
     },
@@ -6257,6 +6261,40 @@
         ],
         "tags": [
           "Pentest"
+        ]
+      }
+    },
+    "/v1/proof-packs/verify": {
+      "post": {
+        "summary": "Verify a sealed Proof Pack",
+        "description": "Check a sealed Proof Pack against this daemon's audit hash chain. Returns ok, the first differing part, and whether retention purged the seal row. The result is only as trustworthy as this daemon; compare chain_tip_hash with the external anchor for more. Requires the admin role or the audit:read scope.",
+        "operationId": "ProofPackService_VerifyProofPack",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/VerifyProofPackResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/VerifyProofPackRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Proof Pack"
         ]
       }
     },
@@ -18220,6 +18258,149 @@
       "default": "PROMPT_SOURCE_UNSPECIFIED",
       "description": "PromptSource says what a skill's system_prompt is composed from (#2488).\n\n - PROMPT_SOURCE_INLINE: The catalog's own text, unchanged.\n - PROMPT_SOURCE_SDLC_PIN: The catalog's text plus the pinned open-sdlc-skills standard section."
     },
+    "ProofCommandSource": {
+      "type": "string",
+      "enum": [
+        "PROOF_COMMAND_SOURCE_UNSPECIFIED",
+        "PROOF_COMMAND_SOURCE_DECLARED",
+        "PROOF_COMMAND_SOURCE_FALLBACK_MAKE_TEST",
+        "PROOF_COMMAND_SOURCE_NONE"
+      ],
+      "default": "PROOF_COMMAND_SOURCE_UNSPECIFIED",
+      "description": "ProofCommandSource says where the commands that ran came from.\n\n - PROOF_COMMAND_SOURCE_DECLARED: The `test:` key of the repository's .github/containarium.yml.\n - PROOF_COMMAND_SOURCE_FALLBACK_MAKE_TEST: No declaration; the repository has a Makefile, so `make test` ran.\n - PROOF_COMMAND_SOURCE_NONE: No declaration and no Makefile: nothing ran."
+    },
+    "ProofKindCount": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ProofPartKind"
+        },
+        "passed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "failed": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "description": "ProofKindCount is the steps that passed and failed for one kind, as a\ntyped pair rather than a map so the pack's encoding is deterministic.\nCounts are of steps by exit status, not of test cases: the pack does not\nparse any test framework's output."
+    },
+    "ProofMismatch": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "type": "boolean",
+          "description": "True when the difference is in the pack's non-step fields; step_index\nand name are then unset."
+        },
+        "stepIndex": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "name": {
+          "type": "string",
+          "description": "The step's name as sealed."
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "description": "ProofMismatch names the first part of a pack that differs from its seal."
+    },
+    "ProofPack": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "format": "int64",
+          "description": "1 for this layout."
+        },
+        "producer": {
+          "type": "string",
+          "description": "The box (container) the commands ran in."
+        },
+        "repoDir": {
+          "type": "string",
+          "description": "The repository directory inside the box the commands ran from."
+        },
+        "gitCommit": {
+          "type": "string",
+          "description": "`git rev-parse HEAD` in repo_dir; empty when it is not a git checkout."
+        },
+        "commandSource": {
+          "$ref": "#/definitions/ProofCommandSource"
+        },
+        "declarationSha256": {
+          "type": "string",
+          "description": "SHA-256 (lowercase hex) of the .github/containarium.yml read; empty\nunless command_source is DECLARED."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProofStep"
+          },
+          "description": "In declaration order."
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProofKindCount"
+          },
+          "description": "One entry per kind that has a step, sorted by kind."
+        },
+        "status": {
+          "$ref": "#/definitions/ProofPackStatus"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "logLimitBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "The bound each step's log was truncated to."
+        },
+        "stepTimeoutSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "The per-step timeout the steps ran under."
+        }
+      },
+      "description": "ProofPack is the record of one generation run."
+    },
+    "ProofPackSeal": {
+      "type": "object",
+      "properties": {
+        "packSha256": {
+          "type": "string",
+          "description": "PackDigest of the whole pack."
+        },
+        "headerSha256": {
+          "type": "string",
+          "description": "PackDigest of the pack with its steps removed: everything that is not a\nstep (producer, commit, counts, status, times, bounds)."
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProofPartDigest"
+          },
+          "description": "One per step, in the pack's step order."
+        },
+        "auditRowId": {
+          "type": "string",
+          "format": "int64",
+          "description": "The audit_logs row that holds this seal. Not part of the row's own\ndetail, which is written before the row has an id."
+        }
+      },
+      "description": "ProofPackSeal is what sealing a pack records. Its body, without\naudit_row_id, is the detail of one audit_logs row (action\n\"proof_pack.seal\"), so the existing audit hash chain covers it. No new\nhashing scheme: every digest here is a SHA-256 of a deterministic proto\nencoding, and the chain row is hashed by internal/audit like any other."
+    },
     "ProofPackStatus": {
       "type": "string",
       "enum": [
@@ -18230,6 +18411,88 @@
       ],
       "default": "PROOF_PACK_STATUS_UNSPECIFIED",
       "description": "ProofPackStatus is the pack's overall outcome.\n\n - PROOF_PACK_STATUS_PASSED: Every step exited 0 within its timeout.\n - PROOF_PACK_STATUS_FAILED: At least one step exited non-zero or timed out.\n - PROOF_PACK_STATUS_NO_COMMANDS: No step ran. Not a pass: there is nothing to show."
+    },
+    "ProofPackVerdict": {
+      "type": "string",
+      "enum": [
+        "PROOF_PACK_VERDICT_UNSPECIFIED",
+        "PROOF_PACK_VERDICT_OK",
+        "PROOF_PACK_VERDICT_MISMATCH",
+        "PROOF_PACK_VERDICT_SEAL_PURGED",
+        "PROOF_PACK_VERDICT_SEAL_NOT_FOUND",
+        "PROOF_PACK_VERDICT_CHAIN_BROKEN"
+      ],
+      "default": "PROOF_PACK_VERDICT_UNSPECIFIED",
+      "description": "ProofPackVerdict is the outcome of verifying a sealed pack.\n\n - PROOF_PACK_VERDICT_OK: Every digest matches the seal and the chain is intact from the seal row\nto the tip.\n - PROOF_PACK_VERDICT_MISMATCH: A part of the pack does not match its seal; first_mismatch names it.\n - PROOF_PACK_VERDICT_SEAL_PURGED: Retention purged the seal's audit row, so the pack can no longer be\nchecked against the chain. Not tampering. The daemon cannot tell an id\nbelow the chain base from a fabricated one, so a pack with an invented\naudit_row_id also gets this verdict.\n - PROOF_PACK_VERDICT_SEAL_NOT_FOUND: The seal's audit row does not exist (and was not purged) or is not the\nseal of this pack.\n - PROOF_PACK_VERDICT_CHAIN_BROKEN: The audit chain from the seal row to the tip does not verify."
+    },
+    "ProofPartDigest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The step's declared name."
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "description": "ProofPartDigest is the digest of one step of a sealed pack: SHA-256\n(lowercase hex) of the step's deterministic proto encoding, the same\ndigest PackDigest takes of the whole pack (#2798)."
+    },
+    "ProofPartKind": {
+      "type": "string",
+      "enum": [
+        "PROOF_PART_KIND_UNSPECIFIED",
+        "PROOF_PART_KIND_TEST",
+        "PROOF_PART_KIND_UNIT",
+        "PROOF_PART_KIND_INTEGRATION",
+        "PROOF_PART_KIND_E2E",
+        "PROOF_PART_KIND_STATIC_ANALYSIS",
+        "PROOF_PART_KIND_SECURITY_SCAN"
+      ],
+      "default": "PROOF_PART_KIND_UNSPECIFIED",
+      "description": "ProofPartKind is the category a declared step belongs to. A repository\nthat does not categorise its steps gets PROOF_PART_KIND_TEST.\n\n - PROOF_PART_KIND_TEST: A test command the repository did not categorise further, including the\n`make test` fallback."
+    },
+    "ProofStep": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name the repository declared for the step (\"make-test\" for the\nfallback). Never the command line."
+        },
+        "kind": {
+          "$ref": "#/definitions/ProofPartKind"
+        },
+        "exitCode": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "timedOut": {
+          "type": "boolean",
+          "description": "The step hit the pack's step timeout and was killed. exit_code is then\nthe timeout's status (124, or 137 when it had to be killed)."
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "log": {
+          "type": "string",
+          "format": "byte",
+          "description": "Combined stdout and stderr. When the output is longer than the pack's\nlog_limit_bytes, only the LAST log_limit_bytes are kept: a test run's\nsummary and failures are at its end."
+        },
+        "logSha256": {
+          "type": "string",
+          "description": "SHA-256 (lowercase hex) of `log` exactly as stored, so a verifier can\nrecompute it from the pack alone."
+        },
+        "logTruncated": {
+          "type": "boolean"
+        },
+        "logOriginalBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Size of the whole output before truncation."
+        }
+      },
+      "description": "ProofStep is one declared command's outcome and output."
     },
     "Protocol": {
       "type": "string",
@@ -19889,6 +20152,18 @@
         }
       },
       "title": "ScanJob represents a queued ClamAV scan job"
+    },
+    "SealedProofPack": {
+      "type": "object",
+      "properties": {
+        "pack": {
+          "$ref": "#/definitions/ProofPack"
+        },
+        "seal": {
+          "$ref": "#/definitions/ProofPackSeal"
+        }
+      },
+      "description": "SealedProofPack is the file attached to an agent-opened PR: the pack and\nthe seal that points at its audit chain row. `containarium proof-pack\nverify` reads it."
     },
     "SecretDelivery": {
       "type": "string",
@@ -22517,6 +22792,54 @@
         "record": {
           "$ref": "#/definitions/BackupRecord",
           "description": "The backup record with last_verification updated."
+        }
+      }
+    },
+    "VerifyProofPackRequest": {
+      "type": "object",
+      "properties": {
+        "sealed": {
+          "$ref": "#/definitions/SealedProofPack",
+          "description": "The file attached to the PR, as `containarium proof-pack verify` reads\nit. Bounded: at most 32 steps and 4 MiB encoded."
+        }
+      }
+    },
+    "VerifyProofPackResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "True only for PROOF_PACK_VERDICT_OK."
+        },
+        "verdict": {
+          "$ref": "#/definitions/ProofPackVerdict"
+        },
+        "firstMismatch": {
+          "$ref": "#/definitions/ProofMismatch",
+          "description": "Set for MISMATCH."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable detail for any verdict other than OK."
+        },
+        "packSha256": {
+          "type": "string",
+          "description": "Set for OK: the pack digest, the seal's audit row, the steps checked,\nand the chain tip the walk covered. A client compares the tip's hash\nwith the external anchor."
+        },
+        "auditRowId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "stepsChecked": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "chainTipId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "chainTipHash": {
+          "type": "string"
         }
       }
     },
