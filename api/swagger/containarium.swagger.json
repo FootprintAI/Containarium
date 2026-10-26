@@ -17462,6 +17462,16 @@
       },
       "description": "NetworkPolicySignature is one operator-managed cleartext exploit signature\n(#661 Tier 2, PR-B). Unlike deny rules these are GLOBAL (fleet-wide), not\ntenant-scoped — an exploit pattern is matched against every scanned container's\ninbound payload. They augment the daemon's curated built-in set."
     },
+    "NetworkPolicySource": {
+      "type": "string",
+      "enum": [
+        "NETWORK_POLICY_SOURCE_UNSPECIFIED",
+        "NETWORK_POLICY_SOURCE_HOST_DEFAULT",
+        "NETWORK_POLICY_SOURCE_STORED"
+      ],
+      "default": "NETWORK_POLICY_SOURCE_UNSPECIFIED",
+      "description": "NetworkPolicySource says which policy a tenant's loaded state came from.\n\n - NETWORK_POLICY_SOURCE_UNSPECIFIED: Unknown: nothing is loaded for the tenant, the daemon has not completed a\npass, or the host's default egress posture is off and the tenant has no\nstored policy.\n - NETWORK_POLICY_SOURCE_HOST_DEFAULT: The tenant has no stored policy and runs the host's default egress\nallow-list (log_only).\n - NETWORK_POLICY_SOURCE_STORED: The tenant runs a policy stored through SetNetworkPolicy."
+    },
     "NetworkPolicyStatus": {
       "type": "object",
       "properties": {
@@ -17505,6 +17515,10 @@
             "$ref": "#/definitions/NetworkPolicyUncoveredPath"
           },
           "description": "Traffic the loaded policy does not decide."
+        },
+        "policySource": {
+          "$ref": "#/definitions/NetworkPolicySource",
+          "description": "Which policy the loaded state comes from: the host default or a stored\npolicy. Only meaningful when state is LOADED or PARTIALLY_LOADED."
         }
       },
       "description": "NetworkPolicyStatus is a tenant's applied network policy on this daemon."

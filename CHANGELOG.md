@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GetNetworkPolicyStatus` reports whether a tenant runs the host default or a stored policy** (#2996). `NetworkPolicyStatus` has a new `policy_source` field (`NetworkPolicySource`: `HOST_DEFAULT`, `STORED`, or `UNSPECIFIED`). `HOST_DEFAULT` means the tenant has no stored policy and runs the host's default egress allow-list; `STORED` means a policy set through `SetNetworkPolicy`. It is `UNSPECIFIED` when nothing is loaded for the tenant, or when the host's default posture is off and the tenant has no stored policy. Additive. `containarium network-policy status` prints a `policy-source:` line. `PlanNetworkPolicy` still does not subtract the default allow-list for a tenant with no stored policy, and its note says so.
+
 - **`GetTrackerStatus` reports the credential kind as a typed enum** (#2993). `GetTrackerStatusResponse` has a new `credential_kind` field (`TrackerCredentialKind`: `PROJECT`, `GROUP`, `PERSONAL`, or `UNSPECIFIED`), next to the unchanged `credential_breadth`. A GitLab group token and a personal token are both `BROAD` but now tell apart. GitLab fills it from the `GET /user` call the adapter already makes: a bot named `project_*` is `PROJECT`, a bot named `group_*` is `GROUP`, a non-bot account is `PERSONAL`. It is `UNSPECIFIED` when that call fails or the bot name has neither prefix. GitHub reports `PERSONAL` for a `ghp_` classic PAT only; fine-grained PATs and App installation tokens stay `UNSPECIFIED` because the token does not show whether they cover one repository or many. `containarium tracker status` prints a `kind:` line.
 
 ### Fixed
