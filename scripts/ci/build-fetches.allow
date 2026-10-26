@@ -56,9 +56,9 @@ scripts/agent-skill-lease-e2e.sh	curl	ada6320f981f	curl wrote status '$during2_c
 scripts/backup-scoped-token-e2e.sh	curl	0bd8aead70c5	curl -sS -o "$out" -w '%{http_code}' "$@"); then
 scripts/build-macos11.sh	go install	3f6c78073ac9	go install cmd/link ) # rebuild the linker with the patch
 scripts/build-webui.sh	npm ci	9db3f780def6	npm ci
+scripts/bundle/add-zabbly-repo.sh	curl	adff70a2d27c	curl -fsSL --retry 3 -o "$work/key.asc" https://pkgs.zabbly.com/key.as
 scripts/bundle/download-deps.sh	curl	364927daf155	curl -fL --retry 3 --retry-delay 2 -o "$out.partial" "$url"; then
-scripts/bundle/download-deps.sh	curl	658ed099fb84	curl wget gnupg ca-certificates software-properties-common
-scripts/bundle/download-deps.sh	wget	f7e75fa472a2	wget gnupg ca-certificates software-properties-common
+scripts/bundle/download-deps.sh	wget	6780eacc506b	wget gnupg ca-certificates software-properties-common jq zfsutils-linu
 scripts/ci/check-licenses.sh	go install	6d695ea3e06f	go install github.com/google/go-licenses@v1.6.0" >&2; exit 2; }
 scripts/ci/npm-licenses.sh	npm ci	e195c096bf6a	npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&
 scripts/ci/npm-licenses.sh	npx	5dc65733e2ac	npx --yes "$CHECKER" --production --excludePrivatePackages --json) > "

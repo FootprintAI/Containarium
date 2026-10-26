@@ -72,8 +72,9 @@ The installer:
 2. Installs `.deb` packages from `./apt/` (Incus, ZFS, jq, etc.) using
    `apt-get install --no-download`, so it never fetches a missing package.
    A non-zero apt exit only warns; the install stops if `incus`, `zfs`,
-   `jq` or `curl` is still missing. If `./apt/` is empty the step is
-   skipped and those packages must already be on the host.
+   `jq` or `curl` is still missing. If `./apt/` holds no `.deb` the
+   installer stops with an error. If those packages are already on the
+   host, pass `--skip-apt` to skip this step.
 3. Initializes Incus, loads ZFS + kernel modules.
 4. Installs `containariumd`, `mcp-server` and `agent-box` from `./bin/`
    into `/usr/local/bin/`, and links `containarium` to `containariumd`.
@@ -84,14 +85,17 @@ The installer:
    pass `--mtls`.
 8. Mints an admin token at `/etc/containarium/admin.token`. It expires
    after 30 days (`--expiry 720h`).
-9. Imports a `containarium-base-*` Incus image from `./images/` and the
-   sidecar images from `./sidecars/`, if present. Sidecars are loaded with
-   `docker load`, so they are skipped on a host without Docker.
+9. Imports the sidecar images from `./sidecars/`, if present. Sidecars are
+   loaded with `docker load`, so they are skipped on a host without Docker.
 
-**Known gap.** Bundles built by the release workflow currently ship an
-empty `./apt/` and an empty `./images/`. Until that is fixed, install
-Incus, ZFS, `jq` and `curl` on the host from your own mirror before running
-the installer, and bring your own image for Step 5.
+The bundle ships no Incus base image (there is no `./images/` directory):
+bring your own image for Step 5. `--skip-base-image` is still accepted and
+does nothing.
+
+Bundles from earlier releases shipped an empty `./apt/`. The release build
+now fails instead of publishing such a bundle; with an older bundle, install
+Incus, ZFS, `jq` and `curl` from your own mirror and run the installer with
+`--skip-apt`.
 
 Install time has not been measured.
 
@@ -109,9 +113,8 @@ sudo journalctl -u containarium -f
 
 `containarium create` defaults to a remote image (`images:ubuntu/24.04`),
 which needs the network. On an air-gapped host, use an image already in the
-local Incus image store. That is the bundled base image if `./images/` had
-one; otherwise import an image you transferred yourself with
-`incus image import <file> --alias <alias>`.
+local Incus image store. The bundle ships none, so import an image you
+transferred yourself with `incus image import <file> --alias <alias>`.
 
 ```bash
 sudo incus image list            # pick a local alias
@@ -148,11 +151,12 @@ For GitHub Enterprise Server, add `GH_BASE_URL=https://github.your-company.inter
 
 ### "Required commands missing after apt step"
 
-The `.deb` set in `./apt/` is incomplete — most often because
-`apt-rdepends` wasn't installed on the host that built the bundle and
-some transitive deps got skipped. Re-build the bundle on a Debian host
-with `apt-rdepends` installed, or manually install the missing packages
-on the air-gapped host.
+The `.deb` set in `./apt/` did not install on this host. The bundle build
+checks that every dependency of every bundled `.deb` is in the bundle, so
+the usual cause is a host that differs from the bundle's target (not
+Ubuntu 24.04, or with conflicting packages already installed). Check
+`/var/log/dpkg.log`, or install the missing packages on the air-gapped
+host from your own mirror and re-run with `--skip-apt`.
 
 ### "Checksum mismatch"
 
