@@ -36,8 +36,11 @@ done
 echo "  ERROR: $svc not healthy after install" >&2
 if [ \$had_old = 1 ]; then
   sudo systemctl stop '$svc' || true
-  sudo mv '$bin.old' '$bin' && sudo systemctl start '$svc'
-  echo "  rolled back to the previous binary ($bin)" >&2
+  if sudo mv '$bin.old' '$bin' && sudo systemctl start '$svc'; then
+    echo "  rolled back to the previous binary ($bin)" >&2
+  else
+    echo "  ROLLBACK FAILED: could not restore and restart the previous binary; $svc needs manual recovery ($bin.old)" >&2
+  fi
 else
   echo "  no previous binary to restore; $svc left as is" >&2
 fi
