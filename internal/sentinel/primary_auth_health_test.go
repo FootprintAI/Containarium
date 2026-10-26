@@ -26,15 +26,18 @@ import (
 // the secret. These tests drive the REAL route table (buildBinaryServerMux),
 // so a route that loses its observing gate fails them.
 
+// The detail route is gated by the ADMIN secret (testAdminSecret), which
+// daemons do not hold.
 const wrongPrimariesSecret = "wrong-secret-but-still-32-bytes!!"
 
 func newAuthHealthTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	m := &Manager{
-		backends:   NewBackendPool(),
-		primaries:  NewPrimaryRegistry(),
-		certStore:  NewCertStore(),
-		hmacSecret: []byte(testPrimariesSecret),
+		backends:    NewBackendPool(),
+		primaries:   NewPrimaryRegistry(),
+		certStore:   NewCertStore(),
+		hmacSecret:  []byte(testPrimariesSecret),
+		adminSecret: []byte(testAdminSecret),
 	}
 	m.state.Store(StateProxy)
 	srv := httptest.NewServer(buildBinaryServerMux("/nonexistent/containarium", m))
@@ -66,7 +69,7 @@ func getStatus(t *testing.T, srv *httptest.Server) (statusView, string) {
 
 func getAuthHealthDetail(t *testing.T, srv *httptest.Server) ([]PrimaryAuthHealthJSON, string) {
 	t.Helper()
-	code, body := doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, testPrimariesSecret, true, nil)
+	code, body := doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, testAdminSecret, true, nil)
 	if code != http.StatusOK {
 		t.Fatalf("%s: code %d body %q", primaryAuthHealthPath, code, body)
 	}
@@ -414,10 +417,11 @@ func TestStatus_UnauthenticatedCarriesCountsNeverPoolNames(t *testing.T) {
 func TestStatus_CountsPerState(t *testing.T) {
 	const marker = "zz-marker-pool"
 	m := &Manager{
-		backends:   NewBackendPool(),
-		primaries:  NewPrimaryRegistry(),
-		certStore:  NewCertStore(),
-		hmacSecret: []byte(testPrimariesSecret),
+		backends:    NewBackendPool(),
+		primaries:   NewPrimaryRegistry(),
+		certStore:   NewCertStore(),
+		hmacSecret:  []byte(testPrimariesSecret),
+		adminSecret: []byte(testAdminSecret),
 	}
 	m.state.Store(StateProxy)
 	srv := httptest.NewServer(buildBinaryServerMux("/nonexistent/containarium", m))
@@ -459,8 +463,9 @@ func TestPrimaryAuthHealthRoute_RefusedWithoutValidSignature(t *testing.T) {
 		secret string
 		signed bool
 	}{
-		"unsigned":     {"", false},
-		"wrong secret": {wrongPrimariesSecret, true},
+		"unsigned":           {"", false},
+		"wrong secret":       {wrongPrimariesSecret, true},
+		"daemon AUTH secret": {testPrimariesSecret, true},
 	} {
 		code, body := doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, tc.secret, tc.signed, nil)
 		if code != http.StatusUnauthorized {
@@ -482,6 +487,8 @@ func TestPrimaryAuthHealthRoute_RefusedReadIsNotAttributed(t *testing.T) {
 	srv := newAuthHealthTestServer(t)
 	registerPool(t, srv, "pool-a")
 	doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, wrongPrimariesSecret, true, nil)
+	doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, testPrimariesSecret, true, nil)
+	doPrimaries(t, srv, http.MethodGet, primaryAuthHealthPath, "", false, nil)
 	st, _ := getStatus(t, srv)
 	if h := healthFor(st, "pool-a"); h == nil || h.State != PrimaryAuthOK {
 		t.Fatalf("health = %+v, want ok: a refused read of the detail route is not a primary's 401", h)
@@ -494,7 +501,7 @@ func TestPrimaryAuthHealthRoute_NeverContainsSecret(t *testing.T) {
 	registerPool(t, srv, "pool-a")
 	doPrimaries(t, srv, http.MethodPut, "/sentinel/primaries/pool-a", wrongPrimariesSecret, true, nil)
 	_, body := getAuthHealthDetail(t, srv)
-	for _, s := range []string{testPrimariesSecret, wrongPrimariesSecret} {
+	for _, s := range []string{testPrimariesSecret, wrongPrimariesSecret, testAdminSecret} {
 		sum := sha256.Sum256([]byte(s))
 		for _, v := range []string{s, hex.EncodeToString(sum[:]), hex.EncodeToString(sum[:])[:8]} {
 			if strings.Contains(body, v) {
@@ -520,7 +527,7 @@ func TestPrimaryAuthHealthRoute_MethodAndSignature(t *testing.T) {
 		{http.MethodPost, true, http.StatusMethodNotAllowed},
 		{http.MethodDelete, true, http.StatusMethodNotAllowed},
 	} {
-		code, body := doPrimaries(t, srv, tc.method, primaryAuthHealthPath, testPrimariesSecret, tc.signed, nil)
+		code, body := doPrimaries(t, srv, tc.method, primaryAuthHealthPath, testAdminSecret, tc.signed, nil)
 		if code != tc.want {
 			t.Errorf("%s signed=%v: status = %d, body = %q; want %d", tc.method, tc.signed, code, body, tc.want)
 		}
@@ -536,7 +543,7 @@ func TestPrimaryAuthHealthRoute_StaleTimestampRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		ts := strconv.FormatInt(time.Now().Add(skew).Unix(), 10)
-		mac := hmac.New(sha256.New, []byte(testPrimariesSecret))
+		mac := hmac.New(sha256.New, []byte(testAdminSecret))
 		mac.Write([]byte("GET\n" + primaryAuthHealthPath + "\n" + ts))
 		req.Header.Set(auth.SentinelHeaderTimestamp, ts)
 		req.Header.Set(auth.SentinelHeaderSignature, hex.EncodeToString(mac.Sum(nil)))

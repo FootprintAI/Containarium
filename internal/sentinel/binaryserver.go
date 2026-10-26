@@ -42,7 +42,7 @@ type StatusJSON struct {
 	SentinelAuthDetail        string `json:"sentinel_auth_detail,omitempty"`
 	// PrimaryAuthCounts is how many primaries are in each daemon-AUTH state
 	// (#2892). Counts only: this endpoint is unauthenticated, so it never
-	// names a pool; the per-pool detail is on the AUTH-gated
+	// names a pool; the per-pool detail is on the ADMIN-secret-gated
 	// /sentinel/primary-auth-health (#3004). Never secret-derived.
 	PrimaryAuthCounts PrimaryAuthCountsJSON `json:"primary_auth_counts"`
 	// UnattributedAuthFailures counts daemon-AUTH 401s that could not be
@@ -115,9 +115,11 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	mux.Handle("/sentinel/primaries", manager.daemonAuthGate(manager.PrimariesHandler()))
 	mux.Handle("/sentinel/primaries/", manager.daemonAuthGate(manager.PrimariesHandler()))
 
-	// Per-pool auth health (#3004): names pools, so it sits behind the daemon
-	// HMAC secret. Deliberately NOT daemonAuthGate (see primaryAuthHealthHandler).
-	mux.Handle(primaryAuthHealthPath, auth.SentinelHMACMiddleware(manager.hmacSecret, manager.primaryAuthHealthHandler()))
+	// Per-pool auth health (#3004): names pools, so it sits behind the ADMIN
+	// secret, which daemons do not hold (the daemon AUTH secret cannot read the
+	// pool inventory). Deliberately NOT daemonAuthGate (see
+	// primaryAuthHealthHandler).
+	mux.Handle(primaryAuthHealthPath, auth.SentinelHMACMiddleware(manager.adminSecret, manager.primaryAuthHealthHandler()))
 
 	// Phase 0.5: peer-CA distribution + leaf-cert issuance. Both
 	// gated by the existing HMAC middleware — the same secret that

@@ -54,7 +54,7 @@ import (
 // hidden.
 //
 // /status carries only a COUNT per state (never a pool name; #3004, Q29). Which
-// primary is failing is served by the AUTH-gated primaryAuthHealthPath.
+// primary is failing is served by the admin-gated primaryAuthHealthPath.
 
 // PrimaryAuthState is the outcome of a primary's most recent daemon-AUTH
 // request.
@@ -73,7 +73,7 @@ const (
 	PrimaryAuthUnknown PrimaryAuthState = "unknown"
 )
 
-// primaryAuthHealthPath is the AUTH-gated route that lists per-pool auth
+// primaryAuthHealthPath is the ADMIN-secret-gated route that lists per-pool auth
 // health. The unauthenticated /status carries only PrimaryAuthCountsJSON.
 const primaryAuthHealthPath = "/sentinel/primary-auth-health"
 
@@ -278,7 +278,7 @@ func (m *Manager) primaryAuthReport() ([]PrimaryAuthHealthJSON, PrimaryAuthCount
 }
 
 // primaryAuthHealthHandler serves the per-pool detail. Register it behind
-// auth.SentinelHMACMiddleware, NOT daemonAuthGate: reading the detail is not a
+// auth.SentinelHMACMiddleware over the ADMIN secret (daemons do not hold it), NOT daemonAuthGate: reading the detail is not a
 // primary's request, so a refused read must not count as a primary's 401.
 func (m *Manager) primaryAuthHealthHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

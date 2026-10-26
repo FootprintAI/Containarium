@@ -232,7 +232,7 @@ address, never by the pool name in the request, so `failing_401` can be a false
 alarm from any bad-signature request from that address: confirm in the logs
 before rotating a secret. Other 401s count in `unattributed_auth_failures`.
 Per-pool detail is `GET /sentinel/primary-auth-health`, which requires a request
-signed with the daemon AUTH secret. Nothing in either is derived from the secret.
+signed with the ADMIN secret (`CONTAINARIUM_SENTINEL_ADMIN_SECRET`; daemons do not hold it). Nothing in either is derived from the secret.
 
 ## Management SSH (Port 2222)
 
