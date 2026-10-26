@@ -83,6 +83,8 @@ containarium retention policy get --server <host>:50051
 containarium retention policy set --prompts 14 --server <host>:50051
 ```
 
+The external anchor bucket's retention lock should be at least 365 days; the daemon logs a warning at startup, and `verify-anchor` reports a finding, when the lock is shorter or its period cannot be read.
+
 ## Legal holds
 
 Legal holds are per org.
