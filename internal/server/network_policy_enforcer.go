@@ -438,6 +438,9 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	if !loader.SupportsEgressMode() {
 		log.Printf("[netpolicy] loaded BPF object predates egress_mode (#2974): a tenant's egress_mode is applied and reported as its mode; rebuild netpolicy.bpf.o to apply it")
 	}
+	if !loader.SupportsInboundReplies() {
+		log.Printf("[netpolicy] WARNING: loaded BPF object predates inbound-reply handling (#2618): a box with an enforce policy cannot answer connections opened toward it, and no source validation runs; rebuild netpolicy.bpf.o (or use the embedded object) before arming enforce for a tenant whose boxes serve inbound traffic")
+	}
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.mu.Lock()
 	e.running = true
@@ -590,8 +593,11 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 			tenant, ev.Src(), ev.Dst(), ev.Dport, ev.SigID, sigName, action)
 	} else {
 		kind := "deny"
-		if ev.Reason == netbpf.DenyReasonVirtualPatch {
+		switch ev.Reason {
+		case netbpf.DenyReasonVirtualPatch:
 			kind = "virtual-patch"
+		case netbpf.DenyReasonSpoofedSource:
+			kind = "spoofed-source" // the box sent from an address that is not its own (#2618)
 		}
 		log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
 			kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
@@ -619,14 +625,17 @@ func (e *NetworkPolicyEnforcer) denyEventDropped(ev netbpf.DenyEvent) bool {
 
 // denyAuditEntry builds the audit row for one deny event. Each deny reason gets
 // its own audit action so an operator can tell a blocked vulnerable destination
-// (#660) and a blocked inbound exploit (#661) apart from a routine allow-list
-// miss; dropped is the verdict the program applied (see denyEventDropped).
+// (#660), a blocked inbound exploit (#661) and a box sending from a forged
+// address (#2618) apart from a routine allow-list miss; dropped is the verdict
+// the program applied (see denyEventDropped).
 func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *audit.AuditEntry {
 	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
 	signature := ev.Reason == netbpf.DenyReasonSignature
+	spoofed := ev.Reason == netbpf.DenyReasonSpoofedSource
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
-		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) + `}`
+		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) +
+		`,"spoofed_source":` + boolStr(spoofed) + `}`
 	if signature {
 		// A Tier 2 signature match (#661): record which signature, on the INBOUND
 		// (container-receive) path, so the audit names the blocked exploit.
@@ -640,6 +649,9 @@ func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *
 		action = "network_policy.signature_match"
 	case vpatch:
 		action = "network_policy.virtual_patch"
+	case spoofed:
+		// The src is the forged address; the tenant names the box that sent it.
+		action = "network_policy.spoofed_source"
 	case dropped:
 		action = "network_policy.deny_dropped"
 	default:

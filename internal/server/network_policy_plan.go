@@ -80,6 +80,13 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 					cfg.EgressMode = netbpf.ModeLogOnly
 				}
 			}
+			// The box's own address (#2618): the program validates the box's
+			// source against it and seeds inbound flows only from frames whose
+			// source is the sending veth's address. Unknown stays zero, which
+			// the program reads as "cannot validate this veth".
+			if v.HasIP {
+				cfg.BoxIP = v.IP
+			}
 			plan.vethPolicy[v.Ifindex] = cfg
 			plan.ifName[v.Ifindex] = v.Name
 		}

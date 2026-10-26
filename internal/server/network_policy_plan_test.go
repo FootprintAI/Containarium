@@ -100,6 +100,15 @@ func TestPlanReconcile(t *testing.T) {
 	if cfg := plan.vethPolicy[20]; cfg.TenantID != 2 || cfg.AllowIntra != 0 {
 		t.Errorf("bob default cfg = %+v, want tenant=2 allowIntra=0", cfg)
 	}
+	// #2618: the program validates a box's source address against box_ip and
+	// seeds inbound flows only for a veth whose box_ip is known, so every running
+	// veth with a resolved IP carries it — with a stored policy or on the default.
+	if cfg := plan.vethPolicy[11]; cfg.BoxIP != [4]byte{10, 100, 0, 10} {
+		t.Errorf("alice veth cfg.BoxIP = %v, want 10.100.0.10", cfg.BoxIP)
+	}
+	if cfg := plan.vethPolicy[20]; cfg.BoxIP != [4]byte{10, 100, 0, 20} {
+		t.Errorf("bob default cfg.BoxIP = %v, want 10.100.0.20", cfg.BoxIP)
+	}
 	if plan.ifName[11] != "alice-container" {
 		t.Errorf("ifName[11] = %q, want alice-container", plan.ifName[11])
 	}

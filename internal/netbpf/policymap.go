@@ -28,6 +28,15 @@ type PolicyConfig struct {
 	// the struct's former pad byte, so the value stays 8 bytes. The program
 	// treats 0 as "follow Mode"; CompileConfig always writes it explicitly.
 	EgressMode uint8
+	// BoxIP is the box's own IPv4 in network byte order (#2618), appended to
+	// the struct as `box_ip`. The program drops (enforce) or logs (log_only) a
+	// packet the box sends from any other address except 0.0.0.0 (DHCP), and
+	// seeds an inbound flow from a frame that entered the host through this
+	// veth only when the frame's source is this address. The zero value means
+	// unknown: no source validation on the veth and no seeding from it. The
+	// daemon sets it from the container view (planReconcile), not from the
+	// policy, so CompileConfig leaves it zero.
+	BoxIP [4]byte
 }
 
 // EgressEntry is one allowed-egress LPM-trie entry the loader writes into the
