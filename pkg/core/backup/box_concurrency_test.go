@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 type gateBox struct {
 	archive []byte
 	usage   int64
+	usages  map[string]int64 // per-box override of usage
 
 	entered chan string   // receives the box name when an export starts
 	release chan struct{} // closed to let every export proceed
@@ -38,7 +40,12 @@ func (g *gateBox) ExportInstance(name string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(g.archive)), nil
 }
 
-func (g *gateBox) BoxDiskUsage(string) (int64, error) { return g.usage, nil }
+func (g *gateBox) BoxDiskUsage(name string) (int64, error) {
+	if u, ok := g.usages[name]; ok {
+		return u, nil
+	}
+	return g.usage, nil
+}
 
 func (g *gateBox) exports() []string {
 	g.mu.Lock()
@@ -56,6 +63,17 @@ func recv(t *testing.T, out <-chan createResult) createResult {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no result in 5s: a backup that should have been refused is running")
 		return createResult{}
+	}
+}
+
+// enter waits for a backup to reach its export, failing instead of hanging
+// when one that should have been admitted was refused.
+func enter(t *testing.T, gb *gateBox) {
+	t.Helper()
+	select {
+	case <-gb.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no backup reached its export in 5s")
 	}
 }
 
@@ -88,7 +106,7 @@ func TestCreateBox_SameBoxConcurrentSecondIsRefused(t *testing.T) {
 	out := make(chan createResult, 2)
 
 	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
-	<-gb.entered // the first is past its pre-flight, inside the export
+	enter(t, gb) // the first is past its pre-flight, inside the export
 
 	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
 	second := recv(t, out)
@@ -104,12 +122,13 @@ func TestCreateBox_SameBoxConcurrentSecondIsRefused(t *testing.T) {
 		t.Errorf("exports = %v, want exactly one", got)
 	}
 
-	// The claim is released: the box can be backed up again.
+	// The claim is released: the box can be backed up again. A later clock
+	// gives the second backup a new id, so it reaches the claim instead of
+	// stopping at the "backup already exists" check.
+	m.clock = func() time.Time { return fixedClock().Add(time.Hour) }
 	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
-	// Same fixed clock, so the id repeats: that refusal is the id check,
-	// not the in-flight one.
-	if again := recv(t, out); errors.Is(again.err, ErrBoxBackupInProgress) {
-		t.Errorf("the in-flight claim was not released: %v", again.err)
+	if again := recv(t, out); again.err != nil {
+		t.Errorf("a third backup after the first finished: %v", again.err)
 	}
 }
 
@@ -139,8 +158,8 @@ func TestCreateBox_DifferentBoxesRunConcurrently(t *testing.T) {
 	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
 	startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
 	// Both reach the export while neither has finished.
-	<-gb.entered
-	<-gb.entered
+	enter(t, gb)
+	enter(t, gb)
 	close(gb.release)
 	for i := 0; i < 2; i++ {
 		if r := recv(t, out); r.err != nil {
@@ -161,7 +180,7 @@ func TestCreateBox_DifferentBoxesShareReservedSpace(t *testing.T) {
 	}))
 	out := make(chan createResult, 2)
 	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
-	<-gb.entered
+	enter(t, gb)
 	startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
 	second := recv(t, out)
 	if !errors.Is(second.err, ErrInsufficientSpace) {
@@ -180,4 +199,110 @@ func TestCreateBox_DifferentBoxesShareReservedSpace(t *testing.T) {
 	if _, err := m.CreateBox(o); err != nil {
 		t.Errorf("after the first finished: %v", err)
 	}
+}
+
+// The reservation of a running backup shrinks as the backup writes: statfs
+// already excludes the bytes it has written, so counting its full estimate
+// again would refuse a backup that fits. Free space here drops as the first
+// backup "writes".
+func TestCreateBox_ReservationCreditsBytesAlreadyWritten(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	const usage = 100 << 20
+	for _, tc := range []struct {
+		name      string
+		startFree uint64
+		wantErr   bool
+	}{
+		// 205 free, 10 written: 195 free; A still holds 90, B needs 100.
+		// Counting A's full 100 would refuse (200 > 195).
+		{"fits once written bytes are credited", 205 << 20, false},
+		// 185 free, 10 written: 175 free; 90 + 100 > 175.
+		{"does not fit even with the credit", 185 << 20, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gb := newGateBox(buildArchive(t, incusLikeEntries()), usage)
+			var free atomic.Uint64
+			free.Store(tc.startFree)
+			m := newBoxManager(t, gb, withFreeSpace(func(string) (diskSpace, error) {
+				return diskSpace{Free: free.Load(), Device: 1}, nil
+			}))
+			out := make(chan createResult, 2)
+			startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
+			enter(t, gb)
+			free.Add(^uint64(10<<20 - 1)) // the first backup writes 10 MiB
+			startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
+			if tc.wantErr {
+				if r := recv(t, out); !errors.Is(r.err, ErrInsufficientSpace) {
+					t.Fatalf("second box: err = %v, want ErrInsufficientSpace", r.err)
+				}
+				close(gb.release)
+				if r := recv(t, out); r.err != nil {
+					t.Fatalf("first box: %v", r.err)
+				}
+				return
+			}
+			enter(t, gb) // admitted: it reached its export
+			close(gb.release)
+			for i := 0; i < 2; i++ {
+				if r := recv(t, out); r.err != nil {
+					t.Errorf("backup of %s: %v", r.box, r.err)
+				}
+			}
+		})
+	}
+}
+
+// Reservations on different filesystems are independent: the first box holds
+// 100 MiB on each device, and a 40 MiB box fits beside it on both even
+// though 140 + 100 would not fit if the devices were pooled.
+func TestCreateBox_ReservationsPerDeviceAreIndependent(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	gb := newGateBox(buildArchive(t, incusLikeEntries()), 100<<20)
+	gb.usages = map[string]int64{"bob-container": 40 << 20}
+	incusDir := t.TempDir()
+	var m *Manager
+	m = newBoxManager(t, gb, WithBoxStagingDirs(incusDir), withFreeSpace(func(p string) (diskSpace, error) {
+		if p == m.dir {
+			return diskSpace{Free: 150 << 20, Device: 1}, nil
+		}
+		return diskSpace{Free: 150 << 20, Device: 2}, nil
+	}))
+	out := make(chan createResult, 2)
+	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
+	enter(t, gb)
+	startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
+	enter(t, gb)
+	close(gb.release)
+	for i := 0; i < 2; i++ {
+		if r := recv(t, out); r.err != nil {
+			t.Errorf("backup of %s: %v", r.box, r.err)
+		}
+	}
+}
+
+// The release func is idempotent, and a late second call from a finished
+// backup must not drop a later backup's claim on the same box.
+func TestCreateBox_ReleaseIsOnceAndTokenScoped(t *testing.T) {
+	gb := newGateBox(nil, 1<<20)
+	m := newBoxManager(t, gb)
+	rel1, err := m.boxPreflight("alice-container")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel1()
+	rel2, err := m.boxPreflight("alice-container")
+	if err != nil {
+		t.Fatalf("claim after release: %v", err)
+	}
+	rel1() // late double call from the first backup
+	if _, err := m.boxPreflight("alice-container"); !errors.Is(err, ErrBoxBackupInProgress) {
+		t.Fatalf("after a late release by the first backup the second's claim is gone: err = %v", err)
+	}
+	rel2()
+	rel2()
+	rel3, err := m.boxPreflight("alice-container")
+	if err != nil {
+		t.Fatalf("claim after the second release: %v", err)
+	}
+	rel3()
 }

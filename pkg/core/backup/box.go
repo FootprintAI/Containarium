@@ -267,32 +267,65 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 // boxClaims is the daemon's record of whole-box backups in flight: which
 // boxes, and how many bytes each reserved on each filesystem. The pre-flight
 // reads the free space and takes its claim under one lock, so two backups
-// cannot both pass the same reading (#3116).
+// cannot both pass the same reading (#3116). It is process-local: a hung
+// export holds its claim and reservation until the daemon restarts.
 type boxClaims struct {
 	mu       sync.Mutex
-	inFlight map[string]map[uint64]uint64 // box -> device -> reserved bytes
+	inFlight map[string]*boxClaim  // box -> its claim
+	devs     map[uint64]*devClaims // device -> reservations on it
 }
 
-// reserved is the bytes other in-flight backups hold on dev. Call with mu held.
-func (c *boxClaims) reserved(dev uint64) uint64 {
-	var n uint64
-	for _, byDev := range c.inFlight {
-		n += byDev[dev]
+// boxClaim is one backup's claim: its reservation per device.
+type boxClaim struct {
+	box  string
+	need map[uint64]uint64
+}
+
+// devClaims is what is reserved on one filesystem. baseFree is the free
+// space when the first reservation was taken (or last rebased); free space
+// falling below it is credited against the reservations, since those are
+// bytes the running backups have already written and statfs no longer
+// counts as free. path is a directory on the device, for rebasing.
+type devClaims struct {
+	baseFree uint64
+	sumNeed  uint64
+	path     string
+}
+
+// held is what running backups still hold on the device, given its current
+// free space: their reservations less the bytes written since the baseline.
+// Call with mu held.
+func (c *boxClaims) held(dev, free uint64) uint64 {
+	d := c.devs[dev]
+	if d == nil {
+		return 0
 	}
-	return n
+	var written uint64
+	if d.baseFree > free {
+		written = d.baseFree - free
+	}
+	if written >= d.sumNeed {
+		return 0
+	}
+	return d.sumNeed - written
 }
 
 // boxPreflight refuses a backup that cannot fit before the export starts,
 // and claims the box and the space for the caller. The returned release
-// gives both back; call it when the backup is done, whatever the outcome.
+// gives both back; call it when the backup is done, whatever the outcome
+// (it is safe to call more than once).
 //
 // Backups of one box are serialized: a second while one runs is
 // ErrBoxBackupInProgress. Backups of different boxes run concurrently, but
 // each reserves its estimate on the filesystems it uses, and a later
-// pre-flight subtracts what is reserved, so two boxes cannot both be
-// promised the same free space. The reservation is held until the backup
-// ends, so it also counts bytes the running backup has already written:
-// conservative, never optimistic.
+// pre-flight subtracts what is still unwritten of those reservations, so two
+// boxes cannot both be promised the same free space. Bytes written since the
+// first reservation are credited against the reservations, because statfs
+// already excludes them. When a backup ends, the credit is dropped
+// (rebased): the remaining backups' earlier writes are then counted twice
+// until they end, so it errs toward refusing, never toward over-admitting.
+// Writes by anything else on the filesystem are credited too, which can only
+// under-reserve by what other writers consumed.
 //
 // The estimate is the box's disk usage. Incus may stage one compressed copy
 // in each of boxStagingDirs (on 6.0 LTS, before the first byte streams),
@@ -313,9 +346,10 @@ func (m *Manager) boxPreflight(containerName string) (release func(), err error)
 	}
 	// Check-and-claim is atomic: the statfs calls are quick, and holding
 	// the lock across them is what closes the race.
-	m.boxClaims.mu.Lock()
-	defer m.boxClaims.mu.Unlock()
-	if _, busy := m.boxClaims.inFlight[containerName]; busy {
+	c := &m.boxClaims
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, busy := c.inFlight[containerName]; busy {
 		return nil, fmt.Errorf("%w: %s (retry when it finishes)", ErrBoxBackupInProgress, containerName)
 	}
 	ours := min(usage, m.maxBoxBytes)
@@ -353,25 +387,62 @@ func (m *Manager) boxPreflight(containerName string) (release func(), err error)
 			return nil, err
 		}
 	}
-	claim := map[uint64]uint64{}
 	for _, dev := range order {
 		a := byDevice[dev]
-		held := m.boxClaims.reserved(dev)
+		held := c.held(dev, a.free)
 		if a.free < a.need+held {
-			return nil, fmt.Errorf("%w: %s needs %d bytes free for a box using %d bytes (plus %d reserved by backups in progress), has %d",
+			return nil, fmt.Errorf("%w: %s needs %d bytes free for a box using %d bytes (plus %d still reserved by backups in progress), has %d",
 				ErrInsufficientSpace, strings.Join(a.paths, " and "), a.need, usage, held, a.free)
 		}
-		claim[dev] = a.need
 	}
-	if m.boxClaims.inFlight == nil {
-		m.boxClaims.inFlight = map[string]map[uint64]uint64{}
+	claim := &boxClaim{box: containerName, need: map[uint64]uint64{}}
+	if c.inFlight == nil {
+		c.inFlight = map[string]*boxClaim{}
+		c.devs = map[uint64]*devClaims{}
 	}
-	m.boxClaims.inFlight[containerName] = claim
-	return func() {
-		m.boxClaims.mu.Lock()
-		delete(m.boxClaims.inFlight, containerName)
-		m.boxClaims.mu.Unlock()
-	}, nil
+	for _, dev := range order {
+		a := byDevice[dev]
+		claim.need[dev] = a.need
+		d := c.devs[dev]
+		if d == nil {
+			d = &devClaims{baseFree: a.free, path: a.paths[0]}
+			c.devs[dev] = d
+		}
+		d.sumNeed += a.need
+	}
+	c.inFlight[containerName] = claim
+	var once sync.Once
+	return func() { once.Do(func() { m.releaseBoxClaim(claim) }) }, nil
+}
+
+// releaseBoxClaim gives back a claim, and only that claim: a stale release
+// never drops a later backup's claim on the same box.
+func (m *Manager) releaseBoxClaim(claim *boxClaim) {
+	c := &m.boxClaims
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inFlight[claim.box] != claim {
+		return
+	}
+	delete(c.inFlight, claim.box)
+	for dev, need := range claim.need {
+		d := c.devs[dev]
+		if d == nil {
+			continue
+		}
+		d.sumNeed -= min(need, d.sumNeed)
+		if d.sumNeed == 0 {
+			delete(c.devs, dev)
+			continue
+		}
+		// Rebase: forget the written-bytes credit. If the probe fails the
+		// baseline becomes 0, which credits nothing.
+		if ds, err := m.freeSpace(d.path); err == nil {
+			d.baseFree = ds.Free
+		} else {
+			d.baseFree = 0
+		}
+	}
 }
 
 // filterBoxArchive copies an Incus instance backup from src to dst, gzip in
