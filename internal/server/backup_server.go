@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,7 +104,10 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	var opts []backup.Option
+	opts, err := boxBackupOptionsFromEnv(containers.manager)
+	if err != nil {
+		return nil, err
+	}
 	if wrapper != nil {
 		opts = append(opts, backup.WithWrapper(wrapper))
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
@@ -112,6 +117,44 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 		containers: containers,
 		mgr:        backup.NewManager(containers.manager, uploader, dir, opts...),
 	}, nil
+}
+
+// Whole-box backup settings (#2801).
+const (
+	// envBackupBoxMaxBytes overrides the 256 GiB cap on a stored BOX
+	// backup, in bytes.
+	envBackupBoxMaxBytes = "CONTAINARIUM_BACKUP_BOX_MAX_BYTES"
+	// envIncusBackupsDir is where Incus stages an export before streaming
+	// it (Incus 6.0 LTS has no direct_backup). The free-space pre-flight
+	// counts a copy of the box there.
+	envIncusBackupsDir = "CONTAINARIUM_INCUS_BACKUPS_DIR"
+	// defaultIncusBackupsDir is that directory on a default Incus install.
+	defaultIncusBackupsDir = "/var/lib/incus/backups"
+)
+
+// boxBackupOptionsFromEnv wires whole-box backup into the backup core: the
+// container manager as the export, the Incus staging dir for the
+// pre-flight, and the cap. A cap that does not parse fails startup, like a
+// bad KMS key name: an operator who set one and silently got the default
+// would find out when a backup is refused, or when the disk fills.
+func boxBackupOptionsFromEnv(box backup.BoxOps) ([]backup.Option, error) {
+	var opts []backup.Option
+	if box != nil {
+		opts = append(opts, backup.WithBoxOps(box))
+	}
+	dir := strings.TrimSpace(os.Getenv(envIncusBackupsDir))
+	if dir == "" {
+		dir = defaultIncusBackupsDir
+	}
+	opts = append(opts, backup.WithBoxStagingDirs(dir))
+	if raw := strings.TrimSpace(os.Getenv(envBackupBoxMaxBytes)); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%s=%q: want a positive number of bytes", envBackupBoxMaxBytes, raw)
+		}
+		opts = append(opts, backup.WithMaxBoxBytes(n))
+	}
+	return opts, nil
 }
 
 // loadBackupWrapper builds the key wrapper from CONTAINARIUM_BACKUP_KMS_
@@ -250,13 +293,12 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	}, nil
 }
 
-// createBoxBackup validates a BOX-scope create (#2800, slice 1 of #2372).
-// The caller has already passed the scope and tenant checks; the box is
-// the tenant's own container, addressed by username as everywhere else.
+// createBoxBackup takes a BOX-scope backup (#2800 contract, #2801 data
+// path). The caller has already passed the scope and tenant checks; the box
+// is the tenant's own container, addressed by username as everywhere else.
 //
-// Every refusal precedes any container command. A request that passes
-// stops at the data path, which is #2801: until it lands the answer is
-// Unimplemented, never a database backup taken by mistake.
+// Every refusal precedes the export. No command runs inside the box: the
+// export goes through Incus, which reads a point-in-time snapshot on ZFS.
 func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	// A BOX request names a box, not a database. A connection — even an
 	// empty one — or a hook means the caller built a database request and
@@ -268,7 +310,7 @@ func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackup
 		return nil, status.Error(codes.InvalidArgument, "a BOX backup takes no hook or hook_format: unset them, or use scope DATABASE")
 	}
 	if _, err := destFromProto(req.Destination); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, err
 	}
 
 	// Plaintext is forbidden for BOX (decision of 2026-10-25 on #2800). The
@@ -282,14 +324,50 @@ func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackup
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
-	if _, err := keyModeFromProto(req.KeyMode, s.mgr.HasWrapper(), ageRecipient != ""); err != nil {
+	keyMode, err := keyModeFromProto(req.KeyMode, s.mgr.HasWrapper(), ageRecipient != "")
+	if err != nil {
+		return nil, err
+	}
+	dest, err := destFromProto(req.Destination)
+	if err != nil {
 		return nil, err
 	}
 
-	if _, err := s.containers.manager.Get(req.Username); err != nil {
+	info, err := s.containers.manager.Get(req.Username)
+	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "box for user %s not found: %v", req.Username, err)
 	}
-	return nil, status.Error(codes.Unimplemented, "whole-box backup is not implemented yet: the request is valid, the snapshot-and-export data path lands in #2801")
+	rec, err := s.mgr.CreateBox(backup.BoxCreateOptions{
+		Username:      req.Username,
+		ContainerName: info.Name,
+		Destination:   dest,
+		GCSBucket:     req.GcsBucket,
+		AgeRecipient:  ageRecipient,
+		KeyMode:       keyMode,
+	})
+	if err != nil {
+		return nil, boxCreateStatus(err)
+	}
+	log.Printf("[backup] created id=%s user=%s box=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	return &pb.CreateBackupResponse{
+		Message: "box backup created: " + rec.ID,
+		Record:  recordToProto(rec),
+		Records: []*pb.BackupRecord{recordToProto(rec)},
+	}, nil
+}
+
+// boxCreateStatus maps a whole-box create failure to a gRPC code: no room
+// (the free-space pre-flight, or the cap) is ResourceExhausted, a daemon
+// that cannot export is FailedPrecondition, and anything else is Internal.
+func boxCreateStatus(err error) error {
+	switch {
+	case errors.Is(err, backup.ErrInsufficientSpace), errors.Is(err, backup.ErrDumpTooLarge):
+		return status.Errorf(codes.ResourceExhausted, "box backup failed: %v", err)
+	case errors.Is(err, backup.ErrBoxUnavailable):
+		return status.Errorf(codes.FailedPrecondition, "box backup failed: %v", err)
+	default:
+		return status.Errorf(codes.Internal, "box backup failed: %v", err)
+	}
 }
 
 // ListBackups returns stored records. Admins see all tenants; a non-admin
@@ -604,11 +682,14 @@ func scopeFromProto(s pb.BackupScope) (pb.BackupScope, error) {
 	}
 }
 
-// scopeToProto reports what a stored record captured. Every record the
-// core writes today is a database backup (pg_dump or hook), including
-// every record written before the field existed; #2801 adds BOX records
-// and extends this mapping from the record's own field.
-func scopeToProto(*backup.Record) pb.BackupScope {
+// scopeToProto reports what a stored record captured. A BOX record is
+// recognised by its engine (#2801); every other record is a database backup
+// (pg_dump or hook), including every record written before the field
+// existed.
+func scopeToProto(r *backup.Record) pb.BackupScope {
+	if r.Engine == backup.EngineBox {
+		return pb.BackupScope_BACKUP_SCOPE_BOX
+	}
 	return pb.BackupScope_BACKUP_SCOPE_DATABASE
 }
 
@@ -647,6 +728,8 @@ func engineToProto(engine string) pb.BackupEngine {
 		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
 	case backup.EngineHook:
 		return pb.BackupEngine_BACKUP_ENGINE_HOOK
+	case backup.EngineBox:
+		return pb.BackupEngine_BACKUP_ENGINE_BOX
 	default:
 		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
 	}

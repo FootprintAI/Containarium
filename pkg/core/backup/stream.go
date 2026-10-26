@@ -114,7 +114,9 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (m *Manager) stageDump(src io.Reader, id, ext string, recipients []string) (string, int64, string, error) {
+// stageDump streams src (encrypted to recipients, when any) into the backup
+// directory as <id><ext>, bounded by limit on both sides.
+func (m *Manager) stageDump(src io.Reader, id, ext string, recipients []string, limit int64) (string, int64, string, error) {
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return "", 0, "", err
 	}
@@ -124,7 +126,7 @@ func (m *Manager) stageDump(src io.Reader, id, ext string, recipients []string) 
 	}
 	defer func() { _ = f.Close(); _ = os.Remove(f.Name()) }()
 	h := sha256.New()
-	dst := &boundedWriter{w: io.MultiWriter(f, h), limit: m.maxDumpBytes}
+	dst := &boundedWriter{w: io.MultiWriter(f, h), limit: limit}
 	var out io.Writer = dst
 	var encrypted io.WriteCloser
 	if len(recipients) > 0 {
@@ -142,7 +144,7 @@ func (m *Manager) stageDump(src io.Reader, id, ext string, recipients []string) 
 		}
 		out = encrypted
 	}
-	in := &boundedReader{r: src, limit: m.maxDumpBytes}
+	in := &boundedReader{r: src, limit: limit}
 	n, err := io.Copy(out, in)
 	if err != nil {
 		return "", 0, "", fmt.Errorf("stage dump: %w", err)
