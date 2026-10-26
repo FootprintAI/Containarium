@@ -18,6 +18,8 @@ import (
 const (
 	DefaultGrace   = 5 * time.Minute
 	DefaultTimeout = 3 * time.Second
+	// MaxApprovalWait caps device-approval polling from the first PENDING.
+	MaxApprovalWait = 60 * time.Second
 )
 
 type Authorizer interface {
@@ -65,6 +67,7 @@ type Config struct {
 	Recorder sshsession.Recorder
 	Target   *sshsession.TargetResolver // routed target on session records
 	Now      func() time.Time           // nil uses time.Now().UTC()
+	Sleep    func(time.Duration)        // device-approval poll wait; nil uses time.Sleep
 }
 
 type Plugin struct {
@@ -74,6 +77,9 @@ type Plugin struct {
 	mu      sync.Mutex
 	pending map[string]pendingConn       // routed, pipe not started yet
 	open    map[string]map[string]string // pipe started, not closed yet
+	// approvals holds the device approval of the key a connection offered
+	// last, until keyboard-interactive consumes it (approval.go).
+	approvals map[string]pendingApproval
 }
 
 func New(cfg Config) (*Plugin, error) {
@@ -98,31 +104,34 @@ func New(cfg Config) (*Plugin, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if cfg.Sleep == nil {
+		cfg.Sleep = time.Sleep
+	}
 	// This private record builder only ever sees connections pipeStart hands
 	// it, so it skips nothing: a session whose decision was evicted from the
 	// stash is still recorded (without credential or decision).
 	session := &sshsession.Plugin{Recorder: cfg.Recorder, Target: cfg.Target, Now: cfg.Now}
-	return &Plugin{cfg: cfg, session: session, pending: map[string]pendingConn{}, open: map[string]map[string]string{}}, nil
+	return &Plugin{cfg: cfg, session: session, pending: map[string]pendingConn{}, open: map[string]map[string]string{}, approvals: map[string]pendingApproval{}}, nil
 }
 
 // PluginConfig returns the callbacks sshpiperd drives. Only publickey is
 // offered and every other method is refused here, as anondoor does: sshpiperd
 // dispatches each method to the plugin its chain cursor is on, so a password,
 // keyboard-interactive or none attempt is answered by this plugin and never
-// advances the chain.
+// advances the chain. The one exception is the device-approval stage: after
+// the key that signed was answered APPROVAL_PENDING, keyboard-interactive is
+// the only method offered (approval.go).
 func (p *Plugin) PluginConfig() libplugin.SshPiperPluginConfig {
 	cfg := libplugin.SshPiperPluginConfig{
-		NextAuthMethodsCallback: func(libplugin.ConnMetadata) ([]string, error) { return []string{"publickey"}, nil },
+		NextAuthMethodsCallback: p.nextAuthMethods,
 		NoClientAuthCallback: func(libplugin.ConnMetadata) (*libplugin.Upstream, error) {
 			return nil, errPublicKeyOnly
 		},
 		PasswordCallback: func(libplugin.ConnMetadata, []byte) (*libplugin.Upstream, error) {
 			return nil, errPublicKeyOnly
 		},
-		KeyboardInteractiveCallback: func(libplugin.ConnMetadata, libplugin.KeyboardInteractiveChallenge) (*libplugin.Upstream, error) {
-			return nil, errPublicKeyOnly
-		},
-		PublicKeyCallback: p.publicKeyCallback,
+		KeyboardInteractiveCallback: p.keyboardInteractive,
+		PublicKeyCallback:           p.publicKeyCallback,
 	}
 	if p.cfg.Enforce {
 		cfg.PipeStartCallback, cfg.PipeErrorCallback = p.pipeStart, p.pipeError
@@ -135,6 +144,9 @@ func deferWith(meta map[string]string) (*libplugin.Upstream, error) {
 }
 
 func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, wire []byte) (*libplugin.Upstream, error) {
+	// A new offer replaces any approval stage: only the key offered last,
+	// which is the one that signed, may reach keyboard-interactive.
+	p.takeApproval(conn.UniqueID())
 	// Clear these on skipped credentials as well; metadata from another offer
 	// must never claim a decision for this credential.
 	meta := map[string]string{sshsession.MetaUserID: "", sshsession.MetaAuthzDecision: "", sshsession.MetaDenyReason: "", sshsession.MetaEnforced: ""}
@@ -177,12 +189,15 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, wire []byte) (*l
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
 	}
-	res, err := p.cfg.Authorizer.Authorize(ctx, backend, &pb.AuthorizeSSHRequest{
+	// The client address goes with each request for audit only; approval is
+	// keyed on (user, fingerprint) by the decision source.
+	req := &pb.AuthorizeSSHRequest{
 		Login: conn.User(), ClientIp: ip, SentinelId: p.cfg.SentinelID,
 		Credential: &pb.SSHCredential{Kind: &pb.SSHCredential_PublicKey{PublicKey: &pb.SSHPublicKeyCredential{
 			FingerprintSha256: fp, KeyType: keyType(key),
 		}}},
-	})
+	}
+	res, err := p.cfg.Authorizer.Authorize(ctx, backend, req)
 	// The managed daemon may report a cloud outage as a typed denial. It is
 	// subject to the same bounded grace as transport errors and HTTP 5xx.
 	outage := err != nil && isOutage(err)
@@ -205,8 +220,16 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, wire []byte) (*l
 	}
 	if res.GetDecision() == pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW {
 		p.cfg.Cache.Put(ck, res.GetUserId(), res.GetCacheTtl().AsDuration())
-	} else {
-		p.cfg.Cache.Delete(ck)
+		return p.stash(meta, conn, wire, backend, fp, res)
+	}
+	p.cfg.Cache.Delete(ck)
+	// Audit-only mode never prompts: the pending decision is logged and
+	// deferred by stash like any other.
+	if p.cfg.Enforce {
+		if a, ok := newApproval(res, p.cfg.Now()); ok {
+			a.backend, a.fp, a.wire, a.req = backend, fp, wire, req
+			return p.beginApproval(meta, conn, a, res)
+		}
 	}
 	return p.stash(meta, conn, wire, backend, fp, res)
 }

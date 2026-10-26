@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SSH device approval on the same connection, in the sentinel's enforcing authz plugin** (part of #2526). When the daemon answers `DENY APPROVAL_PENDING` with an `SSHDeviceApproval`, `ssh-authz-plugin --ssh-authz-enforce` keeps the login open. Once the key has signed, publickey partially succeeds and keyboard-interactive shows `Approve this device at <url>, code <code>` with one prompt. After Enter the plugin polls `Authorize` with `approval_id`: `ALLOW` opens the session. `APPROVAL_DENIED`, any other denial, a poll error, `expires_at` or a 60-second cap from the first `PENDING` refuses the login and writes a `denied` record. The approval is kept by connection, never in sshpiperd metadata, and is cleared by every new key offer, so only the key that signed can be approved. URLs other than `https` and control characters in the code are refused. Non-interactive clients are refused; there is no banner-only fallback. Certificates and audit-only mode never prompt; audit-only logs and defers. The approval id and code are never logged. The cloud approval page is separate and not yet deployed.
+
 ### Fixed
 
 - **The tenant sshpiperd units raise the login grace to 90 seconds** (part of #2526). `sshpiper.service.tmpl` and the GCE sentinel startup script pass `--login-grace-time 90s` to sshpiperd, whose default of 30 seconds is shorter than the 60-second device-approval cap of the enforcing `ssh-authz-plugin`; without it sshpiperd would drop a login while the user approves the device.
