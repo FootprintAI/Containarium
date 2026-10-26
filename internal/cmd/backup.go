@@ -97,6 +97,8 @@ func engineLabel(e pb.BackupEngine) string {
 		return "postgres"
 	case pb.BackupEngine_BACKUP_ENGINE_HOOK:
 		return "hook"
+	case pb.BackupEngine_BACKUP_ENGINE_BOX:
+		return "box"
 	default:
 		// Covers a record written before the enum existed, and one whose
 		// engine this build does not know. Both are genuinely unknown to

@@ -101,6 +101,9 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 	// verification that reads like a corrupt backup. A hook that declared
 	// a pg_custom archive (#2405) is the same bytes database mode
 	// produces, so it runs every check below unchanged.
+	if r.Engine == EngineBox {
+		return nil, errBoxRecordNotDatabase(r.ID, "restore-tested")
+	}
 	if r.Engine == EngineHook && r.HookFormat != HookFormatPGCustom {
 		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
 	}
