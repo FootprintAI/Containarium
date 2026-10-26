@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"sort"
@@ -37,12 +38,23 @@ import (
 //     authenticating from that address; otherwise it bumps one global
 //     counter, which is O(1) memory however many arrive.
 //
-// Residual: a client sending from the same address as a primary (the same
-// host, or the same NAT) can make that primary look failing until its next
-// heartbeat (every 30s) authenticates again. It cannot hide a real failure:
-// failures_since_success only resets on that primary's own authenticated
-// registration, heartbeat or deregister (bind), not on any other
-// authenticated request from the same address.
+// Residual, accepted (#3004, Q30): failing_401 can be a FALSE ALARM. Any
+// request from the primary's source address that fails the signature check
+// counts against that primary: no secret is needed to send one (a scanner, or
+// another client on the same host or NAT, is enough), and it is not cleared by
+// the passage of time. The primary's own next authenticated registration,
+// heartbeat or deregister (every 30s) does clear it, but a bad-signature
+// request arriving at least once per heartbeat interval keeps it set
+// indefinitely. So failing_401 means "a 401 came from this address", not "this
+// primary's secret is wrong": confirm in the sentinel logs that the 401s are
+// the primary's own requests before rotating a secret. The reverse cannot
+// happen: failures_since_success only resets on that primary's own
+// authenticated registration, heartbeat or deregister (bind), not on any other
+// authenticated request from the same address, so a real mismatch is never
+// hidden.
+//
+// /status carries only a COUNT per state (never a pool name; #3004, Q29). Which
+// primary is failing is served by the admin-gated primaryAuthHealthPath.
 
 // PrimaryAuthState is the outcome of a primary's most recent daemon-AUTH
 // request.
@@ -55,7 +67,15 @@ const (
 	// PrimaryAuthFailing401: a 401 from the primary's address since then
 	// (secret mismatch, or clock skew beyond auth.SentinelMaxClockSkew).
 	PrimaryAuthFailing401 PrimaryAuthState = "failing_401"
+	// PrimaryAuthUnknown: a live registered primary the tracker has no
+	// record of (for example the sentinel restarted since its last
+	// authenticated request). Not evidence of a failure.
+	PrimaryAuthUnknown PrimaryAuthState = "unknown"
 )
+
+// primaryAuthHealthPath is the ADMIN-secret-gated route that lists per-pool auth
+// health. The unauthenticated /status carries only PrimaryAuthCountsJSON.
+const primaryAuthHealthPath = "/sentinel/primary-auth-health"
 
 const (
 	// maxTrackedPrimaryAuth caps tracked primaries. Entries are created only
@@ -67,7 +87,20 @@ const (
 	primaryAuthRetention = 24 * time.Hour
 )
 
-// PrimaryAuthHealthJSON is one primary's entry in /status.
+// PrimaryAuthCountsJSON is /status's view: primaries per state, no names.
+type PrimaryAuthCountsJSON struct {
+	OK         int `json:"ok"`
+	Failing401 int `json:"failing_401"`
+	Unknown    int `json:"unknown"`
+}
+
+// PrimaryAuthHealthReportJSON is the body of primaryAuthHealthPath.
+type PrimaryAuthHealthReportJSON struct {
+	Primaries []PrimaryAuthHealthJSON `json:"primaries"`
+}
+
+// PrimaryAuthHealthJSON is one primary's entry on primaryAuthHealthPath. It
+// names a pool, so it is never part of the unauthenticated /status.
 type PrimaryAuthHealthJSON struct {
 	Pool                 string           `json:"pool"`
 	State                PrimaryAuthState `json:"state"`
@@ -204,6 +237,59 @@ func (t *primaryAuthTracker) snapshot() ([]PrimaryAuthHealthJSON, uint64, time.T
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Pool < out[j].Pool })
 	return out, t.unattributed, t.lastUnattributed
+}
+
+// report is the per-pool detail (tracked primaries plus every live registered
+// primary the tracker has no record of, as unknown) and the per-state counts
+// derived from it. live is the pools currently in the primary registry.
+func (t *primaryAuthTracker) report(live []Pool) ([]PrimaryAuthHealthJSON, PrimaryAuthCountsJSON) {
+	out, _, _ := t.snapshot()
+	tracked := make(map[string]bool, len(out))
+	for _, h := range out {
+		tracked[h.Pool] = true
+	}
+	for _, p := range live {
+		if !tracked[string(p)] {
+			out = append(out, PrimaryAuthHealthJSON{Pool: string(p), State: PrimaryAuthUnknown})
+			tracked[string(p)] = true
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Pool < out[j].Pool })
+	var c PrimaryAuthCountsJSON
+	for _, h := range out {
+		switch h.State {
+		case PrimaryAuthOK:
+			c.OK++
+		case PrimaryAuthFailing401:
+			c.Failing401++
+		default:
+			c.Unknown++
+		}
+	}
+	return out, c
+}
+
+func (m *Manager) primaryAuthReport() ([]PrimaryAuthHealthJSON, PrimaryAuthCountsJSON) {
+	var live []Pool
+	for _, p := range m.primaries.All() {
+		live = append(live, p.Pool)
+	}
+	return m.authHealth.report(live)
+}
+
+// primaryAuthHealthHandler serves the per-pool detail. Register it behind
+// auth.SentinelHMACMiddleware over the ADMIN secret (daemons do not hold it), NOT daemonAuthGate: reading the detail is not a
+// primary's request, so a refused read must not count as a primary's 401.
+func (m *Manager) primaryAuthHealthHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		detail, _ := m.primaryAuthReport()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(PrimaryAuthHealthReportJSON{Primaries: detail})
+	})
 }
 
 // requestSourceAddr is the transport source IP: what a client cannot choose
