@@ -201,9 +201,14 @@ Fail closed:
   logs `reason=APPROVAL_PENDING` and defers like any other decision.
 - Neither the approval id nor the code is logged.
 
-sshpiperd's default login grace is 30 seconds, shorter than the cap. The
-supplied tenant units pass `--login-grace-time 90s`. A custom unit that
-enables enforcement with device approval must raise it too.
+sshpiperd closes any connection whose pipe is not established within
+`--login-grace-time`, by default 30 seconds, shorter than the cap. The
+supplied tenant units pass `--login-grace-time 90s` (#3074). It is a
+listener-wide setting: it applies to every unauthenticated connection on
+that listener, not only those waiting on an approval, so a client that
+stalls before authenticating also holds its connection for up to 90 seconds.
+The anonymous-box listener keeps the default. A custom unit that enables
+enforcement with device approval must raise it too.
 
 The managed daemon forwards the request, `approval_id` included, to the
 cloud unchanged (#2525). A self-host daemon never answers `APPROVAL_PENDING`.
