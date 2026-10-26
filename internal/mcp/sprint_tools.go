@@ -2,7 +2,8 @@ package mcp
 
 import (
 	"fmt"
-	"strings"
+
+	"github.com/footprintai/containarium/internal/client"
 )
 
 // sprintTools is the MCP catalog for reading the sprint board a hosted
@@ -53,80 +54,32 @@ func sprintTools() []Tool {
 	}
 }
 
-func parseSprintProvider(s string) (TrackerProvider, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "github":
-		return TrackerProviderGitHub, nil
-	case "gitlab":
-		return TrackerProviderGitLab, nil
-	}
-	return "", fmt.Errorf("provider must be \"github\" or \"gitlab\", got %q", s)
-}
-
-func sprintStateWord(s SprintMirrorState) string {
-	return strings.TrimPrefix(string(s), "SPRINT_MIRROR_STATE_")
-}
-
-func handleSprintBoard(client API, args map[string]interface{}) (string, error) {
+func handleSprintBoard(api API, args map[string]interface{}) (string, error) {
 	org := getStringArg(args, "org_id", "")
 	project := getStringArg(args, "project", "")
 	number, ok := getInt64Arg(args, "number")
 	if org == "" || project == "" || !ok || number <= 0 {
 		return "", fmt.Errorf("org_id, project and a positive number are required")
 	}
-	provider, err := parseSprintProvider(getStringArg(args, "provider", ""))
+	provider, err := client.ParseSprintProvider(getStringArg(args, "provider", ""))
 	if err != nil {
 		return "", err
 	}
-	m, err := client.GetSprintBoard(GetSprintBoardRequest{OrgID: org, Provider: provider, Project: project, Number: number})
+	m, err := api.GetSprintBoard(GetSprintBoardRequest{OrgID: org, Provider: provider, Project: project, Number: number})
 	if err != nil {
 		return "", err
 	}
-	ref := fmt.Sprintf("%s#%d", project, number)
-	switch m.State {
-	case SprintMirrorStatePresent:
-		var b strings.Builder
-		fmt.Fprintf(&b, "Sprint board %s (state: PRESENT)", ref)
-		if m.Board != nil {
-			fmt.Fprintf(&b, ", %d items", len(m.Board.Items))
-			if m.Board.Partial {
-				fmt.Fprintf(&b, ", partial: %s", m.Board.PartialReason)
-			}
-			if m.Board.AsOf != "" {
-				fmt.Fprintf(&b, ", as of %s", m.Board.AsOf)
-			}
-		}
-		b.WriteString("\n\n")
-		b.WriteString(m.RenderedMarkdown)
-		return b.String(), nil
-	case SprintMirrorStateNoMirrorYet:
-		return fmt.Sprintf("%s: state NO_MIRROR_YET: no board yet (it has not been written for this sprint).", ref), nil
-	case SprintMirrorStateNotEnabled:
-		return fmt.Sprintf("%s: state NOT_ENABLED: the sprint board is not enabled for this repository.", ref), nil
-	case SprintMirrorStateProviderNotSupported:
-		return fmt.Sprintf("%s: state PROVIDER_NOT_SUPPORTED: reading sprint boards is not supported yet for this tracker.", ref), nil
-	case SprintMirrorStateRejected:
-		return "", fmt.Errorf("%s: sprint mirror REJECTED: the mirror comment failed verification and was not returned", ref)
-	default:
-		return "", fmt.Errorf("%s: unexpected sprint mirror state %q", ref, m.State)
-	}
+	return client.FormatSprintBoard(project, number, m)
 }
 
-func handleSprintList(client API, args map[string]interface{}) (string, error) {
+func handleSprintList(api API, args map[string]interface{}) (string, error) {
 	org := getStringArg(args, "org_id", "")
 	if org == "" {
 		return "", fmt.Errorf("org_id is required")
 	}
-	sprints, err := client.ListSprints(ListSprintsRequest{OrgID: org})
+	sprints, err := api.ListSprints(ListSprintsRequest{OrgID: org})
 	if err != nil {
 		return "", err
 	}
-	if len(sprints) == 0 {
-		return "No sprints found (a sprint is an open issue labelled \"sprint\" on a repository that opted in).", nil
-	}
-	var b strings.Builder
-	for _, s := range sprints {
-		fmt.Fprintf(&b, "%s#%d  %s  [%s]\n", s.Umbrella.Project, s.Umbrella.Number, s.Title, sprintStateWord(s.State))
-	}
-	return b.String(), nil
+	return client.FormatSprintList(sprints), nil
 }
