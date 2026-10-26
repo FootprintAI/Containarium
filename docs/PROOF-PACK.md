@@ -198,6 +198,16 @@ The first part that does not match is named, for example `step 1 ("lint"): diges
 
 The chain walk proves the chain is internally consistent. To rule out someone with database write access rewriting the chain and recomputing every hash after the edit, also run `audit verify-anchor`.
 
+### Verifying from another machine
+
+```bash
+containarium proof-pack verify proof-pack.json --server <daemon-address>
+```
+
+With `--server` on the command line, the pack is sent to the daemon's `VerifyProofPack` API (`POST /v1/proof-packs/verify` over REST) and no Postgres is read, so it works from any machine. The caller needs the admin role or an explicit `audit:read` scope, the same gate as `GET /v1/audit/logs`; a token with no scopes claim is refused unless it is an admin's. At most 4 verifications run at once; others get a retry-shortly error. The daemon runs the same check as above. A pack that does not verify exits non-zero, naming the first differing step or the header, and a seal row purged by retention is reported as its own state. Responses carry fixed messages and never name an audit row id or date, because the audit chain is global. The purged state cannot tell an id below the chain base from an invented one, so a pack with a made-up `audit_row_id` gets it too. The pack is bounded at 32 steps and 4 MiB; over REST the gateway decodes the body before that check, so also put a body limit on any reverse proxy in front of the daemon. Only `--server` itself switches modes: a server address that comes from the environment or config does not, so scripts that run the local command keep running it.
+
+A daemon's "ok" is weaker than verifying offline: you are trusting the daemon that holds the chain. On success the daemon returns the chain tip id and its row hash; compare that hash with the external anchor. This version does not return the anchor reference itself.
+
 ### After a retention purge
 
 The audit log is one chain, and retention in enforce mode purges its oldest rows as a prefix ([data flow and retention](security/DATA-FLOW-AND-RETENTION.md)). A seal row is an ordinary row of the gateway-logs class (90 days by default). The 365-day evidence-bundles window does not apply to it.

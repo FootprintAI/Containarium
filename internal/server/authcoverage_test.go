@@ -112,7 +112,8 @@ var registeredServices = []rpcSurface{
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
 	// #2875 — every RPC is RequireRole(admin) (through requireRetentionAdmin).
 	{pb.RetentionService_ServiceDesc, "RetentionServer"},
-	{pb.AuditService_ServiceDesc, "AuditServer"}, // #2415
+	{pb.AuditService_ServiceDesc, "AuditServer"},         // #2415
+	{pb.ProofPackService_ServiceDesc, "ProofPackServer"}, // #3064 — RequireScope(audit:read)
 	// #2516 — Authorize is RequireExplicitScope(ssh:authorize), stamped by
 	// the gateway only on a verified sentinel signature.
 	{pb.SSHAuthzService_ServiceDesc, "SSHAuthzServer"},

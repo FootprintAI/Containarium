@@ -71,6 +71,9 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 	if err := client.StartContainer(src); err != nil {
 		t.Fatalf("start %s: %v", src, err)
 	}
+	// Without it the excluded /tmp probe could be removed by the boot's
+	// tmpfiles run, and its absence would pass for the filter's work.
+	waitForBoot(t, client, src)
 
 	blob := make([]byte, 2<<20)
 	if _, err := rand.Read(blob); err != nil {
@@ -95,6 +98,15 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 			if err := client.WriteFile(src, p, b, "0644"); err != nil {
 				t.Fatalf("write %s: %v", p, err)
 			}
+		}
+	}
+
+	// The excluded probes must still be in the box when it is exported, or
+	// their absence from the backup proves nothing about the filter.
+	for p, b := range excluded {
+		got, err := client.ReadFile(src, p)
+		if err != nil || digest(got) != digest(b) {
+			t.Fatalf("excluded probe %s is not in the source box before the backup: %v", p, err)
 		}
 	}
 

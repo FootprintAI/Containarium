@@ -61,9 +61,15 @@ func incusLikeEntries() []tarEntry {
 		{name: "backup/container/rootfs/var/cache/apt/pkgcache.bin", typ: tar.TypeReg, body: "cache"},
 		{name: "backup/container/rootfs/run/", typ: tar.TypeDir},
 		{name: "backup/container/rootfs/run/probe", typ: tar.TypeReg, body: "run probe"},
-		// A hard link out of an excluded directory would point at an entry
-		// the filter dropped; it goes with its target.
+		// A file with one name in an excluded directory and another outside
+		// it. The tar carries the content under the first name (here the
+		// excluded one) and makes the kept name a hard link to it. The kept
+		// name must keep the content: it becomes a regular file, and a
+		// second kept link then points at it.
 		{name: "backup/container/rootfs/root/tmp-link", typ: tar.TypeLink, linkname: "backup/container/rootfs/tmp/probe"},
+		{name: "backup/container/rootfs/srv/second-link", typ: tar.TypeLink, linkname: "./backup/container/rootfs/tmp/probe"},
+		// A link inside an excluded directory goes, whatever it points at.
+		{name: "backup/container/rootfs/tmp/link-to-kept", typ: tar.TypeLink, linkname: "backup/container/rootfs/etc/hostname"},
 		// Look-alikes that are NOT excluded.
 		{name: "backup/container/rootfs/var/cachefile", typ: tar.TypeReg, body: "not a cache dir"},
 		{name: "backup/container/rootfs/home/alice/tmp/notes", typ: tar.TypeReg, body: "a home tmp dir is data"},
@@ -222,6 +228,15 @@ func TestCreateBox_FiltersExcludesEncryptsAndWritesManifest(t *testing.T) {
 	if got, err := m.Get(rec.ID); err != nil || got.Engine != EngineBox {
 		t.Errorf("sidecar: %+v, %v", got, err)
 	}
+	// Only the archive and its sidecar stay: the spill of excluded content
+	// is gone.
+	if entries, _ := os.ReadDir(m.dir); len(entries) != 2 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("backup dir holds %v, want the archive and its sidecar only", names)
+	}
 
 	order, hdrs, bodies := openBoxBackup(t, rec.Location, id.String())
 
@@ -229,7 +244,7 @@ func TestCreateBox_FiltersExcludesEncryptsAndWritesManifest(t *testing.T) {
 	for _, gone := range []string{
 		"backup/container/rootfs/tmp/probe", "backup/container/rootfs/tmp/sub/",
 		"backup/container/rootfs/var/tmp/probe", "backup/container/rootfs/var/cache/apt/pkgcache.bin",
-		"backup/container/rootfs/run/probe", "backup/container/rootfs/root/tmp-link",
+		"backup/container/rootfs/run/probe", "backup/container/rootfs/tmp/link-to-kept",
 	} {
 		if _, ok := hdrs[gone]; ok {
 			t.Errorf("%s is in the backup; it is excluded", gone)
@@ -246,6 +261,12 @@ func TestCreateBox_FiltersExcludesEncryptsAndWritesManifest(t *testing.T) {
 		if _, ok := hdrs[kept]; !ok {
 			t.Errorf("%s is missing from the backup", kept)
 		}
+	}
+	if h := hdrs["backup/container/rootfs/root/tmp-link"]; h == nil || h.Typeflag != tar.TypeReg || string(bodies["backup/container/rootfs/root/tmp-link"]) != "tmp probe" {
+		t.Errorf("kept name of an excluded file lost its content: %+v %q", h, bodies["backup/container/rootfs/root/tmp-link"])
+	}
+	if h := hdrs["backup/container/rootfs/srv/second-link"]; h == nil || h.Typeflag != tar.TypeLink || h.Linkname != "backup/container/rootfs/root/tmp-link" {
+		t.Errorf("second kept link = %+v, want a hard link to the promoted file", h)
 	}
 	if h := hdrs["backup/container/rootfs/tmp/"]; h != nil && h.Mode != 0o1777 {
 		t.Errorf("excluded dir mode = %o, want 1777 kept", h.Mode)
@@ -279,6 +300,7 @@ func TestCreateBox_FiltersExcludesEncryptsAndWritesManifest(t *testing.T) {
 		"/usr/bin/ping":         sha("ELF-ping"),
 		"/var/cachefile":        sha("not a cache dir"),
 		"/home/alice/tmp/notes": sha("a home tmp dir is data"),
+		"/root/tmp-link":        sha("tmp probe"),
 	}
 	got := map[string]string{}
 	for _, f := range mf.Files {
@@ -295,7 +317,8 @@ func TestCreateBox_FiltersExcludesEncryptsAndWritesManifest(t *testing.T) {
 			t.Errorf("manifest %s = %q, want %q", p, got[p], d)
 		}
 	}
-	if len(mf.Links) != 1 || mf.Links[0].Path != "/usr/bin/vi" || mf.Links[0].Target != "/usr/bin/ping" {
+	if len(mf.Links) != 2 || mf.Links[0] != (BoxManifestLink{Path: "/usr/bin/vi", Target: "/usr/bin/ping"}) ||
+		mf.Links[1] != (BoxManifestLink{Path: "/srv/second-link", Target: "/root/tmp-link"}) {
 		t.Errorf("manifest links = %+v", mf.Links)
 	}
 	cfg := map[string]string{}
@@ -738,5 +761,41 @@ func TestCreateBox_StreamsLargeBoxInBoundedMemory(t *testing.T) {
 	_, hdrs, _ := openBoxBackup(t, rec.Location, id.String())
 	if len(hdrs) != files+1 {
 		t.Errorf("backup has %d entries, want %d files plus the manifest", len(hdrs), files)
+	}
+}
+
+// The spill of excluded content is ciphertext on disk, and reads back.
+func TestBoxSpill_EncryptsAndReadsBack(t *testing.T) {
+	s := &boxSpill{dir: t.TempDir()}
+	defer s.close()
+	for name, body := range map[string]string{"a": "first secret body", "b": "second secret body"} {
+		if err := s.add(name, &tar.Header{Name: name, Size: int64(len(body))}, strings.NewReader(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(s.f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("secret body")) {
+		t.Fatal("the spill holds plaintext")
+	}
+	for name, want := range map[string]string{"b": "second secret body", "a": "first secret body"} {
+		r, hdr, ok, err := s.open(name)
+		if err != nil || !ok || hdr.Name != name {
+			t.Fatalf("open %s: ok=%v hdr=%v err=%v", name, ok, hdr, err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if _, _, ok, _ := s.open("absent"); ok {
+		t.Error("open of a name never set aside succeeded")
+	}
+	name := s.f.Name()
+	s.close()
+	if _, err := os.Stat(name); !os.IsNotExist(err) {
+		t.Errorf("spill not removed: %v", err)
 	}
 }

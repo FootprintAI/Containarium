@@ -10,11 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
 	"strings"
 	"time"
+
+	"filippo.io/age"
 )
 
 // Whole-box backups (#2801, slice 2 of #2372). The box is exported through
@@ -207,7 +210,7 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := filterBoxArchive(export, pw, opts.ContainerName, m.now().UTC(), m.maxBoxBytes)
+		err := filterBoxArchive(export, pw, opts.ContainerName, m.now().UTC(), m.maxBoxBytes, m.dir)
 		pw.CloseWithError(err)
 		done <- err
 	}()
@@ -329,7 +332,15 @@ func (m *Manager) boxPreflight(containerName string) error {
 // archive, as DefaultMaxDumpBytes does for a dump: a box of zeros or a
 // sparse file compresses to almost nothing and must not be decompressed
 // without bound.
-func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, limit int64) error {
+//
+// A hard link at a kept path whose target is excluded keeps its content:
+// the content of every dropped regular file is set aside in spillDir,
+// encrypted to a key that exists only in memory for this call, and the
+// first kept name is re-emitted as a regular file from it. Later kept
+// names link to that one. The spill is deleted on return. It holds at most
+// the excluded content, which the box's disk usage (what the free-space
+// pre-flight counts) already includes.
+func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, limit int64, spillDir string) error {
 	br := bufio.NewReader(src)
 	magic, err := br.Peek(2)
 	if err != nil {
@@ -357,6 +368,9 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, l
 		mf.Excluded = append(mf.Excluded, "/"+d)
 	}
 	h := sha256.New()
+	spill := &boxSpill{dir: spillDir}
+	defer spill.close()
+	promotedLinks := map[string]string{}
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -371,30 +385,66 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, l
 		}
 		rel, inRootfs := strings.CutPrefix(name, boxRootfsPrefix)
 		if inRootfs && boxExcluded(rel) {
+			// A dropped regular file may have another name outside the
+			// excluded directories, carried later in the tar as a hard
+			// link to this one. Keep its content aside until the end.
+			if hdr.Typeflag == tar.TypeReg {
+				if err := spill.add(name, hdr, io.LimitReader(tr, hdr.Size)); err != nil {
+					return fmt.Errorf("set aside %s: %w", name, err)
+				}
+			}
 			continue
 		}
 		if hdr.Typeflag == tar.TypeLink {
-			target, targetInRootfs := strings.CutPrefix(strings.TrimPrefix(hdr.Linkname, "./"), boxRootfsPrefix)
+			targetName := strings.TrimPrefix(hdr.Linkname, "./")
+			target, targetInRootfs := strings.CutPrefix(targetName, boxRootfsPrefix)
 			if targetInRootfs && boxExcluded(target) {
-				// Its target was dropped; the link goes with it.
-				continue
-			}
-			if inRootfs && targetInRootfs {
+				// The content's first name was excluded, this one is kept.
+				if promoted, ok := promotedLinks[targetName]; ok {
+					// An earlier kept name already carries the content.
+					hdr.Linkname = promoted
+					if inRootfs {
+						mf.Links = append(mf.Links, BoxManifestLink{Path: "/" + rel, Target: "/" + strings.TrimPrefix(strings.TrimPrefix(promoted, "./"), boxRootfsPrefix)})
+					}
+				} else {
+					// This name becomes the regular file.
+					body, src, ok, err := spill.open(targetName)
+					if err != nil {
+						return fmt.Errorf("restore %s for %s: %w", targetName, name, err)
+					}
+					if !ok {
+						// The target was not a regular file (nothing was set
+						// aside); there is no content to keep.
+						log.Printf("[backup] whole-box backup of %s: hard link %s points at excluded %s, which has no content; dropped", box, name, targetName)
+						continue
+					}
+					reg := *src
+					reg.Name, reg.Linkname, reg.Typeflag = hdr.Name, "", tar.TypeReg
+					entry, err := copyEntry(tw, h, &reg, body)
+					if err != nil {
+						return err
+					}
+					promotedLinks[targetName] = hdr.Name
+					if inRootfs {
+						entry.Path = "/" + rel
+						mf.Files = append(mf.Files, entry)
+					}
+					continue
+				}
+			} else if inRootfs && targetInRootfs {
 				mf.Links = append(mf.Links, BoxManifestLink{Path: "/" + rel, Target: "/" + target})
 			}
 		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
-		}
 		if hdr.Typeflag != tar.TypeReg {
+			if err := tw.WriteHeader(hdr); err != nil {
+				return fmt.Errorf("write %s: %w", name, err)
+			}
 			continue
 		}
-		h.Reset()
-		n, err := io.CopyN(io.MultiWriter(tw, h), tr, hdr.Size)
+		entry, err := copyEntry(tw, h, hdr, tr)
 		if err != nil {
-			return fmt.Errorf("copy %s: %w", name, err)
+			return err
 		}
-		entry := BoxManifestFile{Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}
 		if inRootfs {
 			entry.Path = "/" + rel
 			mf.Files = append(mf.Files, entry)
@@ -430,6 +480,97 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, l
 		return err
 	}
 	return gzw.Close()
+}
+
+// copyEntry writes a regular file entry from body, digesting it.
+func copyEntry(tw *tar.Writer, h hash.Hash, hdr *tar.Header, body io.Reader) (BoxManifestFile, error) {
+	if err := tw.WriteHeader(hdr); err != nil {
+		return BoxManifestFile{}, fmt.Errorf("write %s: %w", hdr.Name, err)
+	}
+	h.Reset()
+	n, err := io.CopyN(io.MultiWriter(tw, h), body, hdr.Size)
+	if err != nil {
+		return BoxManifestFile{}, fmt.Errorf("copy %s: %w", hdr.Name, err)
+	}
+	return BoxManifestFile{Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
+}
+
+// boxSpill keeps the content of dropped regular files, in case a kept hard
+// link needs it. Each file is its own age segment, appended to one temp
+// file and encrypted to an identity held only in memory, so the host holds
+// ciphertext only, as for the staged archive.
+type boxSpill struct {
+	dir      string
+	f        *os.File
+	identity *age.X25519Identity
+	end      int64
+	entries  map[string]boxSpillEntry
+}
+
+type boxSpillEntry struct {
+	off, n int64
+	hdr    *tar.Header
+}
+
+func (s *boxSpill) add(name string, hdr *tar.Header, body io.Reader) error {
+	if s.f == nil {
+		id, err := age.GenerateX25519Identity()
+		if err != nil {
+			return err
+		}
+		f, err := os.CreateTemp(s.dir, ".box-spill-*.tmp")
+		if err != nil {
+			return err
+		}
+		s.f, s.identity, s.entries = f, id, map[string]boxSpillEntry{}
+	}
+	cw := &countingWriter{w: s.f}
+	w, err := age.Encrypt(cw, s.identity.Recipient())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(w, body); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	keep := *hdr
+	s.entries[name] = boxSpillEntry{off: s.end, n: cw.n, hdr: &keep}
+	s.end += cw.n
+	return nil
+}
+
+// open returns the set-aside content and header of name, and false when
+// nothing was set aside under it.
+func (s *boxSpill) open(name string) (io.Reader, *tar.Header, bool, error) {
+	e, ok := s.entries[name]
+	if !ok {
+		return nil, nil, false, nil
+	}
+	r, err := age.Decrypt(io.NewSectionReader(s.f, e.off, e.n), s.identity)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return r, e.hdr, true, nil
+}
+
+func (s *boxSpill) close() {
+	if s.f != nil {
+		_ = s.f.Close()
+		_ = os.Remove(s.f.Name())
+	}
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // maxBoxTrailingBytes bounds the zero padding accepted after the tar end
