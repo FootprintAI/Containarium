@@ -15,8 +15,12 @@ func npAdminCtx() context.Context {
 	return auth.ContextWithTestSubject(context.Background(), "ops", auth.RoleAdmin)
 }
 
+// newNPServer pins the kernel probe to "supported" so status tests do not
+// depend on the kernel of the machine running them.
 func newNPServer() *NetworkPolicyServer {
-	return NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	s := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	s.kernelUnsupported = func() bool { return false }
+	return s
 }
 
 func TestNetworkPolicy_SetNormalizesAndRoundTrips(t *testing.T) {
