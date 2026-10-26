@@ -39,6 +39,17 @@ export class CodexEngine implements Engine {
       ? `${cfg.systemPrompt}\n\n---\nTask:\n${task}`
       : task;
 
+    return this.turn(thread, prompt, cfg, journal);
+  }
+
+  // turn streams one turn on the thread. Its result's followUp runs the next
+  // turn on the same thread, so the model has this one in context (#2513).
+  private async turn(
+    thread: Pick<Thread, "runStreamed">,
+    prompt: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult> {
     const { events } = await thread.runStreamed(prompt, cfg.outputSchema ? { outputSchema: cfg.outputSchema } : undefined);
     let finalResponse = "";
     let usage: unknown;
@@ -65,7 +76,11 @@ export class CodexEngine implements Engine {
       fields: [{ name: "finish_reason", value: turnCompleted ? "turn_completed" : "no_turn_completed" }],
     });
     if (ending) journal.append({ kind: "status", text: ending });
-    return { outputJson: finalResponse.trim(), usage };
+    return {
+      outputJson: finalResponse.trim(),
+      usage,
+      followUp: (next, nextJournal) => this.turn(thread, next, cfg, nextJournal),
+    };
   }
 }
 
