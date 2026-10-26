@@ -207,7 +207,10 @@ supplied tenant units pass `--login-grace-time 90s` (#3074). It is a
 listener-wide setting: it applies to every unauthenticated connection on
 that listener, not only those waiting on an approval, so a client that
 stalls before authenticating also holds its connection for up to 90 seconds.
-The anonymous-box listener keeps the default. A custom unit that enables
+The anonymous-box listener keeps the default. (The grace-timer
+behaviour was read from the sshpiperd v1.5.3 source; v1.6.1 was not
+re-read. The flag itself is passed to the v1.6.1 daemon by the
+approval spike test.) A custom unit that enables
 enforcement with device approval must raise it too.
 
 The managed daemon forwards the request, `approval_id` included, to the
