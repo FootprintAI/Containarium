@@ -2798,6 +2798,9 @@ func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequ
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
+	if len(req.SshPublicKeys) > container.MaxAuthorizedKeys {
+		return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys has %d entries, over the limit of %d", len(req.SshPublicKeys), container.MaxAuthorizedKeys)
+	}
 	switch {
 	case len(req.SshPublicKeys) == 0 && !req.AllowEmpty:
 		return nil, status.Error(codes.InvalidArgument, "ssh_public_keys is empty: set allow_empty=true to remove every key")
@@ -2825,19 +2828,23 @@ func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequ
 		}
 	}
 
-	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys)
+	// Revoke before the file changes: the file layer calls this with the keys it
+	// is about to drop and writes nothing if it fails, so a registry outage
+	// leaves the file as it was and a retry still sees those keys. (Revoked
+	// but still in the file, if the write then fails, is the safe direction.)
+	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys, func(drop []string) error {
+		for _, k := range drop {
+			if err := s.revokeSSHKey(ctx, req.Username, k); err != nil {
+				return registryError("set ssh keys", err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("replace authorized keys: %w", err)
 	}
-	// The file is already replaced; a registry failure is reported so the
-	// caller retries (registration is idempotent).
 	for _, k := range req.SshPublicKeys {
 		if err := s.registerSSHKey(ctx, req.Username, k, sshauthz.SourceAPI); err != nil {
-			return nil, registryError("set ssh keys", err)
-		}
-	}
-	for _, k := range removed {
-		if err := s.revokeSSHKey(ctx, req.Username, k); err != nil {
 			return nil, registryError("set ssh keys", err)
 		}
 	}

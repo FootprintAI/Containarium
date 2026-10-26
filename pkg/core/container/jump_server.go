@@ -922,6 +922,8 @@ func AddAuthorizedKey(username, pubKey string) error {
 		return fmt.Errorf("host user %q does not exist (was the container created?)", username)
 	}
 
+	defer lockAuthorizedKeys(username)()
+
 	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
 	akPath := filepath.Join(sshDir, "authorized_keys")
 
@@ -1002,6 +1004,8 @@ func RemoveAuthorizedKey(username, pubKey string) error {
 	if !authorizedKeysUserExists(username) {
 		return fmt.Errorf("host user %q does not exist", username)
 	}
+
+	defer lockAuthorizedKeys(username)()
 
 	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
 	existing, err := os.ReadFile(akPath)

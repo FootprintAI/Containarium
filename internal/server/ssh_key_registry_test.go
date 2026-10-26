@@ -96,7 +96,7 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 			return nil
 		},
 		count: func(u string) (int32, error) { return safecast.I32(len(f.files[u])), nil },
-		replace: func(u string, keys []string) ([]string, error) {
+		replace: func(u string, keys []string, hook func([]string) error) ([]string, error) {
 			f.replaceCalls++
 			var removed []string
 			for _, l := range f.files[u] {
@@ -108,6 +108,11 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 				}
 				if !keep && l != f.platform {
 					removed = append(removed, l)
+				}
+			}
+			if hook != nil {
+				if err := hook(removed); err != nil {
+					return nil, err
 				}
 			}
 			f.files[u] = append(append([]string{}, keys...), f.platform)

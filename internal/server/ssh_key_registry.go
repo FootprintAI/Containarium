@@ -24,16 +24,17 @@ type authorizedKeysOps struct {
 	add    func(username, pubKey string) error
 	remove func(username, pubKey string) error
 	count  func(username string) (int32, error)
-	// replace makes the file hold exactly keys (plus platform-managed lines)
-	// and returns the caller-managed keys it dropped.
-	replace func(username string, keys []string) ([]string, error)
+	// replace makes the file hold exactly keys (plus platform-managed lines).
+	// beforeWrite sees the caller-managed keys about to be dropped and can veto
+	// the write; see container.ReplaceAuthorizedKeys.
+	replace func(username string, keys []string, beforeWrite func(removed []string) error) ([]string, error)
 }
 
-func (o authorizedKeysOps) replaceKeys(username string, keys []string) ([]string, error) {
+func (o authorizedKeysOps) replaceKeys(username string, keys []string, beforeWrite func(removed []string) error) ([]string, error) {
 	if o.replace != nil {
-		return o.replace(username, keys)
+		return o.replace(username, keys, beforeWrite)
 	}
-	return container.ReplaceAuthorizedKeys(username, keys)
+	return container.ReplaceAuthorizedKeys(username, keys, beforeWrite)
 }
 
 func (o authorizedKeysOps) addKey(username, pubKey string) error {
