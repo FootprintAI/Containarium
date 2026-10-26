@@ -115,8 +115,11 @@ const (
 	// domain moves to is denied, and an address it left still allowed, until
 	// the next refresh and reconcile.
 	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG NetworkPolicyUncoveredPath = 2
-	// The host kernel cannot run egress enforcement. Reserved: not reported
-	// yet; the host kernel check that sets it is tracked separately (#2972).
+	// The host kernel is known to be too old for egress enforcement (TCX attach
+	// needs 6.6 or newer), so the egress program cannot be attached here whatever
+	// the other fields say. Reported in every state, including when no enforcer
+	// is running. A kernel release that cannot be read or parsed is unknown and
+	// is not reported as unsupported (#2972).
 	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED NetworkPolicyUncoveredPath = 3
 	// The tenant's egress allow-list in the kernel is not what its policy says:
 	// the last reconcile pass failed to add or remove at least one entry. In
