@@ -2,7 +2,7 @@ import type { GenerateContentResponse } from "@google/genai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EngineConfig } from "../engine.js";
 import { CaptureJournal } from "../testing/capture.js";
-import { GeminiEngine, journalGeminiResponse } from "./gemini.js";
+import { GeminiEngine, geminiFollowUp, journalGeminiResponse } from "./gemini.js";
 
 // The Gemini engine makes one generateContent call with automatic function
 // calling; the SDK returns the tool-use turns as automaticFunctionCallingHistory
@@ -121,5 +121,53 @@ describe("GeminiEngine output schema (prompt-only gap)", () => {
     const j = new CaptureJournal();
     await expect(new GeminiEngine().run("task", cfg, j)).rejects.toThrow(/GEMINI_API_KEY/);
     expect(j.entries).toEqual([]);
+  });
+});
+
+// #2513 item 2: the follow-up replays the conversation the automatic function
+// calling loop had (its history starts with the task), plus the model's last
+// turn, then asks — with no tools mounted, so the answer is text.
+describe("geminiFollowUp", () => {
+  const callContent = { role: "model", parts: [{ functionCall: { name: "write_file", args: { path: "text/slug.go" } } }] };
+  const resultContent = { role: "user", parts: [{ functionResponse: { name: "write_file", response: { bytes_written: 649 } } }] };
+  const taskContent = { role: "user", parts: [{ text: "task" }] };
+
+  function fakeGenerate(reply: string, seen: unknown[]) {
+    return async (params: unknown) => {
+      seen.push(params);
+      return { text: reply, candidates: [{ finishReason: "STOP", content: { role: "model", parts: [{ text: reply }] } }] } as unknown as GenerateContentResponse;
+    };
+  }
+
+  it("replays the history and asks once with no tools, returning the trimmed reply", async () => {
+    const seen: unknown[] = [];
+    const followUp = geminiFollowUp(fakeGenerate(' {"files":["text/slug.go"]}\n', seen), { model: "m", systemPrompt: "persona", task: "task" }, {
+      automaticFunctionCallingHistory: [taskContent, callContent, resultContent],
+      candidates: [{ finishReason: "STOP" as never, content: { role: "model", parts: [] } }],
+    });
+    const j = new CaptureJournal();
+    const res = await followUp("give me the JSON", j);
+    expect(res.outputJson).toBe('{"files":["text/slug.go"]}');
+    expect(seen).toEqual([
+      {
+        model: "m",
+        contents: [taskContent, callContent, resultContent, { role: "user", parts: [{ text: "give me the JSON" }] }],
+        config: { systemInstruction: "persona" },
+      },
+    ]);
+    expect(j.entries).toEqual([{ kind: "assistant", text: ' {"files":["text/slug.go"]}\n' }]);
+  });
+
+  it("starts from the task when there was no tool loop, keeps the model's last text, drops a dangling call", async () => {
+    const seen: unknown[] = [];
+    await geminiFollowUp(fakeGenerate("{}", seen), { model: "m", systemPrompt: "", task: "task" }, {
+      candidates: [{ content: { role: "model", parts: [{ text: "Done." }, { functionCall: { name: "shell_exec", args: {} } }] } }],
+    })("ask", new CaptureJournal());
+    expect((seen[0] as { contents: unknown }).contents).toEqual([
+      taskContent,
+      { role: "model", parts: [{ text: "Done." }] },
+      { role: "user", parts: [{ text: "ask" }] },
+    ]);
+    expect((seen[0] as { config: unknown }).config).toEqual({});
   });
 });

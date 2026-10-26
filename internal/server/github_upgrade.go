@@ -11,8 +11,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver/v4"
+
 	"github.com/footprintai/containarium/internal/releases"
+	"github.com/footprintai/containarium/pkg/version"
 )
+
+// runningVersion is the running daemon's version; a var so tests can pin it.
+var runningVersion = version.GetVersion
+
+// checkDowngrade refuses a tag older than the running version unless
+// allowDowngrade is set (#3059). Deliberately conservative: it refuses only
+// when BOTH versions parse as semver and tag < running. "latest", an empty or
+// non-semver running version (dev builds) and an unparseable tag are never
+// refused, because we cannot tell that they are older. Semver ordering applies,
+// so a pre-release (v1.2.0-rc1) is older than its release (1.2.0); build
+// metadata is ignored.
+func checkDowngrade(running, tag string, allowDowngrade bool) error {
+	if allowDowngrade || tag == "latest" {
+		return nil
+	}
+	rv, err1 := semver.ParseTolerant(running)
+	tv, err2 := semver.ParseTolerant(tag)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	if tv.LT(rv) {
+		return fmt.Errorf("refusing to downgrade: tag %s is older than the running version %s; pass --allow-downgrade (allow_downgrade) to install it deliberately", tag, running)
+	}
+	return nil
+}
 
 // githubUpgradeBinaryName matches selfupdate.go's releaseBinaryName — the
 // daemon artifact published alongside SHA256SUMS.txt on every release (#1779).
@@ -52,11 +80,17 @@ var restartAfterGitHubSwap = func(binaryPath string) {
 // and AutoUpdater.launchWatchdog (via a throwaway struct value, since it
 // only reads binaryPath).
 //
+// A tag older than the running version is refused unless allowDowngrade
+// (checkDowngrade), before any network access.
+//
 // Returns whether the binary was swapped (false only on a non-force no-op
 // match against the tag's published checksum). On success the daemon
 // restarts via restartAfterGitHubSwap, so the caller should treat a nil
 // error with changed=true as "upgrade started."
-func runGitHubUpgrade(ctx context.Context, binaryPath, tag string, force bool) (bool, error) {
+func runGitHubUpgrade(ctx context.Context, binaryPath, tag string, force, allowDowngrade bool) (bool, error) {
+	if err := checkDowngrade(runningVersion(), tag, allowDowngrade); err != nil {
+		return false, err
+	}
 	remoteChecksum, err := releases.FetchSHA256(ctx, tag, githubUpgradeBinaryName)
 	if err != nil {
 		return false, fmt.Errorf("fetch SHA256SUMS for %s: %w", tag, err)

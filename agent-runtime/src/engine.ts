@@ -41,6 +41,12 @@ export interface EngineResult {
   outputJson: string;
   // Engine-shaped usage/cost, if available.
   usage?: unknown;
+  // followUp sends one more user message in the same conversation (the same
+  // thread or session, with what the run just did in context) and returns
+  // that turn's result, journaling it to the journal it is given. Absent when
+  // the engine cannot continue the conversation. Used to re-prompt once for a
+  // missing final message (#2513; see reprompt.ts).
+  followUp?: (prompt: string, journal: JournalSink) => Promise<EngineResult>;
 }
 
 export interface Engine {

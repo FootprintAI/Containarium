@@ -157,7 +157,7 @@ type API interface {
 	GetSystemInfo() (*GetSystemInfoResponse, error)
 	GetLatestRelease() (*LatestReleaseResponse, error)
 	DebugContainer(username string) (*DebugContainerResponse, error)
-	TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error)
+	TriggerUpgrade(req TriggerUpgradeRequest) (*TriggerUpgradeResponse, error)
 	GetUpgradeStatus(upgradeID string) (*UpgradeStatusResponse, error)
 	// SetMetricsExport / GetMetricsExport (#1069) toggle and inspect
 	// opt-in export of this host's infra metrics to its cloud's native
@@ -221,7 +221,7 @@ func (cloudClient) DebugContainer(string) (*DebugContainerResponse, error) {
 	return nil, errUnsupportedOnCloud("debug_container", "use connect (exec) to inspect the box")
 }
 
-func (cloudClient) TriggerUpgrade(string, bool) (*TriggerUpgradeResponse, error) {
+func (cloudClient) TriggerUpgrade(TriggerUpgradeRequest) (*TriggerUpgradeResponse, error) {
 	return nil, errUnsupportedOnCloud("upgrade_backend", "the platform operator owns control-plane upgrades")
 }
 

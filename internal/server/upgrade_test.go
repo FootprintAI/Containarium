@@ -114,6 +114,7 @@ func TestTriggerUpgrade_LocalNoBinaryPath_GithubTag(t *testing.T) {
 // The github_tag path must work even when autoUpdater is nil (no sentinel
 // configured) — that's the point of #1028: it has no sentinel dependency.
 func TestTriggerUpgrade_GithubTag_DoesNotRequireAutoUpdater(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	// Point releases at a 404 server so the background goroutine's FetchSHA256
 	// call fails fast instead of reaching real GitHub from a unit test.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -20,27 +20,28 @@ CI checks the commands and links on this page against the real CLI
 | Mechanism | What it does | Source |
 | --- | --- | --- |
 | Sentinel auto-update | When the daemon has a sentinel URL, it checks the sentinel every 5 minutes (first check 2 minutes after start) and installs a changed binary. | [autoupdate.go](../internal/server/autoupdate.go), [dual_server.go](../internal/server/dual_server.go) |
-| On-demand upgrade | `containarium backends upgrade [backend-id]` runs the same check now. `--github-tag` installs a named GitHub release tag instead. `--force` re-installs a matching binary. | [backends_upgrade.go](../internal/cmd/backends_upgrade.go), [github_upgrade.go](../internal/server/github_upgrade.go) |
+| On-demand upgrade | `containarium backends upgrade [backend-id]` runs the same check now. `--github-tag` installs a named GitHub release tag instead; a tag older than the running version is refused unless `--allow-downgrade` is also given. The `upgrade_backend` MCP tool takes the same `github_tag` and `allow_downgrade` arguments. `--force` re-installs a matching binary. | [backends_upgrade.go](../internal/cmd/backends_upgrade.go), [github_upgrade.go](../internal/server/github_upgrade.go) |
 | Pre-swap checks | The SHA-256 is checked, then the new binary must run `version`. The running binary is renamed to `.old` and the new one moved in. | [autoupdate.go](../internal/server/autoupdate.go) |
 | Upgrade watchdog | `containariumd upgrade-watchdog` (hidden) is started by the daemon before it restarts. It waits 10 s, then polls `/health` every 5 s for 90 s. Its output is appended to `upgrade-watchdog.log` in the binary's directory (mode 0600). On success it renames `.old` to `.prev`, replacing the `.prev` of the earlier upgrade. On timeout it moves `.old` back and runs `systemctl restart containarium`. | [upgrade_watchdog.go](../internal/cmd/upgrade_watchdog.go), [autoupdate.go](../internal/server/autoupdate.go) |
 | Version overview | `containarium backends versions` lists each backend's version against the latest release. | [backends_versions.go](../internal/cmd/backends_versions.go) |
 | Container snapshots | `containarium snapshot create`, `list` and `rollback`. ZFS backends only. | [snapshot.go](../internal/cmd/snapshot.go), [container_rollback.go](../internal/server/container_rollback.go) |
 | Database backups | `containarium backup create`, `verify` and `restore`. These are logical Postgres dumps of tenant databases only (#2372). | [backup_restore.go](../internal/cmd/backup_restore.go), [DB-BACKUP-OPERATIONS.md](DB-BACKUP-OPERATIONS.md) |
 | Host recovery | `containariumd recover` rebuilds the network, pool and profile from a surviving ZFS disk. | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) |
-| Fleet deploy script | Copies one binary to the sentinel, the primary and the peers. | [deploy-binary.sh](../scripts/deploy-binary.sh) |
-| Helm upgrade lane | CI installs the previous published chart, then upgrades it to the target version. | [helm-install-upgrade.yml](../.github/workflows/helm-install-upgrade.yml), [helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh) |
+| Fleet deploy script | Copies one binary to the sentinel, the primary and the peers. On the sentinel and primary it keeps the replaced binary as `containariumd.old`, checks health after the restart, and on failure restores `.old` and stops the deploy. It starts no watchdog. | [deploy-binary.sh](../scripts/deploy-binary.sh) |
+| Helm upgrade lane | CI installs the previous published chart, upgrades it to the target version, then runs `helm rollback` to the first revision and checks that revision serves again. | [helm-install-upgrade.yml](../.github/workflows/helm-install-upgrade.yml), [helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh) |
 
 Limits a reader needs to know before relying on these:
 
 - **The watchdog only checks `/health`.** A release that answers `/health`
   but is broken in some other way stays installed. Its predecessor is kept
   as `.prev` (see Rollback), but nothing restores it automatically.
-- **`deploy-binary.sh` keeps no `.old` and starts no watchdog.** It copies
-  over the binary in place. To roll back, deploy the previous binary again.
-- **The Helm lane does not test rollback**, only install and upgrade.
-- **No downgrade check.** `--github-tag` installs any tag, older ones too
-  (`runGitHubUpgrade` compares checksums, not versions). Whether a
-  downgrade works after an upgrade has changed state is not established.
+- **The downgrade guard is conservative.** `--github-tag` refuses a tag
+  older than the running version unless `--allow-downgrade` is given. It
+  refuses only when both versions parse as semver: `latest`, a dev build
+  with a non-semver version, or an unparseable tag is not blocked. A
+  pre-release (`v1.2.0-rc1`) counts as older than its release (`1.2.0`).
+  The sentinel path has no such check. Whether a downgrade works after an
+  upgrade has changed state is not established.
   For example, the 0.116.0 retention clamp rewrites stored rows (see
   [CHANGELOG.md](../CHANGELOG.md)). Read each release's **Upgrading** notes.
 
@@ -138,10 +139,10 @@ sudo mv /usr/local/bin/containariumd.prev /usr/local/bin/containariumd
 sudo systemctl restart containarium
 ```
 
-**Manual, daemon still up.** Install the previous tag, then check again:
+**Manual, daemon still up.** Install the previous tag, then check again. `--allow-downgrade` is required because the tag is older than the running version:
 
 ```bash
-containarium backends upgrade --github-tag <previous-tag> --server http://<host>:8080
+containarium backends upgrade --github-tag <previous-tag> --allow-downgrade --server http://<host>:8080
 containarium backends versions --server http://<host>:8080
 ```
 
@@ -176,7 +177,7 @@ something a drill has shown.
 | Component | Recovered by | RTO | RPO | Bound from code or config |
 | --- | --- | --- | --- | --- |
 | Daemon binary, health check fails | Watchdog | TBD — measured by drill | No data involved | The watchdog stops waiting after 10 s + 90 s. |
-| Daemon binary, health check passes but the release is bad | `backends upgrade --github-tag <previous-tag>` | TBD — measured by drill | No data involved | — |
+| Daemon binary, health check passes but the release is bad | `backends upgrade --github-tag <previous-tag> --allow-downgrade` | TBD — measured by drill | No data involved | — |
 | Tenant container storage | `snapshot rollback` | TBD — measured by drill | TBD — measured by drill | Only as recent as the last snapshot. Nothing in this repo schedules snapshots. |
 | Tenant database | `backup restore` | TBD — measured by drill | TBD — measured by drill | The shipped timer runs daily at 02:30 ([containarium-backup.timer](../scripts/containarium-backup.timer)). WAL archiving is not provided. |
 | Whole box: files, packages, non-Postgres state | Nothing today | Not recoverable from backup | Not recoverable from backup | Backup is DB-only (#2372). Whole-box backup is in progress (#2809). |

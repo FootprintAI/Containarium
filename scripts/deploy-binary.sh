@@ -33,6 +33,9 @@
 
 set -euo pipefail
 
+# shellcheck source=lib/deploy-install.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/deploy-install.sh"
+
 BINARY="bin/containariumd-linux-amd64"
 PROJECT="${PROJECT:-<your-gcp-project>}"
 ZONE="${ZONE:-<your-zone>}"
@@ -42,6 +45,12 @@ SENTINEL_VM="${SENTINEL_VM:-<your-sentinel-vm>}"
 # different unit, e.g. PRIMARY_SERVICE=containarium-daemon).
 PRIMARY_SERVICE="${PRIMARY_SERVICE:-containarium}"
 SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
+# After each restart the new binary must prove healthy or the previous one
+# (kept as /usr/local/bin/containariumd.old) is put back and the deploy stops
+# (#3060). The primary is checked with GET <PRIMARY_HEALTH_URL> on the host;
+# the sentinel has no such endpoint, so its check is the unit being active.
+PRIMARY_HEALTH_URL="${PRIMARY_HEALTH_URL:-http://localhost:8080/health}"
+SENTINEL_HEALTH_URL="${SENTINEL_HEALTH_URL:-}"
 # Space-separated peer hostnames; defaults are placeholders.
 PEERS=(${PEERS:-<peer-a> <peer-b>})
 
@@ -187,8 +196,8 @@ verify_remote "sentinel ($SENTINEL_VM)" \
     --tunnel-through-iap --ssh-flag="-p 2222" --command
 gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" \
-    --command="sudo systemctl stop $SENTINEL_SERVICE && sleep 1 && sudo cp /tmp/containariumd /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium && sudo systemctl start $SENTINEL_SERVICE"
-echo "  Sentinel updated and restarted ($SENTINEL_SERVICE)"
+    --command="$(deploy_install_cmd "$SENTINEL_SERVICE" "$SENTINEL_HEALTH_URL")"
+echo "  Sentinel updated, restarted and healthy ($SENTINEL_SERVICE)"
 
 # 3. Deploy on primary
 echo "==> Deploying on primary ($PRIMARY_VM)..."
@@ -199,8 +208,8 @@ verify_remote "primary ($PRIMARY_VM)" \
     --tunnel-through-iap --command
 gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap \
-    --command="sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containariumd /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE"
-echo "  Primary updated and restarted ($PRIMARY_SERVICE)"
+    --command="$(deploy_install_cmd "$PRIMARY_SERVICE" "$PRIMARY_HEALTH_URL")"
+echo "  Primary updated, restarted and healthy ($PRIMARY_SERVICE)"
 
 # 4. Deploy on peers.
 # Guard the expansion: with PEERS=" " (the "primary+sentinel only" idiom) the

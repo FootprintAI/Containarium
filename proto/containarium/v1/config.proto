@@ -569,6 +569,13 @@ message TriggerUpgradeRequest {
   // air-gapped hosts, which have no GitHub egress and must keep the
   // sentinel path regardless — this field existing changes nothing for them.
   string github_tag = 3;
+
+  // Permit github_tag to name a release older than the running daemon
+  // version (a deliberate rollback). Default false: such a tag is refused
+  // with FAILED_PRECONDITION. Only both-parse-as-semver comparisons can
+  // refuse; "latest", dev builds and unparseable versions are not blocked.
+  // Has no effect on the sentinel-served path.
+  bool allow_downgrade = 4;
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
