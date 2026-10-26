@@ -509,6 +509,15 @@ documented token-generation command, listing, a successful restore test,
 denials, source preservation, and target cleanup against a real daemon
 and Incus in the `Incus create path` CI lane.
 
+`TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains
+an RPC with no recorded scope decision, and
+`TestBackupRPCScopeDecisions_Enforced` checks each recorded decision. Every
+backup RPC, including whole-box `CreateBackup`, requires `backups:read` or
+`backups:write` and refuses another tenant's data. A verifier token
+therefore also holds, for its own tenant only, the ability to create,
+restore, delete and prune backups, because `backups:write` is required to
+verify.
+
 ### Watching and alerting
 
 ```bash

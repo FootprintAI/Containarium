@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every backup RPC now has a recorded, tested scope decision** (#2401). `TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains an RPC without an entry in the decision table, and `TestBackupRPCScopeDecisions_Enforced` checks that each RPC, including whole-box `CreateBackup`, rejects a token missing its scope and rejects another tenant's data. No enforcement bug was found. `docs/DB-BACKUP-OPERATIONS.md` states that the verifier token can also create, restore, delete and prune its own tenant's backups.
 - **`GetTrackerStatus` reports the credential kind as a typed enum** (#2993). `GetTrackerStatusResponse` has a new `credential_kind` field (`TrackerCredentialKind`: `PROJECT`, `GROUP`, `PERSONAL`, or `UNSPECIFIED`), next to the unchanged `credential_breadth`. A GitLab group token and a personal token are both `BROAD` but now tell apart. GitLab fills it from the `GET /user` call the adapter already makes: a bot named `project_*` is `PROJECT`, a bot named `group_*` is `GROUP`, a non-bot account is `PERSONAL`. It is `UNSPECIFIED` when that call fails or the bot name has neither prefix. GitHub reports `PERSONAL` for a `ghp_` classic PAT only; fine-grained PATs and App installation tokens stay `UNSPECIFIED` because the token does not show whether they cover one repository or many. `containarium tracker status` prints a `kind:` line.
 
 ### Fixed
