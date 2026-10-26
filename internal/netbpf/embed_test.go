@@ -40,3 +40,14 @@ func TestResolve_PathValueIsLoadedAsFile(t *testing.T) {
 		t.Errorf("Resolve(path) took the embedded branch: %v", err)
 	}
 }
+
+func TestIsEmbeddedValue(t *testing.T) {
+	for v, want := range map[string]bool{
+		"embedded": true, "1": true, "TRUE": true, " on ": true, "Yes": true,
+		"": false, "/opt/netpolicy.bpf.o": false, "0": false, "embedded.o": false,
+	} {
+		if got := IsEmbeddedValue(v); got != want {
+			t.Errorf("IsEmbeddedValue(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
