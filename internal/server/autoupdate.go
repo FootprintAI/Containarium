@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -279,7 +280,8 @@ func (u *AutoUpdater) downloadBinary(ctx context.Context, destPath string) error
 }
 
 // RunUpgradeWatchdog polls healthURL until the daemon is healthy or timeout
-// elapses. On timeout, if binaryPath+".old" exists, it restores .old and
+// elapses. On success the previous binary (.old) is kept as .prev. On
+// timeout, if binaryPath+".old" exists, it restores .old and
 // optionally restarts the service. dryRun skips the systemctl restart.
 // This is the testable core called by both the daemon and the CLI subcommand.
 func RunUpgradeWatchdog(binaryPath, healthURL string, timeout, initialDelay, pollInterval time.Duration, dryRun bool) error {
@@ -300,7 +302,17 @@ func RunUpgradeWatchdog(binaryPath, healthURL string, timeout, initialDelay, pol
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				log.Printf("[upgrade-watchdog] daemon is healthy — upgrade succeeded")
-				_ = os.Remove(oldPath)
+				// Keep the previous binary as .prev (#3058): /health only
+				// proves liveness, so the release may still be broken and
+				// this is the only rollback binary. Overwrites the .prev of
+				// the previous upgrade.
+				if _, err := os.Stat(oldPath); err == nil {
+					if err := os.Rename(oldPath, binaryPath+".prev"); err != nil {
+						log.Printf("[upgrade-watchdog] WARNING: keep previous binary as .prev: %v", err)
+					} else {
+						log.Printf("[upgrade-watchdog] previous binary kept as %s.prev", binaryPath)
+					}
+				}
 				return nil
 			}
 		}
@@ -331,6 +343,12 @@ func RunUpgradeWatchdog(binaryPath, healthURL string, timeout, initialDelay, pol
 	return nil
 }
 
+// WatchdogLogPath is the file the detached upgrade watchdog appends its
+// output to: upgrade-watchdog.log in the binary's directory (#3058).
+func WatchdogLogPath(binaryPath string) string {
+	return filepath.Join(filepath.Dir(binaryPath), "upgrade-watchdog.log")
+}
+
 // launchWatchdog spawns the upgrade-watchdog subcommand in a detached process
 // (new session via Setsid) so it outlives the current daemon process through
 // the systemctl restart (#507). Errors are best-effort logged — a watchdog
@@ -346,6 +364,17 @@ func (u *AutoUpdater) launchWatchdog() {
 		"--health-url", healthURL,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from parent process group
+	// #3058: the child is detached, so without a file its log output (and
+	// any rollback trace) is lost. Append to a 0600 file beside the binary.
+	logPath := WatchdogLogPath(u.binaryPath)
+	if lf, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err != nil { // #nosec G304 -- derived from trusted binaryPath config
+		log.Printf("[auto-update] WARNING: cannot open watchdog log %s: %v — watchdog output will be lost", logPath, err)
+	} else {
+		_ = lf.Chmod(0o600)
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+		defer func() { _ = lf.Close() }() // child holds its own dup after Start
+	}
 	if err := cmd.Start(); err != nil {
 		log.Printf("[auto-update] WARNING: failed to launch upgrade watchdog: %v — rollback on failure will not be available", err)
 		return
