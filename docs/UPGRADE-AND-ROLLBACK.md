@@ -112,6 +112,25 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 
 ## After the upgrade: check
 
+Sentinel units are not part of the binary. The sshpiperd unit comes from
+`sshpiper.service.tmpl` or the sentinel startup script, so a binary-only
+rollout (`containarium backends upgrade`, `deploy-binary.sh`) does not change
+it. A release that adds a sshpiperd flag therefore needs the unit re-rendered,
+or the startup script re-applied, on each existing sentinel, then sshpiper
+restarted. v0.119.0 is one: it adds `--login-grace-time 90s`, and without it
+sshpiperd keeps its 30 s default and drops a login while a user approves a
+device (the approval cap is 60 s). It matters only where device approval is
+on (`ssh-authz-plugin --ssh-authz-enforce`). Check on the sentinel:
+
+```bash
+ps -eo args | grep '[s]shpiperd'
+```
+
+The line must contain `--login-grace-time 90s`. When `--ssh-authz-enforce` is
+on, the plugin also logs a `WARN ssh-authz: parent sshpiperd ...` line at
+startup if the flag is missing or shorter than 70 s (the 60 s cap plus a 10 s
+margin). Re-rendering the unit on self-update is not done (#3125).
+
 - [ ] `containarium backends versions --server http://<host>:8080` shows the target version on every backend.
 - [ ] `containarium service status` on each host shows the unit active.
 - [ ] `sudo containarium doctor` passes on each host.
