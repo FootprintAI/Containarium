@@ -83,6 +83,7 @@ func ReplaceAuthorizedKeys(username string, keys []string) (removed []string, er
 
 	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
 	akPath := filepath.Join(sshDir, "authorized_keys")
+	// #nosec G304 -- akPath is a fixed suffix under the home root; username passed isValidUsername.
 	existing, err := os.ReadFile(akPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read %s: %w", akPath, err)
@@ -145,6 +146,7 @@ func ReplaceAuthorizedKeys(username string, keys []string) (removed []string, er
 		return nil, fmt.Errorf("rename tmp -> %s: %w", akPath, err)
 	}
 	// Best-effort, as in AddAuthorizedKey.
+	// #nosec G204 -- username passed isValidUsername; the command is fixed.
 	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
 	return removed, nil
 }
