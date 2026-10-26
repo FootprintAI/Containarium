@@ -48,6 +48,11 @@ enum BackupEngine {
   // and deleted, but is never restored or restore-tested by the platform —
   // apply it with the tenant's own tooling.
   BACKUP_ENGINE_HOOK = 2;
+
+  // A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported
+  // as an Incus instance backup tarball, encrypted like any other dump. It
+  // is restored by importing it as a new box, never by a database engine.
+  BACKUP_ENGINE_BOX = 3;
 }
 
 // BackupKeyMode names who holds the key that opens an encrypted backup
