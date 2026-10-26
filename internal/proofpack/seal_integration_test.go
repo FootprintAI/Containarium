@@ -136,7 +136,8 @@ func TestSealIntegration_Tampering(t *testing.T) {
 			sealed.Seal.Parts[1].Sha256, strings.Repeat("0", 64)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Verify(ctx, s, sealed); err == nil {
+		_, err := Verify(ctx, s, sealed)
+		if err == nil {
 			t.Fatal("Verify passed a seal row edited in the database")
 		}
 		// The pack is compared with the (edited) seal row before the chain is
