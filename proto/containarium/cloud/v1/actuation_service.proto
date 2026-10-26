@@ -194,6 +194,17 @@ enum NetworkPolicyMode {
   NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied egress
 }
 
+// EgressMode is the egress allow-list's own enforcement mode, separate from
+// NetworkPolicy.mode (vendored from the cloud repo, FootprintAI cloud #3109):
+// an org soaks a narrowed egress list in LOG_ONLY without switching off the
+// cross-org drop, which stays ENFORCE. Same values as NetworkPolicyMode.
+enum EgressMode {
+  // Not set: the egress list follows NetworkPolicy.mode.
+  EGRESS_MODE_UNSPECIFIED = 0;
+  EGRESS_MODE_LOG_ONLY = 1; // log egress to unlisted destinations; drop nothing
+  EGRESS_MODE_ENFORCE = 2;  // drop egress to unlisted destinations
+}
+
 // NetworkPolicy is one org's egress policy, applied on the host by the eBPF
 // network-policy enforcer to every container of that org. It is org-scoped, not
 // per-container — all of an org's containers share it. The host writes it into
@@ -217,6 +228,11 @@ message NetworkPolicy {
   bool allow_metadata = 5;
   // Enforcement mode. Unspecified is treated as LOG_ONLY.
   NetworkPolicyMode mode = 6;
+  // Mode of the egress allow-list (egress_cidrs + egress_domains), separate
+  // from `mode` so egress can be soaked in LOG_ONLY while cross-org traffic
+  // stays dropped. UNSPECIFIED means "follow mode". Field number matches the
+  // cloud repo's contract (egress_mode = 7).
+  EgressMode egress_mode = 7;
 }
 
 // AssignmentBatch is a full-state snapshot, not a delta. Each batch
