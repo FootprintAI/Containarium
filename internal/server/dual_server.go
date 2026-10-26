@@ -2477,6 +2477,9 @@ skipAppHosting:
 	threatDetectServer.SetFindingStore(threatDetectStore)
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
+		// The watcher loads the exec-watch object from the network-policy
+		// setting, so the self-measurement attests it too (#3120).
+		containerServer.SetIntegrityExecWatch(true)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)

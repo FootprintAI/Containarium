@@ -1591,6 +1591,14 @@ holds one entry named `embedded`: the SHA-256 of the object bundled in the
 binary, which is the object the enforcer loads. With a file path, the entry is
 named by that path and digests the file.
 
+When the exec watcher is armed (the threat-detection sentry is enabled and the
+network-policy object loaded), the daemon loads a second object from the same
+setting, and `programDigests` carries one more entry for it: `execwatch-embedded`
+(the bundled exec-watch object) for the same aliases, or, with a file path, an
+entry named by the sibling `execwatch.bpf.o` path in the same directory. It is
+left out when the watcher is not armed or no exec-watch object exists to load.
+A verifier that rejects unknown `programDigests` names must accept it.
+
 ---
 
 ## References

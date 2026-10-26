@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -292,6 +293,8 @@ type ContainerServer struct {
 	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
 	// nil/empty on an unwired server still yields a (config-empty) measurement.
 	integrityConfigState map[string]string
+	// integrityExecWatch is true when the exec watcher is armed (#3120).
+	integrityExecWatch bool
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -4120,12 +4123,24 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
 	// at an object (a path on disk, or the one embedded in the binary); those
-	// loaded bytes are exactly what we attest.
-	progs, err := integrityProgramObjects(os.Getenv(appconfig.EnvNetworkPolicyBPFObject), netbpf.EmbeddedObject())
+	// loaded bytes are exactly what we attest for this object.
+	setting := os.Getenv(appconfig.EnvNetworkPolicyBPFObject)
+	progs, err := integrityProgramObjects(setting, netbpf.EmbeddedObject())
 	if err != nil {
 		return integrity.Measurement{}, err
 	}
 	in.Programs = append(in.Programs, progs...)
+
+	// The exec-watch object (#2637) is loaded from the same setting, but only
+	// when the exec watcher is armed; an object that is never loaded is not
+	// attested (#3120).
+	if s.integrityExecWatch {
+		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
+		if err != nil {
+			return integrity.Measurement{}, err
+		}
+		in.Programs = append(in.Programs, execProgs...)
+	}
 
 	// Node identity signer: the sentinel-issued peer leaf key.
 	if s.peerPool != nil {
@@ -4156,6 +4171,44 @@ func integrityProgramObjects(setting string, embedded []byte) ([]integrity.Progr
 		return []integrity.ProgramObject{{Name: "embedded", Data: embedded}}, nil
 	}
 	return []integrity.ProgramObject{{Name: setting, Path: setting}}, nil
+}
+
+// execWatchEmbeddedName is the stable programDigests name of the embedded
+// exec-watch object, whichever alias selected it (#3120).
+const execWatchEmbeddedName = "execwatch-embedded"
+
+// integrityExecWatchObjects maps the network-policy object setting to the
+// exec-watch object the exec watcher loads from it (netbpf.ExecObjectSource,
+// the same selection netbpf.ResolveExecWatch uses), so the bytes digested are
+// the bytes handed to the loader. The embedded object is digested under
+// "execwatch-embedded"; a sibling file under its own path. An empty setting
+// means no program (the watcher is only started with a non-empty setting). An
+// object the watcher cannot load (none bundled, or the sibling file missing)
+// is skipped, not an error: the watcher reports that itself as
+// `unavailable (...)` and nothing is loaded to attest. Other file errors
+// surface when the measurement digests the path.
+func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	isEmbedded, path := netbpf.ExecObjectSource(setting)
+	if isEmbedded {
+		if len(embedded) == 0 {
+			return nil, nil
+		}
+		return []integrity.ProgramObject{{Name: execWatchEmbeddedName, Data: embedded}}, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
+}
+
+// SetIntegrityExecWatch declares whether the exec watcher is armed, so the
+// self-measurement attests the exec-watch object only when it is loaded.
+func (s *ContainerServer) SetIntegrityExecWatch(enabled bool) {
+	s.integrityExecWatch = enabled
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this
