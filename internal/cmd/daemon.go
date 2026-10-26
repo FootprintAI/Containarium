@@ -359,6 +359,16 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		log.Printf("  Profile: default (configured)")
 	}
 
+	// #3130: bind the HTTP port BEFORE the core-container and Postgres
+	// waits below (up to ~2 min each), so the backend answers /health as
+	// "degraded" with the reason instead of refusing connections and
+	// looking dead. Every other path returns 503 until the gateway takes
+	// the listener over in DualServer.Start. The port can still change
+	// once the persisted daemon config loads; releaseUnlessServing then
+	// closes it and the gateway binds the final port as before.
+	early := bindStartupHealth(enableREST, "", daemonHTTPPort)
+	defer early.Close()
+
 	// Wait for core containers (postgres, caddy) to be ready before proceeding.
 	// This prevents the race condition where the daemon starts before core
 	// containers are fully booted after a spot VM preemption/restart.
@@ -389,6 +399,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			log.Printf("  Falling back to the shared client — a stuck Incus call could block this wait past its own timeout")
 			bootWaitClient = incusClient
 		}
+		early.SetReason(startupReasonCoreContainers)
 		if err := waitForCoreContainers(bootWaitClient, 2*time.Minute); err != nil {
 			log.Printf("Warning: %v", err)
 			log.Printf("  Proceeding anyway — some features may be unavailable")
@@ -476,26 +487,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if postgresConnString != "" {
 		log.Printf("Waiting for PostgreSQL to become reachable...")
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		for {
-			pingPool, pingErr := pgxpool.New(waitCtx, postgresConnString)
-			if pingErr == nil {
-				if err := pingPool.Ping(waitCtx); err == nil {
-					pingPool.Close()
-					log.Printf("PostgreSQL is reachable")
-					break
-				}
-				pingPool.Close()
-			}
-			select {
-			case <-waitCtx.Done():
-				log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
-				goto pgWaitDone
-			case <-time.After(5 * time.Second):
-				log.Printf("  still waiting for PostgreSQL...")
-			}
+		if waitForPostgres(waitCtx, postgresConnString, 5*time.Second, early.SetReason) {
+			log.Printf("PostgreSQL is reachable")
+			early.SetReason(startupReasonInitialising)
+		} else {
+			// /health keeps "postgres unavailable" until the gateway
+			// takes over.
+			log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
 		}
-	pgWaitDone:
 		waitCancel()
+	} else {
+		early.SetReason(startupReasonInitialising)
 	}
 
 	// Load persisted daemon config from PostgreSQL (values saved by previous runs).
@@ -653,6 +655,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		CertsDir:            daemonCertsDir,
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
+		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,
