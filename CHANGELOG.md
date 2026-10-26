@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The integrity self-measurement now digests the embedded network-policy BPF object** (part 1 of #3079). With `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=embedded` (or `1`/`true`/`yes`/`on`) the heartbeat failed every time with `digest program object "embedded": open embedded: no such file or directory`, because the selector was opened as a file path. The measurement now hashes the same embedded bytes the enforcer loads, under the stable program name `embedded` for every alias. Behaviour change: on these hosts `programDigests` was never produced before, so it now carries one `embedded` entry whose value is the SHA-256 of the bundled object; hosts using a file path are unchanged. A build with no bundled object still reports an error, now naming the setting. Part 2 (peer-pki) is not changed here.
+
 ## [0.119.0] - 2026-10-26
 
 ### Added
