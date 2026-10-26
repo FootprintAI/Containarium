@@ -191,6 +191,16 @@ type Manager struct {
 	dir          string   // host backup directory (dumps for LOCAL + sidecar index for all)
 	maxDumpBytes int64
 	clock        func() time.Time
+
+	// Whole-box backups (#2801). box is nil on a manager built without
+	// WithBoxOps, and then CreateBox refuses. boxStagingDirs are the
+	// directories Incus stages an export in before streaming it (counted
+	// by the free-space pre-flight); maxBoxBytes is the BOX cap, separate
+	// from maxDumpBytes; freeSpace is statDiskSpace outside tests.
+	box            BoxOps
+	boxStagingDirs []string
+	maxBoxBytes    int64
+	freeSpace      func(path string) (diskSpace, error)
 	// wrapper, when set, wraps a per-backup age identity with a KMS
 	// (#2402): backups default to KeyModeManaged (or KeyModeBoth when a
 	// legacy recipient is also given). Nil keeps today's behaviour byte
@@ -213,7 +223,7 @@ func WithWrapper(w secrets.KMSClient) Option {
 // uploader may be nil when no object store is configured; GCS backups
 // then return a clear error.
 func NewManager(ops ContainerOps, uploader Uploader, dir string, opts ...Option) *Manager {
-	m := &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now, maxDumpBytes: DefaultMaxDumpBytes}
+	m := &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now, maxDumpBytes: DefaultMaxDumpBytes, maxBoxBytes: DefaultMaxBoxBytes, freeSpace: statDiskSpace}
 	for _, o := range opts {
 		o(m)
 	}
@@ -361,18 +371,8 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch opts.Destination {
-	case DestLocal:
-		// ok
-	case DestGCS:
-		if m.uploader == nil {
-			return nil, fmt.Errorf("gcs destination requested but no object-store uploader is configured on this daemon")
-		}
-		if !strings.HasPrefix(opts.GCSBucket, "gs://") {
-			return nil, fmt.Errorf("gcs_bucket must be a gs:// URI, got %q", opts.GCSBucket)
-		}
-	default:
-		return nil, fmt.Errorf("unknown or unspecified destination %q", opts.Destination)
+	if err := m.checkDestination(opts.Destination, opts.GCSBucket); err != nil {
+		return nil, err
 	}
 
 	id := fmt.Sprintf("%s-%s-%s", opts.Username, dbLabel, m.now().UTC().Format("20060102T150405Z"))
@@ -447,33 +447,15 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 
 	// Wrap the managed identity before staging any bytes. Encryption and
 	// hashing below stream directly to the staging file.
-	recordedRecipient := strings.TrimSpace(opts.AgeRecipient)
-	var recipients []string
-	var wrappedKey []byte
-	var kekID string
-	if mode == KeyModeManaged || mode == KeyModeBoth {
-		managedRecipient, wrapped, kek, err := wrapNewIdentity(context.Background(), m.wrapper)
-		if err != nil {
-			return nil, err
-		}
-		wrappedKey, kekID = wrapped, kek
-		recipients = append(recipients, managedRecipient)
-		if mode == KeyModeManaged {
-			// No legacy recipient on the file; the record names the
-			// ephemeral one so an operator can check an unwrapped
-			// identity against it.
-			recordedRecipient = managedRecipient
-		}
+	plan, err := m.planEncryption(mode, opts.AgeRecipient)
+	if err != nil {
+		return nil, err
 	}
-	if mode == KeyModeBoth || mode == KeyModeAgeRecipient {
-		recipients = append(recipients, opts.AgeRecipient)
-	}
-	encrypted := len(recipients) > 0
 	ext := ".dump"
-	if encrypted {
+	if plan.encrypted() {
 		ext = ".dump.age"
 	}
-	localDump, size, checksum, err := m.stageDump(data, id, ext, recipients)
+	localDump, size, checksum, err := m.stageDump(data, id, ext, plan.recipients, m.maxDumpBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -487,44 +469,113 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		Destination:   opts.Destination,
 		Engine:        engine,
 		RelationCount: relationCount,
-		Encrypted:     encrypted,
 	}
-	if encrypted {
-		record.AgeRecipient = recordedRecipient
-	}
-	if mode == KeyModeManaged || mode == KeyModeBoth {
-		record.WrappedKey = wrappedKey
-		record.KEKID = kekID
-		record.KeyMode = mode
-	}
+	plan.apply(record)
 	if hookMode {
 		record.Hook = strings.TrimSpace(opts.Hook)
 		record.HookFormat = hookFormat
 	}
+	if err := m.commit(record, localDump, opts.GCSBucket, ext); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
 
-	// 3. For off-host destinations, ship the staged dump and drop the
-	//    local copy. The sidecar index stays local for every destination;
-	//    for GCS a copy also goes next to the dump (#2402), so the bucket
-	//    alone — dump plus wrapped key — is enough to restore after a
-	//    host loss. Dump first, then sidecar: a sidecar in the bucket
-	//    always describes an object that is already there.
-	switch opts.Destination {
+// checkDestination refuses a destination this daemon cannot write to,
+// before anything is produced.
+func (m *Manager) checkDestination(dest Destination, gcsBucket string) error {
+	switch dest {
+	case DestLocal:
+		return nil
+	case DestGCS:
+		if m.uploader == nil {
+			return fmt.Errorf("gcs destination requested but no object-store uploader is configured on this daemon")
+		}
+		if !strings.HasPrefix(gcsBucket, "gs://") {
+			return fmt.Errorf("gcs_bucket must be a gs:// URI, got %q", gcsBucket)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown or unspecified destination %q", dest)
+	}
+}
+
+// encryptionPlan is what a resolved key mode turns into: the age recipients
+// the stored file is encrypted to, and the key fields the record carries.
+type encryptionPlan struct {
+	mode              KeyMode
+	recipients        []string
+	recordedRecipient string
+	wrappedKey        []byte
+	kekID             string
+}
+
+func (p encryptionPlan) encrypted() bool { return len(p.recipients) > 0 }
+
+// planEncryption wraps a fresh managed identity when the mode needs one
+// (#2402). It runs before any bytes are staged.
+func (m *Manager) planEncryption(mode KeyMode, ageRecipient string) (encryptionPlan, error) {
+	plan := encryptionPlan{mode: mode, recordedRecipient: strings.TrimSpace(ageRecipient)}
+	if mode == KeyModeManaged || mode == KeyModeBoth {
+		managedRecipient, wrapped, kek, err := wrapNewIdentity(context.Background(), m.wrapper)
+		if err != nil {
+			return encryptionPlan{}, err
+		}
+		plan.wrappedKey, plan.kekID = wrapped, kek
+		plan.recipients = append(plan.recipients, managedRecipient)
+		if mode == KeyModeManaged {
+			// No legacy recipient on the file; the record names the
+			// ephemeral one so an operator can check an unwrapped
+			// identity against it.
+			plan.recordedRecipient = managedRecipient
+		}
+	}
+	if mode == KeyModeBoth || mode == KeyModeAgeRecipient {
+		plan.recipients = append(plan.recipients, ageRecipient)
+	}
+	return plan, nil
+}
+
+// apply sets the record's encryption fields from the plan.
+func (p encryptionPlan) apply(r *Record) {
+	r.Encrypted = p.encrypted()
+	if r.Encrypted {
+		r.AgeRecipient = p.recordedRecipient
+	}
+	if p.mode == KeyModeManaged || p.mode == KeyModeBoth {
+		r.WrappedKey = p.wrappedKey
+		r.KEKID = p.kekID
+		r.KeyMode = p.mode
+	}
+}
+
+// commit moves a staged file to its destination and writes the record.
+//
+// For off-host destinations it ships the staged file and drops the local
+// copy. The sidecar index stays local for every destination; for GCS a copy
+// also goes next to the dump (#2402), so the bucket alone (dump plus
+// wrapped key) is enough to restore after a host loss. Dump first, then
+// sidecar: a sidecar in the bucket always describes an object that is
+// already there.
+func (m *Manager) commit(record *Record, localDump, gcsBucket, ext string) error {
+	id := record.ID
+	switch record.Destination {
 	case DestLocal:
 		record.Location = localDump
 	case DestGCS:
-		destURI := strings.TrimRight(opts.GCSBucket, "/") + "/" + id + ext
+		destURI := strings.TrimRight(gcsBucket, "/") + "/" + id + ext
 		if err := m.uploader.Upload(localDump, destURI); err != nil {
 			_ = os.Remove(localDump)
-			return nil, fmt.Errorf("failed to upload dump to %s: %w", destURI, err)
+			return fmt.Errorf("failed to upload dump to %s: %w", destURI, err)
 		}
 		_ = os.Remove(localDump)
 		record.Location = destURI
 	}
 
 	if err := m.writeSidecar(record); err != nil {
-		return nil, err
+		return err
 	}
-	if opts.Destination == DestGCS {
+	if record.Destination == DestGCS {
 		sidecarURI := sidecarObjectURI(record.Location, id)
 		if err := m.uploader.Upload(m.sidecarPath(id), sidecarURI); err != nil {
 			// A dump object without its sidecar is not something the
@@ -532,10 +583,10 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 			// caller retries and gets a complete backup or a clean error.
 			_ = m.uploader.Delete(record.Location)
 			_ = os.Remove(m.sidecarPath(id))
-			return nil, fmt.Errorf("failed to upload backup metadata to %s: %w", sidecarURI, err)
+			return fmt.Errorf("failed to upload backup metadata to %s: %w", sidecarURI, err)
 		}
 	}
-	return record, nil
+	return nil
 }
 
 // sidecarObjectURI is where a GCS record's sidecar lives in the bucket:
@@ -725,6 +776,9 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		target = t
 	}
 
+	if r.Engine == EngineBox {
+		return errBoxRecordNotDatabase(r.ID, "restored")
+	}
 	if r.Engine == EngineHook {
 		// An opaque hook backup is a stream the platform never understood;
 		// it cannot be pg_restore'd. Refuse before touching the target (#1831).

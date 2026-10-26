@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -129,10 +131,11 @@ func TestCreateBackup_BoxScopeRefusals(t *testing.T) {
 	}
 }
 
-// A well-formed BOX request clears validation and stops at the data path,
-// which lands in #2801: Unimplemented with a message naming it, and no
-// container command run. Every encryption mode is accepted.
-func TestCreateBackup_BoxScopeValidPassesValidation(t *testing.T) {
+// A well-formed BOX request clears validation and runs the whole-box data
+// path (#2801): the record says BOX, and no command runs inside the box (the
+// export goes through Incus, not through exec). Every encryption mode the
+// daemon can honour is accepted.
+func TestCreateBackup_BoxScopeCreatesARecord(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*pb.CreateBackupRequest)
@@ -147,20 +150,85 @@ func TestCreateBackup_BoxScopeValidPassesValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clearBackupKMSEnv(t)
-			s, ops, _ := newRestoreTargetServer(t)
+			s, ops, box := newBoxServer(t)
 			req := boxRequest()
+			req.AgeRecipient = testBoxRealRecipient(t)
 			tc.mutate(req)
-			_, err := s.CreateBackup(restoreCtx("ops", true), req)
-			if status.Code(err) != codes.Unimplemented {
-				t.Fatalf("err = %v, want Unimplemented (validation passed, data path is #2801)", err)
+			resp, err := s.CreateBackup(restoreCtx("ops", true), req)
+			if err != nil {
+				t.Fatalf("CreateBackup: %v", err)
 			}
-			if msg := status.Convert(err).Message(); !strings.Contains(msg, "#2801") {
-				t.Errorf("message %q does not point at #2801", msg)
+			if len(resp.Records) != 1 || resp.Record == nil || resp.Record.Id != resp.Records[0].Id {
+				t.Fatalf("response = %+v, want one record in both shapes", resp)
+			}
+			r := resp.Record
+			if r.Scope != pb.BackupScope_BACKUP_SCOPE_BOX || r.Engine != pb.BackupEngine_BACKUP_ENGINE_BOX {
+				t.Errorf("record scope %v engine %v, want BOX/BOX", r.Scope, r.Engine)
+			}
+			if !r.Encrypted || r.KeyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT || r.Database != "alice-container" {
+				t.Errorf("record = %+v", r)
+			}
+			if !strings.Contains(resp.Message, r.Id) {
+				t.Errorf("message %q does not name the backup", resp.Message)
+			}
+			if strings.Join(box.exported, ",") != "alice-container" {
+				t.Errorf("exported %v, want alice-container", box.exported)
 			}
 			if len(ops.touched) != 0 {
 				t.Errorf("BOX create ran container commands: %v", ops.touched)
 			}
 		})
+	}
+}
+
+// A daemon whose backup core has no Incus export cannot take a BOX backup,
+// and says so as a precondition, not an internal error.
+func TestCreateBackup_BoxScopeWithoutExportIsFailedPrecondition(t *testing.T) {
+	clearBackupKMSEnv(t)
+	s, _, _ := newRestoreTargetServer(t)
+	req := boxRequest()
+	req.AgeRecipient = testBoxRealRecipient(t)
+	_, err := s.CreateBackup(restoreCtx("ops", true), req)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("err = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestBoxCreateStatus(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want codes.Code
+	}{
+		{fmt.Errorf("wrapped: %w", backup.ErrInsufficientSpace), codes.ResourceExhausted},
+		{fmt.Errorf("wrapped: %w", backup.ErrDumpTooLarge), codes.ResourceExhausted},
+		{fmt.Errorf("wrapped: %w", backup.ErrBoxUnavailable), codes.FailedPrecondition},
+		{errors.New("export alice-container: connection reset"), codes.Internal},
+	} {
+		if got := status.Code(boxCreateStatus(tc.err)); got != tc.want {
+			t.Errorf("boxCreateStatus(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+// The BOX cap and the Incus staging dir come from the daemon's environment;
+// a cap that does not parse stops the daemon rather than being ignored.
+func TestBoxBackupOptionsFromEnv(t *testing.T) {
+	for _, tc := range []struct {
+		maxBytes, incusDir string
+		wantErr            bool
+	}{
+		{"", "", false},
+		{"1073741824", "/srv/incus/backups", false},
+		{"lots", "", true},
+		{"0", "", true},
+		{"-5", "", true},
+	} {
+		t.Setenv(envBackupBoxMaxBytes, tc.maxBytes)
+		t.Setenv(envIncusBackupsDir, tc.incusDir)
+		_, err := boxBackupOptionsFromEnv(nil)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("max=%q dir=%q: err = %v, wantErr %v", tc.maxBytes, tc.incusDir, err, tc.wantErr)
+		}
 	}
 }
 
@@ -233,6 +301,13 @@ func TestCreateBackup_UnsetScopeIsDatabase(t *testing.T) {
 
 // Every record the daemon returns says what it captured. A database
 // record — including one written before the field existed — reads DATABASE.
+func TestRecordToProto_BoxRecordIsBox(t *testing.T) {
+	got := recordToProto(&backup.Record{ID: "alice-box-1", Engine: backup.EngineBox})
+	if got.Scope != pb.BackupScope_BACKUP_SCOPE_BOX || got.Engine != pb.BackupEngine_BACKUP_ENGINE_BOX {
+		t.Errorf("box record maps to scope %v engine %v", got.Scope, got.Engine)
+	}
+}
+
 func TestRecordToProto_ScopeIsDatabase(t *testing.T) {
 	for _, r := range []backup.Record{
 		{ID: "pg", Engine: backup.EnginePostgres},
