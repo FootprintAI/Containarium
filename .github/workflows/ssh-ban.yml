@@ -57,6 +57,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ssh-upstream-proof"
           gh release download v1.6.1 --repo tg123/sshpiper \
             --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-upstream-proof"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-upstream-proof/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ssh-upstream-proof/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
             -C "$RUNNER_TEMP/ssh-upstream-proof" sshpiperd plugins/yaml
           go build -o "$RUNNER_TEMP/ssh-upstream-proof/containariumd" ./cmd/containariumd
@@ -145,6 +147,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ssh-ban"
           gh release download v1.6.1 --repo tg123/sshpiper \
             --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-ban"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-ban/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ssh-ban/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
             -C "$RUNNER_TEMP/ssh-ban" sshpiperd plugins/yaml plugins/failtoban
       - name: Build production plugin and prove real SSH behavior
@@ -203,6 +207,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ssh-authz"
           gh release download v1.6.1 --repo tg123/sshpiper \
             --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-authz"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-authz/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ssh-authz/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
             -C "$RUNNER_TEMP/ssh-authz" sshpiperd plugins/yaml
       - name: Build production plugin and run the real-chain tests
