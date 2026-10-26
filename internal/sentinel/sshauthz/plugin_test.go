@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -350,19 +351,37 @@ func denyRes(reason pb.SSHDenyReason) *pb.AuthorizeSSHResponse {
 type approvalHarness struct {
 	p     *Plugin
 	cfg   libplugin.SshPiperPluginConfig
+	mu    sync.Mutex // guards the fields below; the callbacks may run concurrently
 	clock time.Time
 	reqs  []*pb.AuthorizeSSHRequest
 	logs  []string
 	sink  *recordSink
+	// sleeps counts the poll waits; sleepHook, when set, runs after each
+	// with its ordinal, outside the lock, so it may call back into the plugin.
+	sleeps    int
+	sleepHook func(n int)
 }
 
 func newApprovalHarness(t *testing.T, f routerFixture, enforce bool, first *pb.AuthorizeSSHResponse, polls []*pb.AuthorizeSSHResponse, pollErr error) *approvalHarness {
 	t.Helper()
 	h := &approvalHarness{clock: time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC), sink: &recordSink{}}
-	cfg := Config{Enforce: enforce, Recorder: h.sink, Now: func() time.Time { return h.clock }, Sleep: func(d time.Duration) { h.clock = h.clock.Add(d) },
-		Logf:     func(format string, args ...any) { h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
+	cfg := Config{Enforce: enforce, Recorder: h.sink,
+		Now: func() time.Time { h.mu.Lock(); defer h.mu.Unlock(); return h.clock },
+		Sleep: func(d time.Duration) {
+			h.mu.Lock()
+			h.clock = h.clock.Add(d)
+			h.sleeps++
+			n, hook := h.sleeps, h.sleepHook
+			h.mu.Unlock()
+			if hook != nil {
+				hook(n)
+			}
+		},
+		Logf:     func(format string, args ...any) { h.mu.Lock(); defer h.mu.Unlock(); h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
 		Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend-1", true, nil }),
 		Authorizer: authorizerFunc(func(_ context.Context, _ string, r *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
 			h.reqs = append(h.reqs, r)
 			if len(h.reqs) == 1 {
 				return first, nil
@@ -459,6 +478,10 @@ func TestDeviceApproval(t *testing.T) {
 					t.Fatalf("methods after PENDING = %q", m)
 				}
 				up, err = h.cfg.KeyboardInteractiveCallback(conn, func(user, instr, question string, echo bool) (string, error) {
+					if question == "" {
+						// A zero-prompt liveness probe (#3084), not a prompt.
+						return "", nil
+					}
 					instruction, prompts = instr, append(prompts, question)
 					h.clock = h.clock.Add(tt.answerDelay)
 					return "", tt.answerErr
