@@ -121,7 +121,7 @@ Do this on the sentinel and **every** daemon in the target domain.
    # Which EnvironmentFile= entries (later wins)
    systemctl show -p EnvironmentFiles containarium-sentinel   # or: containarium
    # (the glob must expand as root: /etc/containarium can be 0700)
-   sudo sh -c "grep -l 'CONTAINARIUM_SENTINEL_' /etc/containarium/*.env /etc/containarium/env.secrets" 2>/dev/null
+   sudo sh -c "grep -l 'CONTAINARIUM_SENTINEL_' /etc/containarium/*.env /etc/containarium/env.secrets 2>/dev/null"
 
    # Effective value, as a short fingerprint only (never print the secret).
    # `sudo cat` reads as root; a `< /proc/$pid/environ` redirect would run as you.
@@ -190,33 +190,49 @@ Do this on the sentinel and **every** daemon in the target domain.
 Never put a secret in `sed -i 's|...=<secret>|...'`, `VAR=<secret> command`, or
 any other argument or inline assignment: it lands in `ps`, shell history and
 sudo's `COMMAND=` syslog line. Use this flow instead. The value goes in through
-the terminal or a pipe, and only a variable *name* appears in the command:
+the terminal or a pipe, and the script below contains only a variable *name*.
+The value must be hex or base64 (`openssl rand -hex 32`): systemd's
+`EnvironmentFile` parsing mangles quotes, backslashes and trailing spaces, so
+anything else would not be read back as written.
+
+Save this as `set-secret.sh` on each host (it holds no secret) and run it as
+root:
+
+```sh
+set -e
+VAR=CONTAINARIUM_SENTINEL_AUTH_SECRET          # or CONTAINARIUM_SENTINEL_ADMIN_SECRET
+f=/etc/containarium/env.secrets                # the file Step 0.2 showed is effective
+IFS= read -r v                                 # the value arrives on stdin
+tmp=$(mktemp -p /etc/containarium)
+chown --reference="$f" "$tmp"; chmod --reference="$f" "$tmp"
+{ grep -v "^$VAR=" "$f" || true; printf '%s=%s\n' "$VAR" "$v"; } > "$tmp"
+mv "$tmp" "$f"
+```
+
+Run it with the value on stdin:
 
 ```bash
-# On the host, as an operator with sudo. VAR is the name only.
-read -rs -p 'new secret: ' NEW_SECRET; echo        # `read` is a shell builtin: not in ps or history
-printf '%s\n' "$NEW_SECRET" | sudo VAR=CONTAINARIUM_SENTINEL_AUTH_SECRET sh -c '
-  set -e
-  f=/etc/containarium/env.secrets              # the file Step 0.2 showed is effective
-  IFS= read -r v
-  tmp=$(mktemp -p /etc/containarium)
-  chown --reference="$f" "$tmp"; chmod --reference="$f" "$tmp"
-  { grep -v "^$VAR=" "$f" || true; printf "%s=%s\n" "$VAR" "$v"; } > "$tmp"
-  mv "$tmp" "$f"
-'
+read -rs -p 'new secret: ' NEW_SECRET; echo      # `read` is a shell builtin: not in ps or history
+printf '%s\n' "$NEW_SECRET" | sudo sh set-secret.sh   # `printf` is a builtin too
 unset NEW_SECRET
 ```
 
-`printf` is also a builtin, so the value never appears in an argument list.
-Use `VAR=CONTAINARIUM_SENTINEL_ADMIN_SECRET` for the ADMIN secret. If the host
-also has `/etc/containarium/sentinel-auth.env` and Step 0.2 showed it is loaded,
-repeat with `f=` set to that file.
+If the host also loads `/etc/containarium/sentinel-auth.env` (Step 0.2), run it
+again with `f=` set to that file.
 
 **Converging.** The value to carry is the source domain's, and it exists only in
 a file on a source host. Pipe it host to host rather than copying it through a
-terminal or a file on your workstation: replace the `read`/`printf` pair with
-`ssh <source-host> "sudo sed -n 's/^CONTAINARIUM_SENTINEL_AUTH_SECRET=//p' /etc/containarium/env.secrets" | ssh <target-host> "sudo VAR=... sh -c '...'"`
-(the second `ssh` runs the same block as above, reading the value from stdin).
+terminal or a file on your workstation:
+
+```bash
+ssh <source-host> "sudo sed -n 's/^CONTAINARIUM_SENTINEL_AUTH_SECRET=//p' /etc/containarium/env.secrets" \
+  | ssh <target-host> "sudo sh /path/to/set-secret.sh"
+```
+
+The secret travels on stdin, never in an argument. Because stdin carries it,
+sudo cannot prompt for a password on either host (the prompt would read the
+secret): both need passwordless sudo, which Step 0 of the provisioning docs
+already requires for these hosts.
 
 ## Procedure 1 — ADMIN secret (no mismatch window on the platform)
 
@@ -316,13 +332,15 @@ Caveats from the code:
   ed25519 runbook's steps 4 or 5. This migration changes only
   sentinel→daemon authentication; daemon registration and peer PKI bootstrap
   still require the matching HMAC secret on both sides.
-- The anonymous-box door runs under its **own** unit, `sshpiper-anon.service`
-  (`terraform/modules/containarium/scripts/sshpiper-anon.service.tmpl`), which
-  loads `/etc/containarium/env.secrets` itself. Restarting the sentinel does not
-  change its environment, so restart it too after the sentinel:
-  `sudo systemctl restart sshpiper-anon`. Until then every `ssh new.<domain>`
-  login signs with the old secret and fails. The restart drops established door
-  sessions, so do it in the same maintenance window.
+- The anonymous-box door (`sshpiper-anon.service`, installed only when the
+  sentinel has an `anon_door_addr`; check with `systemctl cat sshpiper-anon`)
+  is `PartOf=` and `BindsTo=` the sentinel unit
+  (`terraform/modules/containarium/scripts/sshpiper-anon.service.tmpl`), so the
+  sentinel restart in step 3 restarts it too and it re-reads
+  `/etc/containarium/env.secrets`. Nothing extra to run, but the restart drops
+  established door sessions, so keep it inside the maintenance window. Under
+  this procedure the door keeps working throughout, because it signs with the
+  same ed25519 key as the sentinel.
 
 ## Procedure B — AUTH secret, direct (short window)
 
@@ -350,10 +368,12 @@ last, so do all hosts of the domain **in one sitting** with the commands ready.
    peer-to-peer until its next restart.
 
    ```bash
-   sudo systemctl restart containarium-sentinel   # sentinel, first
-   sudo systemctl restart sshpiper-anon           # the anonymous-box door (own unit); drops door sessions
+   sudo systemctl restart containarium-sentinel   # sentinel, first (also restarts sshpiper-anon, if installed)
    sudo systemctl restart containarium            # then each daemon host: primary, peers, BYOC
    ```
+
+   The anonymous-box door follows the sentinel restart on its own (it is
+   `PartOf=` the sentinel unit) and drops its established sessions when it does.
 
    The window is the time between the sentinel restart and the last daemon
    restart. Start the daemon restarts as soon as the sentinel is back, not after
@@ -379,7 +399,10 @@ contains such a host.
   with the same user count as the baseline. A `rejected the signed /authorized-keys request with 401` line (the keysync message that names the secret mismatch) means that backend still disagrees.
 - Daemons quiet: `journalctl -u containarium --since '-5min' | grep -iE 'sentinel-hmac|sentinel auth failed|signature verify failed|\[primary-register\].*failed|\[peer-pki\] bootstrap failed'` prints nothing. The last two cover the daemon-to-sentinel direction.
 - Peer PKI came up on every daemon: `journalctl -u containarium -b | grep '\[peer-pki\] bootstrap complete'` prints a line newer than the daemon's restart. A daemon without it is on plain-HTTP peer calls until restarted again.
-- The anonymous-box door follows the new secret: `ssh new.<domain>` logs in.
+- Only if the sentinel has an anonymous-box door (`systemctl cat sshpiper-anon`
+  succeeds): it restarted with the sentinel
+  (`systemctl show -p ActiveEnterTimestamp sshpiper-anon` is newer than the
+  secret change) and `ssh new.<domain>` logs in.
 - Fingerprints (Step 0.2) are now identical on the sentinel and every daemon of the domain, and equal to the intended value.
 - An existing tenant can still SSH in, and a freshly created box gets a pipe on the next sync.
 - Update the Terraform variables (`sentinel_auth_secret`, and `sentinel_admin_secret` if you rotated it) so a reboot does not revert the host (fact 8).
@@ -399,21 +422,27 @@ contains such a host.
    rolled back, restore its `sentinel_admin_secret` input separately.
 2. **Restore the effective host files.** Restore the Step 0.3 snapshot on every
    host of the domain, then restart in the same order as the forward procedure
-   (sentinel, then `sshpiper-anon`, then daemons, for either procedure).
+   (sentinel, then daemons, for either procedure; the door follows the sentinel).
    Restore as root, picking the snapshot stamp you took in Step 0.3:
 
    ```bash
    sudo sh -c '
      set -e
      stamp=<YYYYMMDDHHMM>
+     n=0
      for f in env.secrets sentinel-auth.env; do
        b="/root/sentinel-secret-backup/$f.$stamp"
-       [ -f "$b" ] && cp -p "$b" "/etc/containarium/$f"
+       if [ -f "$b" ]; then cp -p "$b" "/etc/containarium/$f"; n=$((n + 1)); fi
      done
+     [ "$n" -gt 0 ] || { echo "FAIL: no snapshot with stamp $stamp; nothing restored" >&2; exit 1; }
+     ls -l /etc/containarium/env.secrets /etc/containarium/sentinel-auth.env 2>/dev/null || true
    '
    ```
- The
-   Terraform startup scripts write `sentinel_auth_secret` into
+
+   Confirm the Step 0.2 fingerprint on the restored host matches the value you
+   recorded before the rotation.
+
+   The Terraform startup scripts write `sentinel_auth_secret` into
    `/etc/containarium/env.secrets` when they run. A Terraform apply updates the
    instance metadata/startup-script input, but the repo has no live reconcile
    for this secret; a host-only rollback can therefore be overwritten the next
