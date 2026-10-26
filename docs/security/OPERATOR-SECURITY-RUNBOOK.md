@@ -1600,9 +1600,13 @@ TSA), then sends the TSA a request over the SHA-256 of the canonical record
 `certReq` set. It stores the reply's token only after checking it: valid
 signature, a signing certificate with the timeStamping extended key usage that
 chains to the bundle at the token's time, the hash it sent, and the nonce it
-sent. Tokens are stored one per checkpoint as
+sent. Every token and reply must be strict DER of at most 256 KiB before it is
+parsed, and a stored token that is not a regular file or is over that size is
+reported as invalid without being read whole. Tokens are stored one per checkpoint as
 `<anchor-path>.tsa/<20-digit checkpoint>.tsr` (DER). If the TSA is
-unreachable, refuses, or returns a token that fails any of those checks,
+unreachable, refuses (a `grantedWithMods` reply counts as a refusal, so a TSA
+that only answers that way is retried on every tick and never stamps), or
+returns a token that fails any of those checks,
 nothing is stored, the error is logged, and the next tick retries; there is no
 fallback TSA and no unstamped "success". The TSA can be combined with
 `CONTAINARIUM_AUDIT_ANCHOR_BUCKET`; the bucket and the TSA are written
@@ -1655,7 +1659,11 @@ It does **not** prove or protect against:
   TSA you meant: anything that chains to the bundle is accepted. Keep the
   bundle to the TSA's own root.
 - **The TSA's policy and accuracy.** The token's policy OID and accuracy are
-  not checked; the time is the TSA's claim.
+  not checked; the time is the TSA's claim. Nor are the token's eContentType
+  (`id-ct-TSTInfo`) or whether the TSA reuses a serial number.
+- **Strict RFC 3161 certificate profile.** The signing certificate must
+  allow the timeStamping extended key usage, but one that also lists other
+  usages, or does not mark it critical, is accepted.
 - **An altered `containarium` binary** on the host that performs the check.
   Run it from a machine you trust, with a copy of the anchor file and tokens.
 

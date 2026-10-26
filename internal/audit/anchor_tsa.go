@@ -76,7 +76,65 @@ var (
 	ErrTSAImprintMismatch = errors.New("audit: timestamp token covers a different anchor record")
 	// ErrTSANonceMismatch: the reply's nonce is not the one sent.
 	ErrTSANonceMismatch = errors.New("audit: timestamp reply nonce does not match the request")
+
+	// ErrTSANotStrictDER: a token or reply failed the strict DER gate that
+	// runs before any pkcs7 parse. Always joined with ErrTSATokenInvalid.
+	ErrTSANotStrictDER = errors.New("audit: timestamp token is not strict DER")
+	// ErrTSATokenTooLarge: a token, reply or token file is over
+	// maxTSAResponseBytes. Always joined with ErrTSATokenInvalid.
+	ErrTSATokenTooLarge = errors.New("audit: timestamp token is too large")
+	// ErrTSATokenFileRefused: a token path is not a regular file (a FIFO, a
+	// device, a symlink or a directory), so it is not opened for reading.
+	// Always joined with ErrTSATokenInvalid.
+	ErrTSATokenFileRefused = errors.New("audit: timestamp token path is not a regular file")
 )
+
+// strictDERGate runs checkStrictDER and tags a failure with both sentinels.
+// Every byte string handed to timestamp or pkcs7 passes through it first.
+func strictDERGate(b []byte) error {
+	if err := checkStrictDER(b); err != nil {
+		return fmt.Errorf("%w: %w: %v", ErrTSATokenInvalid, ErrTSANotStrictDER, err)
+	}
+	return nil
+}
+
+// tokenLstat is os.Lstat; a test replaces it to simulate the path being
+// swapped for a FIFO between the Lstat and the open.
+var tokenLstat = os.Lstat
+
+// readTokenFile reads a stored token without trusting the file: anything
+// but a regular file is refused before it is opened (a FIFO would block the
+// read), the open itself does not block, and at most maxTSAResponseBytes+1
+// bytes are read, so a huge or sparse file is refused, not loaded.
+func readTokenFile(path string) ([]byte, error) {
+	path = filepath.Clean(path)
+	fi, err := tokenLstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %w: %s is %v", ErrTSATokenInvalid, ErrTSATokenFileRefused, path, fi.Mode().Type())
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|tokenOpenNonBlock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	// Re-check on the open descriptor: the path may have been swapped.
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %w: %s is %v", ErrTSATokenInvalid, ErrTSATokenFileRefused, path, fi.Mode().Type())
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxTSAResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTSAResponseBytes {
+		return nil, fmt.Errorf("%w: %w: %s is larger than %d bytes", ErrTSATokenInvalid, ErrTSATokenTooLarge, path, maxTSAResponseBytes)
+	}
+	return data, nil
+}
 
 // canonicalAnchor is the exact record a TSA token covers. Field order is
 // fixed by the struct, so the bytes are stable.
@@ -149,14 +207,18 @@ func verifyTSATokenSignature(token []byte, trust *x509.CertPool) (TSATokenInfo, 
 	if trust == nil {
 		return TSATokenInfo{}, fmt.Errorf("%w: no trust bundle", ErrTSAUntrustedSigner)
 	}
-	if len(token) == 0 || len(token) > maxTSAResponseBytes {
-		return TSATokenInfo{}, fmt.Errorf("%w: token is empty or too large", ErrTSATokenInvalid)
+	if len(token) == 0 {
+		return TSATokenInfo{}, fmt.Errorf("%w: token is empty", ErrTSATokenInvalid)
+	}
+	if len(token) > maxTSAResponseBytes {
+		return TSATokenInfo{}, fmt.Errorf("%w: %w: %d bytes", ErrTSATokenInvalid, ErrTSATokenTooLarge, len(token))
 	}
 	// The pinned pkcs7 transcodes BER before parsing, and that transcoder
-	// predates upstream's fix for children that overrun their parent. Only
-	// strict DER reaches it.
-	if err := checkStrictDER(token); err != nil {
-		return TSATokenInfo{}, fmt.Errorf("%w: %v", ErrTSATokenInvalid, err)
+	// predates upstream's fixes for children that overrun their parent
+	// (digitorus/pkcs7#23). Only strict DER reaches it. Moving to the patched
+	// upstream needs Go 1.27: #3153.
+	if err := strictDERGate(token); err != nil {
+		return TSATokenInfo{}, err
 	}
 	// timestamp.Parse verifies the signature with the embedded certificate.
 	ts, err := recoverParse(func() (*timestamp.Timestamp, error) { return timestamp.Parse(token) })
@@ -371,7 +433,7 @@ func (s *TSAAnchorSink) tokenPath(checkpoint int64) string {
 func (s *TSAAnchorSink) PublishRoot(ctx context.Context, checkpoint int64, root string) error {
 	digest := AnchorRecordDigest(checkpoint, root)
 	path := s.tokenPath(checkpoint)
-	existing, err := os.ReadFile(filepath.Clean(path))
+	existing, err := readTokenFile(path)
 	switch {
 	case err == nil:
 		return s.checkExisting(existing, digest, checkpoint, path)
@@ -385,7 +447,7 @@ func (s *TSAAnchorSink) PublishRoot(ctx context.Context, checkpoint int64, root 
 	}
 	if err := writeTokenOnce(s.dir, path, token); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, rerr := os.ReadFile(filepath.Clean(path)); rerr == nil {
+			if existing, rerr := readTokenFile(path); rerr == nil {
 				return s.checkExisting(existing, digest, checkpoint, path)
 			}
 		}
@@ -424,8 +486,11 @@ func (s *TSAAnchorSink) stamp(ctx context.Context, digest []byte) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	if err := checkStrictDER(reply); err != nil {
-		return nil, fmt.Errorf("%w: reply from %s: %v", ErrTSATokenInvalid, s.url, err)
+	if len(reply) > maxTSAResponseBytes {
+		return nil, fmt.Errorf("reply from %s: %w: %w", s.url, ErrTSATokenInvalid, ErrTSATokenTooLarge)
+	}
+	if err := strictDERGate(reply); err != nil {
+		return nil, fmt.Errorf("reply from %s: %w", s.url, err)
 	}
 	// ParseResponse turns a non-granted PKIStatus into an error.
 	ts, err := recoverParse(func() (*timestamp.Timestamp, error) { return timestamp.ParseResponse(reply) })
@@ -516,7 +581,7 @@ func (s *TSAAnchorSink) LastPublished(ctx context.Context) (int64, string, bool,
 	if !found {
 		return 0, "", false, fmt.Errorf("audit: timestamp token for checkpoint %d has no record in the local anchor file", cp)
 	}
-	token, err := os.ReadFile(filepath.Clean(s.tokenPath(cp)))
+	token, err := readTokenFile(s.tokenPath(cp))
 	if err != nil {
 		return 0, "", false, fmt.Errorf("audit: read timestamp token: %w", err)
 	}

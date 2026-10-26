@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -347,28 +348,68 @@ func TestVerifyTSAToken(t *testing.T) {
 // pkcs7's BER transcoder at the pinned version predates the upstream fix for
 // children that overrun their parent; the strict DER check rejects those
 // inputs before pkcs7 sees them. Inputs from the upstream regression test.
-func TestCheckStrictDER_RejectsMalformedEncodings(t *testing.T) {
-	bad := map[string][]byte{
-		"primitive content":       {0x30, 0x02, 0x04, 0x01, 0x41},
-		"constructed content":     {0x30, 0x02, 0x30, 0x02, 0x05, 0x00},
-		"overlapping siblings":    {0x30, 0x06, 0x30, 0x02, 0x30, 0x02, 0x05, 0x00},
-		"child long length":       {0x30, 0x02, 0x04, 0x81, 0x80},
+// hostileDER are encodings the strict DER gate must refuse before pkcs7's
+// BER transcoder sees them: the upstream regression inputs from
+// digitorus/pkcs7#23 (ber_security_test.go and the malformed-BER no-panic
+// test), plus DER-rule violations of our own.
+func hostileDER() map[string][]byte {
+	deepIndefinite := append([]byte{0x30, 0x02}, bytes.Repeat([]byte{0x30, 0x80}, 502)...)
+	return map[string][]byte{
+		// upstream TestBer2DerParentBoundaries
+		"primitive content":      {0x30, 0x02, 0x04, 0x01, 0x41},
+		"constructed content":    {0x30, 0x02, 0x30, 0x02, 0x05, 0x00},
+		"overlapping siblings":   {0x30, 0x06, 0x30, 0x02, 0x30, 0x02, 0x05, 0x00},
+		"child length byte":      {0x30, 0x01, 0x05, 0x00},
+		"child high tag":         {0x30, 0x02, 0x1f, 0x81, 0x00, 0x00},
+		"child long length":      {0x30, 0x02, 0x04, 0x81, 0x80},
+		"EOC outside parent":     {0x30, 0x02, 0x30, 0x80, 0x00, 0x00},
+		"EOC split at parent":    {0x30, 0x03, 0x30, 0x80, 0x00, 0x00},
+		"indefinite ancestor":    {0x30, 0x80, 0x30, 0x02, 0x04, 0x01, 0x41, 0x00, 0x00},
+		"32 bit length overflow": {0x30, 0x84, 0x7f, 0xff, 0xff, 0xff},
+		// upstream TestBer2DerRejectsBeforeReadingOutsideParent
+		"502-deep indefinite run": deepIndefinite,
+		// DER rules
 		"indefinite length":       {0x30, 0x80, 0x05, 0x00, 0x00, 0x00},
 		"indefinite inside":       {0x30, 0x04, 0x30, 0x80, 0x00, 0x00},
-		"32 bit length overflow":  {0x30, 0x84, 0x7f, 0xff, 0xff, 0xff},
 		"trailing data":           {0x05, 0x00, 0x00},
 		"non-minimal long length": {0x04, 0x81, 0x01, 0x41},
 	}
-	for name, in := range bad {
+}
+
+// The gate must run in VerifyTSAToken before any parse: every hostile input
+// fails with ErrTSANotStrictDER, which only the gate produces. (A pkcs7 parse
+// error alone would carry ErrTSATokenInvalid but not this.)
+func TestCheckStrictDER_RejectsMalformedEncodings(t *testing.T) {
+	for name, in := range hostileDER() {
 		if err := checkStrictDER(in); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
-		if _, err := VerifyTSAToken(in, x509.NewCertPool(), make([]byte, 32)); !errors.Is(err, ErrTSATokenInvalid) {
-			t.Errorf("%s: VerifyTSAToken err = %v, want ErrTSATokenInvalid", name, err)
+		_, err := VerifyTSAToken(in, x509.NewCertPool(), make([]byte, 32))
+		if !errors.Is(err, ErrTSANotStrictDER) || !errors.Is(err, ErrTSATokenInvalid) {
+			t.Errorf("%s: VerifyTSAToken err = %v, want ErrTSANotStrictDER and ErrTSATokenInvalid", name, err)
 		}
 	}
 	if err := checkStrictDER([]byte{0x30, 0x02, 0x05, 0x00}); err != nil {
 		t.Fatalf("valid DER rejected: %v", err)
+	}
+}
+
+// The gate must run in stamp before timestamp.ParseResponse: a hostile reply
+// fails with ErrTSANotStrictDER and stores nothing.
+func TestTSASink_HostileReplyIsRefusedByTheDERGate(t *testing.T) {
+	a := newValidTestTSA(t, "a")
+	for name, in := range hostileDER() {
+		t.Run(name, func(t *testing.T) {
+			file, sink, fake := newTSAFixture(t, a, a)
+			fake.garbage = in
+			err := NewTeeSink(file, sink).PublishRoot(context.Background(), 10, "root-10")
+			if !errors.Is(err, ErrTSANotStrictDER) {
+				t.Fatalf("err = %v, want ErrTSANotStrictDER", err)
+			}
+			if entries, _ := os.ReadDir(sink.TokenDir()); len(entries) != 0 {
+				t.Fatalf("token directory holds %d entries after a hostile reply", len(entries))
+			}
+		})
 	}
 }
 

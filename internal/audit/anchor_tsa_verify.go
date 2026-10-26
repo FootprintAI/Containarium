@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 )
@@ -86,6 +85,9 @@ type TSAAnchorFinding struct {
 	Kind       TSAFindingKind
 	Checkpoint int64
 	Detail     string
+	// Err is the verification error behind a token failure, for errors.Is
+	// (ErrTSANotStrictDER, ErrTSATokenTooLarge, ...); nil otherwise.
+	Err error
 }
 
 // TSAAnchorReport is the result of VerifyAnchorsAgainstTSA. Failures make
@@ -158,17 +160,22 @@ func VerifyAnchorsAgainstTSA(ctx context.Context, chain ChainStore, local *FileS
 				Detail: "a timestamp token exists for this checkpoint but the local anchor file has no record of it"})
 			continue
 		}
-		token, err := os.ReadFile(filepath.Clean(filepath.Join(dir, tsaTokenName(cp))))
-		if err != nil {
+		token, err := readTokenFile(filepath.Join(dir, tsaTokenName(cp)))
+		switch {
+		case errors.Is(err, ErrTSATokenInvalid):
+			// Oversized, or swapped for a non-regular file after listing.
+			r.Failures = append(r.Failures, TSAAnchorFinding{Kind: TSAFindingTokenInvalid, Checkpoint: cp, Detail: err.Error(), Err: err})
+			continue
+		case err != nil:
 			return r, fmt.Errorf("audit: read timestamp token for checkpoint %d: %w", cp, err)
 		}
 		info, err := verifyTSATokenSignature(token, trust)
 		switch {
 		case errors.Is(err, ErrTSAUntrustedSigner):
-			r.Failures = append(r.Failures, TSAAnchorFinding{Kind: TSAFindingUntrustedSigner, Checkpoint: cp, Detail: err.Error()})
+			r.Failures = append(r.Failures, TSAAnchorFinding{Kind: TSAFindingUntrustedSigner, Checkpoint: cp, Detail: err.Error(), Err: err})
 			continue
 		case err != nil:
-			r.Failures = append(r.Failures, TSAAnchorFinding{Kind: TSAFindingTokenInvalid, Checkpoint: cp, Detail: err.Error()})
+			r.Failures = append(r.Failures, TSAAnchorFinding{Kind: TSAFindingTokenInvalid, Checkpoint: cp, Detail: err.Error(), Err: err})
 			continue
 		}
 		matches := true
