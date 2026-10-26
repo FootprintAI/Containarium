@@ -124,6 +124,36 @@ The size cap (256 GiB by default for BOX, configurable per daemon, with a pre-fl
 
 **Overlap with #1157.** #1157 proposes replacing `CreateBackupRequest.connection` with an engine `oneof`. This slice does not touch `connection`. It adds `scope` alongside it, so either #1157 option still applies, and BOX simply requires the connection, whatever its shape, to be absent.
 
+### Whole-box export (#2801, PR A)
+
+**The seam.** `incus.Backend.ExportInstance(name) (io.ReadCloser, error)` and `ImportInstance(name, pool, r, ImportOptions)`. Both use the Incus Go client's instance-backup API and stream through an `io.Pipe`. The daemon writes no temp file of its own. A BOX record carries `BACKUP_ENGINE_BOX`.
+- The export is **non-optimized**: a portable tarball, not a `zfs send` stream, so it restores onto any pool driver.
+- It is **instance-only**, so snapshot history is excluded.
+- It does not set root-only, so attached volumes are kept.
+- The import requires a name, so Incus never takes the archived one (possibly the original box's). The imported box is left stopped.
+
+**Two server paths.** A server with the `direct_backup` API extension streams the tarball as it produces it. The Incus 6.0 LTS package that Ubuntu 24.04 ships (and the lane runs) does not have that extension. There, the export creates a stored backup in Incus's own backups directory (`/var/lib/incus/backups` on a default install), with a 6-hour expiry in case the daemon dies mid-export. The export streams that backup and deletes it when the reader is closed. On 6.0 LTS, Incus stages one full compressed copy of the box on the host before the first byte arrives. The free-space pre-flight for the 256 GiB BOX cap has to count that staging area as well as our own.
+
+**Is a live export consistent? Yes, on ZFS: it is point-in-time.** For a non-optimized backup of a filesystem volume, the Incus ZFS driver (`BackupVolume` in `driver_zfs_volumes.go`) takes a temporary read-only snapshot and reads the tarball from it. The source comment says this is "to ensure the backup taken is consistent". The lane observed it: while a RUNNING box was exported, a `<dataset>@temp_ro-<uuid>` snapshot appeared on the box's dataset. No snapshot was left afterwards, and the test asserts that. "Point-in-time" means crash-consistent: what a power cut would leave on disk. Application-level quiescing (flushing a database inside the box) is not part of it. The snapshot-then-copy decision of 2026-10-20 is therefore met by Incus itself; the daemon does not need its own snapshot step on ZFS.
+
+**What the tarball contains** (lane, Incus 6.0.0, base Ubuntu 24.04 box: 189 MB gzip, exported in about 60 s):
+
+| Entry | What it is |
+|---|---|
+| `backup/index.yaml` | Incus's backup index (name, backend, pool, snapshot list, which is empty with instance-only) |
+| `backup/container/backup.yaml` | The instance's config and devices, plus its pool and volume definitions. Incus needs it to import |
+| `backup/container/metadata.yaml`, `templates/` | The image metadata and templates the instance was created from |
+| `backup/container/rootfs/...` | The root filesystem as read from the snapshot |
+
+The compression is the server default (gzip unless the host sets `backups.compression_algorithm`).
+
+**Excludes: Incus has none, so the daemon has to apply them.** The lane found probe files under `/tmp`, `/var/tmp` and `/var/cache` in the tarball (`rootfs/tmp/...` and so on). `/run` was not in it: inside a running box `/run` is a tmpfs mount, which a dataset snapshot cannot see, so it is excluded for free. Incus's backup API has no per-path exclude. The remaining excludes therefore have to be applied to the stream. The default for PR B (not decided here) is a streaming tar filter between `ExportInstance` and encryption:
+- drop the *contents* of `backup/container/rootfs/{tmp,var/tmp,var/cache}/`;
+- keep the directory entries themselves, so the restored box still has those directories with their modes;
+- re-emit everything else unchanged.
+
+The filter has to decompress and recompress the stream. The alternative, deleting the files inside the box before the export, would modify a tenant's running box and is rejected. The config and device manifest decided on #2800 can be taken from `backup.yaml`, which is already in the stream.
+
 ## Test strategy
 
 | Component | Tests |
@@ -133,6 +163,7 @@ The size cap (256 GiB by default for BOX, configurable per daemon, with a pre-fl
 | Encryption behaviour (shipped) | Incus lane, real pool: create/list/delete with the key genuinely unloaded via `PostStop`; rollback restores real file content and is refused when the key is unavailable |
 | **Clone (#1160c)** | Unit: cross-tenant is unexpressible in the request shape; key-unavailable maps to `FailedPrecondition` naming custody; destination-name collision refused. **Lane, before implementation:** does a same-pool `incus copy` produce a CoW clone or a full copy, and does the result land in the tenant's encryptionroot? |
 | **Two registries** | Lane: create an Incus instance snapshot, then assert what `ListContainerSnapshots` reports — the naming question above |
+| Whole-box export seam (#2801 PR A) | Unit: both export paths and the import against a fake Incus server, plus the `incustest` mock's round trip (`TestExportImportRoundTripMock`); twelve mutations, all caught. Lane: `TestIntegrationIncusExportImport` exports a RUNNING ZFS-backed box, deletes it, imports it under a new name, compares file digests, and records the snapshot and tarball findings above |
 
 The clone row deliberately puts a lane test **before** the implementation. That ordering is what turned this revision from a plausible constraint into a disproved one.
 
@@ -166,3 +197,4 @@ The clone row deliberately puts a lane test **before** the implementation. That 
 | 2026-08-16 | drafted with Claude (`agent-c9aced4b`) | Initial draft, answering #1160's service-ownership question so #1202 could be unblocked. Status: proposed. |
 | 2026-08-16 | revised with Claude (`agent-c9aced4b`) | Ownership **accepted** — implemented and merged (#1381, #1383); #1202 closed. **Clone section rewritten**: the lane (#1384) disproved this doc's premise that ZFS confines a clone to its origin's encryptionroot, so clone moves from `zfs clone` to `incus copy` and the cross-tenant refusal moves to the daemon. Added the two-snapshot-registry finding against merged code. Corrected the CLI namespace to `containarium snapshot`. |
 | 2026-10-25 | revised with Claude (`agent-48362e6a`) | #2800: `BackupService` is no longer database-only. Amended "Not `BackupService`" and added the whole-box section: the `BackupScope` contract, destination and key-mode reuse, plaintext forbidden for BOX, and what a BOX backup includes and excludes. |
+| 2026-10-26 | revised with Claude (`agent-332dbdd5`) | #2801 PR A: added "Whole-box export". It covers the streamed export/import seam and the two server paths (`direct_backup` or a stored backup on Incus 6.0 LTS). It records the lane's findings that a live ZFS export is point-in-time (Incus takes a temporary read-only snapshot) and what the tarball contains, and why the excludes must be applied as a stream filter. |

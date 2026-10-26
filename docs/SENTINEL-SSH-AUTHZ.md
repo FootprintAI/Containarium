@@ -44,8 +44,11 @@ nothing for them, so each session is recorded once. The `target` on both
 records is the upstream the plugin routed to when it accepted the offer, not
 a fresh read of `config.yaml`, so a file keysync re-renders during the
 session cannot put the `open` row on one backend and the `close` row on
-another. Each refusal appends a `denied`
-JSONL record (`enforced=true`, `user_id` when the daemon knows it,
+another. The one exception is a session whose pending decision was evicted
+from the plugin's bounded stash (see
+[SENTINEL-SSH-SESSION-AUDIT.md](./SENTINEL-SSH-SESSION-AUDIT.md)): it has no
+recorded route, so its `target` comes from a fresh read of the config. Each
+refusal appends a `denied` JSONL record (`enforced=true`, `user_id` when the daemon knows it,
 `deny_reason`, key fingerprint) to `--records-file`. The shipper delivers
 it as an `ssh_session_denied` audit row. The backend keeps one row per
 session and phase, so a connection that is refused several times (a client
@@ -107,10 +110,12 @@ keys, so a client could offer one of those first and then log in with a
 denied key that was still in the static `authorized_keys`. In enforce mode
 the plugin now routes every offer itself and never defers, so each offer on
 a connection is checked here. A denied key is refused whatever was offered
-before it. sshpiperd also dispatches password, keyboard-interactive and none
-attempts to the plugin the cursor is on; this plugin offers publickey only
-and refuses those itself, so a client that tries another method first cannot
-move the cursor either. Three tests check this against a real sshpiperd:
+before it. Trying another method first does not move the cursor either, and
+never did: sshpiperd v1.6.1 only advertises the methods the current plugin
+implements, and this plugin offers publickey only. Its refusals of password,
+keyboard-interactive and none are defence in depth (pinned by the unit test
+`TestPublicKeyIsTheOnlyMethod`), not a fix for a past bypass. Three tests
+check the outcomes against a real sshpiperd:
 `TestIntegrationEnforceMultiOfferGap` (a certificate from an untrusted CA,
 then the denied key), `TestIntegrationEnforceAllowThenDeny` (an allowed
 key, of which the client holds only the public half, then the denied key)

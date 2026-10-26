@@ -120,6 +120,12 @@ sudo systemctl restart containarium
 sudo systemctl restart containarium-sentinel
 ```
 
+This order is for an ordinary restart. When the secret itself is **changing**,
+restart the sentinel first instead: a daemon that starts with the new secret
+while the sentinel still has the old one gets 401 from its one-shot peer-cert
+request and stays on plain-HTTP peer calls until its next restart. See the
+[rotation runbook](./SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md) (Procedure B).
+
 ## Upgrading from < v0.19.0
 
 1. Generate the cluster secret (above) if you don't already have one.
