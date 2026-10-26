@@ -5,9 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -151,6 +154,9 @@ func connCountingServer(t *testing.T, statuses ...int) (srv *httptest.Server, co
 
 func TestRESTActuation_RecyclesConnectionAfterRepeated5xx(t *testing.T) {
 	srv, conns := connCountingServer(t, 502, 502, 502, 200)
+	var logs syncBuf
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	r := newRESTActuation(srv.URL, "tok")
 	ctx := context.Background()
 	for i := 0; i < recycleAfter5xx; i++ {
@@ -164,8 +170,22 @@ func TestRESTActuation_RecyclesConnectionAfterRepeated5xx(t *testing.T) {
 	if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
 		t.Fatalf("heartbeat after recycle: %v", err)
 	}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat %d after redial: %v", i, err)
+		}
+	}
 	if got := conns.Load(); got != 2 {
-		t.Errorf("connections after recycle = %d, want 2 (fresh dial)", got)
+		t.Errorf("connections after recycle + 3 more requests = %d, want 2 (one fresh dial, no repeated close)", got)
+	}
+	r.mu.Lock()
+	pending := r.recyclePending
+	r.mu.Unlock()
+	if pending {
+		t.Error("recyclePending still set after the recycle was honoured")
+	}
+	if got := strings.Count(logs.String(), "closing pooled connections"); got != 1 {
+		t.Errorf("recycle log lines = %d, want 1", got)
 	}
 }
 
@@ -207,18 +227,27 @@ func TestRESTActuation_RecycleConcurrent(t *testing.T) {
 	srv, _ := connCountingServer(t, 502)
 	r := newRESTActuation(srv.URL, "tok")
 	const workers, iters = 16, 5
+	var badErrs atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iters; j++ {
-				_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
-				_, _ = r.ReportHostStatus(context.Background(), &cloudv1.ReportHostStatusRequest{})
+				_, e1 := r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+				_, e2 := r.ReportHostStatus(context.Background(), &cloudv1.ReportHostStatusRequest{})
+				for _, e := range []error{e1, e2} {
+					if e == nil || !strings.Contains(e.Error(), "502") {
+						badErrs.Add(1)
+					}
+				}
 			}
 		}()
 	}
 	wg.Wait()
+	if n := badErrs.Load(); n != 0 {
+		t.Errorf("%d calls did not return the 502 error", n)
+	}
 	// Every call is a 502, so the counter cycles 1,2,0,...: after N calls it
 	// must be N mod K. A lost update (missing lock) breaks this.
 	total := workers * iters * 2
@@ -266,16 +295,48 @@ func TestRESTActuation_RecyclesHTTP2Connection(t *testing.T) {
 	if got := conns.Load(); got != 1 {
 		t.Fatalf("connections before recycle = %d, want 1", got)
 	}
-	// The h2 client releases a finished stream asynchronously; a real
-	// heartbeat tick is 30s later, so give it a moment like the tick would.
-	time.Sleep(50 * time.Millisecond)
-	if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
-		t.Fatalf("heartbeat after recycle: %v", err)
+	// The h2 client releases a finished stream asynchronously (a real
+	// heartbeat tick is 30s later), so the close may find the connection
+	// still busy. Re-arm the recycle and retry until a redial, bounded.
+	deadline := time.Now().Add(2 * time.Second)
+	for conns.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no redial within 2s; connections = %d", conns.Load())
+		}
+		r.mu.Lock()
+		r.recyclePending = true
+		r.mu.Unlock()
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat after recycle: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+			t.Fatalf("heartbeat %d after redial: %v", i, err)
+		}
 	}
 	if got := conns.Load(); got != 2 {
-		t.Errorf("connections after recycle = %d, want 2", got)
+		t.Errorf("connections after redial + 3 more requests = %d, want 2", got)
 	}
 	if nonH2.Load() {
 		t.Error("a request was not HTTP/2; the test no longer pins the h2 path")
 	}
+}
+
+// syncBuf is a goroutine-safe log sink.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

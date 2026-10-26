@@ -79,7 +79,8 @@ type restActuation struct {
 const recycleAfter5xx = 3
 
 // noteResponse updates the consecutive-5xx counter for one completed HTTP
-// exchange and recycles the pooled connections when the threshold is hit.
+// exchange and flags a recycle when the threshold is hit; the next request
+// closes the idle connections (see recycleIfPending).
 // Only a 5xx response counts as a failure: 4xx (e.g. a 401 from a bad bearer)
 // is the server answering correctly and says nothing about the connection, so
 // it neither counts nor resets. Any other status is a success and resets.
@@ -207,8 +208,8 @@ func (r *restActuation) do(httpReq *http.Request, path string, out proto.Message
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
-	// After the body is closed the connection is idle, so a recycle here
-	// closes it rather than racing the exchange that just finished.
+	// A recycle is only flagged here; the next request closes the idle
+	// connections, once the stream just finished has been released.
 	r.noteResponse(resp.StatusCode)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("cloud-rest: %s %s: %d %s", httpReq.Method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
