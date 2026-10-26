@@ -148,6 +148,7 @@ func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
 	  "reachable": true,
 	  "credentialValid": true,
 	  "credentialBreadth": "TRACKER_CREDENTIAL_BREADTH_BROAD",
+	  "credentialKind": "TRACKER_CREDENTIAL_KIND_GROUP",
 	  "credentialScopes": ["repo", "read:org"],
 	  "credentialExpiresAt": "2027-05-01T00:00:00Z"
 	}`
@@ -181,6 +182,9 @@ func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
 	}
 	if resp.GetCredentialBreadth() != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
 		t.Errorf("CredentialBreadth = %v, want BROAD", resp.GetCredentialBreadth())
+	}
+	if resp.GetCredentialKind() != pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP {
+		t.Errorf("CredentialKind = %v, want GROUP", resp.GetCredentialKind())
 	}
 	if len(resp.GetCredentialScopes()) != 2 {
 		t.Errorf("CredentialScopes = %v, want 2 entries", resp.GetCredentialScopes())

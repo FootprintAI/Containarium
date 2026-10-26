@@ -1585,6 +1585,12 @@ systemd `Environment=` or `EnvironmentFile` to a Go duration such as `30s`,
 back to that default; values below `30s` are clamped to `30s` to avoid a log
 flood. The daemon logs the effective interval when the heartbeat starts.
 
+When `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` selects the built-in object
+(`embedded`, `1`, `true`, `yes` or `on`), the measurement's `programDigests`
+holds one entry named `embedded`: the SHA-256 of the object bundled in the
+binary, which is the object the enforcer loads. With a file path, the entry is
+named by that path and digests the file.
+
 ---
 
 ## References
