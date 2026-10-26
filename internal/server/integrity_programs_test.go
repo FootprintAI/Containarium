@@ -3,8 +3,10 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,7 +132,7 @@ func TestIntegrityExecWatchObjects(t *testing.T) {
 	})
 }
 
-func TestComputeSelfMeasurement_ExecWatchOnlyWhenArmed(t *testing.T) {
+func TestComputeSelfMeasurement_ExecWatchOnlyWhenLoaded(t *testing.T) {
 	dir := t.TempDir()
 	netObj := filepath.Join(dir, "netpolicy.bpf.o")
 	for name, b := range map[string]string{netObj: "n", filepath.Join(dir, netbpf.ExecObjectName): "e"} {
@@ -139,23 +141,61 @@ func TestComputeSelfMeasurement_ExecWatchOnlyWhenArmed(t *testing.T) {
 		}
 	}
 	t.Setenv(appconfig.EnvNetworkPolicyBPFObject, netObj)
-	names := func(armed bool) []string {
+	count := func(probe func() bool) int {
 		s := &ContainerServer{}
-		s.SetIntegrityExecWatch(armed)
+		if probe != nil {
+			s.SetIntegrityExecWatch(probe)
+		}
 		m, err := s.computeSelfMeasurement()
 		if err != nil {
 			t.Fatal(err)
 		}
-		var out []string
-		for _, p := range m.ProgramDigests {
-			out = append(out, p.Name)
+		return len(m.ProgramDigests)
+	}
+	// Real watchers: constructed-but-never-started (enforcer nil, or load
+	// failed) reports not running; a started one is running.
+	unavailable := NewExecWatcher(nil)
+	unavailable.setStatus(execTelemetryUnavailable(errors.New("no BTF")))
+	loaded := NewExecWatcher(nil)
+	loaded.setStatus(execTelemetryOK)
+
+	cases := []struct {
+		name  string
+		probe func() bool
+		want  int
+	}{
+		{"no watcher wired", nil, 1},
+		{"constructed, never started (enforcer nil)", NewExecWatcher(nil).Running, 1},
+		{"constructed but unavailable", unavailable.Running, 1},
+		{"loaded", loaded.Running, 2},
+	}
+	for _, c := range cases {
+		if got := count(c.probe); got != c.want {
+			t.Errorf("%s: %d program digests, want %d", c.name, got, c.want)
 		}
-		return out
 	}
-	if got := names(false); len(got) != 1 || got[0] != netObj {
-		t.Fatalf("unarmed: %v", got)
+	// Live: the same server follows the watcher's status between heartbeats.
+	w := NewExecWatcher(nil)
+	s := &ContainerServer{}
+	s.SetIntegrityExecWatch(w.Running)
+	w.setStatus(execTelemetryOK)
+	m, _ := s.computeSelfMeasurement()
+	w.setStatus(execTelemetryUnavailable(errors.New("ring consumer exited")))
+	m2, _ := s.computeSelfMeasurement()
+	if len(m.ProgramDigests) != 2 || len(m2.ProgramDigests) != 1 {
+		t.Errorf("live probe: %d then %d", len(m.ProgramDigests), len(m2.ProgramDigests))
 	}
-	if got := names(true); len(got) != 2 {
-		t.Fatalf("armed: %v", got)
+}
+
+// The wiring line in NewDualServer connects the constructed watcher to the
+// measurement; deleting it must fail a test (the line lives in a function too
+// large to construct in a unit test).
+func TestDualServerWiresExecWatcherIntoMeasurement(t *testing.T) {
+	src, err := os.ReadFile("dual_server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "containerServer.SetIntegrityExecWatch(execWatcher.Running)") {
+		t.Fatal("NewDualServer no longer wires execWatcher.Running into the integrity self-measurement (#3120)")
 	}
 }

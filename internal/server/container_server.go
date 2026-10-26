@@ -293,8 +293,9 @@ type ContainerServer struct {
 	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
 	// nil/empty on an unwired server still yields a (config-empty) measurement.
 	integrityConfigState map[string]string
-	// integrityExecWatch is true when the exec watcher is armed (#3120).
-	integrityExecWatch bool
+	// integrityExecWatch reports, per measurement, whether the exec watcher
+	// actually loaded and attached its object (#3120). Nil means no watcher.
+	integrityExecWatch func() bool
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -4132,9 +4133,9 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	in.Programs = append(in.Programs, progs...)
 
 	// The exec-watch object (#2637) is loaded from the same setting, but only
-	// when the exec watcher is armed; an object that is never loaded is not
-	// attested (#3120).
-	if s.integrityExecWatch {
+	// when the exec watcher actually loaded it (read live each measurement); an
+	// object that never loaded is not attested (#3120).
+	if s.integrityExecWatch != nil && s.integrityExecWatch() {
 		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
 		if err != nil {
 			return integrity.Measurement{}, err
@@ -4186,7 +4187,9 @@ const execWatchEmbeddedName = "execwatch-embedded"
 // object the watcher cannot load (none bundled, or the sibling file missing)
 // is skipped, not an error: the watcher reports that itself as
 // `unavailable (...)` and nothing is loaded to attest. Other file errors
-// surface when the measurement digests the path.
+// surface when the measurement digests the path. The stat and the digest are
+// separate reads: the digest is of the file at measurement time, recomputed on
+// every heartbeat.
 func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
 	setting = strings.TrimSpace(setting)
 	if setting == "" {
@@ -4205,10 +4208,11 @@ func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.Pro
 	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
 }
 
-// SetIntegrityExecWatch declares whether the exec watcher is armed, so the
-// self-measurement attests the exec-watch object only when it is loaded.
-func (s *ContainerServer) SetIntegrityExecWatch(enabled bool) {
-	s.integrityExecWatch = enabled
+// SetIntegrityExecWatch wires a live probe of whether the exec watcher loaded
+// and attached its object, so the self-measurement attests the exec-watch
+// object only while it is loaded. Pass ExecWatcher.Running.
+func (s *ContainerServer) SetIntegrityExecWatch(loaded func() bool) {
+	s.integrityExecWatch = loaded
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this

@@ -2478,8 +2478,9 @@ skipAppHosting:
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
 		// The watcher loads the exec-watch object from the network-policy
-		// setting, so the self-measurement attests it too (#3120).
-		containerServer.SetIntegrityExecWatch(true)
+		// setting, so the self-measurement attests it too while it is loaded
+		// (#3120); Running is read live, so a failed load attests nothing.
+		containerServer.SetIntegrityExecWatch(execWatcher.Running)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
