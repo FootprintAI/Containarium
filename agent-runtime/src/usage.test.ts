@@ -26,4 +26,13 @@ describe("sumUsage (#3107 item 2)", () => {
     sumUsage(a, { n: 2 });
     expect(a).toEqual({ n: 1 });
   });
+  it("treats __proto__ as an ordinary key, never touching the prototype", () => {
+    const a = JSON.parse('{"x":1}') as unknown;
+    const b = JSON.parse('{"__proto__":{"n":2},"x":2}') as unknown;
+    const sum = sumUsage(a, b) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(sum)).toBe(Object.prototype);
+    expect(({} as { n?: number }).n).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(sum, "__proto__")?.value).toEqual({ n: 2 });
+    expect(sum.x).toBe(3);
+  });
 });

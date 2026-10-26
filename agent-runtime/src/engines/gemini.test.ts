@@ -173,8 +173,9 @@ describe("geminiFollowUp", () => {
 
   // #3107: a history that ends on a function response, with a last model turn
   // that holds only calls (dropped), replays as two consecutive user turns.
-  // Pinned as it is: the follow-up does not merge them, because the API's
-  // handling of this shape is checked on dev (#3107 item 7), not here.
+  // This pins the CURRENT behaviour, not a blessed one: the follow-up does not
+  // merge them, and whether the real API accepts this shape is unverified until
+  // the dev check (#3107 item 7). Change the test if that check says to merge.
   it("replays two consecutive user turns when the model's last turn left nothing to replay", async () => {
     const seen: unknown[] = [];
     await geminiFollowUp(fakeGenerate("{}", seen), { model: "m", systemPrompt: "", task: "task" }, {
