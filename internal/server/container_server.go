@@ -3087,6 +3087,11 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		if s.binaryPath == "" {
 			return nil, status.Error(codes.Unavailable, "GitHub-direct upgrade is not configured on this daemon (no binary path wired)")
 		}
+		// #3059: report a refused downgrade on the RPC itself rather than as
+		// a failed async job. runGitHubUpgrade re-checks as defense in depth.
+		if err := checkDowngrade(runningVersion(), req.GithubTag, req.AllowDowngrade); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 	} else if s.autoUpdater == nil {
 		// cloud#1547: this used to return with NO log line at all — on a BYOC
 		// host whose containariumd was started without --sentinel-url (a
@@ -3140,7 +3145,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		var changed bool
 		var err error
 		if usingGitHub {
-			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force)
+			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force, req.AllowDowngrade)
 		} else {
 			changed, err = s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
 		}

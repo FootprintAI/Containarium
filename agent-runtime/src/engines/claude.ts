@@ -52,11 +52,24 @@ export class ClaudeEngine implements Engine {
   // queryFn is the Agent SDK's query(); a seam for tests.
   constructor(private readonly queryFn: ClaudeQuery = query) {}
 
-  async run(
+  run(
     task: string,
     cfg: EngineConfig,
     journal: JournalSink,
   ): Promise<EngineResult> {
+    return this.turn(task, cfg, journal, undefined);
+  }
+
+  // turn runs one query. resume is the SDK session to continue (undefined
+  // starts a new one); the result's followUp resumes this turn's session, so
+  // the model has the run it just did in context (#2513).
+  private async turn(
+    task: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+    resume: string | undefined,
+  ): Promise<EngineResult> {
+    let sessionId: string | undefined;
     let source: AuthenticationSource = cfg.authenticationSource ?? "unknown";
     let externalProvider = false;
     let text = "";
@@ -79,6 +92,7 @@ export class ClaudeEngine implements Engine {
       ...(cfg.outputSchema
         ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } }
         : {}),
+      ...(resume ? { resume } : {}),
     } as Parameters<typeof query>[0]["options"];
 
     let dispose: (() => void) | undefined;
@@ -123,6 +137,7 @@ export class ClaudeEngine implements Engine {
         }
       }
       for await (const m of stream) {
+        if (typeof m.session_id === "string" && m.session_id) sessionId = m.session_id;
         if (m.type === "system" && m.subtype === "init") {
           source = externalProvider
             ? "key"
@@ -203,11 +218,17 @@ export class ClaudeEngine implements Engine {
         authenticationSource: source,
       };
     }
+    // A schema-bound run never needs one: it returns structured output or
+    // throws above.
+    const resumeFrom = sessionId;
     return {
       outputJson: text.trim(),
       usage,
       authenticationSucceeded: authenticated,
       authenticationSource: source,
+      ...(resumeFrom
+        ? { followUp: (next: string, nextJournal: JournalSink) => this.turn(next, cfg, nextJournal, resumeFrom) }
+        : {}),
     };
   }
 }

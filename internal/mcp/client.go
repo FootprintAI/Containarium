@@ -1382,6 +1382,10 @@ func (c *Client) ValidateGPU(backendID, pci string) (*ValidateGPUResult, error) 
 type TriggerUpgradeRequest struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Force     bool   `json:"force,omitempty"`
+	// GithubTag installs this release directly from GitHub (#1028).
+	GithubTag string `json:"github_tag,omitempty"`
+	// AllowDowngrade permits a GithubTag older than the running version (#3059).
+	AllowDowngrade bool `json:"allow_downgrade,omitempty"`
 }
 
 // TriggerUpgradeResponse mirrors the TriggerUpgrade response. #354.
@@ -1398,11 +1402,8 @@ type TriggerUpgradeResponse struct {
 // binary now (empty backendID = the local/primary daemon; a peer id forwards to
 // that peer). Admin-only daemon-side. Async — a successful local upgrade
 // restarts the daemon, so confirm via the backend version in list_backends. #354.
-func (c *Client) TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/backends/upgrade", TriggerUpgradeRequest{
-		BackendID: backendID,
-		Force:     force,
-	})
+func (c *Client) TriggerUpgrade(req TriggerUpgradeRequest) (*TriggerUpgradeResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backends/upgrade", req)
 	if err != nil {
 		return nil, err
 	}

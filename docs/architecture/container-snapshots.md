@@ -110,7 +110,7 @@ Filed separately rather than folded into #1160c: it is a defect in shipped code,
 
 Slice 1 of #2372 (#2800) adds the contract. The data path is #2801, and verify-by-restore is #2802.
 
-**Contract.** `CreateBackupRequest.scope` and `BackupRecord.scope` (`BackupScope`: `UNSPECIFIED` = `DATABASE`, `DATABASE`, `BOX`), both additive field numbers. The box is the request's `username`, the box `<username>-container`, so `AuthorizeTenant` keys on it as it does for every other backup. A BOX request is refused with `INVALID_ARGUMENT` when it sets `connection` (even an empty one), `hook` or `hook_format`, or names no `key_mode`. Until #2801 lands, a valid BOX request answers `UNIMPLEMENTED` and touches no container.
+**Contract.** `CreateBackupRequest.scope` and `BackupRecord.scope` (`BackupScope`: `UNSPECIFIED` = `DATABASE`, `DATABASE`, `BOX`), both additive field numbers. The box is the request's `username`, the box `<username>-container`, so `AuthorizeTenant` keys on it as it does for every other backup. A BOX request is refused with `INVALID_ARGUMENT` when it sets `connection` (even an empty one), `hook` or `hook_format`, or names no `key_mode`. A valid BOX request runs the create path below (#2801 PR B). It runs no command inside the box.
 
 **Decision: reuse the destination and the encryption.** A BOX backup uses `BackupDestination` (LOCAL / GCS, with `gcs_bucket`) and `BackupKeyMode` (the #2402 key-wrap seam: MANAGED KMS envelope, AGE_RECIPIENT, or BOTH) unchanged. There is no second destination or key machinery to keep in step. One difference is deliberate: **plaintext is forbidden for BOX** (decision of 2026-10-25). A database request may leave `key_mode` unset and take the daemon default, which can be plaintext. A BOX request must name the mode, and the daemon then checks it can honour it: MANAGED or BOTH without a key wrapper is `FAILED_PRECONDITION`, and AGE_RECIPIENT or BOTH without a recipient is `INVALID_ARGUMENT`.
 
@@ -154,6 +154,35 @@ The compression is the server default (gzip unless the host sets `backups.compre
 
 The filter has to decompress and recompress the stream. The alternative, deleting the files inside the box before the export, would modify a tenant's running box and is rejected. The config and device manifest decided on #2800 can be taken from `backup.yaml`, which is already in the stream.
 
+### Whole-box create (#2801, PR B)
+
+`containarium backup create <username> --box --key-mode <mode>` sends a BOX-scope `CreateBackup`. The daemon calls `backup.Manager.CreateBox`, and `container.Manager` provides `BoxOps`: `ExportInstance` (the PR A seam) and `BoxDiskUsage` (the root disk usage from the instance's metrics).
+
+**Order of operations.** Every refusal comes before the export starts and leaves nothing in the backup directory.
+1. Validate. A key mode must be named, because plaintext is refused in the core as well as at the API. Then check the recipient, the key mode against the daemon's wrapper, and the destination. Derive the id `<username>-box-<UTC timestamp>`. A record with that id must not exist yet: two creates in one second fail instead of overwriting.
+2. **Free-space pre-flight.** The box's disk usage is the estimate. Our staging (the backup directory) needs `min(usage, cap)`. Each Incus staging directory that exists needs `usage`; on 6.0 LTS Incus stages a compressed copy there before the stream starts. The default is `/var/lib/incus/backups`, overridable with `CONTAINARIUM_INCUS_BACKUPS_DIR`, and a missing directory is logged and not counted. Two directories on one filesystem (same device) are summed. Compressed sizes are not known up front, so the check is conservative. It fails with `ErrInsufficientSpace` (`RESOURCE_EXHAUSTED`). An unknown usage (zero, or a metrics error) also fails it: the pre-flight cannot pass without a figure.
+3. Wrap the managed identity if the mode needs one. This is the database path's code, shared.
+4. **Stream:** `ExportInstance` → gzip reader → tar filter → gzip writer (BestSpeed) → `io.Pipe` → age encryption → bounded writer → staging file plus SHA-256. The BOX cap, 256 GiB by default and set with `CONTAINARIUM_BACKUP_BOX_MAX_BYTES`, bounds the stored ciphertext and the uncompressed stream, as `maxDumpBytes` does for a dump. The second bound matters because a box of zeros or a sparse file compresses to almost nothing. Each entry is copied with `io.CopyN` up to its header size, and only zero padding (at most 1 MiB) may follow the tar end marker. A bad value stops the daemon at startup. Going over the cap is `ErrDumpTooLarge` (`RESOURCE_EXHAUSTED`).
+5. Commit to LOCAL or GCS, sidecar included, with the database path's code. The object is `<id>.box.tar.gz.age`.
+
+**The filter.**
+- It drops entries under `backup/container/rootfs/{tmp,var/tmp,var/cache,run}/` and keeps the directory entries themselves.
+- A hard link whose target was dropped goes too.
+- Every other entry is re-emitted with its header, so modes, owners, symlinks and PAX xattrs (file capabilities) survive.
+- An export that is not gzip is refused. Incus uses gzip unless the host sets `backups.compression_algorithm`.
+- So is an export that already has an entry at the manifest path.
+- A truncated stream, including a bad gzip trailer, fails the backup and never produces a short one.
+
+**The manifest** is `backup/containarium-manifest.json`, the archive's last entry, inside the encryption.
+- `files` holds the path, size and SHA-256 of every kept regular file in the rootfs.
+- `links` holds the rootfs hard links.
+- `config` holds the digests of the files outside the rootfs (`index.yaml`, and `backup.yaml`, which carries the box's config and devices).
+- It also records the box name, the time and the excluded directories, and has a format version.
+
+The digests are taken from the bytes as they stream, not in a second pass. The manifest stays in memory until the end, so memory grows with the number of files (about a hundred bytes each) and never with their size. The lane shows that Incus imports the filtered archive with the manifest entry still in it. The restore (PR C) may strip the entry anyway.
+
+**BOX records on the database paths.** `Restore` and `Verify` refuse an `EngineBox` record before touching any container. Without that guard, a tarball would be handed to `pg_restore`.
+
 ## Test strategy
 
 | Component | Tests |
@@ -164,6 +193,7 @@ The filter has to decompress and recompress the stream. The alternative, deletin
 | **Clone (#1160c)** | Unit: cross-tenant is unexpressible in the request shape; key-unavailable maps to `FailedPrecondition` naming custody; destination-name collision refused. **Lane, before implementation:** does a same-pool `incus copy` produce a CoW clone or a full copy, and does the result land in the tenant's encryptionroot? |
 | **Two registries** | Lane: create an Incus instance snapshot, then assert what `ListContainerSnapshots` reports — the naming question above |
 | Whole-box export seam (#2801 PR A) | Unit: both export paths and the import against a fake Incus server, plus the `incustest` mock's round trip (`TestExportImportRoundTripMock`); twelve mutations, all caught. Lane: `TestIntegrationIncusExportImport` exports a RUNNING ZFS-backed box, deletes it, imports it under a new name, compares file digests, and records the snapshot and tarball findings above |
+| Whole-box create (#2801 PR B) | Unit: the filter (excludes, kept directory entries, look-alike paths, `./` names, hard links into an excluded dir, xattrs), the manifest (digests, links, config, last entry), refusals before the export (plaintext, key mode, destination, id, missing export, unknown size, free space), the same-filesystem sum, the cap, broken exports (truncated, bad trailer, stream error, not gzip, forged manifest), managed mode, GCS, no overwrite, restore and verify refusing a BOX record, and a 128 MiB incompressible box streamed with live heap under 48 MiB. Server: a BOX create returns a BOX record and runs no exec; error mapping; env parsing. CLI: `--box` request shape and flag refusals. Lane: `TestIntegrationIncusBoxBackup` backs up a RUNNING ZFS box through `CreateBox`, decrypts the result, checks the excludes and manifest digests, imports the filtered archive and compares files |
 
 The clone row deliberately puts a lane test **before** the implementation. That ordering is what turned this revision from a plausible constraint into a disproved one.
 
@@ -198,3 +228,4 @@ The clone row deliberately puts a lane test **before** the implementation. That 
 | 2026-08-16 | revised with Claude (`agent-c9aced4b`) | Ownership **accepted** — implemented and merged (#1381, #1383); #1202 closed. **Clone section rewritten**: the lane (#1384) disproved this doc's premise that ZFS confines a clone to its origin's encryptionroot, so clone moves from `zfs clone` to `incus copy` and the cross-tenant refusal moves to the daemon. Added the two-snapshot-registry finding against merged code. Corrected the CLI namespace to `containarium snapshot`. |
 | 2026-10-25 | revised with Claude (`agent-48362e6a`) | #2800: `BackupService` is no longer database-only. Amended "Not `BackupService`" and added the whole-box section: the `BackupScope` contract, destination and key-mode reuse, plaintext forbidden for BOX, and what a BOX backup includes and excludes. |
 | 2026-10-26 | revised with Claude (`agent-332dbdd5`) | #2801 PR A: added "Whole-box export". It covers the streamed export/import seam and the two server paths (`direct_backup` or a stored backup on Incus 6.0 LTS). It records the lane's findings that a live ZFS export is point-in-time (Incus takes a temporary read-only snapshot) and what the tarball contains, and why the excludes must be applied as a stream filter. |
+| 2026-10-26 | revised with Claude (`agent-a881ffc8`) | #2801 PR B: added "Whole-box create". It covers the create path's order of operations, the free-space pre-flight (same-filesystem sum, Incus staging dir), the BOX cap and its setting, the stream filter, the manifest format, and the database restore and verify refusing BOX records. |
