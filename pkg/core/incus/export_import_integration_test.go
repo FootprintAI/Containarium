@@ -76,6 +76,7 @@ func TestIntegrationIncusExportImport(t *testing.T) {
 	if err := client.StartContainer(src); err != nil {
 		t.Fatalf("start %s: %v", src, err)
 	}
+	waitForBoot(t, client, src)
 
 	// Synthetic content: a random binary blob and a small text file that must
 	// survive, plus one probe in each directory #2800 decided to exclude.
@@ -290,6 +291,29 @@ func inspectArchive(t *testing.T, path string, probes []string) {
 		} else {
 			t.Logf("TARBALL: %s NOT in the archive", p)
 		}
+	}
+}
+
+// waitForBoot blocks until the box's systemd has finished booting.
+//
+// A probe written while the box is still booting can be deleted under the
+// test: systemd-tmpfiles-setup runs at boot with --remove, and Ubuntu's
+// tmp.conf marks /tmp with "D", so a /tmp file written before it runs is
+// gone by the export (/var/tmp is not "D" and survives). That race made
+// TestIntegrationIncusExportImport report "/tmp probe NOT in the archive"
+// on one lane run and "INCLUDED" on the next.
+func waitForBoot(t *testing.T, client *incus.Client, name string) {
+	t.Helper()
+	// is-system-running --wait returns once the boot job queue is empty;
+	// it exits non-zero for "degraded", which a container often is, so
+	// the state it prints is what counts.
+	out, _, _ := client.ExecWithOutput(name, []string{"timeout", "180", "systemctl", "is-system-running", "--wait"})
+	state := strings.TrimSpace(out)
+	switch state {
+	case "running", "degraded":
+		t.Logf("%s booted (systemd %s)", name, state)
+	default:
+		t.Fatalf("%s did not finish booting: systemd state %q", name, state)
 	}
 }
 
