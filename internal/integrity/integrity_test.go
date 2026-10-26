@@ -193,3 +193,40 @@ func TestCompute_MissingBinaryErrors(t *testing.T) {
 // documents that signing_cert_pem is opaque to Compute).
 var _ = x509.ParseCertificate
 var _ = big.NewInt
+
+// A program object carrying its bytes in memory (the object embedded in the
+// binary, #3079) is digested from those bytes, not opened as a file named
+// after it.
+func TestCompute_ProgramDataDigestedWithoutFile(t *testing.T) {
+	blob := []byte("embedded-ebpf-object-bytes")
+	m, err := Compute(Inputs{
+		Programs: []ProgramObject{{Name: "embedded", Data: blob}},
+		Now:      time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	sum := sha256.Sum256(blob)
+	want := hex.EncodeToString(sum[:])
+	if len(m.ProgramDigests) != 1 || m.ProgramDigests[0].Name != "embedded" || m.ProgramDigests[0].Digest != want {
+		t.Fatalf("ProgramDigests = %+v, want [embedded=%s]", m.ProgramDigests, want)
+	}
+}
+
+// A path-based object digests identically to the same bytes held in memory, so
+// the digest means "sha256 of the object bytes" either way.
+func TestCompute_ProgramDataMatchesFileDigest(t *testing.T) {
+	blob := []byte("same-bytes")
+	p := writeTemp(t, "o.o", blob)
+	a, err := Compute(Inputs{Programs: []ProgramObject{{Name: "x", Path: p}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Compute(Inputs{Programs: []ProgramObject{{Name: "x", Data: blob}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ProgramDigests[0].Digest != b.ProgramDigests[0].Digest {
+		t.Fatalf("file digest %s != data digest %s", a.ProgramDigests[0].Digest, b.ProgramDigests[0].Digest)
+	}
+}
