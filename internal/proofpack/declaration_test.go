@@ -42,6 +42,14 @@ func TestParseDeclaration(t *testing.T) {
 		{name: "name with spaces", in: "test:\n  - {name: go test, run: x}\n", wantErr: "must match"},
 		{name: "duplicate name", in: "test:\n  - {name: a, run: x}\n  - {name: a, run: y}\n", wantErr: "used twice"},
 		{name: "scalar step", in: "test:\n  - go test ./...\n", wantErr: "must be a mapping"},
+		{name: "bool test", in: "test: false\n", wantErr: "line 1: test: must be a string"},
+		{name: "int test", in: "test: 123\n", wantErr: "line 1: test: must be a string"},
+		{name: "true test", in: "test: true\n", wantErr: "line 1: test: must be a string"},
+		{name: "int step name and bool run", in: "test:\n  - {name: 123, run: true}\n", wantErr: "line 2"},
+		{name: "bool step run", in: "test:\n  - {name: a, run: true}\n", wantErr: "run must be a string"},
+		{name: "int step kind", in: "test:\n  - {name: a, kind: 5, run: x}\n", wantErr: "kind must be a string"},
+		{name: "quoted numbers are strings", in: "test: \"123\"\n", ok: true,
+			want: []Step{{Name: "test", Kind: pb.ProofPartKind_PROOF_PART_KIND_TEST, Run: "123"}}},
 		{name: "bad yaml", in: "test: [\n", wantErr: DeclarationPath},
 	}
 	for _, c := range cases {

@@ -62,5 +62,7 @@ Each file in the bundle is whatever the upstream publisher produced —
 the Go tarball is what `go.dev` served, the Node tarball is what
 `nodejs.org` served, the Incus debs are what Zabbly built. We re-host
 without re-signing. If your security review requires verification of
-upstream signatures, the SBOM (shipped in v0.1 as `bundle.sbom.json`
-via `syft`) gives you the input list to audit independently.
+upstream signatures, audit the bundle's contents against
+`CHECKSUMS.sha256`, which lists every file in the bundle. The bundle does
+not ship its own SBOM yet; bundle signing and SBOM coverage are tracked in
+#2561 and #2785.
