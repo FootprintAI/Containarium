@@ -29,6 +29,9 @@
 #   SDLC_SKILLS_OVERLAY_DIR  optional: a directory of skill dirs copied OVER the
 #                      public set after install (the second copy wins), so a team
 #                      can layer its own overrides without forking the public skills
+# skill-sets: v1
+# (marker read by the recipe and `code install` to tell an installer that honours
+#  SKILL_SETS from an older one; do not remove or reword)
 set -euo pipefail
 
 REPO="${REPO:-FootprintAI/Containarium}"

@@ -536,3 +536,21 @@ func TestBuildSDLCSkills_SetsMustPartitionTheNamespaces(t *testing.T) {
 		})
 	}
 }
+
+// A lock value is untrusted too: a namespace with shell-ish or path-ish
+// characters is refused before it is used in a prefix match.
+func TestInstallSDLCSkills_RefusesABadNamespaceInTheLock(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	b, _ := os.ReadFile(lock) //nolint:gosec // test temp dir
+	bad := filepath.Join(t.TempDir(), "bad.lock")
+	write(t, bad, strings.Replace(string(b), "set.qa=qa", "set.qa=qa,q*", 1))
+	dir := filepath.Join(t.TempDir(), "skills")
+	out, ok := installSets(t, base, bad, dir, "qa")
+	if ok || !strings.Contains(out, "bad namespace") {
+		t.Errorf("ok=%v output %q, want a bad-namespace refusal", ok, out)
+	}
+	if exists(filepath.Join(dir, ".sdlc-skills-manifest")) {
+		t.Error("something was installed from a lock with a bad namespace")
+	}
+}

@@ -194,12 +194,20 @@ recipes:
           code="$(curl -sSL -o "$tmp" -w "%{http_code}" "https://raw.githubusercontent.com/FootprintAI/Containarium/$RELEASE/scripts/install-sdlc-skills.sh")"
           case "$code" in
             200)
-              # An installer that predates SKILL_SETS would ignore it and install everything.
-              if [ "$SETS" != all ] && ! grep -q SKILL_SETS "$tmp"; then
-                echo "release $RELEASE SDLC skills installer predates skill sets; cannot apply skill_sets=$SETS" >&2; exit 1
+              if ! grep -q "^# skill-sets: v1$" "$tmp"; then
+                # An installer that predates skill sets would ignore SKILL_SETS and install everything.
+                case "$SETS" in
+                  all) ;;
+                  none) echo "release $RELEASE SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; rm -f "$tmp"; exit 0 ;;
+                  *) echo "release $RELEASE SDLC skills installer predates skill sets; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
+                esac
               fi
               SKILL_SETS="$SETS" bash "$tmp" ;;
-            404) echo "release $RELEASE has no SDLC skills installer; skipping" >&2 ;;
+            404)
+              case "$SETS" in
+                all|none) echo "release $RELEASE has no SDLC skills installer; skipping" >&2 ;;
+                *) echo "release $RELEASE has no SDLC skills installer; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
+              esac ;;
             *) echo "fetching the SDLC skills installer for $RELEASE failed: HTTP $code" >&2; exit 1 ;;
           esac
           rm -f "$tmp"

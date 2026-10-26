@@ -582,11 +582,20 @@ trap 'rm -f "$tmp"' EXIT
 code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
 case "$code" in
   200)
-    if [ "` + sets.String() + `" != all ] && ! grep -q SKILL_SETS "$tmp"; then
-      echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1
+    if ! grep -q '^# skill-sets: v1$' "$tmp"; then
+      # An installer that predates skill sets would ignore SKILL_SETS and install everything.
+      case "` + sets.String() + `" in
+        all) ;;
+        none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
+        *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+      esac
     fi
     SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
-  404) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+  404)
+    case "` + sets.String() + `" in
+      all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+      *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+    esac ;;
   *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
 esac`
 }

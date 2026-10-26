@@ -170,17 +170,45 @@ func TestSDLCSkillsInstallScript_OnlyA404SkipsAndOnlyA200Runs(t *testing.T) {
 	}
 }
 
-// A release whose installer predates SKILL_SETS would ignore the selection and
-// install everything; the wrapper refuses instead of silently widening it.
-func TestSDLCSkillsInstallScript_RefusesAnInstallerThatIgnoresSkillSets(t *testing.T) {
-	out, ok, ran := runSDLCSkillsScriptSets(t, "200", "qa", "")
-	if ok || ran {
-		t.Errorf("old installer, sets=qa: ok=%v ran=%v, want a failure that runs nothing\n%s", ok, ran, out)
+// An installer that predates skill sets would ignore the selection (#3048).
+// Detection is a dedicated marker line, not a mention of SKILL_SETS.
+func TestSDLCSkillsInstallScript_OldInstallerHandling(t *testing.T) {
+	const marker = "# skill-sets: v1\n"
+	cases := []struct {
+		name, status, sets, body string
+		wantOK, wantRan          bool
+		wantMsg                  string
+	}{
+		{"old installer, all: runs as before", "200", "all", "", true, true, ""},
+		{"old installer, none: skips (nothing to prune)", "200", "none", "", true, false, "predates skill sets"},
+		{"old installer, subset: refused", "200", "qa", "", false, false, "predates skill sets"},
+		{"a mere mention of SKILL_SETS is not the marker", "200", "qa", "# honours SKILL_SETS\n", false, false, "predates skill sets"},
+		{"marked installer, subset: runs", "200", "qa", marker, true, true, ""},
+		{"marked installer, none: runs (prunes)", "200", "none", marker, true, true, ""},
+		{"no installer at all, all: skipped", "404", "all", "", true, false, "has no SDLC skills installer"},
+		{"no installer at all, none: skipped", "404", "none", "", true, false, "has no SDLC skills installer"},
+		{"no installer at all, subset: refused", "404", "qa", "", false, false, "has no SDLC skills installer"},
 	}
-	if !strings.Contains(out, "predates skill sets") {
-		t.Errorf("output %q does not say why", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok, ran := runSDLCSkillsScriptSets(t, tc.status, tc.sets, tc.body)
+			if ok != tc.wantOK || ran != tc.wantRan {
+				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", ok, ran, tc.wantOK, tc.wantRan, out)
+			}
+			if tc.wantMsg != "" && !strings.Contains(out, tc.wantMsg) {
+				t.Errorf("output %q does not mention %q", out, tc.wantMsg)
+			}
+		})
 	}
-	if out, ok, ran := runSDLCSkillsScriptSets(t, "200", "qa", "# honours SKILL_SETS\n"); !ok || !ran {
-		t.Errorf("new installer, sets=qa: ok=%v ran=%v, want both true\n%s", ok, ran, out)
+}
+
+// The installer shipped in this repo carries the marker the wrappers look for.
+func TestInstallSDLCSkills_CarriesTheSkillSetsMarker(t *testing.T) {
+	b, err := os.ReadFile(installSDLCSkillsScript) //nolint:gosec // fixed repo path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains("\n"+string(b), "\n# skill-sets: v1\n") {
+		t.Error("install-sdlc-skills.sh lacks the '# skill-sets: v1' marker line")
 	}
 }

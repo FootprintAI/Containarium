@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -679,5 +680,64 @@ func TestLibreChatRecipe_InferenceProviderParam(t *testing.T) {
 	}
 	if p.Default != "" {
 		t.Errorf("inference_provider default: got %q want empty (keeps model_gateway_provider)", p.Default)
+	}
+}
+
+// TestCodingAgentRecipe_OldInstallerHandling runs the recipe's inner installer
+// step against a fake curl: an installer without the "# skill-sets: v1" marker
+// (or no installer at all) must not silently widen a narrowed selection, and
+// none/all keep working against old releases (#3048).
+func TestCodingAgentRecipe_OldInstallerHandling(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := m.Get("coding-agent")
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	start := strings.Index(step, "bash -c '")
+	end := strings.LastIndex(step, "\n'")
+	if start < 0 || end < start {
+		t.Fatal("cannot find the inner installer script")
+	}
+	inner := step[start+len("bash -c '") : end]
+
+	for _, tc := range []struct {
+		name, status, sets, body string
+		wantOK, wantRan          bool
+	}{
+		{"old, all", "200", "all", "", true, true},
+		{"old, none", "200", "none", "", true, false},
+		{"old, qa", "200", "qa", "", false, false},
+		{"mention only, qa", "200", "qa", "# honours SKILL_SETS\n", false, false},
+		{"marked, qa", "200", "qa", "# skill-sets: v1\n", true, true},
+		{"marked, none", "200", "none", "# skill-sets: v1\n", true, true},
+		{"404, all", "404", "all", "", true, false},
+		{"404, none", "404", "none", "", true, false},
+		{"404, qa", "404", "qa", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := dir + "/ran"
+			fake := "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift;; esac; shift; done\n" +
+				"printf '#!/bin/sh\\n" + strings.ReplaceAll(tc.body, "\n", "\\n") + "touch " + marker + "\\n' > \"$out\"\nprintf '" + tc.status + "'\n"
+			if err := os.MkdirAll(dir+"/bin", 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dir+"/bin/curl", []byte(fake), 0o700); err != nil { //nolint:gosec // test stand-in
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", inner) //nolint:gosec // embedded recipe text
+			cmd.Env = append(os.Environ(), "PATH="+dir+"/bin:"+os.Getenv("PATH"), "RELEASE=v9.9.9", "SETS="+tc.sets)
+			out, err := cmd.CombinedOutput()
+			_, statErr := os.Stat(marker)
+			if (err == nil) != tc.wantOK || (statErr == nil) != tc.wantRan {
+				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", err == nil, statErr == nil, tc.wantOK, tc.wantRan, out)
+			}
+		})
 	}
 }
