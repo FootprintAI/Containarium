@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sentinel startup scripts verify the sshpiperd tarball's sha256 before extracting it** (#3103). Both `startup-sentinel.sh` scripts under `terraform/` now check the v1.6.1 release tarball against the same sha256 `ssh-ban.yml` pins, and a mismatch fails the boot step. `scripts/ci/check-sentinel-sshpiper-checksum.sh` runs in the `workflow-lint` lane and fails if either script lacks the check or the three values differ. `docs/security/BUILD-SUPPLY-CHAIN.md` drops the known-gap wording.
+
 ## [0.119.0] - 2026-10-26
 
 ### Added
