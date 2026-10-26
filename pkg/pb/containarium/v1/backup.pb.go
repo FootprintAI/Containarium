@@ -105,6 +105,10 @@ const (
 	// and deleted, but is never restored or restore-tested by the platform —
 	// apply it with the tenant's own tooling.
 	BackupEngine_BACKUP_ENGINE_HOOK BackupEngine = 2
+	// A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported
+	// as an Incus instance backup tarball, encrypted like any other dump. It
+	// is restored by importing it as a new box, never by a database engine.
+	BackupEngine_BACKUP_ENGINE_BOX BackupEngine = 3
 )
 
 // Enum value maps for BackupEngine.
@@ -113,11 +117,13 @@ var (
 		0: "BACKUP_ENGINE_UNSPECIFIED",
 		1: "BACKUP_ENGINE_POSTGRES",
 		2: "BACKUP_ENGINE_HOOK",
+		3: "BACKUP_ENGINE_BOX",
 	}
 	BackupEngine_value = map[string]int32{
 		"BACKUP_ENGINE_UNSPECIFIED": 0,
 		"BACKUP_ENGINE_POSTGRES":    1,
 		"BACKUP_ENGINE_HOOK":        2,
+		"BACKUP_ENGINE_BOX":         3,
 	}
 )
 
@@ -1994,11 +2000,12 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x02*a\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x02*x\n" +
 	"\fBackupEngine\x12\x1d\n" +
 	"\x19BACKUP_ENGINE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BACKUP_ENGINE_POSTGRES\x10\x01\x12\x16\n" +
-	"\x12BACKUP_ENGINE_HOOK\x10\x02*\x8a\x01\n" +
+	"\x12BACKUP_ENGINE_HOOK\x10\x02\x12\x15\n" +
+	"\x11BACKUP_ENGINE_BOX\x10\x03*\x8a\x01\n" +
 	"\rBackupKeyMode\x12\x1f\n" +
 	"\x1bBACKUP_KEY_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dBACKUP_KEY_MODE_AGE_RECIPIENT\x10\x01\x12\x1b\n" +

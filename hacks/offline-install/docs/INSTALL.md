@@ -81,7 +81,8 @@ The installer:
 5. Generates TLS certificates and a JWT secret (local CSPRNG; no
    network), unless they already exist.
 6. Installs the systemd service via `containariumd service install`.
-7. Opens TCP 22, 50051 and 8080 if `ufw` is installed.
+7. Opens TCP 22 and 8080 if `ufw` is installed, and 50051 only when you
+   pass `--mtls`.
 8. Mints an admin token at `/etc/containarium/admin.token`. It expires
    after 30 days (`--expiry 720h`).
 9. Imports the sidecar images from `./sidecars/`, if present. Sidecars are

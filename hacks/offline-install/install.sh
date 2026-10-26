@@ -30,6 +30,8 @@
 #   --skip-firewall           don't touch ufw rules
 #   --skip-base-image         accepted and ignored: the bundle ships no
 #                             base image (#3061)
+#   --mtls                    open 50051/tcp in ufw for the external mTLS gRPC
+#                             listener (the daemon must also run with --mtls)
 
 set -e
 
@@ -59,6 +61,7 @@ SKIP_CHECKSUM_VERIFY=0
 SKIP_APT=0
 SKIP_SIDECARS=0
 SKIP_FIREWALL=0
+ENABLE_MTLS=0
 
 # ---- argparse ----
 while [ $# -gt 0 ]; do
@@ -68,6 +71,7 @@ while [ $# -gt 0 ]; do
     --skip-sidecars)        SKIP_SIDECARS=1 ;;
     --skip-base-image)      echo "--skip-base-image: ignored, this bundle ships no base image" >&2 ;;
     --skip-firewall)        SKIP_FIREWALL=1 ;;
+    --mtls)                 ENABLE_MTLS=1 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -50
       exit 0
@@ -329,7 +333,11 @@ setup_firewall() {
 
     if command -v ufw &> /dev/null; then
         ufw allow 22/tcp comment 'SSH' || true
-        ufw allow 50051/tcp comment 'Containarium gRPC' || true
+        # The daemon serves an external gRPC listener only with --mtls; without
+        # it 50051 has nothing behind it, so leave the port closed (#3063).
+        if [ "${ENABLE_MTLS:-0}" = "1" ]; then
+            ufw allow 50051/tcp comment 'Containarium gRPC (mTLS)' || true
+        fi
         ufw allow 8080/tcp comment 'Containarium REST API' || true
 
         if ! ufw status | grep -q "Status: active"; then

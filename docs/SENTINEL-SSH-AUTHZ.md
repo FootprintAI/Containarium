@@ -12,9 +12,8 @@ checked against the daemon; neither is an unknown login (one no synced
 backend lists), which audit-only mode defers and enforce mode refuses. The
 plugin offers publickey only and refuses password, keyboard-interactive and
 none itself, in both modes, so no other method can move sshpiperd's chain
-cursor past it. What happens to a decision depends on the mode. There is no
-interactive approval flow yet, so `DENY APPROVAL_PENDING` is handled like any
-other denial.
+cursor past it. The one exception is device approval in enforce mode (see
+Device approval below). What happens to a decision depends on the mode.
 
 ## Modes
 
@@ -45,8 +44,11 @@ nothing for them, so each session is recorded once. The `target` on both
 records is the upstream the plugin routed to when it accepted the offer, not
 a fresh read of `config.yaml`, so a file keysync re-renders during the
 session cannot put the `open` row on one backend and the `close` row on
-another. Each refusal appends a `denied`
-JSONL record (`enforced=true`, `user_id` when the daemon knows it,
+another. The one exception is a session whose pending decision was evicted
+from the plugin's bounded stash (see
+[SENTINEL-SSH-SESSION-AUDIT.md](./SENTINEL-SSH-SESSION-AUDIT.md)): it has no
+recorded route, so its `target` comes from a fresh read of the config. Each
+refusal appends a `denied` JSONL record (`enforced=true`, `user_id` when the daemon knows it,
 `deny_reason`, key fingerprint) to `--records-file`. The shipper delivers
 it as an `ssh_session_denied` audit row. The backend keeps one row per
 session and phase, so a connection that is refused several times (a client
@@ -108,10 +110,12 @@ keys, so a client could offer one of those first and then log in with a
 denied key that was still in the static `authorized_keys`. In enforce mode
 the plugin now routes every offer itself and never defers, so each offer on
 a connection is checked here. A denied key is refused whatever was offered
-before it. sshpiperd also dispatches password, keyboard-interactive and none
-attempts to the plugin the cursor is on; this plugin offers publickey only
-and refuses those itself, so a client that tries another method first cannot
-move the cursor either. Three tests check this against a real sshpiperd:
+before it. Trying another method first does not move the cursor either, and
+never did: sshpiperd v1.6.1 only advertises the methods the current plugin
+implements, and this plugin offers publickey only. Its refusals of password,
+keyboard-interactive and none are defence in depth (pinned by the unit test
+`TestPublicKeyIsTheOnlyMethod`), not a fix for a past bypass. Three tests
+check the outcomes against a real sshpiperd:
 `TestIntegrationEnforceMultiOfferGap` (a certificate from an untrusted CA,
 then the denied key), `TestIntegrationEnforceAllowThenDeny` (an allowed
 key, of which the client holds only the public half, then the denied key)
@@ -156,6 +160,54 @@ is not affected.
 The plugin's private socket request carries its remaining deadline, so the
 manager's backend call is also bounded and respects a timeout override.
 
+## Device approval
+
+When the daemon answers `DENY APPROVAL_PENDING` with an `SSHDeviceApproval`,
+enforce mode asks the user to approve the device on the same connection
+(design component 3, #2526):
+
+1. The plugin returns a retry of itself, so sshpiperd's chain cursor stays
+   here. sshpiperd turns that into publickey partial success, and only once
+   the client's signature has been verified.
+2. keyboard-interactive is then the only method offered. The client shows
+   `Approve this device at <url>, code <code>` and one prompt,
+   `press Enter once approved: `.
+3. After Enter the plugin polls `Authorize` with `approval_id`, every
+   `poll_after` (default 2 s, at least 250 ms). `ALLOW` routes the session
+   as any `ALLOW` does. `APPROVAL_DENIED`, any other denial, a transport
+   error or an invalid response ends the login. Reaching `expires_at` or the
+   60-second cap also ends it. The cap counts from the first `PENDING`. A
+   refused login writes a `denied` record (`APPROVAL_PENDING` when the
+   deadline passed). Nothing waits past the deadline, and no grace applies.
+
+Fail closed:
+
+- An approval is shown only when it has an id, an `https` URL and a code of
+  visible ASCII, and an `expires_at` still in the future. Otherwise the key is
+  refused as `APPROVAL_PENDING`. The URL and code reach the user's terminal,
+  so no control characters get through.
+- The approval is kept in the plugin by connection, not in sshpiperd
+  metadata. sshpiperd stores a retry's metadata even for an unsigned key
+  query, so metadata alone would let a client that queried someone else's
+  public key reach the prompt after signing with a different key. Every new
+  publickey offer clears the connection's approval. A keyboard-interactive
+  attempt is answered only for the key that signed last, and only once.
+- Non-interactive clients (`BatchMode=yes`, scripts, CI) cannot answer the
+  prompt and are refused. There is no banner-only fallback: approve the
+  device from an interactive client first. The approval is keyed on
+  `(user, fingerprint)` by the decision source, so later logins with that
+  key are not asked again. The client address is sent for audit only.
+- Certificates never enter this path, and neither does audit-only mode: it
+  logs `reason=APPROVAL_PENDING` and defers like any other decision.
+- Neither the approval id nor the code is logged.
+
+sshpiperd's default login grace is 30 seconds, shorter than the cap. The
+supplied tenant units pass `--login-grace-time 90s`. A custom unit that
+enables enforcement with device approval must raise it too.
+
+The managed daemon forwards the request, `approval_id` included, to the
+cloud unchanged (#2525). A self-host daemon never answers `APPROVAL_PENDING`.
+
 ## Cache and audit behavior
 
 Positive entries are keyed by `(backend, login, SHA256 fingerprint)`. Their
@@ -195,6 +247,10 @@ refused as described under Fail closed (at once for a key with no cached
 Unit tests cover certificates, unknown logins, every denial reason, response
 TTL, backend/login/key isolation, eviction, stale positives, grace boundaries,
 deadline expiry, signatures, redirect rejection and metadata round trips.
+`TestDeviceApproval` and `TestDeviceApprovalBoundaries` cover the device
+approval path: `ALLOW` on the first or a later poll, `APPROVAL_DENIED`,
+`expires_at`, the 60-second cap, poll errors, unusable approvals, another
+key offered after `PENDING`, certificates and audit-only mode.
 
 The integration test uses a real sshpiperd, the production CLI plugins, the
 real yaml plugin, a signed stub daemon and a local SSH upstream. It checks that
@@ -206,9 +262,14 @@ checks that the denied key is refused (including the stock OpenSSH
 grace logs in and one after grace is refused, that a denied key is refused
 after a certificate, an allowed key or a password attempt on the same
 connection, and that each session gets exactly one `open` and one `close`
-record with the full field set. `TestIntegrationEnforceAllowThenDeny` and
-`TestIntegrationEnforcePasswordFirst` drive the stock OpenSSH client and skip
-without it:
+record with the full field set. `TestIntegrationEnforceDeviceApproval` has
+the stub daemon answer `APPROVAL_PENDING`, then `PENDING` again on the first
+poll and `ALLOW` on the second. A stock OpenSSH client, answering through
+`SSH_ASKPASS_REQUIRE=force`, gets partial success, the instruction, one
+prompt and a session. A `BatchMode=yes` client is refused.
+`TestIntegrationEnforceAllowThenDeny`, `TestIntegrationEnforcePasswordFirst`
+and `TestIntegrationEnforceDeviceApproval` drive the stock OpenSSH client and
+skip without it (the CI lane fails on a skip):
 
 ```sh
 go build -o /tmp/containariumd ./cmd/containariumd
@@ -253,6 +314,14 @@ In enforce mode, on one backend behind the sentinel:
    `UPSTREAM_UNAVAILABLE`, and the sentinel log shows `unknown login refused
    in enforce mode: routing not ready, keystore not yet synced`. Once the
    sync completes, login resumes.
+8. Device approval (needs the cloud approval page): ssh from an interactive
+   client with a registered key the tenant policy has not yet approved on
+   this device. The client shows `Approve this device at <url>, code <code>`.
+   Approve it in the browser within 60 seconds, then press Enter: the session
+   opens and the `ssh_session_open` row carries `ALLOW` and `enforced=true`.
+   Deny it in the browser instead, or wait past 60 seconds: the login is
+   refused and an `ssh_session_denied` row carries `APPROVAL_DENIED` or
+   `APPROVAL_PENDING`.
 
 The live checks above require the daemon dependency and a configured
 `audit:ingest` shipper token; passing the stub integration test does not prove
