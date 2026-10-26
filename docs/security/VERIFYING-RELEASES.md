@@ -144,11 +144,16 @@ at it). Without the trust root the bundle cannot be checked offline.
 
 ## How this is built
 
-`release.yml` job `sign-release` runs after the binaries, bundle and chart have
-all been uploaded. It downloads the Release's files, signs each, verifies each
-signature against the identity above before attaching it, and uploads the
-bundles. If any job it depends on fails, nothing is signed and the Release has
-no `.sigstore.json` files, which is a visible failure. Signing runs on tag
+`release.yml` job `sign-release` runs after the binaries and chart have been
+uploaded. It downloads the Release's files except the air-gapped bundle, signs
+each, verifies each signature against the identity above before attaching it,
+and uploads the bundles. It does not wait for the air-gapped bundle, so the
+daemon binary and `SHA256SUMS.txt` are verifiable even while the bundle is
+still building. Job `sign-bundle` signs the bundle and its `.sha256` the same
+way once `build-bundle` has uploaded them, and job `verify-release` then runs
+the whole-release check above against what was published. If a job a signing
+job depends on fails, the files it covers have no `.sigstore.json`, which is a
+visible failure. Signing runs on tag
 pushes only: a `workflow_dispatch` rehearsal builds everything but signs
 nothing, because a signature is a permanent entry in a public log.
 
