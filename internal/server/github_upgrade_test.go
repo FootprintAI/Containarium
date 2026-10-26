@@ -70,6 +70,7 @@ func writeExecutable(t *testing.T, path, content string) {
 }
 
 func TestRunGitHubUpgrade_SwapsBinaryOnChecksumMismatch(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	srv := fakeGitHubRelease(t, githubUpgradeBinaryName, okScript)
 	pointReleasesAt(t, srv.URL)
 	calls := stubRestartAfterGitHubSwap(t)
@@ -78,7 +79,7 @@ func TestRunGitHubUpgrade_SwapsBinaryOnChecksumMismatch(t *testing.T) {
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, "#!/bin/sh\necho old-version\nexit 0\n")
 
-	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false)
+	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false, false)
 	if err != nil {
 		t.Fatalf("runGitHubUpgrade: %v", err)
 	}
@@ -112,6 +113,7 @@ func TestRunGitHubUpgrade_SwapsBinaryOnChecksumMismatch(t *testing.T) {
 }
 
 func TestRunGitHubUpgrade_NoopWhenChecksumMatchesAndNotForced(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	srv := fakeGitHubRelease(t, githubUpgradeBinaryName, okScript)
 	pointReleasesAt(t, srv.URL)
 	calls := stubRestartAfterGitHubSwap(t)
@@ -120,7 +122,7 @@ func TestRunGitHubUpgrade_NoopWhenChecksumMatchesAndNotForced(t *testing.T) {
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, okScript) // already matches the release
 
-	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false)
+	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false, false)
 	if err != nil {
 		t.Fatalf("runGitHubUpgrade: %v", err)
 	}
@@ -136,6 +138,7 @@ func TestRunGitHubUpgrade_NoopWhenChecksumMatchesAndNotForced(t *testing.T) {
 }
 
 func TestRunGitHubUpgrade_ForceSwapsEvenWhenChecksumMatches(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	srv := fakeGitHubRelease(t, githubUpgradeBinaryName, okScript)
 	pointReleasesAt(t, srv.URL)
 	calls := stubRestartAfterGitHubSwap(t)
@@ -144,7 +147,7 @@ func TestRunGitHubUpgrade_ForceSwapsEvenWhenChecksumMatches(t *testing.T) {
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, okScript) // already matches the release
 
-	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", true)
+	changed, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", true, false)
 	if err != nil {
 		t.Fatalf("runGitHubUpgrade: %v", err)
 	}
@@ -157,6 +160,7 @@ func TestRunGitHubUpgrade_ForceSwapsEvenWhenChecksumMatches(t *testing.T) {
 }
 
 func TestRunGitHubUpgrade_UnpublishedTagIsError(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -168,7 +172,7 @@ func TestRunGitHubUpgrade_UnpublishedTagIsError(t *testing.T) {
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, okScript)
 
-	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v9.9.9-nope", false)
+	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v9.9.9-nope", false, false)
 	if err == nil {
 		t.Fatal("expected an error for an unpublished tag")
 	}
@@ -186,6 +190,7 @@ func TestRunGitHubUpgrade_UnpublishedTagIsError(t *testing.T) {
 }
 
 func TestRunGitHubUpgrade_ChecksumMismatchAfterDownloadIsError(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	// SHA256SUMS.txt lies about the asset's checksum.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +212,7 @@ func TestRunGitHubUpgrade_ChecksumMismatchAfterDownloadIsError(t *testing.T) {
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, "#!/bin/sh\necho old-version\nexit 0\n")
 
-	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false)
+	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false, false)
 	if err == nil {
 		t.Fatal("expected a checksum-mismatch error")
 	}
@@ -230,6 +235,7 @@ func TestRunGitHubUpgrade_ChecksumMismatchAfterDownloadIsError(t *testing.T) {
 }
 
 func TestRunGitHubUpgrade_SmokeTestFailureLeavesOriginalBinaryInPlace(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	badScript := "#!/bin/sh\nexit 1\n"
 	srv := fakeGitHubRelease(t, githubUpgradeBinaryName, badScript)
 	pointReleasesAt(t, srv.URL)
@@ -239,7 +245,7 @@ func TestRunGitHubUpgrade_SmokeTestFailureLeavesOriginalBinaryInPlace(t *testing
 	binaryPath := filepath.Join(dir, "containariumd")
 	writeExecutable(t, binaryPath, "#!/bin/sh\necho old-version\nexit 0\n")
 
-	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false)
+	_, err := runGitHubUpgrade(context.Background(), binaryPath, "v0.99.0", false, false)
 	if err == nil {
 		t.Fatal("expected a smoke-test failure error")
 	}
