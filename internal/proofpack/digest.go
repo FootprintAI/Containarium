@@ -33,7 +33,8 @@ func CheckPartDigests(pack *pb.ProofPack) error {
 	for i, s := range pack.GetSteps() {
 		if got := LogDigest(s.GetLog()); got != s.GetLogSha256() {
 			return &TamperedPart{Step: i, Name: s.GetName(),
-				Reason: fmt.Sprintf("log digest %s does not match recorded %s", got, s.GetLogSha256())}
+				Reason: fmt.Sprintf("log digest %s does not match recorded %s", got, s.GetLogSha256()),
+				Public: "log digest does not match the recorded log_sha256"}
 		}
 	}
 	return nil

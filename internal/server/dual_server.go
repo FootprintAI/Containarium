@@ -2028,6 +2028,8 @@ skipAppHosting:
 				// Registered only when the store exists; without Postgres the
 				// RPC is simply absent (Unimplemented) rather than a stub.
 				pb.RegisterAuditServiceServer(grpcServer, NewAuditServer(auditStore))
+				// #3064 — verify a sealed Proof Pack against this chain.
+				pb.RegisterProofPackServiceServer(grpcServer, NewProofPackServer(auditStore))
 				log.Printf("Audit logging service enabled")
 			}
 
