@@ -172,6 +172,16 @@ jobs:
       - name: Run test-sentinel-hostkey-persistence.sh
         run: ./scripts/test-sentinel-hostkey-persistence.sh
 
+  deploy-binary-rollback:
+    name: deploy-binary.sh keeps .old and rolls back (#3060)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run test-deploy-binary-rollback.sh
+        run: ./scripts/test-deploy-binary-rollback.sh
+
   trivy:
     name: Dependency Scan (Trivy)
     runs-on: ubuntu-latest
