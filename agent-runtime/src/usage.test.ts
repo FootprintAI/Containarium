@@ -35,4 +35,9 @@ describe("sumUsage (#3107 item 2)", () => {
     expect(Object.getOwnPropertyDescriptor(sum, "__proto__")?.value).toEqual({ n: 2 });
     expect(sum.x).toBe(3);
   });
+  it("does not treat a key that exists only on the prototype as present", () => {
+    const sum = sumUsage({ x: 1 }, { toString: null, constructor: 3 }) as Record<string, unknown>;
+    expect(sum.toString).toBeNull(); // with `in`, the inherited function would win over null
+    expect(sum.constructor).toBe(3);
+  });
 });

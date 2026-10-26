@@ -18,8 +18,10 @@
 // xargs rm, find -delete / -exec rm, dd of=, a bash -c nested inside bash -c,
 // backtick and $( ) substitutions, and any interpreter that writes from its own
 // code (python, node, make). False positives: a backslash-escaped `>`,
-// `$((1>2))` and `[[ 1 > 2 ]]` read as redirections, and here-document bodies
-// are scanned as if they were commands. A command over MAX_SHELL_COMMAND_BYTES
+// `$((1>2))` and `[[ 1 > 2 ]]` read as redirections, an apostrophe in
+// unquoted text (`echo don't "a > b"`) opens a quote that never closes so the
+// rest is read as code, and here-document bodies
+// are scanned as if they were commands. A command over MAX_SHELL_COMMAND_LENGTH
 // is not scanned at all (reported as not writing), which bounds the work done
 // on the event loop for hostile input.
 //
@@ -35,11 +37,12 @@ const KEYWORDS: ReadonlySet<string> = new Set(["then", "do", "else", "elif", "if
 // git global options that take a separate value.
 const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
 
-// MAX_SHELL_COMMAND_BYTES: longer commands are not scanned (see above).
-export const MAX_SHELL_COMMAND_BYTES = 64 * 1024;
+// MAX_SHELL_COMMAND_LENGTH: commands longer than this many characters (UTF-16
+// code units, as String.length counts them) are not scanned (see above).
+export const MAX_SHELL_COMMAND_LENGTH = 64 * 1024;
 
 export function shellCommandWritesFiles(command: string): boolean {
-  if (command.length > MAX_SHELL_COMMAND_BYTES) return false;
+  if (command.length > MAX_SHELL_COMMAND_LENGTH) return false;
   const script = unwrapShell(command.trim());
   const bare = blankQuoted(script);
   if (hasFileRedirect(bare)) return true;
@@ -85,10 +88,12 @@ function blankQuoted(s: string): string {
   return out;
 }
 
+// The (?<!\d) anchors keep each digit run to one attempt; without them a long
+// run of digits is rescanned from every start (quadratic).
 function hasFileRedirect(s: string): boolean {
   const cleaned = s
-    .replace(/\d*>&\d*-?/g, " ") // 2>&1
-    .replace(/(?:&>>?|\d*>>?\|?)\s*\/dev\/\S*/g, " "); // > /dev/null, 2>/dev/null, &> /dev/null
+    .replace(/(?<!\d)\d*>&\d*-?/g, " ") // 2>&1
+    .replace(/(?:&>>?|(?<!\d)\d*>>?\|?)\s*\/dev\/\S*/g, " "); // > /dev/null, 2>/dev/null, &> /dev/null
   return /(?<![=-])>/.test(cleaned);
 }
 

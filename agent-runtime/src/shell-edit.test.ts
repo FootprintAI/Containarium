@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SHELL_COMMAND_BYTES, shellCommandWritesFiles } from "./shell-edit.js";
+import { MAX_SHELL_COMMAND_LENGTH, shellCommandWritesFiles } from "./shell-edit.js";
 
 describe("shellCommandWritesFiles (#3107 item 1)", () => {
   it.each([
@@ -48,6 +48,7 @@ describe("shellCommandWritesFiles (#3107 item 1)", () => {
     ["if true; then ls; fi", false],
     // An unterminated quote: what follows is still scanned.
     ['echo "oops > out.txt', true],
+    ['echo "unterminated ; rm a', true],
   ])("%j -> %s", (cmd, want) => {
     expect(shellCommandWritesFiles(cmd)).toBe(want);
   });
@@ -61,6 +62,7 @@ describe("shellCommandWritesFiles (#3107 item 1)", () => {
     ["bash -c 'bash -c \"rm a\"'", false],
     ["echo \\> not-a-redirect", true],
     ["echo $((1>2))", true],
+    ["echo don't \"a > b\"", true],
   ])("known limit %j -> %s", (cmd, want) => {
     expect(shellCommandWritesFiles(cmd)).toBe(want);
   });
@@ -69,13 +71,13 @@ describe("shellCommandWritesFiles (#3107 item 1)", () => {
     const hostile = '"\\'.repeat(100_000); // 200 KB
     const t0 = performance.now();
     expect(shellCommandWritesFiles(hostile)).toBe(false);
-    expect(shellCommandWritesFiles(`rm a ${"x".repeat(MAX_SHELL_COMMAND_BYTES)}`)).toBe(false);
+    expect(shellCommandWritesFiles(`rm a ${"x".repeat(MAX_SHELL_COMMAND_LENGTH)}`)).toBe(false);
     expect(performance.now() - t0).toBeLessThan(200);
   });
 
   it("scans a hostile unterminated-quote input just under the cap in linear time", () => {
     const hostile = '"\\'.repeat(30_000); // quote, backslash, repeated: every quote starts a failing scan
-    expect(hostile.length).toBeLessThan(MAX_SHELL_COMMAND_BYTES);
+    expect(hostile.length).toBeLessThan(MAX_SHELL_COMMAND_LENGTH);
     const t0 = performance.now();
     expect(shellCommandWritesFiles(hostile)).toBe(false);
     expect(performance.now() - t0).toBeLessThan(200);
@@ -87,4 +89,23 @@ describe("shellCommandWritesFiles (#3107 item 1)", () => {
     expect(shellCommandWritesFiles(cmd)).toBe(true);
     expect(performance.now() - t0).toBeLessThan(200);
   });
+
+  it("scans a command of exactly the cap and skips one char over", () => {
+    const pad = (n: number) => "x".repeat(n);
+    const base = "rm a ";
+    expect(shellCommandWritesFiles(base + pad(MAX_SHELL_COMMAND_LENGTH - base.length))).toBe(true);
+    expect(shellCommandWritesFiles(base + pad(MAX_SHELL_COMMAND_LENGTH - base.length + 1))).toBe(false);
+  });
+
+  // Every metacharacter class the file's regexes and splits look at, at the cap
+  // and well over it, must stay linear.
+  it.each(["1", "1>", ">", "1&", "&", "|", ";", " ", "\n", "(", "2>&", "> ", "\\", "'", "-", "sh -c ", "a=b ", "/", "$"])(
+    "stays fast on a long run of %j",
+    (unit) => {
+      const t0 = performance.now();
+      shellCommandWritesFiles(unit.repeat(Math.floor((MAX_SHELL_COMMAND_LENGTH - 1) / unit.length)));
+      shellCommandWritesFiles(unit.repeat(Math.floor(200_000 / unit.length)));
+      expect(performance.now() - t0).toBeLessThan(300);
+    },
+  );
 });
