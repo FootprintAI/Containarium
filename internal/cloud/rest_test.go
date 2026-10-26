@@ -3,8 +3,11 @@ package cloud
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -117,4 +120,99 @@ func TestEnrollREST_ReEnroll(t *testing.T) {
 	if bearer != "existing-host-999.secret" {
 		t.Errorf("bearer = %q, want existing-host-999.secret (rebuilt from the returned id, not the token's own throwaway id)", bearer)
 	}
+}
+
+// connCountingServer replies with the next status from statuses (the last one
+// repeats) and counts distinct TCP connections via ConnState.
+func connCountingServer(t *testing.T, statuses ...int) (srv *httptest.Server, conns *atomic.Int32) {
+	t.Helper()
+	conns = new(atomic.Int32)
+	var n atomic.Int32
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		i := int(n.Add(1)) - 1
+		if i >= len(statuses) {
+			i = len(statuses) - 1
+		}
+		w.WriteHeader(statuses[i])
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv, conns
+}
+
+func TestRESTActuation_RecyclesConnectionAfterRepeated5xx(t *testing.T) {
+	srv, conns := connCountingServer(t, 502, 502, 502, 200)
+	r := newRESTActuation(srv.URL, "tok")
+	ctx := context.Background()
+	for i := 0; i < recycleAfter5xx; i++ {
+		if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err == nil {
+			t.Fatalf("call %d: want 502 error", i)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections before recycle = %d, want 1 (pooled)", got)
+	}
+	if _, err := r.Heartbeat(ctx, &cloudv1.HeartbeatRequest{}); err != nil {
+		t.Fatalf("heartbeat after recycle: %v", err)
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections after recycle = %d, want 2 (fresh dial)", got)
+	}
+}
+
+func TestRESTActuation_NoRecycleBelowThreshold(t *testing.T) {
+	srv, conns := connCountingServer(t, 502, 502, 200, 502, 502, 200)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < 6; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1: a success must reset the 5xx count", got)
+	}
+}
+
+func TestRESTActuation_4xxDoesNotRecycle(t *testing.T) {
+	srv, conns := connCountingServer(t, 401)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < recycleAfter5xx*3; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1: 401 must not recycle", got)
+	}
+}
+
+func TestRESTActuation_4xxBetween5xxDoesNotResetOrCount(t *testing.T) {
+	// 502,502,401,502 is still 3 5xx in a row as far as the connection goes.
+	srv, conns := connCountingServer(t, 502, 502, 401, 502, 200)
+	r := newRESTActuation(srv.URL, "tok")
+	for i := 0; i < 5; i++ {
+		_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+	}
+	if got := conns.Load(); got != 2 {
+		t.Errorf("connections = %d, want 2", got)
+	}
+}
+
+func TestRESTActuation_RecycleConcurrent(t *testing.T) {
+	srv, _ := connCountingServer(t, 502)
+	r := newRESTActuation(srv.URL, "tok")
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				_, _ = r.Heartbeat(context.Background(), &cloudv1.HeartbeatRequest{})
+				_, _ = r.ReportHostStatus(context.Background(), &cloudv1.ReportHostStatusRequest{})
+			}
+		}()
+	}
+	wg.Wait()
 }

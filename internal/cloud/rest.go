@@ -26,9 +26,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -53,14 +55,62 @@ type restActuation struct {
 	base   string // control-plane base URL, no trailing slash
 	bearer string // host bearer, sent as Grpc-Metadata-Host-Bearer (empty for enroll, which self-auths via the join token)
 	hc     *http.Client
+
+	// mu guards consecutive5xx. Heartbeat, status and trust-bundle calls
+	// can run concurrently on one client.
+	mu             sync.Mutex
+	consecutive5xx int
+}
+
+// recycleAfter5xx is how many consecutive 5xx responses make the client drop
+// its pooled connections so the next request redials (#3077). A heartbeat
+// every ~30s keeps one HTTP/2 connection permanently busy, so it is never
+// idle-closed; if the control plane's origin moves behind the same hostname,
+// that connection can stay pinned to the old origin at the edge and answer
+// 502 until something closes it.
+const recycleAfter5xx = 3
+
+// noteResponse updates the consecutive-5xx counter for one completed HTTP
+// exchange and recycles the pooled connections when the threshold is hit.
+// Only a 5xx response counts as a failure: 4xx (e.g. a 401 from a bad bearer)
+// is the server answering correctly and says nothing about the connection, so
+// it neither counts nor resets. Any other status is a success and resets.
+func (r *restActuation) noteResponse(status int) {
+	r.mu.Lock()
+	switch {
+	case status >= 500:
+		r.consecutive5xx++
+	case status >= 400:
+		// Neither a connection symptom nor proof of health: leave as is.
+	default:
+		r.consecutive5xx = 0
+	}
+	recycle := r.consecutive5xx >= recycleAfter5xx
+	if recycle {
+		r.consecutive5xx = 0
+	}
+	r.mu.Unlock()
+	if recycle {
+		log.Printf("[cloud] %d consecutive 5xx from the control plane; closing pooled connections so the next request redials", recycleAfter5xx)
+		r.hc.CloseIdleConnections()
+	}
 }
 
 func newRESTActuation(controlPlane, bearer string) *restActuation {
 	return &restActuation{
 		base:   strings.TrimRight(strings.TrimSpace(controlPlane), "/"),
 		bearer: bearer,
-		hc:     &http.Client{Timeout: 30 * time.Second},
+		// Own transport (a clone of the default, so proxy/HTTP2 behaviour is
+		// unchanged) so CloseIdleConnections affects only this client.
+		hc: &http.Client{Timeout: 30 * time.Second, Transport: newTransport()},
 	}
+}
+
+func newTransport() *http.Transport {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		return dt.Clone()
+	}
+	return &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
 }
 
 func (r *restActuation) Heartbeat(ctx context.Context, req *cloudv1.HeartbeatRequest, _ ...grpc.CallOption) (*cloudv1.HeartbeatResponse, error) {
@@ -131,8 +181,11 @@ func (r *restActuation) do(httpReq *http.Request, path string, out proto.Message
 	if err != nil {
 		return fmt.Errorf("cloud-rest: %s %s: %w", httpReq.Method, path, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+	// After the body is closed the connection is idle, so a recycle here
+	// closes it rather than racing the exchange that just finished.
+	r.noteResponse(resp.StatusCode)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("cloud-rest: %s %s: %d %s", httpReq.Method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
