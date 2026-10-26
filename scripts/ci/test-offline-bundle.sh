@@ -223,6 +223,16 @@ mkdir -p "$tmp/img.tree/$top/images"; mkt img
 rm "$tmp/nobin.tree/$top/bin/containariumd"; mkt nobin; mkt fine
 if REQUIRED_DEBS=libx bash "$content" "$tmp/fine.tgz" >/dev/null 2>&1; then pass "check-bundle-content: control tarball accepted"
 else t "check-bundle-content: control tarball rejected"; fi
+# A ref with a slash (a branch rehearsal) nests the bundle directory one
+# level down; that is still one bundle. Two side-by-side roots are not.
+mkdir -p "$tmp/nested.tree/outer"; cp -r "$tmp/fine.tree/$top" "$tmp/nested.tree/outer/"
+tar -C "$tmp/nested.tree" -czf "$tmp/nested.tgz" "outer/$top"
+if REQUIRED_DEBS=libx bash "$content" "$tmp/nested.tgz" >"$tmp/nested.out" 2>&1; then pass "check-bundle-content: nested bundle directory accepted"
+else t "check-bundle-content: nested bundle directory rejected"; cat "$tmp/nested.out"; fi
+mkdir -p "$tmp/two.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/two.tree/"; cp -r "$tmp/fine.tree/$top" "$tmp/two.tree/other"
+tar -C "$tmp/two.tree" -czf "$tmp/two.tgz" "$top" other
+if REQUIRED_DEBS=libx bash "$content" "$tmp/two.tgz" >/dev/null 2>&1; then t "check-bundle-content: two top-level directories accepted"
+else pass "check-bundle-content: two top-level directories rejected"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/img.tgz" >/dev/null 2>&1; then t "check-bundle-content: images/ accepted"
 else pass "check-bundle-content: images/ rejected"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/nobin.tgz" >/dev/null 2>&1; then t "check-bundle-content: missing containariumd accepted"

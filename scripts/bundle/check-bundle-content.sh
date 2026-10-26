@@ -6,7 +6,7 @@
 #
 # Usage: scripts/bundle/check-bundle-content.sh <bundle.tar.gz>
 #
-# Fails unless the tarball has exactly one top-level directory holding:
+# Fails unless every entry is under one bundle directory holding:
 #   bin/{containariumd,mcp-server,agent-box}, offline-install.sh, VERSION,
 #   CHECKSUMS.sha256, toolchains/go*.tar.gz, and apt/<pkg>_*.deb for every
 #   package in REQUIRED_DEBS;
@@ -36,14 +36,23 @@ fi
 errors=0
 err() { echo "check-bundle-content: $*" >&2; errors=$((errors + 1)); }
 
-mapfile -t tops < <(sed -e 's|^\./||' -e 's|/.*||' "$listing" | grep -v '^$' | sort -u)
-if [ "${#tops[@]}" -ne 1 ]; then
-  err "want one top-level directory, got ${#tops[@]}: ${tops[*]}"
+# The bundle directory is the entries' longest common directory prefix. It is
+# usually one component, but a ref containing a slash (a branch rehearsal)
+# nests it one level deeper. Entries under two different roots have no
+# common prefix and fail.
+top="$(awk '
+  { sub(/^\.\//, ""); sub(/\/$/, ""); if ($0 == "") next
+    n = split($0, a, "/")
+    if (!seen) { seen = 1; m = n; for (i = 1; i <= n; i++) p[i] = a[i]; next }
+    k = 0; for (i = 1; i <= m && i <= n; i++) { if (a[i] != p[i]) break; k = i }
+    m = k }
+  END { s = ""; for (i = 1; i <= m; i++) s = s (i > 1 ? "/" : "") p[i]; print s }' "$listing")"
+if [ -z "$top" ]; then
+  err "entries are not under one bundle directory"
   exit 1
 fi
-top="${tops[0]}"
 # Paths relative to the top-level directory, without a trailing slash.
-mapfile -t paths < <(sed -e 's|^\./||' -e "s|^$top/||" -e 's|/$||' "$listing")
+mapfile -t paths < <(sed -e 's|^\./||' -e 's|/$||' "$listing" | awk -v t="$top/" 'index($0, t) == 1 { print substr($0, length(t) + 1) }')
 
 has() { printf '%s\n' "${paths[@]}" | grep -qE "$1"; }
 
