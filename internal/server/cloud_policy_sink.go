@@ -25,14 +25,20 @@ type cloudPolicySink struct {
 const cloudPolicySource = "cloud"
 
 // cloudEgressMode is the egress_mode a synced policy is stored with (#2976,
-// #2994). The vendored cloudv1.NetworkPolicy has no egress_mode field yet, so
-// this returns UNSPECIFIED, which means "follow mode" — exactly what the stored
-// policy carried before the field existed. Once the field is added in the
-// cloud repo and re-vendored, the body becomes
-// `return pb.NetworkPolicyMode(int32(np.GetEgressMode()))` (same enum values as
-// mode), and an unset field keeps meaning "follow mode".
-func cloudEgressMode(_ *cloudv1.NetworkPolicy) pb.NetworkPolicyMode {
-	return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+// #2994): the control plane's own egress mode, so an org that soaks its
+// allow-list in LOG_ONLY (cross-org traffic still ENFORCE) is not enforced here.
+// Mapped value by value rather than by integer cast, so the two enums cannot
+// drift apart silently. UNSPECIFIED, and any value this host does not know (a
+// newer control plane), stay UNSPECIFIED, which means "follow mode".
+func cloudEgressMode(np *cloudv1.NetworkPolicy) pb.NetworkPolicyMode {
+	switch np.GetEgressMode() {
+	case cloudv1.EgressMode_EGRESS_MODE_LOG_ONLY:
+		return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+	case cloudv1.EgressMode_EGRESS_MODE_ENFORCE:
+		return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
+	default:
+		return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+	}
 }
 
 func newCloudPolicySink(np *NetworkPolicyServer) *cloudPolicySink {
