@@ -377,7 +377,11 @@ func newApprovalHarness(t *testing.T, f routerFixture, enforce bool, first *pb.A
 				hook(n)
 			}
 		},
-		Logf:     func(format string, args ...any) { h.mu.Lock(); defer h.mu.Unlock(); h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
+		Logf: func(format string, args ...any) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.logs = append(h.logs, fmt.Sprintf(format, args...))
+		},
 		Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend-1", true, nil }),
 		Authorizer: authorizerFunc(func(_ context.Context, _ string, r *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 			h.mu.Lock()

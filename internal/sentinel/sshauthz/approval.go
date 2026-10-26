@@ -43,8 +43,8 @@ type pendingApproval struct {
 	// session, login and addr identify the connection in the denied record of
 	// a prompt never answered; user is the daemon's user_id with the PENDING.
 	session, login, addr, user string
-	wire          []byte
-	req           *pb.AuthorizeSSHRequest
+	wire                       []byte
+	req                        *pb.AuthorizeSSHRequest
 }
 
 // newApproval returns the approval to prompt for, or false when the daemon's

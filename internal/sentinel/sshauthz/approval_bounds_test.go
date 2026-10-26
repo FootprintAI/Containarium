@@ -150,7 +150,11 @@ func newCapHarness(t *testing.T, f routerFixture) *capHarness {
 	pending := pendingRes(start.Add(5*time.Minute), 5*time.Second)
 	p, err := New(Config{Enforce: true, Recorder: &lockedSink{h: h}, Now: func() time.Time { return start },
 		Sleep: func(time.Duration) { h.entered <- struct{}{}; <-h.gate },
-		Logf:  func(format string, args ...any) { h.mu.Lock(); defer h.mu.Unlock(); h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
+		Logf: func(format string, args ...any) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.logs = append(h.logs, fmt.Sprintf(format, args...))
+		},
 		Resolver: resolverFunc(func(context.Context, string) (string, bool, error) { return "backend-1", true, nil }),
 		Authorizer: authorizerFunc(func(_ context.Context, _ string, r *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 			if r.GetApprovalId() == "" || !h.released.Load() {
