@@ -11145,10 +11145,11 @@
       "enum": [
         "BACKUP_ENGINE_UNSPECIFIED",
         "BACKUP_ENGINE_POSTGRES",
-        "BACKUP_ENGINE_HOOK"
+        "BACKUP_ENGINE_HOOK",
+        "BACKUP_ENGINE_BOX"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling."
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported\nas an Incus instance backup tarball, encrypted like any other dump. It\nis restored by importing it as a new box, never by a database engine."
     },
     "BackupKeyMode": {
       "type": "string",

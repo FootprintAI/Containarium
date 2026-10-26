@@ -5,10 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // containerView is a reconcile-time snapshot of one managed container: its
@@ -127,15 +125,6 @@ func withDefaultPolicies(policies map[string]netpolicy.CompiledPolicy, views []c
 		}
 	}
 	return out
-}
-
-// subEvents returns the subscriber's event channel, or a nil channel (which
-// blocks forever in a select) when there is no subscriber.
-func subEvents(sub *events.Subscriber) <-chan *pb.Event {
-	if sub == nil {
-		return nil
-	}
-	return sub.Events
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
