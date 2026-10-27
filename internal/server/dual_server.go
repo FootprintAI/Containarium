@@ -231,6 +231,14 @@ type DualServerConfig struct {
 	PublicBaseDomains []string // suffix-match anchors advertised to the sentinel; <anything>.<one-of-these> routes here. List multiple to host workloads under different parent domains on the same backend (see docs/PER-POOL-BASE-DOMAIN.md)
 	PublicPort        int      // TLS port the sentinel forwards to (typically 443)
 
+	// BYOCBackend marks a tunnel-joined (BYOC) backend (--byoc-backend, set
+	// by `containarium pool join --byoc`). The control plane owns every
+	// public domain there, so BaseDomain is not served: no management apex
+	// route, no wildcard certificate, nothing advertised for it. BaseDomain
+	// is still passed to the proxy, only so existing ingress routes keep the
+	// IDs they were created under (#2262). See byoc_base_domain.go.
+	BYOCBackend bool
+
 	// SSHHost is the public host clients dial to SSH into this daemon's
 	// containers — the sentinel's SSH endpoint (e.g. region-a.example.com),
 	// from --ssh-host. Surfaced on each Container.ssh_host so clients build
@@ -284,9 +292,9 @@ type DualServerConfig struct {
 // serves and what the sentinel routes here stay identical by construction
 // (#213). Falls back to the single BaseDomain when PublicBaseDomains is
 // unset (e.g. configs built without resolvePublicBaseDomains), keeping
-// single-domain deployments unchanged.
+// single-domain deployments unchanged. A BYOC backend serves no apex (#2262).
 func managementRouteDomains(cfg *DualServerConfig) []string {
-	if cfg == nil {
+	if cfg == nil || cfg.BYOCBackend {
 		return nil
 	}
 	if len(cfg.PublicBaseDomains) > 0 {
@@ -1252,7 +1260,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// redirect failure and Let's Encrypt per-domain rate limits
 						// as regions scale (#389). Best-effort; per-route ProvisionTLS
 						// still covers individual hostnames if this is skipped.
-						if proxyManager.HasDNSChallenge() {
+						if config.BYOCBackend {
+							// A BYOC backend orders no certificate for a base
+							// domain it does not own (#2262); drop a wildcard
+							// subject left by a start before the host was marked.
+							// No-op when there is none.
+							if config.BaseDomain != "" {
+								if err := proxyManager.RemoveTLSSubject("*." + config.BaseDomain); err != nil {
+									log.Printf("Warning: BYOC backend: failed to drop wildcard TLS subject *.%s: %v", config.BaseDomain, err)
+								}
+							}
+						} else if proxyManager.HasDNSChallenge() {
 							if err := proxyManager.ProvisionWildcardTLS(); err != nil {
 								log.Printf("Warning: failed to provision wildcard TLS (*.%s): %v", config.BaseDomain, err)
 							} else {
@@ -4082,6 +4100,12 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// Caddies+serves the apex of every parent domain the sentinel routes
 	// here (#213). Single-domain deployments resolve to [BaseDomain],
 	// unchanged.
+	//
+	// A BYOC backend serves no apex (managementRouteDomains is empty), and
+	// drops the one it saved before it was marked (#2262).
+	if ds.routeStore != nil && ds.config.BYOCBackend {
+		dropStaleManagementRoutes(ctx, ds.routeStore)
+	}
 	if ds.routeStore != nil && ds.config.HostIP != "" {
 		for _, domain := range managementRouteDomains(ds.config) {
 			mgmtRoute := &app.RouteRecord{
@@ -4090,7 +4114,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				TargetIP:    ds.config.HostIP,
 				TargetPort:  ds.config.HTTPPort,
 				Protocol:    "http",
-				Description: "Containarium management UI",
+				Description: managementRouteDescription,
 				Active:      true,
 				CreatedBy:   string(app.RouteCreatorSystem),
 			}

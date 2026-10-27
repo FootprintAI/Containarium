@@ -83,6 +83,7 @@ var (
 	poolJoinPublicHostname     string
 	poolJoinPublicPort         int
 	poolJoinBaseDomain         string
+	poolJoinBYOC               bool
 	poolJoinDryRun             bool
 	poolJoinDaemonFlags        []string
 	poolJoinCloudControlPlane  string
@@ -142,6 +143,7 @@ func init() {
 	poolJoinCmd.Flags().StringVar(&poolJoinPublicHostname, "public-hostname", "", "If set, register this host as the pool's public-routed primary for this hostname (needs --public-port)")
 	poolJoinCmd.Flags().IntVar(&poolJoinPublicPort, "public-port", 0, "Public TLS port the sentinel forwards via this tunnel (typically 443; required with --public-hostname)")
 	poolJoinCmd.Flags().StringVar(&poolJoinBaseDomain, "base-domain", "", "Base domain the daemon's Caddy auto-provisions HTTPS for (optional)")
+	poolJoinCmd.Flags().BoolVar(&poolJoinBYOC, "byoc", false, "This host is a customer's own machine (BYOC): the control plane owns every public domain. Marks the daemon --byoc-backend, so it serves no base domain, passed or stored (#2262). Cannot be combined with --base-domain. Managed like --base-domain: re-running pool join without --byoc removes the mark")
 	poolJoinCmd.Flags().BoolVar(&poolJoinDryRun, "dry-run", false, "Print the unit files that would be written, then exit (no changes)")
 	poolJoinCmd.Flags().StringArrayVar(&poolJoinDaemonFlags, "daemon-flag", nil, "Extra daemon flag to carry into the unit (repeatable), e.g. --daemon-flag=--app-hosting --daemon-flag=--network-subnet=10.0.0.0/24. Use to add/override flags on top of the preserved/baseline set")
 	poolJoinCmd.Flags().StringVar(&poolJoinCloudControlPlane, "cloud-control-plane", "", "Also self-register this host with a cloud control plane (e.g. https://cloud.containarium.dev) using the same --token, right after the tunnel comes up. Optional — omit for a plain OSS pool join with no cloud involvement. A failure here is a warning, not a join failure: the tunnel is joined either way.")
@@ -329,6 +331,33 @@ func stripValuedFlag(argv []string, flag string) []string {
 	return out
 }
 
+// setBoolFlag removes every form of a boolean flag from argv (`--flag`,
+// `--flag=true`, `--flag=false`) and appends `--flag` when on, so a managed
+// bool (--byoc-backend) follows this invocation like --pool does. Pure.
+func setBoolFlag(argv []string, flag string, on bool) []string {
+	out := make([]string, 0, len(argv)+1)
+	for _, a := range argv {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	if on {
+		out = append(out, flag)
+	}
+	return out
+}
+
+// validatePoolJoinBYOC rejects --byoc with --base-domain: a BYOC backend
+// serves no base domain (#2262), so the pair is a contradiction the operator
+// should see at join time rather than as a warning in the daemon log.
+func validatePoolJoinBYOC(byoc bool, baseDomain string) error {
+	if byoc && baseDomain != "" {
+		return fmt.Errorf("--byoc cannot be combined with --base-domain: a BYOC backend serves no base domain; the control plane owns its public domains (#2262)")
+	}
+	return nil
+}
+
 // resolvePoolDaemonArgv builds the daemon ExecStart argv for the pool drop-in.
 // It PRESERVES the host's existing daemon flags (#702) — so onboarding a host
 // that already runs e.g. `--app-hosting --network-subnet <cidr>` doesn't
@@ -426,6 +455,9 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if poolJoinPublicHostname != "" && poolJoinPublicPort == 0 {
 		return fmt.Errorf("--public-port is required when --public-hostname is set")
 	}
+	if err := validatePoolJoinBYOC(poolJoinBYOC, poolJoinBaseDomain); err != nil {
+		return err
+	}
 	if poolJoinSentinelAuthSecret != "" && len(poolJoinSentinelAuthSecret) < 32 {
 		return fmt.Errorf("--sentinel-auth-secret must be at least 32 characters (got %d)", len(poolJoinSentinelAuthSecret))
 	}
@@ -461,7 +493,8 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// ExecStart and carry its flags forward, rather than resetting to a minimal
 	// command and silently dropping e.g. --app-hosting / --network-subnet.
 	current, found := currentDaemonArgv()
-	daemonArgv := resolvePoolDaemonArgv(current, found, poolJoinPool, poolJoinBaseDomain, poolJoinDaemonFlags)
+	daemonArgv := setBoolFlag(resolvePoolDaemonArgv(current, found, poolJoinPool, poolJoinBaseDomain, poolJoinDaemonFlags),
+		"--byoc-backend", poolJoinBYOC)
 	authSecretFile := ""
 	if poolJoinSentinelAuthSecret != "" {
 		authSecretFile = sentinelAuthSecretFile
