@@ -30,9 +30,11 @@ that matters.
    commit of
    [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills)
    (it has no tags). Ask "bump the skills pin?" at every cut: if the
-   answer is yes, set `ref` to the new full commit SHA and run
-   `scripts/build-sdlc-skills-bundle.sh --update-lock bin/` to refresh the
-   `sha256`. The release build and the `sdlc-skills-lock` check both
+   answer is yes, set the `[sdlc]` section's `ref` to the new full commit SHA
+   and run `scripts/build-sdlc-skills-bundle.sh --update-lock sdlc bin/` to
+   refresh its `sha256`. For another source section, replace `sdlc` with that
+   source id; the output is `<source>-skills.tar.gz`. The release build and the
+   `sdlc-skills-lock` check both
    rebuild the tarball from the pin and fail on a digest mismatch, so
    forgetting the digest cannot ship.
 
