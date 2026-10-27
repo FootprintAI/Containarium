@@ -55,8 +55,8 @@ a partner operator until a different one is agreed.
 | `containarium backends upgrade` | admin role plus the `containers:write` scope (`containers:read` for `GetUpgradeStatus`); tokens with no scopes claim stay unrestricted. Refused against the hosted control plane. | `TriggerUpgrade` in [container_server.go](../internal/server/container_server.go), `isCloudTarget` in [backends_upgrade.go](../internal/cmd/backends_upgrade.go) |
 | `containarium snapshot create` / `rollback` | `containers:write`, and you must be the tenant or an admin | `snapshotDatasetFor` in [container_snapshot.go](../internal/server/container_snapshot.go) |
 | `containarium snapshot list` | `containers:read`, and you must be the tenant or an admin | same |
-| `containarium backup create` / `restore` / `prune` | `backups:write` |
-| `containarium backup verify` | `backups:verify` or `backups:write` | same | [backup_server.go](../internal/server/backup_server.go) |
+| `containarium backup create` / `restore` / `prune` | `backups:write` | [backup_server.go](../internal/server/backup_server.go) |
+| `containarium backup verify` | `backups:verify` or `backups:write` | same |
 | `containarium backup list` / `get` | `backups:read` | same |
 | `containarium debug <username>` | the tenant or an admin | `DebugContainer` in [debug_container.go](../internal/server/debug_container.go), `AuthorizeTenant` in [authz.go](../internal/auth/authz.go) |
 | `containariumd recover`, `containarium doctor`, `containarium service status` | a shell on the host. The DR guide runs `recover` with `sudo`. | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) |

@@ -147,3 +147,23 @@ func TestVerifyBackupToolAcceptsVerifyScope(t *testing.T) {
 		}
 	}
 }
+
+// The denial text names every scope that would have satisfied the tool, so a
+// verify_backup caller learns backups:verify exists (#3186).
+func TestRequiredScopeText(t *testing.T) {
+	if got := requiredScopeText(&Tool{RequiredScope: "a:b"}); got != `"a:b"` {
+		t.Errorf("single scope text = %s", got)
+	}
+	srv := &Server{}
+	srv.registerTools()
+	for i := range srv.tools {
+		if srv.tools[i].Name == "verify_backup" {
+			got := requiredScopeText(&srv.tools[i])
+			if !strings.Contains(got, auth.ScopeBackupsVerify) || !strings.Contains(got, auth.ScopeBackupsWrite) {
+				t.Errorf("verify_backup denial text = %s, want both scopes", got)
+			}
+			return
+		}
+	}
+	t.Fatal("verify_backup not registered")
+}

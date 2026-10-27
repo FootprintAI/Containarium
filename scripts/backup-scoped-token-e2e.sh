@@ -109,6 +109,12 @@ legacy=$("$bin" token generate --username "$tenant" --roles user \
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
 api 200 "$scratch_dir/legacy-verify.json" --max-time 600 -H "Authorization: Bearer $legacy" \
   -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
+jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/legacy-verify.json"
+legacy_target=$(jq -er '.verification.targetContainer' "$scratch_dir/legacy-verify.json")
+if incus info "$legacy_target" >/dev/null 2>&1; then
+  echo "Verifier container was not deleted: $legacy_target" >&2
+  exit 1
+fi
 
 # Verification must leave the source database intact.
 test "$(incus exec "$source_name" -- runuser -u postgres -- psql -Atc 'SELECT count(*) FROM scope_contract')" = 1
