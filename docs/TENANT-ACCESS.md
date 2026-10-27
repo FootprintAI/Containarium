@@ -31,13 +31,21 @@ Host MCP adds list_network_policies, get_network_policy and patch_tenant_access.
 Generated gRPC exposes PatchTenantAccess. All use the same fixed Provider
 contract. Unknown outcomes must be inspected before a fresh preview, not replayed.
 
-GetNetworkTenantCapabilities retains boxweave.tenant-network/v1. A's shared create,
-B's atomic support and current policy-write permission are reported independently.
-B support requires local wiring and a durable store. Grants require fresh
-supported ENFORCE Guard; revokes can be recorded while degraded. The typed
-TenantAccessApplicationState reports PENDING, GUARD_VERIFIED or DEGRADED. A commit,
-ACL reconciliation and a TCP connectivity test are distinct; connectivityTested
-is always false. Do not infer immediate enforcement of a degraded revocation.
+GetNetworkTenantCapabilities retains contract native-network-tenant/v1
+(incus.NativeTenantContractID). A's shared create, B's atomic support and
+current policy-write permission are reported independently. B support requires
+local wiring and a durable store. Grants require fresh supported ENFORCE Guard;
+revokes can be recorded while degraded. The typed TenantAccessApplicationState
+reports PENDING, GUARD_VERIFIED or DEGRADED. A commit, ACL reconciliation and a
+TCP connectivity test are distinct; connectivityTested is always false. Do not
+infer immediate enforcement of a degraded revocation.
+
+Minting a token with the required scope: create an admin token whose scope list
+includes network-policy:write alongside containers:write (legacy unrestricted
+admin credentials keep working). A token minted before this change with an
+explicit scope list that omits network-policy:write loses every policy write —
+Set, Patch, Delete and the signature mutations — on upgrade; re-mint it before
+relying on those writes.
 
 Tests cover direction, exact preservation including egress_mode/deny rules,
 revision conflicts, concurrent previews, all-or-none absent-row rollback, signed

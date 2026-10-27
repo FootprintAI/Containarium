@@ -20,18 +20,19 @@ import (
 
 // GRPCClient wraps a gRPC connection to the containarium daemon
 type GRPCClient struct {
-	conn          *grpc.ClientConn
-	client        pb.ContainerServiceClient
-	appClient     pb.AppServiceClient
-	networkClient pb.NetworkServiceClient
-	recipeClient  pb.RecipeServiceClient
-	backupClient  pb.BackupServiceClient
-	volumeClient  pb.VolumeServiceClient
-	kmsClient     pb.KmsServiceClient
-	agentClient   pb.AgentSkillServiceClient
-	crewClient    pb.CrewServiceClient
-	clusterClient pb.ClusterServiceClient
-	auditClient   pb.AuditServiceClient // #2415
+	conn                *grpc.ClientConn
+	client              pb.ContainerServiceClient
+	appClient           pb.AppServiceClient
+	networkClient       pb.NetworkServiceClient
+	networkPolicyClient pb.NetworkPolicyServiceClient
+	recipeClient        pb.RecipeServiceClient
+	backupClient        pb.BackupServiceClient
+	volumeClient        pb.VolumeServiceClient
+	kmsClient           pb.KmsServiceClient
+	agentClient         pb.AgentSkillServiceClient
+	crewClient          pb.CrewServiceClient
+	clusterClient       pb.ClusterServiceClient
+	auditClient         pb.AuditServiceClient // #2415
 	// proofPackClient verifies a sealed Proof Pack (#3064).
 	proofPackClient pb.ProofPackServiceClient
 	sandboxClient   pb.SandboxServiceClient
@@ -98,6 +99,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	client := pb.NewContainerServiceClient(conn)
 	appClient := pb.NewAppServiceClient(conn)
 	networkClient := pb.NewNetworkServiceClient(conn)
+	networkPolicyClient := pb.NewNetworkPolicyServiceClient(conn)
 	recipeClient := pb.NewRecipeServiceClient(conn)
 	backupClient := pb.NewBackupServiceClient(conn)
 	volumeClient := pb.NewVolumeServiceClient(conn)
@@ -111,23 +113,24 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
 	return &GRPCClient{
-		conn:               conn,
-		client:             client,
-		appClient:          appClient,
-		networkClient:      networkClient,
-		recipeClient:       recipeClient,
-		backupClient:       backupClient,
-		volumeClient:       volumeClient,
-		kmsClient:          kmsClient,
-		agentClient:        agentClient,
-		crewClient:         crewClient,
-		clusterClient:      clusterClient,
-		auditClient:        pb.NewAuditServiceClient(conn),
-		proofPackClient:    pb.NewProofPackServiceClient(conn),
-		sandboxClient:      sandboxClient,
-		anonClient:         anonClient,
-		trackerClient:      trackerClient,
-		modelGatewayClient: modelGatewayClient,
+		conn:                conn,
+		client:              client,
+		appClient:           appClient,
+		networkClient:       networkClient,
+		networkPolicyClient: networkPolicyClient,
+		recipeClient:        recipeClient,
+		backupClient:        backupClient,
+		volumeClient:        volumeClient,
+		kmsClient:           kmsClient,
+		agentClient:         agentClient,
+		crewClient:          crewClient,
+		clusterClient:       clusterClient,
+		auditClient:         pb.NewAuditServiceClient(conn),
+		proofPackClient:     pb.NewProofPackServiceClient(conn),
+		sandboxClient:       sandboxClient,
+		anonClient:          anonClient,
+		trackerClient:       trackerClient,
+		modelGatewayClient:  modelGatewayClient,
 
 		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
 		retentionClient:       pb.NewRetentionServiceClient(conn),
@@ -169,7 +172,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 			SSHHost:             container.SshHost,
 			State:               container.State.String(),
 			Tenant:              container.NetworkTenant,
-			NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+			NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
 			Labels:              container.Labels,
 			InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
@@ -226,7 +229,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		State:               container.State.String(),
 		InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
 		Tenant:              container.NetworkTenant,
-		NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+		NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
 		Labels:              container.Labels, // what the daemon stored, incl. --labels (#2358)
 	}
 
@@ -647,7 +650,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		Username:            container.Username,
 		State:               container.State.String(),
 		Tenant:              container.NetworkTenant,
-		NetworkTenantSource: incus.NetworkTenantSource(container.NetworkTenantSource.String()),
+		NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
 		Labels:              container.Labels,
 	}
 	applyProtoLifecycle(info, container)

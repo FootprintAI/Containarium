@@ -27,7 +27,7 @@ func TestNativeTenantCLICapabilityQuery(t *testing.T) {
 		if r.URL.Path != "/v1/network-tenants/capabilities" || r.Header.Get("Authorization") != "Bearer fixture-token" {
 			t.Error("wrong request")
 		}
-		_, _ = io.WriteString(w, `{"contract":"boxweave.tenant-network/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true,"atomicTenantAccess":false,"networkPolicyWrite":false}`)
+		_, _ = io.WriteString(w, `{"contract":"native-network-tenant/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true,"atomicTenantAccess":false,"networkPolicyWrite":false}`)
 	}))
 	defer fixture.Close()
 	oldServer, oldHTTP, oldToken := serverAddr, httpMode, authToken

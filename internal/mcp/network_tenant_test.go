@@ -16,7 +16,7 @@ func TestNativeTenantMCPCreateAndReadback(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/network-tenants/capabilities":
-			_, _ = w.Write([]byte(`{"contract":"boxweave.tenant-network/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true,"atomicTenantAccess":false,"networkPolicyWrite":false}`))
+			_, _ = w.Write([]byte(`{"contract":"native-network-tenant/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true,"atomicTenantAccess":false,"networkPolicyWrite":false}`))
 		case "/v1/containers":
 			calls++
 			var req CreateContainerRequest

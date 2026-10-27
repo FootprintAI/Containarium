@@ -177,6 +177,9 @@ func (r *Reconciler) PrepareNetworkTenant(ctx context.Context, containerName, te
 }
 
 func (r *Reconciler) prepare(ctx context.Context, containerName, tenant string, required bool) error {
+	// ACLs are keyed by the canonical tenant: "account:workload" guards the
+	// same domain — and joins the same sibling rules — as "workload" always did.
+	tenant = incus.CanonicalNetworkTenant(tenant)
 	if r.cfg.Mode != nicguard.ModeEnforce {
 		if required {
 			return fmt.Errorf("explicit network Tenant requires ENFORCE NIC guard")

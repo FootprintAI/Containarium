@@ -51,10 +51,16 @@ func (s *NetworkPolicyServer) PatchTenantAccess(ctx context.Context, req *pb.Pat
 		return nil, status.Error(codes.Aborted, err.Error())
 	}
 	if err != nil {
+		// The caller gets a generic Internal (the cause could name internal
+		// policy rows); the operator needs the real reason in the daemon log.
+		log.Printf("[tenant-access] store failure: %v", err)
 		return nil, status.Error(codes.Internal, "atomic Tenant access store failed")
 	}
 	// Store success is not enforcement success. Never roll back unrelated policy
-	// writes or report a TCP result from an ACL reconciliation.
+	// writes or report a TCP result from an ACL reconciliation. The
+	// reconciliation runs after the response is fully computed but before it is
+	// returned; it takes the guard's own write lock, so a slow pass delays this
+	// reply without holding any network-policy lock.
 	applied := pb.TenantAccessApplicationState_TENANT_ACCESS_APPLICATION_STATE_PENDING
 	if s.tenantGuardReconcile != nil {
 		if err := s.tenantGuardReconcile(ctx); err != nil {

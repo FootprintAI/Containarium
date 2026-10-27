@@ -23,30 +23,33 @@ func nativeUser() context.Context {
 
 func TestNativeTenantAuthorizationAndPlacement(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		admin, local bool
-		req          *pb.CreateContainerRequest
-		want         codes.Code
-		key          string
+		name                    string
+		admin, local, tenancyOn bool
+		req                     *pb.CreateContainerRequest
+		want                    codes.Code
+		key                     string
 	}{
-		{"admin explicit", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.OK, "team-a"},
-		{"admin omitted", true, true, &pb.CreateContainerRequest{}, codes.OK, ""},
-		{"user omitted reserved", false, true, &pb.CreateContainerRequest{}, codes.OK, "account:workload"},
-		{"user shared forbidden", false, true, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.PermissionDenied, ""},
-		{"user explicit own forbidden", false, true, &pb.CreateContainerRequest{NetworkTenant: "account:workload"}, codes.PermissionDenied, ""},
-		{"admin reserved forbidden", true, true, &pb.CreateContainerRequest{NetworkTenant: "account:workload"}, codes.InvalidArgument, ""},
-		{"generic tenant label", true, true, &pb.CreateContainerRequest{Labels: map[string]string{"tenant": "team-a"}}, codes.InvalidArgument, ""},
-		{"native label injection", false, true, &pb.CreateContainerRequest{Labels: map[string]string{incus.TenantLabelKey: "team-a"}}, codes.InvalidArgument, ""},
-		{"cloud bypass", false, true, &pb.CreateContainerRequest{Labels: map[string]string{incus.CloudOrgIDLabel: "team-a"}}, codes.PermissionDenied, ""},
-		{"conflicting cloud", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", Labels: map[string]string{incus.CloudOrgIDLabel: "team-b"}}, codes.InvalidArgument, ""},
-		{"non-admin VM cannot bypass account namespace", false, true, &pb.CreateContainerRequest{Isolation: pb.IsolationType_ISOLATION_TYPE_VM}, codes.InvalidArgument, ""},
-		{"non-admin peer cannot bypass account namespace", false, true, &pb.CreateContainerRequest{BackendId: "remote"}, codes.FailedPrecondition, ""},
-		{"VM", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", Isolation: pb.IsolationType_ISOLATION_TYPE_VM}, codes.InvalidArgument, ""},
-		{"Windows", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", OsType: pb.OSType_OS_TYPE_WINDOWS_2022}, codes.InvalidArgument, ""},
-		{"K8s", true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.FailedPrecondition, ""},
-		{"remote", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", BackendId: "remote"}, codes.FailedPrecondition, ""},
-		{"pool", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", Pool: "pool"}, codes.FailedPrecondition, ""},
-		{"region", true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a", Region: "region"}, codes.FailedPrecondition, ""},
+		{"admin explicit", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.OK, "team-a"},
+		{"admin omitted", true, true, false, &pb.CreateContainerRequest{}, codes.OK, ""},
+		{"user omitted legacy path when switch off", false, true, false, &pb.CreateContainerRequest{}, codes.OK, ""},
+		{"user omitted reserved when switch on", false, true, true, &pb.CreateContainerRequest{}, codes.OK, "account:workload"},
+		{"user omitted on non-local host legacy", false, false, true, &pb.CreateContainerRequest{}, codes.OK, ""},
+		{"user shared forbidden", false, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.PermissionDenied, ""},
+		{"user shared forbidden with switch on", false, true, true, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.PermissionDenied, ""},
+		{"user explicit own forbidden", false, true, false, &pb.CreateContainerRequest{NetworkTenant: "account:workload"}, codes.PermissionDenied, ""},
+		{"admin reserved forbidden", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "account:workload"}, codes.InvalidArgument, ""},
+		{"generic tenant label", true, true, false, &pb.CreateContainerRequest{Labels: map[string]string{"tenant": "team-a"}}, codes.InvalidArgument, ""},
+		{"native label injection", false, true, false, &pb.CreateContainerRequest{Labels: map[string]string{incus.TenantLabelKey: "team-a"}}, codes.InvalidArgument, ""},
+		{"cloud bypass", false, true, false, &pb.CreateContainerRequest{Labels: map[string]string{incus.CloudOrgIDLabel: "team-a"}}, codes.PermissionDenied, ""},
+		{"conflicting cloud", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Labels: map[string]string{incus.CloudOrgIDLabel: "team-b"}}, codes.InvalidArgument, ""},
+		{"non-admin pool refused while tenanted", false, true, true, &pb.CreateContainerRequest{Pool: "pool"}, codes.FailedPrecondition, ""},
+		{"non-admin backend refused while tenanted", false, true, true, &pb.CreateContainerRequest{BackendId: "remote"}, codes.FailedPrecondition, ""},
+		{"VM", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Isolation: pb.IsolationType_ISOLATION_TYPE_VM}, codes.InvalidArgument, ""},
+		{"Windows", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", OsType: pb.OSType_OS_TYPE_WINDOWS_2022}, codes.InvalidArgument, ""},
+		{"K8s", true, false, false, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.FailedPrecondition, ""},
+		{"remote", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", BackendId: "remote"}, codes.FailedPrecondition, ""},
+		{"pool", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Pool: "pool"}, codes.FailedPrecondition, ""},
+		{"region accepted as no-op", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Region: "region"}, codes.OK, "team-a"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.req.Username = "workload"
@@ -54,7 +57,7 @@ func TestNativeTenantAuthorizationAndPlacement(t *testing.T) {
 			if tc.admin {
 				ctx = nativeAdmin()
 			}
-			err := authorizeNetworkTenantCreate(ctx, tc.req, tc.local)
+			err := authorizeNetworkTenantCreate(ctx, tc.req, tc.local, tc.tenancyOn)
 			if status.Code(err) != tc.want {
 				t.Fatalf("code=%v wanted %v: %v", status.Code(err), tc.want, err)
 			}
@@ -65,7 +68,7 @@ func TestNativeTenantAuthorizationAndPlacement(t *testing.T) {
 	}
 	// A username matching an administrator domain still gets its own namespace.
 	req := &pb.CreateContainerRequest{Username: "team-a"}
-	if err := authorizeNetworkTenantCreate(nativeUser(), req, true); err != nil {
+	if err := authorizeNetworkTenantCreate(nativeUser(), req, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if req.NetworkTenant != "account:team-a" {

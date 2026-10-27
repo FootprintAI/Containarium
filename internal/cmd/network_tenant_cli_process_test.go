@@ -38,7 +38,7 @@ func TestNativeTenantCLIFlagAndForcePreflight(t *testing.T) {
 						http.NotFound(w, r)
 						return
 					}
-					_, _ = w.Write([]byte(`{"contract":"boxweave.tenant-network/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true}`))
+					_, _ = w.Write([]byte(`{"contract":"native-network-tenant/v1","backendScope":"local-lxc","nativeMembershipRead":true,"sharedTenantCreate":true}`))
 					return
 				}
 				if r.URL.Path == "/v1/containers/workload" {

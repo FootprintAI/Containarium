@@ -3197,7 +3197,11 @@ func (*GetNetworkTenantCapabilitiesRequest) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_network_proto_rawDescGZIP(), []int{43}
 }
 
-// GetNetworkTenantCapabilitiesResponse is compatible with the BoxWeave handshake.
+// GetNetworkTenantCapabilitiesResponse is the capability handshake between a
+// daemon and its clients (CLI, Host MCP, external gRPC consumers). Clients
+// must match contract against the daemon-published constant
+// (incus.NativeTenantContractID, "native-network-tenant/v1") before relying
+// on the additive create-time network_tenant field.
 type GetNetworkTenantCapabilitiesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Stable contract identifier; never infer capabilities from a version string.
@@ -3212,7 +3216,9 @@ type GetNetworkTenantCapabilitiesResponse struct {
 	NetworkPolicyWrite bool `protobuf:"varint,5,opt,name=network_policy_write,json=networkPolicyWrite,proto3" json:"network_policy_write,omitempty"`
 	// Explanation when local shared creation is unavailable.
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
-	// Scope of verified creation and membership evidence: local-lxc.
+	// Scope of verified creation and membership evidence: local-lxc
+	// (incus.NativeTenantBackendScope) — this daemon's own local Linux LXC
+	// backend only.
 	BackendScope  string `protobuf:"bytes,7,opt,name=backend_scope,json=backendScope,proto3" json:"backend_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -102,8 +102,8 @@ type ActuationServiceClient interface {
 	ReportContainerState(ctx context.Context, in *ReportContainerStateRequest, opts ...grpc.CallOption) (*ReportContainerStateResponse, error)
 	// WatchAssignments is a long-lived server stream. The host opens
 	// it on startup and keeps it open; the cloud sends:
-	//   1. an immediate snapshot of the host's current assignments,
-	//   2. a fresh snapshot on each subsequent change.
+	//  1. an immediate snapshot of the host's current assignments,
+	//  2. a fresh snapshot on each subsequent change.
 	//
 	// v1 implementation polls the store on a fixed interval and sends
 	// a batch every tick. Hosts treat each batch as authoritative
@@ -262,8 +262,8 @@ type ActuationServiceServer interface {
 	ReportContainerState(context.Context, *ReportContainerStateRequest) (*ReportContainerStateResponse, error)
 	// WatchAssignments is a long-lived server stream. The host opens
 	// it on startup and keeps it open; the cloud sends:
-	//   1. an immediate snapshot of the host's current assignments,
-	//   2. a fresh snapshot on each subsequent change.
+	//  1. an immediate snapshot of the host's current assignments,
+	//  2. a fresh snapshot on each subsequent change.
 	//
 	// v1 implementation polls the store on a fixed interval and sends
 	// a batch every tick. Hosts treat each batch as authoritative

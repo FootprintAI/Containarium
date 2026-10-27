@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- Scoped policy writes now require the `network-policy:write` scope (#3165), including the existing full-policy `Set`/`Patch`/`Delete` and signature mutation RPCs that previously needed only the admin role. A token minted with an explicit scope list that omits `network-policy:write` loses those writes on upgrade; mint a new token adding that scope (or keep using legacy unrestricted admin credentials, which are unaffected). `containarium tokens` output shows each token's scopes; a scopes-restricted token created before this change that lists `network-policy:read` but not `network-policy:write` must be re-minted before it can change policies again.
+
 ### Added
 
 - Atomic, revision-checked cross-Tenant ingress grants/revokes across CLI, REST, gRPC and Host MCP, preserving all other policy fields and reporting enforcement separately from TCP tests. No network stack or table migration change.
 
-- Native network Tenant creation through CLI, REST, gRPC and Host MCP, with Provider-derived membership/source queries and an authenticated capability endpoint. The existing required NIC Guard runs before first Start; failed cleanup reports the retained stopped instance. The atomic cross-Tenant policy capability remains disabled.
+- Native network Tenant creation through CLI, REST, gRPC and Host MCP (#3165), with Provider-derived membership/source queries and an authenticated capability endpoint. The existing required NIC Guard runs before first Start; failed cleanup reports the retained stopped instance. The atomic cross-Tenant policy capability remains disabled. Explicit shared-Tenant creation stays admin-only; a non-admin create that names no network Tenant keeps the legacy un-tenanted path unless the operator arms `CONTAINARIUM_NATIVE_ACCOUNT_TENANCY`, and a non-admin request that names a Tenant is refused. An admin-created box for a user lands in the bare `<user>` domain while an armed account-namespace create lands in `account:<user>`; guard ACLs and policy lookups canonicalize both to the same tenant key, so stored policies keep applying.
+- Atomic cross-Tenant ingress edits gain a typed client surface: `GetNetworkPolicy`/`PatchTenantAccess` on both transports, CLI `network-policy access` and the Host MCP `patch_tenant_access` tool go through typed protobuf requests instead of hand-rolled REST JSON.
 
 - **A client can verify a sealed Proof Pack through the daemon: `ProofPackService.VerifyProofPack`** (part of #3064). New RPC (`POST /v1/proof-packs/verify`, admin role or explicit `audit:read` scope, as `/v1/audit/logs`; at most 4 run at once) that runs the same check as `containarium proof-pack verify` and returns `ok`, a typed verdict (`OK`, `MISMATCH`, `SEAL_PURGED`, `SEAL_NOT_FOUND`, `CHAIN_BROKEN`), the first differing step or header, and on success the chain tip id and hash to compare with the external anchor. The pack is bounded at 32 steps and 4 MiB. `containarium proof-pack verify <pack> --server <addr>` calls it; without `--server` on the command line it still reads Postgres directly, as before. A daemon's "ok" is weaker than verifying offline (see `docs/PROOF-PACK.md`). The anchor reference is not returned yet.
 
@@ -131,10 +136,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A narrow control-plane allow-list no longer cuts a box off from the host gateway** (#2994, part 1). Policies received through the control-plane policy sync are now stored with the `ALLOW_LIST_ONLY` egress preset, as the locally authored default is, so the host adds its own bridge gateway (DNS resolver, model gateway) to the allow-set. Before, a cloud-authored list that omitted the gateway left an enforced box without DNS. Synced policies still store `egress_mode` unset (follow `mode`): the synced message has no egress-mode field yet, so a separate egress soak mode cannot be driven from the sync path until that field is added upstream (#2976).
 
 ### Security
-
-- Scoped policy writes require network-policy:write, including existing full-policy and deny/signature mutation paths; legacy unrestricted admin tokens retain compatibility.
-
-- Non-admin new local Linux LXC creates use reserved account-scoped native membership to prevent username collisions with administrator-shared networks. Shared assignment and Cloud attribution require administrator authorization; existing Boxes are unchanged.
 
 - **Build-time downloads are pinned and inventoried** (#2795, story 5 of #2649). `xcaddy` (Makefile, `scripts/setup-caddy.sh`, proxyproto e2e) is now a checksum-verified release binary via `scripts/install-xcaddy.sh` instead of `go install ...@latest`; `govulncheck` is pinned to `v1.9.0`; the `kind` binary in the k8s and helm lanes is sha256-verified; `scripts/build-webui.sh` uses `npm ci`; the release notes' quick-install line now points at the release tag's `hacks/install.sh`, not `main`. `docs/security/BUILD-SUPPLY-CHAIN.md` lists every build-time fetch and how it is pinned, and `scripts/ci/check-build-fetches.sh` (workflow-lint lane, with a seeded self-test) fails on an unlisted fetch, any `@latest`, or a project-level `npm install`.
 

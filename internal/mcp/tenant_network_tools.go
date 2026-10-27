@@ -1,21 +1,27 @@
 package mcp
 
 import (
-	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
+
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"net/url"
 )
 
+// tenantNetworkAPI is the slice of the MCP backend the Tenant-network tools
+// need. The Host MCP client implements it over REST with typed protobuf
+// request/response values; no handler builds a request by re-marshalling raw
+// tool arguments.
 type tenantNetworkAPI interface {
 	NetworkPolicies() (*pb.ListNetworkPoliciesResponse, error)
 	NetworkPolicy(string) (*pb.GetNetworkPolicyResponse, error)
 	PatchTenantAccess(*pb.PatchTenantAccessRequest) (*pb.PatchTenantAccessResponse, error)
 }
 
+// tenantRPC performs one REST round trip with a typed request and response.
 func (c *Client) tenantRPC(method, path string, req proto.Message, out proto.Message) error {
 	var body interface{}
 	if req != nil {
@@ -29,7 +35,7 @@ func (c *Client) tenantRPC(method, path string, req proto.Message, out proto.Mes
 	if err != nil {
 		return err
 	}
-	return protojson.Unmarshal(b, out)
+	return (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(b, out)
 }
 func (c *Client) NetworkPolicies() (*pb.ListNetworkPoliciesResponse, error) {
 	out := &pb.ListNetworkPoliciesResponse{}
@@ -46,6 +52,44 @@ func (c *Client) PatchTenantAccess(req *pb.PatchTenantAccessRequest) (*pb.PatchT
 	err := c.tenantRPC("POST", "/v1/network-policies/tenant-access", req, out)
 	return out, err
 }
+
+// parsePatchTenantAccessArgs builds the proto request field by field from the
+// tool arguments; the raw argument map is never marshalled into the request.
+func parsePatchTenantAccessArgs(args map[string]interface{}) (*pb.PatchTenantAccessRequest, error) {
+	raw, ok := args["changes"]
+	if !ok {
+		return nil, fmt.Errorf("changes is required")
+	}
+	list, ok := raw.([]interface{})
+	if !ok || len(list) == 0 {
+		return nil, fmt.Errorf("changes must be a non-empty array")
+	}
+	if len(list) > 32 {
+		return nil, fmt.Errorf("at most 32 destination changes per request")
+	}
+	req := &pb.PatchTenantAccessRequest{}
+	for i, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("changes[%d] must be an object", i)
+		}
+		ch := &pb.TenantAccessChange{
+			Destination:      strings.TrimSpace(getStringArg(m, "destination", "")),
+			ExpectedRevision: getStringArg(m, "expected_revision", ""),
+			AddSources:       getStringSliceArg(m, "add_sources"),
+			RemoveSources:    getStringSliceArg(m, "remove_sources"),
+		}
+		if ch.Destination == "" {
+			return nil, fmt.Errorf("changes[%d].destination is required", i)
+		}
+		if ch.ExpectedRevision == "" {
+			return nil, fmt.Errorf("changes[%d].expected_revision is required (\"absent\" when no policy exists)", i)
+		}
+		req.Changes = append(req.Changes, ch)
+	}
+	return req, nil
+}
+
 func tenantNetworkHandler(operation string) ToolHandler {
 	return func(api API, args map[string]interface{}) (string, error) {
 		client, ok := api.(tenantNetworkAPI)
@@ -60,15 +104,11 @@ func tenantNetworkHandler(operation string) ToolHandler {
 		case "get":
 			out, err = client.NetworkPolicy(getStringArg(args, "tenant", ""))
 		case "patch":
-			raw, e := json.Marshal(args)
-			if e != nil {
-				return "", e
+			var req *pb.PatchTenantAccessRequest
+			req, err = parsePatchTenantAccessArgs(args)
+			if err == nil {
+				out, err = client.PatchTenantAccess(req)
 			}
-			req := &pb.PatchTenantAccessRequest{}
-			if e = protojson.Unmarshal(raw, req); e != nil {
-				return "", e
-			}
-			out, err = client.PatchTenantAccess(req)
 		}
 		if err != nil {
 			return "", err
@@ -80,7 +120,7 @@ func tenantNetworkHandler(operation string) ToolHandler {
 func tenantNetworkTools() []Tool {
 	empty := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}
 	change := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
-		"destination": map[string]interface{}{"type": "string", "description": "Destination policy whose ingress is edited"}, "expected_revision": map[string]interface{}{"type": "string", "description": "Observed whole-policy SHA256 or absent"},
+		"destination": map[string]interface{}{"type": "string", "description": "Destination policy whose ingress is edited"}, "expected_revision": map[string]interface{}{"type": "string", "description": "Observed whole-policy SHA256 or \"absent\""},
 		"add_sources":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 		"remove_sources": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 	}, "required": []string{"destination", "expected_revision"}, "additionalProperties": false}

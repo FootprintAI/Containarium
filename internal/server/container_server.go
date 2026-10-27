@@ -602,7 +602,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if req.NetworkTenant == "" && auth.RequireRole(ctx, auth.RoleAdmin) != nil && s.nativeTenantLocalLXC() {
 		req = proto.Clone(req).(*pb.CreateContainerRequest)
 	}
-	if err := authorizeNetworkTenantCreate(ctx, req, s.nativeTenantLocalLXC()); err != nil {
+	if err := authorizeNetworkTenantCreate(ctx, req, s.nativeTenantLocalLXC(), accountTenancyArmed()); err != nil {
 		return nil, err
 	}
 	if req.NetworkTenant != "" && (s.nativeTenantReady == nil || !s.nativeTenantReady()) {

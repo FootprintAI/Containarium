@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"io"
 	"log"
 	"net/http"
@@ -192,7 +193,7 @@ func (c *Client) CreateContainer(req CreateContainerRequest) (*CreateContainerRe
 		if err != nil {
 			return nil, fmt.Errorf("native Tenant capability check: %w", err)
 		}
-		if caps.Contract != "boxweave.tenant-network/v1" || caps.BackendScope != "local-lxc" || !caps.NativeMembershipRead || !caps.SharedTenantCreate {
+		if caps.Contract != incus.NativeTenantContractID || caps.BackendScope != incus.NativeTenantBackendScope || !caps.NativeMembershipRead || !caps.SharedTenantCreate {
 			return nil, fmt.Errorf("provider does not advertise ready native network Tenant creation")
 		}
 	}

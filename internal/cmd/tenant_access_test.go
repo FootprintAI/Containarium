@@ -38,11 +38,13 @@ func TestTenantAccessCLIPreviewApplyAndConflict(t *testing.T) {
 		_, _ = w.Write([]byte(`{"applicationState":"TENANT_ACCESS_APPLICATION_STATE_PENDING","connectivityTested":false}`))
 	}))
 	defer fixture.Close()
-	oldServer, oldToken, oldBoth, oldRevoke, oldConfirm := serverAddr, authToken, accessBoth, accessRevoke, accessConfirm
+	oldServer, oldHTTP, oldToken, oldBoth, oldRevoke, oldConfirm := serverAddr, httpMode, authToken, accessBoth, accessRevoke, accessConfirm
 	t.Cleanup(func() {
-		serverAddr, authToken, accessBoth, accessRevoke, accessConfirm = oldServer, oldToken, oldBoth, oldRevoke, oldConfirm
+		serverAddr, httpMode, authToken, accessBoth, accessRevoke, accessConfirm = oldServer, oldHTTP, oldToken, oldBoth, oldRevoke, oldConfirm
 	})
-	serverAddr, authToken, accessBoth, accessRevoke, accessConfirm = fixture.URL, "fixture-token", true, false, true
+	// The fixture is a plain REST server: the access commands select their
+	// transport exactly like every other typed-client command (httpMode).
+	serverAddr, httpMode, authToken, accessBoth, accessRevoke, accessConfirm = fixture.URL, true, "fixture-token", true, false, true
 	preview, _, err := networkPolicyCmd.Find([]string{"access", "preview"})
 	if err != nil {
 		t.Fatal(err)

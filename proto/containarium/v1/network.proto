@@ -832,7 +832,11 @@ message StopEgressProxyResponse {
 
 // GetNetworkTenantCapabilitiesRequest requests the local native contract.
 message GetNetworkTenantCapabilitiesRequest {}
-// GetNetworkTenantCapabilitiesResponse is compatible with the BoxWeave handshake.
+// GetNetworkTenantCapabilitiesResponse is the capability handshake between a
+// daemon and its clients (CLI, Host MCP, external gRPC consumers). Clients
+// must match contract against the daemon-published constant
+// (incus.NativeTenantContractID, "native-network-tenant/v1") before relying
+// on the additive create-time network_tenant field.
 message GetNetworkTenantCapabilitiesResponse {
   // Stable contract identifier; never infer capabilities from a version string.
   string contract = 1;
@@ -846,6 +850,8 @@ message GetNetworkTenantCapabilitiesResponse {
   bool network_policy_write = 5;
   // Explanation when local shared creation is unavailable.
   string reason = 6;
-  // Scope of verified creation and membership evidence: local-lxc.
+  // Scope of verified creation and membership evidence: local-lxc
+  // (incus.NativeTenantBackendScope) — this daemon's own local Linux LXC
+  // backend only.
   string backend_scope = 7;
 }

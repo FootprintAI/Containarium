@@ -23,7 +23,7 @@ type nativeGRPCFixture struct {
 }
 
 func (f *nativeGRPCFixture) GetNetworkTenantCapabilities(context.Context, *pb.GetNetworkTenantCapabilitiesRequest) (*pb.GetNetworkTenantCapabilitiesResponse, error) {
-	return &pb.GetNetworkTenantCapabilitiesResponse{Contract: "boxweave.tenant-network/v1", BackendScope: "local-lxc", NativeMembershipRead: true, SharedTenantCreate: f.ready}, nil
+	return &pb.GetNetworkTenantCapabilitiesResponse{Contract: "native-network-tenant/v1", BackendScope: "local-lxc", NativeMembershipRead: true, SharedTenantCreate: f.ready}, nil
 }
 func (f *nativeGRPCFixture) CreateContainer(_ context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	f.received = req

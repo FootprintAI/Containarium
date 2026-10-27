@@ -22,7 +22,7 @@ type TenantAccessStore interface {
 // rules. An ingress patch can never silently discard an intervening policy edit.
 func PolicyRevision(p *pb.NetworkPolicy) string {
 	if p == nil {
-		return "absent"
+		return incus.TenantAccessAbsentRevision
 	}
 	b, _ := proto.MarshalOptions{Deterministic: true}.Marshal(p)
 	sum := sha256.Sum256(b)
@@ -45,10 +45,10 @@ func validateAccessChanges(changes []*pb.TenantAccessChange) error {
 			return fmt.Errorf("duplicate destination")
 		}
 		seen[c.Destination] = true
-		if c.ExpectedRevision == "absent" && len(c.AddSources) == 0 {
+		if c.ExpectedRevision == incus.TenantAccessAbsentRevision && len(c.AddSources) == 0 {
 			return fmt.Errorf("no policy exists to revoke; omit this no-op destination")
 		}
-		if c.ExpectedRevision != "absent" {
+		if c.ExpectedRevision != incus.TenantAccessAbsentRevision {
 			b, err := hex.DecodeString(c.ExpectedRevision)
 			if err != nil || len(b) != 32 {
 				return fmt.Errorf("expected full policy revision is required")
@@ -107,9 +107,13 @@ func (s *MemNetworkPolicyStore) PatchTenantAccess(_ context.Context, changes []*
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Sorted application order matches the Postgres store's lock order, so both
+	// backends return policies in the same sequence for the same request.
+	ordered := append([]*pb.TenantAccessChange(nil), changes...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Destination < ordered[j].Destination })
 	next := map[string]*pb.NetworkPolicy{}
-	out := []*pb.TenantAccessPolicy{}
-	for _, c := range changes {
+	out := make([]*pb.TenantAccessPolicy, 0, len(ordered))
+	for _, c := range ordered {
 		p, err := applyAccess(s.m[c.Destination], c)
 		if err != nil {
 			return nil, err

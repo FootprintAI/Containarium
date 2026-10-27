@@ -490,10 +490,12 @@ const ContainerNameSuffix = "-container"
 // the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
 // attribution label; then the <tenant>-container naming convention. ""
 // when none yields a tenant — the container is then left unmanaged and
-// reported, never guessed.
+// reported, never guessed. An account-namespace label canonicalizes to its
+// bare username (CanonicalNetworkTenant), so a policy or ACL keyed "workload"
+// keeps matching a box created under "account:workload".
 func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
-		return t
+		return CanonicalNetworkTenant(t)
 	}
 	if t := strings.TrimSpace(cloudOrgID); t != "" {
 		return t
