@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// NotifyService — where the daemon pushes a `code run --approvals ask`
+// permission request that is waiting on the developer (#2185,
+// docs/product/phone-approval.md Story 3).
+//
+// One channel per user. The daemon itself sends the push: it reads each live
+// run's input journal on the user's box and publishes to the channel, so the
+// channel's access token never reaches a box. The token is stored with the
+// tenant secrets store as a broker-only secret named
+// CONTAINARIUM_NOTIFY_NTFY_TOKEN_<random>, a new one per token (the channel
+// switches to it in one write), and is never returned by any RPC.
+//
+// Which user: the request's username, or the caller's own when empty. Reads
+// need secrets:read and writes secrets:write, as for the tenant's secrets.
+service NotifyService {
+  // SetNotifyChannel creates or replaces the user's channel.
+  rpc SetNotifyChannel(SetNotifyChannelRequest) returns (SetNotifyChannelResponse) {
+    option (google.api.http) = {
+      put: "/v1/notify/channel"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set notification channel";
+      description: "Create or replace the user's push channel for waiting permission requests. Only ntfy is supported. A token, when given, is stored as a broker-only tenant secret and requires an https server; it is never returned. An empty username means the caller.";
+      tags: "Notify";
+    };
+  }
+
+  // GetNotifyChannel returns the user's channel, without its token.
+  rpc GetNotifyChannel(GetNotifyChannelRequest) returns (GetNotifyChannelResponse) {
+    option (google.api.http) = {
+      get: "/v1/notify/channel"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get notification channel";
+      description: "Return the user's push channel. has_token says whether a token is stored; the token itself is never returned. NOT_FOUND when none is set.";
+      tags: "Notify";
+    };
+  }
+
+  // DeleteNotifyChannel removes the user's channel and its stored token.
+  rpc DeleteNotifyChannel(DeleteNotifyChannelRequest) returns (DeleteNotifyChannelResponse) {
+    option (google.api.http) = {
+      delete: "/v1/notify/channel"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete notification channel";
+      description: "Remove the user's push channel and its stored token. No further pushes are sent.";
+      tags: "Notify";
+    };
+  }
+
+  // TestNotifyChannel sends one test push through the user's channel.
+  rpc TestNotifyChannel(TestNotifyChannelRequest) returns (TestNotifyChannelResponse) {
+    option (google.api.http) = {
+      post: "/v1/notify/channel/test"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Send a test notification";
+      description: "Publish one test push through the user's channel and report whether the server accepted it.";
+      tags: "Notify";
+    };
+  }
+}
+
+// NotifyChannelKind is the push transport.
+enum NotifyChannelKind {
+  NOTIFY_CHANNEL_KIND_UNSPECIFIED = 0;
+  // ntfy (https://ntfy.sh or self-hosted): POST to <server> with a topic.
+  NOTIFY_CHANNEL_KIND_NTFY = 1;
+}
+
+// NotifyChannel is a user's push channel as stored. It never carries the token.
+message NotifyChannel {
+  string username = 1;
+  NotifyChannelKind kind = 2;
+  // Base URL of the ntfy server, e.g. https://ntfy.example.com.
+  string server = 3;
+  // ntfy topic: 1-64 letters, digits, '-' or '_'.
+  string topic = 4;
+  // A token is stored for this channel.
+  bool has_token = 5;
+  // Pushes carry the tool name only, never its command.
+  bool redact_command = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message SetNotifyChannelRequest {
+  // Owner of the channel; empty means the caller.
+  string username = 1;
+  // Required; only NOTIFY_CHANNEL_KIND_NTFY.
+  NotifyChannelKind kind = 2;
+  string server = 3;
+  string topic = 4;
+  // Access token for the topic. Empty keeps the stored one (if any) unless
+  // clear_token is set. Never logged or returned.
+  string token = 5;
+  // Remove the stored token. Rejected together with token.
+  bool clear_token = 6;
+  bool redact_command = 7;
+}
+
+message SetNotifyChannelResponse {
+  NotifyChannel channel = 1;
+}
+
+message GetNotifyChannelRequest {
+  string username = 1;
+}
+
+message GetNotifyChannelResponse {
+  NotifyChannel channel = 1;
+}
+
+message DeleteNotifyChannelRequest {
+  string username = 1;
+}
+
+message DeleteNotifyChannelResponse {}
+
+message TestNotifyChannelRequest {
+  string username = 1;
+}
+
+message TestNotifyChannelResponse {
+  // Human-readable result, e.g. "test push accepted by https://ntfy.example.com".
+  string message = 1;
+}

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,9 +35,13 @@ import (
 // Why answers are signed: the agent runs as the same Unix user as anyone
 // answering on the box, so any file an answerer can write, the agent can write
 // too. An answer counts only with an Ed25519 signature that verifies under the
-// run's public key, which arrives on this process's command line from `code
-// run`. The private key never reaches the box, so there is no secret on it for
-// any process to read. Out of scope: a process the agent leaves running can
+// box's approval public key, which arrives on this process's command line from
+// `code run`. The private key stays with the daemon, so there is no secret on it for
+// any process to read. The signature also binds the tool call this process
+// journaled, its complete input (#2184): the agent can rewrite that journal
+// line to show a human something else, but an answer made for the shown text
+// never verifies against the tool call held here, and an allow returns the
+// exact input that was signed for. Out of scope: a process the agent leaves running can
 // change the box's own Claude Code setup (its binaries on PATH, its settings)
 // for later runs; no scheme confined to the box can prevent that.
 
@@ -56,8 +61,10 @@ const approvalProgressInterval = 30 * time.Second
 
 // approvalProbeOK is what `approval-mcp --probe` prints, so `code run` can
 // tell an agent-box that has this mode from an older one before it starts a
-// run that would otherwise fail to connect its permission tool.
-const approvalProbeOK = "approval-mcp ok"
+// run that would otherwise fail to connect its permission tool. "v2" is the
+// prompt-bound answer format (#2184): an agent-box that prints only
+// "approval-mcp ok" verifies the older format and is refused.
+const approvalProbeOK = "approval-mcp ok v2"
 
 // approvalPromptMax caps the human-readable prompt journaled per request.
 const approvalPromptMax = 500
@@ -206,23 +213,39 @@ func (s *approvalServer) handleApprove(ctx context.Context, req mcp.CallToolRequ
 		return decisionResult(promptDecision{Behavior: "deny", Message: "could not open a permission request"}), nil
 	}
 	now := s.now().UTC()
-	s.journal(coderun.InputEvent{
+	// Kept in memory: answers are verified against these, not the journal
+	// line, and an allow returns exactly this input, the one the answer was
+	// signed for. Both are in the form a client reads back from the journal.
+	tool := journalForm(in.ToolName)
+	input := journalForm(string(in.Input))
+	request := coderun.InputEvent{
 		Kind:        coderun.KindInputRequest,
 		T:           now,
 		RequestID:   id,
 		RequestKind: coderun.RequestKindPermission,
-		Tool:        in.ToolName,
+		Tool:        tool,
 		Prompt:      describeToolCall(in.ToolName, in.Input),
+		Input:       input,
 		Options:     []coderun.Answer{coderun.AnswerAllow, coderun.AnswerDeny},
 		Default:     coderun.AnswerDeny,
 		ExpiresAt:   now.Add(s.timeout),
-	})
+	}
 
-	answer, reason := s.wait(ctx, id, now.Add(s.timeout), progressTokenOf(req))
+	var answer coderun.Answer
+	var reason coderun.ResponseReason
+	if len(input) > coderun.MaxApprovalInput {
+		// Too large for a human to read before allowing it all.
+		request.Input = ""
+		s.journal(request)
+		answer, reason = coderun.AnswerDeny, coderun.ReasonTooLarge
+	} else {
+		s.journal(request)
+		answer, reason = s.wait(ctx, id, coderun.RequestDigest(tool, input), now.Add(s.timeout), progressTokenOf(req))
+	}
 	s.journal(coderun.InputEvent{Kind: coderun.KindInputResponse, RequestID: id, Answer: answer, Reason: reason})
 
 	if answer == coderun.AnswerAllow {
-		return decisionResult(promptDecision{Behavior: "allow", UpdatedInput: in.Input}), nil
+		return decisionResult(promptDecision{Behavior: "allow", UpdatedInput: json.RawMessage(input)}), nil
 	}
 	msg := "The user denied this action."
 	switch reason {
@@ -232,14 +255,17 @@ func (s *approvalServer) handleApprove(ctx context.Context, req mcp.CallToolRequ
 		msg = "This run has no way to receive answers to permission requests, so it was denied."
 	case coderun.ReasonCancelled:
 		msg = "The permission request was cancelled."
+	case coderun.ReasonTooLarge:
+		msg = "This tool call's input is too large to be shown for approval, so it was denied."
 	}
 	return decisionResult(promptDecision{Behavior: "deny", Message: msg}), nil
 }
 
-// wait blocks until a valid answer for id arrives, the deadline passes, or ctx
-// ends. A file with a bad signature is journaled once and ignored: it is either
-// a mistake or an attempt to approve without the key.
-func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time, progress mcp.ProgressToken) (coderun.Answer, coderun.ResponseReason) {
+// wait blocks until a valid answer for id and the request whose digest is
+// digest arrives, the deadline passes, or ctx ends. A file with a bad
+// signature is journaled once and ignored: it is a mistake, an answer to a
+// forged request, or an attempt to approve without the key.
+func (s *approvalServer) wait(ctx context.Context, id string, digest []byte, deadline time.Time, progress mcp.ProgressToken) (coderun.Answer, coderun.ResponseReason) {
 	if s.pub == nil {
 		return coderun.AnswerDeny, coderun.ReasonNoKey
 	}
@@ -256,7 +282,7 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 		}
 		// #nosec G304 -- <log dir>/<run>.answers/<id>: run passed ValidApprovalRunName, id is this process's own random request id
 		if content, err := os.ReadFile(path); err == nil && string(content) != rejected {
-			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, string(content))
+			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, digest, string(content))
 			if verr == nil {
 				return a, coderun.ReasonAnswered
 			}
@@ -324,7 +350,28 @@ func describeToolCall(tool string, input json.RawMessage) string {
 	}
 	p := tool + ": " + detail
 	if len(p) > approvalPromptMax {
-		p = p[:approvalPromptMax] + "…"
+		cut := approvalPromptMax
+		for cut > 0 && !utf8.RuneStart(p[cut]) {
+			cut--
+		}
+		p = p[:cut] + "…"
 	}
-	return p
+	return journalForm(p)
+}
+
+// journalForm is s as a client reads it back from the journal. Answers are
+// verified against the digest of the tool call held here, and a client signs
+// the digest of what it read from the journal, so the two must be the same
+// strings: JSON encoding replaces invalid UTF-8, so they are passed through
+// that encoding before anything is hashed or shown.
+func journalForm(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return s
+	}
+	var out string
+	if err := json.Unmarshal(b, &out); err != nil {
+		return s
+	}
+	return out
 }

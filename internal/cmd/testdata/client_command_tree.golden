@@ -50,12 +50,14 @@ cluster kubeconfig
 cluster list
 cluster node-pool
 cluster status
+code answer
 code attach
 code egress-policy delete
 code egress-policy get
 code egress-policy set
 code install
 code logs
+code pending
 code run
 code runs
 code status
@@ -144,6 +146,10 @@ network-policy signature add
 network-policy signature list
 network-policy signature rm
 network-policy status
+notify delete
+notify set ntfy
+notify show
+notify test
 org get-default-region
 org set-default-region
 passthrough-route add

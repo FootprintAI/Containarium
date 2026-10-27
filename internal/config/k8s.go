@@ -15,6 +15,7 @@ const (
 	EnvK8sBoxImage                 = "CONTAINARIUM_K8S_BOX_IMAGE"
 	EnvK8sBoxMode                  = "CONTAINARIUM_K8S_BOX_MODE"
 	EnvK8sStorageClass             = "CONTAINARIUM_K8S_STORAGE_CLASS"
+	EnvK8sSharedVolumeStorageClass = "CONTAINARIUM_K8S_SHARED_VOLUME_STORAGE_CLASS"
 	EnvK8sGatewayUpstreamPublicKey = "CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY"
 	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
 	EnvK8sGatewayUpstreamKeySecret = "CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET"
@@ -75,6 +76,10 @@ type K8s struct {
 	// StorageClass is the StorageClass for the box's data PVC; empty disables the
 	// PVC. (EnvK8sStorageClass)
 	StorageClass string
+
+	// SharedVolumeStorageClass is the RWX-capable StorageClass used for
+	// VolumeService shared-volume PVCs. Empty disables shared volumes.
+	SharedVolumeStorageClass string
 
 	// GatewayService is the name of the in-cluster sshpiper Service in
 	// GatewayNamespace, used to auto-resolve the node's advertised SSH
@@ -143,6 +148,7 @@ func LoadK8s() K8s {
 		BoxImage:                  getString(EnvK8sBoxImage, ""),
 		BoxMode:                   getString(EnvK8sBoxMode, ""),
 		StorageClass:              getString(EnvK8sStorageClass, ""),
+		SharedVolumeStorageClass:  getString(EnvK8sSharedVolumeStorageClass, ""),
 		GatewayUpstreamPublicKey:  getString(EnvK8sGatewayUpstreamPublicKey, ""),
 		GatewayUpstreamKeySecret:  getString(EnvK8sGatewayUpstreamKeySecret, ""),
 		InsecureIgnoreHostKey:     getBool(EnvK8sInsecureIgnoreHostKey),

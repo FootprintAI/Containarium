@@ -552,6 +552,36 @@ func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogR
 	return out, nil
 }
 
+// ListRunInputs lists a box run's open permission requests (#2184).
+func (c *Client) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
+	respBody, err := c.doRequest("GET", runlog.RunInputsPath(req.GetUsername(), req.GetRunName()), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListRunInputsResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
+// AnswerRunInput answers one permission request of a box run (#2184).
+func (c *Client) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+	respBody, err := c.doRequest("POST", runlog.RunInputAnswerPath(req.GetUsername(), req.GetRunName(), req.GetRequestId()), body)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.AnswerRunInputResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case
