@@ -1239,7 +1239,7 @@ func (s *Server) registerTools() {
 				"--approvals ask: request id, age, time left before it expires into a deny, " +
 				"and the prompt (tool and command or path), plus the run's request counts. " +
 				"Same table as `containarium code pending`, then `---` and the same data as " +
-				"JSON, whose `input` fields (each request's complete tool input) are what code_answer takes. The list is read from " +
+				"JSON, whose `tool` and `input` fields (each request's tool and complete input) are what code_answer takes. The list is read from " +
 				"a journal the agent on the box can write, so it is advisory.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
@@ -1254,19 +1254,20 @@ func (s *Server) registerTools() {
 		{
 			Name: "code_answer",
 			Description: "Answer one open permission request of a code run: allow or deny. " +
-				"Pass `input` exactly as code_pending's JSON returned it for this request: an " +
-				"allow permits exactly that tool input, the answer is signed for it, and the run " +
+				"Pass `tool` and `input` exactly as code_pending's JSON returned them for this " +
+				"request: an allow permits exactly that tool call, the answer is signed for it, and the run " +
 				"acts on it only if that is the tool call it asked. If the request has changed " +
 				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
 				"nothing and reports how it was closed, as an error. Same signing as " +
 				"`containarium code answer`.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
-				"required": []string{"box", "request_id", "input", "answer"},
+				"required": []string{"box", "request_id", "tool", "input", "answer"},
 				"properties": map[string]interface{}{
 					"box":        map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
 					"name":       map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
 					"request_id": map[string]interface{}{"type": "string", "description": "Request id, from code_pending."},
+					"tool":       map[string]interface{}{"type": "string", "description": "The request's tool exactly as the JSON part of code_pending returned it."},
 					"input":      map[string]interface{}{"type": "string", "description": "The request's complete tool input exactly as the JSON part of code_pending returned it."},
 					"answer":     map[string]interface{}{"type": "string", "enum": []string{"allow", "deny"}, "description": "allow or deny."},
 				},
@@ -3552,6 +3553,10 @@ func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	tool, ok := args["tool"].(string)
+	if !ok {
+		return "", fmt.Errorf("`tool` is required: the request's tool as code_pending returned it")
+	}
 	input, ok := args["input"].(string)
 	if !ok {
 		return "", fmt.Errorf("`input` is required: the request's input as code_pending returned it")
@@ -3561,11 +3566,11 @@ func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// The caller saw this request with this input; runlog.Answer refuses if
-	// the input is no longer what the request carries.
+	// The caller saw this request with this tool and input; runlog.Answer
+	// refuses if either is no longer what the request carries.
 	var seen *pb.RunInput
 	if current != nil {
-		seen = &pb.RunInput{RequestId: id, Tool: current.GetTool(), Prompt: current.GetPrompt(), Input: input}
+		seen = &pb.RunInput{RequestId: id, Tool: tool, Prompt: current.GetPrompt(), Input: input}
 	}
 	res, err := runlog.Answer(client, box, run, id, seen, a)
 	if err != nil {

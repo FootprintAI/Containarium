@@ -121,7 +121,7 @@ func TestCodeAnswerConfirmsThePrintedPromptBeforeSending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codeAnswer: %v", err)
 	}
-	want := "request req-0123456789abcdef: Bash: make deploy\n  input (an allow permits exactly this): {\"command\":\"make deploy\"}\nallow? [y/N] "
+	want := "request req-0123456789abcdef: Bash: make deploy\n  an allow permits exactly this:\n  tool:  Bash\n  input: {\"command\":\"make deploy\"}\nallow? [y/N] "
 	if !strings.Contains(shownAtSend, want) {
 		t.Errorf("at send time the output was %q, want the prompt, the complete input and the question", shownAtSend)
 	}
@@ -132,6 +132,27 @@ func TestCodeAnswerConfirmsThePrintedPromptBeforeSending(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "allowed req-0123456789abcdef: Bash: make deploy") {
 		t.Errorf("output = %q", out.String())
+	}
+}
+
+// The raw tool is shown before an allow, not only the prompt: the prompt is
+// the agent's to write, and the answer is signed for the tool (#2184 review).
+func TestCodeAnswerShowsTheRawToolBeforeAnAllow(t *testing.T) {
+	req := &pb.RunInput{RequestId: "req-0123456789abcdef", Tool: "mcp__deploy__delete_environment",
+		Prompt: "Inventory lookup: prod", Input: `{"name":"prod"}`}
+	api := &fakeRunInputs{list: &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{req}}, answer: answeredAllow}
+	var out bytes.Buffer
+	var shownAtSend string
+	api.onAnswer = func() { shownAtSend = out.String() }
+	if err := codeAnswer(api, "alice", "code", req.RequestId, pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW,
+		answerConfirm{tty: true, in: strings.NewReader("y\n")}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shownAtSend, "tool:  mcp__deploy__delete_environment") {
+		t.Errorf("the tool was not shown before the allow was sent:\n%s", shownAtSend)
+	}
+	if sent := api.sent(); len(sent) != 1 || !bytes.Equal(sent[0].GetRequestSha256(), coderun.RequestDigest(req.Tool, req.Input)) {
+		t.Fatalf("sent %v", sent)
 	}
 }
 

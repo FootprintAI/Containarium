@@ -125,11 +125,13 @@ type AnswerResult struct {
 }
 
 // WriteRequest prints an open request the way it must be seen before an
-// allow: its one-line prompt, then the tool's complete input, which is what
-// an allow permits. Both are escaped (the agent wrote them).
+// allow: its one-line prompt, then the tool and its complete input, which are
+// what an allow permits and what the answer is signed for (the prompt is only
+// a summary, and the agent can write it). All are escaped.
 func WriteRequest(w io.Writer, r *pb.RunInput) {
-	fmt.Fprintf(w, "request %s: %s\n  input (an allow permits exactly this): %s\n",
-		coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()), coderun.PlainText(r.GetInput()))
+	fmt.Fprintf(w, "request %s: %s\n  an allow permits exactly this:\n  tool:  %s\n  input: %s\n",
+		coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()),
+		coderun.PlainText(r.GetTool()), coderun.PlainText(r.GetInput()))
 }
 
 // AnswerShown answers shown, the request as the caller showed it to whoever

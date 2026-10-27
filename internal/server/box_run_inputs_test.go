@@ -5,8 +5,10 @@ package server
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -329,5 +331,37 @@ func TestRunInputs_OversizedJournalIsRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(r.answerPath(r.req.RequestID)); !os.IsNotExist(err) {
 		t.Error("an answer was written while the journal could not be read")
+	}
+}
+
+// The read is bounded even when the journal grows after its size was checked
+// (#2184 review): here the size check is made to see an empty file, as if the
+// agent appended right after it, and the read still stops at the cap.
+func TestRunInputs_JournalGrowingAfterTheSizeCheckIsRefused(t *testing.T) {
+	r := startInputsRun(t, time.Minute)
+	r.s.runInputJournalCap = 1024
+	f, err := os.OpenFile(r.journalPath(), os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.Write(bytes.Repeat([]byte("x"), 1<<20))
+	_ = f.Close()
+	exec := r.s.boxRunExec
+	var got int
+	r.s.boxRunExec = func(box, script string) (string, error) {
+		script = strings.Replace(script, "s=$(stat -L -c %s /proc/$$/fd/3)", "s=0", 1)
+		out, err := exec(box, script)
+		if b64, ok := strings.CutPrefix(strings.TrimSpace(out), "J "); ok && !strings.HasPrefix(b64, "big ") {
+			got = len(b64)
+		}
+		return out, err
+	}
+
+	_, err = r.s.ListRunInputs(tenantCtx(r.owner), &pb.ListRunInputsRequest{Username: r.owner, RunName: r.run})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("err = %v, want ResourceExhausted", err)
+	}
+	if want := base64.StdEncoding.EncodedLen(1025); got != want {
+		t.Errorf("read %d base64 bytes, want the bounded %d (cap + 1)", got, want)
 	}
 }

@@ -119,14 +119,16 @@ func validateRunInputsRun(username, name string) error {
 
 // runInputsJournalScript prints "J <base64 journal>", "J -" when the run has
 // none, or "J big <size>" for one over max bytes, opening it through the same
-// symlink guard as the run reader. The size is checked on the open file, so
-// it is the file that is read.
+// symlink guard as the run reader. The read itself is bounded to max+1
+// bytes, so a file that grows after the size check (the agent can append to
+// it) still yields at most that much; readRunInputs refuses a read that got
+// the extra byte.
 func runInputsJournalScript(dir, name string, max int64) string {
 	return fmt.Sprintf(`%sif open3 %s; then
   s=$(stat -L -c %%s /proc/$$/fd/3)
-  if [ "$s" -gt %d ]; then exec 3<&-; echo "J big $s"; else echo "J $(b64_3)"; fi
+  if [ "$s" -gt %d ]; then exec 3<&-; echo "J big $s"; else echo "J $(head -c %d <&3 | base64 | tr -d '\n')"; exec 3<&-; fi
 else echo "J -"; fi
-`, boxRunOpenFn, shellSingleQuote(dir+"/"+name+".input.jsonl"), max)
+`, boxRunOpenFn, shellSingleQuote(dir+"/"+name+".input.jsonl"), max, max+1)
 }
 
 // runInputsState is one read of a run: whether it is running, and its journal.
@@ -175,6 +177,10 @@ func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsSt
 		raw, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
 			return runInputsState{}, status.Errorf(codes.Internal, "decode the permission journal of run %q: %v", name, err)
+		}
+		if int64(len(raw)) > s.journalCap() {
+			return runInputsState{}, status.Errorf(codes.ResourceExhausted,
+				"the permission journal of run %q grew past the %d-byte limit while it was read; it cannot be read", name, s.journalCap())
 		}
 		st.events = coderun.ParseInputJournal(raw)
 	}

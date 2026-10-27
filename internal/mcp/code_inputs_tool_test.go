@@ -35,7 +35,7 @@ func TestHandleCodeAnswer_BindsTheListedPrompt(t *testing.T) {
 	defer server.Close()
 
 	out, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
-		"box": "alice", "name": "task", "request_id": "req-0123456789abcdef", "input": `{"command":"make deploy"}`, "answer": "deny",
+		"box": "alice", "name": "task", "request_id": "req-0123456789abcdef", "tool": "Bash", "input": `{"command":"make deploy"}`, "answer": "deny",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "denied req-0123456789abcdef: Bash: make deploy\n", out)
@@ -54,7 +54,7 @@ func TestHandleCodeAnswer_AlreadyClosedIsAnError(t *testing.T) {
 	defer server.Close()
 
 	_, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
-		"box": "alice", "request_id": "req-0123456789abcdef", "input": "{}", "answer": "allow",
+		"box": "alice", "request_id": "req-0123456789abcdef", "tool": "Bash", "input": "{}", "answer": "allow",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already closed: deny (expired)")
@@ -64,10 +64,12 @@ func TestHandleCodeAnswer_RequiresArgs(t *testing.T) {
 	c := NewClient("http://127.0.0.1:0", "t")
 	_, err := handleCodeAnswer(c, map[string]interface{}{"box": "alice", "answer": "allow"})
 	require.Error(t, err)
-	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "input": "{}", "answer": "yes"})
+	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "tool": "Bash", "input": "{}", "answer": "yes"})
 	require.Error(t, err)
-	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "answer": "allow"})
+	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "tool": "Bash", "answer": "allow"})
 	require.ErrorContains(t, err, "`input` is required")
+	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "input": "{}", "answer": "allow"})
+	require.ErrorContains(t, err, "`tool` is required")
 }
 
 // An input that differs from the request's current one is refused before
@@ -83,7 +85,7 @@ func TestHandleCodeAnswer_ChangedPromptIsRefused(t *testing.T) {
 	defer server.Close()
 
 	_, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
-		"box": "alice", "request_id": "req-0123456789abcdef", "input": `{"command":"ls"}`, "answer": "allow",
+		"box": "alice", "request_id": "req-0123456789abcdef", "tool": "Bash", "input": `{"command":"ls"}`, "answer": "allow",
 	})
 	require.ErrorContains(t, err, "request changed")
 	assert.Contains(t, err.Error(), "Bash: rm -rf ~/repo")
@@ -115,4 +117,22 @@ func TestHandleCodePending(t *testing.T) {
 	require.Len(t, data.Open, 1)
 	assert.Equal(t, "Bash: ls", data.Open[0].Prompt)
 	assert.Equal(t, "{}", data.Open[0].Input)
+}
+
+// A request whose tool changed, with the same input, is refused before
+// anything is sent (#2184 review).
+func TestHandleCodeAnswer_ChangedToolIsRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("an answer was sent: %s %s", r.Method, r.URL.Path)
+			return
+		}
+		_, _ = w.Write([]byte(`{"running":true,"open":[{"requestId":"req-0123456789abcdef","tool":"mcp__deploy__delete_environment","prompt":"x","input":"{\"name\":\"prod\"}"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
+		"box": "alice", "request_id": "req-0123456789abcdef", "tool": "mcp__inventory__lookup", "input": `{"name":"prod"}`, "answer": "allow",
+	})
+	require.ErrorContains(t, err, "request changed")
 }
