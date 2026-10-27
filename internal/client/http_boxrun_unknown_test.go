@@ -14,13 +14,12 @@ import (
 func TestBoxRunResponsesDiscardUnknownFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost:
+		if r.Method == http.MethodPost {
 			_, _ = w.Write([]byte(`{"futureField":"x"}`))
-		default:
-			// One body serves every GET: unknown keys are dropped per message.
-			_, _ = w.Write([]byte(`{"futureField":"x","runs":[{"futureNested":1}],"inputs":[{"futureNested":1}]}`))
+			return
 		}
+		// One body serves every GET: unknown keys are dropped per message.
+		_, _ = w.Write([]byte(`{"futureField":"x","runs":[{"futureNested":1}],"inputs":[{"futureNested":1}]}`))
 	}))
 	defer srv.Close()
 
