@@ -15,6 +15,7 @@ import (
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/gatewayprovider"
 	"github.com/footprintai/containarium/internal/sshkey"
+	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -93,6 +94,7 @@ var (
 	// `code install` only (#2030).
 	codeBootstrapURL      string
 	codeNoSDLCSkills      bool
+	codeSkillSets         string
 	codeRelease           string
 	codeClaudeCodeVersion string
 
@@ -224,7 +226,10 @@ func init() {
 	codeInstallCmd.Flags().StringVar(&codeBootstrapURL, "bootstrap-url", "",
 		"URL of a .tar.gz bundle to apply after the toolchain lands — unpacked into a temp dir on the box and its apply.sh run as the box user (skipped when empty)")
 	codeInstallCmd.Flags().BoolVar(&codeNoSDLCSkills, "no-sdlc-skills", false,
-		"skip installing the pinned SDLC role skills (product, architect, engineer, QA, reviewer, release, ...) into ~/.claude/skills")
+		"deprecated alias for --skill-sets none")
+	_ = codeInstallCmd.Flags().MarkDeprecated("no-sdlc-skills", "use --skill-sets none")
+	codeInstallCmd.Flags().StringVar(&codeSkillSets, "skill-sets", "",
+		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -471,6 +476,22 @@ func defaultAgentBoxRelease() string {
 	return v
 }
 
+// codeInstallSkillSets resolves --skill-sets and its deprecated alias
+// --no-sdlc-skills (= none) into one validated selection (#3048).
+func codeInstallSkillSets() (sdlcskills.SkillSets, error) {
+	sets, err := sdlcskills.ParseSkillSets(codeSkillSets)
+	if err != nil {
+		return sdlcskills.SkillSets{}, fmt.Errorf("--skill-sets: %w", err)
+	}
+	if codeNoSDLCSkills {
+		if strings.TrimSpace(codeSkillSets) != "" && !sets.None() {
+			return sdlcskills.SkillSets{}, fmt.Errorf("--no-sdlc-skills means --skill-sets none; it conflicts with --skill-sets %q", codeSkillSets)
+		}
+		return sdlcskills.ParseSkillSets("none")
+	}
+	return sets, nil
+}
+
 func codeInstallRelease() (string, error) {
 	r := strings.TrimSpace(codeRelease)
 	if r == "" {
@@ -549,14 +570,32 @@ echo "agent-box installed at $HOME/.local/bin/agent-box"`
 // a message; any other fetch failure fails the install, so a network blip never
 // silently ships a box with no skills. A hash mismatch or unsafe archive is the
 // installer's own failure and propagates.
-func sdlcSkillsInstallScript(release string) string {
+//
+// sets is a validated selection (sdlcskills.SkillSets): its charset cannot carry
+// shell syntax, so it is safe inside the double quotes too. An installer that
+// predates SKILL_SETS would ignore it and install everything, so a narrowed
+// selection against one fails instead.
+func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
 	return `set -e
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
 case "$code" in
-  200) RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
-  404) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+  200)
+    if ! grep -q '^# skill-sets: v1$' "$tmp"; then
+      # An installer that predates skill sets would ignore SKILL_SETS and install everything.
+      case "` + sets.String() + `" in
+        all) ;;
+        none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
+        *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+      esac
+    fi
+    SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
+  404)
+    case "` + sets.String() + `" in
+      all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+      *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+    esac ;;
   *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
 esac`
 }
@@ -654,6 +693,10 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	skillSets, err := codeInstallSkillSets()
+	if err != nil {
+		return err
+	}
 	mint, err := codeInstallPreflight(ctx, box, plan, diag)
 	if err != nil {
 		return err
@@ -678,11 +721,11 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 
 	// The role skills are Claude Code skills (~/.claude/skills), so only the
 	// Claude engine gets them (#2065).
-	if plan.engine.Name() == engine.NameClaude && !codeNoSDLCSkills {
-		if _, err := run(sdlcSkillsInstallScript(release)); err != nil {
+	if plan.engine.Name() == engine.NameClaude {
+		if _, err := run(sdlcSkillsInstallScript(release, skillSets)); err != nil {
 			return fmt.Errorf("install SDLC skills (%s) on %q: %w", release, box, err)
 		}
-		fmt.Fprintf(diag, "✓ SDLC skills installed on %s (from %s)\n", box, release)
+		fmt.Fprintf(diag, "✓ SDLC skills (%s) installed on %s (from %s)\n", skillSets, box, release)
 	}
 
 	if url := strings.TrimSpace(codeBootstrapURL); url != "" {

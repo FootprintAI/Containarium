@@ -89,6 +89,10 @@ func SetDefaultStoragePool(name string) {
 	}
 }
 
+// ConfiguredStoragePool reports the process-wide pool: --storage-pool, or
+// DefaultStoragePool when it was not set.
+func ConfiguredStoragePool() string { return defaultPool() }
+
 // defaultPool reports the process-wide pool.
 func defaultPool() string {
 	if v, ok := configuredStoragePool.Load().(string); ok && v != "" {
@@ -1835,6 +1839,19 @@ func (c *Client) GetRawInstance(name string) (map[string]string, string, error) 
 		return nil, "", fmt.Errorf("failed to get instance %s: %w", name, err)
 	}
 	return inst.Config, etag, nil
+}
+
+// GetRawInstanceDevices returns an instance's expanded (profile-merged) device
+// map: device name -> its config keys. The network-policy enforcer reads the
+// primary NIC's `network`/`parent` and `ipv4.address` from it (#2618) — host-side
+// configuration that root inside the instance cannot change, unlike the
+// addresses the instance state reports from inside its own netns.
+func (c *Client) GetRawInstanceDevices(name string) (map[string]map[string]string, error) {
+	inst, _, err := c.server.GetInstance(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance %s: %w", name, err)
+	}
+	return inst.ExpandedDevices, nil
 }
 
 // GetConsoleLog returns the instance's boot-time console ring-buffer log.

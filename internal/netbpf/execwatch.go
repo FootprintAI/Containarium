@@ -166,6 +166,22 @@ func ExecObjectPathFor(objPath string) string {
 	return filepath.Join(filepath.Dir(objPath), ExecObjectName)
 }
 
+// ExecObjectSource says where ResolveExecWatch reads the execwatch object
+// from for an operator value: the object compiled into the binary (embedded
+// true), or the file at path (the netpolicy path's sibling, ExecObjectPathFor).
+// An empty value selects the embedded object here, unlike Resolve and the
+// integrity self-measurement of the netpolicy object, where empty means no
+// program; the daemon starts the exec watcher only with a non-empty value, so
+// the two never disagree in practice (pinned by tests). ResolveExecWatch and
+// the integrity self-measurement (#3120) share this so they agree on which
+// bytes are loaded.
+func ExecObjectSource(value string) (embedded bool, path string) {
+	if strings.TrimSpace(value) == "" || IsEmbeddedValue(value) {
+		return true, ""
+	}
+	return false, ExecObjectPathFor(strings.TrimSpace(value))
+}
+
 // ResolveExecWatch loads the execwatch object from the same operator value
 // Resolve takes: the embedded keyword selects the object compiled into this
 // binary; any other value is a netpolicy object path whose sibling
@@ -173,17 +189,16 @@ func ExecObjectPathFor(objPath string) string {
 // embedded too (and fails when nothing is embedded) — never a file relative
 // to the daemon's working directory.
 func ResolveExecWatch(value string) (*ExecWatch, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "embedded", "1", "true", "yes", "on":
-		obj := EmbeddedExecObject()
-		if len(obj) == 0 {
-			return nil, fmt.Errorf("netbpf: no embedded execwatch BPF object in this build " +
-				"(release binaries bundle it; for a custom build run `make build-bpf` then build with -tags embed_bpf)")
-		}
-		return LoadExecWatchFromBytes(obj)
-	default:
-		return LoadExecWatch(ExecObjectPathFor(strings.TrimSpace(value)))
+	embedded, path := ExecObjectSource(value)
+	if !embedded {
+		return LoadExecWatch(path)
 	}
+	obj := EmbeddedExecObject()
+	if len(obj) == 0 {
+		return nil, fmt.Errorf("netbpf: no embedded execwatch BPF object in this build " +
+			"(release binaries bundle it; for a custom build run `make build-bpf` then build with -tags embed_bpf)")
+	}
+	return LoadExecWatchFromBytes(obj)
 }
 
 // LoadExecWatch reads the compiled execwatch object at objPath and loads the

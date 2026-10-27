@@ -133,13 +133,29 @@ type fakeInspector struct {
 	containers []incus.ContainerInfo
 	veth       string
 	rawCalls   map[string]int
+	// host-side NIC facts for every container (#2618)
+	network, hwaddr, staticIP string
 }
 
 func (f *fakeInspector) ListContainers() ([]incus.ContainerInfo, error) { return f.containers, nil }
 
 func (f *fakeInspector) GetRawInstance(name string) (map[string]string, string, error) {
 	f.rawCalls[name]++
-	return map[string]string{"volatile.eth0.host_name": f.veth}, "", nil
+	cfg := map[string]string{"volatile.eth0.host_name": f.veth}
+	if f.hwaddr != "" {
+		cfg["volatile.eth0.hwaddr"] = f.hwaddr
+	}
+	return cfg, "", nil
+}
+
+// GetRawInstanceDevices returns one nic device on f.network with f.staticIP as
+// its ipv4.address (when set), the host-side facts #2618 reads.
+func (f *fakeInspector) GetRawInstanceDevices(string) (map[string]map[string]string, error) {
+	dev := map[string]string{"type": "nic", "network": f.network}
+	if f.staticIP != "" {
+		dev["ipv4.address"] = f.staticIP
+	}
+	return map[string]map[string]string{"eth0": dev}, nil
 }
 
 // firstHostIface returns a host interface name that net.InterfaceByName can
@@ -230,6 +246,16 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 	}
 	tagged := map[string]bool{}
 	for _, v := range views {
+		if v.ValidateOnly {
+			// #2618: present, but marking-only — no tenant, no ip_tenant row.
+			if v.Name != "controlplane-container" {
+				t.Errorf("%s is validate-only; only the control plane should be here", v.Name)
+			}
+			if v.Tenant != "" || v.HasIP {
+				t.Errorf("control plane view = %+v, want no tenant and no (guest) IP for ip_tenant", v)
+			}
+			continue
+		}
 		tagged[v.Name] = true
 	}
 	if tagged["controlplane-container"] {

@@ -1,6 +1,8 @@
 package recipes
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -571,6 +573,86 @@ func TestCodingAgentRecipe_InstallsSDLCSkills(t *testing.T) {
 	}
 }
 
+// TestCodingAgentRecipe_SkillSetsParam (#3048): skill_sets selects set ids, empty
+// defers to the deprecated sdlc_skills alias, and the step hands the installer
+// a SKILL_SETS value.
+func TestCodingAgentRecipe_SkillSetsParam(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("coding-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var param *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "skill_sets" {
+			param = p
+		}
+	}
+	if param == nil {
+		t.Fatal("coding-agent missing parameter skill_sets")
+	}
+	if param.Required || param.Default != "" {
+		t.Errorf("skill_sets must be optional with an empty default (empty = fall back to the sdlc_skills alias, then all); got required=%v default=%q", param.Required, param.Default)
+	}
+	for _, p := range r.Parameters {
+		if p.Name == "sdlc_skills" && !strings.Contains(strings.ToLower(p.Description), "deprecated") {
+			t.Errorf("sdlc_skills description must carry the deprecation note: %q", p.Description)
+		}
+	}
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	for _, want := range []string{"CONTAINARIUM_PARAM_SKILL_SETS", `SKILL_SETS="$SETS"`, "predates skill sets"} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the SDLC skills step lacks %q", want)
+		}
+	}
+}
+
+// TestCodingAgentRecipe_SkillSetsResolution runs the step's selection logic:
+// skill_sets wins; otherwise sdlc_skills=false means none and anything else all.
+func TestCodingAgentRecipe_SkillSetsResolution(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := m.Get("coding-agent")
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	// Everything up to the runuser line is the selection logic.
+	logic := step[:strings.Index(step, "runuser")]
+	start := strings.Index(logic, `SETS="${CONTAINARIUM_PARAM_SKILL_SETS`)
+	if start < 0 {
+		t.Fatal("the SDLC skills step does not resolve SETS from skill_sets")
+	}
+	logic = logic[start:]
+	for _, tc := range []struct{ skillSets, alias, want string }{
+		{"", "true", "all"}, {"", "", "all"}, {"", "false", "none"},
+		{"qa", "true", "qa"}, {"qa,sdlc", "false", "qa,sdlc"}, {"none", "true", "none"},
+	} {
+		out, err := exec.Command("bash", "-c", "set -e\n"+
+			"CONTAINARIUM_PARAM_SKILL_SETS='"+tc.skillSets+"' CONTAINARIUM_PARAM_SDLC_SKILLS='"+tc.alias+"'\n"+
+			"export CONTAINARIUM_PARAM_SKILL_SETS CONTAINARIUM_PARAM_SDLC_SKILLS\n"+
+			logic+"\necho \"RESULT=$SETS\"").CombinedOutput() //nolint:gosec // test-only, embedded recipe text
+		if err != nil {
+			t.Fatalf("%+v: %v\n%s", tc, err, out)
+		}
+		if !strings.Contains(string(out), "RESULT="+tc.want+"\n") {
+			t.Errorf("skill_sets=%q sdlc_skills=%q: %s, want RESULT=%s", tc.skillSets, tc.alias, out, tc.want)
+		}
+	}
+}
+
 // TestLibreChatRecipe_InferenceProviderParam (#1728): the recipe still opts
 // into Gemini by default (model_gateway_provider unchanged), and declares the
 // new inference_provider parameter as optional (no required flag, empty
@@ -598,5 +680,64 @@ func TestLibreChatRecipe_InferenceProviderParam(t *testing.T) {
 	}
 	if p.Default != "" {
 		t.Errorf("inference_provider default: got %q want empty (keeps model_gateway_provider)", p.Default)
+	}
+}
+
+// TestCodingAgentRecipe_OldInstallerHandling runs the recipe's inner installer
+// step against a fake curl: an installer without the "# skill-sets: v1" marker
+// (or no installer at all) must not silently widen a narrowed selection, and
+// none/all keep working against old releases (#3048).
+func TestCodingAgentRecipe_OldInstallerHandling(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := m.Get("coding-agent")
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	start := strings.Index(step, "bash -c '")
+	end := strings.LastIndex(step, "\n'")
+	if start < 0 || end < start {
+		t.Fatal("cannot find the inner installer script")
+	}
+	inner := step[start+len("bash -c '") : end]
+
+	for _, tc := range []struct {
+		name, status, sets, body string
+		wantOK, wantRan          bool
+	}{
+		{"old, all", "200", "all", "", true, true},
+		{"old, none", "200", "none", "", true, false},
+		{"old, qa", "200", "qa", "", false, false},
+		{"mention only, qa", "200", "qa", "# honours SKILL_SETS\n", false, false},
+		{"marked, qa", "200", "qa", "# skill-sets: v1\n", true, true},
+		{"marked, none", "200", "none", "# skill-sets: v1\n", true, true},
+		{"404, all", "404", "all", "", true, false},
+		{"404, none", "404", "none", "", true, false},
+		{"404, qa", "404", "qa", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := dir + "/ran"
+			fake := "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift;; esac; shift; done\n" +
+				"printf '#!/bin/sh\\n" + strings.ReplaceAll(tc.body, "\n", "\\n") + "touch " + marker + "\\n' > \"$out\"\nprintf '" + tc.status + "'\n"
+			if err := os.MkdirAll(dir+"/bin", 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dir+"/bin/curl", []byte(fake), 0o700); err != nil { //nolint:gosec // test stand-in
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", inner) //nolint:gosec // embedded recipe text
+			cmd.Env = append(os.Environ(), "PATH="+dir+"/bin:"+os.Getenv("PATH"), "RELEASE=v9.9.9", "SETS="+tc.sets)
+			out, err := cmd.CombinedOutput()
+			_, statErr := os.Stat(marker)
+			if (err == nil) != tc.wantOK || (statErr == nil) != tc.wantRan {
+				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", err == nil, statErr == nil, tc.wantOK, tc.wantRan, out)
+			}
+		})
 	}
 }

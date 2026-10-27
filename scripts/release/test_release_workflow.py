@@ -72,6 +72,24 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertTrue({"sign-release", "sign-bundle"} <= set(needs(job)))
         self.assertIn("verify_assets.py", run_text(job))
 
+    def test_verify_release_is_the_documented_gate(self):
+        # docs/RELEASE-PROCESS.md tells operators to gate rollout on
+        # verify-release (#3156). It must exist, be unskippable by a failed
+        # signing job (no always()/failure() override, no continue-on-error),
+        # and the docs must name it.
+        job = self.jobs["verify-release"]
+        self.assertEqual(self.jobs["verify-release"].get("if"), "startsWith(github.ref, 'refs/tags/v')")
+        self.assertTrue({"sign-release", "sign-bundle"} <= set(needs(job)))
+        self.assertNotIn("continue-on-error", job)
+        for step in job["steps"]:
+            self.assertNotIn("continue-on-error", step)
+        root = WORKFLOW.parents[2]
+        for doc in ("docs/RELEASE-PROCESS.md", "docs/security/VERIFYING-RELEASES.md"):
+            with self.subTest(doc=doc):
+                self.assertIn("`verify-release`", (root / doc).read_text())
+        text = (root / "docs/RELEASE-PROCESS.md").read_text()
+        self.assertIn("The release gate is the `verify-release` job", text)
+
     def test_signing_runs_on_tags_only(self):
         for name in ("sign-release", "sign-bundle", "verify-release"):
             with self.subTest(job=name):
