@@ -50,12 +50,14 @@ cluster kubeconfig
 cluster list
 cluster node-pool
 cluster status
+code answer
 code attach
 code egress-policy delete
 code egress-policy get
 code egress-policy set
 code install
 code logs
+code pending
 code run
 code runs
 code status
