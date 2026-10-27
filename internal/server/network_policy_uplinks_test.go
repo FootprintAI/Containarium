@@ -163,8 +163,10 @@ func TestMasterOfIface(t *testing.T) {
 	}
 }
 
-// #3185 review: the real vethCache -> master lookup -> converge wiring.
-func TestApplyTrustedUplinks_WiresVethCacheAndSysfs(t *testing.T) {
+// #3185 review: managedVethNames -> masterOfIface -> converge wiring against a
+// fake sysfs. The applyTrustedUplinks line itself is not covered: it reads
+// /proc/net/route and the concrete BPF loader.
+func TestManagedVethNames_MasterLookup_Converge(t *testing.T) {
 	fakeSysfs(t, map[string]string{"vethA": "br0"})
 	cache := map[string]vethInfo{"box": {veth: "vethA"}}
 	u, ap, inst, lines := newUplinkRig()
@@ -191,5 +193,22 @@ func TestUplinks_UnreadableMasterFailsClosed(t *testing.T) {
 	}
 	if len(*lines) != 1 || !strings.Contains((*lines)[0], "EIO") {
 		t.Errorf("want one error log, got %v", *lines)
+	}
+}
+
+// #3185 review: with several unreadable veths the error text must not vary from
+// pass to pass (vethCache is a map), or the log-once dedupe is defeated.
+func TestUplinks_UnreadableMastersLogOnceAcrossPasses(t *testing.T) {
+	cache := map[string]vethInfo{}
+	for _, n := range []string{"b", "c", "a", "e", "d", "h", "g", "f"} {
+		cache["box-"+n] = vethInfo{veth: "veth" + n}
+	}
+	boom := func(v string) (string, error) { return "", fmt.Errorf("EIO on %s", v) }
+	u, ap, inst, lines := newUplinkRig()
+	for i := 0; i < 30; i++ {
+		u.converge([]uplinkIface{{"br0", 5}}, managedVethNames(cache), boom, ap, inst)
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("want exactly 1 log line over 30 passes, got %d: %v", len(*lines), *lines)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1361,7 +1362,9 @@ func (e *NetworkPolicyEnforcer) applyTrustedUplinks() {
 	e.uplinks.converge(uplinkCandidates(e.extraUplinks), managedVethNames(e.vethCache), masterOfIface, e.loader, e.trustedInstalled)
 }
 
-// managedVethNames lists the host veth names of the running managed containers.
+// managedVethNames lists the host veth names of the running managed containers,
+// sorted: refuseVethCarriers reports the first unreadable veth, so a stable order
+// keeps its error text (and the log-once dedupe on it) stable across passes.
 func managedVethNames(cache map[string]vethInfo) []string {
 	out := make([]string, 0, len(cache))
 	for _, info := range cache {
@@ -1369,6 +1372,7 @@ func managedVethNames(cache map[string]vethInfo) []string {
 			out = append(out, info.veth)
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -1402,7 +1406,9 @@ func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, 
 	if err != nil {
 		// Fail closed for this pass: the carrier set is incomplete, so add no new
 		// trusted entry and leave the installed set as it is (do not un-trust
-		// legitimate uplinks either). Logged once per distinct error.
+		// legitimate uplinks either). Deliberate: an installed entry that has since
+		// become a carrier stays trusted while the error persists. Logged once per
+		// distinct error.
 		if msg := err.Error(); msg != u.lastErr {
 			u.lastErr = msg
 			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; leaving trusted uplinks unchanged this pass: %v", err)
