@@ -412,10 +412,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Backfill role labels and reconcile base scripts — incus-specific, no-op on k8s.
+	// Backfill role labels — incus-specific, no-op on k8s.
+	// Timezone setup runs during provisioning; replaying it here would
+	// overwrite a tenant-selected timezone on every daemon restart (#3146).
 	if incusClient != nil {
 		backfillCoreContainerLabels(incusClient)
-		go reconcileBaseScripts(incusClient)
 	}
 
 	// Always auto-detect Caddy container IP if no URL specified.
@@ -894,78 +895,6 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 			}
 		}
 	}
-}
-
-// reconcileBaseScripts ensures all running containers have base scripts applied.
-// It runs in the background at daemon startup. Containers that already have the
-// scripts are fast (apt-get install is a no-op for already-installed packages).
-func reconcileBaseScripts(incusClient *incus.Client) {
-	log.Printf("Reconciling base scripts on all running containers...")
-
-	mgr, err := container.New()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	containers, err := incusClient.ListContainers()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	var applied, failed int
-	var failedNames []string
-	for _, c := range baseScriptTargets(containers) {
-		// Derive the lookup name for InstallStack:
-		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
-		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
-		lookupName := c.Name
-		if strings.HasSuffix(c.Name, "-container") {
-			lookupName = strings.TrimSuffix(c.Name, "-container")
-		}
-
-		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
-			failed++
-			failedNames = append(failedNames, c.Name)
-			log.Printf("base script reconcile: ntp on %s: %v", c.Name, err)
-			continue
-		}
-		applied++
-	}
-
-	// One summary line instead of a warning per container (#2617).
-	log.Printf("Base script reconciliation complete: %d applied, %d failed%s", applied, failed, failedSuffix(failedNames))
-}
-
-// baseScriptTargets selects the containers the startup base-script reconcile
-// applies to: running ones, excluding core service containers, which are
-// platform-managed rather than tenant workloads (#2617).
-func baseScriptTargets(containers []incus.ContainerInfo) []incus.ContainerInfo {
-	var out []incus.ContainerInfo
-	for _, c := range containers {
-		if c.State != "Running" || c.Role.IsCoreRole() {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// failedSuffix renders " (a, b, c, +N more)" for the reconcile summary, empty
-// when nothing failed. Capped so a fleet-wide failure stays one short line.
-func failedSuffix(names []string) string {
-	const max = 5
-	if len(names) == 0 {
-		return ""
-	}
-	shown := names
-	more := ""
-	if len(names) > max {
-		shown = names[:max]
-		more = fmt.Sprintf(", +%d more", len(names)-max)
-	}
-	return " (" + strings.Join(shown, ", ") + more + ")"
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for
