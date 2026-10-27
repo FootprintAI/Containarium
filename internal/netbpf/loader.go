@@ -29,9 +29,10 @@ const (
 	mapSignatures       = "signatures"
 	mapSigConfig        = "sig_config"
 	mapInboundFlows     = "inbound_flows"
+	mapTrustedIif       = "trusted_iif"
 	statSeen            = uint32(0)
 	statWouldDeny       = uint32(1)
-	statInboundMiss     = uint32(2) // #2618: reply-shaped packet with no live inbound flow
+	statInboundReseed   = uint32(2) // #2618: TCP inbound entry re-created mid-stream (eviction/expiry healed)
 	statsEntryCount     = 3
 )
 
@@ -192,12 +193,13 @@ func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
 
 // specSupportsInboundReplies reports whether the object validates the box's
 // source, marks frames and tracks inbound flows (#2618): its policy_cfg declares
-// box_ip and flags AND it carries the inbound_flows map. Anything less proves
-// nothing.
+// box_ip and flags AND it carries the inbound_flows and trusted_iif maps.
+// Anything less proves nothing.
 func specSupportsInboundReplies(spec *ebpf.CollectionSpec) bool {
 	return specVethPolicyHasMember(spec, vethPolicyBoxIPField) &&
 		specVethPolicyHasMember(spec, vethPolicyFlagsField) &&
-		spec.Maps[mapInboundFlows] != nil
+		spec.Maps[mapInboundFlows] != nil &&
+		spec.Maps[mapTrustedIif] != nil
 }
 
 // SupportsEgressMode reports whether the loaded object applies the egress_mode
@@ -402,21 +404,56 @@ func (l *Loader) Stats() (seen, wouldDeny uint64, err error) {
 // increment) can open a perf reader over it.
 func (l *Loader) EventsMap() *ebpf.Map { return l.coll.Maps[mapEvents] }
 
-// InboundReplyMisses reads the #2618 counter of reply-shaped packets a box sent
-// whose inbound flow was not in the map or had idled out: an evicted or expired
-// entry (LRU pressure — the peer's next packet re-creates it) or a box-initiated
-// non-SYN segment. 0 on an object built before the counter.
-func (l *Loader) InboundReplyMisses() (uint64, error) {
+// InboundReseeds reads the #2618 counter of TCP inbound-flow entries the egress
+// hook re-created from a validated mid-stream segment — a flow whose entry had
+// been evicted (LRU pressure) or had idled out and healed itself. Only inbound
+// packets write the map, so a box cannot inflate it. 0 on an object built
+// before the counter.
+func (l *Loader) InboundReseeds() (uint64, error) {
 	m := l.coll.Maps[mapStats]
-	if m.MaxEntries() <= statInboundMiss {
+	if m.MaxEntries() <= statInboundReseed {
 		return 0, nil
 	}
 	var n uint64
-	key := statInboundMiss
+	key := statInboundReseed
 	if err := m.Lookup(&key, &n); err != nil {
-		return 0, fmt.Errorf("netbpf: read stats[inbound_miss]: %w", err)
+		return 0, fmt.Errorf("netbpf: read stats[inbound_reseed]: %w", err)
 	}
 	return n, nil
+}
+
+// SetTrustedIface marks a host interface as an uplink whose UNMARKED frames may
+// seed an inbound flow (#2618): frames routed in from outside the bridge. A
+// no-op on an object without the map.
+func (l *Loader) SetTrustedIface(ifindex int) error {
+	if l.coll == nil {
+		return nil // closed: the map is gone with the collection
+	}
+	m := l.coll.Maps[mapTrustedIif]
+	if m == nil {
+		return nil
+	}
+	key, one := uint32(ifindex), uint8(1) // #nosec G115 -- ifindex is a small positive int
+	if err := m.Update(&key, &one, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("netbpf: update trusted_iif[%d]: %w", ifindex, err)
+	}
+	return nil
+}
+
+// DeleteTrustedIface removes an uplink; a missing key is not an error.
+func (l *Loader) DeleteTrustedIface(ifindex int) error {
+	if l.coll == nil {
+		return nil // closed: the map is gone with the collection
+	}
+	m := l.coll.Maps[mapTrustedIif]
+	if m == nil {
+		return nil
+	}
+	key := uint32(ifindex) // #nosec G115 -- ifindex is a small positive int
+	if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("netbpf: delete trusted_iif[%d]: %w", ifindex, err)
+	}
+	return nil
 }
 
 // HasFlowAccounting reports whether the loaded object carries the per-flow
