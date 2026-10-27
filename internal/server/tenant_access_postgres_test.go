@@ -15,9 +15,9 @@ import (
 )
 
 func TestTenantAccessPostgresAtomicityPreservationAndConcurrency(t *testing.T) {
-	dsn := os.Getenv("TEST_TENANT_PG_DSN")
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
 	if dsn == "" {
-		t.Skip("set TEST_TENANT_PG_DSN for an isolated PostgreSQL fixture")
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
 	}
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, dsn)

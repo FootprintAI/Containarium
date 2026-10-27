@@ -71,5 +71,6 @@ the rest of network-policy; --http is not required.
 Tests cover direction, exact preservation including egress_mode/deny rules,
 revision conflicts, concurrent previews, all-or-none absent-row rollback, signed
 JWT REST scope checks, generated gRPC/REST and actual MCP stdio calls. PostgreSQL
-tests use TEST_TENANT_PG_DSN pointing only to a disposable test database, create a
+tests use the shared CONTAINARIUM_TEST_DSN (the store-integration lane provides it;
+TestMain scopes every package process to its own schema), still create a
 unique schema, and drop that schema afterward. No production Box/ACL was changed.
