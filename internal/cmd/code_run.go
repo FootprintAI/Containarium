@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -66,14 +68,18 @@ for "unknown" in that case.
 call that needs a permission, instead of the engine refusing it: the request
 is journaled next to the run's log, 'containarium code status' reports
 waiting_input with the request, and the call proceeds on an allow or is
-refused on a deny. A request nobody answers expires into a deny after
---approval-timeout (default 30m), and the expiry is journaled. An answer
-counts only with a signature under this run's own key pair; only the public
-key goes to the box, so nothing on the box can forge an answer. (A process an
-agent leaves running on the box can still change the box's own Claude Code
-setup for later runs; that is out of scope.) No answer command ships yet, so
-for now every request expires into a deny; 'code status' still counts them. On an engine without a permission hook (pi, Codex) the run starts
-unchanged, with a warning. The default, --approvals deny, is today's behaviour.
+refused on a deny. Answer it inline (a or d + Enter while this command runs at
+a terminal, or in 'code attach'), or with 'containarium code pending' and
+'containarium code answer'. A request nobody answers expires into a deny after
+--approval-timeout (default 30m), and the expiry is journaled. Answers are
+signed by the daemon with a key per box; only the public key goes to the box,
+so nothing on the box can forge an answer. An answer counts only for the
+prompt it was signed for, which is the prompt the answering command printed:
+a prompt the agent rewrites in the journal is never what gets allowed. (A
+process an agent leaves running on the box can still change the box's own
+Claude Code setup for later runs; that is out of scope.) --approvals ask needs
+the daemon (--server). On an engine without a permission hook (pi, Codex) the
+run starts unchanged, with a warning. The default, --approvals deny, is today's behaviour.
 
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
@@ -136,9 +142,15 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	name := codeRunName()
 	// #2183: before any setup with side effects (a gateway run mints a token
 	// and writes it to the box in prepareCodeRun).
+	var approvalKey ed25519.PublicKey
 	if approvals == coderun.ApprovalsAsk {
 		if err := coderun.ValidApprovalRunName(name); err != nil {
 			return err
+		}
+		// #2184: answers are signed by the daemon; its public key goes to
+		// the box.
+		if approvalKey, err = fetchApprovalKey(newRunInputsClient, box); err != nil {
+			return fmt.Errorf("--approvals ask on %q: %w", box, err)
 		}
 	}
 
@@ -159,7 +171,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// #2183: --approvals deny (the default) leaves command untouched.
 	var approvalNote string
 	if approvals == coderun.ApprovalsAsk {
-		if command, approvalNote, err = prepareApprovals(ctx, sess, eng, name, command, codeRunApprovalTimeout, diag); err != nil {
+		if command, approvalNote, err = prepareApprovals(ctx, sess, eng, name, command, approvalKey, codeRunApprovalTimeout, diag); err != nil {
 			return fmt.Errorf("--approvals ask on %q: %w", box, err)
 		}
 	}
@@ -191,6 +203,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if approvals == coderun.ApprovalsAsk && approvalNote == "" && stdinIsTerminal() {
+		defer startInlineAnswers(ctx, newRunInputsClient, box, started.Name, os.Stdin, diag)()
+	}
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
 }
 
@@ -286,6 +301,11 @@ func runCodeAttach(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(diag, "✓ attaching to %s\n", line)
 
+	// #2184: a human at a terminal can answer the run's permission requests
+	// inline.
+	if stdinIsTerminal() && runUsesApprovals(ctx, sess, name) {
+		defer startInlineAnswers(ctx, newRunInputsClient, box, name, os.Stdin, diag)()
+	}
 	return streamAndWait(ctx, sess, name, logPath, cmd.OutOrStdout(), diag, codeAttachStreamJSON)
 }
 

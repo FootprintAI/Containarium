@@ -50,6 +50,9 @@ type API interface {
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 	ListBoxRuns(username string) ([]*pb.BoxRun, error)
 	TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error)
+	// Permission requests of a box run (#2184).
+	ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error)
+	AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error)
 	// Coding-tool egress allowlist, read only (#2378).
 	GetCodingToolEgressPolicy(req *pb.GetCodingToolEgressPolicyRequest) (*pb.GetCodingToolEgressPolicyResponse, error)
 
