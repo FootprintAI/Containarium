@@ -93,7 +93,8 @@ const sendTimeout = 10 * time.Second
 // NewSender returns the daemon's sender. The server is chosen by a tenant, so
 // it never follows a redirect (that would carry the token to another host)
 // and refuses, at connect time, loopback, link-local (cloud metadata
-// included) and unspecified addresses, and private, CGNAT and ULA addresses
+// included) and unspecified addresses, and private, CGNAT, benchmarking and
+// ULA addresses
 // (the daemon's own LAN and the box bridge) unless allowed lists the
 // network: a self-hosted ntfy is reached only where the operator said so.
 func NewSender(allowed []netip.Prefix) *Sender {
@@ -152,13 +153,30 @@ var metadataAddrs = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud metadata
 }
 
-// cgnat is 100.64.0.0/10, which netip.Addr.IsPrivate does not cover.
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+// internalRanges are non-public IPv4 ranges netip.Addr.IsPrivate does not
+// cover: CGNAT (RFC 6598) and the benchmarking range (RFC 2544), either of
+// which can be routed to internal hosts.
+var internalRanges = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+}
+
+func isInternal(ip netip.Addr) bool {
+	if ip.IsPrivate() {
+		return true
+	}
+	for _, p := range internalRanges {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // checkDialAddr refuses the addresses a tenant-chosen server must not reach
 // from the daemon's network position. Loopback, link-local and metadata
 // addresses are refused whatever allowed says; a private, CGNAT or ULA
-// address is accepted only inside an allowed network.
+// address (see isInternal) is accepted only inside an allowed network.
 func checkDialAddr(address string, allowed []netip.Prefix) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -177,7 +195,7 @@ func checkDialAddr(address string, allowed []netip.Prefix) error {
 			return fmt.Errorf("notify: refusing to connect to %s", ip)
 		}
 	}
-	if ip.IsPrivate() || cgnat.Contains(ip) {
+	if isInternal(ip) {
 		for _, p := range allowed {
 			if p.Contains(ip) {
 				return nil

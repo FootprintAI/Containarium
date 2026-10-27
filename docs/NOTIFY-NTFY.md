@@ -39,12 +39,17 @@ Then subscribe to the same topic in the ntfy app on your phone.
 The daemon sends from the host's network, so by default it reaches only
 public addresses: a tenant must not be able to point it at the box bridge or
 the host's LAN. To use a self-hosted ntfy server on a private address, the
-operator lists its network in the daemon's environment and restarts the
-daemon:
+operator lists its network in the daemon's environment, for example with a
+systemd drop-in (`systemctl edit containarium`), and restarts the daemon:
 
-```bash
-CONTAINARIUM_NOTIFY_ALLOWED_CIDRS=192.0.2.0/28        # comma-separated CIDRs
+```ini
+[Service]
+Environment=CONTAINARIUM_NOTIFY_ALLOWED_CIDRS=192.168.10.0/24
 ```
+
+The value is a comma-separated list of CIDRs; the example lets a server on
+the `192.168.10.0/24` LAN through. It is read when the daemon starts, so a
+plain shell assignment does not reach a daemon run by the service manager.
 
 Keep the list narrow (the ntfy server's own address or subnet). A malformed
 value is logged and the daemon then reaches public servers only. Loopback,
@@ -119,9 +124,10 @@ read `code runs` uses. Users without a channel cost nothing.
   would hand the token to another host), and refuses loopback, link-local
   (where most clouds serve instance metadata) and the cloud-metadata
   addresses outside it (AWS and GCP over IPv6, Alibaba Cloud over IPv4; listed
-  in `internal/notify/ntfy.go`). Private, CGNAT and IPv6 ULA addresses (the
-  daemon's own LAN and the box bridge) are refused too, unless the operator
-  lists the network; see "Self-hosted ntfy on a private network" below.
+  in `internal/notify/ntfy.go`). Private, CGNAT, benchmarking (RFC 2544)
+  and IPv6 ULA addresses (the daemon's own LAN and the box bridge) are
+  refused too, unless the operator lists the network; see "Self-hosted ntfy
+  on a private network" below.
 
 ## Limits
 

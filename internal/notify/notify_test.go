@@ -300,15 +300,17 @@ func TestNewSender_RefusesLoopbackAndMetadata(t *testing.T) {
 // a private, CGNAT or ULA address (the daemon's own LAN and the box bridge)
 // is refused unless the operator listed its network.
 func TestCheckDialAddr_PrivateNeedsOperatorAllowlist(t *testing.T) {
-	private := []string{"10.0.0.5:443", "172.16.3.4:80", "192.168.1.20:80", "100.101.102.103:443", "[fd12:3456::1]:443"}
+	private := []string{"10.0.0.5:443", "172.16.3.4:80", "192.168.1.20:80", "100.101.102.103:443", "[fd12:3456::1]:443", "198.18.0.10:80", "198.19.255.1:443"}
 	for _, addr := range private {
 		if checkDialAddr(addr, nil) == nil {
 			t.Errorf("checkDialAddr(%s) allowed with no operator allowlist", addr)
 		}
 	}
-	allowed := mustPrefixes(t, "192.168.1.0/24")
-	if err := checkDialAddr("192.168.1.20:80", allowed); err != nil {
-		t.Errorf("listed network refused: %v", err)
+	allowed := mustPrefixes(t, "192.168.1.0/24", "198.18.0.0/24")
+	for _, addr := range []string{"192.168.1.20:80", "198.18.0.10:80"} {
+		if err := checkDialAddr(addr, allowed); err != nil {
+			t.Errorf("listed network refused for %s: %v", addr, err)
+		}
 	}
 	if checkDialAddr("10.0.0.5:443", allowed) == nil {
 		t.Error("unlisted private address allowed")
