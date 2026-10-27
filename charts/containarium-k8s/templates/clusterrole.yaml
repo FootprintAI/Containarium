@@ -5,6 +5,16 @@ metadata:
   labels:
     {{- include "containarium-k8s.labels" . | nindent 4 }}
 rules:
+  # Optional CSI snapshot backup support; the storage controller owns contents.
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get]
   # Manage per-tenant namespaces
   - apiGroups: [""]
     resources: [namespaces]

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CSI snapshot verification infrastructure** (#3168): add the Helm permissions needed for snapshot backups and a disposable kind lane that installs the snapshot controller and CSI hostpath driver, proves file restoration, and cleans up its cluster. Tool and deployment versions are fixed and downloaded binary/archive checksums are verified.
+
 - **Kubernetes PVC snapshot backups** (#3168): `backup create --box --dest snapshot` captures the active data PVC through CSI, lists the backup in the existing index, restores the source box on a new PVC while retaining the old disk, and deletes the snapshot with its backup. Unsupported clusters and incompatible archive/database options are rejected before snapshot creation.
 
 - **CSI snapshot backup API contract** (#3168): add `BACKUP_DESTINATION_SNAPSHOT` for BOX-scope Kubernetes data-PVC backups and document source-box restore semantics. Runtime support follows separately.

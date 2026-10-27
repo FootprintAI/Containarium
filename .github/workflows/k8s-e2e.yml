@@ -1,16 +1,21 @@
 name: K8s agent-box e2e
 
-# Exercises the Kubernetes box backend (//go:build k8s). Two jobs:
+# Exercises the Kubernetes box backend (//go:build k8s). Three jobs:
 #  - build-unit: fast gate — compiles the k8s variant and runs the reconciler's
 #    fake-clientset unit tests. No cluster, always runs.
 #  - kind-e2e: spins up a throwaway kind cluster and drives the real reconciler
 #    against its apiserver (scripts/k8s-e2e.sh).
+#  - snapshot-e2e: installs a snapshot-capable CSI driver and proves file restore.
 on:
   pull_request:
     paths:
       - 'pkg/core/box/**'
       - 'internal/server/boxbackend_factory.go'
       - 'scripts/k8s-e2e.sh'
+      - 'scripts/k8s-snapshot-e2e.sh'
+      - 'pkg/core/backup/**'
+      - 'internal/server/backup*'
+      - 'charts/containarium-k8s/**'
       - '.github/workflows/k8s-e2e.yml'
       - 'go.mod'
       - 'go.sum'
@@ -20,6 +25,10 @@ on:
       - 'pkg/core/box/**'
       - 'internal/server/boxbackend_factory.go'
       - 'scripts/k8s-e2e.sh'
+      - 'scripts/k8s-snapshot-e2e.sh'
+      - 'pkg/core/backup/**'
+      - 'internal/server/backup*'
+      - 'charts/containarium-k8s/**'
       - '.github/workflows/k8s-e2e.yml'
       - 'go.mod'
       - 'go.sum'
@@ -66,3 +75,22 @@ jobs:
           kind version
       - name: Run k8s agent-box e2e
         run: bash scripts/k8s-e2e.sh
+
+  snapshot-e2e:
+    name: CSI snapshot create and restore
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.10'
+          cache-name: shared
+      - name: Install kind
+        run: |
+          curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  ./kind" | sha256sum -c -
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Test CSI snapshots in a disposable cluster
+        run: bash scripts/k8s-snapshot-e2e.sh
