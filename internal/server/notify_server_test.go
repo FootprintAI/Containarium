@@ -23,8 +23,9 @@ import (
 // fakeNotifySecrets is an in-memory secrets store with the real store's
 // broker-only rules: Get hides a broker value, BrokerCredential reads only one.
 type fakeNotifySecrets struct {
-	mu   sync.Mutex
-	rows map[string]struct{ value, delivery string }
+	mu      sync.Mutex
+	rows    map[string]struct{ value, delivery string }
+	failSet bool
 }
 
 func newFakeNotifySecrets() *fakeNotifySecrets {
@@ -47,6 +48,9 @@ func (f *fakeNotifySecrets) Get(_ context.Context, u, n string) (*secrets.Secret
 func (f *fakeNotifySecrets) Set(_ context.Context, u, n, v, d string) (*secrets.SecretMetadata, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failSet {
+		return nil, errors.New("secrets store down")
+	}
 	f.rows[u+"/"+n] = struct{ value, delivery string }{v, d}
 	return &secrets.SecretMetadata{}, nil
 }
@@ -541,5 +545,29 @@ func TestNotifyWatcher_OldOpenRequestBehindLargeJournal(t *testing.T) {
 	s.wg.Wait()
 	if got := snd.all(); len(got) != 1 || !strings.Contains(got[0].msg.Body, "make release") {
 		t.Fatalf("pushes = %+v, want the old open request", got)
+	}
+}
+
+// TestSetNotifyChannel_TokenWriteFailurePreservesOldChannel: when the new
+// token cannot be stored, the RPC fails and the previous channel and token
+// stay in effect.
+func TestSetNotifyChannel_TokenWriteFailurePreservesOldChannel(t *testing.T) {
+	s, sec, _, _, _ := newTestNotifyServer(t)
+	ctx := notifyCtx("alice")
+	ntfy := pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://a.example.com", Topic: "t", Token: "tokA"}); err != nil {
+		t.Fatal(err)
+	}
+	sec.failSet = true
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://b.example.com", Topic: "t2", Token: "tokB"}); err == nil {
+		t.Fatal("Set with a failing secrets store succeeded")
+	}
+	sec.failSet = false
+	ch, token, err := s.channelAndToken(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Server != "https://a.example.com" || ch.Topic != "t" || !ch.HasToken || token != "tokA" {
+		t.Fatalf("after a failed update: channel %+v token %q, want A with tokA", ch, token)
 	}
 }

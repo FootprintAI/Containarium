@@ -183,6 +183,7 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	if err != nil && !errors.Is(err, notify.ErrNotFound) {
 		return nil, status.Errorf(codes.Internal, "read channel: %v", err)
 	}
+	prevFound := err == nil
 	hasToken := req.GetToken() != "" || (prev.HasToken && !req.GetClearToken())
 	ch := notify.Channel{
 		Username:      username,
@@ -194,7 +195,7 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	if err := notify.ValidateChannel(ch, hasToken); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	stored, err := s.setChannel(ctx, ch, req.GetToken(), req.GetClearToken())
+	stored, err := s.setChannel(ctx, ch, prev, prevFound, req.GetToken(), req.GetClearToken())
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +204,12 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 }
 
 // setChannel stores ch and, when given, its new token, under cfgMu. A new or
-// cleared token is written while the stored channel says it has none, so a
-// write that fails part way never leaves a token paired with a server it was
-// not given for: at worst the channel is left without a token.
-func (s *NotifyServer) setChannel(ctx context.Context, ch notify.Channel, token string, clearToken bool) (notify.Channel, error) {
+// cleared token is written while the stored channel says it has none, so the
+// watcher never pairs a token with a server it was not given for. If the
+// token cannot be written, the previous channel (prev, when found) is put
+// back, leaving the old channel and token in effect; if the last channel
+// write fails, the channel stays without a token.
+func (s *NotifyServer) setChannel(ctx context.Context, ch, prev notify.Channel, prevFound bool, token string, clearToken bool) (notify.Channel, error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	if token != "" || clearToken {
@@ -215,11 +218,14 @@ func (s *NotifyServer) setChannel(ctx context.Context, ch notify.Channel, token 
 		if _, err := s.store.Set(ctx, tokenless); err != nil {
 			return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
 		}
+		var err error
 		if clearToken {
-			if err := s.deleteNotifyToken(ctx, ch.Username); err != nil {
-				return notify.Channel{}, err
-			}
-		} else if err := s.storeNotifyToken(ctx, ch.Username, token); err != nil {
+			err = s.deleteNotifyToken(ctx, ch.Username)
+		} else {
+			err = s.storeNotifyToken(ctx, ch.Username, token)
+		}
+		if err != nil {
+			s.restoreChannel(ctx, ch.Username, prev, prevFound)
 			return notify.Channel{}, err
 		}
 	}
@@ -228,6 +234,21 @@ func (s *NotifyServer) setChannel(ctx context.Context, ch notify.Channel, token 
 		return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
 	return stored, nil
+}
+
+// restoreChannel puts back the channel a failed setChannel replaced. The
+// token was not changed (its write failed), so prev and the stored token
+// still belong together. Called with cfgMu held.
+func (s *NotifyServer) restoreChannel(ctx context.Context, username string, prev notify.Channel, prevFound bool) {
+	var err error
+	if prevFound {
+		_, err = s.store.Set(ctx, prev)
+	} else {
+		err = s.store.Delete(ctx, username)
+	}
+	if err != nil && !errors.Is(err, notify.ErrNotFound) {
+		log.Printf("[notify] restore channel of %s after a failed token write: %v (left without a token)", username, err)
+	}
 }
 
 // GetNotifyChannel returns the user's channel, without its token.
@@ -511,7 +532,9 @@ func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user st
 		if err := s.deliver(ctx, user, p); err != nil {
 			log.Printf("[notify] push for %s/%s: %v", user, p.Run, err)
 			s.coalescer.Requeue(p)
+			continue
 		}
+		s.coalescer.Sent(p, s.now())
 	}
 }
 

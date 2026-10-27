@@ -326,3 +326,22 @@ func TestValidateChannel(t *testing.T) {
 		}
 	}
 }
+
+// TestCoalescer_WindowCountsFromSend: the 30 s window starts when a push is
+// actually sent, not when it was selected.
+func TestCoalescer_WindowCountsFromSend(t *testing.T) {
+	c := NewCoalescer(30 * time.Second)
+	open := []Request{req("r1", "Bash", "Bash: x")}
+	p := c.Step("alice", map[string][]Request{"r": open}, t0)
+	if len(p) != 1 {
+		t.Fatalf("pushes = %d", len(p))
+	}
+	c.Sent(p[0], t0.Add(20*time.Second)) // sending took 20 s
+	open = append(open, req("r2", "Bash", "Bash: y"))
+	if p := c.Step("alice", map[string][]Request{"r": open}, t0.Add(30*time.Second)); len(p) != 0 {
+		t.Fatalf("second push 10 s after the first was sent: %+v", p)
+	}
+	if p := c.Step("alice", map[string][]Request{"r": open}, t0.Add(50*time.Second)); len(p) != 1 {
+		t.Fatalf("no push once 30 s passed since the send: %+v", p)
+	}
+}

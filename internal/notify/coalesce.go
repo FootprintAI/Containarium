@@ -97,6 +97,17 @@ func (c *Coalescer) Step(user string, open map[string][]Request, now time.Time) 
 	return out
 }
 
+// Sent records when p was actually delivered: the run's window starts then,
+// not when Step selected it, so time spent sending other pushes first does
+// not shorten it.
+func (c *Coalescer) Sent(p Push, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.state[runKey{p.User, p.Run}]; st != nil && at.After(st.lastPush) {
+		st.lastPush = at
+	}
+}
+
 // Requeue puts the requests of a push that could not be delivered back in
 // front of the run's queue, so the next Step retries them.
 func (c *Coalescer) Requeue(p Push) {

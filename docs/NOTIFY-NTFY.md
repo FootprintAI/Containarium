@@ -75,9 +75,14 @@ Every 5 seconds the daemon reads the input journal of every running run on
 the box of each user with a channel, read-only, through the same guarded root
 read `code runs` uses. Users without a channel cost nothing.
 
-- **Timing.** The first request of a run is pushed on the poll that finds it,
-  normally within 5 seconds (one poll interval plus the read of the box).
-- **Bursts.** Further requests within 30 seconds of a run's last push wait,
+- **Timing.** The first request of a run is pushed on the poll that finds it:
+  within one poll interval (5 seconds) plus the read of the box and the time
+  the ntfy server takes to accept the push. With a server that answers
+  promptly that is well under 10 seconds; a slow or unreachable server can
+  delay it (each attempt gives up after 10 seconds and is retried on the
+  next poll).
+- **Bursts.** Further requests within 30 seconds of a run's last delivered
+  push wait,
   then go out as one push with a count. No request is dropped. A request that
   is answered or expires before its push is due is not sent.
 - **Delivery is at least once.** After a daemon restart, requests still open
