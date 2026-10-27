@@ -20,7 +20,7 @@ import (
 
 // Done-when 4 of #2517: every key write path records the key in the
 // ssh_keys registry, and RemoveSSHKey revokes it. The registry's own
-// semantics (first registration wins, revoke for every account) are tested
+// semantics (first registration wins, revoke only the owner's row) are tested
 // against Postgres in internal/sshauthz; here a recording fake proves each
 // path hands it the right row.
 
@@ -202,6 +202,34 @@ func TestRemoveSSHKey_RegistryFailureIsAnError(t *testing.T) {
 	_, err := s.RemoveSSHKey(tenantWithScopes("alice", auth.ScopeSSHWrite), &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: newTestPubKey(t)})
 	if err == nil {
 		t.Fatal("RemoveSSHKey must fail when the revocation cannot be recorded")
+	}
+}
+
+// Revoke before the file changes (#3187, as SetSSHKeys does): a registry
+// failure leaves the key in authorized_keys, so the caller's retry sees it
+// and repeats the revocation. Removing first would drop the key from the file
+// with its registry entry still active.
+func TestRemoveSSHKey_RegistryFailureLeavesFileAndRetryRevokes(t *testing.T) {
+	reg, fs := &recordingRegistry{err: errors.New("db down")}, newFakeAuthorizedKeys()
+	s := testServerWithRegistry(reg, fs)
+	pub := newTestPubKey(t)
+	fs.files["alice"] = []string{pub}
+	ctx := tenantWithScopes("alice", auth.ScopeSSHWrite)
+	req := &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: pub}
+
+	if _, err := s.RemoveSSHKey(ctx, req); err == nil {
+		t.Fatal("RemoveSSHKey must fail when the revocation cannot be recorded")
+	}
+	if len(fs.files["alice"]) != 1 || fs.files["alice"][0] != pub {
+		t.Fatalf("file changed although the revocation failed: %q", fs.files["alice"])
+	}
+
+	reg.err = nil
+	if _, err := s.RemoveSSHKey(ctx, req); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(fs.files["alice"]) != 0 || len(reg.revoked) != 1 || reg.revoked[0].rec.PublicKey != pub {
+		t.Fatalf("retry: file=%q revoked=%+v, want key gone and revoked once", fs.files["alice"], reg.revoked)
 	}
 }
 

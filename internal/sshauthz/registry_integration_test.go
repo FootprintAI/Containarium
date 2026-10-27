@@ -97,8 +97,31 @@ func TestPGKeyStore_FirstRegistrationWins(t *testing.T) {
 	}
 }
 
-// Decision (#2517): RemoveSSHKey revokes the key for every account, and a
-// re-add is a fresh registration (new owner, new created_at, active).
+// Decision (#3187, replacing #2517's "every account"): a revocation applies
+// only to the row the revoking account owns. Another account holding the
+// same public key cannot revoke the owner's entry.
+func TestPGKeyStore_RevokeByNonOwnerLeavesRowActive(t *testing.T) {
+	s := pgKeys(t)
+	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	for _, other := range []string{"carol", "bob-container-carol"} {
+		if err := s.Revoke(ctx, mustRecord(t, pub, other, SourceAPI, revokeAt), revokeAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := lookup(t, s, rec.Fingerprint)
+	if !got.RevokedAt.IsZero() || got.Username != "bob" || !got.CreatedAt.Equal(caseNow) {
+		t.Fatalf("a non-owner revoked or rewrote bob's row: %+v", got)
+	}
+}
+
+// The owner's revocation revokes the row, and a re-add is a fresh
+// registration (new owner, new created_at, active).
 func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
 	s := pgKeys(t)
 	ctx := context.Background()
@@ -108,12 +131,12 @@ func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 	revokeAt := caseNow.Add(time.Hour)
-	if err := s.Revoke(ctx, mustRecord(t, pub, "carol", SourceAPI, revokeAt), revokeAt); err != nil {
+	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
 		t.Fatal(err)
 	}
 	got := lookup(t, s, rec.Fingerprint)
 	if !got.RevokedAt.Equal(revokeAt) || got.Username != "bob" {
-		t.Fatalf("revoke by another account must revoke the shared row and keep its owner: %+v", got)
+		t.Fatalf("the owner's revoke must revoke its row and keep its owner: %+v", got)
 	}
 	// A second revoke keeps the original revocation time.
 	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt.Add(time.Hour)), revokeAt.Add(time.Hour)); err != nil {

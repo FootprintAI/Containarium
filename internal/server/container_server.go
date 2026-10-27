@@ -2825,8 +2825,8 @@ var setSSHKeysRegistryTimeout = 10 * time.Second
 // with no change. Platform-managed lines (the sentinel's upstream key) are
 // preserved by the file layer and never revoked, so a caller cannot lock the
 // platform out. Keys dropped by the call are revoked in the ssh_keys
-// registry exactly as RemoveSSHKey does (for every account holding them);
-// kept keys are registered like AddSSHKey does. An empty list is accepted
+// registry exactly as RemoveSSHKey does (only the entries this account owns,
+// #3187); kept keys are registered like AddSSHKey does. An empty list is accepted
 // only with allow_empty, so an omitted field cannot wipe a box.
 func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
@@ -2929,13 +2929,14 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		return nil, err
 	}
 
-	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
-		return nil, fmt.Errorf("remove authorized key: %w", err)
-	}
-	// A removed key is revoked for every account that holds it (#2517
-	// decision: fails closed). A failure is reported so the caller retries.
+	// Revoke before the file changes, as SetSSHKeys does: a registry failure
+	// leaves the key in place and is reported, so the caller's retry repeats
+	// the revocation. Only the entry this account owns is revoked (#3187).
 	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
 		return nil, registryError("remove ssh key", err)
+	}
+	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
+		return nil, fmt.Errorf("remove authorized key: %w", err)
 	}
 
 	total, err := s.authorizedKeys.countKeys(req.Username)
