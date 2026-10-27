@@ -44,6 +44,7 @@ const (
 	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
@@ -258,6 +259,8 @@ type ContainerServiceClient interface {
 	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -683,6 +686,16 @@ func (c *containerServiceClient) AddSSHKey(ctx context.Context, in *AddSSHKeyReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddSSHKeyResponse)
 	err := c.cc.Invoke(ctx, ContainerService_AddSSHKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetSSHKeysResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetSSHKeys_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1297,6 +1310,8 @@ type ContainerServiceServer interface {
 	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -1552,6 +1567,9 @@ func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Conte
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
+}
+func (UnimplementedContainerServiceServer) SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSSHKeys not implemented")
 }
 func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSSHKey not implemented")
@@ -2152,6 +2170,24 @@ func _ContainerService_AddSSHKey_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).AddSSHKey(ctx, req.(*AddSSHKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetSSHKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSSHKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetSSHKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, req.(*SetSSHKeysRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3054,6 +3090,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddSSHKey",
 			Handler:    _ContainerService_AddSSHKey_Handler,
+		},
+		{
+			MethodName: "SetSSHKeys",
+			Handler:    _ContainerService_SetSSHKeys_Handler,
 		},
 		{
 			MethodName: "RemoveSSHKey",
