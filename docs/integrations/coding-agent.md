@@ -49,7 +49,12 @@ selects sets, `--skill-sets none` installs none and removes what the installer
 owned, and `--no-sdlc-skills` is a deprecated alias for `--skill-sets none`).
 Which namespaces a set covers is defined next to the pin, in the `set.<id>=`
 lines of `pkg/core/sdlcskills/sdlc-skills.lock`, so a caller sends set ids and
-never has to track upstream namespaces.
+never has to track upstream namespaces. That lock has one `[source]` section
+per pinned repository (`repo`, full commit `ref`, and deterministic bundle
+`sha256`). `scripts/build-sdlc-skills-bundle.sh [source] <out-dir>` writes
+`<source>-skills.tar.gz`; omitting `source` keeps the existing `sdlc` default.
+The builder inspects every source on each run and refuses duplicate namespaces,
+so installing two source bundles can never make the last copy silently win.
 A team's own skill overrides layer on top: set `SDLC_SKILLS_OVERLAY_DIR` for
 `scripts/install-sdlc-skills.sh` and its directories win over the public set.
 Skills the installer wrote are listed in `~/.claude/skills/.sdlc-skills-manifest`,

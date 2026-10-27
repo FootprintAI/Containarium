@@ -43,6 +43,55 @@ The execution policy also rejects direct assignments to `task-planner` and
 crews containing that skill. The planner endpoint applies the same policy,
 so excluding the planner from a prompt's candidates is not the only check.
 
+## Local host resource requirements
+
+Manually authored graph nodes may declare minimum measured host capabilities:
+
+```yaml
+goal: inspect a repository
+nodes:
+  - id: inspect
+    goal: inspect entry points
+    skill_id: code-review
+    resources:
+      min_cpu_cores: 4
+      min_memory_bytes: 8589934592
+      requires_gpu: false
+```
+
+Run this plan with the existing `crew run <crew-id> --plan <file>` command
+over either gRPC or HTTP. Use a daemon that supports `TaskNode.resources`;
+older daemons may ignore new protobuf fields and cannot enforce these
+requirements. No backend capability inventory is supplied to the planner;
+author these requirements manually.
+
+The shared graph validator rejects negative CPU or memory minima. Structural
+validation (`crew plan validate`) does not probe host capabilities. Execution
+checks every constrained node against the daemon's last recorded capability
+profile before recording a graph run or provisioning any boxes. A missing
+profile, unhealthy local backend, insufficient CPU/RAM, or an unvalidated
+required GPU returns
+`FailedPrecondition` with the node id and reason. An operator can profile the backend with
+`containarium backends profile --format json --server <daemon-http-url>`;
+CPU-only hosts may add `--skip-gpu`.
+
+This version validates only the local host. An explicit backend must name this
+daemon, and a requested pool must contain it. Constrained nodes are pinned to
+the local backend, with pool fallback disabled. Their profile is checked again
+when dependencies finish, immediately before dispatch. If that check fails,
+the node fails with the reason recorded, its dependents are blocked, and
+independent branches can finish. Unconstrained nodes in the same graph retain
+their original placement settings. Absent or all-zero `resources` preserve
+legacy behavior and require no profile.
+
+These are host eligibility checks against measured CPU cores, total RAM and
+GPU passthrough availability; they do not use the self-reported hardware
+class. The last recorded profile is a snapshot, not a fresh measurement or a
+reservation. Refresh it after hardware changes. Requirements do not change
+per-box CPU/RAM limits, configure GPU passthrough in a recipe, or reserve a
+GPU. For a crew node they apply to the host of the whole crew. Existing
+recipe configuration and provisioning/admission checks still apply.
+
 ## Dev verification
 
 On one deployed commit, plan a goal that yields three independent nodes and

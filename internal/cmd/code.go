@@ -264,6 +264,10 @@ func init() {
 		"resume this specific session id instead of starting a fresh one (`claude --resume <id>`, `pi --session <id>`) — mutually exclusive with --continue; also becomes this run's --name unless --name is given explicitly")
 	codeRunCmd.Flags().StringVar(&codeRunTokenTTL, "token-ttl", "",
 		"lifetime of the gateway token minted for this run (e.g. 2h); capped server-side. Default 24h")
+	codeRunCmd.Flags().StringVar(&codeRunApprovals, "approvals", string(coderun.ApprovalsDeny),
+		"what a tool call that needs a permission does: deny (refused, today's behaviour) or ask (the run pauses until the request is answered or expires into a deny; Claude Code only)")
+	codeRunCmd.Flags().DurationVar(&codeRunApprovalTimeout, "approval-timeout", coderun.DefaultApprovalTimeout,
+		"with --approvals ask, how long a permission request waits before it expires into a deny")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
 		"capture stdout/stderr separately (framed capture_mode) so a JSON stream on stdout isn't corrupted by diagnostics; without this, both are interleaved as plain text")
 	codeAttachCmd.Flags().BoolVar(&codeAttachStreamJSON, "output-format-stream-json", false,
