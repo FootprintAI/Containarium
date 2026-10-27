@@ -16182,6 +16182,24 @@
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
+    "HostSecurityPosture": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        },
+        "measuredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Host clock at the start of the posture measurement, not the send time."
+        }
+      },
+      "description": "HostSecurityPosture is one measured snapshot of the host's hardening checks.\nChecks use their unprefixed probe names; false includes a check that could not\nbe measured, with the reason in detail. An empty snapshot is not proof of a\npassing posture. Receivers must evaluate required checks and freshness."
+    },
     "IngestOutcome": {
       "type": "string",
       "enum": [
@@ -19035,6 +19053,10 @@
         "driverToken": {
           "type": "string",
           "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
+        },
+        "posture": {
+          "$ref": "#/definitions/HostSecurityPosture",
+          "description": "Absent means no posture measurement was reported, never \"passing\". Status\nprobes populate this on every report while retaining the posture-prefixed\nentries in checks for older receivers. Token-only refresh requests omit it\nand must not clear a receiver's previously stored posture."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
