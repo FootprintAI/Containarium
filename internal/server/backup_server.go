@@ -113,9 +113,16 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
 	}
 
+	mgr := backup.NewManager(containers.manager, uploader, dir, opts...)
+	// A daemon killed mid whole-box backup leaves its spill file behind.
+	if n, err := mgr.SweepStaleBoxSpills(); err != nil {
+		log.Printf("[backup] sweeping stale whole-box spill files: %v", err)
+	} else if n > 0 {
+		log.Printf("[backup] removed %d stale whole-box spill file(s) at start", n)
+	}
 	return &BackupServer{
 		containers: containers,
-		mgr:        backup.NewManager(containers.manager, uploader, dir, opts...),
+		mgr:        mgr,
 	}, nil
 }
 
