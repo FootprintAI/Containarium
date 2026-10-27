@@ -334,6 +334,29 @@ func TestInlineAnswersBindThePrintedPromptWhenTheJournalChanges(t *testing.T) {
 	}
 }
 
+// With two requests open, the hint printed under the second names the first,
+// which is the one a / d answers (#3188 review: the hint used to read as if it
+// answered the request just printed).
+func TestInlineAnswersHintNamesTheRequestADAnswers(t *testing.T) {
+	now := time.Now()
+	api := &fakeRunInputs{list: &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0000000000000001", "Bash: first")}},
+		answer: answeredAllow}
+	diag := &syncBuffer{}
+	w := &inlineAnswers{api: api, box: "alice", run: "code", diag: diag, shown: map[string]*pb.RunInput{}}
+	w.refresh()
+	api.mu.Lock()
+	api.list = &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{
+		openRequest(now, "req-0000000000000001", "Bash: first"), openRequest(now, "req-0000000000000002", "Bash: second")}}
+	api.mu.Unlock()
+	w.refresh()
+
+	out := diag.String()
+	second := out[strings.Index(out, "request req-0000000000000002:"):]
+	if !strings.Contains(second, "a + Enter allows, d + Enter denies req-0000000000000001") {
+		t.Fatalf("the hint under the second request does not name the first:\n%s", out)
+	}
+}
+
 func TestInlineAnswersWithoutADaemonPrintsOneNote(t *testing.T) {
 	var diag bytes.Buffer
 	stop := startInlineAnswers(context.Background(), func() (runInputsAPI, error) { return nil, errors.New("--server is required") }, "alice", "code", strings.NewReader(""), &diag)
