@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -33,16 +32,15 @@ type approvalSession interface {
 // previous same-name run's approval files are rotated aside by process_start
 // itself, with that run's log, and only once the new run actually starts.
 //
-// Each run gets a fresh Ed25519 key pair. Only the public key goes to the box
-// (on the approval server's command line); the box holds no secret. The private
-// key is not kept: who holds it to sign answers (this CLI, the daemon for a
-// phone answer) is decided with the answer command, not here. Until then
-// requests can be seen in `code status` but expire into a deny.
+// pub is the box's approval public key from the daemon (GetRunApprovalKey,
+// #2184). Only the public key goes to the box (on the approval server's
+// command line); the daemon holds the private key and signs answers to this
+// run's requests (`code answer`, `code attach`), so the box holds no secret.
 //
 // For an engine with no permission hook the command is returned unchanged with
 // a non-empty note, which the caller journals once the run has started.
 func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engine, name, command string,
-	timeout time.Duration, diag io.Writer) (wired, note string, err error) {
+	pub ed25519.PublicKey, timeout time.Duration, diag io.Writer) (wired, note string, err error) {
 
 	// The approval files are named after the run.
 	if err := coderun.ValidApprovalRunName(name); err != nil {
@@ -55,18 +53,28 @@ func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engi
 	}
 
 	if out, err := sess.ShellExec(ctx, engine.ApprovalProbeCommand()); err != nil || !strings.Contains(out, engine.ApprovalProbeOK) {
-		return "", "", errors.New("--approvals ask needs a newer agent-box on the box (it has no approval-mcp mode); update agent-box and retry, or run without --approvals ask")
-	}
-
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", "", fmt.Errorf("generate this run's approval key: %w", err)
+		return "", "", errors.New("--approvals ask needs a newer agent-box on the box (its approval-mcp mode is missing or older than this CLI); update agent-box and retry, or run without --approvals ask")
 	}
 
 	wired, _ = engine.WithApprovals(eng, command, name, pub, timeout)
-	fmt.Fprintf(diag, "• --approvals ask: a permission prompt pauses the run for up to %s; see it with 'containarium code status %s'. No answer command ships yet, so an unanswered prompt expires into a deny.\n",
+	fmt.Fprintf(diag, "• --approvals ask: a permission prompt pauses the run for up to %s; answer it here (a / d + Enter), or with 'containarium code pending %s' and 'containarium code answer'.\n",
 		timeout, codeRunBoxHint(name))
 	return wired, "", nil
+}
+
+// fetchApprovalKey gets the box's approval public key from the daemon, before
+// anything touches the box.
+func fetchApprovalKey(newClient func() (runInputsAPI, error), box string) (ed25519.PublicKey, error) {
+	c, err := newClient()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = c.Close() }()
+	resp, err := c.GetRunApprovalKey(box)
+	if err != nil {
+		return nil, fmt.Errorf("get the box's approval key from the daemon (it needs a daemon with permission-request answers): %w", err)
+	}
+	return coderun.ParseApprovalPublicKey(resp.GetPublicKey())
 }
 
 // journalApprovalNote writes note as the run's approval journal. Called right

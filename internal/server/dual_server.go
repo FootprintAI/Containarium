@@ -485,6 +485,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// default and resume-on-restart silently never fired (caught live
 	// on a GCP backend while validating #1070).
 	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
+	// Box approval keys (#2184) are derived from the JWT secret, so answers
+	// signed for a box's permission requests need no new stored secret.
+	containerServer.SetApprovalKeySecret([]byte(config.JWTSecret))
 
 	// Per-tenant encrypted storage (#1341). Wired here so the create path can
 	// place an encrypted container on its tenant's pool; INERT until a

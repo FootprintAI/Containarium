@@ -150,6 +150,14 @@ type ContainerServer struct {
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
 
+	// approvalSecret is what box approval keys are derived from (#2184,
+	// box_run_inputs.go): the daemon's JWT secret, set by DualServer. Nil
+	// leaves the approval RPCs Unavailable. runInputConfirmWait is a test
+	// seam for how long AnswerRunInput waits for the box's response; zero
+	// means the default.
+	approvalSecret      []byte
+	runInputConfirmWait time.Duration
+
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
 	// owner's identity. Tests set it; production reads the Incus config.

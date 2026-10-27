@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,9 +29,15 @@ import (
 //	<name>.input.jsonl   append-only journal of InputEvent lines
 //	<name>.answers/<id>  one answer per request: "<allow|deny> <hex signature>\n"
 //
-// An answer counts only with an Ed25519 signature under the run's public key,
-// which `code run` passes to the approval server on its command line. The
-// private key never reaches the box.
+// An answer counts only with an Ed25519 signature under the box's approval
+// public key, which `code run` gets from the daemon and passes to the approval
+// server on its command line. The private key never leaves the daemon
+// (AnswerRunInput signs, #2184), so it never reaches the box.
+//
+// The signature also covers the SHA-256 of the prompt the answering human was
+// shown. The journal is writable by the agent, so a shown prompt can be a
+// forgery; the approval server verifies against the prompt it holds in
+// memory, so an answer made for anything but the real request never counts.
 
 // ApprovalMode is `code run --approvals`.
 type ApprovalMode string
@@ -169,27 +176,41 @@ func ParseInputJournal(data []byte) []InputEvent {
 }
 
 // approvalSignContext versions the signed message, so a signature made for
-// anything else never verifies as an answer.
-const approvalSignContext = "containarium-approval-v1"
+// anything else never verifies as an answer. v2 (#2184) added the prompt
+// digest; nothing ever signed v1 answers but tests.
+const approvalSignContext = "containarium-approval-v2"
 
-func answerMessage(run, requestID string, a Answer) []byte {
-	return []byte(approvalSignContext + "\n" + run + "\n" + requestID + "\n" + string(a))
+// PromptDigest is the digest an answer binds: SHA-256 of the raw prompt
+// string as the request line carries it (not its escaped, printed form).
+func PromptDigest(prompt string) []byte {
+	d := sha256.Sum256([]byte(prompt))
+	return d[:]
 }
 
-// SignAnswer signs an answer to (run, requestID). Binding the run name and
-// request id means an answer cannot be replayed onto another request, and
-// binding the answer means "allow" cannot be made from a "deny".
-func SignAnswer(priv ed25519.PrivateKey, run, requestID string, a Answer) string {
-	return hex.EncodeToString(ed25519.Sign(priv, answerMessage(run, requestID, a)))
+func answerMessage(run, requestID string, promptDigest []byte, a Answer) []byte {
+	return []byte(approvalSignContext + "\n" + run + "\n" + requestID + "\n" + hex.EncodeToString(promptDigest) + "\n" + string(a))
+}
+
+// SignAnswer signs an answer to (run, requestID) for the prompt whose digest
+// is promptDigest. Binding the run name and request id means an answer cannot
+// be replayed onto another request; binding the prompt means it cannot be
+// spent on a request whose shown prompt was forged; binding the answer means
+// "allow" cannot be made from a "deny".
+func SignAnswer(priv ed25519.PrivateKey, run, requestID string, promptDigest []byte, a Answer) string {
+	return hex.EncodeToString(ed25519.Sign(priv, answerMessage(run, requestID, promptDigest, a)))
 }
 
 // FormatAnswer renders an answer file's content.
-func FormatAnswer(priv ed25519.PrivateKey, run, requestID string, a Answer) string {
-	return string(a) + " " + SignAnswer(priv, run, requestID, a) + "\n"
+func FormatAnswer(priv ed25519.PrivateKey, run, requestID string, promptDigest []byte, a Answer) string {
+	return string(a) + " " + SignAnswer(priv, run, requestID, promptDigest, a) + "\n"
 }
 
-// VerifyAnswer parses an answer file's content and checks its signature.
-func VerifyAnswer(pub ed25519.PublicKey, run, requestID, content string) (Answer, error) {
+// VerifyAnswer parses an answer file's content and checks its signature for
+// the prompt whose digest is promptDigest.
+func VerifyAnswer(pub ed25519.PublicKey, run, requestID string, promptDigest []byte, content string) (Answer, error) {
+	if len(promptDigest) != sha256.Size {
+		return "", fmt.Errorf("no prompt digest to check the answer against")
+	}
 	fields := strings.Fields(content)
 	if len(fields) != 2 {
 		return "", fmt.Errorf("answer is not \"<allow|deny> <signature>\"")
@@ -199,14 +220,14 @@ func VerifyAnswer(pub ed25519.PublicKey, run, requestID, content string) (Answer
 		return "", fmt.Errorf("answer %q is neither %q nor %q", fields[0], AnswerAllow, AnswerDeny)
 	}
 	sig, err := hex.DecodeString(fields[1])
-	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, answerMessage(run, requestID, a), sig) {
+	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, answerMessage(run, requestID, promptDigest, a), sig) {
 		return "", fmt.Errorf("answer signature does not verify")
 	}
 	return a, nil
 }
 
-// ParseApprovalPublicKey decodes the hex public key the approval server is
-// started with.
+// ParseApprovalPublicKey decodes a hex approval public key: the one the
+// approval server is started with, and the one GetRunApprovalKey returns.
 func ParseApprovalPublicKey(h string) (ed25519.PublicKey, error) {
 	b, err := hex.DecodeString(strings.TrimSpace(h))
 	if err != nil || len(b) != ed25519.PublicKeySize {
@@ -266,12 +287,12 @@ func SummarizeApprovals(events []InputEvent) ApprovalSummary {
 	return s
 }
 
-// plainText makes journal text safe to print on one terminal line. The prompt
+// PlainText makes journal text safe to print on one terminal line. The prompt
 // is the agent's own tool input, and the agent can write the journal itself,
 // so a newline, carriage return, escape sequence or bidi override in it could
 // otherwise forge or hide the lines a human reads before answering. Each
 // control or format character is shown as its escaped form instead.
-func plainText(s string) string {
+func PlainText(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
@@ -297,13 +318,13 @@ func ApprovalStatusLines(s ApprovalSummary, running bool, now time.Time) string 
 		b.WriteString("state: waiting_input\n")
 		for _, e := range s.Open {
 			fmt.Fprintf(&b, "  request %s: %s (expires in %s)\n",
-				plainText(e.RequestID), plainText(e.Prompt), e.ExpiresAt.Sub(now).Round(time.Second))
+				PlainText(e.RequestID), PlainText(e.Prompt), e.ExpiresAt.Sub(now).Round(time.Second))
 		}
 	}
 	fmt.Fprintf(&b, "permission requests: %d (allowed %d, denied %d, expired %d, cancelled %d, open %d)\n",
 		s.Requests, s.Allowed, s.Denied, s.Expired, s.Cancelled, len(s.Open))
 	for _, n := range s.Notes {
-		fmt.Fprintf(&b, "  note: %s\n", plainText(n))
+		fmt.Fprintf(&b, "  note: %s\n", PlainText(n))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -3,6 +3,9 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"testing"
@@ -35,13 +38,14 @@ func (f *fakeApprovalSession) WriteFile(_ context.Context, path, content, mode s
 	return nil
 }
 
-func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
+func TestPrepareApprovalsClaudeWiresCommandWithTheDaemonPublicKey(t *testing.T) {
 	sess := &fakeApprovalSession{probe: engine.ApprovalProbeOK + "\n"}
 	eng := mustEngine(t, engine.NameClaude, engine.SecretCredential{})
 	base := eng.RunCommand("p", false, false, "")
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	var diag bytes.Buffer
 
-	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, 30*time.Minute, &diag)
+	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, pub, 30*time.Minute, &diag)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +53,8 @@ func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
 		t.Errorf("a Claude run got a hookless note %q", note)
 	}
 	m := regexp.MustCompile(`--public-key ([0-9a-f]+) `).FindStringSubmatch(got)
-	if m == nil {
-		t.Fatalf("no --public-key in the command:\n%s", got)
-	}
-	pub, err := coderun.ParseApprovalPublicKey(m[1])
-	if err != nil {
-		t.Fatal(err)
+	if m == nil || m[1] != hex.EncodeToString(pub) {
+		t.Fatalf("command does not carry the daemon's public key:\n%s", got)
 	}
 	if want, _ := engine.WithApprovals(eng, base, "code", pub, 30*time.Minute); got != want {
 		t.Errorf("command = %q, want engine.WithApprovals' %q", got, want)
@@ -64,13 +64,20 @@ func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
 	if len(sess.writes) != 0 || len(sess.execs) != 1 || !strings.Contains(sess.execs[0], "--probe") {
 		t.Errorf("setup touched the box: execs=%v writes=%v", sess.execs, sess.writes)
 	}
-	// A second run gets a different key.
-	again, _, _ := prepareApprovals(context.Background(), &fakeApprovalSession{probe: engine.ApprovalProbeOK}, eng, "code", base, 30*time.Minute, &bytes.Buffer{})
-	if again == got {
-		t.Error("two runs got the same public key")
+	if !strings.Contains(diag.String(), "code answer") {
+		t.Errorf("diag does not say how to answer: %q", diag.String())
 	}
-	if !strings.Contains(diag.String(), "expires into a deny") {
-		t.Errorf("diag does not say unanswered prompts expire into a deny: %q", diag.String())
+}
+
+// An agent-box from #2183 verifies the older answer format, which binds no
+// prompt: its probe line is refused.
+func TestPrepareApprovalsRefusesAnAgentBoxWithTheOlderAnswerFormat(t *testing.T) {
+	sess := &fakeApprovalSession{probe: "approval-mcp ok\n"}
+	eng := mustEngine(t, engine.NameClaude, engine.SecretCredential{})
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	_, _, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", pub, time.Minute, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "newer agent-box") {
+		t.Fatalf("err = %v, want the newer-agent-box error", err)
 	}
 }
 
@@ -80,7 +87,7 @@ func TestPrepareApprovalsRefusesUnsafeRunNamesFirst(t *testing.T) {
 	for _, n := range []engine.Name{engine.NameClaude, engine.NamePi} {
 		for _, name := range []string{"sub/task", "../victim", ".."} {
 			sess := &fakeApprovalSession{probe: engine.ApprovalProbeOK}
-			_, _, err := prepareApprovals(context.Background(), sess, mustEngine(t, n, engine.SecretCredential{}), name, "cmd", time.Minute, &bytes.Buffer{})
+			_, _, err := prepareApprovals(context.Background(), sess, mustEngine(t, n, engine.SecretCredential{}), name, "cmd", nil, time.Minute, &bytes.Buffer{})
 			if err == nil {
 				t.Errorf("%s/%q: accepted", n, name)
 			}
@@ -94,7 +101,7 @@ func TestPrepareApprovalsRefusesUnsafeRunNamesFirst(t *testing.T) {
 func TestPrepareApprovalsRefusesAnAgentBoxWithoutTheMode(t *testing.T) {
 	sess := &fakeApprovalSession{probe: ""}
 	eng := mustEngine(t, engine.NameClaude, engine.SecretCredential{})
-	_, _, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", time.Minute, &bytes.Buffer{})
+	_, _, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", nil, time.Minute, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "newer agent-box") {
 		t.Fatalf("err = %v, want the newer-agent-box error", err)
 	}
@@ -108,7 +115,7 @@ func TestPrepareApprovalsHooklessEngineWarnsAndJournals(t *testing.T) {
 	base := eng.RunCommand("p", false, false, "")
 	var diag bytes.Buffer
 
-	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, time.Minute, &diag)
+	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, nil, time.Minute, &diag)
 	if err != nil {
 		t.Fatal(err)
 	}

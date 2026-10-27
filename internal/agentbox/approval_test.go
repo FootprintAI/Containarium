@@ -51,7 +51,7 @@ func readJournal(t *testing.T, s *approvalServer) []coderun.InputEvent {
 
 // answerWhenAsked waits for the first input_request and drops content as its
 // answer, the way an answerer on the box would.
-func answerWhenAsked(t *testing.T, s *approvalServer, content func(id string) string) {
+func answerWhenAsked(t *testing.T, s *approvalServer, content func(id string, prompt []byte) string) {
 	t.Helper()
 	go func() {
 		deadline := time.Now().Add(5 * time.Second)
@@ -59,7 +59,7 @@ func answerWhenAsked(t *testing.T, s *approvalServer, content func(id string) st
 			if b, err := os.ReadFile(s.journalPath()); err == nil {
 				for _, e := range coderun.ParseInputJournal(b) {
 					if e.Kind == coderun.KindInputRequest {
-						_ = os.WriteFile(s.answerPath(e.RequestID), []byte(content(e.RequestID)), 0o600)
+						_ = os.WriteFile(s.answerPath(e.RequestID), []byte(content(e.RequestID, coderun.PromptDigest(e.Prompt))), 0o600)
 						return
 					}
 				}
@@ -82,7 +82,9 @@ var testPub, testPriv, _ = ed25519.GenerateKey(rand.Reader)
 
 func TestApprovalAllowResumesWithTheOriginalInput(t *testing.T) {
 	s := newTestApprovalServer(t, testPub, 5*time.Second)
-	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testPriv, "code", id, coderun.AnswerAllow) })
+	answerWhenAsked(t, s, func(id string, p []byte) string {
+		return coderun.FormatAnswer(testPriv, "code", id, p, coderun.AnswerAllow)
+	})
 
 	text, _ := callTool(t, s.handleApprove, bashCall("touch marker"))
 	d := decisionOf(t, text)
@@ -106,7 +108,9 @@ func TestApprovalAllowResumesWithTheOriginalInput(t *testing.T) {
 
 func TestApprovalDenyReturnsARefusal(t *testing.T) {
 	s := newTestApprovalServer(t, testPub, 5*time.Second)
-	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testPriv, "code", id, coderun.AnswerDeny) })
+	answerWhenAsked(t, s, func(id string, p []byte) string {
+		return coderun.FormatAnswer(testPriv, "code", id, p, coderun.AnswerDeny)
+	})
 
 	text, _ := callTool(t, s.handleApprove, bashCall("rm -rf build"))
 	if d := decisionOf(t, text); d.Behavior != "deny" || d.Message == "" {
@@ -124,7 +128,9 @@ func TestApprovalDenyReturnsARefusal(t *testing.T) {
 func TestApprovalForgedAnswerIsIgnoredAndTheRequestExpires(t *testing.T) {
 	s := newTestApprovalServer(t, testPub, 300*time.Millisecond)
 	_, forger, _ := ed25519.GenerateKey(rand.Reader)
-	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(forger, "code", id, coderun.AnswerAllow) })
+	answerWhenAsked(t, s, func(id string, p []byte) string {
+		return coderun.FormatAnswer(forger, "code", id, p, coderun.AnswerAllow)
+	})
 
 	text, _ := callTool(t, s.handleApprove, bashCall("curl evil"))
 	if d := decisionOf(t, text); d.Behavior != "deny" || !strings.Contains(d.Message, "expired") {
@@ -250,14 +256,42 @@ func TestRotateFinishedRunMovesApprovalFilesAside(t *testing.T) {
 	}
 }
 
+// #2184: the agent can rewrite the journal a human reads, so it can show a
+// benign prompt under a real request id. An answer signed for that shown
+// prompt is journaled and ignored, and the request still expires into a deny;
+// only an answer for the prompt this process actually asked is accepted.
+func TestApprovalAnswerForASpoofedPromptIsIgnored(t *testing.T) {
+	s := newTestApprovalServer(t, testPub, 300*time.Millisecond)
+	answerWhenAsked(t, s, func(id string, _ []byte) string {
+		return coderun.FormatAnswer(testPriv, "code", id, coderun.PromptDigest("Bash: ls"), coderun.AnswerAllow)
+	})
+
+	text, _ := callTool(t, s.handleApprove, bashCall("rm -rf ~/repo"))
+	if d := decisionOf(t, text); d.Behavior != "deny" || !strings.Contains(d.Message, "expired") {
+		t.Fatalf("decision = %+v, want an expiry deny", d)
+	}
+	var rejected bool
+	for _, e := range readJournal(t, s) {
+		if e.Kind == coderun.KindInputStatus && strings.Contains(e.Text, "signature does not verify") {
+			rejected = true
+		}
+		if e.Kind == coderun.KindInputResponse && e.Answer == coderun.AnswerAllow {
+			t.Errorf("spoofed-prompt answer was accepted: %+v", e)
+		}
+	}
+	if !rejected {
+		t.Error("the spoofed-prompt answer was not journaled as rejected")
+	}
+}
+
 // A valid answer that is already there once the deadline has passed is not
 // accepted: the request has expired.
 func TestApprovalAnswerAfterTheDeadlineIsNotAccepted(t *testing.T) {
 	s := newTestApprovalServer(t, testPub, time.Minute)
-	if err := os.WriteFile(s.answerPath("req-late"), []byte(coderun.FormatAnswer(testPriv, "code", "req-late", coderun.AnswerAllow)), 0o600); err != nil {
+	if err := os.WriteFile(s.answerPath("req-late"), []byte(coderun.FormatAnswer(testPriv, "code", "req-late", coderun.PromptDigest("Bash: x"), coderun.AnswerAllow)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a, reason := s.wait(context.Background(), "req-late", time.Now().Add(-time.Millisecond), nil)
+	a, reason := s.wait(context.Background(), "req-late", "Bash: x", time.Now().Add(-time.Millisecond), nil)
 	if a != coderun.AnswerDeny || reason != coderun.ReasonExpired {
 		t.Errorf("wait = %q, %q; want deny, expired", a, reason)
 	}

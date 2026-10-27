@@ -26,7 +26,7 @@ var File_containarium_v1_service_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/service.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/config.proto\x1a\x1bcontainarium/v1/alert.proto\x1a\x1dcontainarium/v1/secrets.proto\x1a\x1dcontainarium/v1/box_run.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\xa4\xd2\x01\n" +
+	"\x1dcontainarium/v1/service.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/config.proto\x1a\x1bcontainarium/v1/alert.proto\x1a\x1dcontainarium/v1/secrets.proto\x1a\x1dcontainarium/v1/box_run.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\xb9\xde\x01\n" +
 	"\x10ContainerService\x12\xae\x02\n" +
 	"\x0fCreateContainer\x12'.containarium.v1.CreateContainerRequest\x1a(.containarium.v1.CreateContainerResponse\"\xc7\x01\x92A\xaa\x01\n" +
 	"\n" +
@@ -98,7 +98,13 @@ const file_containarium_v1_service_proto_rawDesc = "" +
 	"\tCode Runs\x12\x19Tail a box code run's log\x1a\x97\x02Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x024\x122/v1/containers/{username}/code-runs/{run_name}/log\x12\xbb\x04\n" +
 	"\n" +
 	"StopBoxRun\x12\".containarium.v1.StopBoxRunRequest\x1a#.containarium.v1.StopBoxRunResponse\"\xe3\x03\x92A\xa1\x03\n" +
-	"\tCode Runs\x12\x15Stop a box's code run\x1a\xfc\x02Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x028:\x01*\"3/v1/containers/{username}/code-runs/{run_name}:stop\x12\xdf\x02\n" +
+	"\tCode Runs\x12\x15Stop a box's code run\x1a\xfc\x02Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x028:\x01*\"3/v1/containers/{username}/code-runs/{run_name}:stop\x12\x94\x03\n" +
+	"\x11GetRunApprovalKey\x12).containarium.v1.GetRunApprovalKeyRequest\x1a*.containarium.v1.GetRunApprovalKeyResponse\"\xa7\x02\x92A\xeb\x01\n" +
+	"\tCode Runs\x12\x1fGet a box's approval public key\x1a\xbc\x01Returns the hex Ed25519 public key the daemon signs this box's permission-request answers with; `code run --approvals ask` passes it to the box. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x022\x120/v1/containers/{username}/code-runs:approval-key\x12\xab\x04\n" +
+	"\rListRunInputs\x12%.containarium.v1.ListRunInputsRequest\x1a&.containarium.v1.ListRunInputsResponse\"\xca\x03\x92A\x89\x03\n" +
+	"\tCode Runs\x12.List a box code run's open permission requests\x1a\xcb\x02Returns the run's open permission requests (id, tool, prompt, created and expiry times) and its per-run request counts, read from the run's journal on the box. The journal is written by the box's own user, so it is advisory: the box acts only on an answer signed for the prompt it asked. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x027\x125/v1/containers/{username}/code-runs/{run_name}/inputs\x12\xcd\x04\n" +
+	"\x0eAnswerRunInput\x12&.containarium.v1.AnswerRunInputRequest\x1a'.containarium.v1.AnswerRunInputResponse\"\xe9\x03\x92A\x91\x03\n" +
+	"\tCode Runs\x12*Answer a box code run's permission request\x1a\xd7\x02Signs allow or deny for one request and the prompt the caller showed (prompt_sha256), writes it to the box, and waits briefly for the box to journal its response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a prompt other than the one it asked. Box owner or collaborator, ssh:write scope.\x82\xd3\xe4\x93\x02N:\x01*\"I/v1/containers/{username}/code-runs/{run_name}/inputs/{request_id}:answer\x12\xdf\x02\n" +
 	"\x0fAddCollaborator\x12'.containarium.v1.AddCollaboratorRequest\x1a(.containarium.v1.AddCollaboratorResponse\"\xf8\x01\x92A\xbc\x01\n" +
 	"\rCollaborators\x12\x10Add collaborator\x1a\x98\x01Adds a collaborator to a container. The collaborator can SSH via ProxyJump and sudo su to the container owner with full session logging for audit trail.\x82\xd3\xe4\x93\x022:\x01*\"-/v1/containers/{owner_username}/collaborators\x12\xc8\x02\n" +
 	"\x12RemoveCollaborator\x12*.containarium.v1.RemoveCollaboratorRequest\x1a+.containarium.v1.RemoveCollaboratorResponse\"\xd8\x01\x92A\x87\x01\n" +
@@ -228,115 +234,121 @@ var file_containarium_v1_service_proto_goTypes = []any{
 	(*ListBoxRunsRequest)(nil),                // 28: containarium.v1.ListBoxRunsRequest
 	(*TailBoxRunLogRequest)(nil),              // 29: containarium.v1.TailBoxRunLogRequest
 	(*StopBoxRunRequest)(nil),                 // 30: containarium.v1.StopBoxRunRequest
-	(*AddCollaboratorRequest)(nil),            // 31: containarium.v1.AddCollaboratorRequest
-	(*RemoveCollaboratorRequest)(nil),         // 32: containarium.v1.RemoveCollaboratorRequest
-	(*ListCollaboratorsRequest)(nil),          // 33: containarium.v1.ListCollaboratorsRequest
-	(*TerminateUserSessionsRequest)(nil),      // 34: containarium.v1.TerminateUserSessionsRequest
-	(*GetMetricsRequest)(nil),                 // 35: containarium.v1.GetMetricsRequest
-	(*CleanupDiskRequest)(nil),                // 36: containarium.v1.CleanupDiskRequest
-	(*InstallStackRequest)(nil),               // 37: containarium.v1.InstallStackRequest
-	(*ListStacksRequest)(nil),                 // 38: containarium.v1.ListStacksRequest
-	(*GetSystemInfoRequest)(nil),              // 39: containarium.v1.GetSystemInfoRequest
-	(*ListBackendsRequest)(nil),               // 40: containarium.v1.ListBackendsRequest
-	(*AdvertiseCapacityRequest)(nil),          // 41: containarium.v1.AdvertiseCapacityRequest
-	(*WithdrawCapacityRequest)(nil),           // 42: containarium.v1.WithdrawCapacityRequest
-	(*GetCapacityHeadroomRequest)(nil),        // 43: containarium.v1.GetCapacityHeadroomRequest
-	(*ProfileBackendRequest)(nil),             // 44: containarium.v1.ProfileBackendRequest
-	(*GetCapabilityProfileRequest)(nil),       // 45: containarium.v1.GetCapabilityProfileRequest
-	(*GetSelfMeasurementRequest)(nil),         // 46: containarium.v1.GetSelfMeasurementRequest
-	(*GetLatestReleaseRequest)(nil),           // 47: containarium.v1.GetLatestReleaseRequest
-	(*ValidateGPURequest)(nil),                // 48: containarium.v1.ValidateGPURequest
-	(*TriggerUpgradeRequest)(nil),             // 49: containarium.v1.TriggerUpgradeRequest
-	(*GetUpgradeStatusRequest)(nil),           // 50: containarium.v1.GetUpgradeStatusRequest
-	(*GetMonitoringInfoRequest)(nil),          // 51: containarium.v1.GetMonitoringInfoRequest
-	(*SetMetricsExportRequest)(nil),           // 52: containarium.v1.SetMetricsExportRequest
-	(*GetMetricsExportRequest)(nil),           // 53: containarium.v1.GetMetricsExportRequest
-	(*CreateAlertRuleRequest)(nil),            // 54: containarium.v1.CreateAlertRuleRequest
-	(*ListAlertRulesRequest)(nil),             // 55: containarium.v1.ListAlertRulesRequest
-	(*GetAlertRuleRequest)(nil),               // 56: containarium.v1.GetAlertRuleRequest
-	(*UpdateAlertRuleRequest)(nil),            // 57: containarium.v1.UpdateAlertRuleRequest
-	(*DeleteAlertRuleRequest)(nil),            // 58: containarium.v1.DeleteAlertRuleRequest
-	(*GetAlertingInfoRequest)(nil),            // 59: containarium.v1.GetAlertingInfoRequest
-	(*ListDefaultAlertRulesRequest)(nil),      // 60: containarium.v1.ListDefaultAlertRulesRequest
-	(*UpdateAlertingConfigRequest)(nil),       // 61: containarium.v1.UpdateAlertingConfigRequest
-	(*TestWebhookRequest)(nil),                // 62: containarium.v1.TestWebhookRequest
-	(*ListWebhookDeliveriesRequest)(nil),      // 63: containarium.v1.ListWebhookDeliveriesRequest
-	(*SetSecretRequest)(nil),                  // 64: containarium.v1.SetSecretRequest
-	(*GetSecretRequest)(nil),                  // 65: containarium.v1.GetSecretRequest
-	(*ListSecretsRequest)(nil),                // 66: containarium.v1.ListSecretsRequest
-	(*DeleteSecretRequest)(nil),               // 67: containarium.v1.DeleteSecretRequest
-	(*RefreshSecretsRequest)(nil),             // 68: containarium.v1.RefreshSecretsRequest
-	(*SetTenantKMSKeyRequest)(nil),            // 69: containarium.v1.SetTenantKMSKeyRequest
-	(*CreateContainerResponse)(nil),           // 70: containarium.v1.CreateContainerResponse
-	(*ListContainersResponse)(nil),            // 71: containarium.v1.ListContainersResponse
-	(*GetContainerResponse)(nil),              // 72: containarium.v1.GetContainerResponse
-	(*DebugContainerResponse)(nil),            // 73: containarium.v1.DebugContainerResponse
-	(*GetConsoleLogResponse)(nil),             // 74: containarium.v1.GetConsoleLogResponse
-	(*DeleteContainerResponse)(nil),           // 75: containarium.v1.DeleteContainerResponse
-	(*StartContainerResponse)(nil),            // 76: containarium.v1.StartContainerResponse
-	(*StopContainerResponse)(nil),             // 77: containarium.v1.StopContainerResponse
-	(*ResizeContainerResponse)(nil),           // 78: containarium.v1.ResizeContainerResponse
-	(*MoveContainerResponse)(nil),             // 79: containarium.v1.MoveContainerResponse
-	(*CreateContainerSnapshotResponse)(nil),   // 80: containarium.v1.CreateContainerSnapshotResponse
-	(*ListContainerSnapshotsResponse)(nil),    // 81: containarium.v1.ListContainerSnapshotsResponse
-	(*DeleteContainerSnapshotResponse)(nil),   // 82: containarium.v1.DeleteContainerSnapshotResponse
-	(*RollbackContainerSnapshotResponse)(nil), // 83: containarium.v1.RollbackContainerSnapshotResponse
-	(*DeleteTenantStorageResponse)(nil),       // 84: containarium.v1.DeleteTenantStorageResponse
-	(*RewrapContainerResponse)(nil),           // 85: containarium.v1.RewrapContainerResponse
-	(*PrepareEncryptedMigrationResponse)(nil), // 86: containarium.v1.PrepareEncryptedMigrationResponse
-	(*AdoptMigratedContainerResponse)(nil),    // 87: containarium.v1.AdoptMigratedContainerResponse
-	(*ToggleMonitoringResponse)(nil),          // 88: containarium.v1.ToggleMonitoringResponse
-	(*ToggleAutoSleepResponse)(nil),           // 89: containarium.v1.ToggleAutoSleepResponse
-	(*SetContainerTTLResponse)(nil),           // 90: containarium.v1.SetContainerTTLResponse
-	(*SetContainerDeletePolicyResponse)(nil),  // 91: containarium.v1.SetContainerDeletePolicyResponse
-	(*SetContainerToolAccessResponse)(nil),    // 92: containarium.v1.SetContainerToolAccessResponse
-	(*SetContainerAttributionResponse)(nil),   // 93: containarium.v1.SetContainerAttributionResponse
-	(*AddSSHKeyResponse)(nil),                 // 94: containarium.v1.AddSSHKeyResponse
-	(*SetSSHKeysResponse)(nil),                // 95: containarium.v1.SetSSHKeysResponse
-	(*RemoveSSHKeyResponse)(nil),              // 96: containarium.v1.RemoveSSHKeyResponse
-	(*StartBoxRunResponse)(nil),               // 97: containarium.v1.StartBoxRunResponse
-	(*ListBoxRunsResponse)(nil),               // 98: containarium.v1.ListBoxRunsResponse
-	(*TailBoxRunLogResponse)(nil),             // 99: containarium.v1.TailBoxRunLogResponse
-	(*StopBoxRunResponse)(nil),                // 100: containarium.v1.StopBoxRunResponse
-	(*AddCollaboratorResponse)(nil),           // 101: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorResponse)(nil),        // 102: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsResponse)(nil),         // 103: containarium.v1.ListCollaboratorsResponse
-	(*TerminateUserSessionsResponse)(nil),     // 104: containarium.v1.TerminateUserSessionsResponse
-	(*GetMetricsResponse)(nil),                // 105: containarium.v1.GetMetricsResponse
-	(*CleanupDiskResponse)(nil),               // 106: containarium.v1.CleanupDiskResponse
-	(*InstallStackResponse)(nil),              // 107: containarium.v1.InstallStackResponse
-	(*ListStacksResponse)(nil),                // 108: containarium.v1.ListStacksResponse
-	(*GetSystemInfoResponse)(nil),             // 109: containarium.v1.GetSystemInfoResponse
-	(*ListBackendsResponse)(nil),              // 110: containarium.v1.ListBackendsResponse
-	(*AdvertiseCapacityResponse)(nil),         // 111: containarium.v1.AdvertiseCapacityResponse
-	(*WithdrawCapacityResponse)(nil),          // 112: containarium.v1.WithdrawCapacityResponse
-	(*GetCapacityHeadroomResponse)(nil),       // 113: containarium.v1.GetCapacityHeadroomResponse
-	(*ProfileBackendResponse)(nil),            // 114: containarium.v1.ProfileBackendResponse
-	(*GetCapabilityProfileResponse)(nil),      // 115: containarium.v1.GetCapabilityProfileResponse
-	(*GetSelfMeasurementResponse)(nil),        // 116: containarium.v1.GetSelfMeasurementResponse
-	(*GetLatestReleaseResponse)(nil),          // 117: containarium.v1.GetLatestReleaseResponse
-	(*ValidateGPUResponse)(nil),               // 118: containarium.v1.ValidateGPUResponse
-	(*TriggerUpgradeResponse)(nil),            // 119: containarium.v1.TriggerUpgradeResponse
-	(*GetUpgradeStatusResponse)(nil),          // 120: containarium.v1.GetUpgradeStatusResponse
-	(*GetMonitoringInfoResponse)(nil),         // 121: containarium.v1.GetMonitoringInfoResponse
-	(*SetMetricsExportResponse)(nil),          // 122: containarium.v1.SetMetricsExportResponse
-	(*GetMetricsExportResponse)(nil),          // 123: containarium.v1.GetMetricsExportResponse
-	(*CreateAlertRuleResponse)(nil),           // 124: containarium.v1.CreateAlertRuleResponse
-	(*ListAlertRulesResponse)(nil),            // 125: containarium.v1.ListAlertRulesResponse
-	(*GetAlertRuleResponse)(nil),              // 126: containarium.v1.GetAlertRuleResponse
-	(*UpdateAlertRuleResponse)(nil),           // 127: containarium.v1.UpdateAlertRuleResponse
-	(*DeleteAlertRuleResponse)(nil),           // 128: containarium.v1.DeleteAlertRuleResponse
-	(*GetAlertingInfoResponse)(nil),           // 129: containarium.v1.GetAlertingInfoResponse
-	(*ListDefaultAlertRulesResponse)(nil),     // 130: containarium.v1.ListDefaultAlertRulesResponse
-	(*UpdateAlertingConfigResponse)(nil),      // 131: containarium.v1.UpdateAlertingConfigResponse
-	(*TestWebhookResponse)(nil),               // 132: containarium.v1.TestWebhookResponse
-	(*ListWebhookDeliveriesResponse)(nil),     // 133: containarium.v1.ListWebhookDeliveriesResponse
-	(*SetSecretResponse)(nil),                 // 134: containarium.v1.SetSecretResponse
-	(*GetSecretResponse)(nil),                 // 135: containarium.v1.GetSecretResponse
-	(*ListSecretsResponse)(nil),               // 136: containarium.v1.ListSecretsResponse
-	(*DeleteSecretResponse)(nil),              // 137: containarium.v1.DeleteSecretResponse
-	(*RefreshSecretsResponse)(nil),            // 138: containarium.v1.RefreshSecretsResponse
-	(*SetTenantKMSKeyResponse)(nil),           // 139: containarium.v1.SetTenantKMSKeyResponse
+	(*GetRunApprovalKeyRequest)(nil),          // 31: containarium.v1.GetRunApprovalKeyRequest
+	(*ListRunInputsRequest)(nil),              // 32: containarium.v1.ListRunInputsRequest
+	(*AnswerRunInputRequest)(nil),             // 33: containarium.v1.AnswerRunInputRequest
+	(*AddCollaboratorRequest)(nil),            // 34: containarium.v1.AddCollaboratorRequest
+	(*RemoveCollaboratorRequest)(nil),         // 35: containarium.v1.RemoveCollaboratorRequest
+	(*ListCollaboratorsRequest)(nil),          // 36: containarium.v1.ListCollaboratorsRequest
+	(*TerminateUserSessionsRequest)(nil),      // 37: containarium.v1.TerminateUserSessionsRequest
+	(*GetMetricsRequest)(nil),                 // 38: containarium.v1.GetMetricsRequest
+	(*CleanupDiskRequest)(nil),                // 39: containarium.v1.CleanupDiskRequest
+	(*InstallStackRequest)(nil),               // 40: containarium.v1.InstallStackRequest
+	(*ListStacksRequest)(nil),                 // 41: containarium.v1.ListStacksRequest
+	(*GetSystemInfoRequest)(nil),              // 42: containarium.v1.GetSystemInfoRequest
+	(*ListBackendsRequest)(nil),               // 43: containarium.v1.ListBackendsRequest
+	(*AdvertiseCapacityRequest)(nil),          // 44: containarium.v1.AdvertiseCapacityRequest
+	(*WithdrawCapacityRequest)(nil),           // 45: containarium.v1.WithdrawCapacityRequest
+	(*GetCapacityHeadroomRequest)(nil),        // 46: containarium.v1.GetCapacityHeadroomRequest
+	(*ProfileBackendRequest)(nil),             // 47: containarium.v1.ProfileBackendRequest
+	(*GetCapabilityProfileRequest)(nil),       // 48: containarium.v1.GetCapabilityProfileRequest
+	(*GetSelfMeasurementRequest)(nil),         // 49: containarium.v1.GetSelfMeasurementRequest
+	(*GetLatestReleaseRequest)(nil),           // 50: containarium.v1.GetLatestReleaseRequest
+	(*ValidateGPURequest)(nil),                // 51: containarium.v1.ValidateGPURequest
+	(*TriggerUpgradeRequest)(nil),             // 52: containarium.v1.TriggerUpgradeRequest
+	(*GetUpgradeStatusRequest)(nil),           // 53: containarium.v1.GetUpgradeStatusRequest
+	(*GetMonitoringInfoRequest)(nil),          // 54: containarium.v1.GetMonitoringInfoRequest
+	(*SetMetricsExportRequest)(nil),           // 55: containarium.v1.SetMetricsExportRequest
+	(*GetMetricsExportRequest)(nil),           // 56: containarium.v1.GetMetricsExportRequest
+	(*CreateAlertRuleRequest)(nil),            // 57: containarium.v1.CreateAlertRuleRequest
+	(*ListAlertRulesRequest)(nil),             // 58: containarium.v1.ListAlertRulesRequest
+	(*GetAlertRuleRequest)(nil),               // 59: containarium.v1.GetAlertRuleRequest
+	(*UpdateAlertRuleRequest)(nil),            // 60: containarium.v1.UpdateAlertRuleRequest
+	(*DeleteAlertRuleRequest)(nil),            // 61: containarium.v1.DeleteAlertRuleRequest
+	(*GetAlertingInfoRequest)(nil),            // 62: containarium.v1.GetAlertingInfoRequest
+	(*ListDefaultAlertRulesRequest)(nil),      // 63: containarium.v1.ListDefaultAlertRulesRequest
+	(*UpdateAlertingConfigRequest)(nil),       // 64: containarium.v1.UpdateAlertingConfigRequest
+	(*TestWebhookRequest)(nil),                // 65: containarium.v1.TestWebhookRequest
+	(*ListWebhookDeliveriesRequest)(nil),      // 66: containarium.v1.ListWebhookDeliveriesRequest
+	(*SetSecretRequest)(nil),                  // 67: containarium.v1.SetSecretRequest
+	(*GetSecretRequest)(nil),                  // 68: containarium.v1.GetSecretRequest
+	(*ListSecretsRequest)(nil),                // 69: containarium.v1.ListSecretsRequest
+	(*DeleteSecretRequest)(nil),               // 70: containarium.v1.DeleteSecretRequest
+	(*RefreshSecretsRequest)(nil),             // 71: containarium.v1.RefreshSecretsRequest
+	(*SetTenantKMSKeyRequest)(nil),            // 72: containarium.v1.SetTenantKMSKeyRequest
+	(*CreateContainerResponse)(nil),           // 73: containarium.v1.CreateContainerResponse
+	(*ListContainersResponse)(nil),            // 74: containarium.v1.ListContainersResponse
+	(*GetContainerResponse)(nil),              // 75: containarium.v1.GetContainerResponse
+	(*DebugContainerResponse)(nil),            // 76: containarium.v1.DebugContainerResponse
+	(*GetConsoleLogResponse)(nil),             // 77: containarium.v1.GetConsoleLogResponse
+	(*DeleteContainerResponse)(nil),           // 78: containarium.v1.DeleteContainerResponse
+	(*StartContainerResponse)(nil),            // 79: containarium.v1.StartContainerResponse
+	(*StopContainerResponse)(nil),             // 80: containarium.v1.StopContainerResponse
+	(*ResizeContainerResponse)(nil),           // 81: containarium.v1.ResizeContainerResponse
+	(*MoveContainerResponse)(nil),             // 82: containarium.v1.MoveContainerResponse
+	(*CreateContainerSnapshotResponse)(nil),   // 83: containarium.v1.CreateContainerSnapshotResponse
+	(*ListContainerSnapshotsResponse)(nil),    // 84: containarium.v1.ListContainerSnapshotsResponse
+	(*DeleteContainerSnapshotResponse)(nil),   // 85: containarium.v1.DeleteContainerSnapshotResponse
+	(*RollbackContainerSnapshotResponse)(nil), // 86: containarium.v1.RollbackContainerSnapshotResponse
+	(*DeleteTenantStorageResponse)(nil),       // 87: containarium.v1.DeleteTenantStorageResponse
+	(*RewrapContainerResponse)(nil),           // 88: containarium.v1.RewrapContainerResponse
+	(*PrepareEncryptedMigrationResponse)(nil), // 89: containarium.v1.PrepareEncryptedMigrationResponse
+	(*AdoptMigratedContainerResponse)(nil),    // 90: containarium.v1.AdoptMigratedContainerResponse
+	(*ToggleMonitoringResponse)(nil),          // 91: containarium.v1.ToggleMonitoringResponse
+	(*ToggleAutoSleepResponse)(nil),           // 92: containarium.v1.ToggleAutoSleepResponse
+	(*SetContainerTTLResponse)(nil),           // 93: containarium.v1.SetContainerTTLResponse
+	(*SetContainerDeletePolicyResponse)(nil),  // 94: containarium.v1.SetContainerDeletePolicyResponse
+	(*SetContainerToolAccessResponse)(nil),    // 95: containarium.v1.SetContainerToolAccessResponse
+	(*SetContainerAttributionResponse)(nil),   // 96: containarium.v1.SetContainerAttributionResponse
+	(*AddSSHKeyResponse)(nil),                 // 97: containarium.v1.AddSSHKeyResponse
+	(*SetSSHKeysResponse)(nil),                // 98: containarium.v1.SetSSHKeysResponse
+	(*RemoveSSHKeyResponse)(nil),              // 99: containarium.v1.RemoveSSHKeyResponse
+	(*StartBoxRunResponse)(nil),               // 100: containarium.v1.StartBoxRunResponse
+	(*ListBoxRunsResponse)(nil),               // 101: containarium.v1.ListBoxRunsResponse
+	(*TailBoxRunLogResponse)(nil),             // 102: containarium.v1.TailBoxRunLogResponse
+	(*StopBoxRunResponse)(nil),                // 103: containarium.v1.StopBoxRunResponse
+	(*GetRunApprovalKeyResponse)(nil),         // 104: containarium.v1.GetRunApprovalKeyResponse
+	(*ListRunInputsResponse)(nil),             // 105: containarium.v1.ListRunInputsResponse
+	(*AnswerRunInputResponse)(nil),            // 106: containarium.v1.AnswerRunInputResponse
+	(*AddCollaboratorResponse)(nil),           // 107: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorResponse)(nil),        // 108: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsResponse)(nil),         // 109: containarium.v1.ListCollaboratorsResponse
+	(*TerminateUserSessionsResponse)(nil),     // 110: containarium.v1.TerminateUserSessionsResponse
+	(*GetMetricsResponse)(nil),                // 111: containarium.v1.GetMetricsResponse
+	(*CleanupDiskResponse)(nil),               // 112: containarium.v1.CleanupDiskResponse
+	(*InstallStackResponse)(nil),              // 113: containarium.v1.InstallStackResponse
+	(*ListStacksResponse)(nil),                // 114: containarium.v1.ListStacksResponse
+	(*GetSystemInfoResponse)(nil),             // 115: containarium.v1.GetSystemInfoResponse
+	(*ListBackendsResponse)(nil),              // 116: containarium.v1.ListBackendsResponse
+	(*AdvertiseCapacityResponse)(nil),         // 117: containarium.v1.AdvertiseCapacityResponse
+	(*WithdrawCapacityResponse)(nil),          // 118: containarium.v1.WithdrawCapacityResponse
+	(*GetCapacityHeadroomResponse)(nil),       // 119: containarium.v1.GetCapacityHeadroomResponse
+	(*ProfileBackendResponse)(nil),            // 120: containarium.v1.ProfileBackendResponse
+	(*GetCapabilityProfileResponse)(nil),      // 121: containarium.v1.GetCapabilityProfileResponse
+	(*GetSelfMeasurementResponse)(nil),        // 122: containarium.v1.GetSelfMeasurementResponse
+	(*GetLatestReleaseResponse)(nil),          // 123: containarium.v1.GetLatestReleaseResponse
+	(*ValidateGPUResponse)(nil),               // 124: containarium.v1.ValidateGPUResponse
+	(*TriggerUpgradeResponse)(nil),            // 125: containarium.v1.TriggerUpgradeResponse
+	(*GetUpgradeStatusResponse)(nil),          // 126: containarium.v1.GetUpgradeStatusResponse
+	(*GetMonitoringInfoResponse)(nil),         // 127: containarium.v1.GetMonitoringInfoResponse
+	(*SetMetricsExportResponse)(nil),          // 128: containarium.v1.SetMetricsExportResponse
+	(*GetMetricsExportResponse)(nil),          // 129: containarium.v1.GetMetricsExportResponse
+	(*CreateAlertRuleResponse)(nil),           // 130: containarium.v1.CreateAlertRuleResponse
+	(*ListAlertRulesResponse)(nil),            // 131: containarium.v1.ListAlertRulesResponse
+	(*GetAlertRuleResponse)(nil),              // 132: containarium.v1.GetAlertRuleResponse
+	(*UpdateAlertRuleResponse)(nil),           // 133: containarium.v1.UpdateAlertRuleResponse
+	(*DeleteAlertRuleResponse)(nil),           // 134: containarium.v1.DeleteAlertRuleResponse
+	(*GetAlertingInfoResponse)(nil),           // 135: containarium.v1.GetAlertingInfoResponse
+	(*ListDefaultAlertRulesResponse)(nil),     // 136: containarium.v1.ListDefaultAlertRulesResponse
+	(*UpdateAlertingConfigResponse)(nil),      // 137: containarium.v1.UpdateAlertingConfigResponse
+	(*TestWebhookResponse)(nil),               // 138: containarium.v1.TestWebhookResponse
+	(*ListWebhookDeliveriesResponse)(nil),     // 139: containarium.v1.ListWebhookDeliveriesResponse
+	(*SetSecretResponse)(nil),                 // 140: containarium.v1.SetSecretResponse
+	(*GetSecretResponse)(nil),                 // 141: containarium.v1.GetSecretResponse
+	(*ListSecretsResponse)(nil),               // 142: containarium.v1.ListSecretsResponse
+	(*DeleteSecretResponse)(nil),              // 143: containarium.v1.DeleteSecretResponse
+	(*RefreshSecretsResponse)(nil),            // 144: containarium.v1.RefreshSecretsResponse
+	(*SetTenantKMSKeyResponse)(nil),           // 145: containarium.v1.SetTenantKMSKeyResponse
 }
 var file_containarium_v1_service_proto_depIdxs = []int32{
 	0,   // 0: containarium.v1.ContainerService.CreateContainer:input_type -> containarium.v1.CreateContainerRequest
@@ -370,117 +382,123 @@ var file_containarium_v1_service_proto_depIdxs = []int32{
 	28,  // 28: containarium.v1.ContainerService.ListBoxRuns:input_type -> containarium.v1.ListBoxRunsRequest
 	29,  // 29: containarium.v1.ContainerService.TailBoxRunLog:input_type -> containarium.v1.TailBoxRunLogRequest
 	30,  // 30: containarium.v1.ContainerService.StopBoxRun:input_type -> containarium.v1.StopBoxRunRequest
-	31,  // 31: containarium.v1.ContainerService.AddCollaborator:input_type -> containarium.v1.AddCollaboratorRequest
-	32,  // 32: containarium.v1.ContainerService.RemoveCollaborator:input_type -> containarium.v1.RemoveCollaboratorRequest
-	33,  // 33: containarium.v1.ContainerService.ListCollaborators:input_type -> containarium.v1.ListCollaboratorsRequest
-	34,  // 34: containarium.v1.ContainerService.TerminateUserSessions:input_type -> containarium.v1.TerminateUserSessionsRequest
-	35,  // 35: containarium.v1.ContainerService.GetMetrics:input_type -> containarium.v1.GetMetricsRequest
-	36,  // 36: containarium.v1.ContainerService.CleanupDisk:input_type -> containarium.v1.CleanupDiskRequest
-	37,  // 37: containarium.v1.ContainerService.InstallStack:input_type -> containarium.v1.InstallStackRequest
-	38,  // 38: containarium.v1.ContainerService.ListStacks:input_type -> containarium.v1.ListStacksRequest
-	39,  // 39: containarium.v1.ContainerService.GetSystemInfo:input_type -> containarium.v1.GetSystemInfoRequest
-	40,  // 40: containarium.v1.ContainerService.ListBackends:input_type -> containarium.v1.ListBackendsRequest
-	41,  // 41: containarium.v1.ContainerService.AdvertiseCapacity:input_type -> containarium.v1.AdvertiseCapacityRequest
-	42,  // 42: containarium.v1.ContainerService.WithdrawCapacity:input_type -> containarium.v1.WithdrawCapacityRequest
-	43,  // 43: containarium.v1.ContainerService.GetCapacityHeadroom:input_type -> containarium.v1.GetCapacityHeadroomRequest
-	44,  // 44: containarium.v1.ContainerService.ProfileBackend:input_type -> containarium.v1.ProfileBackendRequest
-	45,  // 45: containarium.v1.ContainerService.GetCapabilityProfile:input_type -> containarium.v1.GetCapabilityProfileRequest
-	46,  // 46: containarium.v1.ContainerService.GetSelfMeasurement:input_type -> containarium.v1.GetSelfMeasurementRequest
-	47,  // 47: containarium.v1.ContainerService.GetLatestRelease:input_type -> containarium.v1.GetLatestReleaseRequest
-	48,  // 48: containarium.v1.ContainerService.ValidateGPU:input_type -> containarium.v1.ValidateGPURequest
-	49,  // 49: containarium.v1.ContainerService.TriggerUpgrade:input_type -> containarium.v1.TriggerUpgradeRequest
-	50,  // 50: containarium.v1.ContainerService.GetUpgradeStatus:input_type -> containarium.v1.GetUpgradeStatusRequest
-	51,  // 51: containarium.v1.ContainerService.GetMonitoringInfo:input_type -> containarium.v1.GetMonitoringInfoRequest
-	52,  // 52: containarium.v1.ContainerService.SetMetricsExport:input_type -> containarium.v1.SetMetricsExportRequest
-	53,  // 53: containarium.v1.ContainerService.GetMetricsExport:input_type -> containarium.v1.GetMetricsExportRequest
-	54,  // 54: containarium.v1.ContainerService.CreateAlertRule:input_type -> containarium.v1.CreateAlertRuleRequest
-	55,  // 55: containarium.v1.ContainerService.ListAlertRules:input_type -> containarium.v1.ListAlertRulesRequest
-	56,  // 56: containarium.v1.ContainerService.GetAlertRule:input_type -> containarium.v1.GetAlertRuleRequest
-	57,  // 57: containarium.v1.ContainerService.UpdateAlertRule:input_type -> containarium.v1.UpdateAlertRuleRequest
-	58,  // 58: containarium.v1.ContainerService.DeleteAlertRule:input_type -> containarium.v1.DeleteAlertRuleRequest
-	59,  // 59: containarium.v1.ContainerService.GetAlertingInfo:input_type -> containarium.v1.GetAlertingInfoRequest
-	60,  // 60: containarium.v1.ContainerService.ListDefaultAlertRules:input_type -> containarium.v1.ListDefaultAlertRulesRequest
-	61,  // 61: containarium.v1.ContainerService.UpdateAlertingConfig:input_type -> containarium.v1.UpdateAlertingConfigRequest
-	62,  // 62: containarium.v1.ContainerService.TestWebhook:input_type -> containarium.v1.TestWebhookRequest
-	63,  // 63: containarium.v1.ContainerService.ListWebhookDeliveries:input_type -> containarium.v1.ListWebhookDeliveriesRequest
-	64,  // 64: containarium.v1.ContainerService.SetSecret:input_type -> containarium.v1.SetSecretRequest
-	65,  // 65: containarium.v1.ContainerService.GetSecret:input_type -> containarium.v1.GetSecretRequest
-	66,  // 66: containarium.v1.ContainerService.ListSecrets:input_type -> containarium.v1.ListSecretsRequest
-	67,  // 67: containarium.v1.ContainerService.DeleteSecret:input_type -> containarium.v1.DeleteSecretRequest
-	68,  // 68: containarium.v1.ContainerService.RefreshSecrets:input_type -> containarium.v1.RefreshSecretsRequest
-	69,  // 69: containarium.v1.ContainerService.SetTenantKMSKey:input_type -> containarium.v1.SetTenantKMSKeyRequest
-	70,  // 70: containarium.v1.ContainerService.CreateContainer:output_type -> containarium.v1.CreateContainerResponse
-	71,  // 71: containarium.v1.ContainerService.ListContainers:output_type -> containarium.v1.ListContainersResponse
-	72,  // 72: containarium.v1.ContainerService.GetContainer:output_type -> containarium.v1.GetContainerResponse
-	73,  // 73: containarium.v1.ContainerService.DebugContainer:output_type -> containarium.v1.DebugContainerResponse
-	74,  // 74: containarium.v1.ContainerService.GetConsoleLog:output_type -> containarium.v1.GetConsoleLogResponse
-	75,  // 75: containarium.v1.ContainerService.DeleteContainer:output_type -> containarium.v1.DeleteContainerResponse
-	76,  // 76: containarium.v1.ContainerService.StartContainer:output_type -> containarium.v1.StartContainerResponse
-	77,  // 77: containarium.v1.ContainerService.StopContainer:output_type -> containarium.v1.StopContainerResponse
-	78,  // 78: containarium.v1.ContainerService.ResizeContainer:output_type -> containarium.v1.ResizeContainerResponse
-	79,  // 79: containarium.v1.ContainerService.MoveContainer:output_type -> containarium.v1.MoveContainerResponse
-	80,  // 80: containarium.v1.ContainerService.CreateContainerSnapshot:output_type -> containarium.v1.CreateContainerSnapshotResponse
-	81,  // 81: containarium.v1.ContainerService.ListContainerSnapshots:output_type -> containarium.v1.ListContainerSnapshotsResponse
-	82,  // 82: containarium.v1.ContainerService.DeleteContainerSnapshot:output_type -> containarium.v1.DeleteContainerSnapshotResponse
-	83,  // 83: containarium.v1.ContainerService.RollbackContainerSnapshot:output_type -> containarium.v1.RollbackContainerSnapshotResponse
-	84,  // 84: containarium.v1.ContainerService.DeleteTenantStorage:output_type -> containarium.v1.DeleteTenantStorageResponse
-	85,  // 85: containarium.v1.ContainerService.RewrapContainer:output_type -> containarium.v1.RewrapContainerResponse
-	86,  // 86: containarium.v1.ContainerService.PrepareEncryptedMigration:output_type -> containarium.v1.PrepareEncryptedMigrationResponse
-	87,  // 87: containarium.v1.ContainerService.AdoptMigratedContainer:output_type -> containarium.v1.AdoptMigratedContainerResponse
-	88,  // 88: containarium.v1.ContainerService.ToggleMonitoring:output_type -> containarium.v1.ToggleMonitoringResponse
-	89,  // 89: containarium.v1.ContainerService.ToggleAutoSleep:output_type -> containarium.v1.ToggleAutoSleepResponse
-	90,  // 90: containarium.v1.ContainerService.SetContainerTTL:output_type -> containarium.v1.SetContainerTTLResponse
-	91,  // 91: containarium.v1.ContainerService.SetContainerDeletePolicy:output_type -> containarium.v1.SetContainerDeletePolicyResponse
-	92,  // 92: containarium.v1.ContainerService.SetContainerToolAccess:output_type -> containarium.v1.SetContainerToolAccessResponse
-	93,  // 93: containarium.v1.ContainerService.SetContainerAttribution:output_type -> containarium.v1.SetContainerAttributionResponse
-	94,  // 94: containarium.v1.ContainerService.AddSSHKey:output_type -> containarium.v1.AddSSHKeyResponse
-	95,  // 95: containarium.v1.ContainerService.SetSSHKeys:output_type -> containarium.v1.SetSSHKeysResponse
-	96,  // 96: containarium.v1.ContainerService.RemoveSSHKey:output_type -> containarium.v1.RemoveSSHKeyResponse
-	97,  // 97: containarium.v1.ContainerService.StartBoxRun:output_type -> containarium.v1.StartBoxRunResponse
-	98,  // 98: containarium.v1.ContainerService.ListBoxRuns:output_type -> containarium.v1.ListBoxRunsResponse
-	99,  // 99: containarium.v1.ContainerService.TailBoxRunLog:output_type -> containarium.v1.TailBoxRunLogResponse
-	100, // 100: containarium.v1.ContainerService.StopBoxRun:output_type -> containarium.v1.StopBoxRunResponse
-	101, // 101: containarium.v1.ContainerService.AddCollaborator:output_type -> containarium.v1.AddCollaboratorResponse
-	102, // 102: containarium.v1.ContainerService.RemoveCollaborator:output_type -> containarium.v1.RemoveCollaboratorResponse
-	103, // 103: containarium.v1.ContainerService.ListCollaborators:output_type -> containarium.v1.ListCollaboratorsResponse
-	104, // 104: containarium.v1.ContainerService.TerminateUserSessions:output_type -> containarium.v1.TerminateUserSessionsResponse
-	105, // 105: containarium.v1.ContainerService.GetMetrics:output_type -> containarium.v1.GetMetricsResponse
-	106, // 106: containarium.v1.ContainerService.CleanupDisk:output_type -> containarium.v1.CleanupDiskResponse
-	107, // 107: containarium.v1.ContainerService.InstallStack:output_type -> containarium.v1.InstallStackResponse
-	108, // 108: containarium.v1.ContainerService.ListStacks:output_type -> containarium.v1.ListStacksResponse
-	109, // 109: containarium.v1.ContainerService.GetSystemInfo:output_type -> containarium.v1.GetSystemInfoResponse
-	110, // 110: containarium.v1.ContainerService.ListBackends:output_type -> containarium.v1.ListBackendsResponse
-	111, // 111: containarium.v1.ContainerService.AdvertiseCapacity:output_type -> containarium.v1.AdvertiseCapacityResponse
-	112, // 112: containarium.v1.ContainerService.WithdrawCapacity:output_type -> containarium.v1.WithdrawCapacityResponse
-	113, // 113: containarium.v1.ContainerService.GetCapacityHeadroom:output_type -> containarium.v1.GetCapacityHeadroomResponse
-	114, // 114: containarium.v1.ContainerService.ProfileBackend:output_type -> containarium.v1.ProfileBackendResponse
-	115, // 115: containarium.v1.ContainerService.GetCapabilityProfile:output_type -> containarium.v1.GetCapabilityProfileResponse
-	116, // 116: containarium.v1.ContainerService.GetSelfMeasurement:output_type -> containarium.v1.GetSelfMeasurementResponse
-	117, // 117: containarium.v1.ContainerService.GetLatestRelease:output_type -> containarium.v1.GetLatestReleaseResponse
-	118, // 118: containarium.v1.ContainerService.ValidateGPU:output_type -> containarium.v1.ValidateGPUResponse
-	119, // 119: containarium.v1.ContainerService.TriggerUpgrade:output_type -> containarium.v1.TriggerUpgradeResponse
-	120, // 120: containarium.v1.ContainerService.GetUpgradeStatus:output_type -> containarium.v1.GetUpgradeStatusResponse
-	121, // 121: containarium.v1.ContainerService.GetMonitoringInfo:output_type -> containarium.v1.GetMonitoringInfoResponse
-	122, // 122: containarium.v1.ContainerService.SetMetricsExport:output_type -> containarium.v1.SetMetricsExportResponse
-	123, // 123: containarium.v1.ContainerService.GetMetricsExport:output_type -> containarium.v1.GetMetricsExportResponse
-	124, // 124: containarium.v1.ContainerService.CreateAlertRule:output_type -> containarium.v1.CreateAlertRuleResponse
-	125, // 125: containarium.v1.ContainerService.ListAlertRules:output_type -> containarium.v1.ListAlertRulesResponse
-	126, // 126: containarium.v1.ContainerService.GetAlertRule:output_type -> containarium.v1.GetAlertRuleResponse
-	127, // 127: containarium.v1.ContainerService.UpdateAlertRule:output_type -> containarium.v1.UpdateAlertRuleResponse
-	128, // 128: containarium.v1.ContainerService.DeleteAlertRule:output_type -> containarium.v1.DeleteAlertRuleResponse
-	129, // 129: containarium.v1.ContainerService.GetAlertingInfo:output_type -> containarium.v1.GetAlertingInfoResponse
-	130, // 130: containarium.v1.ContainerService.ListDefaultAlertRules:output_type -> containarium.v1.ListDefaultAlertRulesResponse
-	131, // 131: containarium.v1.ContainerService.UpdateAlertingConfig:output_type -> containarium.v1.UpdateAlertingConfigResponse
-	132, // 132: containarium.v1.ContainerService.TestWebhook:output_type -> containarium.v1.TestWebhookResponse
-	133, // 133: containarium.v1.ContainerService.ListWebhookDeliveries:output_type -> containarium.v1.ListWebhookDeliveriesResponse
-	134, // 134: containarium.v1.ContainerService.SetSecret:output_type -> containarium.v1.SetSecretResponse
-	135, // 135: containarium.v1.ContainerService.GetSecret:output_type -> containarium.v1.GetSecretResponse
-	136, // 136: containarium.v1.ContainerService.ListSecrets:output_type -> containarium.v1.ListSecretsResponse
-	137, // 137: containarium.v1.ContainerService.DeleteSecret:output_type -> containarium.v1.DeleteSecretResponse
-	138, // 138: containarium.v1.ContainerService.RefreshSecrets:output_type -> containarium.v1.RefreshSecretsResponse
-	139, // 139: containarium.v1.ContainerService.SetTenantKMSKey:output_type -> containarium.v1.SetTenantKMSKeyResponse
-	70,  // [70:140] is the sub-list for method output_type
-	0,   // [0:70] is the sub-list for method input_type
+	31,  // 31: containarium.v1.ContainerService.GetRunApprovalKey:input_type -> containarium.v1.GetRunApprovalKeyRequest
+	32,  // 32: containarium.v1.ContainerService.ListRunInputs:input_type -> containarium.v1.ListRunInputsRequest
+	33,  // 33: containarium.v1.ContainerService.AnswerRunInput:input_type -> containarium.v1.AnswerRunInputRequest
+	34,  // 34: containarium.v1.ContainerService.AddCollaborator:input_type -> containarium.v1.AddCollaboratorRequest
+	35,  // 35: containarium.v1.ContainerService.RemoveCollaborator:input_type -> containarium.v1.RemoveCollaboratorRequest
+	36,  // 36: containarium.v1.ContainerService.ListCollaborators:input_type -> containarium.v1.ListCollaboratorsRequest
+	37,  // 37: containarium.v1.ContainerService.TerminateUserSessions:input_type -> containarium.v1.TerminateUserSessionsRequest
+	38,  // 38: containarium.v1.ContainerService.GetMetrics:input_type -> containarium.v1.GetMetricsRequest
+	39,  // 39: containarium.v1.ContainerService.CleanupDisk:input_type -> containarium.v1.CleanupDiskRequest
+	40,  // 40: containarium.v1.ContainerService.InstallStack:input_type -> containarium.v1.InstallStackRequest
+	41,  // 41: containarium.v1.ContainerService.ListStacks:input_type -> containarium.v1.ListStacksRequest
+	42,  // 42: containarium.v1.ContainerService.GetSystemInfo:input_type -> containarium.v1.GetSystemInfoRequest
+	43,  // 43: containarium.v1.ContainerService.ListBackends:input_type -> containarium.v1.ListBackendsRequest
+	44,  // 44: containarium.v1.ContainerService.AdvertiseCapacity:input_type -> containarium.v1.AdvertiseCapacityRequest
+	45,  // 45: containarium.v1.ContainerService.WithdrawCapacity:input_type -> containarium.v1.WithdrawCapacityRequest
+	46,  // 46: containarium.v1.ContainerService.GetCapacityHeadroom:input_type -> containarium.v1.GetCapacityHeadroomRequest
+	47,  // 47: containarium.v1.ContainerService.ProfileBackend:input_type -> containarium.v1.ProfileBackendRequest
+	48,  // 48: containarium.v1.ContainerService.GetCapabilityProfile:input_type -> containarium.v1.GetCapabilityProfileRequest
+	49,  // 49: containarium.v1.ContainerService.GetSelfMeasurement:input_type -> containarium.v1.GetSelfMeasurementRequest
+	50,  // 50: containarium.v1.ContainerService.GetLatestRelease:input_type -> containarium.v1.GetLatestReleaseRequest
+	51,  // 51: containarium.v1.ContainerService.ValidateGPU:input_type -> containarium.v1.ValidateGPURequest
+	52,  // 52: containarium.v1.ContainerService.TriggerUpgrade:input_type -> containarium.v1.TriggerUpgradeRequest
+	53,  // 53: containarium.v1.ContainerService.GetUpgradeStatus:input_type -> containarium.v1.GetUpgradeStatusRequest
+	54,  // 54: containarium.v1.ContainerService.GetMonitoringInfo:input_type -> containarium.v1.GetMonitoringInfoRequest
+	55,  // 55: containarium.v1.ContainerService.SetMetricsExport:input_type -> containarium.v1.SetMetricsExportRequest
+	56,  // 56: containarium.v1.ContainerService.GetMetricsExport:input_type -> containarium.v1.GetMetricsExportRequest
+	57,  // 57: containarium.v1.ContainerService.CreateAlertRule:input_type -> containarium.v1.CreateAlertRuleRequest
+	58,  // 58: containarium.v1.ContainerService.ListAlertRules:input_type -> containarium.v1.ListAlertRulesRequest
+	59,  // 59: containarium.v1.ContainerService.GetAlertRule:input_type -> containarium.v1.GetAlertRuleRequest
+	60,  // 60: containarium.v1.ContainerService.UpdateAlertRule:input_type -> containarium.v1.UpdateAlertRuleRequest
+	61,  // 61: containarium.v1.ContainerService.DeleteAlertRule:input_type -> containarium.v1.DeleteAlertRuleRequest
+	62,  // 62: containarium.v1.ContainerService.GetAlertingInfo:input_type -> containarium.v1.GetAlertingInfoRequest
+	63,  // 63: containarium.v1.ContainerService.ListDefaultAlertRules:input_type -> containarium.v1.ListDefaultAlertRulesRequest
+	64,  // 64: containarium.v1.ContainerService.UpdateAlertingConfig:input_type -> containarium.v1.UpdateAlertingConfigRequest
+	65,  // 65: containarium.v1.ContainerService.TestWebhook:input_type -> containarium.v1.TestWebhookRequest
+	66,  // 66: containarium.v1.ContainerService.ListWebhookDeliveries:input_type -> containarium.v1.ListWebhookDeliveriesRequest
+	67,  // 67: containarium.v1.ContainerService.SetSecret:input_type -> containarium.v1.SetSecretRequest
+	68,  // 68: containarium.v1.ContainerService.GetSecret:input_type -> containarium.v1.GetSecretRequest
+	69,  // 69: containarium.v1.ContainerService.ListSecrets:input_type -> containarium.v1.ListSecretsRequest
+	70,  // 70: containarium.v1.ContainerService.DeleteSecret:input_type -> containarium.v1.DeleteSecretRequest
+	71,  // 71: containarium.v1.ContainerService.RefreshSecrets:input_type -> containarium.v1.RefreshSecretsRequest
+	72,  // 72: containarium.v1.ContainerService.SetTenantKMSKey:input_type -> containarium.v1.SetTenantKMSKeyRequest
+	73,  // 73: containarium.v1.ContainerService.CreateContainer:output_type -> containarium.v1.CreateContainerResponse
+	74,  // 74: containarium.v1.ContainerService.ListContainers:output_type -> containarium.v1.ListContainersResponse
+	75,  // 75: containarium.v1.ContainerService.GetContainer:output_type -> containarium.v1.GetContainerResponse
+	76,  // 76: containarium.v1.ContainerService.DebugContainer:output_type -> containarium.v1.DebugContainerResponse
+	77,  // 77: containarium.v1.ContainerService.GetConsoleLog:output_type -> containarium.v1.GetConsoleLogResponse
+	78,  // 78: containarium.v1.ContainerService.DeleteContainer:output_type -> containarium.v1.DeleteContainerResponse
+	79,  // 79: containarium.v1.ContainerService.StartContainer:output_type -> containarium.v1.StartContainerResponse
+	80,  // 80: containarium.v1.ContainerService.StopContainer:output_type -> containarium.v1.StopContainerResponse
+	81,  // 81: containarium.v1.ContainerService.ResizeContainer:output_type -> containarium.v1.ResizeContainerResponse
+	82,  // 82: containarium.v1.ContainerService.MoveContainer:output_type -> containarium.v1.MoveContainerResponse
+	83,  // 83: containarium.v1.ContainerService.CreateContainerSnapshot:output_type -> containarium.v1.CreateContainerSnapshotResponse
+	84,  // 84: containarium.v1.ContainerService.ListContainerSnapshots:output_type -> containarium.v1.ListContainerSnapshotsResponse
+	85,  // 85: containarium.v1.ContainerService.DeleteContainerSnapshot:output_type -> containarium.v1.DeleteContainerSnapshotResponse
+	86,  // 86: containarium.v1.ContainerService.RollbackContainerSnapshot:output_type -> containarium.v1.RollbackContainerSnapshotResponse
+	87,  // 87: containarium.v1.ContainerService.DeleteTenantStorage:output_type -> containarium.v1.DeleteTenantStorageResponse
+	88,  // 88: containarium.v1.ContainerService.RewrapContainer:output_type -> containarium.v1.RewrapContainerResponse
+	89,  // 89: containarium.v1.ContainerService.PrepareEncryptedMigration:output_type -> containarium.v1.PrepareEncryptedMigrationResponse
+	90,  // 90: containarium.v1.ContainerService.AdoptMigratedContainer:output_type -> containarium.v1.AdoptMigratedContainerResponse
+	91,  // 91: containarium.v1.ContainerService.ToggleMonitoring:output_type -> containarium.v1.ToggleMonitoringResponse
+	92,  // 92: containarium.v1.ContainerService.ToggleAutoSleep:output_type -> containarium.v1.ToggleAutoSleepResponse
+	93,  // 93: containarium.v1.ContainerService.SetContainerTTL:output_type -> containarium.v1.SetContainerTTLResponse
+	94,  // 94: containarium.v1.ContainerService.SetContainerDeletePolicy:output_type -> containarium.v1.SetContainerDeletePolicyResponse
+	95,  // 95: containarium.v1.ContainerService.SetContainerToolAccess:output_type -> containarium.v1.SetContainerToolAccessResponse
+	96,  // 96: containarium.v1.ContainerService.SetContainerAttribution:output_type -> containarium.v1.SetContainerAttributionResponse
+	97,  // 97: containarium.v1.ContainerService.AddSSHKey:output_type -> containarium.v1.AddSSHKeyResponse
+	98,  // 98: containarium.v1.ContainerService.SetSSHKeys:output_type -> containarium.v1.SetSSHKeysResponse
+	99,  // 99: containarium.v1.ContainerService.RemoveSSHKey:output_type -> containarium.v1.RemoveSSHKeyResponse
+	100, // 100: containarium.v1.ContainerService.StartBoxRun:output_type -> containarium.v1.StartBoxRunResponse
+	101, // 101: containarium.v1.ContainerService.ListBoxRuns:output_type -> containarium.v1.ListBoxRunsResponse
+	102, // 102: containarium.v1.ContainerService.TailBoxRunLog:output_type -> containarium.v1.TailBoxRunLogResponse
+	103, // 103: containarium.v1.ContainerService.StopBoxRun:output_type -> containarium.v1.StopBoxRunResponse
+	104, // 104: containarium.v1.ContainerService.GetRunApprovalKey:output_type -> containarium.v1.GetRunApprovalKeyResponse
+	105, // 105: containarium.v1.ContainerService.ListRunInputs:output_type -> containarium.v1.ListRunInputsResponse
+	106, // 106: containarium.v1.ContainerService.AnswerRunInput:output_type -> containarium.v1.AnswerRunInputResponse
+	107, // 107: containarium.v1.ContainerService.AddCollaborator:output_type -> containarium.v1.AddCollaboratorResponse
+	108, // 108: containarium.v1.ContainerService.RemoveCollaborator:output_type -> containarium.v1.RemoveCollaboratorResponse
+	109, // 109: containarium.v1.ContainerService.ListCollaborators:output_type -> containarium.v1.ListCollaboratorsResponse
+	110, // 110: containarium.v1.ContainerService.TerminateUserSessions:output_type -> containarium.v1.TerminateUserSessionsResponse
+	111, // 111: containarium.v1.ContainerService.GetMetrics:output_type -> containarium.v1.GetMetricsResponse
+	112, // 112: containarium.v1.ContainerService.CleanupDisk:output_type -> containarium.v1.CleanupDiskResponse
+	113, // 113: containarium.v1.ContainerService.InstallStack:output_type -> containarium.v1.InstallStackResponse
+	114, // 114: containarium.v1.ContainerService.ListStacks:output_type -> containarium.v1.ListStacksResponse
+	115, // 115: containarium.v1.ContainerService.GetSystemInfo:output_type -> containarium.v1.GetSystemInfoResponse
+	116, // 116: containarium.v1.ContainerService.ListBackends:output_type -> containarium.v1.ListBackendsResponse
+	117, // 117: containarium.v1.ContainerService.AdvertiseCapacity:output_type -> containarium.v1.AdvertiseCapacityResponse
+	118, // 118: containarium.v1.ContainerService.WithdrawCapacity:output_type -> containarium.v1.WithdrawCapacityResponse
+	119, // 119: containarium.v1.ContainerService.GetCapacityHeadroom:output_type -> containarium.v1.GetCapacityHeadroomResponse
+	120, // 120: containarium.v1.ContainerService.ProfileBackend:output_type -> containarium.v1.ProfileBackendResponse
+	121, // 121: containarium.v1.ContainerService.GetCapabilityProfile:output_type -> containarium.v1.GetCapabilityProfileResponse
+	122, // 122: containarium.v1.ContainerService.GetSelfMeasurement:output_type -> containarium.v1.GetSelfMeasurementResponse
+	123, // 123: containarium.v1.ContainerService.GetLatestRelease:output_type -> containarium.v1.GetLatestReleaseResponse
+	124, // 124: containarium.v1.ContainerService.ValidateGPU:output_type -> containarium.v1.ValidateGPUResponse
+	125, // 125: containarium.v1.ContainerService.TriggerUpgrade:output_type -> containarium.v1.TriggerUpgradeResponse
+	126, // 126: containarium.v1.ContainerService.GetUpgradeStatus:output_type -> containarium.v1.GetUpgradeStatusResponse
+	127, // 127: containarium.v1.ContainerService.GetMonitoringInfo:output_type -> containarium.v1.GetMonitoringInfoResponse
+	128, // 128: containarium.v1.ContainerService.SetMetricsExport:output_type -> containarium.v1.SetMetricsExportResponse
+	129, // 129: containarium.v1.ContainerService.GetMetricsExport:output_type -> containarium.v1.GetMetricsExportResponse
+	130, // 130: containarium.v1.ContainerService.CreateAlertRule:output_type -> containarium.v1.CreateAlertRuleResponse
+	131, // 131: containarium.v1.ContainerService.ListAlertRules:output_type -> containarium.v1.ListAlertRulesResponse
+	132, // 132: containarium.v1.ContainerService.GetAlertRule:output_type -> containarium.v1.GetAlertRuleResponse
+	133, // 133: containarium.v1.ContainerService.UpdateAlertRule:output_type -> containarium.v1.UpdateAlertRuleResponse
+	134, // 134: containarium.v1.ContainerService.DeleteAlertRule:output_type -> containarium.v1.DeleteAlertRuleResponse
+	135, // 135: containarium.v1.ContainerService.GetAlertingInfo:output_type -> containarium.v1.GetAlertingInfoResponse
+	136, // 136: containarium.v1.ContainerService.ListDefaultAlertRules:output_type -> containarium.v1.ListDefaultAlertRulesResponse
+	137, // 137: containarium.v1.ContainerService.UpdateAlertingConfig:output_type -> containarium.v1.UpdateAlertingConfigResponse
+	138, // 138: containarium.v1.ContainerService.TestWebhook:output_type -> containarium.v1.TestWebhookResponse
+	139, // 139: containarium.v1.ContainerService.ListWebhookDeliveries:output_type -> containarium.v1.ListWebhookDeliveriesResponse
+	140, // 140: containarium.v1.ContainerService.SetSecret:output_type -> containarium.v1.SetSecretResponse
+	141, // 141: containarium.v1.ContainerService.GetSecret:output_type -> containarium.v1.GetSecretResponse
+	142, // 142: containarium.v1.ContainerService.ListSecrets:output_type -> containarium.v1.ListSecretsResponse
+	143, // 143: containarium.v1.ContainerService.DeleteSecret:output_type -> containarium.v1.DeleteSecretResponse
+	144, // 144: containarium.v1.ContainerService.RefreshSecrets:output_type -> containarium.v1.RefreshSecretsResponse
+	145, // 145: containarium.v1.ContainerService.SetTenantKMSKey:output_type -> containarium.v1.SetTenantKMSKeyResponse
+	73,  // [73:146] is the sub-list for method output_type
+	0,   // [0:73] is the sub-list for method input_type
 	0,   // [0:0] is the sub-list for extension type_name
 	0,   // [0:0] is the sub-list for extension extendee
 	0,   // [0:0] is the sub-list for field type_name

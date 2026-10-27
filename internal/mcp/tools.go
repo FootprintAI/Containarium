@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
@@ -1233,6 +1234,42 @@ func (s *Server) registerTools() {
 			Handler: handleCodeLogs,
 		},
 		{
+			Name: "code_pending",
+			Description: "List the open permission requests of a code run started with " +
+				"--approvals ask: request id, age, time left before it expires into a deny, " +
+				"and the prompt (tool and command or path), plus the run's request counts. " +
+				"Same output as `containarium code pending`. The list is read from a journal " +
+				"the agent on the box can write, so it is advisory.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":  map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
+					"name": map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
+				},
+			},
+			Handler: handleCodePending,
+		},
+		{
+			Name: "code_answer",
+			Description: "Answer one open permission request of a code run: allow or deny. " +
+				"The request's prompt is read again and returned with the result; the answer " +
+				"is signed for exactly that prompt, and the run acts on it only if that is the " +
+				"prompt it asked. Answering a request already closed or expired changes nothing " +
+				"and reports how it was closed, as an error. Same as `containarium code answer`.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box", "request_id", "answer"},
+				"properties": map[string]interface{}{
+					"box":        map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
+					"name":       map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
+					"request_id": map[string]interface{}{"type": "string", "description": "Request id, from code_pending."},
+					"answer":     map[string]interface{}{"type": "string", "enum": []string{"allow", "deny"}, "description": "allow or deny."},
+				},
+			},
+			Handler: handleCodeAnswer,
+		},
+		{
 			Name: "connect",
 			Description: "Get SSH access to one of your boxes using the token you're already " +
 				"authenticated with — connect authorizes a managed key for you, so there's " +
@@ -1909,6 +1946,8 @@ func toolScopeAssignments() map[string]string {
 		"code_status":          auth.ScopeCodeWrite,
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
+		"code_pending":         auth.ScopeSSHWrite,
+		"code_answer":          auth.ScopeSSHWrite,
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle
@@ -3464,6 +3503,48 @@ func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
 	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nstderr_dropped: %v\n---\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), resp.GetStderrDropped())
 	b.Write(resp.GetChunk())
+	return b.String(), nil
+}
+
+// handleCodePending lists a run's open permission requests (#2184) through
+// the formatter `code pending` uses.
+func handleCodePending(client API, args map[string]interface{}) (string, error) {
+	box := strings.TrimSpace(getStringArg(args, "box", ""))
+	if box == "" {
+		return "", fmt.Errorf("`box` is required")
+	}
+	run := codeRunNameArg(args)
+	resp, err := client.ListRunInputs(&pb.ListRunInputsRequest{Username: box, RunName: run})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := runlog.WriteRunInputs(&b, run, resp, time.Now()); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+// handleCodeAnswer answers one permission request (#2184) through
+// runlog.Answer, the function `code answer` calls.
+func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
+	box := strings.TrimSpace(getStringArg(args, "box", ""))
+	id := strings.TrimSpace(getStringArg(args, "request_id", ""))
+	if box == "" || id == "" {
+		return "", fmt.Errorf("`box` and `request_id` are required")
+	}
+	a, err := runlog.ParseRunInputAnswer(getStringArg(args, "answer", ""))
+	if err != nil {
+		return "", err
+	}
+	res, err := runlog.Answer(client, box, codeRunNameArg(args), id, a)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := runlog.WriteAnswerResult(&b, res); err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(b.String()))
+	}
 	return b.String(), nil
 }
 

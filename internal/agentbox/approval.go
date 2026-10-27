@@ -34,9 +34,12 @@ import (
 // Why answers are signed: the agent runs as the same Unix user as anyone
 // answering on the box, so any file an answerer can write, the agent can write
 // too. An answer counts only with an Ed25519 signature that verifies under the
-// run's public key, which arrives on this process's command line from `code
-// run`. The private key never reaches the box, so there is no secret on it for
-// any process to read. Out of scope: a process the agent leaves running can
+// box's approval public key, which arrives on this process's command line from
+// `code run`. The private key stays with the daemon, so there is no secret on it for
+// any process to read. The signature also binds the prompt this process
+// journaled (#2184): the agent can rewrite that journal line to show a human
+// something else, but an answer made for the shown text never verifies
+// against the prompt held here. Out of scope: a process the agent leaves running can
 // change the box's own Claude Code setup (its binaries on PATH, its settings)
 // for later runs; no scheme confined to the box can prevent that.
 
@@ -56,8 +59,10 @@ const approvalProgressInterval = 30 * time.Second
 
 // approvalProbeOK is what `approval-mcp --probe` prints, so `code run` can
 // tell an agent-box that has this mode from an older one before it starts a
-// run that would otherwise fail to connect its permission tool.
-const approvalProbeOK = "approval-mcp ok"
+// run that would otherwise fail to connect its permission tool. "v2" is the
+// prompt-bound answer format (#2184): an agent-box that prints only
+// "approval-mcp ok" verifies the older format and is refused.
+const approvalProbeOK = "approval-mcp ok v2"
 
 // approvalPromptMax caps the human-readable prompt journaled per request.
 const approvalPromptMax = 500
@@ -206,19 +211,21 @@ func (s *approvalServer) handleApprove(ctx context.Context, req mcp.CallToolRequ
 		return decisionResult(promptDecision{Behavior: "deny", Message: "could not open a permission request"}), nil
 	}
 	now := s.now().UTC()
+	// Kept in memory: answers are verified against this, not the journal line.
+	prompt := describeToolCall(in.ToolName, in.Input)
 	s.journal(coderun.InputEvent{
 		Kind:        coderun.KindInputRequest,
 		T:           now,
 		RequestID:   id,
 		RequestKind: coderun.RequestKindPermission,
 		Tool:        in.ToolName,
-		Prompt:      describeToolCall(in.ToolName, in.Input),
+		Prompt:      prompt,
 		Options:     []coderun.Answer{coderun.AnswerAllow, coderun.AnswerDeny},
 		Default:     coderun.AnswerDeny,
 		ExpiresAt:   now.Add(s.timeout),
 	})
 
-	answer, reason := s.wait(ctx, id, now.Add(s.timeout), progressTokenOf(req))
+	answer, reason := s.wait(ctx, id, prompt, now.Add(s.timeout), progressTokenOf(req))
 	s.journal(coderun.InputEvent{Kind: coderun.KindInputResponse, RequestID: id, Answer: answer, Reason: reason})
 
 	if answer == coderun.AnswerAllow {
@@ -236,14 +243,16 @@ func (s *approvalServer) handleApprove(ctx context.Context, req mcp.CallToolRequ
 	return decisionResult(promptDecision{Behavior: "deny", Message: msg}), nil
 }
 
-// wait blocks until a valid answer for id arrives, the deadline passes, or ctx
-// ends. A file with a bad signature is journaled once and ignored: it is either
-// a mistake or an attempt to approve without the key.
-func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time, progress mcp.ProgressToken) (coderun.Answer, coderun.ResponseReason) {
+// wait blocks until a valid answer for id and prompt arrives, the deadline
+// passes, or ctx ends. A file with a bad signature is journaled once and
+// ignored: it is a mistake, an answer to a forged prompt, or an attempt to
+// approve without the key.
+func (s *approvalServer) wait(ctx context.Context, id, prompt string, deadline time.Time, progress mcp.ProgressToken) (coderun.Answer, coderun.ResponseReason) {
 	if s.pub == nil {
 		return coderun.AnswerDeny, coderun.ReasonNoKey
 	}
 	path := s.answerPath(id)
+	digest := coderun.PromptDigest(prompt)
 	var rejected string
 	tick := time.NewTicker(s.pollInterval)
 	defer tick.Stop()
@@ -256,7 +265,7 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 		}
 		// #nosec G304 -- <log dir>/<run>.answers/<id>: run passed ValidApprovalRunName, id is this process's own random request id
 		if content, err := os.ReadFile(path); err == nil && string(content) != rejected {
-			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, string(content))
+			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, digest, string(content))
 			if verr == nil {
 				return a, coderun.ReasonAnswered
 			}
