@@ -520,6 +520,75 @@ fail-closed table). The ungated fallback applies **only** to ungated
 deploys: a gated recipe with no policy is refused, as the gate procedure
 below states.
 
+### Signer rotation and revocation (#2729)
+
+Decisions Q3 to Q6 on #2729. Rotation and revocation happen in the stored
+server policy, next to `trusted_signers` and outside `policy`, so neither
+changes `policy_hash`.
+
+```proto
+message GuardrailRevokedKey {
+  string key_id = 1;                          // SHA-256 of the public key, hex
+  google.protobuf.Timestamp revoked_at = 2;   // stamped by the server on the Set that adds it
+  string reason = 3;                          // required; named by every refused verify
+}
+message GuardrailTrustBundle {                // the offline verifier's input (protojson)
+  repeated GuardrailTrustedSigner signers = 1;
+  repeated GuardrailRevokedKey revoked = 2;
+}
+// ServerGuardrailPolicy.revoked_signers = 6
+// SetGuardrailPolicyRequest.revoked_signers = 3, optional expected_revision = 4
+```
+
+- **Rotation** adds the new signer and keeps the old one. Attestations
+  made with either key verify. Removing the old signer from
+  `trusted_signers` without revoking it makes every attestation it signed
+  fail as `ErrUntrustedSigner`. That is how to retire a key that was not
+  compromised.
+- **Revocation** moves a key from `trusted_signers` to `revoked_signers`.
+  Every attestation the key signed then fails with `ErrRevokedSigner`, and
+  the error names the key id, `revoked_at` and the reason. That includes
+  attestations whose `attested_at` is earlier than the revocation, because
+  the signer sets that timestamp and a stolen key could backdate it. The
+  data owner re-attests the data they still need with the new key. A "valid
+  if signed before X" cutoff has to wait for a trusted timestamp, which is
+  the RFC 3161 work on the anchor sinks. The revocation check runs before the
+  trusted-signer lookup, so a revoked key is reported as revoked even when
+  no trusted signer is left.
+- **Revocation is permanent and admin-only.** It goes through the existing
+  `SetGuardrailPolicy`: admin role, validated, revision incremented, and
+  audited, with `revoked_signer_key_ids` in the `guardrail.policy.set`
+  detail. `INVALID_ARGUMENT` is returned for a revoked key without a reason,
+  a malformed key id, a duplicate, or a key that is both trusted and revoked.
+  A Set that drops a stored revocation or changes its reason gets
+  `FAILED_PRECONDITION`. Nothing can be un-revoked, and a revoked key can
+  never be trusted again.
+- **Read-edit-write is race-free.** `expected_revision` on the request is
+  compared with the stored revision under the store's lock (the row lock in
+  Postgres). A mismatch is `ABORTED` and nothing changes. When the field is
+  absent, the Set applies as before.
+- **CLI** (follow-up PR): `containarium guardrail signer rotate` and
+  `signer revoke` do the read-edit-write with `expected_revision`, and
+  `guardrail verify --trust-bundle <file>` checks an attestation offline
+  against a `GuardrailTrustBundle`. No MCP tool writes the policy, so there
+  is nothing to wrap.
+
+What rotation and revocation do **not** protect against:
+
+- **Key custody is out of scope (Q6).** The signing key stays a file on the
+  data owner's machine. A key stolen and used before anyone notices produces
+  attestations that verify until an admin revokes the key.
+- **The data owner cannot revoke their own key.** Only an admin can. If the
+  owner is the one who notices the compromise, they have to reach an admin,
+  and attestations keep verifying until then.
+- **Offline verifiers learn of a revocation only from a fresh bundle.** An
+  offline check against an old `GuardrailTrustBundle`, or with
+  `--public-key` alone, does not see later revocations.
+- **Sealed Proof Packs and audit anchors are not affected either way.** They
+  hold digests and chain hashes, not signatures or keys
+  (`internal/proofpack/signer_independence_test.go`). A pack sealed before
+  a rotation or a revocation still verifies afterwards.
+
 ### CLI
 
 ```

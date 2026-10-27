@@ -141,7 +141,7 @@ func runGuardrailPolicySet(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := guardrailpolicy.Validate(req.GetPolicy(), req.GetTrustedSigners()); err != nil {
+	if err := guardrailpolicy.ValidateSetRequest(req); err != nil {
 		return fmt.Errorf("invalid guardrail policy: %w", err)
 	}
 	api, done, err := newGuardrailPolicyAPI()

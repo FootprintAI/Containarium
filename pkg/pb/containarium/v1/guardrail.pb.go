@@ -1098,6 +1098,132 @@ func (x *GuardrailTrustedSigner) GetLabel() string {
 	return ""
 }
 
+// GuardrailRevokedKey is a signing key an admin revoked (#2729;
+// docs/architecture/guardrail-inbound-and-server-policy.md, "Signer rotation
+// and revocation"). Every attestation the key signed fails verification,
+// whatever its attested_at: the signer sets that timestamp, so whoever stole
+// the key could backdate it. Revocation is permanent: a Set that drops or
+// changes a stored entry is refused.
+type GuardrailRevokedKey struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 of the revoked Ed25519 public key, hex (as GuardrailTrustedSigner.key_id).
+	KeyId string `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
+	// Server-assigned by the Set that adds the entry; a value in the request is
+	// ignored.
+	RevokedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	// Required. Reviewer-readable, no personal data. Named by every refused verify.
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GuardrailRevokedKey) Reset() {
+	*x = GuardrailRevokedKey{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GuardrailRevokedKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GuardrailRevokedKey) ProtoMessage() {}
+
+func (x *GuardrailRevokedKey) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GuardrailRevokedKey.ProtoReflect.Descriptor instead.
+func (*GuardrailRevokedKey) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GuardrailRevokedKey) GetKeyId() string {
+	if x != nil {
+		return x.KeyId
+	}
+	return ""
+}
+
+func (x *GuardrailRevokedKey) GetRevokedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return nil
+}
+
+func (x *GuardrailRevokedKey) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// GuardrailTrustBundle is the trust a verifier needs without a server: the
+// trusted signers and the revoked keys. `guardrail verify --trust-bundle`
+// reads it as protojson. A key in `revoked` is refused even if it is also
+// listed in `signers`.
+type GuardrailTrustBundle struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Signers       []*GuardrailTrustedSigner `protobuf:"bytes,1,rep,name=signers,proto3" json:"signers,omitempty"`
+	Revoked       []*GuardrailRevokedKey    `protobuf:"bytes,2,rep,name=revoked,proto3" json:"revoked,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GuardrailTrustBundle) Reset() {
+	*x = GuardrailTrustBundle{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GuardrailTrustBundle) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GuardrailTrustBundle) ProtoMessage() {}
+
+func (x *GuardrailTrustBundle) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GuardrailTrustBundle.ProtoReflect.Descriptor instead.
+func (*GuardrailTrustBundle) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GuardrailTrustBundle) GetSigners() []*GuardrailTrustedSigner {
+	if x != nil {
+		return x.Signers
+	}
+	return nil
+}
+
+func (x *GuardrailTrustBundle) GetRevoked() []*GuardrailRevokedKey {
+	if x != nil {
+		return x.Revoked
+	}
+	return nil
+}
+
 // ServerGuardrailPolicy is the stored policy plus the server's bookkeeping.
 type ServerGuardrailPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1109,14 +1235,17 @@ type ServerGuardrailPolicy struct {
 	Revision  int64                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	UpdatedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	// Authenticated subject that made the last Set.
-	UpdatedBy     string `protobuf:"bytes,5,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	UpdatedBy string `protobuf:"bytes,5,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	// Revoked signing keys (#2729). Outside `policy`, so revoking a key leaves
+	// policy_hash unchanged. Never shrinks.
+	RevokedSigners []*GuardrailRevokedKey `protobuf:"bytes,6,rep,name=revoked_signers,json=revokedSigners,proto3" json:"revoked_signers,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ServerGuardrailPolicy) Reset() {
 	*x = ServerGuardrailPolicy{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[10]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1128,7 +1257,7 @@ func (x *ServerGuardrailPolicy) String() string {
 func (*ServerGuardrailPolicy) ProtoMessage() {}
 
 func (x *ServerGuardrailPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[10]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1141,7 +1270,7 @@ func (x *ServerGuardrailPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerGuardrailPolicy.ProtoReflect.Descriptor instead.
 func (*ServerGuardrailPolicy) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ServerGuardrailPolicy) GetPolicy() *GuardrailPolicy {
@@ -1179,6 +1308,13 @@ func (x *ServerGuardrailPolicy) GetUpdatedBy() string {
 	return ""
 }
 
+func (x *ServerGuardrailPolicy) GetRevokedSigners() []*GuardrailRevokedKey {
+	if x != nil {
+		return x.RevokedSigners
+	}
+	return nil
+}
+
 type GetGuardrailPolicyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1187,7 +1323,7 @@ type GetGuardrailPolicyRequest struct {
 
 func (x *GetGuardrailPolicyRequest) Reset() {
 	*x = GetGuardrailPolicyRequest{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[11]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1199,7 +1335,7 @@ func (x *GetGuardrailPolicyRequest) String() string {
 func (*GetGuardrailPolicyRequest) ProtoMessage() {}
 
 func (x *GetGuardrailPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[11]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1212,7 +1348,7 @@ func (x *GetGuardrailPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGuardrailPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetGuardrailPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{13}
 }
 
 type GetGuardrailPolicyResponse struct {
@@ -1231,7 +1367,7 @@ type GetGuardrailPolicyResponse struct {
 
 func (x *GetGuardrailPolicyResponse) Reset() {
 	*x = GetGuardrailPolicyResponse{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[12]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1243,7 +1379,7 @@ func (x *GetGuardrailPolicyResponse) String() string {
 func (*GetGuardrailPolicyResponse) ProtoMessage() {}
 
 func (x *GetGuardrailPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[12]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1256,7 +1392,7 @@ func (x *GetGuardrailPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGuardrailPolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetGuardrailPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetGuardrailPolicyResponse) GetConfigured() bool {
@@ -1285,13 +1421,20 @@ type SetGuardrailPolicyRequest struct {
 	// Required. An empty rule list is a valid policy (it clears every rule).
 	Policy         *GuardrailPolicy          `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
 	TrustedSigners []*GuardrailTrustedSigner `protobuf:"bytes,2,rep,name=trusted_signers,json=trustedSigners,proto3" json:"trusted_signers,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Must keep every stored revoked key (same key_id and reason), or the Set
+	// is FAILED_PRECONDITION. No trusted signer may be revoked.
+	RevokedSigners []*GuardrailRevokedKey `protobuf:"bytes,3,rep,name=revoked_signers,json=revokedSigners,proto3" json:"revoked_signers,omitempty"`
+	// When set, the Set applies only if the stored revision equals it (0 = not
+	// configured); otherwise ABORTED and nothing changes. A read-edit-write
+	// sets it so a concurrent Set cannot be overwritten silently.
+	ExpectedRevision *int64 `protobuf:"varint,4,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SetGuardrailPolicyRequest) Reset() {
 	*x = SetGuardrailPolicyRequest{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[13]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1303,7 +1446,7 @@ func (x *SetGuardrailPolicyRequest) String() string {
 func (*SetGuardrailPolicyRequest) ProtoMessage() {}
 
 func (x *SetGuardrailPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[13]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1316,7 +1459,7 @@ func (x *SetGuardrailPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetGuardrailPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetGuardrailPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SetGuardrailPolicyRequest) GetPolicy() *GuardrailPolicy {
@@ -1333,6 +1476,20 @@ func (x *SetGuardrailPolicyRequest) GetTrustedSigners() []*GuardrailTrustedSigne
 	return nil
 }
 
+func (x *SetGuardrailPolicyRequest) GetRevokedSigners() []*GuardrailRevokedKey {
+	if x != nil {
+		return x.RevokedSigners
+	}
+	return nil
+}
+
+func (x *SetGuardrailPolicyRequest) GetExpectedRevision() int64 {
+	if x != nil && x.ExpectedRevision != nil {
+		return *x.ExpectedRevision
+	}
+	return 0
+}
+
 type SetGuardrailPolicyResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The stored policy, with its new revision.
@@ -1344,7 +1501,7 @@ type SetGuardrailPolicyResponse struct {
 
 func (x *SetGuardrailPolicyResponse) Reset() {
 	*x = SetGuardrailPolicyResponse{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[14]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1356,7 +1513,7 @@ func (x *SetGuardrailPolicyResponse) String() string {
 func (*SetGuardrailPolicyResponse) ProtoMessage() {}
 
 func (x *SetGuardrailPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[14]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1369,7 +1526,7 @@ func (x *SetGuardrailPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetGuardrailPolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetGuardrailPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SetGuardrailPolicyResponse) GetPolicy() *ServerGuardrailPolicy {
@@ -1394,7 +1551,7 @@ type GetGuardrailStatusRequest struct {
 
 func (x *GetGuardrailStatusRequest) Reset() {
 	*x = GetGuardrailStatusRequest{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[15]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1406,7 +1563,7 @@ func (x *GetGuardrailStatusRequest) String() string {
 func (*GetGuardrailStatusRequest) ProtoMessage() {}
 
 func (x *GetGuardrailStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[15]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1419,7 +1576,7 @@ func (x *GetGuardrailStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGuardrailStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetGuardrailStatusRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{15}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{17}
 }
 
 type GetGuardrailStatusResponse struct {
@@ -1442,7 +1599,7 @@ type GetGuardrailStatusResponse struct {
 
 func (x *GetGuardrailStatusResponse) Reset() {
 	*x = GetGuardrailStatusResponse{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[16]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1454,7 +1611,7 @@ func (x *GetGuardrailStatusResponse) String() string {
 func (*GetGuardrailStatusResponse) ProtoMessage() {}
 
 func (x *GetGuardrailStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[16]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1467,7 +1624,7 @@ func (x *GetGuardrailStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGuardrailStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetGuardrailStatusResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetGuardrailStatusResponse) GetResponsePolicy() GuardrailEffectivePolicy {
@@ -1521,7 +1678,7 @@ type GuardrailBaselineSetting struct {
 
 func (x *GuardrailBaselineSetting) Reset() {
 	*x = GuardrailBaselineSetting{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[17]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1533,7 +1690,7 @@ func (x *GuardrailBaselineSetting) String() string {
 func (*GuardrailBaselineSetting) ProtoMessage() {}
 
 func (x *GuardrailBaselineSetting) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[17]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1546,7 +1703,7 @@ func (x *GuardrailBaselineSetting) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GuardrailBaselineSetting.ProtoReflect.Descriptor instead.
 func (*GuardrailBaselineSetting) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GuardrailBaselineSetting) GetMode() GuardrailBaselineMode {
@@ -1587,7 +1744,7 @@ type SetGuardrailBaselineModeRequest struct {
 
 func (x *SetGuardrailBaselineModeRequest) Reset() {
 	*x = SetGuardrailBaselineModeRequest{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[18]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +1756,7 @@ func (x *SetGuardrailBaselineModeRequest) String() string {
 func (*SetGuardrailBaselineModeRequest) ProtoMessage() {}
 
 func (x *SetGuardrailBaselineModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[18]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +1769,7 @@ func (x *SetGuardrailBaselineModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetGuardrailBaselineModeRequest.ProtoReflect.Descriptor instead.
 func (*SetGuardrailBaselineModeRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetGuardrailBaselineModeRequest) GetMode() GuardrailBaselineMode {
@@ -1632,7 +1789,7 @@ type SetGuardrailBaselineModeResponse struct {
 
 func (x *SetGuardrailBaselineModeResponse) Reset() {
 	*x = SetGuardrailBaselineModeResponse{}
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[19]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1644,7 +1801,7 @@ func (x *SetGuardrailBaselineModeResponse) String() string {
 func (*SetGuardrailBaselineModeResponse) ProtoMessage() {}
 
 func (x *SetGuardrailBaselineModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_guardrail_proto_msgTypes[19]
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1657,7 +1814,7 @@ func (x *SetGuardrailBaselineModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetGuardrailBaselineModeResponse.ProtoReflect.Descriptor instead.
 func (*SetGuardrailBaselineModeResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SetGuardrailBaselineModeResponse) GetBaseline() *GuardrailBaselineSetting {
@@ -1724,7 +1881,15 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x02 \x01(\fR\tpublicKey\x12\x14\n" +
-	"\x05label\x18\x03 \x01(\tR\x05label\"\x99\x02\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\"\x7f\n" +
+	"\x13GuardrailRevokedKey\x12\x15\n" +
+	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x129\n" +
+	"\n" +
+	"revoked_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x99\x01\n" +
+	"\x14GuardrailTrustBundle\x12A\n" +
+	"\asigners\x18\x01 \x03(\v2'.containarium.v1.GuardrailTrustedSignerR\asigners\x12>\n" +
+	"\arevoked\x18\x02 \x03(\v2$.containarium.v1.GuardrailRevokedKeyR\arevoked\"\xe8\x02\n" +
 	"\x15ServerGuardrailPolicy\x128\n" +
 	"\x06policy\x18\x01 \x01(\v2 .containarium.v1.GuardrailPolicyR\x06policy\x12P\n" +
 	"\x0ftrusted_signers\x18\x02 \x03(\v2'.containarium.v1.GuardrailTrustedSignerR\x0etrustedSigners\x12\x1a\n" +
@@ -1732,7 +1897,8 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\x05 \x01(\tR\tupdatedBy\"\x1b\n" +
+	"updated_by\x18\x05 \x01(\tR\tupdatedBy\x12M\n" +
+	"\x0frevoked_signers\x18\x06 \x03(\v2$.containarium.v1.GuardrailRevokedKeyR\x0erevokedSigners\"\x1b\n" +
 	"\x19GetGuardrailPolicyRequest\"\x9d\x01\n" +
 	"\x1aGetGuardrailPolicyResponse\x12\x1e\n" +
 	"\n" +
@@ -1740,10 +1906,13 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"configured\x12>\n" +
 	"\x06policy\x18\x02 \x01(\v2&.containarium.v1.ServerGuardrailPolicyR\x06policy\x12\x1f\n" +
 	"\vpolicy_hash\x18\x03 \x01(\tR\n" +
-	"policyHash\"\xa7\x01\n" +
+	"policyHash\"\xbe\x02\n" +
 	"\x19SetGuardrailPolicyRequest\x128\n" +
 	"\x06policy\x18\x01 \x01(\v2 .containarium.v1.GuardrailPolicyR\x06policy\x12P\n" +
-	"\x0ftrusted_signers\x18\x02 \x03(\v2'.containarium.v1.GuardrailTrustedSignerR\x0etrustedSigners\"}\n" +
+	"\x0ftrusted_signers\x18\x02 \x03(\v2'.containarium.v1.GuardrailTrustedSignerR\x0etrustedSigners\x12M\n" +
+	"\x0frevoked_signers\x18\x03 \x03(\v2$.containarium.v1.GuardrailRevokedKeyR\x0erevokedSigners\x120\n" +
+	"\x11expected_revision\x18\x04 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01B\x14\n" +
+	"\x12_expected_revision\"}\n" +
 	"\x1aSetGuardrailPolicyResponse\x12>\n" +
 	"\x06policy\x18\x01 \x01(\v2&.containarium.v1.ServerGuardrailPolicyR\x06policy\x12\x1f\n" +
 	"\vpolicy_hash\x18\x02 \x01(\tR\n" +
@@ -1797,14 +1966,14 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x1bGUARDRAIL_BASELINE_MODE_LOG\x10\x01\x12!\n" +
 	"\x1dGUARDRAIL_BASELINE_MODE_BLOCK\x10\x022o\n" +
 	"\x16GuardrailEngineService\x12U\n" +
-	"\x04Scan\x12%.containarium.v1.GuardrailScanRequest\x1a&.containarium.v1.GuardrailScanResponse2\xde\x11\n" +
+	"\x04Scan\x12%.containarium.v1.GuardrailScanRequest\x1a&.containarium.v1.GuardrailScanResponse2\xbc\x13\n" +
 	"\x16GuardrailPolicyService\x12\xe6\x03\n" +
 	"\x12GetGuardrailStatus\x12*.containarium.v1.GetGuardrailStatusRequest\x1a+.containarium.v1.GetGuardrailStatusResponse\"\xf6\x02\x92A\xd6\x02\n" +
 	"\tGuardrail\x12+Get the effective response guardrail policy\x1a\x9b\x02Report what scans model responses: NONE (a policy is configured with no inbound BLOCK rule), BASELINE (no policy was ever set; built-in rules, log-only) or ADMIN (the policy has an inbound BLOCK rule). A store read error is an error, never NONE or BASELINE. Any authenticated caller.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/guardrail/status\x12\xdf\x02\n" +
 	"\x12GetGuardrailPolicy\x12*.containarium.v1.GetGuardrailPolicyRequest\x1a+.containarium.v1.GetGuardrailPolicyResponse\"\xef\x01\x92A\xcf\x01\n" +
-	"\tGuardrail\x12\x1fGet the server guardrail policy\x1a\xa0\x01Return the cluster-wide guardrail policy, its trusted signers, revision and policy hash. configured=false when no policy was ever set. Any authenticated caller.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/guardrail/policy\x12\x92\x04\n" +
-	"\x12SetGuardrailPolicy\x12*.containarium.v1.SetGuardrailPolicyRequest\x1a+.containarium.v1.SetGuardrailPolicyResponse\"\xa2\x03\x92A\xff\x02\n" +
-	"\tGuardrail\x12\x1fSet the server guardrail policy\x1a\xd0\x02Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.\x82\xd3\xe4\x93\x02\x19:\x01*\x1a\x14/v1/guardrail/policy\x12\xe3\x06\n" +
+	"\tGuardrail\x12\x1fGet the server guardrail policy\x1a\xa0\x01Return the cluster-wide guardrail policy, its trusted signers, revision and policy hash. configured=false when no policy was ever set. Any authenticated caller.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/guardrail/policy\x12\xf0\x05\n" +
+	"\x12SetGuardrailPolicy\x12*.containarium.v1.SetGuardrailPolicyRequest\x1a+.containarium.v1.SetGuardrailPolicyResponse\"\x80\x05\x92A\xdd\x04\n" +
+	"\tGuardrail\x12\x1fSet the server guardrail policy\x1a\xae\x04Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.\x82\xd3\xe4\x93\x02\x19:\x01*\x1a\x14/v1/guardrail/policy\x12\xe3\x06\n" +
 	"\x18SetGuardrailBaselineMode\x120.containarium.v1.SetGuardrailBaselineModeRequest\x1a1.containarium.v1.SetGuardrailBaselineModeResponse\"\xe1\x05\x92A\xbc\x05\n" +
 	"\tGuardrail\x12#Set the baseline response scan mode\x1a\x89\x05Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.\x82\xd3\xe4\x93\x02\x1b:\x01*\x1a\x16/v1/guardrail/baselineBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -1821,7 +1990,7 @@ func file_containarium_v1_guardrail_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_guardrail_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_containarium_v1_guardrail_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_containarium_v1_guardrail_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_containarium_v1_guardrail_proto_goTypes = []any{
 	(GuardrailKind)(0),                       // 0: containarium.v1.GuardrailKind
 	(CodeModelTrafficScanning)(0),            // 1: containarium.v1.CodeModelTrafficScanning
@@ -1839,17 +2008,19 @@ var file_containarium_v1_guardrail_proto_goTypes = []any{
 	(*GuardrailKindCount)(nil),               // 13: containarium.v1.GuardrailKindCount
 	(*GuardrailAttestation)(nil),             // 14: containarium.v1.GuardrailAttestation
 	(*GuardrailTrustedSigner)(nil),           // 15: containarium.v1.GuardrailTrustedSigner
-	(*ServerGuardrailPolicy)(nil),            // 16: containarium.v1.ServerGuardrailPolicy
-	(*GetGuardrailPolicyRequest)(nil),        // 17: containarium.v1.GetGuardrailPolicyRequest
-	(*GetGuardrailPolicyResponse)(nil),       // 18: containarium.v1.GetGuardrailPolicyResponse
-	(*SetGuardrailPolicyRequest)(nil),        // 19: containarium.v1.SetGuardrailPolicyRequest
-	(*SetGuardrailPolicyResponse)(nil),       // 20: containarium.v1.SetGuardrailPolicyResponse
-	(*GetGuardrailStatusRequest)(nil),        // 21: containarium.v1.GetGuardrailStatusRequest
-	(*GetGuardrailStatusResponse)(nil),       // 22: containarium.v1.GetGuardrailStatusResponse
-	(*GuardrailBaselineSetting)(nil),         // 23: containarium.v1.GuardrailBaselineSetting
-	(*SetGuardrailBaselineModeRequest)(nil),  // 24: containarium.v1.SetGuardrailBaselineModeRequest
-	(*SetGuardrailBaselineModeResponse)(nil), // 25: containarium.v1.SetGuardrailBaselineModeResponse
-	(*timestamppb.Timestamp)(nil),            // 26: google.protobuf.Timestamp
+	(*GuardrailRevokedKey)(nil),              // 16: containarium.v1.GuardrailRevokedKey
+	(*GuardrailTrustBundle)(nil),             // 17: containarium.v1.GuardrailTrustBundle
+	(*ServerGuardrailPolicy)(nil),            // 18: containarium.v1.ServerGuardrailPolicy
+	(*GetGuardrailPolicyRequest)(nil),        // 19: containarium.v1.GetGuardrailPolicyRequest
+	(*GetGuardrailPolicyResponse)(nil),       // 20: containarium.v1.GetGuardrailPolicyResponse
+	(*SetGuardrailPolicyRequest)(nil),        // 21: containarium.v1.SetGuardrailPolicyRequest
+	(*SetGuardrailPolicyResponse)(nil),       // 22: containarium.v1.SetGuardrailPolicyResponse
+	(*GetGuardrailStatusRequest)(nil),        // 23: containarium.v1.GetGuardrailStatusRequest
+	(*GetGuardrailStatusResponse)(nil),       // 24: containarium.v1.GetGuardrailStatusResponse
+	(*GuardrailBaselineSetting)(nil),         // 25: containarium.v1.GuardrailBaselineSetting
+	(*SetGuardrailBaselineModeRequest)(nil),  // 26: containarium.v1.SetGuardrailBaselineModeRequest
+	(*SetGuardrailBaselineModeResponse)(nil), // 27: containarium.v1.SetGuardrailBaselineModeResponse
+	(*timestamppb.Timestamp)(nil),            // 28: google.protobuf.Timestamp
 }
 var file_containarium_v1_guardrail_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.GuardrailFinding.kind:type_name -> containarium.v1.GuardrailKind
@@ -1864,37 +2035,42 @@ var file_containarium_v1_guardrail_proto_depIdxs = []int32{
 	13, // 9: containarium.v1.GuardrailAttestation.found:type_name -> containarium.v1.GuardrailKindCount
 	13, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
 	3,  // 11: containarium.v1.GuardrailAttestation.verdict:type_name -> containarium.v1.GuardrailVerdict
-	26, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
+	28, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: containarium.v1.GuardrailAttestation.kinds_scanned:type_name -> containarium.v1.GuardrailKind
-	12, // 14: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
-	15, // 15: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	26, // 16: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
-	16, // 17: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
-	12, // 18: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
-	15, // 19: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	16, // 20: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
-	4,  // 21: containarium.v1.GetGuardrailStatusResponse.response_policy:type_name -> containarium.v1.GuardrailEffectivePolicy
-	0,  // 22: containarium.v1.GetGuardrailStatusResponse.inbound_block_kinds:type_name -> containarium.v1.GuardrailKind
-	23, // 23: containarium.v1.GetGuardrailStatusResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
-	5,  // 24: containarium.v1.GuardrailBaselineSetting.mode:type_name -> containarium.v1.GuardrailBaselineMode
-	26, // 25: containarium.v1.GuardrailBaselineSetting.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 26: containarium.v1.SetGuardrailBaselineModeRequest.mode:type_name -> containarium.v1.GuardrailBaselineMode
-	23, // 27: containarium.v1.SetGuardrailBaselineModeResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
-	9,  // 28: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
-	21, // 29: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:input_type -> containarium.v1.GetGuardrailStatusRequest
-	17, // 30: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
-	19, // 31: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
-	24, // 32: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:input_type -> containarium.v1.SetGuardrailBaselineModeRequest
-	10, // 33: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
-	22, // 34: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:output_type -> containarium.v1.GetGuardrailStatusResponse
-	18, // 35: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
-	20, // 36: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
-	25, // 37: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:output_type -> containarium.v1.SetGuardrailBaselineModeResponse
-	33, // [33:38] is the sub-list for method output_type
-	28, // [28:33] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	28, // 14: containarium.v1.GuardrailRevokedKey.revoked_at:type_name -> google.protobuf.Timestamp
+	15, // 15: containarium.v1.GuardrailTrustBundle.signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	16, // 16: containarium.v1.GuardrailTrustBundle.revoked:type_name -> containarium.v1.GuardrailRevokedKey
+	12, // 17: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
+	15, // 18: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	28, // 19: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
+	16, // 20: containarium.v1.ServerGuardrailPolicy.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
+	18, // 21: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	12, // 22: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
+	15, // 23: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	16, // 24: containarium.v1.SetGuardrailPolicyRequest.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
+	18, // 25: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	4,  // 26: containarium.v1.GetGuardrailStatusResponse.response_policy:type_name -> containarium.v1.GuardrailEffectivePolicy
+	0,  // 27: containarium.v1.GetGuardrailStatusResponse.inbound_block_kinds:type_name -> containarium.v1.GuardrailKind
+	25, // 28: containarium.v1.GetGuardrailStatusResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
+	5,  // 29: containarium.v1.GuardrailBaselineSetting.mode:type_name -> containarium.v1.GuardrailBaselineMode
+	28, // 30: containarium.v1.GuardrailBaselineSetting.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 31: containarium.v1.SetGuardrailBaselineModeRequest.mode:type_name -> containarium.v1.GuardrailBaselineMode
+	25, // 32: containarium.v1.SetGuardrailBaselineModeResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
+	9,  // 33: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
+	23, // 34: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:input_type -> containarium.v1.GetGuardrailStatusRequest
+	19, // 35: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
+	21, // 36: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
+	26, // 37: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:input_type -> containarium.v1.SetGuardrailBaselineModeRequest
+	10, // 38: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
+	24, // 39: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:output_type -> containarium.v1.GetGuardrailStatusResponse
+	20, // 40: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
+	22, // 41: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
+	27, // 42: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:output_type -> containarium.v1.SetGuardrailBaselineModeResponse
+	38, // [38:43] is the sub-list for method output_type
+	33, // [33:38] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_guardrail_proto_init() }
@@ -1902,13 +2078,14 @@ func file_containarium_v1_guardrail_proto_init() {
 	if File_containarium_v1_guardrail_proto != nil {
 		return
 	}
+	file_containarium_v1_guardrail_proto_msgTypes[15].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_guardrail_proto_rawDesc), len(file_containarium_v1_guardrail_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
