@@ -79,6 +79,13 @@ func main() {
 		os.Exit(agentbox.RunFrameCLI(os.Args[2:], os.Stdin, os.Stderr))
 	}
 
+	// `agent-box approval-mcp --run <name>` — the permission-prompt tool a
+	// `code run --approvals ask` run's Claude Code starts as a stdio MCP
+	// server (#2183). Not a user-facing verb either.
+	if len(os.Args) >= 2 && os.Args[1] == "approval-mcp" {
+		os.Exit(agentbox.RunApprovalCLI(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	mcpServer := server.NewMCPServer(
 		"containarium-agent-box",
 		version.Version,

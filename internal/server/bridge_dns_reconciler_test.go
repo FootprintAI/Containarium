@@ -102,3 +102,17 @@ func TestNewBridgeDNSReconciler_NilWhenNotManaged(t *testing.T) {
 		})
 	}
 }
+
+// The construction gate honours the off switch and the opt-in.
+func TestNewBridgeDNSReconciler_OffSwitchAndOptIn(t *testing.T) {
+	be := &fakeBridgeDNSBackend{present: true, ip: "10.0.3.5"}
+	base := &DualServerConfig{EnableAppHosting: true, BaseDomain: "example.com"}
+	if r := newBridgeDNSReconciler(base, be, false); r == nil {
+		t.Fatal("app hosting + base domain + core-caddy must build a reconciler")
+	}
+	off := *base
+	off.BridgeDNSReconcileDisabled = true
+	if r := newBridgeDNSReconciler(&off, be, true); r != nil {
+		t.Fatal("--bridge-dns-reconcile=false must not build a reconciler, even on first install")
+	}
+}

@@ -1,12 +1,23 @@
 # Pin for the SDLC role skills shipped in coding-agent boxes (#2065).
 #
-# Source of truth is https://github.com/FootprintAI/open-sdlc-skills; this repo
-# references it, it never vendors it. `ref` is a full commit SHA because that
-# repo has no tags (a commit is content-addressed, so it pins the content).
-# `sha256` is the digest of the packaged tarball, which is built
-# deterministically, so CI rebuilds it from `ref` and fails on a mismatch.
+# Each `[source]` section pins one repository and deterministic release asset.
+# `ref` is a full commit SHA; `sha256` is the digest of `<source>-skills.tar.gz`.
+# The repository references these sources but never vendors them. Namespace
+# names must be unique across every source; the bundle builder fetches all pins
+# and fails before writing an asset if two sources contain the same namespace.
 #
-# Bump: scripts/build-sdlc-skills-bundle.sh --update-lock <out-dir>
+# Skill sets (#3048): `set.<id>=<ns>,<ns>` says which upstream namespaces a set id
+# selects (install-sdlc-skills.sh SKILL_SETS, recipe `skill_sets`, `code install
+# --skill-sets`). Every namespace in the bundle belongs to exactly one set; the
+# bundle build fails otherwise, so a namespace added upstream must be assigned
+# here in the same change that bumps `ref`.
+#
+# Bump the default source:
+#   scripts/build-sdlc-skills-bundle.sh --update-lock sdlc <out-dir>
+set.sdlc=architect,coordinator,devops,engineer,pm,product,release,reviewer,scrum,team
+set.qa=qa
+
+[sdlc]
 repo=FootprintAI/open-sdlc-skills
 ref=ba64133c4125dc26d59eeec6d9ad4d6799174148
 sha256=eb4ac625b811c3e19b0fdd1ca4fcd3f5ae2cb2f7bdffda6aaaf83c09699f8a7f

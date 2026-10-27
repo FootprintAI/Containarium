@@ -28,6 +28,10 @@ func (c *countingInspector) GetRawInstance(string) (map[string]string, string, e
 	return nil, "", nil
 }
 
+func (c *countingInspector) GetRawInstanceDevices(string) (map[string]map[string]string, error) {
+	return nil, nil
+}
+
 // loopEnforcer is an enforcer whose reconcile pass is one ListContainers on
 // insp (what gather does), driven by the real loop and bus subscription.
 func loopEnforcer(t *testing.T, bus *events.Bus, interval, debounce time.Duration) (*NetworkPolicyEnforcer, *countingInspector) {

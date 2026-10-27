@@ -39,6 +39,9 @@ const (
 	DenyReasonPolicy       uint8 = 0 // failed the egress allow-list / intra-tenant / metadata check
 	DenyReasonVirtualPatch uint8 = 1 // matched an explicit virtual-patch deny rule (#660)
 	DenyReasonSignature    uint8 = 2 // matched a cleartext exploit signature (#661, Tier 2)
+	// DenyReasonSpoofedSource: the box sent with a source address that is not
+	// its own (#2618). Decided by the tenant's mode; never allowed by anything.
+	DenyReasonSpoofedSource uint8 = 3
 )
 
 // Verdicts carried in DenyEvent.Verdict — mirror the DENY_VERDICT_* #defines in

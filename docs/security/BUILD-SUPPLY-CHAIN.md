@@ -65,8 +65,8 @@ follow-ups.
 | Tree | What it fetches | Pinned how |
 | --- | --- | --- |
 | `hacks/install.sh`, `hacks/install-cli.sh`, `hacks/runner/` | The operator install path: daemon and CLI binaries from a release (or the newest one by default), a package-repository signing key, the actions runner | Release tag when one is passed; no checksum; unpinned signing key |
-| `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only |
-| `terraform/modules/containarium/scripts/startup-sentinel.sh` (line 172), `terraform/gce/scripts/startup-sentinel.sh` (line 90) | curl | The same sshpiperd tarball the CI workflow now checks against its release sha256 | Version only, no checksum: a known gap, same fetch as the row above it |
+| `terraform/` startup scripts | Daemon binary, sshpiper, and a Google ops-agent installer script on first boot | Version only, except the sshpiperd tarball (row below) |
+| `terraform/modules/containarium/scripts/startup-sentinel.sh`, `terraform/gce/scripts/startup-sentinel.sh` | curl | The sshpiperd v1.6.1 release tarball | sha256 (the value `ssh-ban.yml` pins), checked with `sha256sum -c` before extraction under `set -e`, so a mismatch fails the boot step (#3103). `scripts/ci/check-sentinel-sshpiper-checksum.sh`, run in the `workflow-lint` lane, fails if either script loses the check or the three values differ. Not a real boot test |
 | `pkg/core/stacks/stacks.yaml`, `pkg/core/recipes/recipes.yaml` (YAML outside `.github/`) | Tenant dev-stack and recipe installs, including `@latest` Go tools and a NodeSource `curl \| bash`, run inside a tenant container at the tenant's request | Unpinned |
 | `benchmark/`, `examples/`, `experimental/` | Lab and demo scripts | Unpinned |
 
@@ -88,6 +88,7 @@ check with a checksum for each download.
 | `.github/workflows/helm-install-upgrade.yml` | curl | kind v0.24.0 binary | version + sha256 |
 | `.github/workflows/workflow-lint.yml` | curl | actionlint and zizmor release tarballs | version + sha256 |
 | `scripts/install-sdlc-skills.sh` | curl | skills tarball and its `.sha256` from the same release | sha256 verified against the release sidecar file (integrity, not independent authenticity) |
+| `scripts/install-sdlc-skills.sh` | curl | `pkg/core/sdlcskills/sdlc-skills.lock` at the release tag, only when an explicit `SKILL_SETS` list is given | its `sha256=` must equal the digest of the already-verified tarball, else nothing is installed; it only maps set ids to namespaces |
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
 | `scripts/bundle/add-zabbly-repo.sh` | curl | Incus (Zabbly) apt repository signing key, so the offline-bundle builder can download incus, incus-client and incus-extra | primary-key fingerprint (`ZABBLY_KEY_FPR`) checked before the key is installed; apt then verifies the downloaded `.deb`s against it |
 | `scripts/lib/deploy-install.sh` | curl | none downloaded: a health probe the deploy runs on the target host against the daemon's own `/health` (default `http://localhost:8080/health`), and discards the body | not a fetch of third-party content; listed because the gate matches the tool name |

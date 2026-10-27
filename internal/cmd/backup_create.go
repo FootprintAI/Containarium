@@ -88,7 +88,9 @@ snapshot Incus takes, so a running box is fine), the contents of /tmp,
 added, and the archive is encrypted before it is stored. A whole-box
 backup is never plaintext: --key-mode is required. The database and hook
 flags do not apply. The daemon caps a box backup at 256 GiB by default
-(CONTAINARIUM_BACKUP_BOX_MAX_BYTES) and checks free space before starting.
+(CONTAINARIUM_BACKUP_BOX_MAX_BYTES). The one limit applies to both the
+box's uncompressed content and the stored archive. The daemon also checks
+free space before starting.
 
 Examples:
   containarium backup create alice --dest local --server <host>

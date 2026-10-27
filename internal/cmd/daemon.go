@@ -25,6 +25,7 @@ import (
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -142,6 +143,10 @@ Examples:
 	RunE: runDaemon,
 }
 
+// poolHeadroomFloors is --pool-headroom-floor, filled and validated by pflag
+// (#3128).
+var poolHeadroomFloors = poolcapacity.Floors{}
+
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 
@@ -226,6 +231,7 @@ func init() {
 
 	// Runtime selection
 	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
+	daemonCmd.Flags().Var(poolHeadroomFloors, "pool-headroom-floor", "Refuse container creates and snapshots on an Incus storage pool once it is this percent used, as <pool>=<percent>. Repeatable, one pool each; whole percent 86-99 (above the 85% \"pool nearly full\" mark). Pools not named use 95. Host status and the built-in alert keep 85/95 (#3128).")
 	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
 	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
@@ -359,6 +365,16 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		log.Printf("  Profile: default (configured)")
 	}
 
+	// #3130: bind the HTTP port BEFORE the core-container and Postgres
+	// waits below (up to ~2 min each), so the backend answers /health as
+	// "degraded" with the reason instead of refusing connections and
+	// looking dead. Every other path returns 503 until the gateway takes
+	// the listener over in DualServer.Start. The port can still change
+	// once the persisted daemon config loads; releaseUnlessServing then
+	// closes it and the gateway binds the final port as before.
+	early := bindStartupHealth(enableREST, "", daemonHTTPPort)
+	defer early.Close()
+
 	// Wait for core containers (postgres, caddy) to be ready before proceeding.
 	// This prevents the race condition where the daemon starts before core
 	// containers are fully booted after a spot VM preemption/restart.
@@ -389,16 +405,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			log.Printf("  Falling back to the shared client — a stuck Incus call could block this wait past its own timeout")
 			bootWaitClient = incusClient
 		}
+		early.SetReason(startupReasonCoreContainers)
 		if err := waitForCoreContainers(bootWaitClient, 2*time.Minute); err != nil {
 			log.Printf("Warning: %v", err)
 			log.Printf("  Proceeding anyway — some features may be unavailable")
 		}
 	}
 
-	// Backfill role labels and reconcile base scripts — incus-specific, no-op on k8s.
+	// Backfill role labels — incus-specific, no-op on k8s.
+	// Timezone setup runs during provisioning; replaying it here would
+	// overwrite a tenant-selected timezone on every daemon restart (#3146).
 	if incusClient != nil {
 		backfillCoreContainerLabels(incusClient)
-		go reconcileBaseScripts(incusClient)
 	}
 
 	// Always auto-detect Caddy container IP if no URL specified.
@@ -476,26 +494,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if postgresConnString != "" {
 		log.Printf("Waiting for PostgreSQL to become reachable...")
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		for {
-			pingPool, pingErr := pgxpool.New(waitCtx, postgresConnString)
-			if pingErr == nil {
-				if err := pingPool.Ping(waitCtx); err == nil {
-					pingPool.Close()
-					log.Printf("PostgreSQL is reachable")
-					break
-				}
-				pingPool.Close()
-			}
-			select {
-			case <-waitCtx.Done():
-				log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
-				goto pgWaitDone
-			case <-time.After(5 * time.Second):
-				log.Printf("  still waiting for PostgreSQL...")
-			}
+		if waitForPostgres(waitCtx, postgresConnString, 5*time.Second, early.SetReason) {
+			log.Printf("PostgreSQL is reachable")
+			early.SetReason(startupReasonInitialising)
+		} else {
+			// /health keeps "postgres unavailable" until the gateway
+			// takes over.
+			log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
 		}
-	pgWaitDone:
 		waitCancel()
+	} else {
+		early.SetReason(startupReasonInitialising)
 	}
 
 	// Load persisted daemon config from PostgreSQL (values saved by previous runs).
@@ -653,6 +662,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		CertsDir:            daemonCertsDir,
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
+		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,
@@ -687,6 +697,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		LocalBackendID:             resolveBackendID(localBackendID),
 		Pool:                       pool,
 		Region:                     region,
+		PoolHeadroomFloors:         poolHeadroomFloors,
 		CPUOvercommitFactor:        cpuOvercommitFactor,
 		CPUOvercommitEnforce:       cpuOvercommitEnforce,
 		PlacementCPUAware:          placementCPUAware,
@@ -884,78 +895,6 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 			}
 		}
 	}
-}
-
-// reconcileBaseScripts ensures all running containers have base scripts applied.
-// It runs in the background at daemon startup. Containers that already have the
-// scripts are fast (apt-get install is a no-op for already-installed packages).
-func reconcileBaseScripts(incusClient *incus.Client) {
-	log.Printf("Reconciling base scripts on all running containers...")
-
-	mgr, err := container.New()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	containers, err := incusClient.ListContainers()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	var applied, failed int
-	var failedNames []string
-	for _, c := range baseScriptTargets(containers) {
-		// Derive the lookup name for InstallStack:
-		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
-		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
-		lookupName := c.Name
-		if strings.HasSuffix(c.Name, "-container") {
-			lookupName = strings.TrimSuffix(c.Name, "-container")
-		}
-
-		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
-			failed++
-			failedNames = append(failedNames, c.Name)
-			log.Printf("base script reconcile: ntp on %s: %v", c.Name, err)
-			continue
-		}
-		applied++
-	}
-
-	// One summary line instead of a warning per container (#2617).
-	log.Printf("Base script reconciliation complete: %d applied, %d failed%s", applied, failed, failedSuffix(failedNames))
-}
-
-// baseScriptTargets selects the containers the startup base-script reconcile
-// applies to: running ones, excluding core service containers, which are
-// platform-managed rather than tenant workloads (#2617).
-func baseScriptTargets(containers []incus.ContainerInfo) []incus.ContainerInfo {
-	var out []incus.ContainerInfo
-	for _, c := range containers {
-		if c.State != "Running" || c.Role.IsCoreRole() {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// failedSuffix renders " (a, b, c, +N more)" for the reconcile summary, empty
-// when nothing failed. Capped so a fleet-wide failure stays one short line.
-func failedSuffix(names []string) string {
-	const max = 5
-	if len(names) == 0 {
-		return ""
-	}
-	shown := names
-	more := ""
-	if len(names) > max {
-		shown = names[:max]
-		more = fmt.Sprintf(", +%d more", len(names)-max)
-	}
-	return " (" + strings.Join(shown, ", ") + more + ")"
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for

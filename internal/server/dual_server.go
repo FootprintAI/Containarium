@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,6 +49,7 @@ import (
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/retention"
 	retentionpg "github.com/footprintai/containarium/internal/retention/pgstore"
 	"github.com/footprintai/containarium/internal/runlease"
@@ -107,6 +107,10 @@ type DualServerConfig struct {
 	// HTTP/REST settings
 	HTTPPort   int
 	EnableREST bool
+	// StartupListener is HTTPPort, already bound by the daemon before its
+	// startup waits and answering /health "degraded" (#3130). The gateway
+	// takes it over; nil = the gateway binds HTTPPort itself.
+	StartupListener *gateway.StartupListener
 
 	// Authentication settings
 	JWTSecret string
@@ -206,6 +210,10 @@ type DualServerConfig struct {
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
+	// PoolHeadroomFloors is each storage pool's floor in percent used, past
+	// which creates and snapshots are refused (#3128). Unlisted pools use
+	// poolcapacity.DefaultFloorPercent.
+	PoolHeadroomFloors poolcapacity.Floors
 	// CPUOvercommitFactor is the max CPU overcommit ceiling (committed cores /
 	// physical cores) for create-time admission (#1029). <= 0 disables the gate.
 	CPUOvercommitFactor float64
@@ -1612,14 +1620,14 @@ skipAppHosting:
 	// on any failure we keep the in-memory store (policies won't survive a
 	// restart, but the service stays up). Swap happens before grpcServer.Serve,
 	// so it races with no live RPCs.
-	// policyStoreDurable says whether npServer's store is the source of truth
+	// npServer's durable flag says whether its store is the source of truth
 	// for network policies: true with no Postgres configured (the in-memory
 	// store IS the store) or once the Postgres store is installed; false
 	// while Postgres was configured but could not be reached, because the
 	// in-memory fallback is then empty and must not be read as "no policies"
 	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
-	var policyStoreDurable atomic.Bool
-	policyStoreDurable.Store(postgresConnString == "")
+	// While false, the operator mutation RPCs refuse with UNAVAILABLE (#3131).
+	npServer.SetDurable(postgresConnString == "")
 	// The coding-tool egress policy store (#2378) gets the same guard: with
 	// Postgres configured it refuses every RPC until its Postgres store is
 	// installed below, instead of answering "unrestricted" from the empty
@@ -1683,8 +1691,7 @@ skipAppHosting:
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
 				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
 			} else {
-				npServer.SetStore(pgStore)
-				policyStoreDurable.Store(true)
+				npServer.InstallDurableStore(pgStore)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
@@ -1851,11 +1858,6 @@ skipAppHosting:
 				metricsCollector = mc
 				log.Printf("OTel metrics collector configured (target: %s)", config.VictoriaMetricsURL)
 
-				// Bridge DNS drift gauges and their built-in alerts (#2194).
-				if err := attachBridgeDNSMetrics(bridgeDNS, mc.MeterProvider()); err != nil {
-					log.Printf("Warning: bridge DNS metrics disabled: %v", err)
-				}
-
 				// Per-stage create latency (Phase 0 of
 				// docs/architecture/two-digit-ms-sandbox-spawn.md).
 				if obs, err := metrics.NewCreateStageObserver(mc.MeterProvider()); err != nil {
@@ -1870,6 +1872,13 @@ skipAppHosting:
 	// Storage pool capacity log + gauges, on every daemon (#2823).
 	if m := startStoragePoolMonitor(context.Background(), metricsCollector, config.LocalBackendID); m != nil {
 		containerServer.SetStoragePoolSource(m.Snapshot)
+		// Headroom floor (#3128), checked against the same snapshot.
+		containerServer.SetPoolHeadroomGuard(poolcapacity.NewGuard(config.PoolHeadroomFloors, m.Snapshot, incus.ConfiguredStoragePool, nil))
+		if len(config.PoolHeadroomFloors) > 0 {
+			log.Printf("[storage] pool headroom floors: %s (other pools: %d%%)", config.PoolHeadroomFloors, poolcapacity.DefaultFloorPercent)
+		}
+	} else {
+		log.Printf("WARN: storage pool headroom floor disabled: pool sizes cannot be read, so creates and snapshots are not checked (#3128)")
 	}
 
 	// Set monitoring URLs on container server so GetMonitoringInfo works.
@@ -2028,6 +2037,8 @@ skipAppHosting:
 				// Registered only when the store exists; without Postgres the
 				// RPC is simply absent (Unimplemented) rather than a stub.
 				pb.RegisterAuditServiceServer(grpcServer, NewAuditServer(auditStore))
+				// #3064 — verify a sealed Proof Pack against this chain.
+				pb.RegisterProofPackServiceServer(grpcServer, NewProofPackServer(auditStore))
 				log.Printf("Audit logging service enabled")
 			}
 
@@ -2143,6 +2154,7 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
+		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -2211,7 +2223,7 @@ skipAppHosting:
 			// read through npServer each pass because the store is swapped to
 			// Postgres after construction.
 			Policies: tenantguard.PolicySourceFunc(func(ctx context.Context) ([]*pb.NetworkPolicy, error) {
-				if !policyStoreDurable.Load() {
+				if !npServer.Durable() {
 					// An empty fallback is not "no policies": fail the pass
 					// so the ACLs from the last good pass stay in force.
 					return nil, fmt.Errorf("network-policy store is the in-memory fallback (Postgres unavailable at startup); keeping existing ACLs")
@@ -2477,6 +2489,10 @@ skipAppHosting:
 	threatDetectServer.SetFindingStore(threatDetectStore)
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
+		// The watcher loads the exec-watch object from the network-policy
+		// setting, so the self-measurement attests it too while it is loaded
+		// (#3120); Running is read live, so a failed load attests nothing.
+		wireExecWatcherIntegrity(containerServer, execWatcher)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
@@ -2670,6 +2686,9 @@ skipAppHosting:
 		// The gateway forwards JWT-verified claims, so it reaches the gRPC
 		// server over the in-process listener, the only trusted transport.
 		gatewayServer.SetInternalDialer(internalLis.DialContext)
+		if config.StartupListener != nil {
+			gatewayServer.SetStartupListener(config.StartupListener)
+		}
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
 		// provider API key — or an operator registered an OpenAI-compatible
@@ -3485,10 +3504,6 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
-		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
-		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
-		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
-		ds.containerServer.SetBridgeDNSDisabled(ds.config.BridgeDNSReconcileDisabled)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a
@@ -4166,6 +4181,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				httpErrChan <- fmt.Errorf("HTTP gateway error: %w", err)
 			}
 		}()
+	} else if ds.config.StartupListener != nil {
+		// No gateway to hand the early-bound port to (#3130): release it.
+		_ = ds.config.StartupListener.Close()
 	}
 
 	// Wait for errors or context cancellation
