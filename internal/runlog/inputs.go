@@ -128,10 +128,14 @@ type AnswerResult struct {
 // allow: its one-line prompt, then the tool and its complete input, which are
 // what an allow permits and what the answer is signed for (the prompt is only
 // a summary, and the agent can write it). All are escaped.
-func WriteRequest(w io.Writer, r *pb.RunInput) {
-	fmt.Fprintf(w, "request %s: %s\n  an allow permits exactly this:\n  tool:  %s\n  input: %s\n",
+//
+// The error is the writer's: a caller must not send an allow for a request
+// it could not show.
+func WriteRequest(w io.Writer, r *pb.RunInput) error {
+	_, err := fmt.Fprintf(w, "request %s: %s\n  an allow permits exactly this:\n  tool:  %s\n  input: %s\n",
 		coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()),
 		coderun.PlainText(r.GetTool()), coderun.PlainText(r.GetInput()))
+	return err
 }
 
 // AnswerShown answers shown, the request as the caller showed it to whoever
@@ -181,7 +185,7 @@ func Answer(api RunInputs, box, run, id string, seen *pb.RunInput, a pb.RunInput
 	}
 	if current != nil && (seen == nil || current.GetTool() != seen.GetTool() || current.GetInput() != seen.GetInput()) {
 		var b strings.Builder
-		WriteRequest(&b, current)
+		_ = WriteRequest(&b, current) // a strings.Builder does not fail
 		return AnswerResult{}, fmt.Errorf("%w; nothing was sent. It is now:\n%s", ErrRequestChanged, strings.TrimRight(b.String(), "\n"))
 	}
 	if current == nil {

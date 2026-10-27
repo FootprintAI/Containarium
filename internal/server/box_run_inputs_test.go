@@ -365,3 +365,38 @@ func TestRunInputs_JournalGrowingAfterTheSizeCheckIsRefused(t *testing.T) {
 		t.Errorf("read %d base64 bytes, want the bounded %d (cap + 1)", got, want)
 	}
 }
+
+// A journal of many tiny lines is refused before parsing (#2184 review: 8 MiB
+// of "{}" lines would decode into millions of events).
+func TestRunInputs_JournalWithTooManyLinesIsRefused(t *testing.T) {
+	r := startInputsRun(t, time.Minute)
+	f, err := os.OpenFile(r.journalPath(), os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.Write(bytes.Repeat([]byte("{}\n"), maxRunInputEvents))
+	_ = f.Close()
+	if _, err := r.s.ListRunInputs(tenantCtx(r.owner), &pb.ListRunInputsRequest{Username: r.owner, RunName: r.run}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("err = %v, want ResourceExhausted", err)
+	}
+}
+
+// If an earlier answer the other way is taken just as this one is written,
+// this one is reported as already closed, never as answered (#2184 review).
+func TestAnswerRunInput_EarlierOppositeAnswerWinsIsAlreadyClosed(t *testing.T) {
+	r := startInputsRun(t, time.Minute)
+	write := r.s.boxRunStartExec
+	r.s.boxRunStartExec = func(box, username, script string) (string, error) {
+		r.appendJournal(t, coderun.InputEvent{Kind: coderun.KindInputResponse, T: time.Now().UTC(), RequestID: r.req.RequestID,
+			Answer: coderun.AnswerAllow, Reason: coderun.ReasonAnswered})
+		return write(box, username, script)
+	}
+	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, r.req.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetOutcome() != pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED ||
+		resp.GetClosedAnswer() != pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW {
+		t.Fatalf("response = %v, want ALREADY_CLOSED with the earlier allow", resp)
+	}
+}

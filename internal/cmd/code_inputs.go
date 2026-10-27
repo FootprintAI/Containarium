@@ -154,12 +154,16 @@ func codeAnswer(api runlog.RunInputs, box, run, id string, a pb.RunInputAnswer, 
 		return err
 	}
 	if shown != nil {
-		runlog.WriteRequest(w, shown)
+		if err := runlog.WriteRequest(w, shown); err != nil {
+			return fmt.Errorf("could not show request %s, so nothing was sent: %w", id, err)
+		}
 		if a == pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW && !confirm.yes {
 			if !confirm.tty {
 				return fmt.Errorf("an allow needs confirmation: run 'code answer' at a terminal, or pass --yes to allow whatever the request is when it is sent")
 			}
-			fmt.Fprint(w, "allow? [y/N] ")
+			if _, err := fmt.Fprint(w, "allow? [y/N] "); err != nil {
+				return fmt.Errorf("could not ask for confirmation, so nothing was sent: %w", err)
+			}
 			line, _ := bufio.NewReader(confirm.in).ReadString('\n')
 			if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
 				return fmt.Errorf("not confirmed; nothing was sent")
@@ -254,7 +258,6 @@ func (w *inlineAnswers) refresh() {
 		if printed && prev.GetTool() == r.GetTool() && prev.GetInput() == r.GetInput() && prev.GetPrompt() == r.GetPrompt() {
 			continue
 		}
-		w.shown[r.GetRequestId()] = r
 		what := "permission request"
 		if printed {
 			// The journal is the agent's to write: say so when a request
@@ -266,8 +269,12 @@ func (w *inlineAnswers) refresh() {
 			left = fmt.Sprintf(" (expires in %s)", time.Until(r.GetExpiresAt().AsTime()).Round(time.Second))
 		}
 		var b strings.Builder
-		runlog.WriteRequest(&b, r)
-		fmt.Fprintf(w.diag, "[containarium code] %s%s — type a + Enter to allow, d + Enter to deny\n%s", what, left, b.String())
+		_ = runlog.WriteRequest(&b, r) // a strings.Builder does not fail
+		// Only a request that was actually printed can be answered.
+		if _, err := fmt.Fprintf(w.diag, "[containarium code] %s%s — type a + Enter to allow, d + Enter to deny\n%s", what, left, b.String()); err != nil {
+			continue
+		}
+		w.shown[r.GetRequestId()] = r
 	}
 }
 

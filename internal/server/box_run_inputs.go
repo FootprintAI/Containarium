@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -51,6 +52,11 @@ const defaultRunInputConfirmWait = 3 * time.Second
 // could exhaust the daemon's memory. Requests are at most 16 KiB of input
 // each, so this holds hundreds.
 const maxRunInputJournal = 8 << 20
+
+// maxRunInputEvents caps the journal lines the daemon parses (#2184 review):
+// 8 MiB of tiny lines would otherwise decode into millions of events. A run
+// journals about two lines per request.
+const maxRunInputEvents = 20000
 
 // runInputIDPattern is agent-box's request id: "req-" + 16 hex digits. It
 // becomes a path component on the box, so nothing else is accepted.
@@ -181,6 +187,10 @@ func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsSt
 		if int64(len(raw)) > s.journalCap() {
 			return runInputsState{}, status.Errorf(codes.ResourceExhausted,
 				"the permission journal of run %q grew past the %d-byte limit while it was read; it cannot be read", name, s.journalCap())
+		}
+		if n := bytes.Count(raw, []byte{'\n'}); n > maxRunInputEvents {
+			return runInputsState{}, status.Errorf(codes.ResourceExhausted,
+				"the permission journal of run %q has %d lines, over the %d-line limit; it cannot be read", name, n, maxRunInputEvents)
 		}
 		st.events = coderun.ParseInputJournal(raw)
 	}
@@ -385,10 +395,11 @@ func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunI
 			return nil, err
 		}
 		if rec, ok := findRunInput(st.events, id); ok && rec.response != nil {
-			// Closed some other way meanwhile (it expired, the run ended):
-			// report that, not an answer.
+			// Closed some other way meanwhile (it expired, the run ended, or
+			// an earlier answer the other way was taken first): report that,
+			// not this answer.
 			outcome := pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED
-			if rec.response.Reason != coderun.ReasonAnswered {
+			if rec.response.Reason != coderun.ReasonAnswered || rec.response.Answer != answer {
 				outcome = pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED
 			}
 			return closedRunInput(outcome, *rec.response), nil

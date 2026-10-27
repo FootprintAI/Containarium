@@ -156,6 +156,28 @@ func TestCodeAnswerShowsTheRawToolBeforeAnAllow(t *testing.T) {
 	}
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// An allow is never sent for a request that could not be shown (#2184
+// review): not by `code answer`, not inline.
+func TestAnAllowIsNotSentWhenTheRequestCouldNotBeShown(t *testing.T) {
+	api := &fakeRunInputs{list: deployRequest(time.Now()), answer: answeredAllow}
+	err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW,
+		answerConfirm{tty: true, in: strings.NewReader("y\n")}, failingWriter{})
+	if err == nil || len(api.sent()) != 0 {
+		t.Errorf("code answer: err = %v, sent %d", err, len(api.sent()))
+	}
+
+	w := &inlineAnswers{api: api, box: "alice", run: "code", diag: failingWriter{}, shown: map[string]*pb.RunInput{}}
+	w.refresh()
+	w.read(context.Background(), strings.NewReader("a\n"))
+	if len(api.sent()) != 0 {
+		t.Error("inline: an allow was sent for a request that was never printed")
+	}
+}
+
 func TestCodeAnswerAllowNeedsConfirmation(t *testing.T) {
 	cases := map[string]answerConfirm{
 		"answered no":           {tty: true, in: strings.NewReader("n\n")},
