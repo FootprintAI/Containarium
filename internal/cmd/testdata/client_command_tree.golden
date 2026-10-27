@@ -35,6 +35,7 @@ backup get
 backup list
 backup prune
 backup restore
+backup status
 backup verify
 box delete
 capacity advertise
