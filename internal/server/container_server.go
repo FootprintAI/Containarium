@@ -19,7 +19,6 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
-	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -162,11 +161,10 @@ type ContainerServer struct {
 	// the log and orphaning a PID with no record naming it). sync.Map's zero
 	// value is ready to use — no constructor needed, so test literals that
 	// build a bare &ContainerServer{} still get correct serialization.
-	boxRunLocks       sync.Map // key: box+":"+name -> *sync.Mutex
-	emitter           *events.Emitter
-	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
-	pendingCreations  map[string]*PendingCreation
-	pendingMu         sync.RWMutex
+	boxRunLocks      sync.Map // key: box+":"+name -> *sync.Mutex
+	emitter          *events.Emitter
+	pendingCreations map[string]*PendingCreation
+	pendingMu        sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string
@@ -422,10 +420,6 @@ type ContainerServer struct {
 	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
 	// back to network.ip_address.
 	sshHost string
-
-	// bridgeDNS is the reconciler behind GetBridgeDNSStatus (#2188), set by
-	// DualServer wiring. nil = not managed by this daemon.
-	bridgeDNS *bridgedns.Reconciler
 
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but

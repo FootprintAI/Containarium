@@ -15,9 +15,9 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
-// Per-pool storage capacity gauges (#2823). Like the bridge-DNS gauges, the
-// OTel names use dots and VictoriaMetrics stores them with underscores; the
-// built-in rules query the *Series spellings (pinned by a test).
+// Per-pool storage capacity gauges (#2823). The OTel names use dots and
+// VictoriaMetrics stores them with underscores; the built-in rules query the
+// *Series spellings (pinned by a test).
 const (
 	storagePoolUsedName    = "storage_pool.used_bytes"
 	storagePoolTotalName   = "storage_pool.total_bytes"
