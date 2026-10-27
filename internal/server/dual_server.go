@@ -1858,11 +1858,6 @@ skipAppHosting:
 				metricsCollector = mc
 				log.Printf("OTel metrics collector configured (target: %s)", config.VictoriaMetricsURL)
 
-				// Bridge DNS drift gauges and their built-in alerts (#2194).
-				if err := attachBridgeDNSMetrics(bridgeDNS, mc.MeterProvider()); err != nil {
-					log.Printf("Warning: bridge DNS metrics disabled: %v", err)
-				}
-
 				// Per-stage create latency (Phase 0 of
 				// docs/architecture/two-digit-ms-sandbox-spawn.md).
 				if obs, err := metrics.NewCreateStageObserver(mc.MeterProvider()); err != nil {
@@ -2159,6 +2154,7 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
+		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -3508,10 +3504,6 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
-		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
-		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
-		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
-		ds.containerServer.SetBridgeDNSDisabled(ds.config.BridgeDNSReconcileDisabled)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a

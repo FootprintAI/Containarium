@@ -23,6 +23,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
@@ -47,6 +50,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
@@ -344,6 +350,56 @@ jobs:
             */tenants/"$TENANT") ;;
             *) echo "::error::encryptionroot is $ROOT — the container is not under its tenant's key"; exit 1 ;;
           esac
+
+          # #3146: provisioning sets the default, but restarting the daemon
+          # must preserve a timezone the tenant subsequently selects.
+          INSTANCE="${TENANT}-container"
+          timezone=$(sudo incus exec "$INSTANCE" -- timedatectl show --property=Timezone --value)
+          test "$timezone" = "Asia/Taipei" || {
+            echo "::error::new container timezone is $timezone, expected Asia/Taipei"; exit 1; }
+          sudo incus exec "$INSTANCE" -- timedatectl set-timezone Europe/Paris
+
+          sudo pkill -TERM -f '^/tmp/containarium daemon'
+          for _ in $(seq 1 30); do
+            if ! pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+            echo "::error::daemon did not exit before the timezone restart check"
+            exit 1
+          fi
+          sudo /tmp/containarium daemon --standalone --rest \
+            --jwt-secret "$JWT_SECRET" \
+            --zfs-keys-dir=/etc/containarium/keys \
+            > /tmp/daemon-timezone-restart.log 2>&1 &
+
+          ready=""
+          for _ in $(seq 1 60); do
+            if /tmp/containarium --server "$SERVER" list >/tmp/timezone-probe.log 2>&1; then
+              ready=yes; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::restarted daemon never answered the CLI"
+            cat /tmp/timezone-probe.log
+            tail -40 /tmp/daemon-timezone-restart.log
+            exit 1
+          fi
+          # The old replay runs in a goroutine: watch beyond readiness so
+          # a late overwrite also fails instead of passing a single probe.
+          for _ in $(seq 1 10); do
+            timezone=$(sudo incus exec "$INSTANCE" -- timedatectl show --property=Timezone --value)
+            if [ "$timezone" != "Europe/Paris" ]; then
+              echo "::error::daemon restart changed the tenant timezone to $timezone"
+              tail -40 /tmp/daemon-timezone-restart.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "timezone preserved across daemon restart: $timezone"
 
           # And a stopped container is ciphertext: the key unloads.
           #

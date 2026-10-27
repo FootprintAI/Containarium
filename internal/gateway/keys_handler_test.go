@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/footprintai/containarium/pkg/core/container"
 )
 
 func TestServeAuthorizedKeys_Empty(t *testing.T) {
@@ -592,4 +595,26 @@ func readAndAssert(t *testing.T, tmpHome, username, substr string, wantContains 
 		t.Errorf("user %s authorized_keys: substr %q contains=%v, want %v\nfile:\n%s",
 			username, substr, has, wantContains, string(data))
 	}
+}
+
+// applySentinelKey rewrites each user's file, so it must hold the same
+// per-user lock as the daemon's add/remove/set key paths.
+func TestApplySentinelKey_HoldsPerUserLock(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "alice", ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unlock := container.LockAuthorizedKeys("alice")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = applySentinelKey(home, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZkMdKTk8EXlTr5tlsIfAvlCi2iCl0YB/YDua3uMyDX sentinel")
+	}()
+	select {
+	case <-done:
+		t.Fatal("applySentinelKey rewrote a file while its per-user lock was held")
+	case <-time.After(150 * time.Millisecond):
+	}
+	unlock()
+	<-done
 }

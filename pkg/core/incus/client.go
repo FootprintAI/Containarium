@@ -1841,6 +1841,29 @@ func (c *Client) GetRawInstance(name string) (map[string]string, string, error) 
 	return inst.Config, etag, nil
 }
 
+// DataDir is the Incus data directory this client talks to: the directory
+// holding its unix socket (DefaultSocketPath's for a client without one). The
+// network-policy enforcer reads the bridges' dnsmasq lease files under it.
+func (c *Client) DataDir() string {
+	if c.socketPath != "" {
+		return filepath.Dir(c.socketPath)
+	}
+	return filepath.Dir(DefaultSocketPath)
+}
+
+// GetRawInstanceDevices returns an instance's expanded (profile-merged) device
+// map: device name -> its config keys. The network-policy enforcer reads the
+// primary NIC's `network`/`parent` and `ipv4.address` from it (#2618) — host-side
+// configuration that root inside the instance cannot change, unlike the
+// addresses the instance state reports from inside its own netns.
+func (c *Client) GetRawInstanceDevices(name string) (map[string]map[string]string, error) {
+	inst, _, err := c.server.GetInstance(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance %s: %w", name, err)
+	}
+	return inst.ExpandedDevices, nil
+}
+
 // GetConsoleLog returns the instance's boot-time console ring-buffer log.
 // The error is passed through as-is (wrapped with context) rather than
 // swallowed here — an LXC container without a console device and a genuine

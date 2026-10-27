@@ -7,7 +7,8 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
-// BackupDestination is where a logical dump is stored *off* the database
+// BackupDestination selects archive storage or a Kubernetes PVC snapshot.
+// For LOCAL and GCS, the logical dump is stored *off* the database
 // host. The whole point of the feature is getting the data off-box, so a
 // destination is always required — there is no "stay on the same disk"
 // option (a dump that shares a failure domain with the database it came
@@ -25,9 +26,13 @@ enum BackupDestination {
   // (`gcloud storage cp`). True off-host durability; the recommended
   // production destination.
   BACKUP_DESTINATION_GCS = 2;
+
+  // Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.
+  // Encryption and durability are provided by the CSI storage backend.
+  BACKUP_DESTINATION_SNAPSHOT = 3;
 }
 
-// BackupEngine identifies the database engine a backup was taken from.
+// BackupEngine identifies the database or box backup implementation.
 //
 // Postgres is the only engine implemented today; the enum exists so that a
 // second one has somewhere to be named, and so that the engine a record was
@@ -49,9 +54,10 @@ enum BackupEngine {
   // apply it with the tenant's own tooling.
   BACKUP_ENGINE_HOOK = 2;
 
-  // A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported
-  // as an Incus instance backup tarball, encrypted like any other dump. It
-  // is restored by importing it as a new box, never by a database engine.
+  // A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,
+  // with destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot
+  // encryption and durability are controlled by the CSI storage backend.
+  // Box backups are never restored by a database engine.
   BACKUP_ENGINE_BOX = 3;
 }
 
@@ -436,7 +442,9 @@ message GetBackupResponse {
 // database via pg_restore. Destructive: with `clean` set it drops and
 // recreates objects before loading.
 message RestoreBackupRequest {
-  // Backup to restore.
+  // Backup to restore. A SNAPSHOT backup restarts its source box on a new
+  // PVC in the same namespace, retaining the old PVC. connection, clean,
+  // age_identity and target_container must be unset for snapshot restores.
   string id = 1;
 
   // Connection parameters for pg_restore inside the target container.

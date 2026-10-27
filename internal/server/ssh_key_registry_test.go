@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/pkg/core/container"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -67,6 +68,10 @@ func newTestPubKey(t *testing.T) string {
 type fakeAuthorizedKeys struct {
 	files  map[string][]string
 	addErr map[string]error // by key
+
+	platform     string // platform-managed line the fake replace preserves
+	inReplace    bool   // true while the fake replace's critical section is open
+	replaceCalls int
 }
 
 func newFakeAuthorizedKeys() *fakeAuthorizedKeys {
@@ -93,6 +98,35 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 			return nil
 		},
 		count: func(u string) (int32, error) { return safecast.I32(len(f.files[u])), nil },
+		replace: func(u string, keys []string, hooks container.ReplaceHooks) ([]string, error) {
+			f.replaceCalls++
+			var removed []string
+			for _, l := range f.files[u] {
+				keep := false
+				for _, k := range keys {
+					if k == l {
+						keep = true
+					}
+				}
+				if !keep && l != f.platform {
+					removed = append(removed, l)
+				}
+			}
+			f.inReplace = true
+			defer func() { f.inReplace = false }()
+			if hooks.BeforeWrite != nil {
+				if err := hooks.BeforeWrite(removed); err != nil {
+					return nil, err
+				}
+			}
+			f.files[u] = append(append([]string{}, keys...), f.platform)
+			if hooks.AfterWrite != nil {
+				if err := hooks.AfterWrite(); err != nil {
+					return nil, err
+				}
+			}
+			return removed, nil
+		},
 	}
 }
 

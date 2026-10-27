@@ -234,7 +234,7 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 // applySentinelKey uses this marker to find and replace stale entries on
 // rotation (sentinel VM replacement → new upstream keypair → old marker
 // block must go, new one must take its place).
-const sentinelKeyMarker = "# sshpiper sentinel upstream key"
+const sentinelKeyMarker = container.SentinelKeyMarker
 
 // ServeSentinelKey returns an HTTP handler that accepts a POST with the
 // sentinel's current upstream public key and installs it in every jump
@@ -306,18 +306,25 @@ func applySentinelKey(homeRoot, pubKey string) (updated, rotated int, err error)
 		// directory base name with no path separators) joined with a
 		// fixed ".ssh/authorized_keys" suffix. Caller cannot inject a
 		// traversal here; akPath always lands inside homeRoot.
+		// Hold the same per-user lock as the daemon's add/remove/set key
+		// paths across read-rewrite-rename, or this rewrite can overwrite
+		// (and so lose or resurrect) keys they just wrote.
+		unlock := container.LockAuthorizedKeys(username)
 		// #nosec G304 -- safe path construction (see above)
 		existing, _ := os.ReadFile(akPath)
 
 		newContent, hadPriorKey, priorKeyDiffers := rewriteSentinelBlock(string(existing), pubKey)
 		if newContent == string(existing) {
+			unlock()
 			// Already in the desired shape; count as updated since the
 			// key IS present.
 			updated++
 			continue
 		}
 
-		if writeErr := writeAuthorizedKeys(akPath, sshDir, newContent); writeErr != nil {
+		writeErr := writeAuthorizedKeys(akPath, sshDir, newContent)
+		unlock()
+		if writeErr != nil {
 			log.Printf("[keys] failed to write %s: %v", akPath, writeErr)
 			continue
 		}

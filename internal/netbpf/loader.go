@@ -28,9 +28,12 @@ const (
 	mapDenyCIDR         = "deny_cidr"
 	mapSignatures       = "signatures"
 	mapSigConfig        = "sig_config"
+	mapInboundFlows     = "inbound_flows"
+	mapTrustedIif       = "trusted_iif"
 	statSeen            = uint32(0)
 	statWouldDeny       = uint32(1)
-	statsEntryCount     = 2
+	statInboundReseed   = uint32(2) // #2618: TCP inbound entry re-created mid-stream (eviction/expiry healed)
+	statsEntryCount     = 3
 )
 
 // Loader owns a loaded netpolicy BPF collection and the per-veth TCX links it
@@ -45,6 +48,9 @@ type Loader struct {
 	links       map[int]link.Link // ifindex -> TCX ingress link
 	egressLinks map[int]link.Link // ifindex -> TCX egress link (#631 reply accounting)
 	egressMode  bool              // the object's program reads policy_cfg.egress_mode (#2987)
+	// inboundReplies: the object validates a box's source against
+	// policy_cfg.box_ip and recognises replies to inbound flows (#2618).
+	inboundReplies bool
 }
 
 // Resolve loads the netpolicy BPF object from the operator-supplied source. The
@@ -134,10 +140,11 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 	// the loader still works (reply-byte accounting just stays off). AttachVethEgress
 	// no-ops when it's absent.
 	return &Loader{
-		coll:        coll,
-		links:       make(map[int]link.Link),
-		egressLinks: make(map[int]link.Link),
-		egressMode:  specSupportsEgressMode(spec),
+		coll:           coll,
+		links:          make(map[int]link.Link),
+		egressLinks:    make(map[int]link.Link),
+		egressMode:     specSupportsEgressMode(spec),
+		inboundReplies: specSupportsInboundReplies(spec),
 	}, nil
 }
 
@@ -145,15 +152,23 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 // declare for its program to read the egress-mode byte (#2974).
 const vethPolicyEgressModeField = "egress_mode"
 
-// specSupportsEgressMode reports whether the object's program reads the
-// egress_mode byte of `struct policy_cfg` (#2987). The byte was padding before
-// #2974, and an object built from that source loads fine and simply ignores it,
-// applying `mode` to the egress allow-list too. Detected from the object's own
-// BTF (clang -g, which `make build-bpf` and every BTF-defined map require): the
-// veth_policy value type names the member egress_mode only in a program built
-// to read it. No BTF, no map, or a non-struct value proves nothing, so it is
+// vethPolicyBoxIPField and vethPolicyFlagsField are the `struct policy_cfg`
+// members an object declares when its program validates the box's source
+// address, marks frames and tracks inbound flows (#2618); appended after
+// egress_mode, in this order.
+const (
+	vethPolicyBoxIPField = "box_ip"
+	vethPolicyFlagsField = "flags"
+)
+
+// specVethPolicyHasMember reports whether the object's `struct policy_cfg`
+// declares the named member, i.e. whether its program was built to read it
+// (#2987). A member that was padding or absent in an older source is simply
+// ignored by that object's program, which loads fine. Detected from the
+// object's own BTF (clang -g, which `make build-bpf` and every BTF-defined map
+// require): no BTF, no map, or a non-struct value proves nothing, so it is
 // reported as unsupported.
-func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
+func specVethPolicyHasMember(spec *ebpf.CollectionSpec, name string) bool {
 	ms := spec.Maps[mapVethPolicy]
 	if ms == nil || ms.Value == nil {
 		return false
@@ -163,17 +178,42 @@ func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
 		return false
 	}
 	for _, m := range st.Members {
-		if m.Name == vethPolicyEgressModeField {
+		if m.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
+// specSupportsEgressMode reports whether the object's program reads the
+// egress_mode byte of `struct policy_cfg` (#2987); see specVethPolicyHasMember.
+func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
+	return specVethPolicyHasMember(spec, vethPolicyEgressModeField)
+}
+
+// specSupportsInboundReplies reports whether the object validates the box's
+// source, marks frames and tracks inbound flows (#2618): its policy_cfg declares
+// box_ip and flags AND it carries the inbound_flows and trusted_iif maps.
+// Anything less proves nothing.
+func specSupportsInboundReplies(spec *ebpf.CollectionSpec) bool {
+	return specVethPolicyHasMember(spec, vethPolicyBoxIPField) &&
+		specVethPolicyHasMember(spec, vethPolicyFlagsField) &&
+		spec.Maps[mapInboundFlows] != nil &&
+		spec.Maps[mapTrustedIif] != nil
+}
+
 // SupportsEgressMode reports whether the loaded object applies the egress_mode
 // byte to the egress allow-list (#2987). When false, the program applies `mode`
 // to every check, whatever egress_mode the daemon writes.
 func (l *Loader) SupportsEgressMode() bool { return l.egressMode }
+
+// SupportsInboundReplies reports whether the loaded object validates a box's
+// source address against policy_cfg.box_ip and lets the box answer flows that
+// peers open toward it (#2618). When false (an object built before it), the
+// program judges every packet the box sends as a new outbound flow, so a box
+// with an enforce policy cannot answer inbound connections, and BoxIP is
+// written to no effect.
+func (l *Loader) SupportsInboundReplies() bool { return l.inboundReplies }
 
 // hasEgressProgram reports whether the loaded object carries the reply-accounting
 // egress program (#631).
@@ -242,8 +282,11 @@ func (l *Loader) DetachVeth(ifindex int) error {
 // keyed by the veth's host ifindex.
 func (l *Loader) SetVethPolicy(ifindex int, cfg PolicyConfig) error {
 	key := uint32(ifindex) // #nosec G115 -- ifindex is a small positive int
-	val := vethPolicyValue(cfg)
-	if err := l.coll.Maps[mapVethPolicy].Update(&key, val[:], ebpf.UpdateAny); err != nil {
+	m := l.coll.Maps[mapVethPolicy]
+	// The value must be exactly the map's size: an object built before #2618
+	// has an 8-byte policy_cfg (no box_ip) and still loads.
+	val := fitVethPolicyValue(vethPolicyValue(cfg), int(m.ValueSize()))
+	if err := m.Update(&key, val, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("netbpf: update veth_policy[%d]: %w", ifindex, err)
 	}
 	return nil
@@ -361,6 +404,58 @@ func (l *Loader) Stats() (seen, wouldDeny uint64, err error) {
 // increment) can open a perf reader over it.
 func (l *Loader) EventsMap() *ebpf.Map { return l.coll.Maps[mapEvents] }
 
+// InboundReseeds reads the #2618 counter of TCP inbound-flow entries the egress
+// hook re-created from a validated mid-stream segment — a flow whose entry had
+// been evicted (LRU pressure) or had idled out and healed itself. Only inbound
+// packets write the map, so a box cannot inflate it. 0 on an object built
+// before the counter.
+func (l *Loader) InboundReseeds() (uint64, error) {
+	m := l.coll.Maps[mapStats]
+	if m.MaxEntries() <= statInboundReseed {
+		return 0, nil
+	}
+	var n uint64
+	key := statInboundReseed
+	if err := m.Lookup(&key, &n); err != nil {
+		return 0, fmt.Errorf("netbpf: read stats[inbound_reseed]: %w", err)
+	}
+	return n, nil
+}
+
+// SetTrustedIface marks a host interface as an uplink whose UNMARKED frames may
+// seed an inbound flow (#2618): frames routed in from outside the bridge. A
+// no-op on an object without the map.
+func (l *Loader) SetTrustedIface(ifindex int) error {
+	if l.coll == nil {
+		return nil // closed: the map is gone with the collection
+	}
+	m := l.coll.Maps[mapTrustedIif]
+	if m == nil {
+		return nil
+	}
+	key, one := uint32(ifindex), uint8(1) // #nosec G115 -- ifindex is a small positive int
+	if err := m.Update(&key, &one, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("netbpf: update trusted_iif[%d]: %w", ifindex, err)
+	}
+	return nil
+}
+
+// DeleteTrustedIface removes an uplink; a missing key is not an error.
+func (l *Loader) DeleteTrustedIface(ifindex int) error {
+	if l.coll == nil {
+		return nil // closed: the map is gone with the collection
+	}
+	m := l.coll.Maps[mapTrustedIif]
+	if m == nil {
+		return nil
+	}
+	key := uint32(ifindex) // #nosec G115 -- ifindex is a small positive int
+	if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("netbpf: delete trusted_iif[%d]: %w", ifindex, err)
+	}
+	return nil
+}
+
 // HasFlowAccounting reports whether the loaded object carries the per-flow
 // accounting map (#627). It is intentionally NOT required by Load — an older
 // object built before this feature still loads and enforces; the daemon just
@@ -461,18 +556,38 @@ func (l *Loader) Close() error {
 
 // --- byte-layout helpers (kept next to the C struct definitions they mirror) ---
 
-// vethPolicyValue serializes a PolicyConfig into the 8-byte `struct policy_cfg`
+// vethPolicyValueSize is sizeof(struct policy_cfg) in the current object.
+const vethPolicyValueSize = 16
+
+// vethPolicyValue serializes a PolicyConfig into the 16-byte `struct policy_cfg`
 // layout: u32 tenant_id, u8 mode, u8 allow_intra, u8 allow_metadata,
-// u8 egress_mode (the former pad byte).
-// Native byte order (the kernel reads the map value with native loads).
-func vethPolicyValue(cfg PolicyConfig) [8]byte {
-	var b [8]byte
+// u8 egress_mode (the former pad byte), then the box's IPv4 as its 4 wire bytes,
+// u8 flags and 3 pad bytes (#2618, appended). Native byte order for the
+// integers (the kernel reads the map value with native loads); the address
+// stays in network byte order so the program compares it to ip->saddr as-is.
+func vethPolicyValue(cfg PolicyConfig) [vethPolicyValueSize]byte {
+	var b [vethPolicyValueSize]byte
 	binary.NativeEndian.PutUint32(b[0:4], cfg.TenantID)
 	b[4] = cfg.Mode
 	b[5] = cfg.AllowIntra
 	b[6] = cfg.AllowMetadata
 	b[7] = cfg.EgressMode
+	copy(b[8:12], cfg.BoxIP[:])
+	b[12] = uint8(cfg.Flags)
 	return b
+}
+
+// fitVethPolicyValue returns the value at the loaded object's own policy_cfg
+// size: trimmed for an older object whose struct ends before an appended field
+// (it never reads what is cut), zero-padded for a newer one (an appended field
+// it reads as 0 is "unset" by the struct's convention).
+func fitVethPolicyValue(v [vethPolicyValueSize]byte, size int) []byte {
+	if size <= len(v) {
+		return v[:size]
+	}
+	out := make([]byte, size)
+	copy(out, v[:])
+	return out
 }
 
 // egressKeyBytes serializes an EgressEntry into the 12-byte `struct egress_key`
