@@ -550,6 +550,9 @@ func TestRefreshDriverTokenOnce_PushesMintedToken(t *testing.T) {
 	if got := fake.statusReq.GetDriverToken(); got != "fresh.minted.jwt" {
 		t.Errorf("driver token not pushed: got %q", got)
 	}
+	if fake.statusReq.GetPosture() != nil {
+		t.Error("token-only update must not fabricate a posture measurement")
+	}
 }
 
 // TestRefreshDriverTokenOnce_MintFailureSkipsPush confirms a mint error is

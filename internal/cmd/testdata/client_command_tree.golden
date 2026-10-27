@@ -37,7 +37,6 @@ backup prune
 backup restore
 backup verify
 box delete
-bridge-dns status
 capacity advertise
 capacity get
 capacity withdraw
@@ -230,6 +229,7 @@ ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync
+ssh-keys set
 sync
 token delegate
 token generate

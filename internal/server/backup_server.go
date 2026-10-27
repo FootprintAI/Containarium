@@ -358,11 +358,16 @@ func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackup
 
 // boxCreateStatus maps a whole-box create failure to a gRPC code: no room
 // (the free-space pre-flight, or the cap) is ResourceExhausted, a daemon
-// that cannot export is FailedPrecondition, and anything else is Internal.
+// that cannot export is FailedPrecondition, a second backup of a box that is
+// already being backed up is Aborted (retry when the first finishes, the
+// same code a profile operation already in progress returns), and anything
+// else is Internal.
 func boxCreateStatus(err error) error {
 	switch {
 	case errors.Is(err, backup.ErrInsufficientSpace), errors.Is(err, backup.ErrDumpTooLarge):
 		return status.Errorf(codes.ResourceExhausted, "box backup failed: %v", err)
+	case errors.Is(err, backup.ErrBoxBackupInProgress):
+		return status.Errorf(codes.Aborted, "box backup failed: %v", err)
 	case errors.Is(err, backup.ErrBoxUnavailable):
 		return status.Errorf(codes.FailedPrecondition, "box backup failed: %v", err)
 	default:

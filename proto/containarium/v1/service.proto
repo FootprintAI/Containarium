@@ -480,6 +480,19 @@ service ContainerService {
     };
   }
 
+  // SetSSHKeys replaces the caller-managed SSH public keys of a container
+  rpc SetSSHKeys(SetSSHKeysRequest) returns (SetSSHKeysResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/ssh-keys"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set SSH keys (replace all)";
+      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. Revocation is registry-wide: a dropped key is revoked in the ssh_keys registry for every account holding it (as RemoveSSHKey does), so it is also revoked for the same user's other boxes where it remains in the file. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
+      tags: "SSH Management";
+    };
+  }
+
   // RemoveSSHKey removes an SSH public key from a container
   rpc RemoveSSHKey(RemoveSSHKeyRequest) returns (RemoveSSHKeyResponse) {
     option (google.api.http) = {
@@ -845,20 +858,6 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Poll upgrade status";
       description: "Returns the status of an upgrade started by TriggerUpgrade. Note: a local self-upgrade restarts the daemon and drops job state, returning 'unknown' afterward; compare the backend version in ListBackends to confirm.";
-      tags: "System";
-    };
-  }
-
-  // GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-  // app-hosting base domain to core-caddy matches core-caddy's live address,
-  // and why not when it does not (#2188). Admin-only.
-  rpc GetBridgeDNSStatus(GetBridgeDNSStatusRequest) returns (GetBridgeDNSStatusResponse) {
-    option (google.api.http) = {
-      get: "/v1/system/bridge-dns"
-    };
-    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
-      summary: "Get bridge DNS record status";
-      description: "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -> core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.";
       tags: "System";
     };
   }

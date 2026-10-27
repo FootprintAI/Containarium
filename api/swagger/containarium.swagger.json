@@ -1910,7 +1910,7 @@
         "parameters": [
           {
             "name": "id",
-            "description": "Backup to restore.",
+            "description": "Backup to restore. A SNAPSHOT backup restarts its source box on a new\nPVC in the same namespace, retaining the old PVC. connection, clean,\nage_identity and target_container must be unset for snapshot restores.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -4198,6 +4198,45 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/AddSSHKeyBody"
+            }
+          }
+        ],
+        "tags": [
+          "SSH Management"
+        ]
+      },
+      "put": {
+        "summary": "Set SSH keys (replace all)",
+        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. Revocation is registry-wide: a dropped key is revoked in the ssh_keys registry for every account holding it (as RemoveSSHKey does), so it is also revoked for the same user's other boxes where it remains in the file. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
+        "operationId": "ContainerService_SetSSHKeys",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetSSHKeysResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetSSHKeysBody"
             }
           }
         ],
@@ -7969,30 +8008,6 @@
         ]
       }
     },
-    "/v1/system/bridge-dns": {
-      "get": {
-        "summary": "Get bridge DNS record status",
-        "description": "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -\u003e core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.",
-        "operationId": "ContainerService_GetBridgeDNSStatus",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetBridgeDNSStatusResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -11253,10 +11268,11 @@
       "enum": [
         "BACKUP_DESTINATION_UNSPECIFIED",
         "BACKUP_DESTINATION_LOCAL",
-        "BACKUP_DESTINATION_GCS"
+        "BACKUP_DESTINATION_GCS",
+        "BACKUP_DESTINATION_SNAPSHOT"
       ],
       "default": "BACKUP_DESTINATION_UNSPECIFIED",
-      "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
+      "description": "BackupDestination selects archive storage or a Kubernetes PVC snapshot.\nFor LOCAL and GCS, the logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination.\n - BACKUP_DESTINATION_SNAPSHOT: Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.\nEncryption and durability are provided by the CSI storage backend."
     },
     "BackupEngine": {
       "type": "string",
@@ -11267,7 +11283,7 @@
         "BACKUP_ENGINE_BOX"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported\nas an Incus instance backup tarball, encrypted like any other dump. It\nis restored by importing it as a new box, never by a database engine."
+      "description": "BackupEngine identifies the database or box backup implementation.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,\nwith destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot\nencryption and durability are controlled by the CSI storage backend.\nBox backups are never restored by a database engine."
     },
     "BackupKeyMode": {
       "type": "string",
@@ -11556,19 +11572,6 @@
       ],
       "default": "BOX_TOOL_ACCESS_UNSPECIFIED",
       "description": "BoxToolAccess is what a platform-started (unattended, headless) agent run on\na box may do without a person present (#2944). It governs only those runs;\nthe owner's own login and `containarium code run` over SSH are unaffected.\nBacked by the user.containarium.tool_access Incus config key\n(ToolAccessKey in pkg/core/incus). Only a recorded level changes behaviour:\nUNSPECIFIED (key absent) keeps today's run path.\n\n - BOX_TOOL_ACCESS_UNSPECIFIED: No level recorded (the key is absent). Platform-started runs behave exactly\nas before this setting existed. Setting it clears a recorded level.\n - BOX_TOOL_ACCESS_NONE: Nothing that needs approval.\n - BOX_TOOL_ACCESS_BUILD_TOOLS: The platform-managed build and test toolchains.\n - BOX_TOOL_ACCESS_FULL_SUDO: Passwordless sudo for the unprivileged run user. An explicit, per-box\nchoice; software installed this way is the owner's to maintain."
-    },
-    "BridgeDNSState": {
-      "type": "string",
-      "enum": [
-        "BRIDGE_DNS_STATE_UNSPECIFIED",
-        "BRIDGE_DNS_STATE_NOT_MANAGED",
-        "BRIDGE_DNS_STATE_PENDING",
-        "BRIDGE_DNS_STATE_IN_SYNC",
-        "BRIDGE_DNS_STATE_DEGRADED",
-        "BRIDGE_DNS_STATE_ABSENT"
-      ],
-      "default": "BRIDGE_DNS_STATE_UNSPECIFIED",
-      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed.\n - BRIDGE_DNS_STATE_ABSENT: The bridge has no record and this daemon will not create one (#2232):\nit only repairs a record that already exists, or creates one in the run\nthat installs core-caddy, or when started with --bridge-dns-create."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -14842,61 +14845,6 @@
         }
       }
     },
-    "GetBridgeDNSStatusResponse": {
-      "type": "object",
-      "properties": {
-        "state": {
-          "$ref": "#/definitions/BridgeDNSState"
-        },
-        "reason": {
-          "type": "string",
-          "description": "Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty\nwhen IN_SYNC."
-        },
-        "bridge": {
-          "type": "string",
-          "description": "Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0)."
-        },
-        "caddyIp": {
-          "type": "string",
-          "description": "core-caddy's address as of the last pass; empty when it could not be\nestablished."
-        },
-        "desired": {
-          "type": "string",
-          "description": "The raw.dnsmasq value the daemon wants for that address, and the value the\nbridge held after the last pass (equal once IN_SYNC). Operator-configured\nhostnames appear here, so this is admin-only."
-        },
-        "current": {
-          "type": "string"
-        },
-        "lastError": {
-          "type": "string",
-          "description": "Why the last pass could not converge; empty when it did."
-        },
-        "driftCount": {
-          "type": "integer",
-          "format": "int32",
-          "description": "Passes that found the record different from the desired value."
-        },
-        "lastPass": {
-          "type": "string",
-          "format": "date-time",
-          "description": "When the last pass finished, and when the record was last rewritten.\nUnset until the first pass / first rewrite."
-        },
-        "lastApplied": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "lastAction": {
-          "type": "string",
-          "description": "What the last write was: \"created\" (no record existed — the daemon made\none, announced in the log) or \"repaired\" (an existing record was brought\nback to the desired value). Empty until the daemon has written. #2232."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "When this daemon created the record from nothing; unset if it only\never repaired one."
-        }
-      },
-      "description": "GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot."
-    },
     "GetCapabilityProfileResponse": {
       "type": "object",
       "properties": {
@@ -16273,6 +16221,24 @@
         }
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
+    },
+    "HostSecurityPosture": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        },
+        "measuredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Host clock at the start of the posture measurement, not the send time."
+        }
+      },
+      "description": "HostSecurityPosture is one measured snapshot of the host's hardening checks.\nChecks use their unprefixed probe names; false includes a check that could not\nbe measured, with the reason in detail. An empty snapshot is not proof of a\npassing posture. Receivers must evaluate required checks and freshness."
     },
     "IngestOutcome": {
       "type": "string",
@@ -19127,6 +19093,10 @@
         "driverToken": {
           "type": "string",
           "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
+        },
+        "posture": {
+          "$ref": "#/definitions/HostSecurityPosture",
+          "description": "Absent means no posture measurement was reported, never \"passing\". Status\nprobes populate this on every report while retaining the posture-prefixed\nentries in checks for older receivers. Token-only refresh requests omit it\nand must not clear a receiver's previously stored posture."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
@@ -20789,6 +20759,43 @@
         }
       }
     },
+    "SetSSHKeysBody": {
+      "type": "object",
+      "properties": {
+        "sshPublicKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The complete desired list of SSH public keys. Each entry must be one line\nwith no authorized_keys options (command=, from=, ...). Duplicates are\ncollapsed."
+        },
+        "allowEmpty": {
+          "type": "boolean",
+          "description": "Must be true to send an empty ssh_public_keys list (removing every\ncaller-managed key). An empty list without it is rejected, so an omitted\nfield cannot wipe a box's keys. Must be false when keys are given."
+        }
+      },
+      "title": "SetSSHKeysRequest is the request to replace a container user's SSH keys"
+    },
+    "SetSSHKeysResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Success message"
+        },
+        "removedKeys": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of keys removed by this call"
+        },
+        "totalKeys": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of distinct caller-managed keys now authorized (the deduplicated\nrequest list). Platform-managed keys, which are preserved, are not counted."
+        }
+      },
+      "title": "SetSSHKeysResponse is the response from replacing SSH keys"
+    },
     "SetSecretRequest": {
       "type": "object",
       "properties": {
@@ -21777,9 +21784,33 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        },
+        "resources": {
+          "$ref": "#/definitions/TaskNodeResources",
+          "description": "Optional minimum host capabilities, checked against this daemon's last\nmeasured profile before graph execution. Nonzero requirements are local\nonly: remote backends and other pools are rejected. These are host\neligibility constraints, not per-box allocations or resource reservations.\nAbsent or all-zero requirements preserve legacy placement behavior."
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResources": {
+      "type": "object",
+      "properties": {
+        "minCpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum measured CPU core count; zero means no CPU constraint.\nMust be nonnegative."
+        },
+        "minMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Minimum measured total RAM in bytes, not currently free RAM.\nZero means no RAM constraint; must be nonnegative."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "description": "Require a successful GPU passthrough measurement in the profile.\nThis does not allocate a GPU or change the skill's recipe."
+        }
+      },
+      "description": "TaskNodeResources describes minimum measured hardware for a graph node.\nFor a crew node the constraint applies to the host of the whole crew;\nmember box limits and ordinary admission checks remain unchanged."
     },
     "TaskNodeResult": {
       "type": "object",

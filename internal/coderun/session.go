@@ -27,6 +27,10 @@ const tailLogContentMarker = "--- content ---\n"
 // found.
 const agentBoxPathPrefix = `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"`
 
+// AgentBoxPathPrefix is agentBoxPathPrefix for commands built outside this
+// package that start agent-box on the box (the approval server, #2183).
+const AgentBoxPathPrefix = agentBoxPathPrefix
+
 // AgentBoxRemoteCommand is the remote command used by code run and quickstart's
 // MCP configs. exec replaces the wrapping shell so agent-box owns the stdio MCP
 // speaks over, and so a signal reaches the helper rather than an intermediate shell.
