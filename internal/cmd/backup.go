@@ -79,11 +79,13 @@ func parseDestination(s string) (pb.BackupDestination, error) {
 	switch s {
 	case "local":
 		return pb.BackupDestination_BACKUP_DESTINATION_LOCAL, nil
+	case "snapshot":
+		return pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT, nil
 	case "gcs":
 		return pb.BackupDestination_BACKUP_DESTINATION_GCS, nil
 	default:
 		return pb.BackupDestination_BACKUP_DESTINATION_UNSPECIFIED,
-			fmt.Errorf("invalid --dest %q (expected 'local' or 'gcs')", s)
+			fmt.Errorf("invalid --dest %q (expected 'local', 'gcs' or 'snapshot')", s)
 	}
 }
 
@@ -144,6 +146,8 @@ func destLabel(d pb.BackupDestination) string {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:
 		return "local"
+	case pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT:
+		return "snapshot"
 	case pb.BackupDestination_BACKUP_DESTINATION_GCS:
 		return "gcs"
 	default:

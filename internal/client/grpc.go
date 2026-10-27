@@ -1168,7 +1168,7 @@ func (c *GRPCClient) VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackup
 
 // DeleteBackup removes a stored dump and its index entry via gRPC.
 func (c *GRPCClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	resp, err := c.backupClient.DeleteBackup(ctx, &pb.DeleteBackupRequest{Id: id})
