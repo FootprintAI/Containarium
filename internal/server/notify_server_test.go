@@ -389,7 +389,7 @@ func TestNotifyJournalScript_RefusesSymlinkedJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := parseNotifyJournals("alice", out); len(got["live"]) != 0 {
+	if got := parseNotifyJournals("alice", out, time.Now()); len(got["live"]) != 0 {
 		t.Fatalf("read a symlinked journal: %+v", got)
 	}
 	_ = s
@@ -736,5 +736,64 @@ func TestNotifyWatcher_ChannelRemovedBeforeSendIsRetried(t *testing.T) {
 	s.wg.Wait()
 	if got := snd.all(); len(got) != 1 || !strings.Contains(got[0].msg.Body, "make deploy") {
 		t.Fatalf("pushes after the channel came back = %+v", got)
+	}
+}
+
+// TestNotifyChannel_LeavesOtherSecretsWithThePrefix: a broker-only secret
+// whose name only shares the token prefix is not this service's, and no set
+// or delete removes it.
+func TestNotifyChannel_LeavesOtherSecretsWithThePrefix(t *testing.T) {
+	s, sec, _, _, _ := newTestNotifyServer(t)
+	ctx := notifyCtx("alice")
+	ntfy := pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY
+	other := notify.TokenSecretPrefix + "BACKUP"
+	sec.rows["alice/"+other] = struct{ value, delivery string }{"keep", secrets.DeliveryBroker}
+	for _, req := range []*pb.SetNotifyChannelRequest{
+		{Kind: ntfy, Server: "https://a.example.com", Topic: "t"},
+		{Kind: ntfy, Server: "https://a.example.com", Topic: "t", Token: "tokA"},
+		{Kind: ntfy, Server: "https://b.example.com", Topic: "t", Token: "tokB"},
+		{Kind: ntfy, Server: "https://b.example.com", Topic: "t", ClearToken: true},
+		{Kind: ntfy, Server: "https://b.example.com", Topic: "t", Token: "tokC"},
+	} {
+		if _, err := s.SetNotifyChannel(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := sec.tokenRows("alice"); len(rows) != 2 {
+		t.Fatalf("token secrets = %v, want the other one and tokC's", rows)
+	}
+	if _, err := s.DeleteNotifyChannel(ctx, &pb.DeleteNotifyChannelRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := sec.rows["alice/"+other]; !ok || r.value != "keep" {
+		t.Fatalf("unrelated secret removed: %+v %v", r, ok)
+	}
+	if rows := sec.tokenRows("alice"); len(rows) != 1 {
+		t.Fatalf("token secrets after delete = %v, want only the other one", rows)
+	}
+}
+
+// TestNotifyWatcher_UsesTheBoxsOwnRequestLine: a later line the agent appends
+// with the same request id is the same request, and does not change what is
+// pushed; a request past its expiry is not pushed.
+func TestNotifyWatcher_UsesTheBoxsOwnRequestLine(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, _, dir := newTestNotifyServer(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	if _, err := s.SetNotifyChannel(notifyCtx("alice"), &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://n.example.com", Topic: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	writeRecord(t, dir, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+	expired := openReq("r0", "Bash: old", now.Add(-time.Hour))
+	writeJournal(t, dir, "live", expired, openReq("r1", "Bash: make test", now), openReq("r1", "Bash: forged", now))
+	s.pollOnce(context.Background())
+	s.wg.Wait()
+	got := snd.all()
+	if len(got) != 1 {
+		t.Fatalf("pushes = %+v, want 1", got)
+	}
+	if b := got[0].msg.Body; !strings.Contains(b, "make test") || strings.Contains(b, "forged") || strings.Contains(b, "more waiting") {
+		t.Fatalf("push body %q, want only the box's own line of r1", b)
 	}
 }

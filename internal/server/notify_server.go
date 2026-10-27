@@ -33,7 +33,7 @@ import (
 //
 // A token change is a pointer swap: the new token goes into a freshly named
 // secret, then one write of the channel row points at it, then the old secret
-// is removed. The row write is the only commit point, so a failure before it
+// is removed by its exact name. The row write is the only commit point, so a failure before it
 // leaves the previous channel and token in effect, and a secret name is never
 // rewritten, so a push always reads a row and the token that belongs to it.
 
@@ -43,7 +43,6 @@ type notifySecretStore interface {
 	Set(ctx context.Context, username, name, value, delivery string) (*secrets.SecretMetadata, error)
 	Delete(ctx context.Context, username, name string) error
 	BrokerCredential(ctx context.Context, username, name string) (string, error)
-	List(ctx context.Context, username string) ([]secrets.SecretMetadata, error)
 }
 
 // notifySender is notify.Sender, behind an interface for tests.
@@ -66,10 +65,10 @@ type NotifyServer struct {
 	coalescer *notify.Coalescer
 	now       func() time.Time
 
-	// cfgMu serializes channel writes (Set, Delete), so one call's cleanup of
-	// unused token secrets never removes the secret another call just
-	// committed. Pushes do not take it: a row and the secret it names are
-	// consistent on their own.
+	// cfgMu serializes channel writes (Set, Delete), so each reads the row the
+	// previous one committed and removes only the secret that row named.
+	// Pushes do not take it: a row and the secret it names are consistent on
+	// their own.
 	cfgMu sync.Mutex
 
 	// Each user is polled on its own goroutine, so one slow box or ntfy
@@ -154,28 +153,18 @@ func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token str
 	return name, nil
 }
 
-// removeTokenSecrets deletes the user's broker-only channel-token secrets
-// except keep. It returns the first failure; the rest are still tried.
-func (s *NotifyServer) removeTokenSecrets(ctx context.Context, username, keep string) error {
-	if s.secrets == nil {
+// removeTokenSecret deletes one token secret this service wrote, by its
+// exact name: only names a channel row pointed at, or one just created, are
+// ever passed here, never a name merely sharing the prefix. A secret that is
+// already gone is fine.
+func (s *NotifyServer) removeTokenSecret(ctx context.Context, username, name string) error {
+	if s.secrets == nil || name == "" {
 		return nil
 	}
-	metas, err := s.secrets.List(ctx, username)
-	if err != nil {
-		return fmt.Errorf("list secrets: %w", err)
+	if err := s.secrets.Delete(ctx, username, name); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+		return fmt.Errorf("delete %s: %w", name, err)
 	}
-	var first error
-	for _, m := range metas {
-		// Only broker-only secrets with our prefix: one a box receives was
-		// not written here and is left alone.
-		if m.Name == keep || !strings.HasPrefix(m.Name, notify.TokenSecretPrefix) || m.Delivery != secrets.DeliveryBroker {
-			continue
-		}
-		if err := s.secrets.Delete(ctx, username, m.Name); err != nil && !errors.Is(err, secrets.ErrNotFound) && first == nil {
-			first = fmt.Errorf("delete %s: %w", m.Name, err)
-		}
-	}
-	return first
+	return nil
 }
 
 // SetNotifyChannel creates or replaces the user's channel.
@@ -227,17 +216,17 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	// what pushes use.
 	stored, err := s.store.Set(ctx, ch)
 	if err != nil {
-		if created != "" {
-			if derr := s.secrets.Delete(ctx, username, created); derr != nil {
-				log.Printf("[notify] remove uncommitted token secret of %s: %v", username, derr)
-			}
+		if derr := s.removeTokenSecret(ctx, username, created); derr != nil {
+			log.Printf("[notify] remove uncommitted token secret of %s: %v", username, derr)
 		}
 		return nil, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
-	// Committed: the old token secret, and any left by an earlier failure, are
-	// no longer pointed at.
-	if err := s.removeTokenSecrets(ctx, username, stored.TokenSecret); err != nil {
-		log.Printf("[notify] remove unused token secrets of %s: %v", username, err)
+	// Committed: the previous token secret is no longer pointed at. If this
+	// delete fails the secret stays behind (broker-only, never delivered).
+	if prev.TokenSecret != stored.TokenSecret {
+		if err := s.removeTokenSecret(ctx, username, prev.TokenSecret); err != nil {
+			log.Printf("[notify] remove the previous token secret of %s: %v", username, err)
+		}
 	}
 	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
 	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
@@ -273,7 +262,8 @@ func (s *NotifyServer) DeleteNotifyChannel(ctx context.Context, req *pb.DeleteNo
 	}
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
-	if _, err := s.store.Get(ctx, username); err != nil {
+	ch, err := s.store.Get(ctx, username)
+	if err != nil {
 		if errors.Is(err, notify.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "no notification channel for %s", username)
 		}
@@ -282,7 +272,7 @@ func (s *NotifyServer) DeleteNotifyChannel(ctx context.Context, req *pb.DeleteNo
 	// Token first, row last: while the row exists a failed delete can be
 	// retried, and a row left pointing at a removed secret only fails its
 	// pushes (they are retried) until the retry removes it.
-	if err := s.removeTokenSecrets(ctx, username, ""); err != nil {
+	if err := s.removeTokenSecret(ctx, username, ch.TokenSecret); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete token: %v; retry the delete", err)
 	}
 	if err := s.store.Delete(ctx, username); err != nil && !errors.Is(err, notify.ErrNotFound) {
@@ -384,7 +374,11 @@ done
 
 // parseNotifyJournals turns the script's output into the open requests of
 // each live run, keyed by run name. A run that is not running is left out.
-func parseNotifyJournals(box, out string) map[string][]notify.Request {
+// Each open request is taken from the first request line for its id: the id
+// is random and unknown before the box writes it, so a later line with the
+// same id is the agent's and is ignored. A request past its expiry at now is
+// denied whatever the journal says yet, and is left out.
+func parseNotifyJournals(box, out string, now time.Time) map[string][]notify.Request {
 	var boot string
 	alive := map[int]bool{}
 	open := map[string][]notify.Request{}
@@ -435,9 +429,25 @@ func parseNotifyJournals(box, out string) map[string][]notify.Request {
 		if agentbox.ResolveOutcome(r.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) != agentbox.RunOutcomeRunning {
 			continue
 		}
-		summary := coderun.SummarizeApprovals(coderun.ParseInputJournal(r.journal))
+		events := coderun.ParseInputJournal(r.journal)
+		first := map[string]coderun.InputEvent{}
+		for _, e := range events {
+			if _, ok := first[e.RequestID]; e.Kind == coderun.KindInputRequest && !ok {
+				first[e.RequestID] = e
+			}
+		}
+		summary := coderun.SummarizeApprovals(events)
 		reqs := make([]notify.Request, 0, len(summary.Open))
-		for _, e := range summary.Open {
+		seen := map[string]bool{}
+		for _, o := range summary.Open {
+			if seen[o.RequestID] {
+				continue
+			}
+			seen[o.RequestID] = true
+			e := first[o.RequestID]
+			if !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt) {
+				continue
+			}
 			reqs = append(reqs, notify.Request{
 				Box: box, Run: r.name, RequestID: e.RequestID, Tool: e.Tool, Prompt: e.Prompt, ExpiresAt: e.ExpiresAt,
 			})
@@ -509,7 +519,7 @@ func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user st
 	if err != nil {
 		return
 	}
-	pushes := s.coalescer.Step(user, parseNotifyJournals(user, out), s.now())
+	pushes := s.coalescer.Step(user, parseNotifyJournals(user, out, s.now()), s.now())
 	sort.Slice(pushes, func(i, j int) bool { return pushes[i].Run < pushes[j].Run })
 	// The box's user can write run records and journals, so a flood of
 	// fake runs must not become a flood of pushes: the rest wait.

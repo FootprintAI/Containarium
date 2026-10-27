@@ -75,8 +75,8 @@ channel to it in one write, then removes the old one. If anything fails
 before that switch, the previous server and token stay in effect; a token is
 never sent to a server it was not set for. `notify delete` removes the token
 first and the channel last, so a failed delete can simply be retried.
-Secrets with that prefix in a delivered mode were not written by this
-service and are left alone.
+Only the exact secrets this service wrote are ever removed; another secret
+whose name merely starts with the same prefix is left alone.
 
 Every 5 seconds the daemon reads the input journal of every running run on
 the box of each user with a channel, read-only, through the same guarded root
@@ -89,9 +89,10 @@ read `code runs` uses. Users without a channel cost nothing.
   delay it (each attempt gives up after 10 seconds and is retried on the
   next poll).
 - **Bursts.** Further requests within 30 seconds of a run's last delivered
-  push wait,
-  then go out as one push with a count. No request is dropped. A request that
-  is answered or expires before its push is due is not sent.
+  push wait, then go out as one push with a count. No request is dropped,
+  within the read limit below. A request that is answered or expires before
+  its push is due is not sent. A later journal line the agent writes with the
+  same request id is ignored: the box's own first line for the id is pushed.
 - **Delivery is at least once.** After a daemon restart, requests still open
   are pushed again. A failed push is retried on the next poll.
 - **Isolation.** Each user is polled separately, so one slow box or ntfy
@@ -109,7 +110,10 @@ read `code runs` uses. Users without a channel cost nothing.
   the daemon push text of its choosing to your topic, at most three pushes
   per poll and one per run per 30 seconds. It cannot read the token or
   answer a request this way.
-- The daemon reads the last 256 KiB of a run's request and response lines.
-  A request still open behind more than that much later traffic is not
-  pushed (a request expires after `--approval-timeout`, 30 minutes by default).
+- The daemon reads the last 256 KiB of a run's request and response lines
+  (about 300 requests and their responses at the largest prompt size). A
+  request still open behind more than that much later traffic is not pushed;
+  a request expires after `--approval-timeout`, 30 minutes by default.
+- If removing a replaced token's secret fails, that secret stays behind
+  (broker-only, never delivered to a box); the daemon logs it.
 - Needs Postgres on the daemon; without it `NotifyService` is not registered.
