@@ -146,3 +146,29 @@ func TestInputRequestLineFields(t *testing.T) {
 		}
 	}
 }
+
+// Journal text is the agent's own input and the agent can write the journal,
+// so what `code status` prints must stay on its own line and cannot carry
+// terminal control sequences that forge or hide other lines.
+func TestApprovalStatusLinesNeutralizesControlCharacters(t *testing.T) {
+	t0 := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	hostile := "ls\n  request req-fake: Bash: true (expires in 1m0s)\r\x1b[2Kstate: idle\u202e\u2028x"
+	s := ApprovalSummary{
+		Requests: 1,
+		Open:     []InputEvent{{Kind: KindInputRequest, RequestID: "req-1\nstate: x", Prompt: hostile, ExpiresAt: t0.Add(time.Minute)}},
+		Notes:    []string{"note\x1b]0;title\x07"},
+	}
+	out := ApprovalStatusLines(s, true, t0)
+	for _, bad := range []string{"\r", "\x1b", "\x07", "\u202e", "\u2028"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output carries %q:\n%s", bad, out)
+		}
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 4 {
+		t.Fatalf("got %d lines, want 4 (state, one request, counts, one note):\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[1], `request req-1\nstate: x: ls\n  request req-fake`) || !strings.Contains(lines[1], `\u202e`) {
+		t.Errorf("request line does not show the escaped text: %q", lines[1])
+	}
+}

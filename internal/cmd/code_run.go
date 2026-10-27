@@ -134,6 +134,13 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	}
 	diag := cmd.ErrOrStderr()
 	name := codeRunName()
+	// #2183: before any setup with side effects (a gateway run mints a token
+	// and writes it to the box in prepareCodeRun).
+	if approvals == coderun.ApprovalsAsk {
+		if err := coderun.ValidApprovalRunName(name); err != nil {
+			return err
+		}
+	}
 
 	sess, err := resolveCodeSession(ctx, box, diag)
 	if err != nil {

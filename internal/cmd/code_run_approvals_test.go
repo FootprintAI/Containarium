@@ -160,3 +160,16 @@ func TestApprovalsFlagDefaultsToDeny(t *testing.T) {
 		t.Fatalf("--approval-timeout default = %v, want 30m0s", f)
 	}
 }
+
+// With --approvals ask, a run name that cannot be used is refused before any
+// setup with side effects — before the box session is even resolved, so a
+// gateway run never mints and writes a token for a run that will not start.
+func TestRunCodeRunRefusesAnUnusableApprovalRunNameFirst(t *testing.T) {
+	defer func(a, n, p string) { codeRunApprovals, codeName, codeRunPrompt = a, n, p }(codeRunApprovals, codeName, codeRunPrompt)
+	codeRunApprovals, codeName, codeRunPrompt = "ask", "sub/task", "p"
+
+	err := runCodeRun(codeRunCmd, []string{"some-box"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be used with --approvals ask") {
+		t.Fatalf("err = %v, want the run-name refusal", err)
+	}
+}
