@@ -259,6 +259,10 @@ type ApprovalSummary struct {
 	Expired   int
 	Cancelled int
 	Open      []InputEvent
+	// Partial says the journal was read only in part (it is over the size
+	// limit), so the counts are lower bounds and Open is unknown: a response
+	// to a request may lie in the unread part.
+	Partial bool
 	// Notes are the journal's status lines, in order.
 	Notes []string
 }
@@ -328,6 +332,15 @@ func ApprovalStatusLines(s ApprovalSummary, running bool, now time.Time) string 
 		return ""
 	}
 	var b strings.Builder
+	if s.Partial {
+		// No request is claimed open (or answered) from a part of the journal.
+		fmt.Fprintf(&b, "permission requests: at least %d so far (allowed %d, denied %d, expired %d, cancelled %d; open requests unknown)\n",
+			s.Requests, s.Allowed, s.Denied, s.Expired, s.Cancelled)
+		for _, n := range s.Notes {
+			fmt.Fprintf(&b, "  note: %s\n", PlainText(n))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
 	if running && len(s.Open) > 0 {
 		b.WriteString("state: waiting_input\n")
 		for _, e := range s.Open {
@@ -360,8 +373,10 @@ var ErrJournalTooLarge = errors.New("approval journal is over the size limit")
 // readApprovalJournal reads path window by window through r — the same
 // offset-based tail_log read `code attach` uses, whose every reply is capped
 // (256 KiB), so one call sees only the start of a longer journal (#3182). The
-// bytes are joined before they are parsed, so a line or a rune split by a
-// window boundary is whole again. A missing file is ErrFileNotFound.
+// bytes are joined before they are parsed, so a line split by a window
+// boundary is whole again. (A multi-byte character cut by a boundary is
+// already a replacement character by the time tail_log's text reaches us;
+// that changes no count.) A missing file is ErrFileNotFound.
 func readApprovalJournal(ctx context.Context, r LogReader, path string) ([]byte, error) {
 	var buf []byte
 	var offset int64
@@ -380,7 +395,7 @@ func readApprovalJournal(ctx context.Context, r LogReader, path string) ([]byte,
 		if end <= offset {
 			return buf, fmt.Errorf("read %s: no progress at offset %d", path, offset)
 		}
-		if len(buf) >= maxApprovalJournalBytes {
+		if len(buf) > maxApprovalJournalBytes {
 			return buf, fmt.Errorf("%w (%d MiB)", ErrJournalTooLarge, maxApprovalJournalBytes>>20)
 		}
 		offset = end
@@ -393,7 +408,11 @@ func readApprovalJournal(ctx context.Context, r LogReader, path string) ([]byte,
 // A journal over the size limit is summarized from the part read, with a note
 // saying so.
 func (s *Session) ApprovalStatus(ctx context.Context, name string, running bool, now time.Time) (string, error) {
-	blob, err := readApprovalJournal(ctx, s, ApprovalJournalPath(name))
+	return approvalStatus(ctx, s, name, running, now)
+}
+
+func approvalStatus(ctx context.Context, r LogReader, name string, running bool, now time.Time) (string, error) {
+	blob, err := readApprovalJournal(ctx, r, ApprovalJournalPath(name))
 	tooLarge := errors.Is(err, ErrJournalTooLarge)
 	if err != nil && !tooLarge {
 		if errors.Is(err, ErrFileNotFound) {
@@ -401,9 +420,11 @@ func (s *Session) ApprovalStatus(ctx context.Context, name string, running bool,
 		}
 		return "", err
 	}
-	out := ApprovalStatusLines(SummarizeApprovals(ParseInputJournal(blob)), running, now)
+	sum := SummarizeApprovals(ParseInputJournal(blob))
 	if tooLarge {
-		out += fmt.Sprintf("\nnote: the journal is over %d MiB; the counts cover only its first %d MiB", maxApprovalJournalBytes>>20, maxApprovalJournalBytes>>20)
+		sum.Partial = true
+		note := fmt.Sprintf("note: the journal is over %d MiB and was read only in part, so these counts are partial\n", maxApprovalJournalBytes>>20)
+		return note + ApprovalStatusLines(sum, running, now), nil
 	}
-	return out, nil
+	return ApprovalStatusLines(sum, running, now), nil
 }

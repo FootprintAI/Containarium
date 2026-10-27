@@ -204,8 +204,10 @@ func (r *windowReader) Read(_ context.Context, _ string, start int64, _ time.Dur
 		start = int64(len(r.data))
 	}
 	end := start + int64(r.window)
-	truncated := end < int64(len(r.data))
-	if !truncated {
+	// Like tail_log: a reply that fills the window is truncated even when it
+	// happens to end exactly at EOF.
+	truncated := end <= int64(len(r.data))
+	if end > int64(len(r.data)) {
 		end = int64(len(r.data))
 	}
 	return r.data[start:end], end, truncated, nil
@@ -295,4 +297,70 @@ type stuckReader struct{}
 
 func (stuckReader) Read(_ context.Context, _ string, start int64, _ time.Duration) ([]byte, int64, bool, error) {
 	return nil, start, true, nil
+}
+
+// journalOfSize builds a journal of exactly size bytes: a request, one status
+// line of padding, and that request's response as the very last line, so a
+// read cut anywhere before the end sees the request as open.
+func journalOfSize(t *testing.T, size int) []byte {
+	t.Helper()
+	t0 := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	line := func(e InputEvent) []byte {
+		b, err := e.MarshalLine()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	req := line(InputEvent{Kind: KindInputRequest, T: t0, RequestID: "r0", Tool: "Bash", Prompt: "Bash: ls", ExpiresAt: t0.Add(time.Hour)})
+	resp := line(InputEvent{Kind: KindInputResponse, T: t0, RequestID: "r0", Answer: AnswerAllow, Reason: ReasonAnswered})
+	pad := size - len(req) - len(resp)
+	// status lines (notes) are the filler: one note, padded to fit exactly.
+	note := line(InputEvent{Kind: KindInputStatus, T: t0, Text: ""})
+	if pad < len(note) {
+		t.Fatal("size too small")
+	}
+	note = line(InputEvent{Kind: KindInputStatus, T: t0, Text: strings.Repeat("n", pad-len(note)-len(`,"text":""`))})
+	out := append(append(append([]byte{}, req...), note...), resp...)
+	if len(out) != size {
+		t.Fatalf("built %d bytes, want %d", len(out), size)
+	}
+	return out
+}
+
+func TestApprovalStatusOverLimitIsPartialAndClaimsNothingOpen(t *testing.T) {
+	t0 := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	r := &windowReader{data: journalOfSize(t, maxApprovalJournalBytes+1024*1024), window: 256 * 1024}
+	out, err := approvalStatus(context.Background(), r, "run", true, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "note: the journal is over 8 MiB and was read only in part") {
+		t.Errorf("partial note must come first:\n%.200s", out)
+	}
+	for _, bad := range []string{"waiting_input", "open 1", "open 0", "request r0"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("partial output claims %q:\n%.300s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "open requests unknown") || !strings.Contains(out, "at least 1 so far") {
+		t.Errorf("partial output does not say counts are partial:\n%.300s", out)
+	}
+}
+
+func TestApprovalStatusJournalOfExactlyTheLimitIsComplete(t *testing.T) {
+	t0 := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	// A window size that divides the limit, so the last full window ends
+	// exactly at the cap with truncated=true.
+	r := &windowReader{data: journalOfSize(t, maxApprovalJournalBytes), window: 256 * 1024}
+	out, err := approvalStatus(context.Background(), r, "run", true, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "read only in part") || strings.Contains(out, "unknown") {
+		t.Errorf("a journal of exactly the limit was reported partial:\n%.300s", out)
+	}
+	if !strings.Contains(out, "permission requests: 1 (allowed 1,") {
+		t.Errorf("summary wrong:\n%.300s", out)
+	}
 }
