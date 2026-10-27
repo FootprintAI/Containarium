@@ -464,9 +464,7 @@ cannot be poisoned:
   with the reverse tuple and a per-protocol reply shape: TCP anything
   but a fresh SYN-without-ACK; UDP the same 5-tuple; ICMP an echo reply
   carrying the request's id (ICMP errors stay judged). Each protocol has
-  an idle timeout checked on lookup (TCP 4h, UDP 120s, ICMP 30s). A
-  reply-shaped packet with no live entry bumps an `inbound_miss` counter
-  the daemon reads for LRU-pressure signal.
+  an idle timeout checked on lookup (TCP 4h, UDP 120s, ICMP 30s).
 - **Source validation makes the seed sound,** and the verdict travels
   with the packet rather than being re-derived at the receiving end. A
   managed box's NIC has no `security.ipv4_filtering` on a default backend
@@ -480,22 +478,45 @@ cannot be poisoned:
     (enforce) / logged (`log_only`, action `network_policy.spoofed_source`)
     on a policed veth; `0.0.0.0` (DHCP) is exempt from the drop but is not
     `VALIDATED`.
-  - the egress hook seeds a flow only from a frame that is **not** `SEEN`
-    (the host's own traffic, or routed in from outside the bridge) or is
-    `SEEN` **and** `VALIDATED`. `SEEN`-without-`VALIDATED` — a container's
+  - the egress hook seeds a flow only from a frame that is `SEEN` **and**
+    `VALIDATED`, or that is **unmarked and trusted**: the host's own
+    traffic (`ingress_ifindex` 0) or a frame that entered on a known
+    **uplink** — the host's default-route interfaces, plus any named in
+    `CONTAINARIUM_NETWORK_POLICY_UPLINKS` — written to the `trusted_iif`
+    map every reconcile pass. `SEEN`-without-`VALIDATED` — a container's
     forgery — never seeds, whatever the neighbour's mode and whether the
-    frame was bridged or routed through the host. Carrying the verdict in
-    the mark, rather than re-checking `skb->ingress_ifindex` at the
-    receiving hook, is what makes this hold for routed frames and for
-    instances with no policy of their own; the kernel scrubs the mark when
-    a packet crosses a netns, so a box cannot forge the bits.
+    frame was bridged or routed through the host. Any **other unmarked
+    frame fails closed**: an instance's veth before its first reconcile
+    (so a new box cannot be answered under enforce until the daemon has
+    configured it, at most one reconcile interval), a namespace someone
+    attached to the bridge by hand, or a frame whose mark a host rule
+    rewrote. Carrying the verdict in the mark, rather than re-checking
+    `skb->ingress_ifindex` at the receiving hook, is what makes the
+    container case hold for routed frames and for instances with no policy
+    of their own; the kernel scrubs the mark when a packet crosses a netns,
+    so a box cannot forge the bits.
+  - **the top two bits of `skb->mark` (`0x40000000`, `0x80000000`) are
+    reserved** for this on a host running the enforcer. A host firewall
+    rule or CNI that writes those bits can only make things fail closed
+    (a cleared `SEEN`/`VALIDATED` on a container frame → the frame is
+    unmarked and untrusted; a set `SEEN` without `VALIDATED` → untrusted);
+    it cannot make a forgery trusted unless it sets both bits on a
+    container frame, which would be a deliberate bypass. Marks in the low
+    30 bits are left alone.
 
   `box_ip` comes from a **host-authoritative** source — the NIC device's
   static `ipv4.address`, else the bridge's `dnsmasq` DHCP lease for the
-  NIC's MAC — never from the address the instance reports about itself
-  (which root in the box controls). A box the host knows no address for
-  gets `box_ip` 0: it validates nothing, cannot answer inbound under
-  enforce, and never seeds. This is option (a) of the issue's decision; it
+  NIC's MAC **when it agrees with the address the instance reports** —
+  never from the guest's report alone (root in the box controls it) and
+  never from the lease alone (a neighbour can move a lease with a forged
+  DHCP release/request naming the MAC, which would flag the victim's
+  genuine traffic as spoofed: a cross-tenant DoS under enforce). Requiring
+  both to agree means neither side can move the validated address on its
+  own. A box the host knows no address for gets `box_ip` 0: it validates
+  nothing, cannot answer inbound under enforce, and never seeds; the
+  daemon logs this once per container. The lease files are read under the
+  Incus data dir the daemon talks to (`<data dir>/networks/<bridge>/
+  dnsmasq.leases`). This is option (a) of the issue's decision; it
   does not depend on the tenant guard. The naive "judge only fresh SYNs"
   alternative is unsound (a box is root in its netns and can send
   ACK-flagged segments with a payload, an exfil channel) and is not used.
@@ -507,10 +528,13 @@ cannot be poisoned:
 - **Availability.** The LRU map is shared host-wide (65,536 entries). Any
   box allowed to send to a neighbour can churn it, which evicts other
   tenants' idle entries; re-seeding TCP from any validated inbound segment
-  (above) makes that self-healing rather than fatal, and the `inbound_miss`
-  counter surfaces the pressure. Per-box inner maps (hash-of-maps keyed by
-  ifindex) would isolate the churn and are a possible follow-up; the shared
-  map with re-seeding is what ships.
+  (above) makes that self-healing rather than fatal. An `inbound_reseed`
+  counter counts TCP entries re-created from a mid-stream segment — a flow
+  whose entry was evicted or idled out and healed — which only inbound
+  packets can bump, so a box cannot inflate it; the daemon logs its growth
+  each reconcile pass as the LRU-pressure signal. Per-box inner maps
+  (hash-of-maps keyed by ifindex) would isolate the churn and are a
+  possible follow-up; the shared map with re-seeding is what ships.
 - **IP options and fragments** fail closed: a packet with `ihl != 5` or any
   fragmentation is parsed as neither a seed nor a reply, so a box cannot
   match a seeded tuple while really addressing other ports. The older
@@ -523,7 +547,7 @@ cannot be poisoned:
   `struct policy_cfg`, so an object built before this change loads
   unchanged (the loader fits the shorter value and detects the missing
   support from the object's BTF, needing both the new members and the
-  `inbound_flows` map). On such a host the daemon warns that a box cannot
+  `inbound_flows` and `trusted_iif` maps). On such a host the daemon warns that a box cannot
   serve inbound traffic under enforce until `netpolicy.bpf.o` is rebuilt.
 
 ## What this is NOT
