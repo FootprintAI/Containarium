@@ -804,10 +804,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	containerServer.SetBackupManager(backupServer.Manager())
 	log.Printf("Backup service enabled")
 
-	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
-	// Capability-gated: create/attach are rejected unless the host has a
-	// cephfs storage pool (single-node ZFS hosts get a clear error).
-	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
+	// Register VolumeService — CephFS on Incus and RWX PVCs on Kubernetes.
+	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer(cfg.Runtime))
 	log.Printf("Volume service enabled")
 
 	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488). Own

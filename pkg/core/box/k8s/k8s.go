@@ -63,8 +63,12 @@ type Config struct {
 	// interactive login shell (developer-box). Empty leaves the image default.
 	BoxMode string
 
-	// StorageClass is reserved for the box PVC (not wired in this slice).
+	// StorageClass backs the per-box data PVC.
 	StorageClass string
+
+	// SharedVolumeStorageClass is an operator-selected RWX-capable class for
+	// VolumeService PVCs. Empty disables shared volumes on this backend.
+	SharedVolumeStorageClass string
 
 	// RuntimeClass names the Kubernetes RuntimeClass every box pod is scheduled
 	// under. Empty (the default) leaves RuntimeClassName unset, so pods run on

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"google.golang.org/grpc/codes"
@@ -12,28 +13,62 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// VolumeServer implements the gRPC VolumeService — shared, multi-writer
-// CephFS volumes (#384). Capability-gated: create/attach are rejected
-// unless the host has a cephfs storage pool.
-//
-// NOT end-to-end verified: exercising the real path needs an Incus cluster
-// on Ceph. The command construction + capability detection are unit-tested
-// in pkg/core/volume; the orchestration here is thin.
+// VolumeServer implements the gRPC VolumeService. Incus uses CephFS custom
+// volumes; Kubernetes uses RWX PVCs in the authenticated tenant namespace.
 type VolumeServer struct {
 	pb.UnimplementedVolumeServiceServer
-	mgr *volume.Manager
+	backend volume.Backend
+	runtime string
 }
 
-// NewVolumeServer builds the server. If `incus` is absent the server still
-// registers but every call returns a clear error (no silent partial
-// surface) — matches how the backup server degrades without gcloud.
-func NewVolumeServer() *VolumeServer {
+// NewVolumeServer builds the backend for the selected box runtime. If the
+// runtime dependencies are unavailable it still registers and returns clear
+// errors rather than exposing a partially working service.
+func NewVolumeServer(runtime string) *VolumeServer {
+	if runtime == RuntimeK8s {
+		backend, err := newK8sBackend()
+		if err != nil {
+			log.Printf("[volume] Kubernetes backend unavailable (%v); shared-volume calls will error", err)
+			return &VolumeServer{backend: unavailableVolumeBackend{err}, runtime: runtime}
+		}
+		volumeBackend, ok := backend.(volume.Backend)
+		if !ok {
+			err := fmt.Errorf("Kubernetes backend does not implement VolumeService")
+			log.Printf("[volume] %v", err)
+			return &VolumeServer{backend: unavailableVolumeBackend{err}, runtime: runtime}
+		}
+		return &VolumeServer{backend: volumeBackend, runtime: runtime}
+	}
 	runner, err := volume.NewCLIRunner()
 	if err != nil {
 		log.Printf("[volume] incus CLI unavailable (%v); shared-volume calls will error", err)
-		return &VolumeServer{mgr: volume.NewManager(unavailableRunner{err})}
+		return &VolumeServer{backend: volume.IncusBackend{Manager: volume.NewManager(unavailableRunner{err})}, runtime: runtime}
 	}
-	return &VolumeServer{mgr: volume.NewManager(runner)}
+	return &VolumeServer{backend: volume.IncusBackend{Manager: volume.NewManager(runner)}, runtime: runtime}
+}
+
+type unavailableVolumeBackend struct{ err error }
+
+func (u unavailableVolumeBackend) SharedVolumesSupported(context.Context, string) (string, bool, string) {
+	return "", false, fmt.Sprintf("shared-volume backend unavailable: %v", u.err)
+}
+func (u unavailableVolumeBackend) CreateVolume(context.Context, string, string, int64, string) (*volume.Volume, error) {
+	return nil, u.err
+}
+func (u unavailableVolumeBackend) ListVolumes(context.Context, string, string) ([]volume.Volume, error) {
+	return nil, u.err
+}
+func (u unavailableVolumeBackend) GetVolume(context.Context, string, string, string) (*volume.Volume, error) {
+	return nil, u.err
+}
+func (u unavailableVolumeBackend) DeleteVolume(context.Context, string, string, string, bool) error {
+	return u.err
+}
+func (u unavailableVolumeBackend) AttachVolume(context.Context, string, string, string, string, string, bool) error {
+	return u.err
+}
+func (u unavailableVolumeBackend) DetachVolume(context.Context, string, string, string) error {
+	return u.err
 }
 
 // unavailableRunner makes every Manager call fail with a stable message
@@ -46,7 +81,8 @@ func (s *VolumeServer) CreateVolume(ctx context.Context, req *pb.CreateVolumeReq
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesWrite); err != nil {
 		return nil, err
 	}
-	v, err := s.mgr.Create(req.Name, req.SizeBytes, req.Pool)
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	v, err := s.backend.CreateVolume(ctx, tenant, req.Name, req.SizeBytes, req.Pool)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
@@ -58,7 +94,8 @@ func (s *VolumeServer) ListVolumes(ctx context.Context, req *pb.ListVolumesReque
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesRead); err != nil {
 		return nil, err
 	}
-	pool, ok, detail := s.mgr.SharedVolumesSupported()
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	pool, ok, detail := s.backend.SharedVolumesSupported(ctx, tenant)
 	resp := &pb.ListVolumesResponse{SharedVolumesSupported: ok, CapabilityDetail: detail}
 	if !ok {
 		return resp, nil // not supported → empty list + capability detail, not an error
@@ -67,7 +104,7 @@ func (s *VolumeServer) ListVolumes(ctx context.Context, req *pb.ListVolumesReque
 	if filter == "" {
 		filter = pool
 	}
-	vols, err := s.mgr.List(filter)
+	vols, err := s.backend.ListVolumes(ctx, tenant, filter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -81,7 +118,8 @@ func (s *VolumeServer) GetVolume(ctx context.Context, req *pb.GetVolumeRequest) 
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesRead); err != nil {
 		return nil, err
 	}
-	v, err := s.mgr.Get(req.Name, req.Pool)
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	v, err := s.backend.GetVolume(ctx, tenant, req.Name, req.Pool)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
@@ -92,7 +130,8 @@ func (s *VolumeServer) DeleteVolume(ctx context.Context, req *pb.DeleteVolumeReq
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesWrite); err != nil {
 		return nil, err
 	}
-	if err := s.mgr.Delete(req.Name, req.Pool, req.Force); err != nil {
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	if err := s.backend.DeleteVolume(ctx, tenant, req.Name, req.Pool, req.Force); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	log.Printf("[volume] deleted name=%s force=%t", req.Name, req.Force)
@@ -103,10 +142,15 @@ func (s *VolumeServer) AttachVolume(ctx context.Context, req *pb.AttachVolumeReq
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesWrite); err != nil {
 		return nil, err
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Container); err != nil {
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	authorizedTenant := req.Container
+	if s.runtime == RuntimeK8s {
+		authorizedTenant = tenant
+	}
+	if err := auth.AuthorizeTenant(ctx, authorizedTenant); err != nil {
 		return nil, err
 	}
-	if err := s.mgr.Attach(req.Volume, req.Pool, req.Container, req.MountPath, req.ReadOnly); err != nil {
+	if err := s.backend.AttachVolume(ctx, tenant, req.Volume, req.Pool, req.Container, req.MountPath, req.ReadOnly); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	log.Printf("[volume] attached vol=%s container=%s path=%s ro=%t", req.Volume, req.Container, req.MountPath, req.ReadOnly)
@@ -117,10 +161,15 @@ func (s *VolumeServer) DetachVolume(ctx context.Context, req *pb.DetachVolumeReq
 	if err := auth.RequireScope(ctx, auth.ScopeVolumesWrite); err != nil {
 		return nil, err
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Container); err != nil {
+	tenant, _, _ := auth.SubjectFromGRPCContext(ctx)
+	authorizedTenant := req.Container
+	if s.runtime == RuntimeK8s {
+		authorizedTenant = tenant
+	}
+	if err := auth.AuthorizeTenant(ctx, authorizedTenant); err != nil {
 		return nil, err
 	}
-	if err := s.mgr.Detach(req.Volume, req.Container); err != nil {
+	if err := s.backend.DetachVolume(ctx, tenant, req.Volume, req.Container); err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	log.Printf("[volume] detached vol=%s container=%s", req.Volume, req.Container)
