@@ -98,6 +98,9 @@ tenantNamespacePrefix: "tenant-"
 # Empty = no PVC (box data is ephemeral). Use "standard" for kind.
 storageClass: ""
 
+# RWX-capable class used by VolumeService shared volumes; empty disables them.
+sharedVolumeStorageClass: ""
+
 # -- RuntimeClass every box pod is scheduled under.
 # Empty (default) = the cluster's default runtime, `runc`, which shares the host
 # kernel. Set to "runsc" to run boxes inside a gVisor sandbox instead; that
