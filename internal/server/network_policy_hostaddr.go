@@ -137,10 +137,18 @@ func (l *leaseReader) lookup(network, mac string) (netip.Addr, bool) {
 	if network == "" || mac == "" {
 		return netip.Addr{}, false
 	}
+	// network is the Incus bridge name from host-side device config; a valid one
+	// is a single path segment. Reject anything with a separator or "." element
+	// so the join cannot escape the lease dir (defence in depth — the value is
+	// host-controlled, not guest-controlled).
+	if network != filepath.Base(network) || network == "." || network == ".." || strings.ContainsAny(network, `/\`) {
+		return netip.Addr{}, false
+	}
 	leases, ok := l.cache[network]
 	if !ok {
 		leases = map[string]netip.Addr{}
-		if f, err := os.Open(filepath.Join(l.dir, network, "dnsmasq.leases")); err == nil {
+		leasePath := filepath.Join(l.dir, network, "dnsmasq.leases")
+		if f, err := os.Open(leasePath); err == nil { // #nosec G304 -- base dir is fixed; network is a validated single path segment from host-side Incus config
 			leases = parseDnsmasqLeases(f, l.now)
 			_ = f.Close()
 		}
