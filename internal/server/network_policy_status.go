@@ -65,8 +65,8 @@ type appliedStateSource interface {
 func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool, egressNames map[uint32]string) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
-		if !v.Running {
-			continue
+		if !v.Running || v.ValidateOnly {
+			continue // a validate-only instance is not a tenant's box (#2618)
 		}
 		a := out[v.Tenant]
 		cfg, planned := plan.vethPolicy[v.Ifindex]
