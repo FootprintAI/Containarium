@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -137,9 +138,14 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	// An unencrypted container skips this entirely — no extra round trip and
 	// no new failure mode on the path every container takes today.
 	var encStoragePool, encRefJSON string
-	ref, _, encrypted, err := s.encryption.migrationRef(containerName)
+	ref, srcPool, encrypted, err := s.encryption.migrationRef(containerName)
 	if err != nil {
 		return nil, fmt.Errorf("resolve encryption state for %s: %w", containerName, err)
+	}
+	// Pool headroom floor (#3128): every sync point below is a snapshot on
+	// the source pool. srcPool is "" (the default pool) when unencrypted.
+	if err := s.admitPoolHeadroom(srcPool, poolcapacity.OperationSnapshot); err != nil {
+		return nil, err
 	}
 	if encrypted {
 		refJSON, merr := json.Marshal(ref)

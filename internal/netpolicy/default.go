@@ -75,6 +75,7 @@ func DefaultPolicy(tenant string, extras DefaultEgressExtras) (CompiledPolicy, e
 			return CompiledPolicy{}, fmt.Errorf("default network policy: extra CIDR %s is not IPv4 (the egress allow-list is IPv4-only)", pfx)
 		}
 	}
+	c.IsHostDefault = true
 	return c, nil
 }
 
