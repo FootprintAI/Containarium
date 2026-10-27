@@ -78,6 +78,11 @@ func setupEbpfLoadEnv() error {
 		return fmt.Errorf("%s not found — run `make build-bpf` before this test (that's the workflow's job): %w", ebpfLoadObjPath, err)
 	}
 
+	// A previous run that died before teardown (a panic in a test, a killed
+	// process) leaves the netns and veth behind; remove them first so the whole
+	// package does not fail at setup on the next run.
+	teardownEbpfLoadEnv()
+
 	steps := [][]string{
 		{"ip", "netns", "add", ebpfLoadNetns},
 		{"ip", "link", "add", ebpfLoadHostVeth, "type", "veth", "peer", "name", ebpfLoadPeerVeth},

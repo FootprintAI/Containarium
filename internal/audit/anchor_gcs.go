@@ -317,44 +317,56 @@ func AnchorSinkFor(file *FileSink, bucketURI string, newBucket func(string) (*GC
 	return NewTeeSink(file, bucket), bucket, nil
 }
 
-// TeeSink publishes to the local file first, then the external sink.
+// TeeSink publishes to the local file first, then to each external sink
+// (the GCS bucket from #2880, the TSA from #2728) in order.
 //
-// Ordering: the external sink is written only after the file write
-// succeeded, so the bucket never holds a checkpoint the local file lacks
-// (slice B flags a bucket checkpoint missing locally as tampering). If the
-// file write fails, the external write is skipped and the error returned.
+// Ordering: the external sinks are written only after the file write
+// succeeded, so no external copy ever holds a checkpoint the local file lacks
+// (verify-anchor flags such a checkpoint as tampering). If the file write
+// fails, every external write is skipped and the error returned.
 //
-// If the external write fails, the file record stays and the error is
-// returned, so AnchorManager does not advance: the next tick publishes
-// again — the file write is an idempotent no-op and the bucket upload is
-// retried. If the chain has grown by then, the next tick anchors the newer
-// checkpoint instead, and the failed one exists only in the local file
-// (the bucket holds a subset of the file's checkpoints, never a superset).
+// The external sinks are independent: one failing does not skip the others.
+// If any fails, the file record stays and the joined error is returned, so
+// AnchorManager does not advance: the next tick publishes again — the file
+// write and every external sink that already holds the checkpoint are
+// idempotent no-ops, and the failed one is retried. If the chain has grown by
+// then, the next tick anchors the newer checkpoint instead, and the failed one
+// exists only in the local file (each external copy holds a subset of the
+// file's checkpoints, never a superset).
 type TeeSink struct {
-	file     RootSink
-	external RootSink
+	file      RootSink
+	externals []RootSink
 }
 
-// NewTeeSink builds a TeeSink. Neither sink may be nil.
-func NewTeeSink(file, external RootSink) *TeeSink {
-	if file == nil || external == nil {
-		panic("audit: nil sink passed to NewTeeSink")
+// NewTeeSink builds a TeeSink. No sink may be nil, and there must be at least
+// one external sink.
+func NewTeeSink(file RootSink, externals ...RootSink) *TeeSink {
+	if file == nil || len(externals) == 0 {
+		panic("audit: NewTeeSink needs the file sink and at least one external sink")
 	}
-	return &TeeSink{file: file, external: external}
+	for _, e := range externals {
+		if e == nil {
+			panic("audit: nil sink passed to NewTeeSink")
+		}
+	}
+	return &TeeSink{file: file, externals: append([]RootSink(nil), externals...)}
 }
 
 func (t *TeeSink) PublishRoot(ctx context.Context, checkpoint int64, root string) error {
 	if err := t.file.PublishRoot(ctx, checkpoint, root); err != nil {
 		return fmt.Errorf("local anchor file (external anchor skipped): %w", err)
 	}
-	if err := t.external.PublishRoot(ctx, checkpoint, root); err != nil {
-		return fmt.Errorf("external anchor (local file has checkpoint %d; retried next tick): %w", checkpoint, err)
+	var errs []error
+	for _, e := range t.externals {
+		if err := e.PublishRoot(ctx, checkpoint, root); err != nil {
+			errs = append(errs, fmt.Errorf("external anchor (local file has checkpoint %d; retried next tick): %w", checkpoint, err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // LastPublished reports the local file's last anchor — what `audit
-// verify-anchor` reads today. Checking against the external copy is slice B.
+// verify-anchor` reads without an external sink configured.
 func (t *TeeSink) LastPublished(ctx context.Context) (int64, string, bool, error) {
 	return t.file.LastPublished(ctx)
 }

@@ -42,6 +42,7 @@ type guardrailPolicyAuditDetail struct {
 	Revision            int64    `json:"revision"`
 	PolicyHash          string   `json:"policy_hash"`
 	TrustedSignerKeyIDs []string `json:"trusted_signer_key_ids,omitempty"`
+	RevokedSignerKeyIDs []string `json:"revoked_signer_key_ids,omitempty"`
 }
 
 // GuardrailPolicyServer serves the cluster-wide guardrail policy (#2368;
@@ -86,8 +87,8 @@ func (w *swappableGuardrailPolicyStore) Get(ctx context.Context) (*pb.ServerGuar
 	return w.current().Get(ctx)
 }
 
-func (w *swappableGuardrailPolicyStore) Set(ctx context.Context, p *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*guardrailpolicy.SetResult, error) {
-	return w.current().Set(ctx, p, signers, updatedBy)
+func (w *swappableGuardrailPolicyStore) Set(ctx context.Context, req *pb.SetGuardrailPolicyRequest, updatedBy string) (*guardrailpolicy.SetResult, error) {
+	return w.current().Set(ctx, req, updatedBy)
 }
 
 func (w *swappableGuardrailPolicyStore) GetBaselineMode(ctx context.Context) (*pb.GuardrailBaselineSetting, error) {
@@ -113,7 +114,7 @@ func (unavailableGuardrailPolicyStore) Get(context.Context) (*pb.ServerGuardrail
 	return nil, errGuardrailPolicyStoreUnavailable
 }
 
-func (unavailableGuardrailPolicyStore) Set(context.Context, *pb.GuardrailPolicy, []*pb.GuardrailTrustedSigner, string) (*guardrailpolicy.SetResult, error) {
+func (unavailableGuardrailPolicyStore) Set(context.Context, *pb.SetGuardrailPolicyRequest, string) (*guardrailpolicy.SetResult, error) {
 	return nil, errGuardrailPolicyStoreUnavailable
 }
 
@@ -322,12 +323,17 @@ func (s *GuardrailPolicyServer) SetGuardrailPolicy(ctx context.Context, req *pb.
 	if err := checkGuardrailRate(ctx, s.setLimit); err != nil {
 		return nil, err
 	}
-	if err := guardrailpolicy.Validate(req.GetPolicy(), req.GetTrustedSigners()); err != nil {
+	if err := guardrailpolicy.ValidateSetRequest(req); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
-	res, err := s.store.Set(ctx, req.GetPolicy(), req.GetTrustedSigners(), subject)
-	if err != nil {
+	res, err := s.store.Set(ctx, req, subject)
+	switch {
+	case errors.Is(err, guardrailpolicy.ErrRevisionConflict):
+		return nil, status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, guardrailpolicy.ErrRevocationPermanent):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case err != nil:
 		return nil, status.Errorf(codes.Internal, "store guardrail policy: %v", err)
 	}
 	hash, err := guardrailpolicy.Hash(res.Current)
@@ -357,6 +363,9 @@ func (s *GuardrailPolicyServer) auditSet(ctx context.Context, subject string, re
 	}
 	for _, sg := range res.Current.GetTrustedSigners() {
 		d.TrustedSignerKeyIDs = append(d.TrustedSignerKeyIDs, sg.GetKeyId())
+	}
+	for _, r := range res.Current.GetRevokedSigners() {
+		d.RevokedSignerKeyIDs = append(d.RevokedSignerKeyIDs, r.GetKeyId())
 	}
 	payload, err := json.Marshal(d)
 	if err != nil {

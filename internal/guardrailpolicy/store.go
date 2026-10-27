@@ -7,6 +7,7 @@ package guardrailpolicy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -37,13 +38,16 @@ type SetResult struct {
 	Current  *pb.ServerGuardrailPolicy
 }
 
-// Store is the read/write store. Set assigns revision = previous + 1 (1 for
-// the first Set), stamps updated_at/updated_by, and stores the policy and
-// signers as given; validation is the caller's job (see Validate).
+// Store is the read/write store. Set first runs CheckTransition against the
+// stored policy under the store's lock (ErrRevisionConflict,
+// ErrRevocationPermanent), then assigns revision = previous + 1 (1 for the
+// first Set), stamps updated_at/updated_by, and stores the request as Next
+// builds it; validating the request itself is the caller's job (see
+// ValidateSetRequest).
 type Store interface {
 	PolicyProvider
 	BaselineModeProvider
-	Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error)
+	Set(ctx context.Context, req *pb.SetGuardrailPolicyRequest, updatedBy string) (*SetResult, error)
 	// SetBaselineMode stores the baseline mode (LOG or BLOCK; anything else
 	// is ErrInvalidBaselineMode), revision = previous + 1. It never touches
 	// the policy, so it cannot turn the baseline off. beforeCommit (nil =
@@ -103,18 +107,62 @@ func Hash(p *pb.ServerGuardrailPolicy) (string, error) {
 	return guardrail.PolicyHash(p.GetPolicy())
 }
 
+// ErrRevisionConflict: the request's expected_revision is not the stored
+// revision, so another Set landed since the caller read the policy.
+var ErrRevisionConflict = errors.New("guardrail policy changed since it was read (expected_revision does not match)")
+
+// ErrRevocationPermanent: the request drops or changes a stored revoked key.
+var ErrRevocationPermanent = errors.New("guardrail signer revocation is permanent")
+
+// CheckTransition is what a Set checks against the stored state, under the
+// store's lock: the expected_revision precondition (stored is the stored
+// revision, 0 when not configured), and that every stored revoked key is
+// kept with the same reason.
+func CheckTransition(prev *pb.ServerGuardrailPolicy, stored int64, req *pb.SetGuardrailPolicyRequest) error {
+	if req.ExpectedRevision != nil && req.GetExpectedRevision() != stored {
+		return fmt.Errorf("%w: expected revision %d, stored revision is %d", ErrRevisionConflict, req.GetExpectedRevision(), stored)
+	}
+	kept := make(map[string]string, len(req.GetRevokedSigners()))
+	for _, r := range req.GetRevokedSigners() {
+		kept[r.GetKeyId()] = r.GetReason()
+	}
+	for _, r := range prev.GetRevokedSigners() {
+		reason, ok := kept[r.GetKeyId()]
+		if !ok {
+			return fmt.Errorf("%w: the request drops revoked key %s", ErrRevocationPermanent, r.GetKeyId())
+		}
+		if reason != r.GetReason() {
+			return fmt.Errorf("%w: the request changes the reason of revoked key %s", ErrRevocationPermanent, r.GetKeyId())
+		}
+	}
+	return nil
+}
+
 // Next builds the record a Set stores on top of prev (nil = not configured):
-// revision prev+1, the given rules and signers (copied), now and updatedBy.
-// Exported for the Postgres store in pgstore.
-func Next(prev *pb.ServerGuardrailPolicy, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string, now time.Time) *pb.ServerGuardrailPolicy {
+// revision prev+1, the request's rules and signers (copied), now and
+// updatedBy. A revoked key already stored keeps its stored entry; a new one
+// gets revoked_at = now, whatever the request says. Exported for pgstore.
+func Next(prev *pb.ServerGuardrailPolicy, req *pb.SetGuardrailPolicyRequest, updatedBy string, now time.Time) *pb.ServerGuardrailPolicy {
+	stamp := timestamppb.New(now.UTC().Truncate(time.Microsecond))
 	out := &pb.ServerGuardrailPolicy{
-		Policy:    proto.Clone(policy).(*pb.GuardrailPolicy),
+		Policy:    proto.Clone(req.GetPolicy()).(*pb.GuardrailPolicy),
 		Revision:  prev.GetRevision() + 1,
-		UpdatedAt: timestamppb.New(now.UTC().Truncate(time.Microsecond)),
+		UpdatedAt: stamp,
 		UpdatedBy: updatedBy,
 	}
-	for _, s := range signers {
+	for _, s := range req.GetTrustedSigners() {
 		out.TrustedSigners = append(out.TrustedSigners, proto.Clone(s).(*pb.GuardrailTrustedSigner))
+	}
+	stored := make(map[string]*pb.GuardrailRevokedKey, len(prev.GetRevokedSigners()))
+	for _, r := range prev.GetRevokedSigners() {
+		stored[r.GetKeyId()] = r
+	}
+	for _, r := range req.GetRevokedSigners() {
+		entry, ok := stored[r.GetKeyId()]
+		if !ok {
+			entry = &pb.GuardrailRevokedKey{KeyId: r.GetKeyId(), Reason: r.GetReason(), RevokedAt: stamp}
+		}
+		out.RevokedSigners = append(out.RevokedSigners, proto.Clone(entry).(*pb.GuardrailRevokedKey))
 	}
 	return out
 }
@@ -172,10 +220,13 @@ func (m *MemoryStore) Get(context.Context) (*pb.ServerGuardrailPolicy, error) {
 	return Clone(m.cur), nil
 }
 
-func (m *MemoryStore) Set(_ context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error) {
+func (m *MemoryStore) Set(_ context.Context, req *pb.SetGuardrailPolicyRequest, updatedBy string) (*SetResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	prev := m.cur
-	m.cur = Next(prev, policy, signers, updatedBy, time.Now())
+	if err := CheckTransition(prev, prev.GetRevision(), req); err != nil {
+		return nil, err
+	}
+	m.cur = Next(prev, req, updatedBy, time.Now())
 	return &SetResult{Previous: Clone(prev), Current: Clone(m.cur)}, nil
 }

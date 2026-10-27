@@ -251,8 +251,8 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 			if v.Name != "controlplane-container" {
 				t.Errorf("%s is validate-only; only the control plane should be here", v.Name)
 			}
-			if v.Tenant != "" || v.HasIP {
-				t.Errorf("control plane view = %+v, want no tenant and no (guest) IP for ip_tenant", v)
+			if v.Tenant != "" {
+				t.Errorf("control plane view = %+v, want no tenant", v)
 			}
 			continue
 		}
@@ -266,6 +266,15 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 	}
 	if !tagged["core-postgres-container"] {
 		t.Error("non-control-plane core services must stay tagged (still isolated from tenants)")
+	}
+	// The guest IP is read for every instance (it cross-checks the DHCP lease,
+	// #2618 S4), but a validate-only instance's never reaches ip_tenant.
+	plan := planReconcile(views, nil, true)
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 200}]; ok {
+		t.Error("control plane IP reached ip_tenant")
+	}
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 11}]; !ok {
+		t.Error("core-postgres IP must be in ip_tenant")
 	}
 }
 

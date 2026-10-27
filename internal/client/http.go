@@ -1557,6 +1557,47 @@ func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 	return out, nil
 }
 
+// GetRunApprovalKey returns a box's approval public key via HTTP (#2184).
+func (c *HTTPClient) GetRunApprovalKey(username string) (*pb.GetRunApprovalKeyResponse, error) {
+	out := &pb.GetRunApprovalKeyResponse{}
+	return out, c.doProto(http.MethodGet, runlog.RunApprovalKeyPath(username), nil, out, "get run approval key")
+}
+
+// ListRunInputs lists a box run's open permission requests via HTTP (#2184).
+func (c *HTTPClient) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
+	out := &pb.ListRunInputsResponse{}
+	return out, c.doProto(http.MethodGet, runlog.RunInputsPath(req.GetUsername(), req.GetRunName()), nil, out, "list run inputs")
+}
+
+// AnswerRunInput answers one permission request via HTTP (#2184).
+func (c *HTTPClient) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.AnswerRunInputResponse{}
+	return out, c.doProto(http.MethodPost, runlog.RunInputAnswerPath(req.GetUsername(), req.GetRunName(), req.GetRequestId()), body, out, "answer run input")
+}
+
+// doProto sends one request and decodes a proto JSON response into out.
+func (c *HTTPClient) doProto(method, path string, body []byte, out proto.Message, what string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, path, body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, what)
+	}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

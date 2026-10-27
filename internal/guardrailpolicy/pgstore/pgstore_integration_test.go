@@ -63,7 +63,7 @@ func TestGuardrailPolicyPGStore_RevisionSurvivesRestart(t *testing.T) {
 	pool := policyPool(t)
 	first := pgStore(t, pool)
 	for i := 0; i < 2; i++ {
-		if _, err := first.Set(ctx, storetest.Policy(int32(i)), []*pb.GuardrailTrustedSigner{storetest.Signer(t, 3, "k")}, "admin-a"); err != nil {
+		if _, err := first.Set(ctx, storetest.Req(storetest.Policy(int32(i)), storetest.Signer(t, 3, "k")), "admin-a"); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -80,7 +80,7 @@ func TestGuardrailPolicyPGStore_RevisionSurvivesRestart(t *testing.T) {
 	if !proto.Equal(before, after) {
 		t.Fatalf("after restart = %v, want %v", after, before)
 	}
-	res, err := restarted.Set(ctx, storetest.Policy(5), nil, "admin-b")
+	res, err := restarted.Set(ctx, storetest.Req(storetest.Policy(5)), "admin-b")
 	if err != nil {
 		t.Fatalf("Set after restart: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestGuardrailPolicyPGStore_ConcurrentSetsGetDistinctRevisions(t *testing.T)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = s.Set(ctx, storetest.Policy(int32(i)), nil, "admin-a")
+			results[i], errs[i] = s.Set(ctx, storetest.Req(storetest.Policy(int32(i))), "admin-a")
 		}(i)
 	}
 	wg.Wait()
@@ -231,7 +231,7 @@ func TestGuardrailPolicyPGStore_CorruptStoredPolicyIsAnError(t *testing.T) {
 	ctx := context.Background()
 	pool := policyPool(t)
 	s := pgStore(t, pool)
-	if _, err := s.Set(ctx, storetest.Policy(1), nil, "admin-a"); err != nil {
+	if _, err := s.Set(ctx, storetest.Req(storetest.Policy(1)), "admin-a"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	// Field 1, length 5, one byte of payload: a truncated message.
@@ -241,7 +241,7 @@ func TestGuardrailPolicyPGStore_CorruptStoredPolicyIsAnError(t *testing.T) {
 	}
 	_, err := s.Get(ctx)
 	requireDamagedError(t, "Get", err)
-	_, err = s.Set(ctx, storetest.Policy(2), nil, "admin-b")
+	_, err = s.Set(ctx, storetest.Req(storetest.Policy(2)), "admin-b")
 	requireDamagedError(t, "Set", err)
 
 	var (
@@ -268,7 +268,7 @@ func TestGuardrailPolicyPGStore_MissingRowIsAnError(t *testing.T) {
 	}
 	_, err := s.Get(ctx)
 	requireDamagedError(t, "Get", err)
-	_, err = s.Set(ctx, storetest.Policy(1), nil, "admin-a")
+	_, err = s.Set(ctx, storetest.Req(storetest.Policy(1)), "admin-a")
 	requireDamagedError(t, "Set", err)
 
 	var rows int

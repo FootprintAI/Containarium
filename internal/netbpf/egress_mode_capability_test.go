@@ -59,6 +59,11 @@ func policyCfgBTFBoxIPOnly() *btf.Struct {
 func TestSpecSupportsInboundReplies(t *testing.T) {
 	withMap := func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
 		spec.Maps[mapInboundFlows] = &ebpf.MapSpec{Name: mapInboundFlows, Type: ebpf.LRUHash, KeySize: 20, ValueSize: 8, MaxEntries: 65536}
+		spec.Maps[mapTrustedIif] = &ebpf.MapSpec{Name: mapTrustedIif, Type: ebpf.Hash, KeySize: 4, ValueSize: 1, MaxEntries: 64}
+		return spec
+	}
+	withoutTrusted := func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+		delete(spec.Maps, mapTrustedIif)
 		return spec
 	}
 	for _, tc := range []struct {
@@ -70,6 +75,7 @@ func TestSpecSupportsInboundReplies(t *testing.T) {
 		{"pre-#2618 object (egress_mode only, no map)", specWithVethPolicyValue(policyCfgBTF("egress_mode")), false},
 		{"box_ip member but no inbound_flows map", specWithVethPolicyValue(policyCfgBTFWithBoxIP()), false},
 		{"box_ip without flags (unreleased intermediate) with map", withMap(specWithVethPolicyValue(policyCfgBTFBoxIPOnly())), false},
+		{"inbound_flows but no trusted_iif map (unreleased intermediate)", withoutTrusted(withMap(specWithVethPolicyValue(policyCfgBTFWithBoxIP()))), false},
 		{"inbound_flows map but no box_ip member", withMap(specWithVethPolicyValue(policyCfgBTF("egress_mode"))), false},
 		{"value without BTF", withMap(specWithVethPolicyValue(nil)), false},
 	} {

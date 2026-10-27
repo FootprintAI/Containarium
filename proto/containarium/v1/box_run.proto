@@ -238,3 +238,140 @@ message StopBoxRunResponse {
   // ignored); call again with force.
   bool exited = 3;
 }
+
+// Permission requests of a box run (#2183, #2184). A run started with
+// `code run --approvals ask` journals each tool call that needs a permission
+// to <run_name>.input.jsonl beside its log and waits for a signed answer.
+// The journal is written by the box's own user, which the agent runs as, so
+// what these messages report is advisory: the box only acts on an answer
+// signed for the tool call it actually asked (request_sha256 below).
+
+// RunInputKind is what a request asks for.
+enum RunInputKind {
+  RUN_INPUT_KIND_UNSPECIFIED = 0;
+  // Allow or deny one tool call.
+  RUN_INPUT_KIND_PERMISSION = 1;
+}
+
+// RunInputAnswer is a decision on a permission request.
+enum RunInputAnswer {
+  RUN_INPUT_ANSWER_UNSPECIFIED = 0;
+  RUN_INPUT_ANSWER_ALLOW = 1;
+  RUN_INPUT_ANSWER_DENY = 2;
+}
+
+// RunInputCloseReason says how a request was closed, as journaled by the box.
+enum RunInputCloseReason {
+  RUN_INPUT_CLOSE_REASON_UNSPECIFIED = 0;
+  // Someone answered it.
+  RUN_INPUT_CLOSE_REASON_ANSWERED = 1;
+  // Nobody answered before expires_at; it was denied.
+  RUN_INPUT_CLOSE_REASON_EXPIRED = 2;
+  // The run ended while the request was open.
+  RUN_INPUT_CLOSE_REASON_CANCELLED = 3;
+  // The run had no usable approval key, so it was denied at once.
+  RUN_INPUT_CLOSE_REASON_NO_KEY = 4;
+  // The tool input was too large to be shown for approval, so it was denied
+  // at once.
+  RUN_INPUT_CLOSE_REASON_TOO_LARGE = 5;
+}
+
+// RunInput is one open request.
+message RunInput {
+  // Opaque id, "req-" plus 16 hex digits; pass it to AnswerRunInput.
+  string request_id = 1;
+  RunInputKind kind = 2;
+  // The tool the agent wants to use, e.g. "Bash".
+  string tool = 3;
+  // One-line summary: the tool and its command, path or URL, cut at 500
+  // bytes (raw; a client escapes control characters before printing).
+  string prompt = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // An unanswered request is denied at this time.
+  google.protobuf.Timestamp expires_at = 6;
+  // The tool's complete input as JSON (at most 16 KiB): what an allow
+  // permits, and what a client must show before sending one.
+  string input = 7;
+}
+
+message ListRunInputsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+}
+
+message ListRunInputsResponse {
+  // Open requests, oldest first. Empty once the run has exited: nothing is
+  // waiting on an answer then. A request past expires_at is not listed.
+  repeated RunInput open = 1;
+  // Whether the run is still running.
+  bool running = 2;
+  // Per-run counts of all requests in the journal (the PRD's demand
+  // instrumentation): total, and closed by each outcome.
+  int32 requests = 3;
+  int32 allowed = 4;
+  int32 denied = 5;
+  int32 expired = 6;
+  int32 cancelled = 7;
+}
+
+// AnswerRunInputRequest answers one permission request of a box run. Fields
+// name the run by (username, run_name); crew runs (#2124) will add their own
+// run id.
+message AnswerRunInputRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // A request_id from ListRunInputs.
+  string request_id = 3;
+  RunInputAnswer answer = 4;
+  // SHA-256 (32 bytes) of tool, a NUL byte, and input, exactly as the caller
+  // showed them (from ListRunInputs) to whoever answered. The daemon signs it
+  // as given; the box accepts the answer only if it matches the tool call the
+  // box asked, so an answer to a request the agent rewrote in the journal
+  // never counts, and an allow permits exactly that input.
+  bytes request_sha256 = 5;
+}
+
+// RunInputAnswerOutcome is what AnswerRunInput did.
+enum RunInputAnswerOutcome {
+  RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED = 0;
+  // The answer was written and the run's journal then showed a response to
+  // it. The journal is writable by the agent, so this is the run's report,
+  // not proof that the run took the answer.
+  RUN_INPUT_ANSWER_OUTCOME_ANSWERED = 1;
+  // The request was already closed; nothing was written. closed_answer and
+  // close_reason say how.
+  RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED = 2;
+  // The request is past expires_at; nothing was written.
+  RUN_INPUT_ANSWER_OUTCOME_EXPIRED = 3;
+  // The answer was written but the run's journal showed no response to it in
+  // time.
+  // The box may have refused it (for one, the prompt it was signed for is not
+  // the prompt the box asked); the request stays open until answered or
+  // expired.
+  RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED = 4;
+}
+
+message AnswerRunInputResponse {
+  RunInputAnswerOutcome outcome = 1;
+  // For ANSWERED and ALREADY_CLOSED: the answer the box journaled (DENY for
+  // an expiry).
+  RunInputAnswer closed_answer = 2;
+  RunInputCloseReason close_reason = 3;
+  // When the box journaled the response, for ANSWERED and ALREADY_CLOSED.
+  google.protobuf.Timestamp closed_at = 4;
+}
+
+message GetRunApprovalKeyRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+message GetRunApprovalKeyResponse {
+  // Hex Ed25519 public key that AnswerRunInput signs this box's answers with.
+  // `code run --approvals ask` passes it to the box's approval server.
+  string public_key = 1;
+}

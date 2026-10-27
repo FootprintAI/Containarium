@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -142,9 +143,19 @@ type NetworkPolicyEnforcer struct {
 	// it needs no lock.
 	vethCache map[string]vethInfo
 
-	// leaseDir is where the bridge DHCP lease files live (#2618); the default
-	// is Incus's, tests point it at a fixture.
+	// leaseDir is where the bridge DHCP lease files live (#2618); derived from
+	// the Incus data dir (SetIncusDataDir), tests point it at a fixture.
 	leaseDir string
+	// addrWarned holds the running containers already warned that the host
+	// knows no address for them (#2618 S5); cleared when known or stopped.
+	addrWarned map[string]bool
+	// extraUplinks are operator-named uplink interfaces
+	// (CONTAINARIUM_NETWORK_POLICY_UPLINKS) added to the default-route ones.
+	extraUplinks []string
+	// trustedInstalled is what the kernel trusted_iif map holds (ifindex set).
+	trustedInstalled map[int]bool
+	// reseedLast is the inbound_reseed counter at the previous pass.
+	reseedLast uint64
 
 	// egressModeWarned holds the tenant ids already warned that the loaded
 	// object ignores their egress_mode (#2987), so the warning is not repeated
@@ -195,6 +206,9 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		flowIdleTimeout:   defaultFlowIdleTimeout,
 		vethCache:         make(map[string]vethInfo),
 		leaseDir:          defaultIncusLeaseDir,
+		addrWarned:        make(map[string]bool),
+		extraUplinks:      splitCSV(os.Getenv("CONTAINARIUM_NETWORK_POLICY_UPLINKS")),
+		trustedInstalled:  make(map[int]bool),
 		egressNames:       make(map[uint32]string),
 		attached:          make(map[int]string),
 		idName:            make(map[uint32]string),
@@ -842,6 +856,10 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// when the set is unchanged, so this is cheap every pass.
 	e.refreshSignatureSlots()
 
+	// Uplinks (#2618 B5): the host interfaces whose unmarked frames may seed an
+	// inbound flow. Converged every pass so a changed default route follows.
+	e.applyTrustedUplinks()
+	e.logInboundReseeds()
 	// ip_tenant: every managed container's IP -> its tenant id. Converge the map
 	// (set desired, delete stale) like egress/deny below — an add-only pass would
 	// leak a tag once a container's IP is freed or an entity is excluded from
@@ -1007,6 +1025,12 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 		// with the source-validation mark and nothing else, so that a frame
 		// without the mark can only be the host's own or routed in from outside.
 		tenant := resolveTenant(c.Tenant, c.Labels[cloudOrgIDLabel], c.Name)
+		// The guest-reported address: ip_tenant tagging for tenants, and the
+		// cross-check a DHCP lease must agree with before it is trusted (S4).
+		if ip, err := netip.ParseAddr(c.IPAddress); err == nil && ip.Is4() {
+			v.IP = ip.As4()
+			v.HasIP = true
+		}
 		if c.Role == incus.RoleControlPlane || tenant == "" {
 			v.ValidateOnly = true
 		} else {
@@ -1017,10 +1041,6 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 			}
 			idName[tid] = tenant
 			v.Tenant, v.TenantID = tenant, tid
-			if ip, err := netip.ParseAddr(c.IPAddress); err == nil && ip.Is4() {
-				v.IP = ip.As4()
-				v.HasIP = true
-			}
 		}
 		if strings.EqualFold(c.State, "running") {
 			v.Running = true
@@ -1031,10 +1051,23 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 				// The address the program validates the box against comes from
 				// the host (device config or DHCP lease), never from c.IPAddress,
 				// which the guest reports about itself (#2618).
-				v.HostIP, v.HasHostIP = hostIPv4For(nic, leases)
+				v.HostIP, v.HasHostIP = hostIPv4For(nic, leases, v.IP, v.HasIP)
+				if !v.HasHostIP {
+					if !e.addrWarned[c.Name] {
+						e.addrWarned[c.Name] = true
+						log.Printf("[netpolicy] no host-known address for %q (no static ipv4.address, and no DHCP lease agreeing with the guest's %s): it cannot answer inbound connections under enforce and its frames never seed a flow", c.Name, c.IPAddress)
+					}
+				} else {
+					delete(e.addrWarned, c.Name)
+				}
 			}
 		}
 		views = append(views, v)
+	}
+	for name := range e.addrWarned {
+		if !running[name] {
+			delete(e.addrWarned, name)
+		}
 	}
 	// Evict cache entries for containers that are gone or no longer running, so the
 	// map stays bounded and a container that restarts re-inspects for its new veth.
@@ -1305,4 +1338,67 @@ func (e *NetworkPolicyEnforcer) warnEgressModeIgnored(ignored map[uint32]bool, i
 		e.egressModeWarned[id] = true
 		log.Printf("[netpolicy] WARNING: tenant %q sets egress_mode different from mode, but the loaded BPF object predates egress_mode (#2974) and applies mode to the egress allow-list; enforcing and reporting mode. Rebuild netpolicy.bpf.o (or use the embedded object) to apply egress_mode", idName[id])
 	}
+}
+
+// SetIncusDataDir points the DHCP-lease lookup (#2618) at the Incus data dir the
+// daemon actually talks to (the directory holding its unix socket), instead of
+// the compiled-in default.
+func (e *NetworkPolicyEnforcer) SetIncusDataDir(dir string) {
+	if dir != "" {
+		e.leaseDir = leaseDirFor(dir)
+	}
+}
+
+// applyTrustedUplinks converges the kernel trusted_iif map with the host's
+// current uplinks: the default-route interfaces plus any the operator named in
+// CONTAINARIUM_NETWORK_POLICY_UPLINKS. A failed op is logged and skipped without
+// touching the installed set, so the next pass retries it.
+func (e *NetworkPolicyEnforcer) applyTrustedUplinks() {
+	desired := uplinkIfindexes(e.extraUplinks)
+	for idx := range desired {
+		if e.trustedInstalled[idx] {
+			continue
+		}
+		if err := e.loader.SetTrustedIface(idx); err != nil {
+			log.Printf("[netpolicy] set trusted_iif: %v", err)
+			continue
+		}
+		e.trustedInstalled[idx] = true
+	}
+	for idx := range e.trustedInstalled {
+		if desired[idx] {
+			continue
+		}
+		if err := e.loader.DeleteTrustedIface(idx); err != nil {
+			log.Printf("[netpolicy] delete trusted_iif: %v", err)
+			continue
+		}
+		delete(e.trustedInstalled, idx)
+	}
+}
+
+// logInboundReseeds logs the growth of the inbound_reseed counter since the last
+// pass (#2618 S5): TCP inbound entries re-created mid-stream, the sign that the
+// shared inbound_flows LRU evicted live flows (or they idled out).
+func (e *NetworkPolicyEnforcer) logInboundReseeds() {
+	n, err := e.loader.InboundReseeds()
+	if err != nil {
+		log.Printf("[netpolicy] read inbound_reseed: %v", err)
+		return
+	}
+	if n > e.reseedLast {
+		log.Printf("[netpolicy] inbound flows re-seeded mid-stream: +%d this pass (total %d) — LRU pressure or idle expiry on connections into enforced boxes", n-e.reseedLast, n)
+	}
+	e.reseedLast = n
+}
+
+// splitCSV splits a comma-separated list, trimming blanks.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

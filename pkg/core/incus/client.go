@@ -1843,6 +1843,16 @@ func (c *Client) GetRawInstance(name string) (map[string]string, string, error) 
 	return inst.Config, etag, nil
 }
 
+// DataDir is the Incus data directory this client talks to: the directory
+// holding its unix socket (DefaultSocketPath's for a client without one). The
+// network-policy enforcer reads the bridges' dnsmasq lease files under it.
+func (c *Client) DataDir() string {
+	if c.socketPath != "" {
+		return filepath.Dir(c.socketPath)
+	}
+	return filepath.Dir(DefaultSocketPath)
+}
+
 // GetRawInstanceDevices returns an instance's expanded (profile-merged) device
 // map: device name -> its config keys. The network-policy enforcer reads the
 // primary NIC's `network`/`parent` and `ipv4.address` from it (#2618) — host-side

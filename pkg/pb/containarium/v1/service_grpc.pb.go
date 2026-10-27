@@ -50,6 +50,9 @@ const (
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
+	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
+	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
+	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
@@ -282,6 +285,17 @@ type ContainerServiceClient interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
+	// GetRunApprovalKey returns the public key a box's permission-request
+	// answers are signed with (#2184). `code run --approvals ask` hands it to
+	// the box. Same access as StartBoxRun.
+	GetRunApprovalKey(ctx context.Context, in *GetRunApprovalKeyRequest, opts ...grpc.CallOption) (*GetRunApprovalKeyResponse, error)
+	// ListRunInputs lists the open permission requests of a box run (#2184).
+	// Same access as StartBoxRun.
+	ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error)
+	// AnswerRunInput answers one permission request of a box run (#2184).
+	// Answering a request that is already closed or expired changes nothing
+	// and reports the existing outcome. Same access as StartBoxRun.
+	AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -746,6 +760,36 @@ func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StopBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetRunApprovalKey(ctx context.Context, in *GetRunApprovalKeyRequest, opts ...grpc.CallOption) (*GetRunApprovalKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRunApprovalKeyResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetRunApprovalKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunInputsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListRunInputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnswerRunInputResponse)
+	err := c.cc.Invoke(ctx, ContainerService_AnswerRunInput_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1333,6 +1377,17 @@ type ContainerServiceServer interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
+	// GetRunApprovalKey returns the public key a box's permission-request
+	// answers are signed with (#2184). `code run --approvals ask` hands it to
+	// the box. Same access as StartBoxRun.
+	GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error)
+	// ListRunInputs lists the open permission requests of a box run (#2184).
+	// Same access as StartBoxRun.
+	ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error)
+	// AnswerRunInput answers one permission request of a box run (#2184).
+	// Answering a request that is already closed or expired changes nothing
+	// and reports the existing outcome. Same access as StartBoxRun.
+	AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -1585,6 +1640,15 @@ func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailB
 }
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
+}
+func (UnimplementedContainerServiceServer) ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRunInputs not implemented")
+}
+func (UnimplementedContainerServiceServer) AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AnswerRunInput not implemented")
 }
 func (UnimplementedContainerServiceServer) AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCollaborator not implemented")
@@ -2278,6 +2342,60 @@ func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetRunApprovalKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRunApprovalKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetRunApprovalKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetRunApprovalKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetRunApprovalKey(ctx, req.(*GetRunApprovalKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListRunInputs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunInputsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListRunInputs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListRunInputs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListRunInputs(ctx, req.(*ListRunInputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_AnswerRunInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnswerRunInputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).AnswerRunInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_AnswerRunInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).AnswerRunInput(ctx, req.(*AnswerRunInputRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3114,6 +3232,18 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopBoxRun",
 			Handler:    _ContainerService_StopBoxRun_Handler,
+		},
+		{
+			MethodName: "GetRunApprovalKey",
+			Handler:    _ContainerService_GetRunApprovalKey_Handler,
+		},
+		{
+			MethodName: "ListRunInputs",
+			Handler:    _ContainerService_ListRunInputs_Handler,
+		},
+		{
+			MethodName: "AnswerRunInput",
+			Handler:    _ContainerService_AnswerRunInput_Handler,
 		},
 		{
 			MethodName: "AddCollaborator",

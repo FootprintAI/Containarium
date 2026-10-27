@@ -3,6 +3,7 @@
 package netbpf
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,10 +335,10 @@ type spoofTopo struct {
 // same machine) must not fail the next test, so both setup and teardown call
 // this to stay order-independent.
 func cleanSpoofIfaces() {
-	for _, l := range []string{spoofBridge, spoofAHostV, spoofNHostV, routedNHostV} {
+	for _, l := range []string{spoofBridge, spoofAHostV, spoofNHostV, routedNHostV, routedPHostV, strayHostV} {
 		_ = exec.Command("ip", "link", "delete", l).Run() // #nosec G204 -- fixed argv
 	}
-	for _, n := range []string{spoofANetns, spoofNNetns, routedNNetns} {
+	for _, n := range []string{spoofANetns, spoofNNetns, routedNNetns, routedPNetns, strayNetns} {
 		_ = exec.Command("ip", "netns", "delete", n).Run() // #nosec G204 -- fixed argv
 	}
 }
@@ -538,40 +540,242 @@ func TestAttachedProgram_NoPolicyNeighbourCannotSeedForgery(t *testing.T) {
 	if aboxExfil(t, br.raw, spoofBoxPort, spoofExfilPort, "nopol-2618-after-forged-seed") {
 		t.Error("a validate-only (no-policy) neighbour's forged SYN opened the enforced box's egress — the mark is not set for an unpoliced instance (#2618 B2)")
 	}
-	// Control: the SAME neighbour, sending from its OWN address, DOES seed a
-	// flow abox may answer — proving a validate-only neighbour still validates
-	// its legitimate traffic (distinct ports from the forgery above).
-	forgeSYNToAbox(t, spoofNNetns, spoofNAddr, spoofCtrlExfilPort, spoofCtrlBoxPort)
-	if !aboxExfil(t, br.raw, spoofCtrlBoxPort, spoofCtrlExfilPort, "nopol-2618-valid") {
-		// nbox seeds peer=nbox, but abox exfils to P here, not nbox — so this
-		// control instead uses a host-originated valid seed on the control ports.
-		forgeSYNToAbox(t, "", spoofExfilAddr, spoofCtrlExfilPort, spoofCtrlBoxPort)
-		if !aboxExfil(t, br.raw, spoofCtrlBoxPort, spoofCtrlExfilPort, "nopol-2618-valid-host") {
-			t.Fatal("positive control: no valid seed opened egress on this topology")
-		}
+	// Control: the SAME validate-only neighbour, sending from its OWN address,
+	// seeds a flow abox may answer — abox's ACK on the reverse tuple arrives in
+	// nbox's namespace. This proves the neighbour's own VALIDATED path works, so
+	// the forgery above was withheld by the mark, not by a broken topology.
+	if !aboxAnswersPeer(t, spoofNNetns, spoofNAddr, spoofCtrlBoxPort, spoofCtrlExfilPort, "nopol-2618-own-address") {
+		t.Fatal("positive control: abox's answer to the validate-only neighbour's OWN-address seed did not arrive — the neighbour's validated path is broken")
 	}
 }
 
-// Routed topology (#2618 B2 routed path): nbox is NOT on abox's bridge but on a
-// point-to-point link, so the host L3-ROUTES nbox's frames to abox. This
-// verifies the sender hook's mark survives host forwarding — if the kernel
-// cleared skb->mark on the forward, a routed forgery would reach abox's egress
-// hook unmarked and be trusted. rp_filter is disabled on the ingress path so the
-// forged source is not dropped before it is routed (the TC ingress hook, where
-// the mark is set, runs before rp_filter regardless).
+// sniffScript listens on a raw TCP socket inside the current netns and prints
+// HIT when a segment carrying argv[1] arrives before the deadline (argv[2]
+// seconds), else MISS. It prints READY once the socket is open so the caller can
+// start sending. argv: marker seconds
+const sniffScript = `
+import socket, sys, time
+marker, secs = sys.argv[1].encode(), float(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+s.settimeout(0.2)
+print("READY", flush=True)
+end = time.monotonic() + secs
+while time.monotonic() < end:
+    try:
+        data = s.recv(65535)
+    except socket.timeout:
+        continue
+    if marker in data:
+        print("HIT", flush=True)
+        sys.exit(0)
+print("MISS", flush=True)
+sys.exit(1)
+`
+
+// sniffInNetns starts a raw TCP sniffer in netns, waits until it is listening,
+// runs send, and reports whether a segment with marker arrived within 2s.
+func sniffInNetns(t *testing.T, netns, marker string, send func()) bool {
+	t.Helper()
+	cmd := exec.Command("ip", "netns", "exec", netns, "python3", "-c", sniffScript, marker, "2") // #nosec G204 -- fixed argv, constant script
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("sniffer stdout: %v", err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sniffer in %s: %v", netns, err)
+	}
+	rd := bufio.NewReader(stdout)
+	line, err := rd.ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "READY") {
+		_ = cmd.Process.Kill()
+		t.Fatalf("sniffer in %s did not report READY: %q %v", netns, line, err)
+	}
+	send()
+	verdict, _ := rd.ReadString('\n')
+	_ = cmd.Wait()
+	return strings.HasPrefix(verdict, "HIT")
+}
+
+// aboxAnswersPeer is the own-address positive control: the peer netns (at
+// peerIP) opens a flow to abox:boxPort from peerPort using its OWN address, then
+// abox sends an ACK-only segment back on the reverse tuple and we report whether
+// it arrived in the peer's namespace.
+func aboxAnswersPeer(t *testing.T, peerNetns, peerIP string, boxPort, peerPort int, marker string) bool {
+	t.Helper()
+	forgeSYNToAbox(t, peerNetns, peerIP, peerPort, boxPort)
+	return sniffInNetns(t, peerNetns, marker, func() {
+		out, err := exec.Command("ip", "netns", "exec", spoofANetns, // #nosec G204 -- fixed argv, constant script
+			"python3", "-c", forgeACKScript,
+			spoofAAddr, peerIP, fmt.Sprint(boxPort), fmt.Sprint(peerPort), marker).CombinedOutput()
+		if err != nil {
+			t.Fatalf("abox ACK to %s: %v\n%s", peerIP, err, out)
+		}
+	})
+}
+
+// --- B5: an UNMARKED frame fails closed unless host-originated or from a
+// known uplink -----------------------------------------------------------------
+//
+// A veth the daemon has not configured yet (a new instance before its first
+// reconcile), or a namespace someone attached to the bridge by hand, has no
+// sender hook, so its frames carry no mark. Before B5 those were trusted like
+// the host's; now only ingress_ifindex 0 or an interface in trusted_iif is.
+const (
+	strayHostV = "ebpfload-sh"
+	strayPeerV = "ebpfload-sp"
+	strayNetns = "ebpfload-sns"
+	strayAddr  = "10.251.0.4"
+)
+
+// TestAttachedProgram_UnmarkedNewInstanceCannotSeed: a bridge member with NO
+// veth_policy entry forges a SYN from P into the enforced abox. Its frame is
+// unmarked and its ingress interface is neither 0 nor a trusted uplink, so the
+// seed is withheld and abox cannot reach P. Registering that interface as an
+// uplink (what the daemon does for the default-route interfaces) then makes its
+// unmarked frames trusted — proving the trusted_iif path and that the negative
+// was the fail-closed rule, not a broken topology.
+//
+// Mutation guard: remove the unmarked-frame check and the stray's forgery seeds;
+// this test fails.
+func TestAttachedProgram_UnmarkedNewInstanceCannotSeed(t *testing.T) {
+	loader, err := Load(ebpfLoadObjPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer func() { _ = loader.Close() }()
+	if !loader.SupportsInboundReplies() {
+		t.Fatal("loaded object has no inbound-flow/box_ip support — rebuild netpolicy.bpf.o for #2618")
+	}
+	br := setupSpoofBridge(t, loader, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY)
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); /* #nosec G204 -- fixed argv */ err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	// A third bridge member with NO veth_policy entry and no hooks attached.
+	_ = exec.Command("ip", "link", "delete", strayHostV).Run()  // #nosec G204 -- fixed argv
+	_ = exec.Command("ip", "netns", "delete", strayNetns).Run() // #nosec G204 -- fixed argv
+	run("ip", "netns", "add", strayNetns)
+	run("ip", "link", "add", strayHostV, "type", "veth", "peer", "name", strayPeerV)
+	run("ip", "link", "set", strayHostV, "master", spoofBridge)
+	run("ip", "link", "set", strayHostV, "up")
+	run("ip", "link", "set", strayPeerV, "netns", strayNetns)
+	run("ip", "netns", "exec", strayNetns, "ip", "addr", "add", strayAddr+spoofSubnet, "dev", strayPeerV)
+	run("ip", "netns", "exec", strayNetns, "ip", "link", "set", strayPeerV, "up")
+	run("ip", "netns", "exec", strayNetns, "ip", "route", "add", "default", "via", spoofBridgeIP)
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "netns", "delete", strayNetns).Run() // #nosec G204 -- fixed argv
+		_ = exec.Command("ip", "link", "delete", strayHostV).Run()  // #nosec G204 -- fixed argv
+	})
+	strayIf, err := VethIndex(strayHostV)
+	if err != nil {
+		t.Fatalf("VethIndex(%q): %v", strayHostV, err)
+	}
+
+	if aboxExfil(t, br.raw, spoofBoxPort, spoofExfilPort, "unmarked-2618-baseline") {
+		t.Fatal("precondition: abox reached P with no seed under enforce — enforcement is not active")
+	}
+	// The unconfigured member forges a SYN from P: unmarked, ingress = its veth
+	// (not 0, not an uplink) — must NOT seed.
+	forgeSYNToAbox(t, strayNetns, spoofExfilAddr, spoofExfilPort, spoofBoxPort)
+	if aboxExfil(t, br.raw, spoofBoxPort, spoofExfilPort, "unmarked-2618-after-forged-seed") {
+		t.Error("an UNMARKED frame from an unconfigured bridge member seeded the enforced box's egress — unmarked frames must fail closed unless host-originated or from a trusted uplink (#2618 B5)")
+	}
+	// Control: register the stray's interface as a trusted uplink and its
+	// (still unmarked) frame now seeds — on distinct ports.
+	if err := loader.SetTrustedIface(strayIf); err != nil {
+		t.Fatalf("SetTrustedIface: %v", err)
+	}
+	t.Cleanup(func() { _ = loader.DeleteTrustedIface(strayIf) })
+	forgeSYNToAbox(t, strayNetns, spoofExfilAddr, spoofCtrlExfilPort, spoofCtrlBoxPort)
+	if !aboxExfil(t, br.raw, spoofCtrlBoxPort, spoofCtrlExfilPort, "unmarked-2618-trusted-uplink") {
+		t.Fatal("positive control: a frame from a TRUSTED uplink interface did not seed — the trusted_iif path is broken, so the negative above proves nothing")
+	}
+	// And un-trusting it closes the door again (a third tuple).
+	if err := loader.DeleteTrustedIface(strayIf); err != nil {
+		t.Fatalf("DeleteTrustedIface: %v", err)
+	}
+	forgeSYNToAbox(t, strayNetns, spoofExfilAddr, spoofCtrlExfilPort+1, spoofCtrlBoxPort+1)
+	if aboxExfil(t, br.raw, spoofCtrlBoxPort+1, spoofCtrlExfilPort+1, "unmarked-2618-untrusted-again") {
+		t.Error("after DeleteTrustedIface the interface's unmarked frames still seed")
+	}
+}
+
+// --- B4: the ROUTED path, with P in its own namespace -------------------------
+//
+// nbox is NOT on abox's bridge but on a point-to-point link, so the host
+// L3-ROUTES its frames to abox: the sender hook's mark must survive forwarding.
+// P lives in its own namespace behind a second p2p link — NOT as a host-local
+// address, which would make the host drop a forged src=P frame as a martian
+// before routing it (the reason the first version of this test could not fail).
+// The host routes to P via that link and the test registers P's host-side veth
+// as a trusted uplink, which is what P's frames are from the host's point of
+// view. rp_filter is relaxed to loose on the host for the test (TC ingress, where
+// the mark is set, runs before rp_filter, but strict mode would then drop the
+// routed forgery) and restored afterwards.
 const (
 	routedNHostV = "ebpfload-rnh"
 	routedNPeerV = "ebpfload-rnp"
 	routedNNetns = "ebpfload-rnns"
-	routedNHost  = "10.251.2.1" // host end of the p2p link
+	routedNHost  = "10.251.2.1" // host end of nbox's p2p link
 	routedNAddr  = "10.251.2.2" // nbox
+	routedPHostV = "ebpfload-rph"
+	routedPPeerV = "ebpfload-rpp"
+	routedPNetns = "ebpfload-rpns"
+	routedPHost  = "10.251.3.1" // host end of P's p2p link
+	routedPAddr  = "10.251.3.2" // P, the external address
 	routedP2P    = "/30"
 )
 
+// allowForward inserts iptables FORWARD ACCEPT rules for the test's interfaces
+// (both directions) and removes them on cleanup. A runner with Docker installed
+// has `iptables -P FORWARD DROP`, which silently discards the L3-routed traffic
+// this test depends on (bridged frames between ports never reach FORWARD, so the
+// bridged tests do not need this). Without iptables on the host nothing is done.
+func allowForward(t *testing.T, ifaces ...string) {
+	t.Helper()
+	ipt, err := exec.LookPath("iptables")
+	if err != nil {
+		t.Logf("iptables not found; not adding FORWARD rules")
+		return
+	}
+	for _, ifc := range ifaces {
+		for _, dir := range []string{"-i", "-o"} {
+			args := []string{"-w", "-I", "FORWARD", dir, ifc, "-j", "ACCEPT"}
+			if out, err := exec.Command(ipt, args...).CombinedOutput(); err != nil { // #nosec G204 -- fixed argv
+				t.Fatalf("iptables %v: %v\n%s", args, err, out)
+			}
+			del := []string{"-w", "-D", "FORWARD", dir, ifc, "-j", "ACCEPT"}
+			t.Cleanup(func() { _ = exec.Command(ipt, del...).Run() }) // #nosec G204 -- fixed argv
+		}
+	}
+}
+
+// sysctlSaveSet sets a sysctl for the test and restores the previous value.
+func sysctlSaveSet(t *testing.T, key, value string) {
+	t.Helper()
+	prev, err := exec.Command("sysctl", "-n", key).Output() // #nosec G204 -- fixed argv
+	if err != nil {
+		t.Fatalf("sysctl -n %s: %v", key, err)
+	}
+	old := strings.TrimSpace(string(prev))
+	if out, err := exec.Command("sysctl", "-wq", key+"="+value).CombinedOutput(); err != nil { // #nosec G204 -- fixed argv
+		t.Fatalf("sysctl %s=%s: %v\n%s", key, value, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("sysctl", "-wq", key+"="+old).Run() }) // #nosec G204 -- fixed argv
+}
+
 // TestAttachedProgram_RoutedForgedSeedDoesNotOpenEgress forges from a neighbour
-// whose frames the host routes (not bridges) to the enforced abox. abox must
-// still not reach P. Remove the mark-based check, or have the mark not survive
-// routing, and the forged seed is trusted and this fails.
+// whose frames the host routes (not bridges) to the enforced abox, with the
+// target address P in its own namespace. A control first shows the routed
+// neighbour's OWN-address seed opens (abox's answer arrives in nbox), then P's
+// own flow seeds via the trusted uplink. The forgery from nbox "as P" must not
+// open abox's egress to P.
+//
+// Mutation guard: remove the mark-based seed check and the routed forgery is
+// trusted, the exfil reaches P's namespace, and this test fails.
 func TestAttachedProgram_RoutedForgedSeedDoesNotOpenEgress(t *testing.T) {
 	loader, err := Load(ebpfLoadObjPath)
 	if err != nil {
@@ -581,37 +785,54 @@ func TestAttachedProgram_RoutedForgedSeedDoesNotOpenEgress(t *testing.T) {
 	if !loader.SupportsInboundReplies() {
 		t.Fatal("loaded object has no inbound-flow/box_ip support — rebuild netpolicy.bpf.o for #2618")
 	}
-	// abox on its bridge (nbox left in log_only but we overwrite its veth below);
-	// reuse the bridge setup for abox + P + the raw reader, then ignore its nbox.
-	br := setupSpoofBridge(t, loader, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY)
-
+	// abox on its bridge; the bridge's nbox and host-local P are unused here.
+	setupSpoofBridge(t, loader, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY)
 	run := func(args ...string) {
 		t.Helper()
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); /* #nosec G204 -- fixed argv */ err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
 	}
-	// A routed neighbour on a p2p link to the host (not on abox's bridge).
-	run("ip", "netns", "add", routedNNetns)
-	run("ip", "link", "add", routedNHostV, "type", "veth", "peer", "name", routedNPeerV)
-	run("ip", "addr", "add", routedNHost+routedP2P, "dev", routedNHostV)
-	run("ip", "link", "set", routedNHostV, "up")
-	run("ip", "link", "set", routedNPeerV, "netns", routedNNetns)
-	run("ip", "netns", "exec", routedNNetns, "ip", "addr", "add", routedNAddr+routedP2P, "dev", routedNPeerV)
-	run("ip", "netns", "exec", routedNNetns, "ip", "link", "set", routedNPeerV, "up")
-	run("ip", "netns", "exec", routedNNetns, "ip", "route", "add", "default", "via", routedNHost)
-	// Let the host accept and route the forged source: TC ingress (where the
-	// mark is set) runs before rp_filter, but rp_filter would otherwise drop the
-	// spoofed src before routing it on to abox.
-	run("sysctl", "-wq", "net.ipv4.conf.all.rp_filter=0")
-	run("sysctl", "-wq", "net.ipv4.conf."+routedNHostV+".rp_filter=0")
+	for _, l := range []string{routedNHostV, routedPHostV} {
+		_ = exec.Command("ip", "link", "delete", l).Run() // #nosec G204 -- fixed argv
+	}
+	for _, n := range []string{routedNNetns, routedPNetns} {
+		_ = exec.Command("ip", "netns", "delete", n).Run() // #nosec G204 -- fixed argv
+	}
 	t.Cleanup(func() {
-		_ = exec.Command("ip", "netns", "delete", routedNNetns).Run() // #nosec G204 -- fixed argv
-		_ = exec.Command("ip", "link", "delete", routedNHostV).Run()  // #nosec G204 -- fixed argv
+		for _, n := range []string{routedNNetns, routedPNetns} {
+			_ = exec.Command("ip", "netns", "delete", n).Run() // #nosec G204 -- fixed argv
+		}
+		for _, l := range []string{routedNHostV, routedPHostV} {
+			_ = exec.Command("ip", "link", "delete", l).Run() // #nosec G204 -- fixed argv
+		}
 	})
+	for _, l := range []struct{ hostV, peerV, netns, hostIP, peerIP string }{
+		{routedNHostV, routedNPeerV, routedNNetns, routedNHost, routedNAddr},
+		{routedPHostV, routedPPeerV, routedPNetns, routedPHost, routedPAddr},
+	} {
+		run("ip", "netns", "add", l.netns)
+		run("ip", "link", "add", l.hostV, "type", "veth", "peer", "name", l.peerV)
+		run("ip", "addr", "add", l.hostIP+routedP2P, "dev", l.hostV)
+		run("ip", "link", "set", l.hostV, "up")
+		run("ip", "link", "set", l.peerV, "netns", l.netns)
+		run("ip", "netns", "exec", l.netns, "ip", "addr", "add", l.peerIP+routedP2P, "dev", l.peerV)
+		run("ip", "netns", "exec", l.netns, "ip", "link", "set", l.peerV, "up")
+		run("ip", "netns", "exec", l.netns, "ip", "link", "set", "lo", "up")
+		run("ip", "netns", "exec", l.netns, "ip", "route", "add", "default", "via", l.hostIP)
+	}
+	// The host must actually forward between the p2p links and the bridge: a
+	// Docker-equipped runner's FORWARD policy is DROP.
+	allowForward(t, routedNHostV, routedPHostV, spoofBridge)
+	// Loose rp_filter for the test only, restored after: strict mode would drop
+	// nbox's forged src=P on input (P's route is via the other link) before the
+	// host could route it to abox.
+	sysctlSaveSet(t, "net.ipv4.conf.all.rp_filter", "2")
+	sysctlSaveSet(t, "net.ipv4.conf."+routedNHostV+".rp_filter", "2")
+	sysctlSaveSet(t, "net.ipv4.conf."+routedPHostV+".rp_filter", "2")
 
-	// The routed neighbour's veth gets a managed entry (log_only) with its own
-	// address, so its sender hook marks its frames.
+	// The routed neighbour: a managed log_only entry with its own address, so its
+	// sender hook marks its frames.
 	c, err := netpolicy.Compile(&pb.NetworkPolicy{Tenant: "routed-nbox", Mode: pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY})
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -628,26 +849,50 @@ func TestAttachedProgram_RoutedForgedSeedDoesNotOpenEgress(t *testing.T) {
 	if err := loader.AttachVeth(rnIf); err != nil {
 		t.Fatalf("AttachVeth(routed nbox): %v", err)
 	}
-	if err := loader.AttachVethEgress(rnIf); err != nil {
-		t.Fatalf("AttachVethEgress(routed nbox): %v", err)
-	}
 	t.Cleanup(func() { _ = loader.DetachVeth(rnIf) })
+	// P's link is an uplink from the host's point of view.
+	rpIf, err := VethIndex(routedPHostV)
+	if err != nil {
+		t.Fatalf("VethIndex(%q): %v", routedPHostV, err)
+	}
+	if err := loader.SetTrustedIface(rpIf); err != nil {
+		t.Fatalf("SetTrustedIface(P link): %v", err)
+	}
+	t.Cleanup(func() { _ = loader.DeleteTrustedIface(rpIf) })
 
-	if aboxExfil(t, br.raw, spoofBoxPort, spoofExfilPort, "routed-2618-baseline") {
-		t.Fatal("precondition: abox reached P with no seed under enforce — enforcement is not active")
+	// exfilToP: abox sends an ACK-only segment to P on the given tuple; did it
+	// arrive in P's namespace?
+	exfilToP := func(boxPort, pPort int, marker string) bool {
+		t.Helper()
+		return sniffInNetns(t, routedPNetns, marker, func() {
+			out, err := exec.Command("ip", "netns", "exec", spoofANetns, // #nosec G204 -- fixed argv, constant script
+				"python3", "-c", forgeACKScript,
+				spoofAAddr, routedPAddr, fmt.Sprint(boxPort), fmt.Sprint(pPort), marker).CombinedOutput()
+			if err != nil {
+				t.Fatalf("abox ACK to P: %v\n%s", err, out)
+			}
+		})
 	}
-	// Positive control: a host-originated valid seed still opens egress (proves
-	// the topology, distinct ports).
-	forgeSYNToAbox(t, "", spoofExfilAddr, spoofCtrlExfilPort, spoofCtrlBoxPort)
-	if !aboxExfil(t, br.raw, spoofCtrlBoxPort, spoofCtrlExfilPort, "routed-2618-valid") {
-		t.Fatal("positive control: a valid host-originated seed did not open egress on this topology")
+
+	if exfilToP(spoofBoxPort, spoofExfilPort, "routed-2618-baseline") {
+		t.Fatal("precondition: abox reached routed P with no seed under enforce — enforcement is not active")
 	}
-	// The routed neighbour forges from P. The host routes it to abox; abox's
-	// egress hook must still see the (withheld) mark the neighbour's sender hook
-	// set, so the seed is rejected.
-	forgeSYNToAbox(t, routedNNetns, spoofExfilAddr, spoofExfilPort, spoofBoxPort)
-	if aboxExfil(t, br.raw, spoofBoxPort, spoofExfilPort, "routed-2618-after-forged-seed") {
-		t.Error("a routed neighbour's forged SYN opened the enforced box's egress — the mark did not survive host forwarding, or the seed check is ingress_ifindex-based (#2618 B2)")
+	// Control 1: the routed neighbour seeds from its OWN address and abox's
+	// answer arrives in nbox — the mark survives host forwarding and VALIDATED
+	// frames seed.
+	if !aboxAnswersPeer(t, routedNNetns, routedNAddr, spoofCtrlBoxPort, spoofCtrlExfilPort, "routed-2618-nbox-own-address") {
+		t.Fatal("positive control: the routed neighbour's own-address seed did not open abox's egress to it — the routed validated path is broken")
+	}
+	// Control 2: P itself (via the trusted uplink) seeds and abox answers P.
+	forgeSYNToAbox(t, routedPNetns, routedPAddr, spoofCtrlExfilPort+1, spoofCtrlBoxPort+1)
+	if !exfilToP(spoofCtrlBoxPort+1, spoofCtrlExfilPort+1, "routed-2618-P-own-seed") {
+		t.Fatal("positive control: P's own seed over the trusted uplink did not open abox's egress to P")
+	}
+	// The forgery: nbox sends a SYN "from P", routed by the host to abox. SEEN
+	// without VALIDATED travels with it, so the seed is withheld.
+	forgeSYNToAbox(t, routedNNetns, routedPAddr, spoofExfilPort, spoofBoxPort)
+	if exfilToP(spoofBoxPort, spoofExfilPort, "routed-2618-after-forged-seed") {
+		t.Error("a routed neighbour's forged SYN opened the enforced box's egress to P — the mark did not survive host forwarding, or the seed check is not mark-based (#2618 B4)")
 	}
 }
 
@@ -668,7 +913,7 @@ def csum(b):
 tcp = struct.pack("!HHIIBBHHH", sport, dport, 1000, 2000, 5 << 4, 0x10, 65535, 0, 0)
 pseudo = socket.inet_aton(src) + socket.inet_aton(dst) + struct.pack("!BBH", 0, 6, len(tcp) + len(payload))
 tcp = tcp[:16] + struct.pack("!H", csum(pseudo + tcp + payload)) + tcp[18:]
-opts = b"\x01\x01\x01\x00"  # NOP, NOP, NOP, End-of-options — one 32-bit word
+opts = b"\x01\x01\x01\x00"  # NOP, NOP, NOP, End-of-options: one 32-bit word
 ihl = 5 + len(opts) // 4
 ip = struct.pack("!BBHHHBBH4s4s", (4 << 4) | ihl, 0, 20 + len(opts) + len(tcp) + len(payload), 0, 0, 64, 6, 0,
                  socket.inet_aton(src), socket.inet_aton(dst)) + opts
@@ -696,13 +941,13 @@ func TestAttachedProgram_IPOptionsSegmentIsNotAReply(t *testing.T) {
 
 	// Validly seed a flow from the host (P) to abox:spoofCtrlBoxPort.
 	forgeSYNToAbox(t, "", spoofExfilAddr, spoofCtrlExfilPort, spoofCtrlBoxPort)
-	// A plain ACK on the seeded tuple reaches P — the seed is live.
+	// A plain ACK on the seeded tuple reaches P: the seed is live.
 	if !aboxExfil(t, br.raw, spoofCtrlBoxPort, spoofCtrlExfilPort, "s2-plain-ack") {
 		t.Fatal("positive control: a plain ACK on a validly seeded tuple did not reach P")
 	}
 
 	// The SAME tuple, but with IP options: parse_l4 bails, so it is not a reply
-	// and is judged as egress under enforce — it must not reach P.
+	// and is judged as egress under enforce: it must not reach P.
 	marker := "s2-options-segment"
 	out, err := exec.Command("ip", "netns", "exec", spoofANetns, // #nosec G204 -- fixed argv, constant script
 		"python3", "-c", forgeACKOptionsScript,
@@ -721,7 +966,7 @@ func TestAttachedProgram_IPOptionsSegmentIsNotAReply(t *testing.T) {
 			t.Fatalf("raw read: %v", err)
 		}
 		if bytes.Contains(buf[:n], []byte(marker)) {
-			t.Error("an IP-options segment rode a seeded tuple out to P — parse_l4 did not fail closed on ihl!=5 (#2618 S2)")
+			t.Error("an IP-options segment rode a seeded tuple out to P: parse_l4 did not fail closed on ihl!=5 (#2618 S2)")
 			break
 		}
 	}
