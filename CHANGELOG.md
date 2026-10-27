@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`backends profile` text output decodes protobuf JSON capacities and benchmark scores** (refs #681). Recording a profile or reading it with `--get` no longer fails on string-encoded 64-bit values returned by the daemon. Raw JSON output and the unprofiled-backend message are preserved.
+
 - **`traffic history` with no end time returned nothing** (#2884). An unset `end_time` was read as the Unix epoch, so the window was empty. It now defaults to now.
 
 - **Agent re-prompt follow-ups** (part of #3107, from the review of #3098). A run that edits files only through `shell_exec` (or Codex's `shell`) is now re-prompted once for its missing final message when the command is an unmistakable write (output redirection to a file, `tee`, `sed -i`, `rm`, `mv`, `cp`, `touch`, `git apply`, and the like); reads, builds and package installs do not count. Known limits: it misses `git checkout`/`restore`/`reset`/`clean`, `xargs rm`, `find -delete`, `dd of=`, nested `bash -c`, backtick substitutions and interpreters that write from their own code; it can false-positive on a backslash-escaped `>`, `$((1>2))`, `[[ 1 > 2 ]]`, an apostrophe in unquoted text (`echo don't "a > b"`) and here-document bodies; a command over 64 KB is not scanned. After a re-prompt, `artifact.json` records both turns' usage summed instead of only the follow-up's. The `mcp__` prefix is now recognised only for the agent-box server, so another MCP server's `write_file` no longer counts as a file change. Any non-blank reply counts as a final message; the runtime does not parse it. Still to verify on a deployed box: Claude session resume, the Codex second turn, and a real Gemini replay.
