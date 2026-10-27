@@ -8,8 +8,8 @@ import (
 )
 
 // renderStoragePools is the "Storage Pools" block of `containarium info`
-// (#2823): each pool's fill against its size, flagged WARNING (>= 85%) or
-// CRITICAL (>= 95%). Empty when the daemon reported no pools (local mode, an
+// (#2823): each pool's fill against its size, flagged "WARNING: pool nearly
+// full" (>= 85%, #3128) or CRITICAL (>= 95%). Empty when the daemon reported no pools (local mode, an
 // older daemon, or a monitor that has not read yet).
 func renderStoragePools(pools []incus.StoragePoolCapacity) string {
 	if len(pools) == 0 {
@@ -29,7 +29,7 @@ func renderStoragePools(pools []incus.StoragePoolCapacity) string {
 		}
 		switch p.Level {
 		case incus.StoragePoolLevelWarning:
-			line += "  WARNING"
+			line += "  WARNING: pool nearly full"
 		case incus.StoragePoolLevelCritical:
 			line += "  CRITICAL: containers on this pool may soon stop writing"
 		}
