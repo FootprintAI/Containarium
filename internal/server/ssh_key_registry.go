@@ -24,6 +24,17 @@ type authorizedKeysOps struct {
 	add    func(username, pubKey string) error
 	remove func(username, pubKey string) error
 	count  func(username string) (int32, error)
+	// replace makes the file hold exactly keys (plus platform-managed lines).
+	// hooks run inside the per-user critical section; see
+	// container.ReplaceAuthorizedKeys.
+	replace func(username string, keys []string, hooks container.ReplaceHooks) ([]string, error)
+}
+
+func (o authorizedKeysOps) replaceKeys(username string, keys []string, hooks container.ReplaceHooks) ([]string, error) {
+	if o.replace != nil {
+		return o.replace(username, keys, hooks)
+	}
+	return container.ReplaceAuthorizedKeys(username, keys, hooks)
 }
 
 func (o authorizedKeysOps) addKey(username, pubKey string) error {
