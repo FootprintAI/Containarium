@@ -176,3 +176,31 @@ func TestUncoveredPathText_CoversEveryReportedPath(t *testing.T) {
 		}
 	}
 }
+
+// status says whether the tenant runs the host default or a stored policy (#2996).
+func TestPrintStatus_PolicySource(t *testing.T) {
+	for _, tc := range []struct {
+		src  pb.NetworkPolicySource
+		want string
+	}{
+		{pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_HOST_DEFAULT, "policy-source:      host default egress allow-list (no stored policy)"},
+		{pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_STORED, "policy-source:      stored policy"},
+		{pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_UNSPECIFIED, "policy-source:      unknown"},
+	} {
+		var b bytes.Buffer
+		printStatus(&b, &pb.NetworkPolicyStatus{Tenant: "acme", PolicySource: tc.src})
+		if !strings.Contains(b.String(), tc.want) {
+			t.Errorf("source %v: output lacks %q:\n%s", tc.src, tc.want, b.String())
+		}
+	}
+}
+
+func TestDecodeStatus_PolicySource(t *testing.T) {
+	s, err := decodeStatus([]byte(`{"status":{"tenant":"acme","policySource":"NETWORK_POLICY_SOURCE_STORED"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.GetPolicySource() != pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_STORED {
+		t.Errorf("policy_source = %v", s.GetPolicySource())
+	}
+}
