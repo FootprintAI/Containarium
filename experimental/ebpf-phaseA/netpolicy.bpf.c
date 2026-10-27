@@ -164,9 +164,10 @@ struct {
 } ip_tenant SEC(".maps");
 
 // Stats counters the validator reads (like Phase 0). 0=seen, 1=would_deny,
-// 2=inbound_miss (#2618: a reply-shaped packet the box sent whose inbound flow
-// was not in the map or had idled out — an evicted or expired entry, or a
-// box-initiated ACK-only segment; an operator signal for LRU pressure).
+// 2=inbound_reseed (#2618: a TCP inbound-flow entry re-created from a validated
+// MID-STREAM segment, i.e. after an LRU eviction or an idle expiry healed itself;
+// a box cannot inflate it, since only inbound packets write the map — the
+// daemon logs its growth each reconcile pass as the LRU-pressure signal).
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
@@ -174,9 +175,9 @@ struct {
     __uint(max_entries, 3);
 } stats SEC(".maps");
 
-#define STAT_SEEN         0
-#define STAT_WOULD_DENY   1
-#define STAT_INBOUND_MISS 2
+#define STAT_SEEN           0
+#define STAT_WOULD_DENY     1
+#define STAT_INBOUND_RESEED 2
 
 static __always_inline void bump(__u32 idx) {
     __u64 *v = bpf_map_lookup_elem(&stats, &idx);
@@ -256,8 +257,9 @@ struct {
 //     a SYN "from" an external address P and so open the target's egress to P,
 //     whatever the neighbour's own mode (its hook drops the forgery only under
 //     enforce, but it always withholds VALIDATED) and whether the frame was
-//     bridged or routed through the host. A frame with neither bit came from
-//     the host itself or from outside the bridge and is trusted, as today;
+//     bridged or routed through the host. A frame with neither bit is trusted
+//     ONLY if it is the host's own (ingress_ifindex 0) or came in on a known
+//     uplink (trusted_iif); every other unmarked frame fails closed;
 //   - consulted on the sender hook AFTER the virtual-patch and metadata
 //     checks (both still win, fail closed), with a reply-only shape per
 //     protocol (see inbound_reply) and a per-protocol idle timeout;
@@ -280,6 +282,21 @@ struct {
     __type(value, __u64);               // last inbound packet, bpf_ktime_get_ns
     __uint(max_entries, 65536);
 } inbound_flows SEC(".maps");
+
+// Host interfaces whose UNMARKED frames may seed an inbound flow (#2618): the
+// host's uplinks (default-route interfaces), written by the daemon. An unmarked
+// frame with ingress_ifindex 0 is the host's own; one from an interface in this
+// map was routed in from outside the bridge, where the host's rp_filter and the
+// cloud firewall are the source guards. Any other unmarked frame — a veth the
+// daemon has not configured yet (a new instance before its first reconcile), a
+// non-Incus namespace attached to the bridge, or a frame whose mark something
+// rewrote — is NOT trusted (fail closed).
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);                 // host ifindex
+    __type(value, __u8);
+    __uint(max_entries, 64);
+} trusted_iif SEC(".maps");
 
 // Idle timeouts, checked on lookup. Inbound packets alone refresh an entry, so a
 // box can only keep answering a peer while that peer keeps talking to it: on a
@@ -376,11 +393,19 @@ static __always_inline void track_inbound(struct __sk_buff *skb, __u32 ifindex,
         return;
     // Source validation, carried from the sender hook in the mark: a frame from
     // a managed veth (SEEN) is trusted only if that hook validated its source
-    // (VALIDATED). A frame with neither bit came from the host or from outside
-    // the bridge.
+    // (VALIDATED). An unmarked frame is trusted only when it is the host's own
+    // (ingress_ifindex 0) or entered on a known uplink; anything else unmarked
+    // — an unconfigured veth, a foreign namespace on the bridge, a rewritten
+    // mark — fails closed.
     __u32 mark = skb->mark;
-    if ((mark & NETPOLICY_MARK_SEEN) && !(mark & NETPOLICY_MARK_VALIDATED))
-        return;
+    if (mark & NETPOLICY_MARK_SEEN) {
+        if (!(mark & NETPOLICY_MARK_VALIDATED))
+            return;
+    } else {
+        __u32 iif = skb->ingress_ifindex;
+        if (iif != 0 && !bpf_map_lookup_elem(&trusted_iif, &iif))
+            return;
+    }
 
     struct inbound_key k = {};
     k.ifindex = ifindex;
@@ -404,6 +429,10 @@ static __always_inline void track_inbound(struct __sk_buff *skb, __u32 ifindex,
         *seen = now;
         return;
     }
+    // A TCP entry created by anything but a fresh SYN is a re-seed: the flow
+    // existed and its entry was evicted or idled out. Count it (see stats).
+    if (proto == IPPROTO_TCP && !(l4->tcp_syn && !l4->tcp_ack))
+        bump(STAT_INBOUND_RESEED);
     bpf_map_update_elem(&inbound_flows, &k, &now, BPF_ANY);
 }
 
@@ -438,18 +467,14 @@ static __always_inline int inbound_reply(__u32 ifindex, __u32 box_ip, __u32 peer
         return 0;
     }
     __u64 *seen = bpf_map_lookup_elem(&inbound_flows, &k);
-    if (!seen) {
-        bump(STAT_INBOUND_MISS); // evicted, never seeded, or a box-initiated non-SYN
+    if (!seen)
         return 0;
-    }
     // Read the stamp before the clock: a refresh on another CPU between the two
     // reads could otherwise make now - last underflow and drop a valid reply.
     __u64 last = *seen;
     __u64 now = bpf_ktime_get_ns();
-    if (now > last && now - last > inbound_idle_ns(proto)) {
-        bump(STAT_INBOUND_MISS); // idled out; the peer's next packet re-creates it
-        return 0;
-    }
+    if (now > last && now - last > inbound_idle_ns(proto))
+        return 0; // idled out; the peer's next packet re-creates it
     return 1;
 }
 

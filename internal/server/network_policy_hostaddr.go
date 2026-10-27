@@ -31,8 +31,12 @@ import (
 // address is deliberately NOT a fallback.
 
 // defaultIncusLeaseDir is where Incus keeps each managed bridge's dnsmasq lease
-// file, under the same var dir as its unix socket.
+// file, under the same data dir as its unix socket; leaseDirFor derives it from
+// the client's actual data dir.
 const defaultIncusLeaseDir = "/var/lib/incus/networks"
+
+// leaseDirFor is the lease directory under an Incus data dir.
+func leaseDirFor(incusDataDir string) string { return filepath.Join(incusDataDir, "networks") }
 
 // hostNIC is what the enforcer needs to know about an instance's primary NIC
 // device, read from host-side config.
@@ -159,13 +163,20 @@ func (l *leaseReader) lookup(network, mac string) (netip.Addr, bool) {
 }
 
 // hostIPv4For resolves the box address for nic from host-side sources: the
-// static device address, else the bridge's DHCP lease. ok is false when neither
-// knows it.
-func hostIPv4For(nic hostNIC, leases *leaseReader) ([4]byte, bool) {
+// static device address, else the bridge's DHCP lease — but a lease counts only
+// when it equals the address the guest itself reports. dnsmasq moves a lease on
+// a DHCP release/request that names the MAC, and a neighbour can send those on
+// the bridge, so a lease alone could be made to disagree with the box's real
+// address and get the box's genuine traffic flagged as spoofed (a cross-tenant
+// DoS under enforce). Requiring both to agree means neither side can move the
+// validated address on its own: the guest cannot (its report is not trusted
+// alone) and a neighbour cannot (the lease is not trusted alone). ok is false
+// when nothing host-side knows it, or the two disagree.
+func hostIPv4For(nic hostNIC, leases *leaseReader, guest [4]byte, hasGuest bool) ([4]byte, bool) {
 	if nic.StaticIP.IsValid() {
 		return nic.StaticIP.As4(), true
 	}
-	if ip, ok := leases.lookup(nic.Network, nic.HWAddr); ok {
+	if ip, ok := leases.lookup(nic.Network, nic.HWAddr); ok && hasGuest && ip.As4() == guest {
 		return ip.As4(), true
 	}
 	return [4]byte{}, false
