@@ -281,12 +281,12 @@ func TestNewSender_RefusesLoopbackAndMetadata(t *testing.T) {
 	if err == nil || len(cap.hits) != 0 {
 		t.Fatalf("guarded sender reached a loopback server: err=%v hits=%d", err, len(cap.hits))
 	}
-	for _, addr := range []string{"127.0.0.1:80", "[::1]:443", "169.254.169.254:80", "[fe80::1]:80", "0.0.0.0:80", "[fd00:ec2::254]:80"} {
+	for _, addr := range []string{"127.0.0.1:80", "[::1]:443", "169.254.169.254:80", "[fe80::1]:80", "0.0.0.0:80", "[fd00:ec2::254]:80", "100.100.100.200:80", "[fd20:ce::254]:80"} {
 		if checkDialAddr(addr) == nil {
 			t.Errorf("checkDialAddr(%s) allowed", addr)
 		}
 	}
-	for _, addr := range []string{"10.0.0.5:443", "192.168.1.20:80", "203.0.113.7:443", "[2001:db8::1]:443"} {
+	for _, addr := range []string{"10.0.0.5:443", "192.168.1.20:80", "203.0.113.7:443", "[2001:db8::1]:443", "100.101.102.103:443"} {
 		if err := checkDialAddr(addr); err != nil {
 			t.Errorf("checkDialAddr(%s) = %v, want allowed", addr, err)
 		}

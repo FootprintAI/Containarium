@@ -84,9 +84,14 @@ type fakeSender struct {
 	mu   sync.Mutex
 	sent []sentPush
 	err  error
+	// block, when set, is called before a send and may wait.
+	block func(ch notify.Channel)
 }
 
 func (f *fakeSender) Send(_ context.Context, ch notify.Channel, token string, m notify.Message) error {
+	if f.block != nil {
+		f.block(ch)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -94,6 +99,12 @@ func (f *fakeSender) Send(_ context.Context, ch notify.Channel, token string, m 
 	}
 	f.sent = append(f.sent, sentPush{ch, token, m})
 	return nil
+}
+
+func (f *fakeSender) all() []sentPush {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sentPush(nil), f.sent...)
 }
 
 func notifyCtx(user string) context.Context {
@@ -263,6 +274,7 @@ func TestNotifyWatcher_PushesOpenRequestsOfLiveRuns(t *testing.T) {
 	writeRecord(t, dir, recordSpec{name: "plain", pid: os.Getpid(), boot: boot, started: now})
 
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if len(snd.sent) != 1 {
 		t.Fatalf("pushes = %d (%+v), want 1", len(snd.sent), snd.sent)
 	}
@@ -279,6 +291,7 @@ func TestNotifyWatcher_PushesOpenRequestsOfLiveRuns(t *testing.T) {
 
 	// Next poll: same open request, no second push.
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if len(snd.sent) != 1 {
 		t.Fatalf("re-pushed an already pushed request: %d", len(snd.sent))
 	}
@@ -296,8 +309,10 @@ func TestNotifyWatcher_FailedSendRetried(t *testing.T) {
 	writeJournal(t, dir, "live", openReq("r1", "Bash: make deploy", now))
 	snd.err = errors.New("connection refused")
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	snd.err = nil
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if len(snd.sent) != 1 || snd.sent[0].token != "" {
 		t.Fatalf("after a failed send: %+v", snd.sent)
 	}
@@ -306,6 +321,7 @@ func TestNotifyWatcher_FailedSendRetried(t *testing.T) {
 func TestNotifyWatcher_NoChannelNoBoxRead(t *testing.T) {
 	s, _, _, b, _ := newTestNotifyServer(t)
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if b.calls() != 0 {
 		t.Fatalf("watcher read %d boxes with no channel configured", b.calls())
 	}
@@ -344,11 +360,186 @@ func TestNotifyWatcher_CapsPushesPerPoll(t *testing.T) {
 		writeJournal(t, dir, run, openReq("r1", "Bash: x", now))
 	}
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if len(snd.sent) != notifyMaxPushesPerPoll {
 		t.Fatalf("first poll: %d pushes, want %d", len(snd.sent), notifyMaxPushesPerPoll)
 	}
 	s.pollOnce(context.Background())
+	s.wg.Wait()
 	if len(snd.sent) != 5 {
 		t.Fatalf("after second poll: %d pushes, want 5 (none dropped)", len(snd.sent))
+	}
+}
+
+// gatedChannelStore is a ChannelStore whose Set can be held or failed.
+type gatedChannelStore struct {
+	*notify.MemStore
+	mu      sync.Mutex
+	holdSet chan struct{} // when non-nil, Set waits for it to close
+	entered chan struct{}
+	failSet bool
+}
+
+func (g *gatedChannelStore) Set(ctx context.Context, ch notify.Channel) (notify.Channel, error) {
+	g.mu.Lock()
+	hold, entered, fail := g.holdSet, g.entered, g.failSet
+	g.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if hold != nil {
+		<-hold
+	}
+	if fail {
+		return notify.Channel{}, errors.New("store down")
+	}
+	return g.MemStore.Set(ctx, ch)
+}
+
+// TestSetNotifyChannel_NewTokenNeverSentToOldServer: while a channel moves
+// from server A with token A to server B with token B, no push pairs server
+// A with token B, and a failed store write leaves A with token A.
+func TestSetNotifyChannel_NewTokenNeverSentToOldServer(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, _, dir := newTestNotifyServer(t)
+	g := &gatedChannelStore{MemStore: notify.NewMemStore()}
+	s.store = g
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	ntfy := pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY
+	ctx := notifyCtx("alice")
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://a.example.com", Topic: "t", Token: "tokA"}); err != nil {
+		t.Fatal(err)
+	}
+	writeRecord(t, dir, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+
+	// A failed move keeps A paired with token A.
+	g.failSet = true
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://b.example.com", Topic: "t", Token: "tokB"}); err == nil {
+		t.Fatal("Set with a failing store succeeded")
+	}
+	g.failSet = false
+	writeJournal(t, dir, "live", openReq("r1", "Bash: x", now))
+	s.pollOnce(context.Background())
+	s.wg.Wait()
+
+	// A move that is held mid-way while the watcher polls.
+	g.mu.Lock()
+	g.holdSet, g.entered = make(chan struct{}), make(chan struct{}, 1)
+	g.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://b.example.com", Topic: "t", Token: "tokB"})
+		done <- err
+	}()
+	<-g.entered
+	writeJournal(t, dir, "live", openReq("r2", "Bash: y", now))
+	now = now.Add(time.Minute)
+	polled := make(chan struct{})
+	go func() { s.pollOnce(context.Background()); s.wg.Wait(); close(polled) }()
+	time.Sleep(50 * time.Millisecond)
+	g.mu.Lock()
+	close(g.holdSet)
+	g.holdSet = nil
+	g.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-polled
+	for _, p := range snd.all() {
+		want := map[string]string{"https://a.example.com": "tokA", "https://b.example.com": "tokB"}[p.ch.Server]
+		if p.token != "" && p.token != want {
+			t.Fatalf("push to %s carried %q", p.ch.Server, p.token)
+		}
+	}
+	if len(snd.all()) == 0 {
+		t.Fatal("no push sent")
+	}
+}
+
+// TestNotifyWatcher_SlowServerDoesNotDelayOtherUsers: one user's stalled
+// ntfy server does not hold back another user's first push.
+func TestNotifyWatcher_SlowServerDoesNotDelayOtherUsers(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, b, _ := newTestNotifyServer(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	// One temp dir per user's "box".
+	dirs := map[string]string{"alice-container": t.TempDir(), "bob-container": t.TempDir()}
+	s.exec = func() boxScriptFunc {
+		return func(box, script string) (string, error) {
+			return b.exec(box, strings.ReplaceAll(script, shellSingleQuote(s.dir), shellSingleQuote(dirs[box])))
+		}
+	}
+	for _, u := range []string{"alice", "bob"} {
+		if _, err := s.SetNotifyChannel(notifyCtx(u), &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://" + u + ".example.com", Topic: "t"}); err != nil {
+			t.Fatal(err)
+		}
+		d := dirs[u+"-container"]
+		writeRecord(t, d, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+		writeJournal(t, d, "live", openReq("r1", "Bash: x", now))
+	}
+	release := make(chan struct{})
+	snd.block = func(ch notify.Channel) {
+		if ch.Server == "https://alice.example.com" {
+			<-release
+		}
+	}
+	s.pollOnce(context.Background())
+	deadline := time.After(2 * time.Second)
+	for {
+		var bob bool
+		for _, p := range snd.all() {
+			bob = bob || p.ch.Server == "https://bob.example.com"
+		}
+		if bob {
+			break
+		}
+		select {
+		case <-deadline:
+			close(release)
+			t.Fatal("bob's push waited for alice's stalled server")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// A poll while alice's send is still stuck does not start a second one.
+	s.pollOnce(context.Background())
+	close(release)
+	s.wg.Wait()
+	n := 0
+	for _, p := range snd.all() {
+		if p.ch.Server == "https://alice.example.com" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("alice pushes = %d, want 1", n)
+	}
+}
+
+// TestNotifyWatcher_OldOpenRequestBehindLargeJournal: an open request stays
+// visible after more than the read limit of other journal lines.
+func TestNotifyWatcher_OldOpenRequestBehindLargeJournal(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, _, dir := newTestNotifyServer(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	if _, err := s.SetNotifyChannel(notifyCtx("alice"), &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://n.example.com", Topic: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	writeRecord(t, dir, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+	events := []coderun.InputEvent{openReq("r-old", "Bash: make release", now)}
+	note := strings.Repeat("n", 1000)
+	for i := 0; i < 2*notifyJournalReadLimit/1000; i++ {
+		events = append(events, coderun.InputEvent{Kind: coderun.KindInputStatus, T: now, Text: note})
+	}
+	writeJournal(t, dir, "live", events...)
+	s.pollOnce(context.Background())
+	s.wg.Wait()
+	if got := snd.all(); len(got) != 1 || !strings.Contains(got[0].msg.Body, "make release") {
+		t.Fatalf("pushes = %+v, want the old open request", got)
 	}
 }

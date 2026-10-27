@@ -7,6 +7,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -57,6 +58,19 @@ type NotifyServer struct {
 
 	coalescer *notify.Coalescer
 	now       func() time.Time
+
+	// cfgMu makes a channel change and the token it carries one step for the
+	// watcher: a push reads the channel and its token under it, so it never
+	// pairs a new token with the old server.
+	cfgMu sync.Mutex
+
+	// Each user is polled on its own goroutine, so one slow box or ntfy
+	// server delays only that user; inflight keeps one poll per user at a
+	// time, and sem bounds how many run at once.
+	mu       sync.Mutex
+	inflight map[string]bool
+	sem      chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewNotifyServer wires the service. secretStore may be nil on a daemon
@@ -70,6 +84,8 @@ func NewNotifyServer(store notify.ChannelStore, secretStore notifySecretStore, e
 		dir:       dir,
 		coalescer: notify.NewCoalescer(notify.DefaultWindow),
 		now:       time.Now,
+		inflight:  map[string]bool{},
+		sem:       make(chan struct{}, notifyMaxConcurrentUsers),
 	}
 }
 
@@ -178,22 +194,40 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	if err := notify.ValidateChannel(ch, hasToken); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	switch {
-	case req.GetToken() != "":
-		if err := s.storeNotifyToken(ctx, username, req.GetToken()); err != nil {
-			return nil, err
+	stored, err := s.setChannel(ctx, ch, req.GetToken(), req.GetClearToken())
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, ch.HasToken, ch.RedactCommand)
+	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
+}
+
+// setChannel stores ch and, when given, its new token, under cfgMu. A new or
+// cleared token is written while the stored channel says it has none, so a
+// write that fails part way never leaves a token paired with a server it was
+// not given for: at worst the channel is left without a token.
+func (s *NotifyServer) setChannel(ctx context.Context, ch notify.Channel, token string, clearToken bool) (notify.Channel, error) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if token != "" || clearToken {
+		tokenless := ch
+		tokenless.HasToken = false
+		if _, err := s.store.Set(ctx, tokenless); err != nil {
+			return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
 		}
-	case req.GetClearToken():
-		if err := s.deleteNotifyToken(ctx, username); err != nil {
-			return nil, err
+		if clearToken {
+			if err := s.deleteNotifyToken(ctx, ch.Username); err != nil {
+				return notify.Channel{}, err
+			}
+		} else if err := s.storeNotifyToken(ctx, ch.Username, token); err != nil {
+			return notify.Channel{}, err
 		}
 	}
 	stored, err := s.store.Set(ctx, ch)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "store channel: %v", err)
+		return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
-	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, ch.HasToken, ch.RedactCommand)
-	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
+	return stored, nil
 }
 
 // GetNotifyChannel returns the user's channel, without its token.
@@ -224,6 +258,8 @@ func (s *NotifyServer) DeleteNotifyChannel(ctx context.Context, req *pb.DeleteNo
 	if err != nil {
 		return nil, err
 	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
 	if err := s.store.Delete(ctx, username); err != nil {
 		if errors.Is(err, notify.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "no notification channel for %s", username)
@@ -245,16 +281,12 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 	if err != nil {
 		return nil, err
 	}
-	ch, err := s.store.Get(ctx, username)
+	ch, token, err := s.channelAndToken(ctx, username)
 	if errors.Is(err, notify.ErrNotFound) {
 		return nil, status.Errorf(codes.NotFound, "no notification channel for %s; run `containarium notify set ntfy` first", username)
 	}
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "read channel: %v", err)
-	}
-	token, err := s.channelToken(ctx, ch)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "read token: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	msg := notify.Message{
 		Title: "Containarium test notification",
@@ -265,6 +297,22 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 		return nil, status.Errorf(codes.Unavailable, "%v", err)
 	}
 	return &pb.TestNotifyChannelResponse{Message: "test push accepted by " + ch.Server}, nil
+}
+
+// channelAndToken reads a user's channel and its token as one consistent
+// pair (see cfgMu).
+func (s *NotifyServer) channelAndToken(ctx context.Context, username string) (notify.Channel, string, error) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	ch, err := s.store.Get(ctx, username)
+	if err != nil {
+		return notify.Channel{}, "", err
+	}
+	token, err := s.channelToken(ctx, ch)
+	if err != nil {
+		return notify.Channel{}, "", fmt.Errorf("read token: %w", err)
+	}
+	return ch, token, nil
 }
 
 func (s *NotifyServer) channelToken(ctx context.Context, ch notify.Channel) (string, error) {
@@ -281,17 +329,25 @@ func (s *NotifyServer) channelToken(ctx context.Context, ch notify.Channel) (str
 // the 10 s a first request may take to reach the phone (#2185).
 const NotifyPollInterval = 5 * time.Second
 
+// notifyMaxConcurrentUsers bounds how many users are polled at once.
+const notifyMaxConcurrentUsers = 16
+
 // notifyMaxPushesPerPoll caps the pushes one user gets per poll.
 const notifyMaxPushesPerPoll = 3
 
-// notifyJournalReadLimit caps how much of a journal is read per poll: its
-// tail, where open requests are. A torn first line is skipped by
+// notifyJournalReadLimit caps how much of a journal is read per poll: the
+// tail of its request and response lines (status notes, which can be large
+// and many, are left out on the box). An open request older than this many
+// bytes of later requests and responses is not seen; a request expires after
+// --approval-timeout anyway. A torn first line is skipped by
 // coderun.ParseInputJournal.
 const notifyJournalReadLimit = 256 << 10
 
 // notifyJournalScript prints "B <boot-id>", "P <live pids>", then for every
 // run record with an input journal
-// "R <file> <base64 record> <base64 exit sidecar | -> <base64 journal tail>".
+// "R <file> <base64 record> <base64 exit sidecar | -> <base64 journal tail>",
+// the tail holding only input_request and input_response lines (the kind is
+// the first key MarshalLine writes).
 // Every file goes through open3's regular-file and resolved-path guard.
 func notifyJournalScript(dir string) string {
 	return fmt.Sprintf(`d=%s
@@ -306,7 +362,7 @@ for f in "$d"/*.json; do
   x=-
   if open3 "$b.exit"; then x=$(b64_3); fi
   open3 "$b.input.jsonl" || continue
-  j=$(tail -c %d <&3 | base64 | tr -d '\n'); exec 3<&-
+  j=$(grep -E '^\{"kind":"input_(request|response)"' <&3 | tail -c %d | base64 | tr -d '\n'); exec 3<&-
   echo "R ${f##*/} ${r:--} ${x:--} ${j:--}"
 done
 `, shellSingleQuote(dir), boxRunOpenFn, notifyJournalReadLimit)
@@ -391,8 +447,8 @@ func (s *NotifyServer) RunNotifyWatcher(ctx context.Context) {
 	}
 }
 
-// pollOnce reads every channel user's journals once and sends what is due.
-// A user whose box cannot be read is skipped this round, keeping its state.
+// pollOnce starts one poll for every channel user that has none running,
+// each on its own goroutine (bounded by sem). Tests wait on s.wg.
 func (s *NotifyServer) pollOnce(ctx context.Context) {
 	exec := s.exec()
 	if exec == nil {
@@ -404,34 +460,70 @@ func (s *NotifyServer) pollOnce(ctx context.Context) {
 		return
 	}
 	for _, ch := range channels {
-		if ctx.Err() != nil {
-			return
+		s.mu.Lock()
+		busy := s.inflight[ch.Username]
+		if !busy {
+			s.inflight[ch.Username] = true
 		}
-		out, err := exec(ch.Username+"-container", notifyJournalScript(s.dir))
-		if err != nil {
+		s.mu.Unlock()
+		if busy {
 			continue
 		}
-		pushes := s.coalescer.Step(ch.Username, parseNotifyJournals(ch.Username, out), s.now())
-		sort.Slice(pushes, func(i, j int) bool { return pushes[i].Run < pushes[j].Run })
-		// The box's user can write run records and journals, so a flood of
-		// fake runs must not become a flood of pushes: the rest wait.
-		for _, p := range pushes[min(len(pushes), notifyMaxPushesPerPoll):] {
-			s.coalescer.Requeue(p)
-		}
-		pushes = pushes[:min(len(pushes), notifyMaxPushesPerPoll)]
-		for _, p := range pushes {
-			if err := s.deliver(ctx, ch, p); err != nil {
-				log.Printf("[notify] push for %s/%s: %v", ch.Username, p.Run, err)
-				s.coalescer.Requeue(p)
+		s.wg.Add(1)
+		go func(user string) {
+			defer s.wg.Done()
+			defer func() {
+				s.mu.Lock()
+				delete(s.inflight, user)
+				s.mu.Unlock()
+			}()
+			select {
+			case s.sem <- struct{}{}:
+				defer func() { <-s.sem }()
+			case <-ctx.Done():
+				return
 			}
+			s.pollUser(ctx, exec, user)
+		}(ch.Username)
+	}
+}
+
+// pollUser reads one user's journals and sends what is due. A box that
+// cannot be read is skipped this round, keeping its state.
+func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user string) {
+	out, err := exec(user+"-container", notifyJournalScript(s.dir))
+	if err != nil {
+		return
+	}
+	pushes := s.coalescer.Step(user, parseNotifyJournals(user, out), s.now())
+	sort.Slice(pushes, func(i, j int) bool { return pushes[i].Run < pushes[j].Run })
+	// The box's user can write run records and journals, so a flood of
+	// fake runs must not become a flood of pushes: the rest wait.
+	for _, p := range pushes[min(len(pushes), notifyMaxPushesPerPoll):] {
+		s.coalescer.Requeue(p)
+	}
+	pushes = pushes[:min(len(pushes), notifyMaxPushesPerPoll)]
+	for _, p := range pushes {
+		if ctx.Err() != nil {
+			s.coalescer.Requeue(p)
+			continue
+		}
+		if err := s.deliver(ctx, user, p); err != nil {
+			log.Printf("[notify] push for %s/%s: %v", user, p.Run, err)
+			s.coalescer.Requeue(p)
 		}
 	}
 }
 
-func (s *NotifyServer) deliver(ctx context.Context, ch notify.Channel, p notify.Push) error {
-	token, err := s.channelToken(ctx, ch)
+// deliver sends one push with the channel and token read together, at send
+// time: a channel changed or removed since the poll began is honoured.
+func (s *NotifyServer) deliver(ctx context.Context, user string, p notify.Push) error {
+	ch, token, err := s.channelAndToken(ctx, user)
+	if errors.Is(err, notify.ErrNotFound) {
+		return nil // channel removed: nothing to send to
+	}
 	if err != nil {
-		return fmt.Errorf("read token: %w", err)
+		return err
 	}
 	return s.sender.Send(ctx, ch, token, notify.BuildMessage(p.Requests, ch.RedactCommand, s.now()))
 }

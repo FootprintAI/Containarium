@@ -102,9 +102,14 @@ func newSender(rt http.RoundTripper) *Sender {
 	}}
 }
 
-// metadataAddrs are cloud metadata endpoints outside the link-local ranges.
+// metadataAddrs are cloud metadata endpoints outside the link-local ranges
+// (169.254.169.254, used by most clouds, is link-local and refused as such).
+// Only the exact addresses: 100.64.0.0/10 as a whole stays allowed, since a
+// self-hosted ntfy can sit on a CGNAT-range overlay network.
 var metadataAddrs = []netip.Addr{
-	netip.MustParseAddr("fd00:ec2::254"), // AWS IMDS over IPv6
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS IMDS over IPv6
+	netip.MustParseAddr("fd20:ce::254"),    // GCP metadata over IPv6
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud metadata
 }
 
 // checkDialAddr refuses the addresses a tenant-chosen server must not reach
