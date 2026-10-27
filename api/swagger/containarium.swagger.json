@@ -1910,7 +1910,7 @@
         "parameters": [
           {
             "name": "id",
-            "description": "Backup to restore.",
+            "description": "Backup to restore. A SNAPSHOT backup restarts its source box on a new\nPVC in the same namespace, retaining the old PVC. connection, clean,\nage_identity and target_container must be unset for snapshot restores.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -11268,10 +11268,11 @@
       "enum": [
         "BACKUP_DESTINATION_UNSPECIFIED",
         "BACKUP_DESTINATION_LOCAL",
-        "BACKUP_DESTINATION_GCS"
+        "BACKUP_DESTINATION_GCS",
+        "BACKUP_DESTINATION_SNAPSHOT"
       ],
       "default": "BACKUP_DESTINATION_UNSPECIFIED",
-      "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
+      "description": "BackupDestination selects archive storage or a Kubernetes PVC snapshot.\nFor LOCAL and GCS, the logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination.\n - BACKUP_DESTINATION_SNAPSHOT: Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.\nEncryption and durability are provided by the CSI storage backend."
     },
     "BackupEngine": {
       "type": "string",
@@ -11282,7 +11283,7 @@
         "BACKUP_ENGINE_BOX"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported\nas an Incus instance backup tarball, encrypted like any other dump. It\nis restored by importing it as a new box, never by a database engine."
+      "description": "BackupEngine identifies the database or box backup implementation.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,\nwith destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot\nencryption and durability are controlled by the CSI storage backend.\nBox backups are never restored by a database engine."
     },
     "BackupKeyMode": {
       "type": "string",
@@ -16221,6 +16222,24 @@
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
+    "HostSecurityPosture": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        },
+        "measuredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Host clock at the start of the posture measurement, not the send time."
+        }
+      },
+      "description": "HostSecurityPosture is one measured snapshot of the host's hardening checks.\nChecks use their unprefixed probe names; false includes a check that could not\nbe measured, with the reason in detail. An empty snapshot is not proof of a\npassing posture. Receivers must evaluate required checks and freshness."
+    },
     "IngestOutcome": {
       "type": "string",
       "enum": [
@@ -19074,6 +19093,10 @@
         "driverToken": {
           "type": "string",
           "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
+        },
+        "posture": {
+          "$ref": "#/definitions/HostSecurityPosture",
+          "description": "Absent means no posture measurement was reported, never \"passing\". Status\nprobes populate this on every report while retaining the posture-prefixed\nentries in checks for older receivers. Token-only refresh requests omit it\nand must not clear a receiver's previously stored posture."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
@@ -21761,9 +21784,33 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        },
+        "resources": {
+          "$ref": "#/definitions/TaskNodeResources",
+          "description": "Optional minimum host capabilities, checked against this daemon's last\nmeasured profile before graph execution. Nonzero requirements are local\nonly: remote backends and other pools are rejected. These are host\neligibility constraints, not per-box allocations or resource reservations.\nAbsent or all-zero requirements preserve legacy placement behavior."
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResources": {
+      "type": "object",
+      "properties": {
+        "minCpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum measured CPU core count; zero means no CPU constraint.\nMust be nonnegative."
+        },
+        "minMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Minimum measured total RAM in bytes, not currently free RAM.\nZero means no RAM constraint; must be nonnegative."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "description": "Require a successful GPU passthrough measurement in the profile.\nThis does not allocate a GPU or change the skill's recipe."
+        }
+      },
+      "description": "TaskNodeResources describes minimum measured hardware for a graph node.\nFor a crew node the constraint applies to the host of the whole crew;\nmember box limits and ordinary admission checks remain unchanged."
     },
     "TaskNodeResult": {
       "type": "object",
