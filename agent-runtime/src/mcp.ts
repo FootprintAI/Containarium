@@ -15,6 +15,9 @@ export interface McpServerSpec {
 }
 
 export const PLATFORM_MCP_NAME = "containarium";
+// AGENT_BOX_MCP_NAME is the in-box tool server's name. Claude and Codex journal
+// its tools as mcp__agent-box__<tool> (reprompt.ts keys on this).
+export const AGENT_BOX_MCP_NAME = "agent-box";
 
 // mcpServerSpecs is agent-box always, plus the platform MCP when the seed asked
 // for it. The platform MCP receives its URL, the PATH of the token file and its
@@ -22,10 +25,10 @@ export const PLATFORM_MCP_NAME = "containarium";
 export function mcpServerSpecs(cfg: EngineConfig): McpServerSpec[] {
   const specs: McpServerSpec[] = [
     {
-      name: "agent-box",
+      name: AGENT_BOX_MCP_NAME,
       command: cfg.agentBoxCommand,
       args: cfg.agentBoxArgs,
-      claudeAllow: ["mcp__agent-box__*"],
+      claudeAllow: [`mcp__${AGENT_BOX_MCP_NAME}__*`],
     },
   ];
   const p = cfg.platformMcp;
