@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Daemon restarts preserve tenant-selected timezones** (#3146). Timezone setup remains part of container provisioning, with `Asia/Taipei` as the default. Startup no longer replays the `ntp` base script on existing containers; users can change their timezone without a later daemon restart resetting it. This does not recover a timezone overwritten before upgrading or change time synchronization. Explicit `install-stack <username> ntp` still reapplies the script when requested.
+
 - **`backends profile` text output decodes protobuf JSON capacities and benchmark scores** (refs #681). Recording a profile or reading it with `--get` no longer fails on string-encoded 64-bit values returned by the daemon. Raw JSON output and the unprofiled-backend message are preserved.
 
 - **`traffic history` with no end time returned nothing** (#2884). An unset `end_time` was read as the Unix epoch, so the window was empty. It now defaults to now.
