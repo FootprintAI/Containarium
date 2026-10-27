@@ -49,9 +49,12 @@ func TestVethPolicyValue_EgressModeInPadByte(t *testing.T) {
 // layout, and the box's IPv4 follows as its 4 network-order bytes, so an object
 // built before it still loads (SetVethPolicy fits the value to the map's size).
 func TestVethPolicyValue_BoxIPAppended(t *testing.T) {
-	b := vethPolicyValue(PolicyConfig{TenantID: 7, Mode: ModeEnforce, EgressMode: ModeEnforce, BoxIP: [4]byte{10, 100, 0, 10}})
-	if len(b) != vethPolicyValueSize || vethPolicyValueSize != 12 {
-		t.Fatalf("policy_cfg value is %d bytes (const %d), want 12", len(b), vethPolicyValueSize)
+	b := vethPolicyValue(PolicyConfig{TenantID: 7, Mode: ModeEnforce, EgressMode: ModeEnforce, BoxIP: [4]byte{10, 100, 0, 10}, Flags: PolicyFlagValidateOnly})
+	if len(b) != vethPolicyValueSize || vethPolicyValueSize != 16 {
+		t.Fatalf("policy_cfg value is %d bytes (const %d), want 16", len(b), vethPolicyValueSize)
+	}
+	if b[12] != uint8(PolicyFlagValidateOnly) || b[13] != 0 || b[14] != 0 || b[15] != 0 {
+		t.Errorf("flags/pad bytes = %v, want [1 0 0 0]", b[12:16])
 	}
 	if got := binary.NativeEndian.Uint32(b[0:4]); got != 7 {
 		t.Errorf("tenant_id = %d, want 7", got)
@@ -78,10 +81,13 @@ func TestFitVethPolicyValue(t *testing.T) {
 	if got := fitVethPolicyValue(v, 8); len(got) != 8 || string(got) != string(v[:8]) {
 		t.Errorf("fit to 8 = %v, want the first 8 bytes %v", got, v[:8])
 	}
-	if got := fitVethPolicyValue(v, 12); string(got) != string(v[:]) {
-		t.Errorf("fit to 12 = %v, want %v", got, v[:])
+	if got := fitVethPolicyValue(v, 12); len(got) != 12 || string(got) != string(v[:12]) {
+		t.Errorf("fit to 12 (box_ip, no flags) = %v, want %v", got, v[:12])
 	}
-	if got := fitVethPolicyValue(v, 16); len(got) != 16 || string(got[:12]) != string(v[:]) || got[12] != 0 || got[15] != 0 {
-		t.Errorf("fit to 16 = %v, want %v then zeros", got, v[:])
+	if got := fitVethPolicyValue(v, 16); string(got) != string(v[:]) {
+		t.Errorf("fit to 16 = %v, want %v", got, v[:])
+	}
+	if got := fitVethPolicyValue(v, 20); len(got) != 20 || string(got[:16]) != string(v[:]) || got[16] != 0 || got[19] != 0 {
+		t.Errorf("fit to 20 = %v, want %v then zeros", got, v[:])
 	}
 }

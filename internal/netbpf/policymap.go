@@ -35,8 +35,31 @@ type PolicyConfig struct {
 	// veth only when the frame's source is this address. The zero value means
 	// unknown: no source validation on the veth and no seeding from it. The
 	// daemon sets it from the container view (planReconcile), not from the
-	// policy, so CompileConfig leaves it zero.
+	// policy, so CompileConfig leaves it zero. It must come from a
+	// host-authoritative source (the NIC's configured address or the bridge's
+	// DHCP lease), never from what the guest reports about itself.
 	BoxIP [4]byte
+	// Flags is the `flags` byte appended after box_ip (PolicyFlag*).
+	Flags PolicyFlags
+}
+
+// PolicyFlags mirrors the POLICY_FLAG_* bits of `struct policy_cfg`.
+type PolicyFlags uint8
+
+const (
+	// PolicyFlagValidateOnly marks a veth the daemon does not police (the
+	// control plane, an instance with no tenant): its sender hook only stamps
+	// frames with the source-validation mark and passes — no accounting, no
+	// policy, no events, never a drop. Every Incus instance on the bridge gets
+	// at least this entry so that a frame without the mark can only be the
+	// host's own or routed in from outside (#2618).
+	PolicyFlagValidateOnly PolicyFlags = 1
+)
+
+// ValidateOnlyConfig is the veth_policy entry for an instance the daemon does
+// not police: source-validation marking only, with the host-assigned address.
+func ValidateOnlyConfig(boxIP [4]byte) PolicyConfig {
+	return PolicyConfig{BoxIP: boxIP, Flags: PolicyFlagValidateOnly}
 }
 
 // EgressEntry is one allowed-egress LPM-trie entry the loader writes into the

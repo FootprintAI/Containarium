@@ -32,8 +32,19 @@ func specWithVethPolicyValue(v btf.Type) *ebpf.CollectionSpec {
 }
 
 // policyCfgBTFWithBoxIP is `struct policy_cfg` since #2618: the 8 bytes above
-// plus the appended `box_ip`.
+// plus the appended `box_ip`, `flags` and pad. policyCfgBTFBoxIPOnly is an
+// intermediate shape (box_ip, no flags) that was never released.
 func policyCfgBTFWithBoxIP() *btf.Struct {
+	st := policyCfgBTFBoxIPOnly()
+	st.Size = 16
+	u8 := &btf.Int{Name: "__u8", Size: 1}
+	st.Members = append(st.Members,
+		btf.Member{Name: "flags", Type: u8, Offset: 96},
+		btf.Member{Name: "pad", Type: &btf.Array{Type: u8, Nelems: 3}, Offset: 104})
+	return st
+}
+
+func policyCfgBTFBoxIPOnly() *btf.Struct {
 	st := policyCfgBTF("egress_mode")
 	st.Size = 12
 	st.Members = append(st.Members, btf.Member{Name: "box_ip", Type: &btf.Int{Name: "__u32", Size: 4}, Offset: 64})
@@ -58,6 +69,7 @@ func TestSpecSupportsInboundReplies(t *testing.T) {
 		{"current object (box_ip + inbound_flows)", withMap(specWithVethPolicyValue(policyCfgBTFWithBoxIP())), true},
 		{"pre-#2618 object (egress_mode only, no map)", specWithVethPolicyValue(policyCfgBTF("egress_mode")), false},
 		{"box_ip member but no inbound_flows map", specWithVethPolicyValue(policyCfgBTFWithBoxIP()), false},
+		{"box_ip without flags (unreleased intermediate) with map", withMap(specWithVethPolicyValue(policyCfgBTFBoxIPOnly())), false},
 		{"inbound_flows map but no box_ip member", withMap(specWithVethPolicyValue(policyCfgBTF("egress_mode"))), false},
 		{"value without BTF", withMap(specWithVethPolicyValue(nil)), false},
 	} {

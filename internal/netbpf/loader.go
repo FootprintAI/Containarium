@@ -31,7 +31,8 @@ const (
 	mapInboundFlows     = "inbound_flows"
 	statSeen            = uint32(0)
 	statWouldDeny       = uint32(1)
-	statsEntryCount     = 2
+	statInboundMiss     = uint32(2) // #2618: reply-shaped packet with no live inbound flow
+	statsEntryCount     = 3
 )
 
 // Loader owns a loaded netpolicy BPF collection and the per-veth TCX links it
@@ -150,10 +151,14 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 // declare for its program to read the egress-mode byte (#2974).
 const vethPolicyEgressModeField = "egress_mode"
 
-// vethPolicyBoxIPField is the `struct policy_cfg` member an object declares
-// when its program validates the box's source address and tracks inbound flows
-// (#2618); it is appended after egress_mode.
-const vethPolicyBoxIPField = "box_ip"
+// vethPolicyBoxIPField and vethPolicyFlagsField are the `struct policy_cfg`
+// members an object declares when its program validates the box's source
+// address, marks frames and tracks inbound flows (#2618); appended after
+// egress_mode, in this order.
+const (
+	vethPolicyBoxIPField = "box_ip"
+	vethPolicyFlagsField = "flags"
+)
 
 // specVethPolicyHasMember reports whether the object's `struct policy_cfg`
 // declares the named member, i.e. whether its program was built to read it
@@ -186,10 +191,13 @@ func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
 }
 
 // specSupportsInboundReplies reports whether the object validates the box's
-// source and tracks inbound flows (#2618): its policy_cfg declares box_ip AND it
-// carries the inbound_flows map. Either alone proves nothing.
+// source, marks frames and tracks inbound flows (#2618): its policy_cfg declares
+// box_ip and flags AND it carries the inbound_flows map. Anything less proves
+// nothing.
 func specSupportsInboundReplies(spec *ebpf.CollectionSpec) bool {
-	return specVethPolicyHasMember(spec, vethPolicyBoxIPField) && spec.Maps[mapInboundFlows] != nil
+	return specVethPolicyHasMember(spec, vethPolicyBoxIPField) &&
+		specVethPolicyHasMember(spec, vethPolicyFlagsField) &&
+		spec.Maps[mapInboundFlows] != nil
 }
 
 // SupportsEgressMode reports whether the loaded object applies the egress_mode
@@ -394,6 +402,23 @@ func (l *Loader) Stats() (seen, wouldDeny uint64, err error) {
 // increment) can open a perf reader over it.
 func (l *Loader) EventsMap() *ebpf.Map { return l.coll.Maps[mapEvents] }
 
+// InboundReplyMisses reads the #2618 counter of reply-shaped packets a box sent
+// whose inbound flow was not in the map or had idled out: an evicted or expired
+// entry (LRU pressure — the peer's next packet re-creates it) or a box-initiated
+// non-SYN segment. 0 on an object built before the counter.
+func (l *Loader) InboundReplyMisses() (uint64, error) {
+	m := l.coll.Maps[mapStats]
+	if m.MaxEntries() <= statInboundMiss {
+		return 0, nil
+	}
+	var n uint64
+	key := statInboundMiss
+	if err := m.Lookup(&key, &n); err != nil {
+		return 0, fmt.Errorf("netbpf: read stats[inbound_miss]: %w", err)
+	}
+	return n, nil
+}
+
 // HasFlowAccounting reports whether the loaded object carries the per-flow
 // accounting map (#627). It is intentionally NOT required by Load — an older
 // object built before this feature still loads and enforces; the daemon just
@@ -495,14 +520,14 @@ func (l *Loader) Close() error {
 // --- byte-layout helpers (kept next to the C struct definitions they mirror) ---
 
 // vethPolicyValueSize is sizeof(struct policy_cfg) in the current object.
-const vethPolicyValueSize = 12
+const vethPolicyValueSize = 16
 
-// vethPolicyValue serializes a PolicyConfig into the 12-byte `struct policy_cfg`
+// vethPolicyValue serializes a PolicyConfig into the 16-byte `struct policy_cfg`
 // layout: u32 tenant_id, u8 mode, u8 allow_intra, u8 allow_metadata,
-// u8 egress_mode (the former pad byte), then the box's IPv4 as its 4 wire bytes
-// (#2618, appended). Native byte order for the integers (the kernel reads the
-// map value with native loads); the address stays in network byte order so the
-// program compares it to ip->saddr as-is.
+// u8 egress_mode (the former pad byte), then the box's IPv4 as its 4 wire bytes,
+// u8 flags and 3 pad bytes (#2618, appended). Native byte order for the
+// integers (the kernel reads the map value with native loads); the address
+// stays in network byte order so the program compares it to ip->saddr as-is.
 func vethPolicyValue(cfg PolicyConfig) [vethPolicyValueSize]byte {
 	var b [vethPolicyValueSize]byte
 	binary.NativeEndian.PutUint32(b[0:4], cfg.TenantID)
@@ -511,6 +536,7 @@ func vethPolicyValue(cfg PolicyConfig) [vethPolicyValueSize]byte {
 	b[6] = cfg.AllowMetadata
 	b[7] = cfg.EgressMode
 	copy(b[8:12], cfg.BoxIP[:])
+	b[12] = uint8(cfg.Flags)
 	return b
 }
 

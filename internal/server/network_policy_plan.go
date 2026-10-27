@@ -17,11 +17,25 @@ type containerView struct {
 	Name     string
 	Tenant   string
 	TenantID uint32
-	IP       [4]byte
-	HasIP    bool
-	Ifindex  int
-	HasVeth  bool
-	Running  bool
+	// IP is the address the instance state reports — what the GUEST configured
+	// on itself. It feeds ip_tenant (which tenant a destination belongs to) and
+	// nothing the box's own packets are validated against.
+	IP    [4]byte
+	HasIP bool
+	// HostIP is the box's address as the HOST knows it — the NIC device's
+	// static ipv4.address or the bridge's DHCP lease — the only source the
+	// program's source validation and inbound-flow seeding trust (#2618). Root
+	// in the box cannot change it.
+	HostIP    [4]byte
+	HasHostIP bool
+	Ifindex   int
+	HasVeth   bool
+	Running   bool
+	// ValidateOnly marks an instance the daemon does not police (the control
+	// plane, an instance with no tenant): it gets a veth entry that only stamps
+	// its frames with the source-validation mark (#2618), no policy, no
+	// ip_tenant row, no per-tenant status.
+	ValidateOnly bool
 }
 
 // reconcilePlan is the desired BPF map state for one reconcile pass — pure data
@@ -57,6 +71,20 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	egressDone := make(map[uint32]bool)
 
 	for _, v := range views {
+		if v.ValidateOnly {
+			// Not a tenant: no ip_tenant row, no policy. Its veth gets the
+			// marking-only entry so the receiving side can tell its frames
+			// from the host's (#2618); the address is the host-known one or 0.
+			if v.Running && v.HasVeth {
+				var ip [4]byte
+				if v.HasHostIP {
+					ip = v.HostIP
+				}
+				plan.vethPolicy[v.Ifindex] = netbpf.ValidateOnlyConfig(ip)
+				plan.ifName[v.Ifindex] = v.Name
+			}
+			continue
+		}
 		if v.HasIP {
 			plan.ipTenant[v.IP] = v.TenantID
 		}
@@ -82,10 +110,12 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 			}
 			// The box's own address (#2618): the program validates the box's
 			// source against it and seeds inbound flows only from frames whose
-			// source is the sending veth's address. Unknown stays zero, which
-			// the program reads as "cannot validate this veth".
-			if v.HasIP {
-				cfg.BoxIP = v.IP
+			// source is the sending veth's address. HOST-known only (device
+			// config or DHCP lease) — never v.IP, which the guest reports and
+			// root in the box can change. Unknown stays zero, which the program
+			// reads as "cannot validate this veth".
+			if v.HasHostIP {
+				cfg.BoxIP = v.HostIP
 			}
 			plan.vethPolicy[v.Ifindex] = cfg
 			plan.ifName[v.Ifindex] = v.Name
