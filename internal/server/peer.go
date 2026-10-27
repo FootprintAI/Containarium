@@ -399,7 +399,18 @@ func (p *PeerPool) discover() {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Printf("[peers] discovery failed: %v", err)
+		return
+	}
+	// The sentinel returns pool tags (and honours ?pool=) only to a caller
+	// with a valid daemon signature (#3119). Without a secret we still
+	// discover peers, but they arrive untagged.
+	if secret := loadSentinelHMACSecret(); len(secret) >= auth.SentinelMinSecretLen {
+		auth.SignSentinelRequest(req, secret)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[peers] discovery failed: %v", err)
 		return

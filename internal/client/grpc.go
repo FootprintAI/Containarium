@@ -32,9 +32,11 @@ type GRPCClient struct {
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
 	auditClient   pb.AuditServiceClient // #2415
-	sandboxClient pb.SandboxServiceClient
-	anonClient    pb.AnonymousBoxServiceClient
-	trackerClient pb.TrackerServiceClient
+	// proofPackClient verifies a sealed Proof Pack (#3064).
+	proofPackClient pb.ProofPackServiceClient
+	sandboxClient   pb.SandboxServiceClient
+	anonClient      pb.AnonymousBoxServiceClient
+	trackerClient   pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
 	// guardrailPolicyClient is the server-side guardrail policy (#2368).
@@ -121,6 +123,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
 		auditClient:        pb.NewAuditServiceClient(conn),
+		proofPackClient:    pb.NewProofPackServiceClient(conn),
 		sandboxClient:      sandboxClient,
 		anonClient:         anonClient,
 		trackerClient:      trackerClient,

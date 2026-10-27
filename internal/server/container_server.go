@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -292,6 +293,9 @@ type ContainerServer struct {
 	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
 	// nil/empty on an unwired server still yields a (config-empty) measurement.
 	integrityConfigState map[string]string
+	// integrityExecWatch reports, per measurement, whether the exec watcher
+	// actually loaded and attached its object (#3120). Nil means no watcher.
+	integrityExecWatch func() bool
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -453,6 +457,9 @@ type ContainerServer struct {
 	// storagePools returns the pool capacity monitor's last snapshot (#2823).
 	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
 	storagePools func() poolcapacity.Snapshot
+	// headroom refuses creates and snapshots on a pool past its floor
+	// (#3128). Nil admits everything.
+	headroom *poolcapacity.Guard
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -859,6 +866,16 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// the Box-CR/sync paths (the top-level defer), inside the goroutine for
 	// async, matching exactly how asyncHandledInline already splits
 	// platformStats reporting between those two completion shapes.
+	// Pool headroom floor (#3128): refuse before anything is allocated on a
+	// pool past its floor. encPool is the tenant's pool for an encrypted
+	// create and "" (the daemon's default pool) otherwise. An encrypted dry
+	// run has not resolved its tenant pool, so there is no pool to check.
+	if !req.GetEncrypted() || encPool != "" {
+		if err := s.admitPoolHeadroom(encPool, poolcapacity.OperationCreate); err != nil {
+			return nil, err
+		}
+	}
+
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr
@@ -4120,12 +4137,26 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
 	// at an object (a path on disk, or the one embedded in the binary); those
-	// loaded bytes are exactly what we attest.
-	progs, err := integrityProgramObjects(os.Getenv(appconfig.EnvNetworkPolicyBPFObject), netbpf.EmbeddedObject())
+	// loaded bytes are exactly what we attest for this object.
+	setting := os.Getenv(appconfig.EnvNetworkPolicyBPFObject)
+	progs, err := integrityProgramObjects(setting, netbpf.EmbeddedObject())
 	if err != nil {
 		return integrity.Measurement{}, err
 	}
 	in.Programs = append(in.Programs, progs...)
+
+	// The exec-watch object (#2637) is loaded from the same setting, but only
+	// when the exec watcher actually loaded it (read live each measurement); an
+	// object that never loaded is not attested (#3120). Running is a snapshot:
+	// a watcher that stops right after the probe can leave one heartbeat's
+	// attestation stale.
+	if s.integrityExecWatch != nil && s.integrityExecWatch() {
+		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
+		if err != nil {
+			return integrity.Measurement{}, err
+		}
+		in.Programs = append(in.Programs, execProgs...)
+	}
 
 	// Node identity signer: the sentinel-issued peer leaf key.
 	if s.peerPool != nil {
@@ -4156,6 +4187,56 @@ func integrityProgramObjects(setting string, embedded []byte) ([]integrity.Progr
 		return []integrity.ProgramObject{{Name: "embedded", Data: embedded}}, nil
 	}
 	return []integrity.ProgramObject{{Name: setting, Path: setting}}, nil
+}
+
+// execWatchEmbeddedName is the stable programDigests name of the embedded
+// exec-watch object, whichever alias selected it (#3120).
+const execWatchEmbeddedName = "execwatch-embedded"
+
+// integrityExecWatchObjects maps the network-policy object setting to the
+// exec-watch object the exec watcher loads from it (netbpf.ExecObjectSource,
+// the same selection netbpf.ResolveExecWatch uses), so the bytes digested are
+// the bytes handed to the loader. The embedded object is digested under
+// "execwatch-embedded"; a sibling file under its own path. An empty setting
+// means no program (the watcher is only started with a non-empty setting). An
+// object the watcher cannot load (none bundled, or the sibling file missing)
+// is skipped, not an error: the watcher reports that itself as
+// `unavailable (...)` and nothing is loaded to attest. Other file errors
+// surface when the measurement digests the path. The stat and the digest are
+// separate reads: the digest is of the file at measurement time, recomputed on
+// every heartbeat.
+func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	isEmbedded, path := netbpf.ExecObjectSource(setting)
+	if isEmbedded {
+		if len(embedded) == 0 {
+			return nil, nil
+		}
+		return []integrity.ProgramObject{{Name: execWatchEmbeddedName, Data: embedded}}, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
+}
+
+// wireExecWatcherIntegrity connects a constructed exec watcher to the
+// self-measurement; a nil watcher (sentry off) leaves it unwired.
+func wireExecWatcherIntegrity(cs *ContainerServer, w *ExecWatcher) {
+	if w == nil {
+		return
+	}
+	cs.SetIntegrityExecWatch(w.Running)
+}
+
+// SetIntegrityExecWatch wires a live probe of whether the exec watcher loaded
+// and attached its object, so the self-measurement attests the exec-watch
+// object only while it is loaded. Pass ExecWatcher.Running.
+func (s *ContainerServer) SetIntegrityExecWatch(loaded func() bool) {
+	s.integrityExecWatch = loaded
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this

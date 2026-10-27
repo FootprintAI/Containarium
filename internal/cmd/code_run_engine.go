@@ -58,18 +58,16 @@ func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName str
 // policy; a failed read is reported as unknown and never blocks the run.
 func reportModelTrafficScanning(eng engine.Engine, diag io.Writer) {
 	cred := eng.Credential().Kind()
-	var policy *pb.ServerGuardrailPolicy
-	known := true
+	effective := pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED
 	if cred == engine.KindGateway {
-		known = false
-		if api, done, err := newGuardrailPolicyAPI(); err == nil {
-			if resp, gerr := api.GetGuardrailPolicy(); gerr == nil {
-				policy, known = resp.GetPolicy(), true
+		if api, done, err := newGuardrailStatusAPI(); err == nil {
+			if resp, gerr := api.GetGuardrailStatus(); gerr == nil {
+				effective = resp.GetResponsePolicy()
 			}
 			done()
 		}
 	}
-	fmt.Fprintln(diag, engine.ScanningLine(engine.ModelTrafficScanning(cred, policy, known)))
+	fmt.Fprintln(diag, engine.ScanningLine(engine.ModelTrafficScanning(cred, effective)))
 }
 
 // readBoxCodeConfig reads code.json off the box.
