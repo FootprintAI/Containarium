@@ -382,6 +382,16 @@ describe("ClaudeEngine follow-up", () => {
     expect(seen[1]!.options?.mcpServers).toEqual(seen[0]!.options?.mcpServers);
   });
 
+  it("offers no follow-up to a run with an output schema, even with a session id (#3107)", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1", structured_output: { ok: true } },
+      ]),
+    ).run("task", { ...cfg, outputSchema: { type: "object" } }, new CaptureJournal());
+    expect(res.outputJson).toBe('{"ok":true}');
+    expect(res.followUp).toBeUndefined();
+  });
+
   it("offers no follow-up when the SDK never named a session", async () => {
     const res = await new ClaudeEngine(
       fakeQuery([{ type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn" }]),
