@@ -122,7 +122,15 @@ else
     echo "install-sdlc-skills: cannot read the skill-set lock at $lock_url (a release that predates skill sets cannot honour SKILL_SETS=$SKILL_SETS); nothing installed" >&2
     exit 1
   fi
-  lock_sha="$(sed -n 's/^sha256=//p' "$tmp/sdlc-skills.lock" | head -n1)"
+  # The current lock has one [source] section per release asset. Read the
+  # digest for sdlc-skills.tar.gz from [sdlc], while accepting the earlier flat
+  # lock during the compatibility window.
+  lock_sha="$(awk -F= '
+    /^\[/ { in_sdlc = ($0 == "[sdlc]"); saw_section = 1; next }
+    $1 == "sha256" && in_sdlc { print $2; found = 1; exit }
+    $1 == "sha256" && !saw_section && legacy == "" { legacy = $2 }
+    END { if (!found && legacy != "") print legacy }
+  ' "$tmp/sdlc-skills.lock")"
   if [[ "$lock_sha" != "$got" ]]; then
     echo "install-sdlc-skills: the lock does not pin the downloaded bundle (lock ${lock_sha:-none}, bundle $got); nothing installed" >&2
     exit 1
