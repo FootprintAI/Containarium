@@ -317,7 +317,7 @@ chain.
 | Session transcripts | In-box SSH logins (`ssh_login`) and front-door SSH session records (`ssh_session_open` / `ssh_session_close`) in `audit_logs` | `org_id`, empty on a single-tenant daemon | No automatic deletion | 90 days in enforce mode, as a prefix below the latest anchor (see below) | **yes** |
 | Session transcripts | Front-door session log file on the sentinel VM | none | 90 days after rotation (configurable) | none: a file on the sentinel VM, rotated by logrotate | no |
 | Evidence bundles | Proof Packs (`containarium proof-pack generate`, docs/PROOF-PACK.md), written to the file the operator names, or kept in the PR branch (#2798). The daemon does not store them (decision of 2026-10-25 on #2879); only the digest goes in the audit chain | n/a | Kept as long as the operator or the repository keeps the file | none: no daemon-side store | n/a |
-| (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl` | n/a | No automatic deletion; required to verify the chain | none: required to verify the chain | anchors it |
+| (chain anchors) | `/var/lib/containarium/audit-anchors.jsonl`, and with a timestamp authority configured its tokens in `audit-anchors.jsonl.tsa/` | n/a | No automatic deletion; required to verify the chain | none: required to verify the chain | anchors it |
 
 The model gateway holds token counts in memory only, so they are gone after
 a restart.

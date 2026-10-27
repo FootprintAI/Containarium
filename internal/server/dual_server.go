@@ -3749,7 +3749,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			// #2880: CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
 			// adds an external copy in a retention-locked GCS bucket, written
 			// after the local file. Unset keeps file-only anchoring.
-			anchorSink, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
+			_, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
 			if err != nil {
 				log.Printf("[audit-anchor] ERROR: external anchor bucket disabled, anchoring to the local file only: %v", err)
 			}
@@ -3766,6 +3766,18 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				}()
 			}
 			ds.wireRetentionAnchor(fileSink, bucketSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
+			// #2728: CONTAINARIUM_AUDIT_ANCHOR_TSA_URL plus
+			// CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE add an RFC 3161
+			// timestamp token per checkpoint, stored in <anchor-path>.tsa/
+			// after the local file is written. Combinable with the bucket.
+			tsaSink, err := audit.TSAAnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_URL"), os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE"))
+			if err != nil {
+				log.Printf("[audit-anchor] ERROR: timestamp-authority anchoring disabled: %v", err)
+			}
+			if tsaSink != nil {
+				log.Printf("[audit-anchor] stamping anchors at TSA %s, tokens in %s (file first)", tsaSink.URI(), tsaSink.TokenDir())
+			}
+			anchorSink := audit.ComposeAnchorSink(fileSink, bucketSink, tsaSink)
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
