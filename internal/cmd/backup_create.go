@@ -31,7 +31,7 @@ var (
 
 var backupCreateCmd = &cobra.Command{
 	Use:   "create <username>",
-	Short: "Dump a container's database(s), or the whole box, and store them off-host",
+	Short: "Back up a database or box to archive storage or a PVC snapshot",
 	Long: `Run pg_dump inside the tenant's container and store the compressed
 dump(s) at the chosen destination.
 
@@ -92,6 +92,9 @@ flags do not apply. The daemon caps a box backup at 256 GiB by default
 box's uncompressed content and the stored archive. The daemon also checks
 free space before starting.
 
+Kubernetes PVC snapshot: use --box --dest snapshot without --key-mode.
+Only /home/agent/workspace is included; encryption is provided by CSI storage.
+
 Examples:
   containarium backup create alice --dest local --server <host>
   containarium backup create alice --box --key-mode managed --dest gcs \
@@ -112,7 +115,7 @@ func init() {
 	backupCmd.AddCommand(backupCreateCmd)
 	f := backupCreateCmd.Flags()
 	f.StringVar(&backupCreateDatabase, "database", "", "database name to dump; omit to back up every non-template database found (default)")
-	f.StringVar(&backupCreateDest, "dest", "local", "destination: 'local' or 'gcs'")
+	f.StringVar(&backupCreateDest, "dest", "local", "destination: 'local', 'gcs' or 'snapshot' (K8s --box)")
 	f.StringVar(&backupCreateBucket, "gcs-bucket", "", "GCS bucket/prefix for --dest gcs, e.g. gs://my-backups/pg")
 	f.StringVar(&backupCreateDBUser, "db-user", "", "Postgres role (default: postgres)")
 	f.StringVar(&backupCreateDBPass, "db-password", "", "Postgres password (omit for peer/trust auth)")
@@ -144,6 +147,9 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if dest == pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT && !backupCreateBox {
+		return fmt.Errorf("--dest snapshot requires --box")
+	}
 	if backupCreateBox {
 		return runBackupCreateBox(username, dest, keyMode)
 	}
@@ -212,7 +218,11 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 			return fmt.Errorf("%s does not apply to a whole-box backup (--box)", f.flag)
 		}
 	}
-	if keyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+	if dest == pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT {
+		if keyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED || backupCreateAgeRecipient != "" || backupCreateBucket != "" {
+			return fmt.Errorf("snapshot uses CSI storage encryption; key-mode, age-recipient and gcs-bucket do not apply")
+		}
+	} else if keyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
 		return fmt.Errorf("--box needs --key-mode (managed, both or age-recipient): a whole-box backup is never plaintext")
 	}
 
@@ -222,7 +232,11 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 	}
 	defer func() { _ = c.Close() }()
 
-	fmt.Printf("Backing up the whole box of %s to %s (key mode %s)...\n", username, backupCreateDest, keyModeLabel(keyMode))
+	if dest == pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT {
+		fmt.Printf("Snapshotting the data PVC of %s...\n", username)
+	} else {
+		fmt.Printf("Backing up the whole box of %s to %s (key mode %s)...\n", username, backupCreateDest, keyModeLabel(keyMode))
+	}
 	resp, err := c.CreateBackup(&pb.CreateBackupRequest{
 		Username:     username,
 		Scope:        pb.BackupScope_BACKUP_SCOPE_BOX,

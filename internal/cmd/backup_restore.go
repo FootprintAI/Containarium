@@ -63,6 +63,9 @@ apply it with the tenant's tooling. A hook declared --hook-format
 pg_custom can be restored, but only into a --target other than its
 source container.
 
+For a CSI snapshot, restore by ID without database or key flags. The source
+box is restarted on a new PVC; its previous PVC is retained.
+
 Examples:
   containarium backup restore alice-app-20260605T130405Z --clean --server <host>
   containarium backup restore alice-app-20260605T130405Z --database app_staging --server <host>
@@ -163,19 +166,17 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Restoring backup %q (clean=%t)...\n", rec.Id, backupRestoreClean)
-	resp, err := c.RestoreBackup(&pb.RestoreBackupRequest{
-		Id:              rec.Id,
-		Clean:           backupRestoreClean,
-		AgeIdentity:     ageIdentity,
-		TargetContainer: backupRestoreTarget,
-		Connection: &pb.PgConnection{
-			Database: backupRestoreDatabase,
-			User:     backupRestoreDBUser,
-			Password: backupRestoreDBPass,
-			Host:     backupRestoreDBHost,
-			Port:     backupRestoreDBPort,
-		},
-	})
+	connection := &pb.PgConnection{Database: backupRestoreDatabase, User: backupRestoreDBUser, Password: backupRestoreDBPass, Host: backupRestoreDBHost, Port: backupRestoreDBPort}
+	if rec.Destination == pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT {
+		if connection.Database != "" || connection.User != "" || connection.Password != "" || connection.Host != "" || connection.Port != 0 || backupRestoreClean || ageIdentity != "" || backupRestoreTarget != "" {
+			return fmt.Errorf("snapshot restore does not accept database, clean, identity or target options")
+		}
+		connection = nil
+	}
+	if connection != nil && connection.Database == "" && connection.User == "" && connection.Password == "" && connection.Host == "" && connection.Port == 0 {
+		connection = nil
+	}
+	resp, err := c.RestoreBackup(&pb.RestoreBackupRequest{Id: rec.Id, Clean: backupRestoreClean, AgeIdentity: ageIdentity, TargetContainer: backupRestoreTarget, Connection: connection})
 	if err != nil {
 		return err
 	}

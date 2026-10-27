@@ -49,8 +49,8 @@ func backupTools() []Tool {
 					},
 					"dest": map[string]interface{}{
 						"type":        "string",
-						"description": "Destination: 'local' (host backup dir) or 'gcs'. Default 'local'.",
-						"enum":        []string{"local", "gcs"},
+						"description": "Destination: 'local', 'gcs', or 'snapshot' (K8s box PVC, no database/key options). Default 'local'.",
+						"enum":        []string{"local", "gcs", "snapshot"},
 					},
 					"gcs_bucket": map[string]interface{}{
 						"type":        "string",
@@ -196,6 +196,8 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	switch dest {
 	case "local":
 		destEnum = "BACKUP_DESTINATION_LOCAL"
+	case "snapshot":
+		destEnum = "BACKUP_DESTINATION_SNAPSHOT"
 	case "gcs":
 		destEnum = "BACKUP_DESTINATION_GCS"
 	default:
@@ -204,7 +206,7 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 
 	database := getStringArg(args, "database", "")
 	hook := getStringArg(args, "hook", "")
-	if database == "" && hook == "" {
+	if database == "" && hook == "" && dest != "snapshot" {
 		return "", fmt.Errorf("either database or hook is required")
 	}
 	keyMode, err := keyModeEnumName(getStringArg(args, "key_mode", ""))
@@ -215,7 +217,7 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.CreateBackup(CreateBackupRequest{
+	request := CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
 		Destination:  destEnum,
 		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
@@ -229,7 +231,15 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 			User:     getStringArg(args, "db_user", ""),
 			Password: getStringArg(args, "db_password", ""),
 		},
-	})
+	}
+	if dest == "snapshot" {
+		if database != "" || hook != "" || request.Label != "" || request.GCSBucket != "" || request.AgeRecipient != "" || keyMode != "" || hookFormat != "" || request.Connection.User != "" || request.Connection.Password != "" {
+			return "", fmt.Errorf("snapshot does not accept database, hook, GCS or encryption options")
+		}
+		request.Scope = pb.BackupScope_BACKUP_SCOPE_BOX
+		request.Connection = nil
+	}
+	resp, err := client.CreateBackup(request)
 	if err != nil {
 		return "", err
 	}
@@ -345,15 +355,16 @@ func handleRestoreBackup(client API, args map[string]interface{}) (string, error
 		return "", err
 	}
 	defer zero()
+	var connection *PgConnectionBody
+	if database, password := getStringArg(args, "database", ""), getStringArg(args, "db_password", ""); database != "" || password != "" {
+		connection = &PgConnectionBody{Database: database, Password: password}
+	}
 	resp, err := client.RestoreBackup(RestoreBackupRequest{
 		ID:              rec.Id,
 		Clean:           getBoolArg(args, "clean", false),
 		AgeIdentity:     ageIdentity,
 		TargetContainer: getStringArg(args, "target", ""),
-		Connection: &PgConnectionBody{
-			Database: getStringArg(args, "database", ""),
-			Password: getStringArg(args, "db_password", ""),
-		},
+		Connection:      connection,
 	})
 	if err != nil {
 		return "", err
@@ -415,6 +426,8 @@ func backupDestLabel(enumName string) string {
 	switch enumName {
 	case "BACKUP_DESTINATION_LOCAL":
 		return "local"
+	case "BACKUP_DESTINATION_SNAPSHOT":
+		return "snapshot"
 	case "BACKUP_DESTINATION_GCS":
 		return "gcs"
 	default:

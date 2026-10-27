@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -126,11 +127,12 @@ type Config struct {
 // there is no in-box exec seam. box.MetricsCapable / box.GPUCapable are
 // deferred.
 type Backend struct {
-	cfg       Config
-	clientset kubernetes.Interface
-	sandboxes sandboxclient.Interface
-	dyn       dynamic.Interface // for the sshpiper Pipe CRD; nil disables gateway routing
-	router    gatewayRouter     // SSH-gateway routing seam; sshpiperRouter today
+	snapshotMu sync.Mutex
+	cfg        Config
+	clientset  kubernetes.Interface
+	sandboxes  sandboxclient.Interface
+	dyn        dynamic.Interface // for the sshpiper Pipe CRD; nil disables gateway routing
+	router     gatewayRouter     // SSH-gateway routing seam; sshpiperRouter today
 }
 
 var _ box.BoxBackend = (*Backend)(nil)
