@@ -16221,6 +16221,24 @@
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
+    "HostSecurityPosture": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        },
+        "measuredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Host clock at the start of the posture measurement, not the send time."
+        }
+      },
+      "description": "HostSecurityPosture is one measured snapshot of the host's hardening checks.\nChecks use their unprefixed probe names; false includes a check that could not\nbe measured, with the reason in detail. An empty snapshot is not proof of a\npassing posture. Receivers must evaluate required checks and freshness."
+    },
     "IngestOutcome": {
       "type": "string",
       "enum": [
@@ -19074,6 +19092,10 @@
         "driverToken": {
           "type": "string",
           "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
+        },
+        "posture": {
+          "$ref": "#/definitions/HostSecurityPosture",
+          "description": "Absent means no posture measurement was reported, never \"passing\". Status\nprobes populate this on every report while retaining the posture-prefixed\nentries in checks for older receivers. Token-only refresh requests omit it\nand must not clear a receiver's previously stored posture."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
@@ -21761,9 +21783,33 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        },
+        "resources": {
+          "$ref": "#/definitions/TaskNodeResources",
+          "description": "Optional minimum host capabilities, checked against this daemon's last\nmeasured profile before graph execution. Nonzero requirements are local\nonly: remote backends and other pools are rejected. These are host\neligibility constraints, not per-box allocations or resource reservations.\nAbsent or all-zero requirements preserve legacy placement behavior."
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResources": {
+      "type": "object",
+      "properties": {
+        "minCpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum measured CPU core count; zero means no CPU constraint.\nMust be nonnegative."
+        },
+        "minMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Minimum measured total RAM in bytes, not currently free RAM.\nZero means no RAM constraint; must be nonnegative."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "description": "Require a successful GPU passthrough measurement in the profile.\nThis does not allocate a GPU or change the skill's recipe."
+        }
+      },
+      "description": "TaskNodeResources describes minimum measured hardware for a graph node.\nFor a crew node the constraint applies to the host of the whole crew;\nmember box limits and ordinary admission checks remain unchanged."
     },
     "TaskNodeResult": {
       "type": "object",

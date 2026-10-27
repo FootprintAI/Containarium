@@ -1072,6 +1072,27 @@ message TaskNode {
   // JSON input handed to the assignee — the same shape as
   // RunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}.
   string input_json = 5;
+  // Optional minimum host capabilities, checked against this daemon's last
+  // measured profile before graph execution. Nonzero requirements are local
+  // only: remote backends and other pools are rejected. These are host
+  // eligibility constraints, not per-box allocations or resource reservations.
+  // Absent or all-zero requirements preserve legacy placement behavior.
+  TaskNodeResources resources = 6;
+}
+
+// TaskNodeResources describes minimum measured hardware for a graph node.
+// For a crew node the constraint applies to the host of the whole crew;
+// member box limits and ordinary admission checks remain unchanged.
+message TaskNodeResources {
+  // Minimum measured CPU core count; zero means no CPU constraint.
+  // Must be nonnegative.
+  int32 min_cpu_cores = 1;
+  // Minimum measured total RAM in bytes, not currently free RAM.
+  // Zero means no RAM constraint; must be nonnegative.
+  int64 min_memory_bytes = 2;
+  // Require a successful GPU passthrough measurement in the profile.
+  // This does not allocate a GPU or change the skill's recipe.
+  bool requires_gpu = 3;
 }
 
 // TaskEdge says node_id cannot start until depends_on has finished.

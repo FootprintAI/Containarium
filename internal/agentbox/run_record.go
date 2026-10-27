@@ -391,5 +391,16 @@ func rotateFinishedRun(record RunRecord) error {
 	if err := os.Rename(oldExitPath, newExitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("rotate exit sidecar %q: %w", record.Name, err)
 	}
+
+	// The approval journal and answers (#2183) rotate too, for the same reason:
+	// the next run under this name would otherwise report this run's permission
+	// requests as its own. Only names that are valid approval run names have
+	// these files, and for those sanitizeName is the identity.
+	for _, ext := range []string{".input.jsonl", ".answers"} {
+		base := filepath.Join(processLogDir, sanitizeName(record.Name))
+		if err := os.Rename(base+ext, base+suffix+ext); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("rotate approval file %q%s: %w", record.Name, ext, err)
+		}
+	}
 	return nil
 }

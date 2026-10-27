@@ -262,10 +262,17 @@ func handleCodeStatus(client API, args map[string]interface{}) (string, error) {
 	if line == "" {
 		return fmt.Sprintf("no run named %q on %s", name, box), nil
 	}
+	out := line
 	if !running {
-		return line + "\n" + coderun.ExitCodeLine(listing, name), nil
+		out += "\n" + coderun.ExitCodeLine(listing, name)
 	}
-	return line, nil
+	// #2183: the same approval lines `code status` prints.
+	if approvals, err := sess.ApprovalStatus(context.Background(), name, running, time.Now()); err != nil {
+		out += "\nnote: could not read this run's permission requests: " + err.Error()
+	} else if approvals != "" {
+		out += "\n" + approvals
+	}
+	return out, nil
 }
 
 // handleCodeStop reaps a run. The log is deliberately left readable so its
