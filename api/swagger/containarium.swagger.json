@@ -117,6 +117,10 @@
       "description": "NetworkPolicyService — the control-plane CRUD for per-tenant network\nisolation policies (Phase A of the eBPF network-isolation design, #315).\n\nThis is the policy *store* surface: operators (and the cloud control plane)\nset/get/list/delete a tenant's NetworkPolicy here; the per-veth TC_INGRESS\nBPF loader (a later increment) consumes the stored policies and programs the\nkernel. Admin-only — policies are fleet-shaping config, not tenant-editable."
     },
     {
+      "name": "NotifyService",
+      "description": "NotifyService — where the daemon pushes a `code run --approvals ask`\npermission request that is waiting on the developer (#2185,\ndocs/product/phone-approval.md Story 3).\n\nOne channel per user. The daemon itself sends the push: it reads each live\nrun's input journal on the user's box and publishes to the channel, so the\nchannel's access token never reaches a box. The token is stored with the\ntenant secrets store as a broker-only secret named\nCONTAINARIUM_NOTIFY_NTFY_TOKEN_\u003crandom\u003e, a new one per token (the channel\nswitches to it in one write), and is never returned by any RPC.\n\nWhich user: the request's username, or the caller's own when empty. Reads\nneed secrets:read and writes secrets:write, as for the tenant's secrets."
+    },
+    {
       "name": "PentestService",
       "description": "PentestService provides automated penetration testing and vulnerability scanning"
     },
@@ -5996,6 +6000,134 @@
         ],
         "tags": [
           "Network"
+        ]
+      }
+    },
+    "/v1/notify/channel": {
+      "get": {
+        "summary": "Get notification channel",
+        "description": "Return the user's push channel. has_token says whether a token is stored; the token itself is never returned. NOT_FOUND when none is set.",
+        "operationId": "NotifyService_GetNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      },
+      "delete": {
+        "summary": "Delete notification channel",
+        "description": "Remove the user's push channel and its stored token. No further pushes are sent.",
+        "operationId": "NotifyService_DeleteNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      },
+      "put": {
+        "summary": "Set notification channel",
+        "description": "Create or replace the user's push channel for waiting permission requests. Only ntfy is supported. A token, when given, is stored as a broker-only tenant secret and requires an https server; it is never returned. An empty username means the caller.",
+        "operationId": "NotifyService_SetNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetNotifyChannelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      }
+    },
+    "/v1/notify/channel/test": {
+      "post": {
+        "summary": "Send a test notification",
+        "description": "Publish one test push through the user's channel and report whether the server accepted it.",
+        "operationId": "NotifyService_TestNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TestNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TestNotifyChannelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Notify"
         ]
       }
     },
@@ -13646,6 +13778,9 @@
     "DeleteNetworkPolicySignatureResponse": {
       "type": "object"
     },
+    "DeleteNotifyChannelResponse": {
+      "type": "object"
+    },
     "DeletePassthroughRouteResponse": {
       "type": "object",
       "properties": {
@@ -15412,6 +15547,14 @@
         "topology": {
           "$ref": "#/definitions/NetworkTopology",
           "title": "Network topology data"
+        }
+      }
+    },
+    "GetNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/NotifyChannel"
         }
       }
     },
@@ -17904,6 +18047,47 @@
       ],
       "default": "NODE_ISOLATION_UNSPECIFIED",
       "description": "NodeIsolation is the isolation class of a cluster's nodes: the\nboundary that contains a tenant kernel exploit. Cluster-level and\nimmutable after create.\n\nVM is the default and the only class safe on a shared multi-tenant\nhost. CONTAINER runs each node as an Incus system container sharing\nthe host kernel — weaker by construction, so it is operator-gated:\nthe daemon permits it only where the operator has declared the host\na single trust domain. UNSPECIFIED resolves to VM server-side; the\nweaker class is never reached by omission.\n\nDesign: docs/architecture/cluster-container-node-pools.md.\n\n - NODE_ISOLATION_VM: Each node is an Incus VM — hardware-virtualized kernel boundary.\n - NODE_ISOLATION_CONTAINER: Each node is an Incus system container sharing the host kernel.\nRequires the operator opt-in on the target host."
+    },
+    "NotifyChannel": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/NotifyChannelKind"
+        },
+        "server": {
+          "type": "string",
+          "description": "Base URL of the ntfy server, e.g. https://ntfy.example.com."
+        },
+        "topic": {
+          "type": "string",
+          "description": "ntfy topic: 1-64 letters, digits, '-' or '_'."
+        },
+        "hasToken": {
+          "type": "boolean",
+          "description": "A token is stored for this channel."
+        },
+        "redactCommand": {
+          "type": "boolean",
+          "description": "Pushes carry the tool name only, never its command."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "NotifyChannel is a user's push channel as stored. It never carries the token."
+    },
+    "NotifyChannelKind": {
+      "type": "string",
+      "enum": [
+        "NOTIFY_CHANNEL_KIND_UNSPECIFIED",
+        "NOTIFY_CHANNEL_KIND_NTFY"
+      ],
+      "default": "NOTIFY_CHANNEL_KIND_UNSPECIFIED",
+      "description": "NotifyChannelKind is the push transport.\n\n - NOTIFY_CHANNEL_KIND_NTFY: ntfy (https://ntfy.sh or self-hosted): POST to \u003cserver\u003e with a topic."
     },
     "OSType": {
       "type": "string",
@@ -20962,6 +21146,44 @@
         }
       }
     },
+    "SetNotifyChannelRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Owner of the channel; empty means the caller."
+        },
+        "kind": {
+          "$ref": "#/definitions/NotifyChannelKind",
+          "description": "Required; only NOTIFY_CHANNEL_KIND_NTFY."
+        },
+        "server": {
+          "type": "string"
+        },
+        "topic": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string",
+          "description": "Access token for the topic. Empty keeps the stored one (if any) unless\nclear_token is set. Never logged or returned."
+        },
+        "clearToken": {
+          "type": "boolean",
+          "description": "Remove the stored token. Rejected together with token."
+        },
+        "redactCommand": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SetNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/NotifyChannel"
+        }
+      }
+    },
     "SetPentestScanOptInBody": {
       "type": "object",
       "properties": {
@@ -22160,6 +22382,23 @@
         }
       },
       "description": "TerminateUserSessionsResponse reports what was ended."
+    },
+    "TestNotifyChannelRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        }
+      }
+    },
+    "TestNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable result, e.g. \"test push accepted by https://ntfy.example.com\"."
+        }
+      }
     },
     "TestWebhookRequest": {
       "type": "object",
