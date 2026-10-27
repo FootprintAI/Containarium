@@ -236,16 +236,19 @@ func TestCreateBox_ForeignWritesAreNotCreditedToARunningBackup(t *testing.T) {
 func TestBoxPreflight_NeverOverAdmits(t *testing.T) {
 	for seed := uint64(1); seed <= 500; seed++ {
 		rng := mrand.New(mrand.NewPCG(seed, seed*7919))
-		var free uint64 = uint64(100+rng.IntN(400)) << 20
+		free := (100 + rng.Uint64N(400)) << 20
 		type run struct {
 			release       func()
 			need, written uint64
 		}
 		runs := map[string]*run{}
 		usages := map[string]int64{}
+		need := map[string]uint64{}
 		names := []string{"b0", "b1", "b2", "b3"}
 		for _, n := range names {
-			usages[n] = int64(20+rng.IntN(150)) << 20
+			mib := 20 + rng.Uint64N(150)
+			need[n] = mib << 20
+			usages[n] = int64(need[n]) // #nosec G115 -- at most 170 MiB
 		}
 		gb := newGateBox(nil, 0)
 		gb.usages = usages
@@ -260,7 +263,7 @@ func TestBoxPreflight_NeverOverAdmits(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				runs[n] = &run{release: rel, need: uint64(usages[n])}
+				runs[n] = &run{release: rel, need: need[n]}
 				var remaining uint64
 				for _, r := range runs {
 					remaining += r.need - r.written
@@ -270,13 +273,13 @@ func TestBoxPreflight_NeverOverAdmits(t *testing.T) {
 				}
 			case 1: // an in-flight backup writes
 				for _, r := range runs {
-					w := min(uint64(rng.IntN(40))<<20, r.need-r.written, free)
+					w := min(rng.Uint64N(40)<<20, r.need-r.written, free)
 					r.written += w
 					free -= w
 					break
 				}
 			case 2: // a foreign process writes
-				free -= min(uint64(rng.IntN(60))<<20, free)
+				free -= min(rng.Uint64N(60)<<20, free)
 			case 3: // a backup ends; its written bytes stay on disk
 				for n, r := range runs {
 					r.release()
