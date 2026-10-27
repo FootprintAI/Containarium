@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
@@ -61,6 +62,18 @@ so CI and shell scripts can gate on '$?' directly, without separately parsing
 (the box died mid-run) is not treated as a failure here; check 'code status'
 for "unknown" in that case.
 
+--approvals ask (Claude Code only) pauses the run when the agent wants a tool
+call that needs a permission, instead of the engine refusing it: the request
+is journaled next to the run's log, 'containarium code status' reports
+waiting_input with the request, and the call proceeds on an allow or is
+refused on a deny. A request nobody answers expires into a deny after
+--approval-timeout (default 30m), and the expiry is journaled. Answers must be
+signed with a key only the box's approval process holds, so a process the
+agent starts (short of root) cannot approve its own request. No answer command
+ships yet, so for now every request expires into a deny; 'code status' still
+counts them. On an engine without a permission hook (pi, Codex) the run starts
+unchanged, with a warning. The default, --approvals deny, is today's behaviour.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -110,6 +123,10 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if codeRunSession != "" && codeRunContinue {
 		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
 	}
+	approvals, err := validateApprovalFlags()
+	if err != nil {
+		return err
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -130,6 +147,12 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	command, eng, err := prepareCodeRun(ctx, sess, box, name, diag)
 	if err != nil {
 		return err
+	}
+	// #2183: --approvals deny (the default) leaves command untouched.
+	if approvals == coderun.ApprovalsAsk {
+		if command, err = prepareApprovals(ctx, sess, eng, name, command, codeRunApprovalTimeout, diag); err != nil {
+			return fmt.Errorf("--approvals ask on %q: %w", box, err)
+		}
 	}
 
 	// A fresh run's session id is found by comparing the engine's session
@@ -288,6 +311,16 @@ func runCodeStatus(cmd *cobra.Command, args []string) error {
 	// internal/mcp/code_tools.go) so the two surfaces cannot drift.
 	if !running {
 		fmt.Fprintln(out, coderun.ExitCodeLine(listing, name))
+	}
+
+	// #2183: a run started with --approvals ask reports waiting_input and its
+	// permission-request counts. Best-effort: the run's own status above is
+	// already printed.
+	lines, err := sess.ApprovalStatus(ctx, name, running, time.Now())
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not read this run's permission requests: %v\n", err)
+	} else if lines != "" {
+		fmt.Fprintln(out, lines)
 	}
 	return nil
 }
