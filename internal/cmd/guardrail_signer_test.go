@@ -104,7 +104,7 @@ func TestGuardrailSigner_StaleRevisionIsNotOverwritten(t *testing.T) {
 type racingPolicyAPI struct{ *fakeGuardrailPolicyAPI }
 
 func (r *racingPolicyAPI) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
-	cur, _ := r.fakeGuardrailPolicyAPI.GetGuardrailPolicy()
+	cur, _ := r.GetGuardrailPolicy()
 	other := guardrailpolicy.Clone(cur.GetPolicy())
 	_, _ = r.store.Set(context.Background(), &pb.SetGuardrailPolicyRequest{Policy: other.GetPolicy(), TrustedSigners: other.GetTrustedSigners()}, "other-admin")
 	return r.fakeGuardrailPolicyAPI.SetGuardrailPolicy(req)
