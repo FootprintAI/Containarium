@@ -99,6 +99,16 @@ jobs:
       - name: Run test-old-binary-path-gate.sh
         run: ./scripts/test-old-binary-path-gate.sh
 
+  wait-daemon-ready:
+    name: E2E daemon-readiness probe (#3143)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run test-wait-daemon-ready.sh
+        run: ./scripts/test-wait-daemon-ready.sh
+
   daemon-artifact-name-gate:
     name: Daemon-artifact-name gate (#1784)
     runs-on: ubuntu-latest
