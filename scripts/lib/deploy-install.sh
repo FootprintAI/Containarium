@@ -27,14 +27,16 @@ deploy_install_cmd() {
     local svc="$1" url="${2:-}"
     local dir="${BIN_DIR:-/usr/local/bin}" src="${SRC:-/tmp/containariumd}"
     local tries="${HEALTH_TRIES:-15}" interval="${HEALTH_INTERVAL:-2}"
-    local bin="$dir/containariumd" poll
+    local bin="$dir/containariumd" check poll
     if [ -n "$url" ]; then
+        check="curl -fsS --max-time 3 '$url' >/dev/null 2>&1"
         # Healthy on the first successful probe.
-        poll="if curl -fsS --max-time 3 '$url' >/dev/null 2>&1; then echo \"  $svc healthy after install\"; exit 0; fi"
+        poll="if $check; then echo \"  $svc healthy after install\"; exit 0; fi"
     else
+        check="sudo systemctl is-active --quiet '$svc'"
         # Healthy only if still active after the whole window: a failed
         # probe ends the wait at once and falls through to the rollback.
-        poll="if ! sudo systemctl is-active --quiet '$svc'; then break; fi"
+        poll="if ! $check; then break; fi"
     fi
     cat <<CMD
 had_old=0
