@@ -80,4 +80,6 @@ func ApprovalProbeCommand() string {
 }
 
 // ApprovalProbeOK is the line ApprovalProbeCommand prints on a box that has it.
-const ApprovalProbeOK = "approval-mcp ok"
+// "v2" is the prompt-bound answer format (#2184); an older agent-box prints
+// "approval-mcp ok" alone and must not match.
+const ApprovalProbeOK = "approval-mcp ok v2"

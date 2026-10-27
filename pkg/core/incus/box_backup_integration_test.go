@@ -101,6 +101,24 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 		}
 	}
 
+	// A file with two names: one in an excluded directory, one outside it.
+	// Incus walks the root filesystem in path order, so "/tmp/..." comes
+	// before "/usr/..." and the tar carries the content under the excluded
+	// name and the kept one as a hard link to it. The backup must keep the
+	// content at the kept name (it spills the excluded file and promotes the
+	// link); only the lane can prove it against real Incus output (#3126).
+	const linkContent = "hard link content\n"
+	const linkExcluded = "/tmp/containarium-2801b-hl"
+	const linkKept = "/usr/local/containarium-2801b-hl"
+	if err := client.WriteFile(src, linkExcluded, []byte(linkContent), "0644"); err != nil {
+		t.Fatalf("write %s: %v", linkExcluded, err)
+	}
+	if _, stderr, err := client.ExecWithOutput(src, []string{"ln", linkExcluded, linkKept}); err != nil {
+		t.Fatalf("ln %s %s: %v (%s)", linkExcluded, linkKept, err, stderr)
+	}
+	kept[linkKept] = []byte(linkContent)
+	excluded[linkExcluded] = []byte(linkContent)
+
 	// The excluded probes must still be in the box when it is exported, or
 	// their absence from the backup proves nothing about the filter.
 	for p, b := range excluded {
@@ -153,6 +171,10 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 		if _, ok := files[p]; ok {
 			t.Errorf("manifest lists excluded %s", p)
 		}
+	}
+	// No spill file outlives the backup.
+	if left, _ := filepath.Glob(filepath.Join(dir, ".box-spill-*.tmp")); len(left) != 0 {
+		t.Errorf("spill files left in the backup directory: %v", left)
 	}
 	t.Logf("manifest: %d files, %d hard links, %d config entries", len(mf.Files), len(mf.Links), len(mf.Config))
 

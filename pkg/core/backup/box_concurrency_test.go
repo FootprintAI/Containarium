@@ -1,10 +1,14 @@
 package backup
 
 import (
+	"archive/tar"
 	"bytes"
 	"errors"
 	"io"
 	mrand "math/rand/v2"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -346,4 +350,52 @@ func TestCreateBox_ReleaseIsClaimScoped(t *testing.T) {
 		t.Fatalf("claim after the second release: %v", err)
 	}
 	rel3()
+}
+
+// #3126 with #3116: whole-box backups of different boxes run concurrently,
+// and every one sweeps stale spill files before it starts. The sweep of the
+// second must never delete the spill file of the first, even when that file
+// looks old (mtime past the stale age), because the first is still running.
+// Only the in-flight registration can save it here.
+func TestCreateBox_ConcurrentBackupSweepSparesInFlightSpill(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	const usage = 100 << 20
+	gb := newGateBox(buildArchive(t, incusLikeEntries()), usage)
+	m := newBoxManager(t, gb, withFreeSpace(func(string) (diskSpace, error) {
+		return diskSpace{Free: 4 * usage, Device: 1}, nil
+	}))
+	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out := make(chan createResult, 2)
+	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
+	enter(t, gb) // the first backup is in flight
+
+	// The first backup's spill: open (registered) but with an old mtime.
+	inFlight := &boxSpill{dir: m.dir}
+	if err := inFlight.add("a", &tar.Header{Name: "a", Size: 1}, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	defer inFlight.close()
+	touchOld(t, inFlight.f.Name(), 72*time.Hour)
+	// A genuine leftover beside it, which the sweep must still remove.
+	dead := filepath.Join(m.dir, ".box-spill-dead.tmp")
+	writeFile(t, dead, "leftover")
+	touchOld(t, dead, 72*time.Hour)
+
+	startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
+	enter(t, gb) // the second passed its sweep and pre-flight
+
+	if _, err := os.Stat(inFlight.f.Name()); err != nil {
+		t.Errorf("a concurrent backup's sweep removed an in-flight spill: %v", err)
+	}
+	if _, err := os.Lstat(dead); !os.IsNotExist(err) {
+		t.Errorf("the dead spill survived the second backup's sweep: %v", err)
+	}
+	close(gb.release)
+	for i := 0; i < 2; i++ {
+		if r := recv(t, out); r.err != nil {
+			t.Errorf("backup of %s: %v", r.box, r.err)
+		}
+	}
 }

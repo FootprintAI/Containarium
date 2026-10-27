@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -196,6 +197,11 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	}
 	if _, err := os.Stat(m.sidecarPath(id)); err == nil {
 		return nil, fmt.Errorf("backup %s already exists: retry in a second", id)
+	}
+	// Leftovers of a daemon that died mid-backup would count against the
+	// free space the pre-flight is about to read.
+	if _, err := m.SweepStaleBoxSpills(); err != nil {
+		log.Printf("[backup] sweeping stale whole-box spill files: %v", err)
 	}
 	release, err := m.boxPreflight(opts.ContainerName)
 	if err != nil {
@@ -599,6 +605,7 @@ func (s *boxSpill) add(name string, hdr *tar.Header, body io.Reader) error {
 		if err != nil {
 			return err
 		}
+		activeSpills.Store(filepath.Clean(f.Name()), struct{}{})
 		s.f, s.identity, s.entries = f, id, map[string]boxSpillEntry{}
 	}
 	cw := &countingWriter{w: s.f}
@@ -636,7 +643,72 @@ func (s *boxSpill) close() {
 	if s.f != nil {
 		_ = s.f.Close()
 		_ = os.Remove(s.f.Name())
+		activeSpills.Delete(filepath.Clean(s.f.Name()))
 	}
+}
+
+// boxSpillPattern is the exact name of a spill file (os.CreateTemp's "*" is
+// a run of digits).
+const boxSpillPattern = ".box-spill-*.tmp"
+
+// boxSpillStaleAfter is how long a spill file must sit untouched before a
+// sweep treats it as a leftover. Within this process a running backup's
+// spill is protected by activeSpills. Against ANOTHER process sharing the
+// backup directory this age check is the only protection (activeSpills is
+// per-process). A backup that goes quiet for longer than this between
+// excluded-file writes could therefore lose its spill to a sweep by the other
+// process: that backup then fails when it reads the spill back (the staged
+// archive is discarded and nothing in the box is touched), and the next
+// attempt succeeds. 24 hours is generous for a 256 GiB export.
+const boxSpillStaleAfter = 24 * time.Hour
+
+// activeSpills holds the cleaned paths of the spill files of backups running
+// in this process, which a sweep must never remove. Keys and lookups both go
+// through filepath.Clean, since the backup directory may be spelled uncleanly
+// (a//b, ./x, a trailing slash).
+var activeSpills sync.Map
+
+// SweepStaleBoxSpills removes spill files that a daemon killed mid-backup
+// (SIGKILL, power loss) left in the backup directory, and reports how many.
+// They are ciphertext under a key that died with the process, so they are a
+// disk leak, not a disclosure. It removes only regular files directly in the
+// backup directory whose name matches the spill pattern, that have not been
+// modified for boxSpillStaleAfter, and that no running backup in this
+// process owns. Symlinks and directories with the name are left alone, and
+// nothing outside the backup directory is touched.
+func (m *Manager) SweepStaleBoxSpills() (int, error) {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().Add(-boxSpillStaleAfter)
+	swept := 0
+	var firstErr error
+	for _, e := range entries {
+		if ok, _ := filepath.Match(boxSpillPattern, e.Name()); !ok || !e.Type().IsRegular() {
+			continue
+		}
+		path := filepath.Clean(filepath.Join(m.dir, e.Name()))
+		if _, active := activeSpills.Load(path); active {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() || fi.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			if firstErr == nil && !os.IsNotExist(err) {
+				firstErr = err
+			}
+			continue
+		}
+		log.Printf("[backup] removed stale whole-box spill file %s", e.Name())
+		swept++
+	}
+	return swept, firstErr
 }
 
 type countingWriter struct {
