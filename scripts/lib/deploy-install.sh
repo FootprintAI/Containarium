@@ -7,19 +7,34 @@
 # unit does not become healthy it puts <bin>.old back, starts the unit again
 # and exits non-zero, so the caller's ssh (and `set -e`) stops the rollout.
 #
-# Health is `curl -f <health-url>` when a URL is given, otherwise the unit
-# being active. Knobs, read when the command is built: BIN_DIR (default
-# /usr/local/bin), SRC (default /tmp/containariumd), HEALTH_TRIES (default 15),
-# HEALTH_INTERVAL seconds (default 2).
+# Health is `curl -f <health-url>` when a URL is given: the first success
+# within the window passes. Without a URL (the sentinel) health is the unit
+# staying active for the whole window, so a binary that is active right after
+# `systemctl start` and crashes a moment later still rolls back (#3108).
+#
+# Knobs, read when the command is built: BIN_DIR (default /usr/local/bin),
+# SRC (default /tmp/containariumd), HEALTH_TRIES (default 15), HEALTH_INTERVAL
+# seconds (default 2). The window is HEALTH_TRIES x HEALTH_INTERVAL, 30s by
+# default. A daemon that is healthy but needs longer than the window to come up
+# (URL path) or to settle is rolled back like a broken one: raise HEALTH_TRIES
+# (or HEALTH_INTERVAL) for a slow-starting daemon, e.g.
+#   HEALTH_TRIES=60 HEALTH_INTERVAL=2 scripts/deploy-binary.sh ...
+#
+# The service name and URL are placed inside single quotes in the generated
+# command. They come from operator env (SENTINEL_SERVICE, PRIMARY_SERVICE,
+# *_HEALTH_URL), never from untrusted input, and must not contain a `'`.
 deploy_install_cmd() {
     local svc="$1" url="${2:-}"
     local dir="${BIN_DIR:-/usr/local/bin}" src="${SRC:-/tmp/containariumd}"
     local tries="${HEALTH_TRIES:-15}" interval="${HEALTH_INTERVAL:-2}"
-    local bin="$dir/containariumd" check
+    local bin="$dir/containariumd" poll
     if [ -n "$url" ]; then
-        check="curl -fsS --max-time 3 '$url' >/dev/null 2>&1"
+        # Healthy on the first successful probe.
+        poll="if curl -fsS --max-time 3 '$url' >/dev/null 2>&1; then echo \"  $svc healthy after install\"; exit 0; fi"
     else
-        check="sudo systemctl is-active --quiet '$svc'"
+        # Healthy only if still active after the whole window: a failed
+        # probe ends the wait at once and falls through to the rollback.
+        poll="if ! sudo systemctl is-active --quiet '$svc'; then break; fi"
     fi
     cat <<CMD
 had_old=0
@@ -30,9 +45,10 @@ if [ '$dir' = /usr/local/bin ]; then sudo ln -sf '$bin' '$dir/containarium'; fi
 sudo systemctl start '$svc'
 i=0
 while [ \$i -lt $tries ]; do
-  if $check; then echo "  $svc healthy after install"; exit 0; fi
+  $poll
   i=\$((i+1)); sleep $interval
 done
+if [ -z '$url' ] && [ \$i -ge $tries ]; then echo "  $svc healthy after install"; exit 0; fi
 echo "  ERROR: $svc not healthy after install" >&2
 if [ \$had_old = 1 ]; then
   sudo systemctl stop '$svc' || true
