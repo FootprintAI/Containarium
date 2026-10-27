@@ -21761,9 +21761,33 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        },
+        "resources": {
+          "$ref": "#/definitions/TaskNodeResources",
+          "description": "Optional minimum host capabilities, checked against this daemon's last\nmeasured profile before graph execution. Nonzero requirements are local\nonly: remote backends and other pools are rejected. These are host\neligibility constraints, not per-box allocations or resource reservations.\nAbsent or all-zero requirements preserve legacy placement behavior."
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResources": {
+      "type": "object",
+      "properties": {
+        "minCpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum measured CPU core count; zero means no CPU constraint.\nMust be nonnegative."
+        },
+        "minMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Minimum measured total RAM in bytes, not currently free RAM.\nZero means no RAM constraint; must be nonnegative."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "description": "Require a successful GPU passthrough measurement in the profile.\nThis does not allocate a GPU or change the skill's recipe."
+        }
+      },
+      "description": "TaskNodeResources describes minimum measured hardware for a graph node.\nFor a crew node the constraint applies to the host of the whole crew;\nmember box limits and ordinary admission checks remain unchanged."
     },
     "TaskNodeResult": {
       "type": "object",
