@@ -506,7 +506,7 @@ func (s *BackupServer) resolveRestoreTarget(ctx context.Context, name string) (s
 // that could not be run at all (unknown backup, missing target
 // container) returns a gRPC error.
 func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
-	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+	if err := auth.RequireAnyScope(ctx, auth.ScopeBackupsVerify, auth.ScopeBackupsWrite); err != nil {
 		return nil, err
 	}
 	if req.Id == "" {

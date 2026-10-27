@@ -124,3 +124,26 @@ func TestEveryToolHasScope(t *testing.T) {
 		}
 	}
 }
+
+// verify_backup (#3186) is callable with backups:verify or the legacy
+// backups:write, but a backups:verify token must not see the write tools.
+func TestVerifyBackupToolAcceptsVerifyScope(t *testing.T) {
+	srv := &Server{}
+	srv.registerTools()
+	byName := map[string]*Tool{}
+	for i := range srv.tools {
+		byName[srv.tools[i].Name] = &srv.tools[i]
+	}
+	verifyOnly := []string{auth.ScopeBackupsRead, auth.ScopeBackupsVerify}
+	if !toolAllowed(verifyOnly, byName["verify_backup"]) {
+		t.Error("backups:verify must allow verify_backup")
+	}
+	if !toolAllowed([]string{auth.ScopeBackupsWrite}, byName["verify_backup"]) {
+		t.Error("legacy backups:write must still allow verify_backup")
+	}
+	for _, n := range []string{"create_backup", "restore_backup"} {
+		if toolAllowed(verifyOnly, byName[n]) {
+			t.Errorf("backups:verify must not allow %s", n)
+		}
+	}
+}

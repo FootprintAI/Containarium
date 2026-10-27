@@ -48,7 +48,7 @@ var backupRPCDecisions = map[string]backupRPCDecision{
 		_, err := s.RestoreBackup(ctx, &pb.RestoreBackupRequest{Id: bobBackupID})
 		return err
 	}},
-	"VerifyBackup": {auth.ScopeBackupsWrite, func(ctx context.Context, s *BackupServer) error {
+	"VerifyBackup": {auth.ScopeBackupsVerify, func(ctx context.Context, s *BackupServer) error {
 		_, err := s.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: bobBackupID, TargetUsername: "alice"})
 		return err
 	}},
@@ -123,6 +123,11 @@ func TestBackupRPCScopeDecisions_Enforced(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// A token holding every other scope but the required one is denied.
 			other := []string{auth.ScopeBackupsRead}
+			if d.scope == auth.ScopeBackupsVerify {
+				// VerifyBackup also accepts the broader write scope, so the
+				// "wrong scope" token for it holds neither verify nor write.
+				other = []string{auth.ScopeBackupsRead, "containers:write"}
+			}
 			if d.scope == auth.ScopeBackupsRead {
 				other = []string{auth.ScopeBackupsWrite, "containers:read", "secrets:read"}
 			}
@@ -138,5 +143,46 @@ func TestBackupRPCScopeDecisions_Enforced(t *testing.T) {
 				t.Fatalf("cross-tenant: code = %v, want PermissionDenied", c)
 			}
 		})
+	}
+}
+
+// verifyOnlyCtx is the narrowed verifier token (#3186): one tenant, scopes
+// exactly backups:read + backups:verify.
+func verifyOnlyCtx(tenant string) context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), tenant, []string{"user"},
+		[]string{auth.ScopeBackupsRead, auth.ScopeBackupsVerify})
+}
+
+// TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs is the reason
+// backups:verify exists: a token holding it (and backups:read) can verify its
+// own tenant's backups but is refused every RPC that creates, restores,
+// deletes or prunes. Granting it any of those RPCs makes this test fail.
+func TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs(t *testing.T) {
+	_, bs := verifierServer(t)
+	ctx := verifyOnlyCtx("alice")
+	for _, name := range []string{"CreateBackup", "CreateBackup/BOX", "RestoreBackup", "DeleteBackup", "PruneBackups"} {
+		t.Run(name+" refused", func(t *testing.T) {
+			if c := status.Code(callBackupRPC(ctx, bs, name)); c != codes.PermissionDenied {
+				t.Fatalf("verify-only token on %s: code = %v, want PermissionDenied", name, c)
+			}
+		})
+	}
+	for _, name := range []string{"ListBackups", "GetBackup", "VerifyBackup"} {
+		t.Run(name+" allowed", func(t *testing.T) {
+			if c := status.Code(callBackupRPC(ctx, bs, name)); c == codes.PermissionDenied || c == codes.Unauthenticated {
+				t.Fatalf("verify-only token on %s: code = %v, want it to pass the scope gate", name, c)
+			}
+		})
+	}
+}
+
+// TestBackupRPCScopeDecisions_VerifyAcceptsLegacyWriteScope pins the
+// no-migration decision (#3186): tokens minted before backups:verify existed
+// carry backups:write and keep verifying.
+func TestBackupRPCScopeDecisions_VerifyAcceptsLegacyWriteScope(t *testing.T) {
+	_, bs := verifierServer(t)
+	_, err := bs.VerifyBackup(verifierCtx("alice"), &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
+	if err != nil {
+		t.Fatalf("legacy backups:write verifier token refused: %v", err)
 	}
 }

@@ -59,7 +59,7 @@ backup_id=$(jq -er '.record.id' "$scratch_dir/create.json")
 
 # The exact documented invocation, including the non-admin role and 720h TTL.
 token=$("$bin" token generate --username "$tenant" --roles user \
-  --scopes backups:read,backups:write --expiry 720h \
+  --scopes backups:read,backups:verify --expiry 720h \
   --secret-file "$scratch_dir/jwt.secret" --raw)
 
 api 200 "$scratch_dir/list.json" -H "Authorization: Bearer $token" \
@@ -87,6 +87,29 @@ for path in '/v1/backups?username=other-tenant' '/v1/containers' "/v1/secrets/$t
   api 403 "$scratch_dir/denied.json" -H "Authorization: Bearer $token" "$server$path"
 done
 
+# The narrow verifier token must be refused on every RPC that creates,
+# restores, deletes or prunes (#3186). 403 is the daemon's PermissionDenied.
+create_req=$(jq -n --arg tenant "$tenant" '{username:$tenant,destination:"BACKUP_DESTINATION_LOCAL",connection:{database:"postgres",password:"lane-source-password"}}')
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d "$create_req" "$server/v1/backups"
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d '{}' "$server/v1/backups/$backup_id/restore"
+api 403 "$scratch_dir/denied.json" -X DELETE -H "Authorization: Bearer $token" \
+  "$server/v1/backups/$backup_id"
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d "{\"username\":\"$tenant\",\"keep\":1}" "$server/v1/backups/prune"
+# The backup must still exist after the refused delete/prune.
+api 200 "$scratch_dir/still.json" -H "Authorization: Bearer $token" "$server/v1/backups/$backup_id"
+
+# A verifier token minted before backups:verify existed (backups:write) keeps
+# verifying: no migration is required.
+legacy=$("$bin" token generate --username "$tenant" --roles user \
+  --scopes backups:read,backups:write --expiry 5m \
+  --secret-file "$scratch_dir/jwt.secret" --raw)
+request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
+api 200 "$scratch_dir/legacy-verify.json" --max-time 600 -H "Authorization: Bearer $legacy" \
+  -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
+
 # Verification must leave the source database intact.
 test "$(incus exec "$source_name" -- runuser -u postgres -- psql -Atc 'SELECT count(*) FROM scope_contract')" = 1
-echo 'PASS: scoped token lists and verifies its own backup, denies other APIs, and cleans up its isolated target.'
+echo 'PASS: backups:verify token lists and verifies its own backup, is refused create/restore/delete/prune and other APIs, and cleans up its isolated target.'

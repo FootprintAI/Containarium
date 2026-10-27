@@ -159,3 +159,26 @@ func TestRequireScope_RecordsUnscopedCallRegardlessOfMode(t *testing.T) {
 		t.Fatalf("UnscopedTokenCalls().Count = %d after a scoped call, want unchanged 1", got)
 	}
 }
+
+func TestRequireAnyScope(t *testing.T) {
+	mk := func(scopes []string) context.Context {
+		return ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, scopes)
+	}
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   codes.Code
+	}{
+		{"narrow scope", []string{ScopeBackupsVerify}, codes.OK},
+		{"legacy scope", []string{ScopeBackupsWrite}, codes.OK},
+		{"wildcard", []string{ScopeWildcard}, codes.OK},
+		{"neither", []string{ScopeBackupsRead}, codes.PermissionDenied},
+		{"empty", []string{}, codes.PermissionDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := status.Code(RequireAnyScope(mk(tc.scopes), ScopeBackupsVerify, ScopeBackupsWrite)); got != tc.want {
+				t.Fatalf("code = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

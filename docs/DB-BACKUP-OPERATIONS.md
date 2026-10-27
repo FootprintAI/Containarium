@@ -457,18 +457,27 @@ A job whose purpose is to decrypt and restore backups (a nightly verifier)
 should not hold an admin token: the identity that can read every tenant's
 secrets would also be the one that unwraps backup keys. `ListBackups` and
 `VerifyBackup` need much less. Mint one **non-admin token bound to a single
-tenant**, with exactly the two backup scopes:
+tenant**, with exactly the two backup scopes `backups:read` and
+`backups:verify`:
 
 ```bash
 sudo containarium token generate \
   --username <tenant> --roles user \
-  --scopes backups:read,backups:write \
+  --scopes backups:read,backups:verify \
   --expiry 720h \
   --secret-file /etc/containarium/jwt.secret --raw
 ```
 
-- `backups:write` is required because `VerifyBackup` restores the dump into
-  a scratch database. `backups:read` covers `ListBackups`.
+- `backups:verify` is what `VerifyBackup` needs: it restores the dump into a
+  scratch database in an isolated container. `backups:read` covers
+  `ListBackups`. A token holding only these two is refused `CreateBackup`,
+  `RestoreBackup`, `DeleteBackup` and `PruneBackups`, which still need
+  `backups:write`.
+- No migration is needed. `VerifyBackup` also accepts `backups:write`, so a
+  verifier token minted earlier with `backups:read,backups:write` keeps
+  working, but it still holds create, restore, delete and prune for its
+  tenant. Re-mint it with `backups:verify` to drop that reach, then revoke the
+  old one with `containarium token revoke`.
 - The token is bound to the tenant by its username. It can list and verify
   **that tenant's** backups. Set `--target` to that same tenant username:
   the daemon creates a fresh, isolated Postgres 16 container labelled with
@@ -512,11 +521,13 @@ and Incus in the `Incus create path` CI lane.
 `TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains
 an RPC with no recorded scope decision, and
 `TestBackupRPCScopeDecisions_Enforced` checks each recorded decision. Every
-backup RPC, including whole-box `CreateBackup`, requires `backups:read` or
-`backups:write` and refuses another tenant's data. A verifier token
-therefore also holds, for its own tenant only, the ability to create,
-restore, delete and prune backups, because `backups:write` is required to
-verify.
+backup RPC, including whole-box `CreateBackup`, requires `backups:read`,
+`backups:verify` (`VerifyBackup` only, which also accepts `backups:write`) or
+`backups:write`, and refuses another tenant's data.
+`TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs` pins that a
+`backups:verify` token is refused create, restore, delete and prune, and
+`TestBackupRPCScopeDecisions_VerifyAcceptsLegacyWriteScope` pins that a
+`backups:write` verifier token still verifies.
 
 ### Watching and alerting
 
@@ -736,7 +747,7 @@ rather than loading corrupt data.
 - **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
 - **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete/prune)
+- **Auth scopes**: `backups:read` (list/get), `backups:verify` (verify only), `backups:write` (create/restore/verify/delete/prune)
 - **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
 - **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify

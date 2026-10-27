@@ -400,6 +400,32 @@ func RequireScope(ctx context.Context, required string) error {
 	return status.Error(codes.PermissionDenied, "scope required: "+required)
 }
 
+// RequireAnyScope is RequireScope for an RPC that accepts any one of several
+// scopes (e.g. a narrow scope plus the broader legacy one it was split from,
+// #3186). The unscoped-token and strict-mode behavior is identical to
+// RequireScope; the denial names every accepted scope.
+func RequireAnyScope(ctx context.Context, accepted ...string) error {
+	if len(accepted) == 0 {
+		return status.Error(codes.Internal, "no accepted scope configured")
+	}
+	if _, _, ok := SubjectFromGRPCContext(ctx); !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	scopes, present := ScopesFromGRPCContext(ctx)
+	if !present {
+		recordUnscopedCall()
+		if StrictScopesEnabled() {
+			return status.Errorf(codes.PermissionDenied, "%s (scope required: %s) — mint a token with --scopes", strictScopesDenialPrefix, strings.Join(accepted, " or "))
+		}
+	}
+	for _, want := range accepted {
+		if HasScope(scopes, want) {
+			return nil
+		}
+	}
+	return status.Error(codes.PermissionDenied, "scope required: "+strings.Join(accepted, " or "))
+}
+
 // RequireExplicitScope is RequireScope without the backwards-compat
 // "no scopes claim = unrestricted" fall-through (#2415). It exists for
 // write paths whose authority must never be inherited from a pre-scope
