@@ -23,6 +23,7 @@ import (
 //	GET /v1/containers/{name}/connections          → connections
 //	GET /v1/containers/{name}/connections/summary  → summary
 //	GET /v1/containers/{name}/traffic/history      → history
+//	GET /v1/traffic/history                        → find (every box, admin only)
 //
 // Server + token resolution mirrors the ssh/connect commands (pickSSHServer +
 // the bearer token auto-filled by root's PersistentPreRunE), so `traffic` works
@@ -35,6 +36,8 @@ var (
 	trafficDestPort   uint32
 	trafficLimit      int32
 	trafficSince      time.Duration
+	trafficFrom       string
+	trafficTo         string
 )
 
 var trafficCmd = &cobra.Command{
@@ -46,6 +49,7 @@ Subcommands:
   connections <box>   active connections (source/dest IP, port, proto, bytes)
   summary <box>       per-box totals + top destinations
   history <box>       closed connections recorded in the traffic history
+  find                which box connected to a destination (every box; admin)
 
 Reads the platform daemon's TrafficService over its HTTP API, using the
 server + token you logged in with (override with --server / --token).`,
@@ -73,11 +77,25 @@ var trafficHistoryCmd = &cobra.Command{
 	RunE:  runTrafficHistory,
 }
 
+var trafficFindCmd = &cobra.Command{
+	Use:   "find --from <time> [--to <time>] [--dest-ip <ip>] [--dest-port <port>]",
+	Short: "Find which box connected to a destination, across every box (admin)",
+	Long: `Search the traffic history of every box on the backend, without naming
+the box. Each row names the box that made the connection.
+
+This reveals every tenant's connection history, so it needs an admin token.
+--from is required; --to defaults to now; the window is at most 7 days. Both
+ends are inclusive and are RFC3339 timestamps (e.g. 2026-10-20T10:00:00Z).
+--dest-ip is an exact address match.`,
+	Args: cobra.NoArgs,
+	RunE: runTrafficFind,
+}
+
 func init() {
 	rootCmd.AddCommand(trafficCmd)
-	trafficCmd.AddCommand(trafficConnectionsCmd, trafficSummaryCmd, trafficHistoryCmd)
+	trafficCmd.AddCommand(trafficConnectionsCmd, trafficSummaryCmd, trafficHistoryCmd, trafficFindCmd)
 
-	for _, c := range []*cobra.Command{trafficConnectionsCmd, trafficSummaryCmd, trafficHistoryCmd} {
+	for _, c := range []*cobra.Command{trafficConnectionsCmd, trafficSummaryCmd, trafficHistoryCmd, trafficFindCmd} {
 		c.Flags().StringVar(&trafficServerFlag, "server", "", "server to query (default: the logged-in server)")
 		c.Flags().StringVarP(&trafficFormat, "format", "f", "table", "output format: table, json")
 	}
@@ -87,6 +105,13 @@ func init() {
 	trafficConnectionsCmd.Flags().Int32Var(&trafficLimit, "limit", 0, "max rows to return (0 = server default)")
 	trafficHistoryCmd.Flags().DurationVar(&trafficSince, "since", time.Hour, "look back this far (e.g. 30m, 24h)")
 	trafficHistoryCmd.Flags().Int32Var(&trafficLimit, "limit", 0, "max rows to return (0 = server default)")
+	for _, c := range []*cobra.Command{trafficHistoryCmd, trafficFindCmd} {
+		c.Flags().StringVar(&trafficDestIP, "dest-ip", "", "only connections to this destination IP (exact match)")
+		c.Flags().Uint32Var(&trafficDestPort, "dest-port", 0, "only connections to this destination port")
+		c.Flags().StringVar(&trafficFrom, "from", "", "window start, RFC3339 (inclusive)")
+		c.Flags().StringVar(&trafficTo, "to", "", "window end, RFC3339 (inclusive; default now)")
+	}
+	trafficFindCmd.Flags().Int32Var(&trafficLimit, "limit", 0, "max rows to return (0 = server default, max 1000)")
 }
 
 // flexInt64 decodes a proto3-JSON int64, which grpc-gateway emits as a QUOTED
@@ -146,6 +171,7 @@ type connectionSummaryResp struct {
 }
 
 type historicalConnection struct {
+	ContainerName string    `json:"containerName"`
 	Protocol      string    `json:"protocol"`
 	SourceIP      string    `json:"sourceIp"`
 	SourcePort    uint32    `json:"sourcePort"`
@@ -160,6 +186,9 @@ type historicalConnection struct {
 type queryHistoryResp struct {
 	Connections []historicalConnection `json:"connections"`
 	TotalCount  int32                  `json:"totalCount"`
+	// OldestRecordTime is the oldest record held for the queried scope; empty
+	// when nothing has been collected.
+	OldestRecordTime string `json:"oldestRecordTime"`
 }
 
 // trafficGet performs an authenticated GET against the resolved traffic server
@@ -299,17 +328,58 @@ func runTrafficSummary(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runTrafficHistory(cmd *cobra.Command, args []string) error {
-	box := args[0]
+// historyWindow resolves the query window: --from/--to when given (RFC3339,
+// --to defaulting to now), otherwise a look-back of --since from now.
+func historyWindow(now time.Time) (start, end time.Time, err error) {
+	if trafficFrom == "" {
+		if trafficTo != "" {
+			return start, end, fmt.Errorf("--to needs --from")
+		}
+		return now.Add(-trafficSince), now, nil
+	}
+	if start, err = time.Parse(time.RFC3339, trafficFrom); err != nil {
+		return start, end, fmt.Errorf("--from: want RFC3339 like 2026-10-20T10:00:00Z: %w", err)
+	}
+	end = now
+	if trafficTo != "" {
+		if end, err = time.Parse(time.RFC3339, trafficTo); err != nil {
+			return start, end, fmt.Errorf("--to: want RFC3339 like 2026-10-20T11:00:00Z: %w", err)
+		}
+	}
+	if end.Before(start) {
+		return start, end, fmt.Errorf("--to is before --from")
+	}
+	return start, end, nil
+}
+
+func historyQuery(start, end time.Time, explicitEnd bool) url.Values {
 	q := url.Values{}
 	// google.protobuf.Timestamp query params are RFC3339 via grpc-gateway.
-	q.Set("startTime", time.Now().Add(-trafficSince).UTC().Format(time.RFC3339))
+	q.Set("startTime", start.UTC().Format(time.RFC3339))
+	if explicitEnd {
+		q.Set("endTime", end.UTC().Format(time.RFC3339))
+	}
+	if trafficDestIP != "" {
+		q.Set("destIp", trafficDestIP)
+	}
+	if trafficDestPort != 0 {
+		q.Set("destPort", strconv.FormatUint(uint64(trafficDestPort), 10))
+	}
 	if trafficLimit != 0 {
 		q.Set("limit", strconv.FormatInt(int64(trafficLimit), 10))
 	}
+	return q
+}
 
+func runTrafficHistory(cmd *cobra.Command, args []string) error {
+	box := args[0]
+	start, end, err := historyWindow(time.Now())
+	if err != nil {
+		return err
+	}
 	var resp queryHistoryResp
-	if err := trafficGet(cmd.Context(), "/v1/containers/"+url.PathEscape(box)+"/traffic/history", q, &resp); err != nil {
+	if err := trafficGet(cmd.Context(), "/v1/containers/"+url.PathEscape(box)+"/traffic/history",
+		historyQuery(start, end, trafficTo != ""), &resp); err != nil {
 		return err
 	}
 
@@ -318,7 +388,9 @@ func runTrafficHistory(cmd *cobra.Command, args []string) error {
 		return writeJSON(out, resp)
 	}
 	if len(resp.Connections) == 0 {
-		fmt.Fprintf(out, "No history for %q in the last %s.\n", box, trafficSince)
+		fmt.Fprintf(out, "No matching history for %q between %s and %s.\n", box,
+			start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+		printOldest(out, resp)
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
@@ -333,6 +405,57 @@ func runTrafficHistory(cmd *cobra.Command, args []string) error {
 	}
 	_ = tw.Flush()
 	fmt.Fprintf(out, "\n%d historical connection(s).\n", resp.TotalCount)
+	return nil
+}
+
+// printOldest explains an empty result: either history exists but nothing
+// matched, or nothing has been collected at all.
+func printOldest(out io.Writer, resp queryHistoryResp) {
+	if resp.OldestRecordTime == "" {
+		fmt.Fprintln(out, "No traffic records are held for this scope: no history is held, so the collector may not have been recording.")
+		return
+	}
+	fmt.Fprintf(out, "Oldest record held: %s (anything earlier is not available).\n", resp.OldestRecordTime)
+}
+
+// runTrafficFind is the host-wide history query: which box connected to a
+// destination, without naming the box. Admin-only on the server.
+func runTrafficFind(cmd *cobra.Command, _ []string) error {
+	if trafficFrom == "" {
+		return fmt.Errorf("--from is required (RFC3339, e.g. 2026-10-20T10:00:00Z)")
+	}
+	start, end, err := historyWindow(time.Now())
+	if err != nil {
+		return err
+	}
+	var resp queryHistoryResp
+	if err := trafficGet(cmd.Context(), "/v1/traffic/history", historyQuery(start, end, trafficTo != ""), &resp); err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if trafficFormat == "json" {
+		return writeJSON(out, resp)
+	}
+	if len(resp.Connections) == 0 {
+		fmt.Fprintf(out, "No box matched between %s and %s.\n",
+			start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+		printOldest(out, resp)
+		return nil
+	}
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "BOX\tSTARTED\tPROTO\tSOURCE\tDESTINATION\tSENT\tRECV")
+	for _, c := range resp.Connections {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			c.ContainerName, c.StartedAt, shortEnum(c.Protocol),
+			hostPort(c.SourceIP, c.SourcePort), hostPort(c.DestIP, c.DestPort),
+			humanBytes(int64(c.BytesSent)), humanBytes(int64(c.BytesReceived)))
+	}
+	_ = tw.Flush()
+	fmt.Fprintf(out, "\n%d matching connection(s)", resp.TotalCount)
+	if int(resp.TotalCount) > len(resp.Connections) {
+		fmt.Fprintf(out, " (showing %d; raise --limit, max 1000, or narrow the window)", len(resp.Connections))
+	}
+	fmt.Fprintln(out, ".")
 	return nil
 }
 

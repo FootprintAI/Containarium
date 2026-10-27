@@ -46,7 +46,14 @@ Run from your laptop. Each step is verifiable independently.
 
 2. **Confirm the prod backend is already pool-tagged.** Per [memory](../README.md), the prod backend may have been brought up before the pool concept landed.
    ```sh
-   curl -s https://containarium.<your-base-domain>/sentinel/peers | jq '.peers[] | {id, pool, healthy}'
+   # Pool tags are only returned to a signed (daemon-secret) request; an
+   # unsigned curl lists the peers without `pool`.
+   SECRET="$CONTAINARIUM_SENTINEL_AUTH_SECRET"   # from the sentinel's own env
+   TS=$(date +%s)
+   SIG=$(printf 'GET\n/sentinel/peers\n%s' "$TS" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $2}')
+   curl -s https://containarium.<your-base-domain>/sentinel/peers \
+     -H "X-Containarium-Sentinel-Ts: $TS" -H "X-Containarium-Sentinel-Sig: $SIG" \
+     | jq '.peers[] | {id, pool, healthy}'
    ```
    If `<prod-backend>` shows `pool: ""`, restart its daemon with `--pool=prod --public-base-domain=<your-base-domain>` *before* introducing the demo pool — otherwise demo and prod would both be "untagged" and the routing decision would be ambiguous.
 
@@ -129,8 +136,14 @@ The journal should show `connected to sentinel`, `registered as "<demo-backend>-
 From your laptop (or any host that can reach `containarium.<your-base-domain>`):
 
 ```sh
-# Peer registry — demo backend should appear with pool=demo
+# Peer registry — demo backend should appear with pool=demo. `pool` is only
+# returned to a signed request (same scheme as below, path /sentinel/peers);
+# an unsigned curl lists the peers with no `pool` field.
+SECRET="$CONTAINARIUM_SENTINEL_AUTH_SECRET"   # from the sentinel's own env
+TS=$(date +%s)
+SIG=$(printf 'GET\n/sentinel/peers\n%s' "$TS" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $2}')
 curl -s https://containarium.<your-base-domain>/sentinel/peers \
+  -H "X-Containarium-Sentinel-Ts: $TS" -H "X-Containarium-Sentinel-Sig: $SIG" \
   | jq '.peers[] | select(.id == "tunnel-<demo-backend>-spot")'
 
 # Primary registry — HMAC-gated (same secret as key resync / certs), so the
@@ -251,7 +264,7 @@ Rollback is non-destructive on the prod side — the prod sentinel just stops ge
 2. Pool-tag prod backend (`--pool=prod --public-base-domain=<your-base-domain>`) if not already.
 3. Mint a demo-pool tunnel token, add to sentinel's `--tunnel-token-policy`.
 4. Stop the demo sentinel role; install `containarium-tunnel.service` with `--pool=demo --public-base-domain=<demo-base-domain>`.
-5. Verify `/sentinel/peers` and `/sentinel/primaries` on prod (the latter needs a signed request — see Step 2 above).
+5. Verify `/sentinel/peers` and `/sentinel/primaries` on prod (both need a signed request to show pools — see Step 2 above).
 6. `curl --resolve` an existing demo hostname against prod sentinel IP — must succeed before DNS change.
 7. Cut DNS `*.<demo-base-domain>` to prod sentinel IP.
 8. After 24h: destroy demo sentinel + its static IP.

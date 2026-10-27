@@ -75,6 +75,9 @@ func runSentinelSSHAuthzPlugin(cmd *cobra.Command, args []string) error {
 	if sentinelSSHAuthzEnforce {
 		cfg.Router = sshauthz.NewRouter(sentinelSSHAuthzConfigFile)
 		cfg.Target = sshsession.NewTargetResolver(sentinelSSHAuthzConfigFile)
+		// Warn-only (#3125): a stale unit without --login-grace-time drops
+		// logins during device approval. Never fails startup.
+		sshauthz.CheckParentLoginGrace(sshauthz.ParentCmdline, log.Printf)
 	}
 	var recorder *sshsession.JSONLRecorder
 	if sentinelSSHAuthzEnforce && sentinelSSHAuthzRecordsFile != "" {
