@@ -148,7 +148,7 @@ func answerEveryRequest(ctx context.Context, priv ed25519.PrivateKey, run string
 			answered[e.RequestID] = true
 			path := filepath.Join(coderun.ApprovalAnswersDir(run), e.RequestID)
 			tmp := path + ".tmp"
-			if os.WriteFile(tmp, []byte(coderun.FormatAnswer(priv, run, e.RequestID, coderun.PromptDigest(e.Prompt), a)), 0o600) == nil {
+			if os.WriteFile(tmp, []byte(coderun.FormatAnswer(priv, run, e.RequestID, coderun.RequestDigest(e.Tool, e.Input), a)), 0o600) == nil {
 				_ = os.Rename(tmp, path)
 			}
 		}

@@ -22,14 +22,14 @@ func TestParseApprovalMode(t *testing.T) {
 }
 
 // An answer verifies only under the public key of the private key that signed
-// it, and only for the run, request, prompt and answer it was signed for: no
-// replay onto another request or run, no turning a deny into an allow, and no
-// answer made for a prompt the box did not ask (#2184: the journal a human
-// reads is writable by the agent, so a shown prompt can be a forgery).
-func TestVerifyAnswerBindsKeyRunRequestPromptAndAnswer(t *testing.T) {
+// it, and only for the run, request, tool call and answer it was signed for:
+// no replay onto another request or run, no turning a deny into an allow, and
+// no answer made for a tool call the box did not ask (#2184: the journal a
+// human reads is writable by the agent, so what it shows can be a forgery).
+func TestVerifyAnswerBindsKeyRunRequestToolCallAndAnswer(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	otherPub, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-	shown := PromptDigest("Bash: rm -rf ~/repo")
+	shown := RequestDigest("Bash", `{"command":"rm -rf ~/repo"}`)
 	good := FormatAnswer(priv, "code", "req-1", shown, AnswerAllow)
 
 	if a, err := VerifyAnswer(pub, "code", "req-1", shown, good); err != nil || a != AnswerAllow {
@@ -46,8 +46,9 @@ func TestVerifyAnswerBindsKeyRunRequestPromptAndAnswer(t *testing.T) {
 		"signed by another": {pub, "code", "req-1", shown, FormatAnswer(otherPriv, "code", "req-1", shown, AnswerAllow)},
 		"other request":     {pub, "code", "req-2", shown, good},
 		"other run":         {pub, "other", "req-1", shown, good},
-		"other prompt":      {pub, "code", "req-1", PromptDigest("Bash: ls"), good},
-		"no prompt digest":  {pub, "code", "req-1", nil, good},
+		"other input":       {pub, "code", "req-1", RequestDigest("Bash", `{"command":"ls"}`), good},
+		"other tool":        {pub, "code", "req-1", RequestDigest("Write", `{"command":"rm -rf ~/repo"}`), good},
+		"no request digest": {pub, "code", "req-1", nil, good},
 		"deny sig as allow": {pub, "code", "req-1", shown, "allow " + denySig},
 		"unsigned":          {pub, "code", "req-1", shown, "allow"},
 		"not hex":           {pub, "code", "req-1", shown, "allow zz"},

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -64,8 +65,17 @@ func (f *fakeRunInputs) sent() []*pb.AnswerRunInputRequest {
 	return append([]*pb.AnswerRunInputRequest(nil), f.answers...)
 }
 
+// inputFor is the complete Bash input behind a "Bash: <command>" prompt.
+func inputFor(prompt string) string {
+	b, _ := json.Marshal(map[string]string{"command": strings.TrimPrefix(prompt, "Bash: ")})
+	return string(b)
+}
+
+// digestOf is the request digest an answer for that prompt's request binds.
+func digestOf(prompt string) []byte { return coderun.RequestDigest("Bash", inputFor(prompt)) }
+
 func openRequest(now time.Time, id, prompt string) *pb.RunInput {
-	return &pb.RunInput{RequestId: id, Kind: pb.RunInputKind_RUN_INPUT_KIND_PERMISSION, Tool: "Bash", Prompt: prompt,
+	return &pb.RunInput{RequestId: id, Kind: pb.RunInputKind_RUN_INPUT_KIND_PERMISSION, Tool: "Bash", Prompt: prompt, Input: inputFor(prompt),
 		CreatedAt: timestamppb.New(now.Add(-90 * time.Second)), ExpiresAt: timestamppb.New(now.Add(10 * time.Minute))}
 }
 
@@ -96,9 +106,10 @@ func deployRequest(now time.Time) *pb.ListRunInputsResponse {
 var answeredAllow = &pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED,
 	ClosedAnswer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, CloseReason: pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_ANSWERED}
 
-// `code answer` prints the prompt and has an allow confirmed BEFORE anything
-// is sent, and the answer is signed for the printed prompt (#2184 review: the
-// prompt used to be printed only after the answer was sent).
+// `code answer` prints the request, complete input included, and has an
+// allow confirmed BEFORE anything is sent, and the answer is signed for the
+// printed request (#2184 review: it used to be printed only after sending,
+// and only as a one-line prompt).
 func TestCodeAnswerConfirmsThePrintedPromptBeforeSending(t *testing.T) {
 	api := &fakeRunInputs{list: deployRequest(time.Now()), answer: answeredAllow}
 	var out bytes.Buffer
@@ -110,11 +121,12 @@ func TestCodeAnswerConfirmsThePrintedPromptBeforeSending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codeAnswer: %v", err)
 	}
-	if !strings.Contains(shownAtSend, "request req-0123456789abcdef: Bash: make deploy\nallow? [y/N] ") {
-		t.Errorf("at send time the output was %q, want the prompt and the confirmation question", shownAtSend)
+	want := "request req-0123456789abcdef: Bash: make deploy\n  input (an allow permits exactly this): {\"command\":\"make deploy\"}\nallow? [y/N] "
+	if !strings.Contains(shownAtSend, want) {
+		t.Errorf("at send time the output was %q, want the prompt, the complete input and the question", shownAtSend)
 	}
 	sent := api.sent()
-	if len(sent) != 1 || !bytes.Equal(sent[0].GetPromptSha256(), coderun.PromptDigest("Bash: make deploy")) ||
+	if len(sent) != 1 || !bytes.Equal(sent[0].GetRequestSha256(), digestOf("Bash: make deploy")) ||
 		sent[0].GetAnswer() != pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW || sent[0].GetRunName() != "code" {
 		t.Fatalf("sent %v, want an allow bound to the printed prompt", sent)
 	}
@@ -170,8 +182,8 @@ func TestCodeAnswerRefusesWhenThePromptChangedAfterPrinting(t *testing.T) {
 	}, answer: answeredAllow}
 	err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW,
 		answerConfirm{tty: true, in: strings.NewReader("y\n")}, &bytes.Buffer{})
-	if !errors.Is(err, runlog.ErrPromptChanged) {
-		t.Fatalf("err = %v, want ErrPromptChanged", err)
+	if !errors.Is(err, runlog.ErrRequestChanged) {
+		t.Fatalf("err = %v, want ErrRequestChanged", err)
 	}
 	if len(api.sent()) != 0 {
 		t.Error("an answer was sent for a prompt the user did not see")
@@ -232,12 +244,12 @@ func TestInlineAnswersAllowTheOldestPrintedRequest(t *testing.T) {
 	waitFor(t, func() bool { return len(api.sent()) == 1 })
 
 	sent := api.sent()[0]
-	if sent.GetRequestId() != "req-0000000000000001" || !bytes.Equal(sent.GetPromptSha256(), coderun.PromptDigest("Bash: first")) ||
+	if sent.GetRequestId() != "req-0000000000000001" || !bytes.Equal(sent.GetRequestSha256(), digestOf("Bash: first")) ||
 		sent.GetAnswer() != pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW {
 		t.Fatalf("sent %v, want an allow for the oldest request bound to its printed prompt", sent)
 	}
 	waitFor(t, func() bool { return strings.Contains(diag.String(), "allowed req-0000000000000001") })
-	if strings.Count(diag.String(), "permission request req-0000000000000001") != 1 {
+	if strings.Count(diag.String(), "request req-0000000000000001:") != 1 {
 		t.Errorf("a request was printed more than once:\n%s", diag.String())
 	}
 }
@@ -255,7 +267,7 @@ func TestInlineAnswersBindThePrintedPromptWhenTheJournalChanges(t *testing.T) {
 		answer: &pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED},
 	}
 	diag := &syncBuffer{}
-	w := &inlineAnswers{api: api, box: "alice", run: "code", diag: diag, shown: map[string]string{}}
+	w := &inlineAnswers{api: api, box: "alice", run: "code", diag: diag, shown: map[string]*pb.RunInput{}}
 	w.refresh()
 
 	// The journal now shows the real prompt, but nothing printed it yet.
@@ -265,7 +277,7 @@ func TestInlineAnswersBindThePrintedPromptWhenTheJournalChanges(t *testing.T) {
 	w.read(context.Background(), strings.NewReader("a\n"))
 
 	sent := api.sent()
-	if len(sent) != 1 || !bytes.Equal(sent[0].GetPromptSha256(), coderun.PromptDigest("Bash: ls")) {
+	if len(sent) != 1 || !bytes.Equal(sent[0].GetRequestSha256(), digestOf("Bash: ls")) {
 		t.Fatalf("sent %v, want the answer bound to the printed prompt \"Bash: ls\"", sent)
 	}
 	// The read's own refresh prints the changed prompt, so the next answer
@@ -274,7 +286,7 @@ func TestInlineAnswersBindThePrintedPromptWhenTheJournalChanges(t *testing.T) {
 		t.Errorf("the changed prompt was not printed:\n%s", diag.String())
 	}
 	w.read(context.Background(), strings.NewReader("a\n"))
-	if sent := api.sent(); len(sent) != 2 || !bytes.Equal(sent[1].GetPromptSha256(), coderun.PromptDigest("Bash: rm -rf ~/repo")) {
+	if sent := api.sent(); len(sent) != 2 || !bytes.Equal(sent[1].GetRequestSha256(), digestOf("Bash: rm -rf ~/repo")) {
 		t.Fatalf("second answer %v, want it bound to the reprinted prompt", sent)
 	}
 }

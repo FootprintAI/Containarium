@@ -244,7 +244,7 @@ message StopBoxRunResponse {
 // to <run_name>.input.jsonl beside its log and waits for a signed answer.
 // The journal is written by the box's own user, which the agent runs as, so
 // what these messages report is advisory: the box only acts on an answer
-// signed for the prompt it actually asked (prompt_sha256 below).
+// signed for the tool call it actually asked (request_sha256 below).
 
 // RunInputKind is what a request asks for.
 enum RunInputKind {
@@ -271,6 +271,9 @@ enum RunInputCloseReason {
   RUN_INPUT_CLOSE_REASON_CANCELLED = 3;
   // The run had no usable approval key, so it was denied at once.
   RUN_INPUT_CLOSE_REASON_NO_KEY = 4;
+  // The tool input was too large to be shown for approval, so it was denied
+  // at once.
+  RUN_INPUT_CLOSE_REASON_TOO_LARGE = 5;
 }
 
 // RunInput is one open request.
@@ -280,12 +283,15 @@ message RunInput {
   RunInputKind kind = 2;
   // The tool the agent wants to use, e.g. "Bash".
   string tool = 3;
-  // What a human answers: the tool and its command, path or input, as the box
-  // journaled it (raw; a client escapes control characters before printing).
+  // One-line summary: the tool and its command, path or URL, cut at 500
+  // bytes (raw; a client escapes control characters before printing).
   string prompt = 4;
   google.protobuf.Timestamp created_at = 5;
   // An unanswered request is denied at this time.
   google.protobuf.Timestamp expires_at = 6;
+  // The tool's complete input as JSON (at most 16 KiB): what an allow
+  // permits, and what a client must show before sending one.
+  string input = 7;
 }
 
 message ListRunInputsRequest {
@@ -297,7 +303,7 @@ message ListRunInputsRequest {
 
 message ListRunInputsResponse {
   // Open requests, oldest first. Empty once the run has exited: nothing is
-  // waiting on an answer then.
+  // waiting on an answer then. A request past expires_at is not listed.
   repeated RunInput open = 1;
   // Whether the run is still running.
   bool running = 2;
@@ -321,11 +327,12 @@ message AnswerRunInputRequest {
   // A request_id from ListRunInputs.
   string request_id = 3;
   RunInputAnswer answer = 4;
-  // SHA-256 (32 bytes) of the raw prompt the caller showed the human who
-  // answered. The daemon signs it as given; the box accepts the answer only
-  // if it matches the prompt the box asked, so an answer to a prompt the
-  // agent rewrote in the journal never counts.
-  bytes prompt_sha256 = 5;
+  // SHA-256 (32 bytes) of tool, a NUL byte, and input, exactly as the caller
+  // showed them (from ListRunInputs) to whoever answered. The daemon signs it
+  // as given; the box accepts the answer only if it matches the tool call the
+  // box asked, so an answer to a request the agent rewrote in the journal
+  // never counts, and an allow permits exactly that input.
+  bytes request_sha256 = 5;
 }
 
 // RunInputAnswerOutcome is what AnswerRunInput did.

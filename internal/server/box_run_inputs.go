@@ -27,15 +27,15 @@ import (
 // A run started with `code run --approvals ask` asks through `agent-box
 // approval-mcp` (#2183), which journals each request to <run>.input.jsonl and
 // accepts an answer only with an Ed25519 signature under the box's approval
-// public key, made for the prompt it asked. The daemon holds the private key,
+// public key, made for the tool call it asked. The daemon holds the private key,
 // derived per box from its own secret, and signs here for an authorized
 // caller; the box never holds a secret.
 //
 // The journal is written by the box's user, which the agent runs as, so
 // everything read from it is advisory: a forged line can make a request look
-// closed, show another prompt, or report a response the run never made (so
-// ANSWERED is the run's report, not proof), but the box only acts on an
-// answer signed for the prompt it holds in memory. Whether an answer counts
+// closed, show another tool call, or report a response the run never made
+// (so ANSWERED is the run's report, not proof), but the box only acts on an
+// answer signed for the tool call it holds in memory. Whether an answer counts
 // is the box's check, not one made here.
 
 // approvalKeyContext separates this derivation from every other use of the
@@ -45,6 +45,12 @@ const approvalKeyContext = "containarium-approval-key-v1\n"
 // defaultRunInputConfirmWait bounds how long AnswerRunInput waits for the box
 // to journal its response. The approval server polls every 500ms.
 const defaultRunInputConfirmWait = 3 * time.Second
+
+// maxRunInputJournal caps the journal the daemon reads (#2184 review): the
+// file is the agent's to write, and is read whole, so without a cap one box
+// could exhaust the daemon's memory. Requests are at most 16 KiB of input
+// each, so this holds hundreds.
+const maxRunInputJournal = 8 << 20
 
 // runInputIDPattern is agent-box's request id: "req-" + 16 hex digits. It
 // becomes a path component on the box, so nothing else is accepted.
@@ -68,6 +74,13 @@ func (s *ContainerServer) approvalKey(username string) (ed25519.PrivateKey, erro
 	m := hmac.New(sha256.New, s.approvalSecret)
 	m.Write([]byte(approvalKeyContext + username))
 	return ed25519.NewKeyFromSeed(m.Sum(nil)), nil
+}
+
+func (s *ContainerServer) journalCap() int64 {
+	if s.runInputJournalCap > 0 {
+		return s.runInputJournalCap
+	}
+	return maxRunInputJournal
 }
 
 func (s *ContainerServer) confirmWait() time.Duration {
@@ -104,11 +117,16 @@ func validateRunInputsRun(username, name string) error {
 	return nil
 }
 
-// runInputsJournalScript prints "J <base64 journal>" or "J -" when the run
-// has none, opening it through the same symlink guard as the run reader.
-func runInputsJournalScript(dir, name string) string {
-	return fmt.Sprintf(`%sif open3 %s; then echo "J $(b64_3)"; else echo "J -"; fi
-`, boxRunOpenFn, shellSingleQuote(dir+"/"+name+".input.jsonl"))
+// runInputsJournalScript prints "J <base64 journal>", "J -" when the run has
+// none, or "J big <size>" for one over max bytes, opening it through the same
+// symlink guard as the run reader. The size is checked on the open file, so
+// it is the file that is read.
+func runInputsJournalScript(dir, name string, max int64) string {
+	return fmt.Sprintf(`%sif open3 %s; then
+  s=$(stat -L -c %%s /proc/$$/fd/3)
+  if [ "$s" -gt %d ]; then exec 3<&-; echo "J big $s"; else echo "J $(b64_3)"; fi
+else echo "J -"; fi
+`, boxRunOpenFn, shellSingleQuote(dir+"/"+name+".input.jsonl"), max)
 }
 
 // runInputsState is one read of a run: whether it is running, and its journal.
@@ -141,7 +159,7 @@ func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsSt
 	if !found {
 		return runInputsState{}, status.Errorf(codes.NotFound, "no run named %q on %q", name, username)
 	}
-	jout, err := exec(box, runInputsJournalScript(dir, name))
+	jout, err := exec(box, runInputsJournalScript(dir, name, s.journalCap()))
 	if err != nil {
 		return runInputsState{}, status.Errorf(codes.Unavailable, "read the permission requests of run %q: %v", name, err)
 	}
@@ -149,6 +167,10 @@ func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsSt
 		b64, ok := strings.CutPrefix(strings.TrimSpace(line), "J ")
 		if !ok || b64 == "-" {
 			continue
+		}
+		if size, big := strings.CutPrefix(b64, "big "); big {
+			return runInputsState{}, status.Errorf(codes.ResourceExhausted,
+				"the permission journal of run %q is %s bytes, over the %d-byte limit; it cannot be read", name, size, s.journalCap())
 		}
 		raw, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
@@ -209,6 +231,8 @@ func runInputCloseReasonProto(r coderun.ResponseReason) pb.RunInputCloseReason {
 		return pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_CANCELLED
 	case coderun.ReasonNoKey:
 		return pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_NO_KEY
+	case coderun.ReasonTooLarge:
+		return pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_TOO_LARGE
 	}
 	return pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_UNSPECIFIED
 }
@@ -218,7 +242,7 @@ func runInputProto(e coderun.InputEvent) *pb.RunInput {
 	if e.RequestKind == coderun.RequestKindPermission {
 		kind = pb.RunInputKind_RUN_INPUT_KIND_PERMISSION
 	}
-	in := &pb.RunInput{RequestId: e.RequestID, Kind: kind, Tool: e.Tool, Prompt: e.Prompt, CreatedAt: timestamppb.New(e.T)}
+	in := &pb.RunInput{RequestId: e.RequestID, Kind: kind, Tool: e.Tool, Prompt: e.Prompt, Input: e.Input, CreatedAt: timestamppb.New(e.T)}
 	if !e.ExpiresAt.IsZero() {
 		in.ExpiresAt = timestamppb.New(e.ExpiresAt)
 	}
@@ -246,13 +270,18 @@ func (s *ContainerServer) ListRunInputs(ctx context.Context, req *pb.ListRunInpu
 		Expired:   int32(sum.Expired),   // #nosec G115 -- a count of journal lines
 		Cancelled: int32(sum.Cancelled), // #nosec G115 -- a count of journal lines
 	}
-	// An open request on a run that has exited is waiting on nobody.
+	// An open request on a run that has exited is waiting on nobody, and one
+	// past its expiry is denied whatever the journal says yet.
 	if st.running {
+		now := time.Now()
 		for _, e := range sum.Open {
 			// Report the box's own request line for the id, not a later
 			// one the agent appended.
 			if rec, ok := findRunInput(st.events, e.RequestID); ok {
 				e = rec.request
+			}
+			if !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt) {
+				continue
 			}
 			resp.Open = append(resp.Open, runInputProto(e))
 		}
@@ -264,7 +293,7 @@ func (s *ContainerServer) ListRunInputs(ctx context.Context, req *pb.ListRunInpu
 // user (so nothing here runs with more rights than the agent already has):
 // written to a temp file in the answers directory, then renamed over any
 // earlier file (one that never got a response is no answer: it may
-// be the agent's, or signed for a prompt the box did not ask). Prints
+// be the agent's, or signed for a tool call the box did not ask). Prints
 // "written", or "nodir" when the run has no answers directory.
 func runInputAnswerScript(answersDir, id, content string) string {
 	q := shellSingleQuote
@@ -294,8 +323,8 @@ func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunI
 	default:
 		return nil, status.Error(codes.InvalidArgument, "answer must be ALLOW or DENY")
 	}
-	if len(req.GetPromptSha256()) != sha256.Size {
-		return nil, status.Errorf(codes.InvalidArgument, "prompt_sha256 must be %d bytes: the SHA-256 of the prompt shown to whoever answered", sha256.Size)
+	if len(req.GetRequestSha256()) != sha256.Size {
+		return nil, status.Errorf(codes.InvalidArgument, "request_sha256 must be %d bytes: the SHA-256 of the tool call shown to whoever answered", sha256.Size)
 	}
 	if err := s.authorizeBoxRuns(ctx, username); err != nil {
 		return nil, err
@@ -334,7 +363,7 @@ func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunI
 		return nil, status.Errorf(codes.FailedPrecondition, "run %q on %q is not running; nothing is waiting on request %q", name, username, id)
 	}
 
-	content := coderun.FormatAnswer(priv, name, id, req.GetPromptSha256(), answer)
+	content := coderun.FormatAnswer(priv, name, id, req.GetRequestSha256(), answer)
 	out, err := write(box, username, runInputAnswerScript(s.boxRunDir()+"/"+name+".answers", id, content))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "write the answer to %q on %q: %v", id, username, err)

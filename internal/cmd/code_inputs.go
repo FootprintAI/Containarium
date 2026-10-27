@@ -44,14 +44,15 @@ var codeAnswerCmd = &cobra.Command{
 	Long: `Answers one open permission request of a run started with
 'code run --approvals ask'.
 
-The request's prompt is read again and printed before anything is sent, and
-the answer is signed for exactly that prompt: the run acts on it only if that
-is the prompt it asked. An allow needs confirmation: at a terminal you are
-asked "allow? [y/N]" under the printed prompt. Without a terminal, pass --yes;
-the allow is then signed for whatever the prompt is at that moment, which you
-have not seen, so prefer answering at a terminal or inline in 'code attach'.
-A deny is sent without asking. If the prompt changes between printing and
-sending, nothing is sent.
+The request is read again and printed before anything is sent: its one-line
+prompt and the tool's complete input, which is what an allow permits. The
+answer is signed for exactly that tool and input, so the run acts on it only
+if that is the tool call it asked. An allow needs confirmation: at a terminal
+you are asked "allow? [y/N]" under the printed request. Without a terminal,
+pass --yes; the allow is then signed for whatever the request is at that
+moment, which you have not seen, so prefer answering at a terminal or inline
+in 'code attach'. A deny is sent without asking. If the request changes
+between printing and sending, nothing is sent.
 
 Answering a request that is already answered or has expired changes nothing,
 prints how it was closed, and exits non-zero; so does an answer the run has
@@ -72,7 +73,7 @@ func init() {
 		c.Flags().StringVar(&codeName, "name", "", "run name (default: \""+defaultCodeRunName+"\")")
 	}
 	codeAnswerCmd.Flags().BoolVar(&codeAnswerYes, "yes", false,
-		"send an allow without asking (needed without a terminal); the allow is signed for the prompt current at that moment, unseen")
+		"send an allow without asking (needed without a terminal); the allow is signed for the request current at that moment, unseen")
 }
 
 // runInputsAPI is what pending/answer/attach and `code run --approvals ask`
@@ -142,20 +143,21 @@ type answerConfirm struct {
 	in  io.Reader // where the y/N answer is read
 }
 
-// codeAnswer prints the request's prompt, has an allow confirmed, and sends
-// the answer signed for the printed prompt through runlog.Answer, the
-// function the MCP code_answer tool also calls. Anything but a fresh answer
-// the run reported taking is an error, so the command exits non-zero.
+// codeAnswer prints the request (its prompt and complete input), has an
+// allow confirmed, and sends the answer signed for the printed request through
+// runlog.Answer, the function the MCP code_answer tool also calls. Anything
+// but a fresh answer the run reported taking is an error, so the command
+// exits non-zero.
 func codeAnswer(api runlog.RunInputs, box, run, id string, a pb.RunInputAnswer, confirm answerConfirm, w io.Writer) error {
-	prompt, open, err := runlog.OpenPrompt(api, box, run, id)
+	shown, err := runlog.OpenRequest(api, box, run, id)
 	if err != nil {
 		return err
 	}
-	if open {
-		fmt.Fprintf(w, "request %s: %s\n", coderun.PlainText(id), coderun.PlainText(prompt))
+	if shown != nil {
+		runlog.WriteRequest(w, shown)
 		if a == pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW && !confirm.yes {
 			if !confirm.tty {
-				return fmt.Errorf("an allow needs confirmation: run 'code answer' at a terminal, or pass --yes to allow whatever the prompt is when it is sent")
+				return fmt.Errorf("an allow needs confirmation: run 'code answer' at a terminal, or pass --yes to allow whatever the request is when it is sent")
 			}
 			fmt.Fprint(w, "allow? [y/N] ")
 			line, _ := bufio.NewReader(confirm.in).ReadString('\n')
@@ -164,7 +166,7 @@ func codeAnswer(api runlog.RunInputs, box, run, id string, a pb.RunInputAnswer, 
 			}
 		}
 	}
-	res, err := runlog.Answer(api, box, run, id, prompt, a)
+	res, err := runlog.Answer(api, box, run, id, shown, a)
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,7 @@ var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 // requests while its output streams (#2184): each new open request is printed
 // to diag (stdout stays the run's output), and printed again if its prompt
 // changes; a line "a" or "d" on in answers the oldest one printed, bound to
-// the prompt last printed for it. It
+// the request (tool and complete input) as last printed. It
 // needs the daemon (--server); without one, or on a daemon without the RPCs,
 // it prints one note and stays off. The returned func stops it.
 func startInlineAnswers(ctx context.Context, newClient func() (runInputsAPI, error), box, run string, in io.Reader, diag io.Writer) func() {
@@ -195,7 +197,7 @@ func startInlineAnswers(ctx context.Context, newClient func() (runInputsAPI, err
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	w := &inlineAnswers{api: c, box: box, run: run, diag: diag, shown: map[string]string{}}
+	w := &inlineAnswers{api: c, box: box, run: run, diag: diag, shown: map[string]*pb.RunInput{}}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -217,10 +219,9 @@ type inlineAnswers struct {
 	box, run string
 	diag     io.Writer
 	mu       sync.Mutex
-	// shown maps each printed request id to the prompt last printed for it:
-	// an answer binds that text, never a later journal read the user has not
-	// seen.
-	shown     map[string]string
+	// shown maps each printed request id to the request as last printed: an
+	// answer binds that, never a later journal read the user has not seen.
+	shown     map[string]*pb.RunInput
 	open      []*pb.RunInput // oldest first, as last listed
 	reportErr bool
 }
@@ -250,13 +251,13 @@ func (w *inlineAnswers) refresh() {
 	w.open = resp.GetOpen()
 	for _, r := range w.open {
 		prev, printed := w.shown[r.GetRequestId()]
-		if printed && prev == r.GetPrompt() {
+		if printed && prev.GetTool() == r.GetTool() && prev.GetInput() == r.GetInput() && prev.GetPrompt() == r.GetPrompt() {
 			continue
 		}
-		w.shown[r.GetRequestId()] = r.GetPrompt()
+		w.shown[r.GetRequestId()] = r
 		what := "permission request"
 		if printed {
-			// The journal is the agent's to write: say so when a prompt
+			// The journal is the agent's to write: say so when a request
 			// already on screen changes, and bind answers to the new text.
 			what = "permission request CHANGED"
 		}
@@ -264,22 +265,22 @@ func (w *inlineAnswers) refresh() {
 		if r.GetExpiresAt() != nil {
 			left = fmt.Sprintf(" (expires in %s)", time.Until(r.GetExpiresAt().AsTime()).Round(time.Second))
 		}
-		fmt.Fprintf(w.diag, "[containarium code] %s %s: %s%s — type a + Enter to allow, d + Enter to deny\n",
-			what, coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()), left)
+		var b strings.Builder
+		runlog.WriteRequest(&b, r)
+		fmt.Fprintf(w.diag, "[containarium code] %s%s — type a + Enter to allow, d + Enter to deny\n%s", what, left, b.String())
 	}
 }
 
-// oldest is the oldest open request that has been printed, with the prompt
-// printed for it.
-func (w *inlineAnswers) oldest() (id, prompt string, ok bool) {
+// oldest is the oldest open request that has been printed, as printed.
+func (w *inlineAnswers) oldest() *pb.RunInput {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range w.open {
-		if p, printed := w.shown[r.GetRequestId()]; printed {
-			return r.GetRequestId(), p, true
+		if shown, printed := w.shown[r.GetRequestId()]; printed {
+			return shown
 		}
 	}
-	return "", "", false
+	return nil
 }
 
 func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
@@ -297,12 +298,12 @@ func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
 		default:
 			continue
 		}
-		id, prompt, ok := w.oldest()
-		if !ok {
+		shown := w.oldest()
+		if shown == nil {
 			fmt.Fprintln(w.diag, "[containarium code] no open permission request to answer")
 			continue
 		}
-		res, err := runlog.AnswerShown(w.api, w.box, w.run, id, prompt, a)
+		res, err := runlog.AnswerShown(w.api, w.box, w.run, shown, a)
 		if err != nil {
 			fmt.Fprintf(w.diag, "[containarium code] %v\n", err)
 			continue

@@ -354,6 +354,9 @@ const (
 	RunInputCloseReason_RUN_INPUT_CLOSE_REASON_CANCELLED RunInputCloseReason = 3
 	// The run had no usable approval key, so it was denied at once.
 	RunInputCloseReason_RUN_INPUT_CLOSE_REASON_NO_KEY RunInputCloseReason = 4
+	// The tool input was too large to be shown for approval, so it was denied
+	// at once.
+	RunInputCloseReason_RUN_INPUT_CLOSE_REASON_TOO_LARGE RunInputCloseReason = 5
 )
 
 // Enum value maps for RunInputCloseReason.
@@ -364,6 +367,7 @@ var (
 		2: "RUN_INPUT_CLOSE_REASON_EXPIRED",
 		3: "RUN_INPUT_CLOSE_REASON_CANCELLED",
 		4: "RUN_INPUT_CLOSE_REASON_NO_KEY",
+		5: "RUN_INPUT_CLOSE_REASON_TOO_LARGE",
 	}
 	RunInputCloseReason_value = map[string]int32{
 		"RUN_INPUT_CLOSE_REASON_UNSPECIFIED": 0,
@@ -371,6 +375,7 @@ var (
 		"RUN_INPUT_CLOSE_REASON_EXPIRED":     2,
 		"RUN_INPUT_CLOSE_REASON_CANCELLED":   3,
 		"RUN_INPUT_CLOSE_REASON_NO_KEY":      4,
+		"RUN_INPUT_CLOSE_REASON_TOO_LARGE":   5,
 	}
 )
 
@@ -1251,12 +1256,15 @@ type RunInput struct {
 	Kind      RunInputKind `protobuf:"varint,2,opt,name=kind,proto3,enum=containarium.v1.RunInputKind" json:"kind,omitempty"`
 	// The tool the agent wants to use, e.g. "Bash".
 	Tool string `protobuf:"bytes,3,opt,name=tool,proto3" json:"tool,omitempty"`
-	// What a human answers: the tool and its command, path or input, as the box
-	// journaled it (raw; a client escapes control characters before printing).
+	// One-line summary: the tool and its command, path or URL, cut at 500
+	// bytes (raw; a client escapes control characters before printing).
 	Prompt    string                 `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// An unanswered request is denied at this time.
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// The tool's complete input as JSON (at most 16 KiB): what an allow
+	// permits, and what a client must show before sending one.
+	Input         string `protobuf:"bytes,7,opt,name=input,proto3" json:"input,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1333,6 +1341,13 @@ func (x *RunInput) GetExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *RunInput) GetInput() string {
+	if x != nil {
+		return x.Input
+	}
+	return ""
+}
+
 type ListRunInputsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box owner's username (the box is <username>-container).
@@ -1390,7 +1405,7 @@ func (x *ListRunInputsRequest) GetRunName() string {
 type ListRunInputsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Open requests, oldest first. Empty once the run has exited: nothing is
-	// waiting on an answer then.
+	// waiting on an answer then. A request past expires_at is not listed.
 	Open []*RunInput `protobuf:"bytes,1,rep,name=open,proto3" json:"open,omitempty"`
 	// Whether the run is still running.
 	Running bool `protobuf:"varint,2,opt,name=running,proto3" json:"running,omitempty"`
@@ -1496,11 +1511,12 @@ type AnswerRunInputRequest struct {
 	// A request_id from ListRunInputs.
 	RequestId string         `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Answer    RunInputAnswer `protobuf:"varint,4,opt,name=answer,proto3,enum=containarium.v1.RunInputAnswer" json:"answer,omitempty"`
-	// SHA-256 (32 bytes) of the raw prompt the caller showed the human who
-	// answered. The daemon signs it as given; the box accepts the answer only
-	// if it matches the prompt the box asked, so an answer to a prompt the
-	// agent rewrote in the journal never counts.
-	PromptSha256  []byte `protobuf:"bytes,5,opt,name=prompt_sha256,json=promptSha256,proto3" json:"prompt_sha256,omitempty"`
+	// SHA-256 (32 bytes) of tool, a NUL byte, and input, exactly as the caller
+	// showed them (from ListRunInputs) to whoever answered. The daemon signs it
+	// as given; the box accepts the answer only if it matches the tool call the
+	// box asked, so an answer to a request the agent rewrote in the journal
+	// never counts, and an allow permits exactly that input.
+	RequestSha256 []byte `protobuf:"bytes,5,opt,name=request_sha256,json=requestSha256,proto3" json:"request_sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1563,9 +1579,9 @@ func (x *AnswerRunInputRequest) GetAnswer() RunInputAnswer {
 	return RunInputAnswer_RUN_INPUT_ANSWER_UNSPECIFIED
 }
 
-func (x *AnswerRunInputRequest) GetPromptSha256() []byte {
+func (x *AnswerRunInputRequest) GetRequestSha256() []byte {
 	if x != nil {
-		return x.PromptSha256
+		return x.RequestSha256
 	}
 	return nil
 }
@@ -1793,7 +1809,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x12StopBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\x129\n" +
 	"\x06signal\x18\x02 \x01(\x0e2!.containarium.v1.BoxRunStopSignalR\x06signal\x12\x16\n" +
-	"\x06exited\x18\x03 \x01(\bR\x06exited\"\xfe\x01\n" +
+	"\x06exited\x18\x03 \x01(\bR\x06exited\"\x94\x02\n" +
 	"\bRunInput\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x121\n" +
@@ -1803,7 +1819,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"M\n" +
+	"expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x14\n" +
+	"\x05input\x18\a \x01(\tR\x05input\"M\n" +
 	"\x14ListRunInputsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x19\n" +
 	"\brun_name\x18\x02 \x01(\tR\arunName\"\xe6\x01\n" +
@@ -1814,14 +1831,14 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\aallowed\x18\x04 \x01(\x05R\aallowed\x12\x16\n" +
 	"\x06denied\x18\x05 \x01(\x05R\x06denied\x12\x18\n" +
 	"\aexpired\x18\x06 \x01(\x05R\aexpired\x12\x1c\n" +
-	"\tcancelled\x18\a \x01(\x05R\tcancelled\"\xcb\x01\n" +
+	"\tcancelled\x18\a \x01(\x05R\tcancelled\"\xcd\x01\n" +
 	"\x15AnswerRunInputRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x19\n" +
 	"\brun_name\x18\x02 \x01(\tR\arunName\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x03 \x01(\tR\trequestId\x127\n" +
-	"\x06answer\x18\x04 \x01(\x0e2\x1f.containarium.v1.RunInputAnswerR\x06answer\x12#\n" +
-	"\rprompt_sha256\x18\x05 \x01(\fR\fpromptSha256\"\xa2\x02\n" +
+	"\x06answer\x18\x04 \x01(\x0e2\x1f.containarium.v1.RunInputAnswerR\x06answer\x12%\n" +
+	"\x0erequest_sha256\x18\x05 \x01(\fR\rrequestSha256\"\xa2\x02\n" +
 	"\x16AnswerRunInputResponse\x12@\n" +
 	"\aoutcome\x18\x01 \x01(\x0e2&.containarium.v1.RunInputAnswerOutcomeR\aoutcome\x12D\n" +
 	"\rclosed_answer\x18\x02 \x01(\x0e2\x1f.containarium.v1.RunInputAnswerR\fclosedAnswer\x12G\n" +
@@ -1857,13 +1874,14 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x0eRunInputAnswer\x12 \n" +
 	"\x1cRUN_INPUT_ANSWER_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16RUN_INPUT_ANSWER_ALLOW\x10\x01\x12\x19\n" +
-	"\x15RUN_INPUT_ANSWER_DENY\x10\x02*\xcf\x01\n" +
+	"\x15RUN_INPUT_ANSWER_DENY\x10\x02*\xf5\x01\n" +
 	"\x13RunInputCloseReason\x12&\n" +
 	"\"RUN_INPUT_CLOSE_REASON_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fRUN_INPUT_CLOSE_REASON_ANSWERED\x10\x01\x12\"\n" +
 	"\x1eRUN_INPUT_CLOSE_REASON_EXPIRED\x10\x02\x12$\n" +
 	" RUN_INPUT_CLOSE_REASON_CANCELLED\x10\x03\x12!\n" +
-	"\x1dRUN_INPUT_CLOSE_REASON_NO_KEY\x10\x04*\xe7\x01\n" +
+	"\x1dRUN_INPUT_CLOSE_REASON_NO_KEY\x10\x04\x12$\n" +
+	" RUN_INPUT_CLOSE_REASON_TOO_LARGE\x10\x05*\xe7\x01\n" +
 	"\x15RunInputAnswerOutcome\x12(\n" +
 	"$RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED\x10\x00\x12%\n" +
 	"!RUN_INPUT_ANSWER_OUTCOME_ANSWERED\x10\x01\x12+\n" +

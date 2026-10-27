@@ -34,10 +34,11 @@ import (
 // server on its command line. The private key never leaves the daemon
 // (AnswerRunInput signs, #2184), so it never reaches the box.
 //
-// The signature also covers the SHA-256 of the prompt the answering human was
-// shown. The journal is writable by the agent, so a shown prompt can be a
-// forgery; the approval server verifies against the prompt it holds in
-// memory, so an answer made for anything but the real request never counts.
+// The signature also covers RequestDigest of the tool and its complete input,
+// which the answering human is shown before an allow. The journal is writable
+// by the agent, so what it shows can be a forgery; the approval server
+// verifies against the tool call it holds in memory, so an answer made for
+// anything but the real, complete request never counts.
 
 // ApprovalMode is `code run --approvals`.
 type ApprovalMode string
@@ -125,6 +126,9 @@ const (
 	// ReasonNoKey closes a request at once when the server has no usable
 	// public key, so nothing could ever answer it.
 	ReasonNoKey ResponseReason = "no_key"
+	// ReasonTooLarge closes a request at once when its input is over
+	// MaxApprovalInput (#2184).
+	ReasonTooLarge ResponseReason = "too_large"
 )
 
 // InputEvent is one line of the input journal.
@@ -134,12 +138,15 @@ type InputEvent struct {
 	RequestID string    `json:"request_id,omitempty"`
 
 	// input_request
-	RequestKind string    `json:"request_kind,omitempty"`
-	Tool        string    `json:"tool,omitempty"`
-	Prompt      string    `json:"prompt,omitempty"`
-	Options     []Answer  `json:"options,omitempty"`
-	Default     Answer    `json:"default,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitzero"`
+	RequestKind string `json:"request_kind,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
+	// Input is the tool's complete input as JSON (#2184): what an allow
+	// permits. Prompt is only its one-line summary.
+	Input     string    `json:"input,omitempty"`
+	Options   []Answer  `json:"options,omitempty"`
+	Default   Answer    `json:"default,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 
 	// input_response
 	Answer Answer         `json:"answer,omitempty"`
@@ -176,40 +183,47 @@ func ParseInputJournal(data []byte) []InputEvent {
 }
 
 // approvalSignContext versions the signed message, so a signature made for
-// anything else never verifies as an answer. v2 (#2184) added the prompt
+// anything else never verifies as an answer. v2 (#2184) added the request
 // digest; nothing ever signed v1 answers but tests.
 const approvalSignContext = "containarium-approval-v2"
 
-// PromptDigest is the digest an answer binds: SHA-256 of the raw prompt
-// string as the request line carries it (not its escaped, printed form).
-func PromptDigest(prompt string) []byte {
-	d := sha256.Sum256([]byte(prompt))
+// MaxApprovalInput caps a request's tool input (#2184). An allow permits the
+// whole input, so the whole input is journaled and shown before an allow; a
+// larger one cannot reasonably be read by a human and is denied at once
+// (ReasonTooLarge).
+const MaxApprovalInput = 16 * 1024
+
+// RequestDigest is the digest an answer binds: SHA-256 of the tool name and
+// its complete input, as the request line carries them (raw, not their
+// escaped, printed form). An allow permits exactly that input.
+func RequestDigest(tool, input string) []byte {
+	d := sha256.Sum256([]byte(tool + "\x00" + input))
 	return d[:]
 }
 
-func answerMessage(run, requestID string, promptDigest []byte, a Answer) []byte {
-	return []byte(approvalSignContext + "\n" + run + "\n" + requestID + "\n" + hex.EncodeToString(promptDigest) + "\n" + string(a))
+func answerMessage(run, requestID string, requestDigest []byte, a Answer) []byte {
+	return []byte(approvalSignContext + "\n" + run + "\n" + requestID + "\n" + hex.EncodeToString(requestDigest) + "\n" + string(a))
 }
 
-// SignAnswer signs an answer to (run, requestID) for the prompt whose digest
-// is promptDigest. Binding the run name and request id means an answer cannot
-// be replayed onto another request; binding the prompt means it cannot be
-// spent on a request whose shown prompt was forged; binding the answer means
+// SignAnswer signs an answer to (run, requestID) for the request whose digest
+// is requestDigest. Binding the run name and request id means an answer cannot
+// be replayed onto another request; binding the tool call means it cannot be
+// spent on a request whose shown content was forged; binding the answer means
 // "allow" cannot be made from a "deny".
-func SignAnswer(priv ed25519.PrivateKey, run, requestID string, promptDigest []byte, a Answer) string {
-	return hex.EncodeToString(ed25519.Sign(priv, answerMessage(run, requestID, promptDigest, a)))
+func SignAnswer(priv ed25519.PrivateKey, run, requestID string, requestDigest []byte, a Answer) string {
+	return hex.EncodeToString(ed25519.Sign(priv, answerMessage(run, requestID, requestDigest, a)))
 }
 
 // FormatAnswer renders an answer file's content.
-func FormatAnswer(priv ed25519.PrivateKey, run, requestID string, promptDigest []byte, a Answer) string {
-	return string(a) + " " + SignAnswer(priv, run, requestID, promptDigest, a) + "\n"
+func FormatAnswer(priv ed25519.PrivateKey, run, requestID string, requestDigest []byte, a Answer) string {
+	return string(a) + " " + SignAnswer(priv, run, requestID, requestDigest, a) + "\n"
 }
 
 // VerifyAnswer parses an answer file's content and checks its signature for
-// the prompt whose digest is promptDigest.
-func VerifyAnswer(pub ed25519.PublicKey, run, requestID string, promptDigest []byte, content string) (Answer, error) {
-	if len(promptDigest) != sha256.Size {
-		return "", fmt.Errorf("no prompt digest to check the answer against")
+// the request whose digest is requestDigest.
+func VerifyAnswer(pub ed25519.PublicKey, run, requestID string, requestDigest []byte, content string) (Answer, error) {
+	if len(requestDigest) != sha256.Size {
+		return "", fmt.Errorf("no request digest to check the answer against")
 	}
 	fields := strings.Fields(content)
 	if len(fields) != 2 {
@@ -220,7 +234,7 @@ func VerifyAnswer(pub ed25519.PublicKey, run, requestID string, promptDigest []b
 		return "", fmt.Errorf("answer %q is neither %q nor %q", fields[0], AnswerAllow, AnswerDeny)
 	}
 	sig, err := hex.DecodeString(fields[1])
-	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, answerMessage(run, requestID, promptDigest, a), sig) {
+	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, answerMessage(run, requestID, requestDigest, a), sig) {
 		return "", fmt.Errorf("answer signature does not verify")
 	}
 	return a, nil

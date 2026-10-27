@@ -70,13 +70,16 @@ func closeReasonWord(r pb.RunInputCloseReason) string {
 		return "cancelled"
 	case pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_NO_KEY:
 		return "no key"
+	case pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_TOO_LARGE:
+		return "input too large"
 	}
 	return "unknown"
 }
 
 // WriteRunInputs renders a run's open requests as the table `code pending`
-// prints: id, age, expiry and the prompt (escaped: the prompt is the agent's
-// own tool input), then the run's counts.
+// prints: id, age, expiry and the one-line prompt (escaped: the prompt is the
+// agent's own tool input), then the run's counts. The complete input, which
+// an allow permits, is shown by `code answer` before it sends one.
 func WriteRunInputs(w io.Writer, run string, resp *pb.ListRunInputsResponse, now time.Time) error {
 	if !resp.GetRunning() {
 		if _, err := fmt.Fprintf(w, "run %s is not running; nothing is waiting on an answer\n", run); err != nil {
@@ -110,67 +113,84 @@ func WriteRunInputs(w io.Writer, run string, resp *pb.ListRunInputsResponse, now
 // not be confirmed: the CLI exits non-zero on it.
 var ErrNotAnswered = errors.New("not answered")
 
-// AnswerResult is one answer's outcome plus the prompt it was signed for.
+// AnswerResult is one answer's outcome plus the request it was signed for.
 type AnswerResult struct {
 	RequestID string
 	Answer    pb.RunInputAnswer
-	// Prompt is the raw prompt the answer was signed for ("" when the request
-	// was not open, so nothing was signed).
-	Prompt string
-	Resp   *pb.AnswerRunInputResponse
+	// Shown is the request as the answering party saw it, which the answer
+	// was signed for; nil when the request was not open, so nothing could be
+	// signed for it and the daemon only reported its state.
+	Shown *pb.RunInput
+	Resp  *pb.AnswerRunInputResponse
 }
 
-// AnswerShown answers request id of run on box for prompt, the prompt the
-// caller showed whoever is answering: the signed answer binds its digest, so
-// the box ignores it unless that is the prompt the box asked.
-func AnswerShown(api RunInputs, box, run, id, prompt string, a pb.RunInputAnswer) (AnswerResult, error) {
+// WriteRequest prints an open request the way it must be seen before an
+// allow: its one-line prompt, then the tool's complete input, which is what
+// an allow permits. Both are escaped (the agent wrote them).
+func WriteRequest(w io.Writer, r *pb.RunInput) {
+	fmt.Fprintf(w, "request %s: %s\n  input (an allow permits exactly this): %s\n",
+		coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()), coderun.PlainText(r.GetInput()))
+}
+
+// AnswerShown answers shown, the request as the caller showed it to whoever
+// is answering: the signed answer binds the digest of its tool and complete
+// input, so the box ignores it unless that is the tool call the box asked.
+func AnswerShown(api RunInputs, box, run string, shown *pb.RunInput, a pb.RunInputAnswer) (AnswerResult, error) {
+	id := shown.GetRequestId()
 	resp, err := api.AnswerRunInput(&pb.AnswerRunInputRequest{
-		Username: box, RunName: run, RequestId: id, Answer: a, PromptSha256: coderun.PromptDigest(prompt),
+		Username: box, RunName: run, RequestId: id, Answer: a,
+		RequestSha256: coderun.RequestDigest(shown.GetTool(), shown.GetInput()),
 	})
 	if err != nil {
 		return AnswerResult{}, fmt.Errorf("answer %s on run %s: %w", id, run, err)
 	}
-	return AnswerResult{RequestID: id, Answer: a, Prompt: prompt, Resp: resp}, nil
+	return AnswerResult{RequestID: id, Answer: a, Shown: shown, Resp: resp}, nil
 }
 
-// ErrPromptChanged marks an answer that was not sent because the request's
-// prompt is no longer the one the answering party saw.
-var ErrPromptChanged = errors.New("the request's prompt changed")
+// ErrRequestChanged marks an answer that was not sent because the request is
+// no longer the one the answering party saw.
+var ErrRequestChanged = errors.New("the request changed")
 
-// OpenPrompt returns request id's prompt when the request is open on run.
-func OpenPrompt(api RunInputs, box, run, id string) (prompt string, open bool, err error) {
+// OpenRequest returns request id when it is open on run, else nil.
+func OpenRequest(api RunInputs, box, run, id string) (*pb.RunInput, error) {
 	list, err := api.ListRunInputs(&pb.ListRunInputsRequest{Username: box, RunName: run})
 	if err != nil {
-		return "", false, fmt.Errorf("read the permission requests of run %s: %w", run, err)
+		return nil, fmt.Errorf("read the permission requests of run %s: %w", run, err)
 	}
 	for _, in := range list.GetOpen() {
 		if in.GetRequestId() == id {
-			return in.GetPrompt(), true, nil
+			return in, nil
 		}
 	}
-	return "", false, nil
+	return nil, nil
 }
 
-// Answer answers request id for seen, the raw prompt the answering party saw
-// (the prompt `code answer` printed and had confirmed, or the one the MCP
-// caller got from code_pending). It re-reads the request first: if it is open
-// with another prompt now, nothing is sent and the error wraps
-// ErrPromptChanged. A request that is not open is closed, expired or unknown:
-// the daemon reports which without writing anything.
-func Answer(api RunInputs, box, run, id, seen string, a pb.RunInputAnswer) (AnswerResult, error) {
-	current, open, err := OpenPrompt(api, box, run, id)
+// Answer answers request id for seen, the request as the answering party saw
+// it (what `code answer` printed and had confirmed, or the input the MCP
+// caller got from code_pending); seen is nil when it was not open. It re-reads
+// the request first: if it is open with another tool or input now, nothing is
+// sent and the error wraps ErrRequestChanged. A request that is not open is
+// closed, expired or unknown: the daemon reports which without writing
+// anything.
+func Answer(api RunInputs, box, run, id string, seen *pb.RunInput, a pb.RunInputAnswer) (AnswerResult, error) {
+	current, err := OpenRequest(api, box, run, id)
 	if err != nil {
 		return AnswerResult{}, err
 	}
-	if open && current != seen {
-		return AnswerResult{}, fmt.Errorf("%w; nothing was sent. It is now: %s", ErrPromptChanged, coderun.PlainText(current))
+	if current != nil && (seen == nil || current.GetTool() != seen.GetTool() || current.GetInput() != seen.GetInput()) {
+		var b strings.Builder
+		WriteRequest(&b, current)
+		return AnswerResult{}, fmt.Errorf("%w; nothing was sent. It is now:\n%s", ErrRequestChanged, strings.TrimRight(b.String(), "\n"))
 	}
-	res, err := AnswerShown(api, box, run, id, seen, a)
+	if current == nil {
+		seen = &pb.RunInput{RequestId: id}
+	}
+	res, err := AnswerShown(api, box, run, seen, a)
 	if err != nil {
 		return AnswerResult{}, err
 	}
-	if !open {
-		res.Prompt = ""
+	if current == nil {
+		res.Shown = nil
 	}
 	return res, nil
 }
@@ -182,7 +202,7 @@ func WriteAnswerResult(w io.Writer, r AnswerResult) error {
 	id := coderun.PlainText(r.RequestID)
 	switch r.Resp.GetOutcome() {
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED:
-		_, err := fmt.Fprintf(w, "%s %s: %s\n", pastTense(r.Resp.GetClosedAnswer()), id, coderun.PlainText(r.Prompt))
+		_, err := fmt.Fprintf(w, "%s %s: %s\n", pastTense(r.Resp.GetClosedAnswer()), id, coderun.PlainText(r.Shown.GetPrompt()))
 		return err
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED:
 		fmt.Fprintf(w, "%s was already closed: %s (%s)%s; nothing changed\n", id,
@@ -190,8 +210,8 @@ func WriteAnswerResult(w io.Writer, r AnswerResult) error {
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_EXPIRED:
 		fmt.Fprintf(w, "%s has expired (it is denied); nothing changed\n", id)
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED:
-		fmt.Fprintf(w, "%s %s was sent for: %s\nbut the run has not reported taking it. It may have been refused because that is not the prompt the run asked; the request stays open until answered or expired.\n",
-			answerWord(r.Answer), id, coderun.PlainText(r.Prompt))
+		fmt.Fprintf(w, "%s %s was sent for: %s\nbut the run has not reported taking it. It may have been refused because that is not the tool call the run asked; the request stays open until answered or expired.\n",
+			answerWord(r.Answer), id, coderun.PlainText(r.Shown.GetPrompt()))
 	default:
 		fmt.Fprintf(w, "%s: unexpected outcome %v\n", id, r.Resp.GetOutcome())
 	}

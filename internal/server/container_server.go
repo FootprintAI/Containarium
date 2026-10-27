@@ -157,6 +157,9 @@ type ContainerServer struct {
 	// means the default.
 	approvalSecret      []byte
 	runInputConfirmWait time.Duration
+	// runInputJournalCap is a test seam for maxRunInputJournal; zero means
+	// the default.
+	runInputJournalCap int64
 
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the

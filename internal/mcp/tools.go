@@ -1239,7 +1239,7 @@ func (s *Server) registerTools() {
 				"--approvals ask: request id, age, time left before it expires into a deny, " +
 				"and the prompt (tool and command or path), plus the run's request counts. " +
 				"Same table as `containarium code pending`, then `---` and the same data as " +
-				"JSON, whose `prompt` fields are what code_answer takes. The list is read from " +
+				"JSON, whose `input` fields (each request's complete tool input) are what code_answer takes. The list is read from " +
 				"a journal the agent on the box can write, so it is advisory.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
@@ -1254,20 +1254,20 @@ func (s *Server) registerTools() {
 		{
 			Name: "code_answer",
 			Description: "Answer one open permission request of a code run: allow or deny. " +
-				"Pass `prompt` exactly as code_pending returned it for this request: the answer " +
-				"is signed for that prompt, and the run acts on it only if that is the prompt it " +
-				"asked. If the request's prompt has changed since, nothing is sent and the call " +
-				"fails with the new prompt. Answering a request already closed or expired changes " +
+				"Pass `input` exactly as code_pending's JSON returned it for this request: an " +
+				"allow permits exactly that tool input, the answer is signed for it, and the run " +
+				"acts on it only if that is the tool call it asked. If the request has changed " +
+				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
 				"nothing and reports how it was closed, as an error. Same signing as " +
 				"`containarium code answer`.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
-				"required": []string{"box", "request_id", "prompt", "answer"},
+				"required": []string{"box", "request_id", "input", "answer"},
 				"properties": map[string]interface{}{
 					"box":        map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
 					"name":       map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
 					"request_id": map[string]interface{}{"type": "string", "description": "Request id, from code_pending."},
-					"prompt":     map[string]interface{}{"type": "string", "description": "The request's prompt exactly as the JSON part of code_pending returned it."},
+					"input":      map[string]interface{}{"type": "string", "description": "The request's complete tool input exactly as the JSON part of code_pending returned it."},
 					"answer":     map[string]interface{}{"type": "string", "enum": []string{"allow", "deny"}, "description": "allow or deny."},
 				},
 			},
@@ -3526,8 +3526,9 @@ func handleCodePending(client API, args map[string]interface{}) (string, error) 
 	if err := runlog.WriteRunInputs(&b, run, resp, time.Now()); err != nil {
 		return "", err
 	}
-	// The table escapes control characters for reading; code_answer needs the
-	// raw prompt, which the JSON form carries losslessly.
+	// The table escapes control characters for reading and shows only the
+	// one-line prompt; code_answer needs the raw, complete input, which the
+	// JSON form carries losslessly.
 	raw, err := protojson.Marshal(resp)
 	if err != nil {
 		return "", err
@@ -3539,7 +3540,7 @@ func handleCodePending(client API, args map[string]interface{}) (string, error) 
 }
 
 // handleCodeAnswer answers one permission request (#2184) through
-// runlog.Answer, the function `code answer` calls, signed for the prompt the
+// runlog.Answer, the function `code answer` calls, signed for the input the
 // caller got from code_pending.
 func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	box := strings.TrimSpace(getStringArg(args, "box", ""))
@@ -3551,11 +3552,22 @@ func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prompt, ok := args["prompt"].(string)
+	input, ok := args["input"].(string)
 	if !ok {
-		return "", fmt.Errorf("`prompt` is required: the request's prompt as code_pending returned it")
+		return "", fmt.Errorf("`input` is required: the request's input as code_pending returned it")
 	}
-	res, err := runlog.Answer(client, box, codeRunNameArg(args), id, prompt, a)
+	run := codeRunNameArg(args)
+	current, err := runlog.OpenRequest(client, box, run, id)
+	if err != nil {
+		return "", err
+	}
+	// The caller saw this request with this input; runlog.Answer refuses if
+	// the input is no longer what the request carries.
+	var seen *pb.RunInput
+	if current != nil {
+		seen = &pb.RunInput{RequestId: id, Tool: current.GetTool(), Prompt: current.GetPrompt(), Input: input}
+	}
+	res, err := runlog.Answer(client, box, run, id, seen, a)
 	if err != nil {
 		return "", err
 	}

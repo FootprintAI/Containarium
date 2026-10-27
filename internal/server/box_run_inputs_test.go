@@ -39,7 +39,7 @@ func startInputsRun(t *testing.T, expiresIn time.Duration) *inputsRun {
 	now := time.Now().UTC()
 	r.req = coderun.InputEvent{
 		Kind: coderun.KindInputRequest, T: now, RequestID: "req-0123456789abcdef",
-		RequestKind: coderun.RequestKindPermission, Tool: "Bash", Prompt: "Bash: rm -rf ~/repo",
+		RequestKind: coderun.RequestKindPermission, Tool: "Bash", Prompt: "Bash: rm -rf ~/repo", Input: `{"command":"rm -rf ~/repo"}`,
 		Options: []coderun.Answer{coderun.AnswerAllow, coderun.AnswerDeny}, Default: coderun.AnswerDeny,
 		ExpiresAt: now.Add(expiresIn),
 	}
@@ -69,7 +69,7 @@ func (r *inputsRun) appendJournal(t *testing.T, e coderun.InputEvent) {
 }
 
 // boxApproves plays the box's approval server for r.req: it accepts only an
-// answer that verifies under the box's public key for the prompt it asked, and
+// answer that verifies under the box's public key for the tool call it asked, and
 // journals the response, as internal/agentbox does.
 func (r *inputsRun) boxApproves(t *testing.T, pub ed25519.PublicKey) {
 	t.Helper()
@@ -77,7 +77,7 @@ func (r *inputsRun) boxApproves(t *testing.T, pub ed25519.PublicKey) {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if b, err := os.ReadFile(r.answerPath(r.req.RequestID)); err == nil {
-				if a, err := coderun.VerifyAnswer(pub, r.run, r.req.RequestID, coderun.PromptDigest(r.req.Prompt), string(b)); err == nil {
+				if a, err := coderun.VerifyAnswer(pub, r.run, r.req.RequestID, coderun.RequestDigest(r.req.Tool, r.req.Input), string(b)); err == nil {
 					line, _ := coderun.InputEvent{Kind: coderun.KindInputResponse, T: time.Now().UTC(), RequestID: r.req.RequestID, Answer: a, Reason: coderun.ReasonAnswered}.MarshalLine()
 					f, err := os.OpenFile(r.journalPath(), os.O_WRONLY|os.O_APPEND, 0o600)
 					if err == nil {
@@ -105,10 +105,10 @@ func (r *inputsRun) publicKey(t *testing.T) ed25519.PublicKey {
 	return pub
 }
 
-func (r *inputsRun) answer(a pb.RunInputAnswer, prompt string) (*pb.AnswerRunInputResponse, error) {
+func (r *inputsRun) answer(a pb.RunInputAnswer, input string) (*pb.AnswerRunInputResponse, error) {
 	return r.s.AnswerRunInput(tenantCtx(r.owner), &pb.AnswerRunInputRequest{
 		Username: r.owner, RunName: r.run, RequestId: r.req.RequestID, Answer: a,
-		PromptSha256: coderun.PromptDigest(prompt),
+		RequestSha256: coderun.RequestDigest(r.req.Tool, input),
 	})
 }
 
@@ -137,7 +137,7 @@ func TestAnswerRunInput_AnswerResumesTheRun(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
 	r.boxApproves(t, r.publicKey(t))
 
-	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Prompt)
+	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input)
 	if err != nil {
 		t.Fatalf("AnswerRunInput: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestAnswerRunInput_AnswerResumesTheRun(t *testing.T) {
 func TestAnswerRunInput_DuplicateAnswerIsIdempotent(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
 	r.boxApproves(t, r.publicKey(t))
-	if _, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Prompt); err != nil {
+	if _, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input); err != nil {
 		t.Fatal(err)
 	}
 	first, err := os.ReadFile(r.answerPath(r.req.RequestID))
@@ -161,7 +161,7 @@ func TestAnswerRunInput_DuplicateAnswerIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, r.req.Prompt)
+	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, r.req.Input)
 	if err != nil {
 		t.Fatalf("second AnswerRunInput: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestAnswerRunInput_DuplicateAnswerIsIdempotent(t *testing.T) {
 // An expired request is refused with EXPIRED, and nothing is written.
 func TestAnswerRunInput_ExpiredRequestIsRefused(t *testing.T) {
 	r := startInputsRun(t, -time.Second)
-	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Prompt)
+	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input)
 	if err != nil {
 		t.Fatalf("AnswerRunInput: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestAnswerRunInput_WrongRunIsRefused(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
 	resp, err := r.s.AnswerRunInput(tenantCtx(r.owner), &pb.AnswerRunInputRequest{
 		Username: r.owner, RunName: r.run, RequestId: "req-fedcba9876543210",
-		Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, PromptSha256: coderun.PromptDigest(r.req.Prompt),
+		Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, RequestSha256: coderun.RequestDigest(r.req.Tool, r.req.Input),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("AnswerRunInput(other run's id) = %v, %v; want NotFound", resp, err)
@@ -205,15 +205,15 @@ func TestAnswerRunInput_WrongRunIsRefused(t *testing.T) {
 	}
 }
 
-// An answer for a prompt other than the one the box asked — what a human
+// An answer for a tool call other than the one the box asked — what a human
 // answers after the agent rewrote the journal line — is written but never
 // accepted by the box: NOT_CONFIRMED, never ANSWERED.
-func TestAnswerRunInput_SpoofedPromptIsNotConfirmed(t *testing.T) {
+func TestAnswerRunInput_SpoofedRequestIsNotConfirmed(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
 	r.s.runInputConfirmWait = 300 * time.Millisecond
 	r.boxApproves(t, r.publicKey(t))
 
-	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, "Bash: ls")
+	resp, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, `{"command":"ls"}`)
 	if err != nil {
 		t.Fatalf("AnswerRunInput: %v", err)
 	}
@@ -227,12 +227,12 @@ func TestAnswerRunInput_ValidatesTheRequest(t *testing.T) {
 	ctx := tenantCtx("alice")
 	good := func() *pb.AnswerRunInputRequest {
 		return &pb.AnswerRunInputRequest{Username: "alice", RunName: "code", RequestId: "req-0123456789abcdef",
-			Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, PromptSha256: coderun.PromptDigest("p")}
+			Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, RequestSha256: coderun.RequestDigest("Bash", "{}")}
 	}
 	cases := map[string]func(*pb.AnswerRunInputRequest){
 		"bad request id":   func(r *pb.AnswerRunInputRequest) { r.RequestId = "../x" },
 		"no answer":        func(r *pb.AnswerRunInputRequest) { r.Answer = pb.RunInputAnswer_RUN_INPUT_ANSWER_UNSPECIFIED },
-		"short digest":     func(r *pb.AnswerRunInputRequest) { r.PromptSha256 = []byte{1, 2, 3} },
+		"short digest":     func(r *pb.AnswerRunInputRequest) { r.RequestSha256 = []byte{1, 2, 3} },
 		"bad run name":     func(r *pb.AnswerRunInputRequest) { r.RunName = "a b" },
 		"bad box username": func(r *pb.AnswerRunInputRequest) { r.Username = "a/b" },
 	}
@@ -248,7 +248,7 @@ func TestAnswerRunInput_ValidatesTheRequest(t *testing.T) {
 func TestAnswerRunInput_OtherTenantIsRefused(t *testing.T) {
 	s := &ContainerServer{approvalSecret: []byte("x"), boxRunCollaborator: func(string, string) (bool, error) { return false, nil }}
 	_, err := s.AnswerRunInput(tenantCtx("mallory"), &pb.AnswerRunInputRequest{Username: "alice", RunName: "code",
-		RequestId: "req-0123456789abcdef", Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, PromptSha256: coderun.PromptDigest("p")})
+		RequestId: "req-0123456789abcdef", Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, RequestSha256: coderun.RequestDigest("Bash", "{}")})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("err = %v, want PermissionDenied", err)
 	}
@@ -257,7 +257,7 @@ func TestAnswerRunInput_OtherTenantIsRefused(t *testing.T) {
 	}
 }
 
-// ListRunInputs reports the open request with its raw prompt and the per-run
+// ListRunInputs reports the open request with its raw prompt and input and the per-run
 // counts, and nothing open once it is answered.
 func TestListRunInputs_ReportsOpenRequestsAndCounts(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
@@ -274,13 +274,13 @@ func TestListRunInputs_ReportsOpenRequestsAndCounts(t *testing.T) {
 		t.Fatalf("response = %v, want one open request on a running run", resp)
 	}
 	o := resp.GetOpen()[0]
-	if o.GetRequestId() != r.req.RequestID || o.GetPrompt() != r.req.Prompt || o.GetTool() != "Bash" ||
+	if o.GetRequestId() != r.req.RequestID || o.GetPrompt() != r.req.Prompt || o.GetInput() != r.req.Input || o.GetTool() != "Bash" ||
 		o.GetKind() != pb.RunInputKind_RUN_INPUT_KIND_PERMISSION || o.GetExpiresAt().AsTime().Unix() != r.req.ExpiresAt.Unix() {
 		t.Errorf("open request = %v", o)
 	}
 
 	r.boxApproves(t, r.publicKey(t))
-	if _, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, r.req.Prompt); err != nil {
+	if _, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, r.req.Input); err != nil {
 		t.Fatal(err)
 	}
 	if resp := list(); len(resp.GetOpen()) != 0 || resp.GetDenied() != 1 {
@@ -293,5 +293,41 @@ func TestListRunInputs_NoRunIsNotFound(t *testing.T) {
 	_, err := r.s.ListRunInputs(tenantCtx(r.owner), &pb.ListRunInputsRequest{Username: r.owner, RunName: "nope"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("err = %v, want NotFound", err)
+	}
+}
+
+// A request past its expiry is not listed as open, even before the box
+// journals the expiry (#2184 review).
+func TestListRunInputs_ExpiredRequestIsNotOpen(t *testing.T) {
+	r := startInputsRun(t, -time.Second)
+	resp, err := r.s.ListRunInputs(tenantCtx(r.owner), &pb.ListRunInputsRequest{Username: r.owner, RunName: r.run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GetOpen()) != 0 || resp.GetRequests() != 1 {
+		t.Fatalf("response = %v, want the expired request counted but not open", resp)
+	}
+}
+
+// A journal over the cap is refused, not read (#2184 review: the agent can
+// make it arbitrarily large).
+func TestRunInputs_OversizedJournalIsRefused(t *testing.T) {
+	r := startInputsRun(t, time.Minute)
+	r.s.runInputJournalCap = 1024
+	f, err := os.OpenFile(r.journalPath(), os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.Write(bytes.Repeat([]byte("x"), 2048))
+	_ = f.Close()
+
+	if _, err := r.s.ListRunInputs(tenantCtx(r.owner), &pb.ListRunInputsRequest{Username: r.owner, RunName: r.run}); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("ListRunInputs err = %v, want ResourceExhausted", err)
+	}
+	if _, err := r.answer(pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("AnswerRunInput err = %v, want ResourceExhausted", err)
+	}
+	if _, err := os.Stat(r.answerPath(r.req.RequestID)); !os.IsNotExist(err) {
+		t.Error("an answer was written while the journal could not be read")
 	}
 }
