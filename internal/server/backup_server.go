@@ -234,6 +234,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	// #3169: with require_encryption, a dump that would be stored with no
+	// key at all is refused here, before any container is touched, so no
+	// plaintext object is ever written.
+	if err := refusePlaintext(req.RequireEncryption, req.Username, keyMode, ageRecipient, s.mgr.HasWrapper()); err != nil {
+		log.Printf("[backup] REFUSED user=%s: %v", req.Username, err)
+		return nil, err
+	}
+
 	hookFormat, err := hookFormatFromProto(req.HookFormat)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -790,6 +798,19 @@ func keyModeFromProto(m pb.BackupKeyMode, hasWrapper, hasRecipient bool) (backup
 // it at all (#3169): not age-encrypted and not managed/both key mode.
 func backupStoredPlaintext(r *backup.Record) bool {
 	return !r.Encrypted && keyModeToProto(r) == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
+}
+
+// refusePlaintext enforces require_encryption (#3169). It refuses exactly
+// the case Manager.resolveKeyMode would store in plaintext: no explicit key
+// mode, no recipient (given or registered), and no managed key wrapper on
+// this daemon. Without require it never refuses, so today's default stands.
+func refusePlaintext(require bool, username string, mode backup.KeyMode, recipient string, hasWrapper bool) error {
+	if !require || mode != "" || strings.TrimSpace(recipient) != "" || hasWrapper {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"refusing to store tenant %s's backup unencrypted (require_encryption): no age recipient was given or registered (%s) and this daemon has no managed backup key; register one with `containarium secrets set %s %s age1...` on this daemon",
+		username, backupAgeRecipientSecretName, username, backupAgeRecipientSecretName)
 }
 
 // keyModeToProto maps a stored record's key mode to the wire enum. The

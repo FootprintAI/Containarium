@@ -33,7 +33,9 @@
 #
 # Encryption (#1836) is NOT configured here: a tenant that has registered a
 # CONTAINARIUM_BACKUP_AGE_RECIPIENT secret gets it automatically, with no
-# flag needed from this script.
+# flag needed from this script. Secrets are stored per daemon: a container
+# copied to another host arrives WITHOUT its registered recipient. Run
+# `containarium backup status` to list configured tenants that have none.
 #
 # Required environment variables (set in /etc/containarium/backup.env):
 #   CONTAINARIUM_SERVER         daemon address, e.g. localhost:8080
@@ -58,12 +60,17 @@
 #                             with `invalid token`.
 #   CONTAINARIUM_BACKUP_KEEP  newest backups to keep per (tenant, database)
 #                             after each successful create (default: 7)
-#   CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED  set to 1 to exit 3 when any tenant's
-#                             dump was stored unencrypted (no age recipient
-#                             registered, #3169) so the unit result turns red.
-#                             Default: the run still exits 0, but every such
-#                             tenant is named on a `WARNING UNENCRYPTED` line
-#                             and in the closing summary.
+#   CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION  set to 1 to pass --require-encryption
+#                             (#3169): a tenant with no age recipient (and no
+#                             managed key on the daemon) then FAILS instead of
+#                             being stored in plaintext, and no object is
+#                             written. Recommended. Default: off.
+#
+# Exit status: 1 when any tenant failed; otherwise 3 when any tenant's dump
+# was stored UNENCRYPTED (#3169) — every tenant is still backed up first,
+# each such tenant is named on a `WARNING UNENCRYPTED` line and in the
+# closing summary, and the non-zero status turns the unit result red;
+# otherwise 0.
 
 set -uo pipefail
 
@@ -95,6 +102,11 @@ fi
 auth_flags=()
 if [[ -n "$TOKEN" ]]; then
   auth_flags=(--token "$TOKEN")
+fi
+
+require_flags=()
+if [[ "${CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION:-}" == "1" ]]; then
+  require_flags=(--require-encryption)
 fi
 
 failed=0
@@ -176,6 +188,7 @@ while IFS= read -r line; do
       --dest gcs \
       --gcs-bucket "$BUCKET" \
       --server "$SERVER" \
+      ${require_flags[@]+"${require_flags[@]}"} \
       ${auth_flags[@]+"${auth_flags[@]}"} | tee "$create_out"; then
     echo "[backup] ok     tenant=$tenant"
     # #3169: encryption is opt-in per tenant; an unregistered recipient means
@@ -219,6 +232,7 @@ if [[ "$failed" -gt 0 ]]; then
 fi
 
 echo "[backup] all $total tenant(s) done"
-if [[ "${#unencrypted[@]}" -gt 0 && "${CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED:-}" == "1" ]]; then
+if [[ "${#unencrypted[@]}" -gt 0 ]]; then
+  # #3169: every tenant ran, but a plaintext dump is not a clean run.
   exit 3
 fi

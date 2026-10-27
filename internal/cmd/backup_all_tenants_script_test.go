@@ -213,8 +213,9 @@ func TestBackupAllTenantsScript_MintFailureIsFatal(t *testing.T) {
 
 // runBackupAllTenantsPlaintext runs the script with a stand-in binary whose
 // `backup create` prints the Encrypted line chosen per tenant: tenants listed
-// in plaintext print "Encrypted: no", the rest "Encrypted: yes". Returns
-// combined output and the exit code.
+// in plaintext print "Encrypted: no", the rest "Encrypted: yes". Given
+// --require-encryption, a plaintext tenant's create fails instead, as the
+// daemon refuses it (#3169). Returns combined output and the exit code.
 func runBackupAllTenantsPlaintext(t *testing.T, conf string, plaintext []string, extraEnv ...string) (string, int) {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -228,7 +229,12 @@ func runBackupAllTenantsPlaintext(t *testing.T, conf string, plaintext []string,
 	fakeBin := filepath.Join(dir, "containarium")
 	fake := "#!/usr/bin/env bash\n" +
 		"if [[ \"$1 $2\" == \"backup create\" ]]; then\n" +
-		"  case \" " + strings.Join(plaintext, " ") + " \" in *\" $3 \"*) echo '      Encrypted: no';; *) echo '      Encrypted: yes (to age1x)';; esac\n" +
+		"  case \" " + strings.Join(plaintext, " ") + " \" in\n" +
+		"    *\" $3 \"*)\n" +
+		"      case \" $* \" in *\" --require-encryption \"*) echo \"Error: tenant $3 has no age recipient registered (require_encryption)\" >&2; exit 1;; esac\n" +
+		"      echo '      Encrypted: no';;\n" +
+		"    *) echo '      Encrypted: yes (to age1x)';;\n" +
+		"  esac\n" +
 		"fi\n"
 	if err := os.WriteFile(fakeBin, []byte(fake), 0o700); err != nil { //nolint:gosec // test-only executable stand-in
 		t.Fatal(err)
@@ -241,7 +247,7 @@ func runBackupAllTenantsPlaintext(t *testing.T, conf string, plaintext []string,
 		"CONTAINARIUM_BIN="+fakeBin,
 		"CONTAINARIUM_AUTH_TOKEN=",
 		"CONTAINARIUM_JWT_SECRET_FILE=",
-		"CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=",
+		"CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=",
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
@@ -255,11 +261,16 @@ func runBackupAllTenantsPlaintext(t *testing.T, conf string, plaintext []string,
 }
 
 // #3169: a plaintext tenant is named in a greppable per-tenant line and in a
-// summary count; the default exit status is unchanged.
+// summary count. Every tenant is still backed up, then the run exits 3 so
+// the unit result (and the timer-health metric) turns red (decided on Q3 of
+// the sprint umbrella).
 func TestBackupAllTenantsScript_PlaintextTenantWarned(t *testing.T) {
-	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\nbeta appdb\n", []string{"beta"})
-	if code != 0 {
-		t.Fatalf("default exit must stay 0, got %d\n%s", code, out)
+	out, code := runBackupAllTenantsPlaintext(t, "beta appdb\nacme appdb\n", []string{"beta"})
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3 when a tenant was stored in plaintext\n%s", code, out)
+	}
+	if !strings.Contains(out, "[backup] ok     tenant=acme") {
+		t.Errorf("a plaintext tenant must not stop the tenants after it:\n%s", out)
 	}
 	for _, want := range []string{
 		"[backup] WARNING UNENCRYPTED tenant=beta",
@@ -277,17 +288,36 @@ func TestBackupAllTenantsScript_PlaintextTenantWarned(t *testing.T) {
 	}
 }
 
+// #3169: tenants with a registered recipient behave exactly as before, with
+// or without the require setting.
 func TestBackupAllTenantsScript_AllEncryptedNoWarning(t *testing.T) {
-	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\n", nil, "CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1")
-	if code != 0 || strings.Contains(out, "UNENCRYPTED") {
-		t.Fatalf("code=%d, want 0 and no warning:\n%s", code, out)
+	for _, env := range []string{"CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=", "CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1"} {
+		out, code := runBackupAllTenantsPlaintext(t, "acme appdb\n", nil, env)
+		if code != 0 || strings.Contains(out, "UNENCRYPTED") || !strings.Contains(out, "all 1 tenant(s) done") {
+			t.Fatalf("%s: code=%d, want 0, no warning, success line:\n%s", env, code, out)
+		}
 	}
 }
 
-// #3169: opt-in distinct exit status so the timer-health metric can go red.
-func TestBackupAllTenantsScript_FailOnUnencryptedExit(t *testing.T) {
-	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\nbeta appdb\n", []string{"beta"}, "CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1")
-	if code != 3 {
-		t.Fatalf("exit = %d, want 3\n%s", code, out)
+// #3169: CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1 passes --require-encryption,
+// so a tenant with no recipient fails (no plaintext object is written) and
+// the run exits 1 like any other failed tenant; the others still run.
+func TestBackupAllTenantsScript_RequireEncryptionFailsPlaintextTenant(t *testing.T) {
+	out, code := runBackupAllTenantsPlaintext(t, "beta appdb\nacme appdb\n", []string{"beta"}, "CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\n%s", code, out)
+	}
+	for _, want := range []string{
+		"[backup] FAIL   tenant=beta",
+		"has no age recipient registered",
+		"[backup] ok     tenant=acme",
+		"[backup] 1/2 tenant(s) failed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "UNENCRYPTED tenant=beta") {
+		t.Errorf("a refused tenant was not stored, so it must not be reported as stored plaintext:\n%s", out)
 	}
 }

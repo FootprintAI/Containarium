@@ -221,13 +221,39 @@ unchanged when neither flag is given.
 
 
 **Unencrypted dumps (#3169).** Encryption is opt-in per tenant. A tenant with
-no registered `CONTAINARIUM_BACKUP_AGE_RECIPIENT` is stored in plaintext;
-`backup create` prints `Encrypted: no` with a warning, and
-`backup-all-tenants.sh` lists such tenants on `WARNING UNENCRYPTED` lines and
-in a closing count (set `CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1` to also
-exit 3). Registered secrets, including the backup recipient, do not travel
-with a copied container: re-register them on the new host before its first
-backup there.
+no registered `CONTAINARIUM_BACKUP_AGE_RECIPIENT` (on a daemon with no managed
+backup key) is stored in plaintext, and every surface says so:
+
+- `backup create` prints `Encrypted: no` and a `WARNING ... UNENCRYPTED` line;
+  the daemon logs `[backup] WARNING UNENCRYPTED user=<tenant>`.
+- The backup record the API returns has `encrypted: false`; `backup list` shows `NO` in its
+  `ENCRYPTED` column and `backup get` prints `Encrypted: NO`.
+- `backup-all-tenants.sh` names each such tenant on a
+  `WARNING UNENCRYPTED tenant=<tenant>` line and in a closing
+  `N/M tenant(s) stored UNENCRYPTED` count. It still backs up every tenant,
+  then exits **3**, so the unit result and the timer-health metric turn red.
+  (Exit 1, any failed tenant, takes precedence.)
+
+**Refusing plaintext (recommended).** `backup create --require-encryption`
+fails a backup that would be stored with no key, names the tenant, and writes
+no object. For the nightly run, set `CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1`
+in `/etc/containarium/backup.env`: such a tenant then counts as a failed
+tenant (exit 1) while the others still run. The default is off, so existing
+setups are unchanged.
+
+**Check before the first bad run.** `containarium backup status --server <host>`
+reads `backup-tenants.conf` (`--conf`, default
+`/etc/containarium/backup-tenants.conf`) and lists every configured tenant
+with no recipient registered on that daemon; it exits non-zero if any are
+missing or could not be checked.
+
+**Moving a tenant to another host.** Registered secrets, including the backup
+recipient, are stored per daemon and do **not** travel with a copied
+container (`incus copy`, export/import, or `zfs send`). On the new host,
+re-register them (`containarium secrets set <tenant>
+CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...`) and run `backup status` before the
+first backup there. Without that step, every backup of that tenant on the new
+host is stored in plaintext.
 
 ### Streaming and archive size limits (#2303)
 
