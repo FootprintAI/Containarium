@@ -602,3 +602,27 @@ func TestExecWatchSource_RingSizeAndNoWakeupDefault(t *testing.T) {
 		t.Errorf("ring capacity %d records, want >= 5000", c)
 	}
 }
+
+// ExecObjectSource is what ResolveExecWatch loads and what the integrity
+// self-measurement digests (#3120). It pins the empty-setting difference with
+// Resolve (empty = embedded here, no program there) and that every alias
+// Resolve accepts selects the embedded object too.
+func TestExecObjectSource(t *testing.T) {
+	for _, v := range []string{"", "  ", "embedded", "1", "TRUE", " on ", "yes"} {
+		if emb, p := ExecObjectSource(v); !emb || p != "" {
+			t.Errorf("ExecObjectSource(%q) = %v, %q; want embedded", v, emb, p)
+		}
+	}
+	for _, v := range []string{"embedded", "1", "true", "yes", "on", "On"} {
+		if !IsEmbeddedValue(v) {
+			t.Errorf("IsEmbeddedValue(%q) = false", v)
+		}
+	}
+	if IsEmbeddedValue("") {
+		t.Error("IsEmbeddedValue(\"\") = true; the netpolicy resolver treats empty as no program")
+	}
+	emb, p := ExecObjectSource(" /opt/c/netpolicy.bpf.o ")
+	if emb || p != "/opt/c/execwatch.bpf.o" {
+		t.Errorf("path value = %v, %q", emb, p)
+	}
+}
