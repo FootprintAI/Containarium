@@ -30,6 +30,17 @@ A correctly brought-up BYOC backend has all of these:
    there: leave `base_domain` empty. The CP's base domain belongs to the CP, and
    the names that reach this host's boxes arrive as per-hostname routes pushed by
    the cloud, which need no base domain on the backend.
+
+   **Mark the host so the daemon enforces this** (#2262): join with
+   `containarium pool join --byoc`, which starts the daemon with
+   `--byoc-backend`. A marked daemon serves no base domain, passed or stored —
+   no management apex route, no certificate order for it, nothing advertised to
+   the sentinel — so invariants 1 and 3 hold even if a value was stored on an
+   earlier start, and it logs a `WARNING: --byoc-backend` line naming that value.
+   The stored value is kept only to name existing ingress routes (see
+   [Recovering a host](#recovering-a-host-that-claimed-the-wrong-domain)).
+   Invariant 2 is not handled by the mark: #2263 removes the bridge wildcard
+   for every host.
 2. **No bridge DNS wildcard for a domain it does not own.** With a base domain
    set, the daemon makes every box on the bridge resolve `*.<base-domain>` to the
    local Caddy (`raw.dnsmasq` on the bridge). That silently hides the real
@@ -76,13 +87,17 @@ sudo journalctl -u containarium -b --no-pager -o cat -g 'base-domain'
 
 ## Bring-up
 
-1. Join the pool. `--base-domain` is optional; omit it on a BYOC backend.
+1. Join the pool with `--byoc`. It marks the daemon `--byoc-backend` and
+   refuses `--base-domain`. Re-running `pool join` without `--byoc` removes
+   the mark, as it does for `--base-domain`.
    ```bash
-   sudo containarium pool join --pool <pool> ...
+   sudo containarium pool join --byoc --pool <pool> ...
    ```
-2. Start the daemon with app hosting. Do not pass `--base-domain`.
+2. Start the daemon with app hosting. Do not pass `--base-domain`; if you start
+   it by hand rather than through the unit `pool join` wrote, pass
+   `--byoc-backend`.
    ```bash
-   containarium daemon --app-hosting --rest --jwt-secret-file /etc/containarium/jwt.secret ...
+   containarium daemon --byoc-backend --app-hosting --rest --jwt-secret-file /etc/containarium/jwt.secret ...
    ```
 3. Set the edge ingress for the sentinel-terminated path in the daemon's
    environment: `CONTAINARIUM_BYOC_INGRESS_ADDR=127.0.0.1:<port>`.
@@ -99,6 +114,8 @@ box.
 
 ```bash
 # 1. Which base domain is the daemon using, and where did it come from?
+#    On a host marked --byoc-backend, a stored or passed value also prints a
+#    "WARNING: --byoc-backend" line: it is held, not served.
 sudo journalctl -u containarium -b --no-pager -o cat -g 'base-domain'
 
 # 2. Is a wildcard DNS record installed on the bridge? (Expect empty.)
@@ -130,6 +147,17 @@ sudo incus exec <box> -- getent ahostsv4 <cp-hostname>
 ## Recovering a host that claimed the wrong domain
 
 Do these in order. Each step is reversible: keep the old values.
+
+**On a host marked `--byoc-backend`** (#2262; see [The invariants](#the-invariants)),
+the daemon does steps 1 and 3 for you at start: it serves no apex route and
+orders no certificate for the stored value, and deletes the apex route it saved
+before the host was marked (the route sync then removes it from Caddy with its
+certificate subject). It keeps using the stored value to name ingress routes,
+so a host with live routes is safe to leave as it is. Marking the host is
+`containarium pool join --byoc` and a daemon restart. Step 2 is still yours
+until #2263 removes the bridge wildcard.
+
+On an unmarked host:
 
 1. **Clear the stored base domain.** In the host's core Postgres, update the
    `base_domain` row of `daemon_config` to an empty string, then restart the

@@ -64,6 +64,7 @@ var (
 	enableAppHosting       bool
 	postgresConnString     string
 	baseDomain             string
+	byocBackend            bool
 	anonClaimURLBase       string
 	anonReminderWebhook    string
 	anonMaxBoxes           int
@@ -190,6 +191,7 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
 	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
 	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "example.org", "Base domain for app subdomains (e.g., example.org)")
+	daemonCmd.Flags().BoolVar(&byocBackend, "byoc-backend", false, "This daemon is a tunnel-joined (BYOC) backend: the control plane owns every public domain, so no base domain is served here, passed or stored — no management apex route, no certificate for it, no --public-base-domain advertised. A stored value is kept only to name existing ingress routes (#2262). Set by `containarium pool join --byoc`.")
 	daemonCmd.Flags().IntVar(&anonMaxBoxes, "anon-max-boxes", 0, "Anonymous-box door: cap on live unclaimed boxes on this daemon (0 = default 20)")
 	daemonCmd.Flags().IntVar(&anonKeyCreatesPer10, "anon-key-creates-per-10min", 0, "Anonymous-box door: box creates allowed per key per 10 minutes (0 = default 1)")
 	daemonCmd.Flags().IntVar(&anonKeyBurst, "anon-key-burst", 0, "Anonymous-box door: creation burst per key (0 = default 2)")
@@ -510,6 +512,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Load persisted daemon config from PostgreSQL (values saved by previous runs).
 	// CLI flags that were explicitly set always override DB values.
 	// Uses retry logic to handle post-restart races with PostgreSQL.
+	baseDomainSrc := baseDomainFromDefault
+	if cmd.Flags().Changed("base-domain") {
+		baseDomainSrc = baseDomainFromFlag
+	}
 	var daemonConfigStore *app.DaemonConfigStore
 	if postgresConnString != "" {
 		var pool *pgxpool.Pool
@@ -545,6 +551,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 					if !cmd.Flags().Changed("base-domain") {
 						if v, ok := savedConfig["base_domain"]; ok {
 							baseDomain = v
+							baseDomainSrc = baseDomainFromDB
 							log.Printf("  base-domain = %s (from DB)", v)
 						}
 					}
@@ -614,6 +621,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		} else {
 			log.Printf("Warning: Failed to connect to PostgreSQL for config after 5 attempts: %v", poolErr)
 		}
+	}
+
+	if w := byocBaseDomainWarning(byocBackend, baseDomain, baseDomainSrc); w != "" {
+		log.Print(w)
+	}
+	if byocBackend && len(publicBaseDomains) > 0 {
+		log.Printf("WARNING: --byoc-backend: --public-base-domain %v is ignored; a BYOC backend advertises no base domain (#2262)", publicBaseDomains)
 	}
 
 	// Save recovery config to persistent storage (for disaster recovery)
@@ -703,7 +717,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		PlacementCPUAware:          placementCPUAware,
 		PublicHostname:             publicHostname,
 		PublicAliases:              publicAliases,
-		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain),
+		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain, byocBackend),
+		BYOCBackend:                byocBackend,
 		PublicPort:                 publicPort,
 		ProxyProtocol:              proxyProtocol,
 		ProxyProtocolTrusted:       proxyProtocolTrusted,
@@ -968,8 +983,12 @@ func waitForCoreContainers(incusClient *incus.Client, timeout time.Duration) err
 // win verbatim; otherwise the list falls back to a single entry
 // derived from --base-domain (which is already the suffix the
 // backend's own Caddy serves containers under). An empty result
-// means suffix matching is disabled for this primary.
-func resolvePublicBaseDomains(public []string, base string) []string {
+// means suffix matching is disabled for this primary. A BYOC backend
+// advertises nothing, explicit values included (#2262).
+func resolvePublicBaseDomains(public []string, base string, byoc bool) []string {
+	if byoc {
+		return nil
+	}
 	if len(public) > 0 {
 		return public
 	}
