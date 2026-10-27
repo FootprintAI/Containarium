@@ -1228,7 +1228,14 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				if containerServer.secretsStore != nil {
 					notifySecrets = containerServer.secretsStore
 				}
-				notifyServer = NewNotifyServer(ntfStore, notifySecrets, containerServer.boxRunExecFn, containerServer.boxRunDir())
+				// Private networks a self-hosted ntfy may be on; a bad value
+				// fails closed (public servers only).
+				allowed, aerr := notify.ParseAllowedCIDRs(os.Getenv(notify.AllowedCIDRsEnv))
+				if aerr != nil {
+					log.Printf("Warning: %v; notifications reach public ntfy servers only", aerr)
+					allowed = nil
+				}
+				notifyServer = NewNotifyServer(ntfStore, notifySecrets, containerServer.boxRunExecFn, containerServer.boxRunDir(), allowed)
 				pb.RegisterNotifyServiceServer(grpcServer, notifyServer)
 				log.Printf("Notify channel store ready")
 			}

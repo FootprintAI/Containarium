@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -277,20 +278,63 @@ func TestNewSender_RefusesLoopbackAndMetadata(t *testing.T) {
 	var cap capture
 	srv := httptest.NewServer(cap.handler(http.StatusOK))
 	defer srv.Close()
-	err := NewSender().Send(context.Background(), Channel{Server: srv.URL, Topic: "t"}, "", Message{Title: "t"})
+	err := NewSender(nil).Send(context.Background(), Channel{Server: srv.URL, Topic: "t"}, "", Message{Title: "t"})
 	if err == nil || len(cap.hits) != 0 {
 		t.Fatalf("guarded sender reached a loopback server: err=%v hits=%d", err, len(cap.hits))
 	}
+	// Never reachable, whatever the operator allows.
+	all := mustPrefixes(t, "0.0.0.0/0", "::/0")
 	for _, addr := range []string{"127.0.0.1:80", "[::1]:443", "169.254.169.254:80", "[fe80::1]:80", "0.0.0.0:80", "[fd00:ec2::254]:80", "100.100.100.200:80", "[fd20:ce::254]:80"} {
-		if checkDialAddr(addr) == nil {
+		if checkDialAddr(addr, all) == nil {
 			t.Errorf("checkDialAddr(%s) allowed", addr)
 		}
 	}
-	for _, addr := range []string{"10.0.0.5:443", "192.168.1.20:80", "203.0.113.7:443", "[2001:db8::1]:443", "100.101.102.103:443"} {
-		if err := checkDialAddr(addr); err != nil {
+	for _, addr := range []string{"203.0.113.7:443", "[2001:db8::1]:443"} {
+		if err := checkDialAddr(addr, nil); err != nil {
 			t.Errorf("checkDialAddr(%s) = %v, want allowed", addr, err)
 		}
 	}
+}
+
+// TestCheckDialAddr_PrivateNeedsOperatorAllowlist: a tenant-chosen server on
+// a private, CGNAT or ULA address (the daemon's own LAN and the box bridge)
+// is refused unless the operator listed its network.
+func TestCheckDialAddr_PrivateNeedsOperatorAllowlist(t *testing.T) {
+	private := []string{"10.0.0.5:443", "172.16.3.4:80", "192.168.1.20:80", "100.101.102.103:443", "[fd12:3456::1]:443"}
+	for _, addr := range private {
+		if checkDialAddr(addr, nil) == nil {
+			t.Errorf("checkDialAddr(%s) allowed with no operator allowlist", addr)
+		}
+	}
+	allowed := mustPrefixes(t, "192.168.1.0/24")
+	if err := checkDialAddr("192.168.1.20:80", allowed); err != nil {
+		t.Errorf("listed network refused: %v", err)
+	}
+	if checkDialAddr("10.0.0.5:443", allowed) == nil {
+		t.Error("unlisted private address allowed")
+	}
+}
+
+func TestParseAllowedCIDRs(t *testing.T) {
+	got, err := ParseAllowedCIDRs(" 192.168.1.0/24, fd00:1::/64 ,")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ParseAllowedCIDRs = %v, %v", got, err)
+	}
+	if got, err := ParseAllowedCIDRs(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty: %v, %v", got, err)
+	}
+	if _, err := ParseAllowedCIDRs("10.0.0.0/8,not-a-cidr"); err == nil {
+		t.Fatal("bad entry accepted")
+	}
+}
+
+func mustPrefixes(t *testing.T, cidrs ...string) []netip.Prefix {
+	t.Helper()
+	var out []netip.Prefix
+	for _, c := range cidrs {
+		out = append(out, netip.MustParsePrefix(c))
+	}
+	return out
 }
 
 func TestValidateChannel(t *testing.T) {

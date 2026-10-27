@@ -34,6 +34,24 @@ containarium --server <daemon> notify delete   # channel and token removed
 
 Then subscribe to the same topic in the ntfy app on your phone.
 
+### Self-hosted ntfy on a private network
+
+The daemon sends from the host's network, so by default it reaches only
+public addresses: a tenant must not be able to point it at the box bridge or
+the host's LAN. To use a self-hosted ntfy server on a private address, the
+operator lists its network in the daemon's environment and restarts the
+daemon:
+
+```bash
+CONTAINARIUM_NOTIFY_ALLOWED_CIDRS=192.0.2.0/28        # comma-separated CIDRs
+```
+
+Keep the list narrow (the ntfy server's own address or subnet). A malformed
+value is logged and the daemon then reaches public servers only. Loopback,
+link-local and cloud-metadata addresses stay refused whatever the list says.
+`notify test` reports only that the push failed; the reason is in the daemon
+log.
+
 ## ntfy.sh topics are public by name
 
 On the public ntfy.sh server, anyone who knows or guesses a topic name can
@@ -101,8 +119,9 @@ read `code runs` uses. Users without a channel cost nothing.
   would hand the token to another host), and refuses loopback, link-local
   (where most clouds serve instance metadata) and the cloud-metadata
   addresses outside it (AWS and GCP over IPv6, Alibaba Cloud over IPv4; listed
-  in `internal/notify/ntfy.go`). Private LAN addresses are allowed, for a
-  self-hosted server on the same network.
+  in `internal/notify/ntfy.go`). Private, CGNAT and IPv6 ULA addresses (the
+  daemon's own LAN and the box bridge) are refused too, unless the operator
+  lists the network; see "Self-hosted ntfy on a private network" below.
 
 ## Limits
 

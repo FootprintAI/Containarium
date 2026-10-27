@@ -93,12 +93,13 @@ const sendTimeout = 10 * time.Second
 // NewSender returns the daemon's sender. The server is chosen by a tenant, so
 // it never follows a redirect (that would carry the token to another host)
 // and refuses, at connect time, loopback, link-local (cloud metadata
-// included) and unspecified addresses. Private LAN addresses stay allowed,
-// for a self-hosted ntfy.
-func NewSender() *Sender {
+// included) and unspecified addresses, and private, CGNAT and ULA addresses
+// (the daemon's own LAN and the box bridge) unless allowed lists the
+// network: a self-hosted ntfy is reached only where the operator said so.
+func NewSender(allowed []netip.Prefix) *Sender {
 	d := &net.Dialer{
 		Timeout: sendTimeout,
-		Control: func(_, address string, _ syscall.RawConn) error { return checkDialAddr(address) },
+		Control: func(_, address string, _ syscall.RawConn) error { return checkDialAddr(address, allowed) },
 	}
 	return newSender(&http.Transport{
 		Proxy:               nil,
@@ -107,6 +108,28 @@ func NewSender() *Sender {
 		MaxIdleConns:        8,
 		IdleConnTimeout:     90 * time.Second,
 	})
+}
+
+// AllowedCIDRsEnv names the daemon setting that lists the private networks a
+// self-hosted ntfy server may be on, comma-separated (#2185).
+const AllowedCIDRsEnv = "CONTAINARIUM_NOTIFY_ALLOWED_CIDRS"
+
+// ParseAllowedCIDRs parses an AllowedCIDRsEnv value. Empty entries are
+// ignored; any malformed entry is an error.
+func ParseAllowedCIDRs(v string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(v, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(f)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not a CIDR", AllowedCIDRsEnv, f)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 func newSender(rt http.RoundTripper) *Sender {
@@ -129,9 +152,14 @@ var metadataAddrs = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud metadata
 }
 
+// cgnat is 100.64.0.0/10, which netip.Addr.IsPrivate does not cover.
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
 // checkDialAddr refuses the addresses a tenant-chosen server must not reach
-// from the daemon's network position.
-func checkDialAddr(address string) error {
+// from the daemon's network position. Loopback, link-local and metadata
+// addresses are refused whatever allowed says; a private, CGNAT or ULA
+// address is accepted only inside an allowed network.
+func checkDialAddr(address string, allowed []netip.Prefix) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
@@ -148,6 +176,14 @@ func checkDialAddr(address string) error {
 		if ip == m {
 			return fmt.Errorf("notify: refusing to connect to %s", ip)
 		}
+	}
+	if ip.IsPrivate() || cgnat.Contains(ip) {
+		for _, p := range allowed {
+			if p.Contains(ip) {
+				return nil
+			}
+		}
+		return fmt.Errorf("notify: refusing to connect to private address %s (not in %s)", ip, AllowedCIDRsEnv)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -64,6 +65,9 @@ type NotifyServer struct {
 
 	coalescer *notify.Coalescer
 	now       func() time.Time
+	// execTimeout is how long one user's box read may hold a concurrency
+	// slot (see pollOnce).
+	execTimeout time.Duration
 
 	// cfgMu serializes channel writes (Set, Delete), so each reads the row the
 	// previous one committed and removes only the secret that row named.
@@ -82,17 +86,21 @@ type NotifyServer struct {
 
 // NewNotifyServer wires the service. secretStore may be nil on a daemon
 // without one; a channel can then not hold a token.
-func NewNotifyServer(store notify.ChannelStore, secretStore notifySecretStore, exec func() boxScriptFunc, dir string) *NotifyServer {
+//
+// allowedCIDRs are the private networks a self-hosted ntfy server may be on
+// (notify.AllowedCIDRsEnv); with none, only public addresses are reached.
+func NewNotifyServer(store notify.ChannelStore, secretStore notifySecretStore, exec func() boxScriptFunc, dir string, allowedCIDRs []netip.Prefix) *NotifyServer {
 	return &NotifyServer{
-		store:     store,
-		secrets:   secretStore,
-		sender:    notify.NewSender(),
-		exec:      exec,
-		dir:       dir,
-		coalescer: notify.NewCoalescer(notify.DefaultWindow),
-		now:       time.Now,
-		inflight:  map[string]bool{},
-		sem:       make(chan struct{}, notifyMaxConcurrentUsers),
+		store:       store,
+		secrets:     secretStore,
+		sender:      notify.NewSender(allowedCIDRs),
+		exec:        exec,
+		dir:         dir,
+		coalescer:   notify.NewCoalescer(notify.DefaultWindow),
+		now:         time.Now,
+		execTimeout: notifyExecTimeout,
+		inflight:    map[string]bool{},
+		sem:         make(chan struct{}, notifyMaxConcurrentUsers),
 	}
 }
 
@@ -303,7 +311,10 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 		Tags:  []string{"white_check_mark"},
 	}
 	if err := s.sender.Send(ctx, ch, token, msg); err != nil {
-		return nil, status.Errorf(codes.Unavailable, "%v", err)
+		// The reason (an HTTP status, a dial error) says something about
+		// the daemon's network; it goes to the daemon log, not the caller.
+		log.Printf("[notify] test push for %s: %v", username, err)
+		return nil, status.Error(codes.Unavailable, "the ntfy server did not accept the test push; check the server URL, topic and token (the daemon log has the details)")
 	}
 	return &pb.TestNotifyChannelResponse{Message: "test push accepted by " + ch.Server}, nil
 }
@@ -332,6 +343,12 @@ func (s *NotifyServer) channelAndToken(ctx context.Context, username string) (no
 // NotifyPollInterval is how often the watcher reads the journals: well under
 // the 10 s a first request may take to reach the phone (#2185).
 const NotifyPollInterval = 5 * time.Second
+
+// notifyExecTimeout bounds how long one user's box read holds a concurrency
+// slot. The exec itself cannot be cancelled (the box exec path takes no
+// context), so a read past it keeps running and its user is not polled again
+// until it returns; only its slot is freed for other users.
+const notifyExecTimeout = 30 * time.Second
 
 // notifyMaxConcurrentUsers bounds how many users are polled at once.
 const notifyMaxConcurrentUsers = 16
@@ -503,19 +520,52 @@ func (s *NotifyServer) pollOnce(ctx context.Context) {
 			}()
 			select {
 			case s.sem <- struct{}{}:
-				defer func() { <-s.sem }()
 			case <-ctx.Done():
 				return
 			}
-			s.pollUser(ctx, exec, user)
+			release := sync.OnceFunc(func() { <-s.sem })
+			defer release()
+			s.pollUser(ctx, exec, user, release)
 		}(ch.Username)
 	}
 }
 
+// execBounded runs the user's journal read. Past execTimeout it calls release,
+// giving the concurrency slot to other users, and waits for the read to end
+// before returning an error, so the user stays in flight and is not polled
+// again meanwhile; what such a late read returns is discarded as stale.
+func (s *NotifyServer) execBounded(ctx context.Context, exec boxScriptFunc, user string, release func()) (string, error) {
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := exec(user+"-container", notifyJournalScript(s.dir))
+		done <- result{out, err}
+	}()
+	t := time.NewTimer(s.execTimeout)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-t.C:
+	}
+	log.Printf("[notify] reading %s's box took over %s; freeing its slot until the read returns", user, s.execTimeout)
+	release()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	return "", errors.New("box read timed out")
+}
+
 // pollUser reads one user's journals and sends what is due. A box that
 // cannot be read is skipped this round, keeping its state.
-func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user string) {
-	out, err := exec(user+"-container", notifyJournalScript(s.dir))
+func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user string, release func()) {
+	out, err := s.execBounded(ctx, exec, user, release)
 	if err != nil {
 		return
 	}

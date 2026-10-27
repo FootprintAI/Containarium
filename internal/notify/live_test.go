@@ -24,7 +24,7 @@ func TestLiveNtfy(t *testing.T) {
 	}
 	now := time.Now()
 	m := BuildMessage([]Request{{Box: "demo", Run: "e2e", RequestID: "req-1", Tool: "Bash", Prompt: "Bash: git push origin feature", ExpiresAt: now.Add(30 * time.Minute)}}, false, now)
-	if err := NewSender().Send(context.Background(), ch, token, m); err != nil {
+	if err := NewSender(nil).Send(context.Background(), ch, token, m); err != nil {
 		t.Fatal(err)
 	}
 }

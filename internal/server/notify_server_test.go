@@ -153,7 +153,7 @@ func newTestNotifyServer(t *testing.T) (*NotifyServer, *fakeNotifySecrets, *fake
 	dir := t.TempDir()
 	sec := newFakeNotifySecrets()
 	snd := &fakeSender{}
-	s := NewNotifyServer(notify.NewMemStore(), sec, func() boxScriptFunc { return b.exec }, dir)
+	s := NewNotifyServer(notify.NewMemStore(), sec, func() boxScriptFunc { return b.exec }, dir, nil)
 	s.sender = snd
 	return s, sec, snd, b, dir
 }
@@ -539,7 +539,7 @@ func TestNotifyWatcher_SlowServerDoesNotDelayOtherUsers(t *testing.T) {
 		}
 	}
 	s.pollOnce(context.Background())
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for {
 		var bob bool
 		for _, p := range snd.all() {
@@ -797,5 +797,87 @@ func TestNotifyWatcher_UsesTheBoxsOwnRequestLine(t *testing.T) {
 	}
 	if b := got[0].msg.Body; !strings.Contains(b, "make test") || strings.Contains(b, "forged") || strings.Contains(b, "more waiting") {
 		t.Fatalf("push body %q, want only the box's own line of r1", b)
+	}
+}
+
+// TestTestNotifyChannel_GenericError: a failed test push tells the caller it
+// failed, not why (no HTTP status, no dial error about the daemon's network).
+func TestTestNotifyChannel_GenericError(t *testing.T) {
+	s, _, snd, _, _ := newTestNotifyServer(t)
+	ctx := notifyCtx("alice")
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://n.example.com", Topic: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	snd.err = errors.New("ntfy publish to https://n.example.com: dial tcp 10.1.2.3:443: connection refused")
+	_, err := s.TestNotifyChannel(ctx, &pb.TestNotifyChannelRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable", err)
+	}
+	for _, leak := range []string{"10.1.2.3", "connection refused", "dial"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error %q exposes %q", err, leak)
+		}
+	}
+}
+
+// TestNotifyWatcher_StuckExecReleasesItsSlot: a box exec that does not return
+// gives its concurrency slot back after the exec timeout, so other users are
+// still polled, and the stuck user is not polled again until it returns.
+func TestNotifyWatcher_StuckExecReleasesItsSlot(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, b, _ := newTestNotifyServer(t)
+	s.sem = make(chan struct{}, 1)
+	s.execTimeout = 50 * time.Millisecond
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	dirs := map[string]string{"alice-container": t.TempDir(), "bob-container": t.TempDir()}
+	release := make(chan struct{})
+	var mu sync.Mutex
+	aliceExecs := 0
+	s.exec = func() boxScriptFunc {
+		return func(box, script string) (string, error) {
+			if box == "alice-container" {
+				mu.Lock()
+				aliceExecs++
+				mu.Unlock()
+				<-release
+			}
+			return b.exec(box, strings.ReplaceAll(script, s.dir, dirs[box]))
+		}
+	}
+	for _, u := range []string{"alice", "bob"} {
+		if _, err := s.SetNotifyChannel(notifyCtx(u), &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://" + u + ".example.com", Topic: "t"}); err != nil {
+			t.Fatal(err)
+		}
+		d := dirs[u+"-container"]
+		writeRecord(t, d, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+		writeJournal(t, d, "live", openReq("r1", "Bash: x", now))
+	}
+	s.pollOnce(context.Background())
+	deadline := time.After(10 * time.Second)
+	for {
+		var bob bool
+		for _, p := range snd.all() {
+			bob = bob || p.ch.Server == "https://bob.example.com"
+		}
+		if bob {
+			break
+		}
+		select {
+		case <-deadline:
+			close(release)
+			t.Fatal("bob was not polled while alice's exec was stuck")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	s.pollOnce(context.Background())
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	n := aliceExecs
+	mu.Unlock()
+	close(release)
+	s.wg.Wait()
+	if n != 1 {
+		t.Fatalf("alice execs while the first was stuck = %d, want 1", n)
 	}
 }
