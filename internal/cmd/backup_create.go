@@ -252,6 +252,11 @@ func printCreatedBackups(resp *pb.CreateBackupResponse) {
 		fmt.Printf("      Location: %s\n", r.Location)
 		if r.Encrypted {
 			fmt.Printf("      Encrypted: yes (to %s)\n", r.AgeRecipient)
+		} else if r.KeyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED && r.KeyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
+			// #3169: say so when no key protects the dump, instead of
+			// leaving the absence of a line to be noticed.
+			fmt.Printf("      Encrypted: no\n")
+			fmt.Printf("      WARNING: backup %s was stored UNENCRYPTED (no age recipient registered or given)\n", r.Id)
 		}
 		if r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED || r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
 			fmt.Printf("      Key mode: %s (key version %s)\n", keyModeLabel(r.KeyMode), r.KekId)

@@ -276,6 +276,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		for _, r := range records {
 			resp.Records = append(resp.Records, recordToProto(r))
 			log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
+			if backupStoredPlaintext(r) {
+				log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", r.Username, r.ID)
+			}
 		}
 		for _, e := range errs {
 			resp.Failures = append(resp.Failures, e.Error())
@@ -293,6 +296,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.Internal, "backup failed: %v", err)
 	}
 	log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	if backupStoredPlaintext(rec) {
+		log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", rec.Username, rec.ID)
+	}
 	return &pb.CreateBackupResponse{
 		Message: "backup created: " + rec.ID,
 		Record:  recordToProto(rec),
@@ -778,6 +784,12 @@ func keyModeFromProto(m pb.BackupKeyMode, hasWrapper, hasRecipient bool) (backup
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "unknown key_mode %d", m)
 	}
+}
+
+// backupStoredPlaintext reports whether a stored record has no key protecting
+// it at all (#3169): not age-encrypted and not managed/both key mode.
+func backupStoredPlaintext(r *backup.Record) bool {
+	return !r.Encrypted && keyModeToProto(r) == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
 }
 
 // keyModeToProto maps a stored record's key mode to the wire enum. The

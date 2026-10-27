@@ -58,6 +58,12 @@
 #                             with `invalid token`.
 #   CONTAINARIUM_BACKUP_KEEP  newest backups to keep per (tenant, database)
 #                             after each successful create (default: 7)
+#   CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED  set to 1 to exit 3 when any tenant's
+#                             dump was stored unencrypted (no age recipient
+#                             registered, #3169) so the unit result turns red.
+#                             Default: the run still exits 0, but every such
+#                             tenant is named on a `WARNING UNENCRYPTED` line
+#                             and in the closing summary.
 
 set -uo pipefail
 
@@ -93,6 +99,9 @@ fi
 
 failed=0
 total=0
+unencrypted=()
+create_out="$(mktemp)"
+trap 'rm -f "$create_out"' EXIT
 
 while IFS= read -r line; do
   # shellcheck disable=SC2206 # deliberate word-splitting: config is whitespace-delimited by design
@@ -167,8 +176,14 @@ while IFS= read -r line; do
       --dest gcs \
       --gcs-bucket "$BUCKET" \
       --server "$SERVER" \
-      ${auth_flags[@]+"${auth_flags[@]}"}; then
+      ${auth_flags[@]+"${auth_flags[@]}"} | tee "$create_out"; then
     echo "[backup] ok     tenant=$tenant"
+    # #3169: encryption is opt-in per tenant; an unregistered recipient means
+    # a plaintext object. Make that greppable instead of silent.
+    if grep -q 'Encrypted: no' "$create_out"; then
+      echo "[backup] WARNING UNENCRYPTED tenant=$tenant: dump stored without encryption (no age recipient registered)" >&2
+      unencrypted+=("$tenant")
+    fi
   else
     echo "[backup] FAIL   tenant=$tenant" >&2
     failed=$((failed + 1))
@@ -194,9 +209,16 @@ if [[ "$total" -eq 0 ]]; then
   exit 0
 fi
 
+if [[ "${#unencrypted[@]}" -gt 0 ]]; then
+  echo "[backup] ${#unencrypted[@]}/$total tenant(s) stored UNENCRYPTED: ${unencrypted[*]}" >&2
+fi
+
 if [[ "$failed" -gt 0 ]]; then
   echo "[backup] $failed/$total tenant(s) failed" >&2
   exit 1
 fi
 
 echo "[backup] all $total tenant(s) done"
+if [[ "${#unencrypted[@]}" -gt 0 && "${CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED:-}" == "1" ]]; then
+  exit 3
+fi

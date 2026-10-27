@@ -219,6 +219,16 @@ The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
 
+
+**Unencrypted dumps (#3169).** Encryption is opt-in per tenant. A tenant with
+no registered `CONTAINARIUM_BACKUP_AGE_RECIPIENT` is stored in plaintext;
+`backup create` prints `Encrypted: no` with a warning, and
+`backup-all-tenants.sh` lists such tenants on `WARNING UNENCRYPTED` lines and
+in a closing count (set `CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1` to also
+exit 3). Registered secrets, including the backup recipient, do not travel
+with a copied container: re-register them on the new host before its first
+backup there.
+
 ### Streaming and archive size limits (#2303)
 
 Create streams the container dump through optional age encryption into a

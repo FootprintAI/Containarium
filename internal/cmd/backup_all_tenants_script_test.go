@@ -210,3 +210,84 @@ func TestBackupAllTenantsScript_MintFailureIsFatal(t *testing.T) {
 		}
 	}
 }
+
+// runBackupAllTenantsPlaintext runs the script with a stand-in binary whose
+// `backup create` prints the Encrypted line chosen per tenant: tenants listed
+// in plaintext print "Encrypted: no", the rest "Encrypted: yes". Returns
+// combined output and the exit code.
+func runBackupAllTenantsPlaintext(t *testing.T, conf string, plaintext []string, extraEnv ...string) (string, int) {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "backup-tenants.conf")
+	if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := filepath.Join(dir, "containarium")
+	fake := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1 $2\" == \"backup create\" ]]; then\n" +
+		"  case \" " + strings.Join(plaintext, " ") + " \" in *\" $3 \"*) echo '      Encrypted: no';; *) echo '      Encrypted: yes (to age1x)';; esac\n" +
+		"fi\n"
+	if err := os.WriteFile(fakeBin, []byte(fake), 0o700); err != nil { //nolint:gosec // test-only executable stand-in
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", backupAllTenantsScript) //nolint:gosec // test-only, fixed path
+	cmd.Env = append(os.Environ(),
+		"CONTAINARIUM_BACKUP_CONF="+confPath,
+		"CONTAINARIUM_SERVER=localhost:0",
+		"CONTAINARIUM_BACKUP_BUCKET=gs://example-bucket/pg",
+		"CONTAINARIUM_BIN="+fakeBin,
+		"CONTAINARIUM_AUTH_TOKEN=",
+		"CONTAINARIUM_JWT_SECRET_FILE=",
+		"CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=",
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return string(out), code
+}
+
+// #3169: a plaintext tenant is named in a greppable per-tenant line and in a
+// summary count; the default exit status is unchanged.
+func TestBackupAllTenantsScript_PlaintextTenantWarned(t *testing.T) {
+	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\nbeta appdb\n", []string{"beta"})
+	if code != 0 {
+		t.Fatalf("default exit must stay 0, got %d\n%s", code, out)
+	}
+	for _, want := range []string{
+		"[backup] WARNING UNENCRYPTED tenant=beta",
+		"[backup] 1/2 tenant(s) stored UNENCRYPTED: beta",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "UNENCRYPTED tenant=acme") {
+		t.Errorf("encrypted tenant must not be flagged:\n%s", out)
+	}
+	if !strings.Contains(out, "all 2 tenant(s) done") {
+		t.Errorf("success line must remain:\n%s", out)
+	}
+}
+
+func TestBackupAllTenantsScript_AllEncryptedNoWarning(t *testing.T) {
+	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\n", nil, "CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1")
+	if code != 0 || strings.Contains(out, "UNENCRYPTED") {
+		t.Fatalf("code=%d, want 0 and no warning:\n%s", code, out)
+	}
+}
+
+// #3169: opt-in distinct exit status so the timer-health metric can go red.
+func TestBackupAllTenantsScript_FailOnUnencryptedExit(t *testing.T) {
+	out, code := runBackupAllTenantsPlaintext(t, "acme appdb\nbeta appdb\n", []string{"beta"}, "CONTAINARIUM_BACKUP_FAIL_ON_UNENCRYPTED=1")
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3\n%s", code, out)
+	}
+}
