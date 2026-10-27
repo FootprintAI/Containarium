@@ -2387,7 +2387,7 @@ func (c *HTTPClient) VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackup
 
 // DeleteBackup removes a stored dump and its index entry via HTTP.
 func (c *HTTPClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/backups/%s", url.PathEscape(id))

@@ -597,6 +597,7 @@ type PgConnectionBody struct {
 // CreateBackupRequest is the body for POST /v1/backups. Destination is the
 // proto enum NAME ("BACKUP_DESTINATION_LOCAL" / "BACKUP_DESTINATION_GCS").
 type CreateBackupRequest struct {
+	Scope       pb.BackupScope    `json:"scope,omitempty"`
 	Username    string            `json:"username"`
 	Connection  *PgConnectionBody `json:"connection,omitempty"`
 	Destination string            `json:"destination"`
@@ -695,6 +696,15 @@ type RestoreBackupResponse struct {
 
 // CreateBackup dumps a tenant's database and stores it off-host.
 func (c *Client) CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error) {
+	// CSI readiness can take five minutes; keep this request independent of
+	// the default 120s HTTP timeout without mutating the shared client.
+	if req.Destination == "BACKUP_DESTINATION_SNAPSHOT" {
+		long := *c
+		hc := *c.httpClient
+		hc.Timeout = 6 * time.Minute
+		long.httpClient = &hc
+		c = &long
+	}
 	respBody, err := c.doRequest("POST", "/v1/backups", req)
 	if err != nil {
 		return nil, err
@@ -755,6 +765,12 @@ func (c *Client) VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, e
 
 // RestoreBackup streams a stored dump back into a container's database.
 func (c *Client) RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse, error) {
+	// Restores include PVC provisioning and pod startup (or archive loading).
+	long := *c
+	hc := *c.httpClient
+	hc.Timeout = 30 * time.Minute
+	long.httpClient = &hc
+	c = &long
 	respBody, err := c.doRequest("POST", "/v1/backups/"+req.ID+"/restore", req)
 	if err != nil {
 		return nil, err

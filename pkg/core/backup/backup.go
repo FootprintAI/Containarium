@@ -45,8 +45,9 @@ const EnginePostgres = "postgres"
 type Destination string
 
 const (
-	DestLocal Destination = "local"
-	DestGCS   Destination = "gcs"
+	DestLocal    Destination = "local"
+	DestGCS      Destination = "gcs"
+	DestSnapshot Destination = "snapshot"
 )
 
 // KeyMode names who holds the key that opens an encrypted backup (#2402).
@@ -106,6 +107,8 @@ type Record struct {
 	Destination Destination `json:"destination"`
 	Location    string      `json:"location"`
 	Engine      string      `json:"engine"`
+
+	Snapshot *SnapshotReference `json:"snapshot,omitempty"`
 
 	// LastVerification is the outcome of the most recent restore test,
 	// nil until the backup has been verified. SHA256 proves the bytes
@@ -186,6 +189,7 @@ func (c PgConn) withDefaults() PgConn {
 
 // Manager orchestrates backups. One per daemon.
 type Manager struct {
+	snapshots    SnapshotOps
 	ops          ContainerOps
 	uploader     Uploader // may be nil → GCS destinations are rejected
 	dir          string   // host backup directory (dumps for LOCAL + sidecar index for all)
@@ -731,12 +735,24 @@ func validateBackupID(id string) error {
 // A sidecar object that is simply not there (a record written before
 // sidecars were uploaded) is not a failure: there was nothing to delete.
 func (m *Manager) Delete(id string) error {
+	return m.DeleteContext(context.Background(), id)
+}
+
+// DeleteContext propagates cancellation to storage operations.
+func (m *Manager) DeleteContext(ctx context.Context, id string) error {
 	r, err := m.Get(id)
 	if err != nil {
 		return err
 	}
 	var sidecarErr error
 	switch r.Destination {
+	case DestSnapshot:
+		if m.snapshots == nil || r.Snapshot == nil {
+			return fmt.Errorf("snapshot backend or metadata unavailable")
+		}
+		if err := m.snapshots.DeleteVolumeSnapshot(ctx, r.Username, *r.Snapshot); err != nil {
+			return err
+		}
 	case DestGCS:
 		if m.uploader == nil {
 			return fmt.Errorf("cannot delete GCS object: no object-store uploader configured")

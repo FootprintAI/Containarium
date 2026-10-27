@@ -108,6 +108,9 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	if snapshots, ok := containers.boxes().(backup.SnapshotOps); ok {
+		opts = append(opts, backup.WithSnapshots(snapshots))
+	}
 	if wrapper != nil {
 		opts = append(opts, backup.WithWrapper(wrapper))
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
@@ -197,6 +200,12 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	scope, err := scopeFromProto(req.Scope)
 	if err != nil {
 		return nil, err
+	}
+	if req.Destination == pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT {
+		if scope != pb.BackupScope_BACKUP_SCOPE_BOX {
+			return nil, status.Error(codes.InvalidArgument, "snapshot destination requires scope BOX")
+		}
+		return s.createSnapshotBackup(ctx, req)
 	}
 	if scope == pb.BackupScope_BACKUP_SCOPE_BOX {
 		return s.createBoxBackup(ctx, req)
@@ -441,6 +450,15 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
 		return nil, err
 	}
+	if rec.Destination == backup.DestSnapshot {
+		if req.Connection != nil || req.Clean || req.AgeIdentity != "" || req.TargetContainer != "" {
+			return nil, status.Error(codes.InvalidArgument, "snapshot restore uses the source box; database, identity and target options do not apply")
+		}
+		if err := s.mgr.RestoreSnapshot(ctx, rec); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "snapshot restore failed: %v", err)
+		}
+		return &pb.RestoreBackupResponse{Message: "snapshot restored: " + rec.ID}, nil
+	}
 	info, err := s.containers.manager.Get(rec.Username)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", rec.Username, err)
@@ -515,6 +533,9 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	}
 	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
 		return nil, err
+	}
+	if rec.Destination == backup.DestSnapshot {
+		return nil, status.Error(codes.FailedPrecondition, "snapshot verification requires a file-level restore test; database verification is unsupported")
 	}
 	// The caller must also own the container being written to — the
 	// restore test creates and drops a database inside it.
@@ -652,7 +673,7 @@ func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupReq
 	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
 		return nil, err
 	}
-	if err := s.mgr.Delete(req.Id); err != nil {
+	if err := s.mgr.DeleteContext(ctx, req.Id); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete backup: %v", err)
 	}
 	log.Printf("[backup] deleted id=%s user=%s", rec.ID, rec.Username)
@@ -702,10 +723,12 @@ func destFromProto(d pb.BackupDestination) (backup.Destination, error) {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:
 		return backup.DestLocal, nil
+	case pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT:
+		return backup.DestSnapshot, nil
 	case pb.BackupDestination_BACKUP_DESTINATION_GCS:
 		return backup.DestGCS, nil
 	default:
-		return "", status.Error(codes.InvalidArgument, "destination is required (local or gcs)")
+		return "", status.Error(codes.InvalidArgument, "destination is required (local, gcs or snapshot)")
 	}
 }
 
@@ -713,6 +736,8 @@ func destToProto(d backup.Destination) pb.BackupDestination {
 	switch d {
 	case backup.DestLocal:
 		return pb.BackupDestination_BACKUP_DESTINATION_LOCAL
+	case backup.DestSnapshot:
+		return pb.BackupDestination_BACKUP_DESTINATION_SNAPSHOT
 	case backup.DestGCS:
 		return pb.BackupDestination_BACKUP_DESTINATION_GCS
 	default:
