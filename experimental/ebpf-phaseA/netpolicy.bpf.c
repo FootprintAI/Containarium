@@ -836,7 +836,9 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 
-    return TC_ACT_OK; // MUTATION B (temporary, #2618 B3): never drop
+    if (deny_mode == MODE_ENFORCE)
+        return TC_ACT_SHOT; // Phase B path; Phase A never sets ENFORCE here.
+    return TC_ACT_OK;
 }
 
 // netpolicy_egress runs on the container veth's TC_EGRESS hook — packets the
