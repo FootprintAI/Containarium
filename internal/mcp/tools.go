@@ -1260,7 +1260,7 @@ func (s *Server) registerTools() {
 				"acts on it only if that is the tool call it asked. If the request has changed " +
 				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
 				"nothing and reports how it was closed, as an error. Same signing as " +
-				"`containarium code answer`.",
+				"`containarium code answer`. Needs a token carrying both the code:answer and ssh:write scopes.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box", "request_id", "tool", "input", "answer"},
@@ -1955,7 +1955,7 @@ func toolScopeAssignments() map[string]string {
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
 		"code_pending":         auth.ScopeSSHWrite,
-		"code_answer":          auth.ScopeSSHWrite,
+		"code_answer":          auth.ScopeCodeAnswer, // #3191: the daemon also needs ssh:write
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle

@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/coderun"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -108,10 +110,56 @@ func (r *inputsRun) publicKey(t *testing.T) ed25519.PublicKey {
 }
 
 func (r *inputsRun) answer(a pb.RunInputAnswer, input string) (*pb.AnswerRunInputResponse, error) {
-	return r.s.AnswerRunInput(tenantCtx(r.owner), &pb.AnswerRunInputRequest{
+	return r.answerAs(answererCtx(r.owner), a, input)
+}
+
+func (r *inputsRun) answerAs(ctx context.Context, a pb.RunInputAnswer, input string) (*pb.AnswerRunInputResponse, error) {
+	return r.s.AnswerRunInput(ctx, &pb.AnswerRunInputRequest{
 		Username: r.owner, RunName: r.run, RequestId: r.req.RequestID, Answer: a,
 		RequestSha256: coderun.RequestDigest(r.req.Tool, input),
 	})
+}
+
+// answererCtx is a human's answering token (#3191): the box-run scope plus
+// code:answer, which no credential on a box carries.
+func answererCtx(name string) context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), name, []string{"user"},
+		[]string{auth.ScopeSSHWrite, auth.ScopeCodeAnswer})
+}
+
+// AnswerRunInput needs code:answer on top of the box-run rule (#3191). The
+// owner's own token without it is refused and writes nothing: that is the
+// token an agent reads from ~/.containarium/credentials.json when its owner
+// logs in from inside the box, or the "*" token a skill run is given.
+func TestAnswerRunInput_RequiresTheAnswerScope(t *testing.T) {
+	r := startInputsRun(t, time.Minute)
+	refused := map[string]context.Context{
+		"ssh:write only": auth.ContextWithTestSubjectScopes(context.Background(), r.owner, []string{"user"},
+			[]string{auth.ScopeSSHWrite}),
+		"unscoped token": auth.ContextWithTestSubjectScopes(context.Background(), r.owner, []string{"user"}, nil),
+		"wildcard token": auth.ContextWithTestSubjectScopes(context.Background(), r.owner, []string{"user"},
+			[]string{auth.ScopeWildcard}),
+		"code:answer without ssh:write": auth.ContextWithTestSubjectScopes(context.Background(), r.owner, []string{"user"},
+			[]string{auth.ScopeCodeAnswer}),
+	}
+	for name, ctx := range refused {
+		_, err := r.answerAs(ctx, pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input)
+		if status.Code(err) != codes.PermissionDenied {
+			t.Errorf("%s: err = %v, want PermissionDenied", name, err)
+		}
+		if _, statErr := os.Stat(r.answerPath(r.req.RequestID)); statErr == nil {
+			t.Fatalf("%s: an answer was written for a refused caller", name)
+		}
+	}
+
+	r.boxApproves(t, r.publicKey(t))
+	resp, err := r.answerAs(answererCtx(r.owner), pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, r.req.Input)
+	if err != nil {
+		t.Fatalf("ssh:write + code:answer: %v", err)
+	}
+	if resp.GetOutcome() != pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED {
+		t.Fatalf("response = %v, want ANSWERED", resp)
+	}
 }
 
 // The key is per box, stable for one daemon secret, and differs per box and
@@ -195,7 +243,7 @@ func TestAnswerRunInput_ExpiredRequestIsRefused(t *testing.T) {
 // is NotFound, and nothing is written.
 func TestAnswerRunInput_WrongRunIsRefused(t *testing.T) {
 	r := startInputsRun(t, time.Minute)
-	resp, err := r.s.AnswerRunInput(tenantCtx(r.owner), &pb.AnswerRunInputRequest{
+	resp, err := r.s.AnswerRunInput(answererCtx(r.owner), &pb.AnswerRunInputRequest{
 		Username: r.owner, RunName: r.run, RequestId: "req-fedcba9876543210",
 		Answer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, RequestSha256: coderun.RequestDigest(r.req.Tool, r.req.Input),
 	})
