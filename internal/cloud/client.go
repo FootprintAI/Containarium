@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -92,6 +93,13 @@ type HostCheck struct {
 	Detail string
 }
 
+// HostSecurityPosture is a measured hardening snapshot, separate from the
+// capability self-check. A nil posture means no measurement, not a pass.
+type HostSecurityPosture struct {
+	Checks     []HostCheck
+	MeasuredAt time.Time
+}
+
 // HostStatus is the host's self-measured capability profile + `doctor`
 // self-check, reported to the cloud so the BYO fleet view goes live.
 type HostStatus struct {
@@ -107,6 +115,7 @@ type HostStatus struct {
 	AvailGPUCount int32
 	SelfCheckOK   bool
 	Checks        []HostCheck
+	Posture       *HostSecurityPosture
 }
 
 // StatusProbe gathers the host's current capability profile + self-check.
@@ -413,9 +422,12 @@ func (c *Client) reportStatusOnce() {
 		log.Printf("[cloud] status probe failed: %v", err)
 		return
 	}
-	checks := make([]*cloudv1.HostCapabilityCheck, 0, len(st.Checks))
-	for _, ck := range st.Checks {
-		checks = append(checks, &cloudv1.HostCapabilityCheck{Name: ck.Name, Ok: ck.OK, Detail: ck.Detail})
+	var posture *cloudv1.HostSecurityPosture
+	if st.Posture != nil {
+		posture = &cloudv1.HostSecurityPosture{Checks: hostChecksProto(st.Posture.Checks)}
+		if !st.Posture.MeasuredAt.IsZero() {
+			posture.MeasuredAt = timestamppb.New(st.Posture.MeasuredAt)
+		}
 	}
 	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
 	defer cancel()
@@ -430,10 +442,19 @@ func (c *Client) reportStatusOnce() {
 		AvailDiskGb:   st.AvailDiskGB,
 		AvailGpuCount: st.AvailGPUCount,
 		SelfCheckOk:   st.SelfCheckOK,
-		Checks:        checks,
+		Checks:        hostChecksProto(st.Checks),
+		Posture:       posture,
 	}); err != nil {
 		log.Printf("[cloud] report host status: %v", err)
 	}
+}
+
+func hostChecksProto(checks []HostCheck) []*cloudv1.HostCapabilityCheck {
+	out := make([]*cloudv1.HostCapabilityCheck, 0, len(checks))
+	for _, ck := range checks {
+		out = append(out, &cloudv1.HostCapabilityCheck{Name: ck.Name, Ok: ck.OK, Detail: ck.Detail})
+	}
+	return out
 }
 
 // driverRefreshLoop re-mints the BYOC driver token on a ~20-day cycle so the
