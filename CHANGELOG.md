@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every backup RPC now has a recorded, tested scope decision** (#2401). `TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains an RPC without an entry in the decision table, and `TestBackupRPCScopeDecisions_Enforced` checks that each RPC, including whole-box `CreateBackup`, rejects a token missing its scope and rejects another tenant's data. No enforcement bug was found. `docs/DB-BACKUP-OPERATIONS.md` states that the verifier token can also create, restore, delete and prune its own tenant's backups.
+
 - **CSI snapshot backup API contract** (#3168): add `BACKUP_DESTINATION_SNAPSHOT` for BOX-scope Kubernetes data-PVC backups and document source-box restore semantics. Runtime support follows separately.
 - **TaskGraph nodes can require minimum measured local-host capabilities** (refs #681, #2805). Optional typed CPU-core, total-RAM and validated-GPU requirements are checked against the local capability profile before any node is dispatched, then checked again at dispatch. Constrained nodes stay on the local backend; explicit remote backends, incompatible pools, unknown profiles and unmet requirements are rejected. Existing box limits/admission and graphs without resource requirements retain their behavior.
 
