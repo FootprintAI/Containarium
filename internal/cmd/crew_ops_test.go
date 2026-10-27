@@ -39,7 +39,8 @@ func TestCrewRun_GraphFlagsReachDaemonRequest(t *testing.T) {
 			t.Cleanup(resetCrewRunFlags)
 			capture := &crewRunCaptureServer{}
 			startCrewRunDaemon(t, transport, capture)
-			crewRunGraphFile = writePlan(t, "plan.yaml", examplePlanYAML)
+			plan := strings.Replace(examplePlanYAML, "    skill_id: issue-implementer", "    skill_id: issue-implementer\n    resources:\n      min_cpu_cores: 4\n      min_memory_bytes: 8589934592\n      requires_gpu: true", 1)
+			crewRunGraphFile = writePlan(t, "plan.yaml", plan)
 			crewRunConcurrency = 2
 			if err := runCrewRun(crewRunCmd, []string{"freeform-crew"}); err != nil {
 				t.Fatal(err)
@@ -53,6 +54,10 @@ func TestCrewRun_GraphFlagsReachDaemonRequest(t *testing.T) {
 			}
 			if got.CrewId != "freeform-crew" || got.Concurrency != 2 || !proto.Equal(got.Graph, graph) {
 				t.Fatalf("graph request did not survive %s transport: %v", transport, got)
+			}
+			r := got.Graph.Nodes[0].GetResources()
+			if r.GetMinCpuCores() != 4 || r.GetMinMemoryBytes() != 8<<30 || !r.GetRequiresGpu() {
+				t.Fatalf("resource requirements lost over %s: %v", transport, r)
 			}
 		})
 	}
