@@ -5,8 +5,10 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -407,5 +409,92 @@ func TestRunAuditVerifyAnchorBucket_RejectsABadBucketURI(t *testing.T) {
 	err := runAuditVerifyAnchorBucket(context.Background(), newAnchorTestChain(1), newAnchorTestFile(t), "anchors.jsonl", "s3://not-gcs")
 	if err == nil || !strings.Contains(err.Error(), "open anchor bucket") {
 		t.Fatalf("err = %v, want an 'open anchor bucket' error", err)
+	}
+}
+
+// #2728 — verify-anchor against RFC 3161 timestamp tokens. Token
+// verification itself is tested in internal/audit with a fake TSA; these
+// cover flag/env resolution, the rendered lines and the exit semantics.
+
+func TestResolveAnchorTSATrustBundle_FlagBeatsEnv(t *testing.T) {
+	t.Setenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE", "/env/bundle.pem")
+	if got := resolveAnchorTSATrustBundle("/flag/bundle.pem"); got != "/flag/bundle.pem" {
+		t.Errorf("flag should win, got %q", got)
+	}
+	if got := resolveAnchorTSATrustBundle(""); got != "/env/bundle.pem" {
+		t.Errorf("env should be the fallback, got %q", got)
+	}
+	t.Setenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE", " ")
+	if got := resolveAnchorTSATrustBundle(""); got != "" {
+		t.Errorf("blank env means no TSA check, got %q", got)
+	}
+}
+
+func TestVerifyAnchorTSA(t *testing.T) {
+	tests := []struct {
+		name       string
+		file       []int64
+		badToken   int64 // write a corrupt token for this checkpoint
+		wantErr    string
+		wantStdout string
+		wantStderr string
+		wantVerify int
+		wantTailCP int64
+	}{
+		{name: "no anchor anywhere is a warning, exit zero", wantStdout: "No anchor has been published yet"},
+		{name: "unstamped checkpoints warn, exit zero, tail check from the latest", file: []int64{10, 20},
+			wantStdout: "⚠", wantVerify: 1, wantTailCP: 20},
+		{name: "a corrupt token fails", file: []int64{10, 20}, badToken: 10,
+			wantErr: "failed", wantStderr: "checkpoint id=10", wantVerify: 1, wantTailCP: 20},
+		{name: "a token without a local record fails", file: []int64{10}, badToken: 20,
+			wantErr: "failed", wantStderr: "checkpoint id=20", wantVerify: 1, wantTailCP: 10},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "anchors.jsonl")
+			local, err := audit.NewFileSink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cp := range tc.file {
+				if err := local.PublishRoot(context.Background(), cp, fmt.Sprintf("root-%d", cp)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.badToken != 0 {
+				dir := audit.TSATokenDir(path)
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%020d.tsr", tc.badToken)), []byte{0x30, 0x00}, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chain := newAnchorTestChain(30)
+			var out, errOut bytes.Buffer
+			err = verifyAnchorTSA(context.Background(), chain, local, path, x509.NewCertPool(), &out, &errOut)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+			}
+			if tc.wantStdout != "" && !strings.Contains(out.String(), tc.wantStdout) {
+				t.Errorf("stdout missing %q:\n%s", tc.wantStdout, out.String())
+			}
+			if tc.wantStderr != "" && !strings.Contains(errOut.String(), tc.wantStderr) {
+				t.Errorf("stderr missing %q:\n%s", tc.wantStderr, errOut.String())
+			}
+			if chain.verifyCalls != tc.wantVerify || chain.sawCP != tc.wantTailCP {
+				t.Fatalf("tail checks = %d from %d, want %d from %d", chain.verifyCalls, chain.sawCP, tc.wantVerify, tc.wantTailCP)
+			}
+		})
+	}
+}
+
+func TestRunAuditVerifyAnchorTSA_RejectsAnUnreadableBundle(t *testing.T) {
+	err := runAuditVerifyAnchorTSA(context.Background(), newAnchorTestChain(1), newAnchorTestFile(t), "anchors.jsonl", filepath.Join(t.TempDir(), "missing.pem"))
+	if err == nil || !strings.Contains(err.Error(), "TSA trust bundle") {
+		t.Fatalf("err = %v, want a trust-bundle error", err)
 	}
 }

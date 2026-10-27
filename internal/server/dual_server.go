@@ -47,6 +47,7 @@ import (
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/nicguard"
+	"github.com/footprintai/containarium/internal/notify"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/poolcapacity"
@@ -315,6 +316,7 @@ type DualServer struct {
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
 	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
+	notifyServer             *NotifyServer            // pushes waiting permission requests (#2185); nil without Postgres
 	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
@@ -493,6 +495,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// default and resume-on-restart silently never fired (caught live
 	// on a GCP backend while validating #1070).
 	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
+	// Box approval keys (#2184) are derived from the JWT secret, so answers
+	// signed for a box's permission requests need no new stored secret.
+	containerServer.SetApprovalKeySecret([]byte(config.JWTSecret))
 
 	// Per-tenant encrypted storage (#1341). Wired here so the create path can
 	// place an encrypted container on its tenant's pool; INERT until a
@@ -698,6 +703,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// enforcement yet.
 	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
 	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
+
+	// NotifyService (#2185) is registered only once its Postgres store is
+	// up (below); nil leaves the RPCs unimplemented and the watcher off.
+	var notifyServer *NotifyServer
 
 	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
 	// policy. It starts fail-closed; the real store is chosen by
@@ -1213,6 +1222,33 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
 				log.Printf("Tracker connection store ready")
+			}
+
+			// Notification channels (#2185): where a waiting `code run
+			// --approvals ask` request is pushed. Own pgxpool, like the
+			// tracker store; failure only disables NotifyService.
+			if notifyPool, notifyErr := pgGate.connect(postgresConnString, 3, 3*time.Second); notifyErr != nil {
+				log.Printf("Warning: Failed to connect to Postgres for notify store: %v", notifyErr)
+			} else if ntfStore, nerr := notify.NewPGStore(context.Background(), notifyPool); nerr != nil {
+				log.Printf("Warning: Failed to init notify store: %v. Notifications disabled.", nerr)
+				notifyPool.Close()
+			} else {
+				// A nil *secrets.Store must stay a nil interface: the
+				// service then refuses tokens instead of dereferencing it.
+				var notifySecrets notifySecretStore
+				if containerServer.secretsStore != nil {
+					notifySecrets = containerServer.secretsStore
+				}
+				// Private networks a self-hosted ntfy may be on; a bad value
+				// fails closed (public servers only).
+				allowed, aerr := notify.ParseAllowedCIDRs(os.Getenv(notify.AllowedCIDRsEnv))
+				if aerr != nil {
+					log.Printf("Warning: %v; notifications reach public ntfy servers only", aerr)
+					allowed = nil
+				}
+				notifyServer = NewNotifyServer(ntfStore, notifySecrets, containerServer.boxRunExecFn, containerServer.boxRunDir(), allowed)
+				pb.RegisterNotifyServiceServer(grpcServer, notifyServer)
+				log.Printf("Notify channel store ready")
 			}
 
 			// Connect to app store
@@ -2172,6 +2208,7 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
+		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -3115,6 +3152,7 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		notifyServer:           notifyServer,
 		modelGateway:           modelGW,
 		anonManager:            anonManager,
 		config:                 config,
@@ -3501,6 +3539,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	if ds.retentionReporter != nil {
 		go ds.retentionReporter.Run(ctx, retentionSweepInterval)
 	}
+	if ds.notifyServer != nil {
+		go ds.notifyServer.RunNotifyWatcher(ctx)
+	}
 	if ds.credentialWatcher != nil {
 		ds.credentialWatcher.Start(ctx)
 	}
@@ -3766,7 +3807,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			// #2880: CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
 			// adds an external copy in a retention-locked GCS bucket, written
 			// after the local file. Unset keeps file-only anchoring.
-			anchorSink, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
+			_, bucketSink, err := audit.AnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"), audit.NewGCSAnchorSink)
 			if err != nil {
 				log.Printf("[audit-anchor] ERROR: external anchor bucket disabled, anchoring to the local file only: %v", err)
 			}
@@ -3783,6 +3824,18 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				}()
 			}
 			ds.wireRetentionAnchor(fileSink, bucketSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_BUCKET"))
+			// #2728: CONTAINARIUM_AUDIT_ANCHOR_TSA_URL plus
+			// CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE add an RFC 3161
+			// timestamp token per checkpoint, stored in <anchor-path>.tsa/
+			// after the local file is written. Combinable with the bucket.
+			tsaSink, err := audit.TSAAnchorSinkFor(fileSink, os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_URL"), os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_TSA_TRUST_BUNDLE"))
+			if err != nil {
+				log.Printf("[audit-anchor] ERROR: timestamp-authority anchoring disabled: %v", err)
+			}
+			if tsaSink != nil {
+				log.Printf("[audit-anchor] stamping anchors at TSA %s, tokens in %s (file first)", tsaSink.URI(), tsaSink.TokenDir())
+			}
+			anchorSink := audit.ComposeAnchorSink(fileSink, bucketSink, tsaSink)
 			opts := audit.AnchorOptions{}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {

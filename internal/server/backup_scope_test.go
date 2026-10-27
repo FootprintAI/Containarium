@@ -202,6 +202,7 @@ func TestBoxCreateStatus(t *testing.T) {
 		{fmt.Errorf("wrapped: %w", backup.ErrInsufficientSpace), codes.ResourceExhausted},
 		{fmt.Errorf("wrapped: %w", backup.ErrDumpTooLarge), codes.ResourceExhausted},
 		{fmt.Errorf("wrapped: %w", backup.ErrBoxUnavailable), codes.FailedPrecondition},
+		{fmt.Errorf("wrapped: %w", backup.ErrBoxBackupInProgress), codes.Aborted},
 		{errors.New("export alice-container: connection reset"), codes.Internal},
 	} {
 		if got := status.Code(boxCreateStatus(tc.err)); got != tc.want {
