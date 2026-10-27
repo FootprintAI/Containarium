@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
+	sandboxv1beta1 "sigs.k8s.io/agent-sandbox/api/v1beta1"
 
 	"github.com/footprintai/containarium/pkg/core/volume"
 )
@@ -110,6 +111,9 @@ func (b *Backend) ListVolumes(ctx context.Context, tenant, pool string) ([]volum
 	selector := labels.Set{managedByLabel: managedByValue, tenantLabel: tenant, sharedVolumeLabel: "true"}.AsSelector().String()
 	list, err := b.clientset.CoreV1().PersistentVolumeClaims(b.namespaceFor(tenant)).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return []volume.Volume{}, nil
+		}
 		return nil, fmt.Errorf("k8s: list shared volume PVCs: %w", err)
 	}
 	volumes := make([]volume.Volume, 0, len(list.Items))
@@ -206,7 +210,7 @@ func (b *Backend) AttachVolume(ctx context.Context, tenant, name, pool, containe
 		}
 	}
 	for _, m := range sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts {
-		if m.MountPath == cleanPath {
+		if mountPathsOverlap(m.MountPath, cleanPath) {
 			return fmt.Errorf("k8s: mount path %q is already in use", cleanPath)
 		}
 	}
@@ -215,10 +219,11 @@ func (b *Backend) AttachVolume(ctx context.Context, tenant, name, pool, containe
 		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName, ReadOnly: readOnly}},
 	})
 	sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts = append(sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: volName, MountPath: cleanPath, ReadOnly: readOnly})
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{}); err != nil {
+	updated, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{})
+	if err != nil {
 		return fmt.Errorf("k8s: update sandbox to attach shared volume: %w", err)
 	}
-	return nil
+	return b.restartSandboxForVolumeChange(ctx, tenant, updated)
 }
 
 func (b *Backend) DetachVolume(ctx context.Context, tenant, name, container string) error {
@@ -263,10 +268,40 @@ func (b *Backend) DetachVolume(ctx context.Context, tenant, name, container stri
 	if !found {
 		return nil
 	}
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{}); err != nil {
+	updated, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{})
+	if err != nil {
 		return fmt.Errorf("k8s: update sandbox to detach shared volume: %w", err)
 	}
+	return b.restartSandboxForVolumeChange(ctx, tenant, updated)
+}
+
+// restartSandboxForVolumeChange recreates a live Sandbox pod so the controller
+// applies the changed volume mounts. Suspended Sandboxes pick up the template
+// change on their next start without an extra mode transition.
+func (b *Backend) restartSandboxForVolumeChange(ctx context.Context, tenant string, sb *sandboxv1beta1.Sandbox) error {
+	if sb.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeRunning {
+		return nil
+	}
+	if err := b.setSandboxOperatingMode(ctx, tenant, sb.Name, sandboxv1beta1.SandboxOperatingModeSuspended); err != nil {
+		return fmt.Errorf("k8s: suspend sandbox %q to apply shared-volume change: %w", sb.Name, err)
+	}
+	if err := b.setSandboxOperatingMode(ctx, tenant, sb.Name, sandboxv1beta1.SandboxOperatingModeRunning); err != nil {
+		return fmt.Errorf("k8s: resume sandbox %q to apply shared-volume change: %w", sb.Name, err)
+	}
 	return nil
+}
+
+func mountPathsOverlap(existing, requested string) bool {
+	existing = path.Clean(existing)
+	requested = path.Clean(requested)
+	return pathContains(existing, requested) || pathContains(requested, existing)
+}
+
+func pathContains(parent, child string) bool {
+	if parent == child || parent == "/" {
+		return true
+	}
+	return strings.HasPrefix(child, parent+"/")
 }
 
 // sandboxNameForVolume accepts the legacy tenant identifier as the default

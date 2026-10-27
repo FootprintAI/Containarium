@@ -506,9 +506,13 @@ func (b *Backend) Stop(ctx context.Context, ref box.BoxRef, force bool) error {
 // strategic) — CRDs don't support strategic merge, and for a scalar field the
 // two are equivalent.
 func (b *Backend) setOperatingMode(ctx context.Context, ref box.BoxRef, mode sandboxv1beta1.SandboxOperatingMode) error {
+	return b.setSandboxOperatingMode(ctx, ref.Tenant, sandboxName, mode)
+}
+
+func (b *Backend) setSandboxOperatingMode(ctx context.Context, tenant, name string, mode sandboxv1beta1.SandboxOperatingMode) error {
 	patch := []byte(fmt.Sprintf(`{"spec":{"operatingMode":%q}}`, mode))
-	_, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(ref.Tenant)).
-		Patch(ctx, sandboxName, types.MergePatchType, patch, metav1.PatchOptions{})
+	_, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(tenant)).
+		Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 
