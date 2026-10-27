@@ -271,7 +271,15 @@ func (w *inlineAnswers) refresh() {
 		var b strings.Builder
 		_ = runlog.WriteRequest(&b, r) // a strings.Builder does not fail
 		// Only a request that was actually printed can be answered.
-		if _, err := fmt.Fprintf(w.diag, "[containarium code] %s%s — type a + Enter to allow, d + Enter to deny\n%s", what, left, b.String()); err != nil {
+		// a / d answers the oldest printed request, which need not be this
+		// one: name it, so an allow never lands on a request the user did
+		// not mean.
+		target := r.GetRequestId()
+		if t := w.oldestLocked(); t != nil {
+			target = t.GetRequestId()
+		}
+		if _, err := fmt.Fprintf(w.diag, "[containarium code] %s%s\n%s[containarium code] a + Enter allows, d + Enter denies %s\n",
+			what, left, b.String(), coderun.PlainText(target)); err != nil {
 			continue
 		}
 		w.shown[r.GetRequestId()] = r
@@ -282,6 +290,10 @@ func (w *inlineAnswers) refresh() {
 func (w *inlineAnswers) oldest() *pb.RunInput {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.oldestLocked()
+}
+
+func (w *inlineAnswers) oldestLocked() *pb.RunInput {
 	for _, r := range w.open {
 		if shown, printed := w.shown[r.GetRequestId()]; printed {
 			return shown
@@ -319,6 +331,9 @@ func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
 		_ = runlog.WriteAnswerResult(&out, res) // ErrNotAnswered: the text says why
 		fmt.Fprint(w.diag, "[containarium code] "+out.String())
 		w.refresh()
+		if next := w.oldest(); next != nil {
+			fmt.Fprintf(w.diag, "[containarium code] a + Enter allows, d + Enter denies %s\n", coderun.PlainText(next.GetRequestId()))
+		}
 	}
 }
 
