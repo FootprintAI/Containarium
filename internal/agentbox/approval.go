@@ -161,7 +161,7 @@ func (s *approvalServer) journal(e coderun.InputEvent) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := os.OpenFile(s.journalPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(s.journalPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600) // #nosec G304 -- <log dir>/<run>.input.jsonl, run passed ValidApprovalRunName
 	if err != nil {
 		log.Printf("[approval-mcp] open journal: %v", err)
 		return
@@ -254,6 +254,7 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 		if !s.now().Before(deadline) {
 			return coderun.AnswerDeny, coderun.ReasonExpired
 		}
+		// #nosec G304 -- <log dir>/<run>.answers/<id>: run passed ValidApprovalRunName, id is this process's own random request id
 		if content, err := os.ReadFile(path); err == nil && string(content) != rejected {
 			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, string(content))
 			if verr == nil {

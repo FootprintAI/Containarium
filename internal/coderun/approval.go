@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Permission approvals for `code run --approvals ask` (#2183).
@@ -264,6 +266,24 @@ func SummarizeApprovals(events []InputEvent) ApprovalSummary {
 	return s
 }
 
+// plainText makes journal text safe to print on one terminal line. The prompt
+// is the agent's own tool input, and the agent can write the journal itself,
+// so a newline, carriage return, escape sequence or bidi override in it could
+// otherwise forge or hide the lines a human reads before answering. Each
+// control or format character is shown as its escaped form instead.
+func plainText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ApprovalStatusLines renders a summary for `code status` and the MCP
 // code_status tool. running says whether the run is still alive: an open
 // request on a dead run is not waiting on anyone. It returns "" for a run that
@@ -277,13 +297,13 @@ func ApprovalStatusLines(s ApprovalSummary, running bool, now time.Time) string 
 		b.WriteString("state: waiting_input\n")
 		for _, e := range s.Open {
 			fmt.Fprintf(&b, "  request %s: %s (expires in %s)\n",
-				e.RequestID, e.Prompt, e.ExpiresAt.Sub(now).Round(time.Second))
+				plainText(e.RequestID), plainText(e.Prompt), e.ExpiresAt.Sub(now).Round(time.Second))
 		}
 	}
 	fmt.Fprintf(&b, "permission requests: %d (allowed %d, denied %d, expired %d, cancelled %d, open %d)\n",
 		s.Requests, s.Allowed, s.Denied, s.Expired, s.Cancelled, len(s.Open))
 	for _, n := range s.Notes {
-		fmt.Fprintf(&b, "  note: %s\n", n)
+		fmt.Fprintf(&b, "  note: %s\n", plainText(n))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
