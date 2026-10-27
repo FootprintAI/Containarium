@@ -11,6 +11,7 @@ import (
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Platform-MCP wrappers for `containarium code` (#1698). Every operation here
@@ -147,7 +148,7 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 		started.Name, started.PID, box,
 		// This tool only builds the Claude tenant-secret command, so its
 		// traffic never crosses the gateway.
-		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, nil, true)),
+		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED)),
 		started.LogPath, next, out, started.Name, next), nil
 }
 
