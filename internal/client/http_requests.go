@@ -50,13 +50,14 @@ type containerResources struct {
 // for the other three — and omitted them entirely otherwise. Pointers
 // reproduce that exactly; plain strings with omitempty would not.
 type createContainerRequest struct {
-	Username     string             `json:"username"`
-	Resources    containerResources `json:"resources"`
-	SSHKeys      []string           `json:"sshKeys"`
-	Image        string             `json:"image"`
-	EnablePodman bool               `json:"enablePodman"`
-	Stack        string             `json:"stack"`
-	GPUs         []string           `json:"gpus"`
+	NetworkTenant string             `json:"networkTenant,omitempty"`
+	Username      string             `json:"username"`
+	Resources     containerResources `json:"resources"`
+	SSHKeys       []string           `json:"sshKeys"`
+	Image         string             `json:"image"`
+	EnablePodman  bool               `json:"enablePodman"`
+	Stack         string             `json:"stack"`
+	GPUs          []string           `json:"gpus"`
 	// The generated enum, not a string: json.Marshal emits its numeric
 	// value, which is what the previous map sent and what protojson
 	// accepts on the server side.

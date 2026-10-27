@@ -167,7 +167,20 @@ func (r *Reconciler) Run(ctx context.Context, events <-chan struct{}) {
 // returned so the caller can refuse the create rather than start a box
 // that co-tenants can reach.
 func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) error {
+	return r.prepare(ctx, containerName, tenant, false)
+}
+
+// PrepareNetworkTenant requires working ENFORCE + NIC-ACL support at birth.
+// In contrast to legacy Prepare it never silently skips unsupported hosts.
+func (r *Reconciler) PrepareNetworkTenant(ctx context.Context, containerName, tenant string) error {
+	return r.prepare(ctx, containerName, tenant, true)
+}
+
+func (r *Reconciler) prepare(ctx context.Context, containerName, tenant string, required bool) error {
 	if r.cfg.Mode != nicguard.ModeEnforce {
+		if required {
+			return fmt.Errorf("explicit network Tenant requires ENFORCE NIC guard")
+		}
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -180,6 +193,9 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 	defer r.writeMu.Unlock()
 	if _, err := nicguard.CheckSupport(r.be); err != nil {
 		if nicguard.Unsupported(err) {
+			if required {
+				return fmt.Errorf("explicit network Tenant requires supported NIC ACLs: %w", err)
+			}
 			// This host cannot carry bridge NIC ACLs at all (driver or
 			// Incus too old). Refusing every create here would turn a
 			// missing capability into an outage; the pass reports it and

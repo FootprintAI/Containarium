@@ -65,8 +65,9 @@ type ResourceLimits struct {
 // the spec exist and returns a BoxStatus. Create must be idempotent on
 // re-create (the agent-skills bring-up taught us this the hard way, #669).
 type BoxSpec struct {
-	Ref   BoxRef
-	Image string
+	NetworkTenant string // Explicit native NIC security domain; local Linux LXC only.
+	Ref           BoxRef
+	Image         string
 	// Mode selects the box's SSH session behavior on backends that support it
 	// (K8s → the agent-box image's AGENTBOX_MODE: "mcp" forced-command MCP, or
 	// "shell" interactive login shell). Empty uses the backend's configured
@@ -160,15 +161,17 @@ type BoxEndpoint struct {
 // The backend is responsible for translating its substrate's native form into
 // this shape — the server depends on BoxStatus, not on any incus type.
 type BoxStatus struct {
-	Ref       BoxRef
-	State     pb.ContainerState
-	IPAddress string
-	Resources ResourceLimits
-	Labels    map[string]string
-	GPU       string   // first GPU device, for display/back-compat
-	GPUs      []string // all attached GPU devices
-	BackendID string   // which backend/peer the box runs on
-	CreatedAt time.Time
+	NetworkTenant       string
+	NetworkTenantSource pb.NetworkTenantSource
+	Ref                 BoxRef
+	State               pb.ContainerState
+	IPAddress           string
+	Resources           ResourceLimits
+	Labels              map[string]string
+	GPU                 string   // first GPU device, for display/back-compat
+	GPUs                []string // all attached GPU devices
+	BackendID           string   // which backend/peer the box runs on
+	CreatedAt           time.Time
 	// Isolation is how the box is actually isolated, read back from the
 	// backend (LXC: the Incus instance type). UNSPECIFIED when unknown.
 	Isolation pb.IsolationType

@@ -5308,6 +5308,40 @@
         ]
       }
     },
+    "/v1/network-policies/tenant-access": {
+      "post": {
+        "summary": "Patch cross-Tenant ingress access",
+        "description": "Administrator and network-policy:write required. Updates only ingress sources in one transaction; full-policy revision conflicts abort the batch. Does not test TCP.",
+        "operationId": "NetworkPolicyService_PatchTenantAccess",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PatchTenantAccessResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PatchTenantAccessRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policies/{tenant}": {
       "get": {
         "summary": "Get network policy",
@@ -5529,6 +5563,30 @@
         ],
         "tags": [
           "NetworkPolicy"
+        ]
+      }
+    },
+    "/v1/network-tenants/capabilities": {
+      "get": {
+        "summary": "Get native network Tenant capabilities",
+        "description": "Authenticated admin capability query; policy writes are not implied by shared creation.",
+        "operationId": "NetworkService_GetNetworkTenantCapabilities",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNetworkTenantCapabilitiesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Network"
         ]
       }
     },
@@ -12949,6 +13007,14 @@
         "toolAccess": {
           "$ref": "#/definitions/BoxToolAccess",
           "description": "The tool-access level recorded for platform-started runs (#2944), read\nback from the instance config. UNSPECIFIED when none is recorded."
+        },
+        "networkTenant": {
+          "type": "string",
+          "description": "Resolved from current local Provider config, not the create request."
+        },
+        "networkTenantSource": {
+          "$ref": "#/definitions/NetworkTenantSource",
+          "description": "Which current Provider identity input selected network_tenant."
         }
       }
     },
@@ -13350,6 +13416,10 @@
         "dryRun": {
           "type": "boolean",
           "description": "Validate only (#2925). Runs every pre-flight check the create would run\n(bounds, stack id, TTL and idle-stop ranges, encryption wiring, pool\nplacement, ssh keys, image policy, CPU admission) and returns before\nanything is provisioned: no storage, no Box CR, no instance, no async\njob, and no CPU reservation is left behind. A rejection comes back as\nthe same error the real create would return; success comes back with\n`dry_run` set on the response. Its purpose is `create --force`, which\ndeletes the existing box first and must not do so for a request the\ndaemon would reject. It does not check whether the box already exists\n(a --force caller expects it to).\n\nA create bound for a peer backend is NOT forwarded: a peer that predates\nthis field would ignore it and really create the box. The stack is checked\nagainst that peer's own catalog (#2952), read with an ordinary\nGET /v1/stacks; the response says the peer's other checks were not run."
+        },
+        "networkTenant": {
+          "type": "string",
+          "description": "Administrator-authorized native NIC security domain, independent of the\nencryption tenant_id. Local Linux LXC only; required Guard before Start.\nEmpty retains the default identity resolution (subject to authorization)."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -15529,6 +15599,10 @@
       "properties": {
         "policy": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicy"
+        },
+        "revision": {
+          "type": "string",
+          "description": "SHA256 of the complete observed policy for optimistic ingress edits."
         }
       }
     },
@@ -15540,6 +15614,40 @@
         }
       },
       "description": "GetNetworkPolicyStatusResponse carries the tenant's applied state."
+    },
+    "GetNetworkTenantCapabilitiesResponse": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "type": "string",
+          "description": "Stable contract identifier; never infer capabilities from a version string."
+        },
+        "nativeMembershipRead": {
+          "type": "boolean",
+          "description": "Provider list/get exposes resolved native membership and source."
+        },
+        "sharedTenantCreate": {
+          "type": "boolean",
+          "description": "Current local enforced Guard and create path are ready for shared creation."
+        },
+        "atomicTenantAccess": {
+          "type": "boolean",
+          "description": "Atomic ingress-only cross-Tenant editing support, independent of creation."
+        },
+        "networkPolicyWrite": {
+          "type": "boolean",
+          "description": "Current credential authorization for the atomic policy contract."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Explanation when local shared creation is unavailable."
+        },
+        "backendScope": {
+          "type": "string",
+          "description": "Scope of verified creation and membership evidence: local-lxc\n(incus.NativeTenantBackendScope) — this daemon's own local Linux LXC\nbackend only."
+        }
+      },
+      "description": "GetNetworkTenantCapabilitiesResponse is the capability handshake between a\ndaemon and its clients (CLI, Host MCP, external gRPC consumers). Clients\nmust match contract against the daemon-published constant\n(incus.NativeTenantContractID, \"native-network-tenant/v1\") before relying\non the additive create-time network_tenant field."
     },
     "GetNetworkTopologyResponse": {
       "type": "object",
@@ -17990,6 +18098,17 @@
       "default": "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
       "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel is known to be too old for egress enforcement (TCX attach\nneeds 6.6 or newer), so the egress program cannot be attached here whatever\nthe other fields say. Reported in every state, including when no enforcer\nis running. A kernel release that cannot be read or parsed is unknown and\nis not reported as unsupported (#2972).\n - NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: The tenant's egress allow-list in the kernel is not what its policy says:\nthe last reconcile pass failed to add or remove at least one entry. In\nenforce mode a missing entry denies traffic the policy allows, and an entry\nthat could not be removed keeps allowing traffic the policy no longer does.\nThe failed entries are retried on the next pass."
     },
+    "NetworkTenantSource": {
+      "type": "string",
+      "enum": [
+        "NETWORK_TENANT_SOURCE_UNSPECIFIED",
+        "NETWORK_TENANT_SOURCE_NATIVE",
+        "NETWORK_TENANT_SOURCE_CLOUD_ORG_ID",
+        "NETWORK_TENANT_SOURCE_NAME"
+      ],
+      "default": "NETWORK_TENANT_SOURCE_UNSPECIFIED",
+      "description": "NetworkTenantSource identifies the authoritative Provider resolution input."
+    },
     "NetworkTopology": {
       "type": "object",
       "properties": {
@@ -18178,6 +18297,37 @@
         }
       },
       "description": "PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch\ndeny rules (#660): the server reads the current rules, removes any whose CIDR\nis in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by\nCIDR — an add for an existing CIDR replaces it), re-normalizes, and writes\nback under a lock, so concurrent edits don't lose updates. The allow-policy\n(egress, mode, intra, metadata) is untouched. The normalized stored policy is\nechoed back."
+    },
+    "PatchTenantAccessRequest": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TenantAccessChange"
+          }
+        }
+      }
+    },
+    "PatchTenantAccessResponse": {
+      "type": "object",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TenantAccessPolicy"
+          }
+        },
+        "applicationState": {
+          "$ref": "#/definitions/TenantAccessApplicationState",
+          "description": "A committed store write is separate from guard convergence and TCP testing."
+        },
+        "connectivityTested": {
+          "type": "boolean"
+        }
+      }
     },
     "PentestConfig": {
       "type": "object",
@@ -22402,6 +22552,53 @@
       ],
       "default": "TASK_NODE_STATE_UNSPECIFIED",
       "description": "TaskNodeState distinguishes execution failures from dependencies never run."
+    },
+    "TenantAccessApplicationState": {
+      "type": "string",
+      "enum": [
+        "TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED",
+        "TENANT_ACCESS_APPLICATION_STATE_PENDING",
+        "TENANT_ACCESS_APPLICATION_STATE_GUARD_VERIFIED",
+        "TENANT_ACCESS_APPLICATION_STATE_DEGRADED"
+      ],
+      "default": "TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED",
+      "description": "TenantAccessApplicationState describes enforcement evidence after a commit."
+    },
+    "TenantAccessChange": {
+      "type": "object",
+      "properties": {
+        "destination": {
+          "type": "string",
+          "description": "Destination policy: listed sources may initiate connections into it."
+        },
+        "addSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "removeSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "string",
+          "description": "SHA256 of the entire observed policy, or \"absent\". Required to prevent lost previews."
+        }
+      }
+    },
+    "TenantAccessPolicy": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicy"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
     },
     "TerminateUserSessionsBody": {
       "type": "object",

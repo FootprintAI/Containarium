@@ -186,6 +186,7 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Enable Podman support (default: true)",
 					},
+					"network_tenant": map[string]interface{}{"type": "string", "description": "Administrator-authorized native network Tenant; local Linux LXC only. Independent of encryption tenant_id; enforced NIC ACL before first Start."},
 					"disable_auto_sleep": map[string]interface{}{
 						"type":        "boolean",
 						"description": "Create the box with NO auto-sleep timer (default: false). Only matters on a hosted platform that defaults some orgs (for example seat-billed ones) to a 30-minute idle-stop; a self-hosted daemon never auto-sleeps a new box and ignores it.",
@@ -1903,6 +1904,8 @@ func (s *Server) registerTools() {
 	// entry here or they default to `""` (no-scope, allowed
 	// to any token) — see TestEveryToolHasScope which
 	// enforces this in CI.
+	s.tools = append(s.tools, networkTenantCapabilityTool())
+	s.tools = append(s.tools, tenantNetworkTools()...)
 	scopeByTool := toolScopeAssignments()
 	for i := range s.tools {
 		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
@@ -1992,9 +1995,13 @@ func toolScopeAssignments() map[string]string {
 		// routes / network exposure
 		"list_routes": auth.ScopeRoutesRead,
 		// network guards (#2353): read-only security posture.
-		"network_guard_status": auth.ScopeSecurityRead,
-		"expose_port":          auth.ScopeRoutesWrite,
-		"delete_route":         auth.ScopeRoutesWrite,
+		"network_guard_status":        auth.ScopeSecurityRead,
+		"network_tenant_capabilities": auth.ScopeContainersRead,
+		"list_network_policies":       auth.ScopeNetworkPolicyRead,
+		"get_network_policy":          auth.ScopeNetworkPolicyRead,
+		"patch_tenant_access":         auth.ScopeNetworkPolicyWrite,
+		"expose_port":                 auth.ScopeRoutesWrite,
+		"delete_route":                auth.ScopeRoutesWrite,
 		// collaborators (#1145) — container access control, scoped like any
 		// other container write/read (the RPCs themselves gate on
 		// AuthorizeTenant, same as create/delete container).
@@ -2097,6 +2104,11 @@ func toolScopeAssignments() map[string]string {
 // Tool handlers
 
 func handleCreateContainer(client API, args map[string]interface{}) (string, error) {
+	if value, exists := args["network_tenant"]; exists {
+		if _, ok := value.(string); !ok {
+			return "", fmt.Errorf("network_tenant must be a string")
+		}
+	}
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -2122,7 +2134,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	}
 
 	req := CreateContainerRequest{
-		Username: username,
+		NetworkTenant: getStringArg(args, "network_tenant", ""),
+		Username:      username,
 		Resources: &ResourceLimits{
 			CPU:    getStringArg(args, "cpu", "4"),
 			Memory: getStringArg(args, "memory", "4GB"),
@@ -2307,6 +2320,9 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 	for _, container := range resp.Containers {
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)
+		if container.NetworkTenant != "" {
+			result += fmt.Sprintf("   Network Tenant: %s (%s)\n", container.NetworkTenant, container.NetworkTenantSource)
+		}
 		result += fmt.Sprintf("   State: %s\n", container.State)
 		// Show WHERE the box actually runs. A wrong/typo'd backend_id silently
 		// falls back to the default pool, so surfacing the resolved backend is

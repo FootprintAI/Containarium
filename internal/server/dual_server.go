@@ -2271,6 +2271,21 @@ skipAppHosting:
 	}
 	if networkServer != nil {
 		networkServer.SetGuards(coreGuard, tenantGuard)
+		networkServer.nativeTenantLocal = containerServer.nativeTenantLocalLXC()
+		ready := func() bool {
+			if !containerServer.nativeTenantLocalLXC() || tenantGuard == nil || !npServer.Durable() {
+				return false
+			}
+			return nativeTenantGuardCapable(tenantGuardStatusToProto(tenantGuard.Status()), time.Now())
+		}
+		npServer.tenantStoreDurable = func() bool { return npServer.Durable() }
+		if tenantGuard != nil && containerServer.nativeTenantLocalLXC() {
+			npServer.tenantGuardRead = func() *pb.GuardStatus { return tenantGuardStatusToProto(tenantGuard.Status()) }
+			npServer.tenantGuardReconcile = tenantGuard.ReconcileOnce
+		}
+		networkServer.atomicTenantAccessReady = npServer.atomicTenantAccessAvailable
+		networkServer.nativeTenantReady = ready
+		containerServer.nativeTenantReady = ready
 	}
 
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`

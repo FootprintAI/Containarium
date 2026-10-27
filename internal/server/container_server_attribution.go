@@ -29,7 +29,14 @@ import (
 // Cloud→daemon plumbing (like /authorized-keys/sentinel), not a standalone
 // operator action — stamping cloud org UUIDs by hand is meaningless, so there's
 // no `containarium` CLI verb; the operator surface is the cloud's adopt flow.
+// The admin role is required (on top of containers:write) because cloud_org_id
+// is a protected attribution label that also feeds tenant resolution: the
+// control plane's adopt token must carry the admin role, matching create-time
+// stamping, and a tenant can never re-attribute its own box.
 func (s *ContainerServer) SetContainerAttribution(ctx context.Context, req *pb.SetContainerAttributionRequest) (*pb.SetContainerAttributionResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
 		return nil, err
 	}
@@ -43,6 +50,10 @@ func (s *ContainerServer) SetContainerAttribution(ctx context.Context, req *pb.S
 		if k == "" {
 			return nil, status.Error(codes.InvalidArgument, "label key must not be empty")
 		}
+	}
+
+	if err := authorizeNetworkTenantLabels(ctx, req.Labels); err != nil {
+		return nil, err
 	}
 
 	username := req.Name

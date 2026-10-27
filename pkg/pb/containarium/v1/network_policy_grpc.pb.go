@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	NetworkPolicyService_PatchTenantAccess_FullMethodName            = "/containarium.v1.NetworkPolicyService/PatchTenantAccess"
 	NetworkPolicyService_SetNetworkPolicy_FullMethodName             = "/containarium.v1.NetworkPolicyService/SetNetworkPolicy"
 	NetworkPolicyService_GetNetworkPolicy_FullMethodName             = "/containarium.v1.NetworkPolicyService/GetNetworkPolicy"
 	NetworkPolicyService_ListNetworkPolicies_FullMethodName          = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
@@ -43,6 +44,8 @@ const (
 // BPF loader (a later increment) consumes the stored policies and programs the
 // kernel. Admin-only — policies are fleet-shaping config, not tenant-editable.
 type NetworkPolicyServiceClient interface {
+	// Atomically edits destination ingress sources; all revisions must match.
+	PatchTenantAccess(ctx context.Context, in *PatchTenantAccessRequest, opts ...grpc.CallOption) (*PatchTenantAccessResponse, error)
 	// SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
 	// The policy is validated + normalized; the stored form is echoed back.
 	SetNetworkPolicy(ctx context.Context, in *SetNetworkPolicyRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
@@ -88,6 +91,16 @@ type networkPolicyServiceClient struct {
 
 func NewNetworkPolicyServiceClient(cc grpc.ClientConnInterface) NetworkPolicyServiceClient {
 	return &networkPolicyServiceClient{cc}
+}
+
+func (c *networkPolicyServiceClient) PatchTenantAccess(ctx context.Context, in *PatchTenantAccessRequest, opts ...grpc.CallOption) (*PatchTenantAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PatchTenantAccessResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_PatchTenantAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *networkPolicyServiceClient) SetNetworkPolicy(ctx context.Context, in *SetNetworkPolicyRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error) {
@@ -202,6 +215,8 @@ func (c *networkPolicyServiceClient) DeleteNetworkPolicySignature(ctx context.Co
 // BPF loader (a later increment) consumes the stored policies and programs the
 // kernel. Admin-only — policies are fleet-shaping config, not tenant-editable.
 type NetworkPolicyServiceServer interface {
+	// Atomically edits destination ingress sources; all revisions must match.
+	PatchTenantAccess(context.Context, *PatchTenantAccessRequest) (*PatchTenantAccessResponse, error)
 	// SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
 	// The policy is validated + normalized; the stored form is echoed back.
 	SetNetworkPolicy(context.Context, *SetNetworkPolicyRequest) (*SetNetworkPolicyResponse, error)
@@ -249,6 +264,9 @@ type NetworkPolicyServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNetworkPolicyServiceServer struct{}
 
+func (UnimplementedNetworkPolicyServiceServer) PatchTenantAccess(context.Context, *PatchTenantAccessRequest) (*PatchTenantAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PatchTenantAccess not implemented")
+}
 func (UnimplementedNetworkPolicyServiceServer) SetNetworkPolicy(context.Context, *SetNetworkPolicyRequest) (*SetNetworkPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetNetworkPolicy not implemented")
 }
@@ -298,6 +316,24 @@ func RegisterNetworkPolicyServiceServer(s grpc.ServiceRegistrar, srv NetworkPoli
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&NetworkPolicyService_ServiceDesc, srv)
+}
+
+func _NetworkPolicyService_PatchTenantAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PatchTenantAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).PatchTenantAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_PatchTenantAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).PatchTenantAccess(ctx, req.(*PatchTenantAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _NetworkPolicyService_SetNetworkPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -487,6 +523,10 @@ var NetworkPolicyService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.NetworkPolicyService",
 	HandlerType: (*NetworkPolicyServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PatchTenantAccess",
+			Handler:    _NetworkPolicyService_PatchTenantAccess_Handler,
+		},
 		{
 			MethodName: "SetNetworkPolicy",
 			Handler:    _NetworkPolicyService_SetNetworkPolicy_Handler,

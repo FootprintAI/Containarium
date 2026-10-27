@@ -134,6 +134,8 @@ moved:sync-accounts
 moved:tunnel
 moved:upgrade-watchdog
 network-guard status
+network-policy access apply
+network-policy access preview
 network-policy delete
 network-policy get
 network-policy list
@@ -146,6 +148,7 @@ network-policy signature add
 network-policy signature list
 network-policy signature rm
 network-policy status
+network-tenant capabilities
 notify delete
 notify set ntfy
 notify show

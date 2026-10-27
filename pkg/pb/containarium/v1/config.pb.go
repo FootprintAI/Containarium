@@ -2982,8 +2982,10 @@ func (x *GetNetworkPolicyRequest) GetTenant() string {
 }
 
 type GetNetworkPolicyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Policy        *NetworkPolicy         `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Policy *NetworkPolicy         `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	// SHA256 of the complete observed policy for optimistic ingress edits.
+	Revision      string `protobuf:"bytes,2,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3023,6 +3025,13 @@ func (x *GetNetworkPolicyResponse) GetPolicy() *NetworkPolicy {
 		return x.Policy
 	}
 	return nil
+}
+
+func (x *GetNetworkPolicyResponse) GetRevision() string {
+	if x != nil {
+		return x.Revision
+	}
+	return ""
 }
 
 type ListNetworkPoliciesRequest struct {
@@ -5560,9 +5569,10 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x18SetNetworkPolicyResponse\x126\n" +
 	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.NetworkPolicyR\x06policy\"1\n" +
 	"\x17GetNetworkPolicyRequest\x12\x16\n" +
-	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"R\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"n\n" +
 	"\x18GetNetworkPolicyResponse\x126\n" +
-	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.NetworkPolicyR\x06policy\"\x1c\n" +
+	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.NetworkPolicyR\x06policy\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\tR\brevision\"\x1c\n" +
 	"\x1aListNetworkPoliciesRequest\"Y\n" +
 	"\x1bListNetworkPoliciesResponse\x12:\n" +
 	"\bpolicies\x18\x01 \x03(\v2\x1e.containarium.v1.NetworkPolicyR\bpolicies\"4\n" +

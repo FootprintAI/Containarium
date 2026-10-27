@@ -52,13 +52,16 @@ const defaultCloudInitWait = 5 * time.Second
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
-	Username string
-	Image    string
-	CPU      string
-	Memory   string
-	Disk     string   // Disk size (e.g., "20GB")
-	GPUs     []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
-	StaticIP string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+	// NetworkTenant is an explicit, administrator-authorized NIC security domain.
+	// It is independent of the encryption tenant_id and of cloud labels.
+	NetworkTenant string
+	Username      string
+	Image         string
+	CPU           string
+	Memory        string
+	Disk          string   // Disk size (e.g., "20GB")
+	GPUs          []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
+	StaticIP      string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 
 	// StoragePool overrides the daemon-wide storage pool for this create.
 	// Empty uses the configured pool (#1213). See box.BoxSpec.StoragePool for
@@ -176,6 +179,14 @@ var (
 
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
+	if opts.NetworkTenant != "" {
+		if err := incus.ValidateNetworkTenant(opts.NetworkTenant); err != nil {
+			return nil, err
+		}
+		if cloud := opts.Labels[incus.CloudOrgIDLabel]; cloud != "" && cloud != opts.NetworkTenant {
+			return nil, fmt.Errorf("network Tenant conflicts with cloud attribution")
+		}
+	}
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
@@ -248,7 +259,15 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if opts.Verbose {
 		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
 	}
-	labelConfig := make(map[string]string, len(opts.Labels))
+	labelConfig := make(map[string]string, len(opts.Labels)+1)
+	if opts.NetworkTenant != "" {
+		if isVM {
+			return nil, fmt.Errorf("explicit network Tenant requires LXC")
+		}
+		// Persist the native membership with the initial instance config.
+		// Generic labels are not authoritative network membership.
+		labelConfig[incus.TenantLabelKey] = opts.NetworkTenant
+	}
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
@@ -267,9 +286,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Memory:                 opts.Memory,
 		EnableNesting:          opts.EnablePodman,
 		EnablePodmanPrivileged: opts.EnablePodmanPrivileged,
-		AutoStart:              opts.AutoStart,
-		Env:                    otelEnvVars(opts, containerName),
-		ExtraConfig:            labelConfig,
+		// Explicit membership requires a guarded, non-started instance.
+		AutoStart:   opts.AutoStart && opts.NetworkTenant == "",
+		Env:         otelEnvVars(opts, containerName),
+		ExtraConfig: labelConfig,
 	}
 	// Record whether podman was requested, always, so a box created with it
 	// off is distinguishable from a legacy box with no key (#2858).
@@ -359,8 +379,12 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// Guard the NIC before the first start (tenant network guard): a box
 	// that cannot be guarded is deleted rather than started reachable.
 	if err := m.guardNIC(containerName, opts); err != nil {
-		_ = m.incus.DeleteContainer(containerName)
-		return nil, err
+		return nil, m.cleanupGuardedCreate(containerName, err)
+	}
+	if opts.NetworkTenant != "" && opts.AutoStart {
+		if err := m.incus.SetConfig(containerName, "boot.autostart", "true"); err != nil {
+			return nil, m.cleanupGuardedCreate(containerName, fmt.Errorf("%w: guarded autostart: %v", ErrNICGuard, err))
+		}
 	}
 
 	// Step 2: Start container

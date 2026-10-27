@@ -12,6 +12,7 @@ import (
 
 	"github.com/cilium/ebpf/perf"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/footprintai/containarium/internal/audit"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -1137,6 +1138,20 @@ func (e *NetworkPolicyEnforcer) planPolicies(ctx context.Context, views []contai
 	if err != nil {
 		return nil, err
 	}
+	for _, view := range views {
+		if _, exists := policies[view.Tenant]; exists {
+			continue
+		}
+		legacy, account := incus.LegacyAccountPolicyKey(view.Tenant)
+		if !account {
+			continue
+		}
+		if inherited, exists := policies[legacy]; exists {
+			inherited.Tenant = view.Tenant
+			inherited.AllowFromTenants = nil
+			policies[view.Tenant] = inherited
+		}
+	}
 	if e.defaultOn {
 		policies = withDefaultPolicies(policies, views, e.defaultPolicyFor)
 	}
@@ -1162,6 +1177,24 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 		// here (not in the pure netpolicy/plan layer) so those stay time-free.
 		c.DenyRules = activeDenyRules(c.DenyRules, time.Now())
 		out[c.Tenant] = c
+	}
+	// An ingress-only account row created by PatchTenantAccess must not turn
+	// a legacy ENFORCE egress policy into the default log-only policy.
+	for _, p := range stored {
+		legacy, account := incus.LegacyAccountPolicyKey(p.GetTenant())
+		if !account {
+			continue
+		}
+		remainder := proto.Clone(p).(*pb.NetworkPolicy)
+		remainder.Tenant, remainder.AllowFromTenants = "", nil
+		if !proto.Equal(remainder, &pb.NetworkPolicy{}) {
+			continue
+		}
+		if inherited, exists := out[legacy]; exists {
+			inherited.Tenant = p.Tenant
+			inherited.AllowFromTenants = nil
+			out[p.Tenant] = inherited
+		}
 	}
 	return out, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"io"
 	"log"
 	"net/http"
@@ -187,6 +188,16 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 
 // CreateContainer creates a new container
 func (c *Client) CreateContainer(req CreateContainerRequest) (*CreateContainerResponse, error) {
+	if req.NetworkTenant != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if caps.Contract != incus.NativeTenantContractID || caps.BackendScope != incus.NativeTenantBackendScope || !caps.NativeMembershipRead || !caps.SharedTenantCreate {
+			return nil, fmt.Errorf("provider does not advertise ready native network Tenant creation")
+		}
+	}
+
 	respBody, err := c.doRequest("POST", "/v1/containers", req)
 	if err != nil {
 		return nil, err
@@ -2042,12 +2053,13 @@ func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, er
 // API Request/Response types
 
 type CreateContainerRequest struct {
-	Username     string            `json:"username"`
-	Resources    *ResourceLimits   `json:"resources,omitempty"`
-	SSHKeys      []string          `json:"sshKeys,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Image        string            `json:"image,omitempty"`
-	EnablePodman bool              `json:"enablePodman,omitempty"`
+	NetworkTenant string            `json:"networkTenant,omitempty"`
+	Username      string            `json:"username"`
+	Resources     *ResourceLimits   `json:"resources,omitempty"`
+	SSHKeys       []string          `json:"sshKeys,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	EnablePodman  bool              `json:"enablePodman,omitempty"`
 
 	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
 	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
@@ -2378,12 +2390,14 @@ type ListPassthroughRoutesResponse struct {
 }
 
 type Container struct {
-	Name      string          `json:"name"`
-	Username  string          `json:"username"`
-	State     string          `json:"state"`
-	Resources *ResourceLimits `json:"resources,omitempty"`
-	SSHKeys   []string        `json:"sshKeys,omitempty"`
-	Network   *NetworkInfo    `json:"network,omitempty"`
+	NetworkTenant       string          `json:"networkTenant"`
+	NetworkTenantSource string          `json:"networkTenantSource"`
+	Name                string          `json:"name"`
+	Username            string          `json:"username"`
+	State               string          `json:"state"`
+	Resources           *ResourceLimits `json:"resources,omitempty"`
+	SSHKeys             []string        `json:"sshKeys,omitempty"`
+	Network             *NetworkInfo    `json:"network,omitempty"`
 	// CreatedAt / UpdatedAt come back as JSON strings from the platform's
 	// grpc-gateway HTTP layer — int64 protobuf scalars are emitted as
 	// strings to avoid JavaScript number-precision loss. The `,string`

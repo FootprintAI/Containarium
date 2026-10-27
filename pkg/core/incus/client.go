@@ -490,7 +490,7 @@ const ContainerNameSuffix = "-container"
 // the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
 // attribution label; then the <tenant>-container naming convention. ""
 // when none yields a tenant — the container is then left unmanaged and
-// reported, never guessed.
+// reported, never guessed. Account and shared-domain identities stay distinct.
 func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
 		return t
@@ -547,16 +547,17 @@ type ContainerInfo struct {
 	// container IP in direct mode, the sentinel's public host when routed
 	// through one. Empty when the daemon doesn't report it (local Incus,
 	// older daemons) — callers then fall back to IPAddress.
-	SSHHost      string
-	CPU          string
-	Memory       string
-	Disk         string
-	GPU          string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
-	GPUs         []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
-	InstanceType string   // "container" or "virtual-machine"
-	Labels       map[string]string
-	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
-	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
+	SSHHost             string
+	CPU                 string
+	Memory              string
+	Disk                string
+	GPU                 string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
+	GPUs                []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
+	InstanceType        string   // "container" or "virtual-machine"
+	Labels              map[string]string
+	Role                Role                // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
+	NetworkTenantSource NetworkTenantSource // Populated by remote API clients.
+	Tenant              string              // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
 	// Managed is true when the instance carries any user.containarium.* config
 	// key, i.e. Containarium created or adopted it. An instance made directly
 	// with `incus launch` has none.
@@ -1383,6 +1384,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 
 	info := &ContainerInfo{
 		Name:                 inst.Name,
+		InstanceType:         inst.Type,
 		State:                inst.Status,
 		CreatedAt:            inst.CreatedAt,
 		Labels:               extractLabelsFromConfig(inst.Config),

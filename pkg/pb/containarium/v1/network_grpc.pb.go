@@ -19,22 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NetworkService_GetNetworkGuardStatus_FullMethodName  = "/containarium.v1.NetworkService/GetNetworkGuardStatus"
-	NetworkService_GetRoutes_FullMethodName              = "/containarium.v1.NetworkService/GetRoutes"
-	NetworkService_AddRoute_FullMethodName               = "/containarium.v1.NetworkService/AddRoute"
-	NetworkService_UpdateRoute_FullMethodName            = "/containarium.v1.NetworkService/UpdateRoute"
-	NetworkService_DeleteRoute_FullMethodName            = "/containarium.v1.NetworkService/DeleteRoute"
-	NetworkService_ListDNSRecords_FullMethodName         = "/containarium.v1.NetworkService/ListDNSRecords"
-	NetworkService_ListPassthroughRoutes_FullMethodName  = "/containarium.v1.NetworkService/ListPassthroughRoutes"
-	NetworkService_AddPassthroughRoute_FullMethodName    = "/containarium.v1.NetworkService/AddPassthroughRoute"
-	NetworkService_DeletePassthroughRoute_FullMethodName = "/containarium.v1.NetworkService/DeletePassthroughRoute"
-	NetworkService_UpdatePassthroughRoute_FullMethodName = "/containarium.v1.NetworkService/UpdatePassthroughRoute"
-	NetworkService_GetContainerACL_FullMethodName        = "/containarium.v1.NetworkService/GetContainerACL"
-	NetworkService_UpdateContainerACL_FullMethodName     = "/containarium.v1.NetworkService/UpdateContainerACL"
-	NetworkService_GetNetworkTopology_FullMethodName     = "/containarium.v1.NetworkService/GetNetworkTopology"
-	NetworkService_ListACLPresets_FullMethodName         = "/containarium.v1.NetworkService/ListACLPresets"
-	NetworkService_StartEgressProxy_FullMethodName       = "/containarium.v1.NetworkService/StartEgressProxy"
-	NetworkService_StopEgressProxy_FullMethodName        = "/containarium.v1.NetworkService/StopEgressProxy"
+	NetworkService_GetNetworkTenantCapabilities_FullMethodName = "/containarium.v1.NetworkService/GetNetworkTenantCapabilities"
+	NetworkService_GetNetworkGuardStatus_FullMethodName        = "/containarium.v1.NetworkService/GetNetworkGuardStatus"
+	NetworkService_GetRoutes_FullMethodName                    = "/containarium.v1.NetworkService/GetRoutes"
+	NetworkService_AddRoute_FullMethodName                     = "/containarium.v1.NetworkService/AddRoute"
+	NetworkService_UpdateRoute_FullMethodName                  = "/containarium.v1.NetworkService/UpdateRoute"
+	NetworkService_DeleteRoute_FullMethodName                  = "/containarium.v1.NetworkService/DeleteRoute"
+	NetworkService_ListDNSRecords_FullMethodName               = "/containarium.v1.NetworkService/ListDNSRecords"
+	NetworkService_ListPassthroughRoutes_FullMethodName        = "/containarium.v1.NetworkService/ListPassthroughRoutes"
+	NetworkService_AddPassthroughRoute_FullMethodName          = "/containarium.v1.NetworkService/AddPassthroughRoute"
+	NetworkService_DeletePassthroughRoute_FullMethodName       = "/containarium.v1.NetworkService/DeletePassthroughRoute"
+	NetworkService_UpdatePassthroughRoute_FullMethodName       = "/containarium.v1.NetworkService/UpdatePassthroughRoute"
+	NetworkService_GetContainerACL_FullMethodName              = "/containarium.v1.NetworkService/GetContainerACL"
+	NetworkService_UpdateContainerACL_FullMethodName           = "/containarium.v1.NetworkService/UpdateContainerACL"
+	NetworkService_GetNetworkTopology_FullMethodName           = "/containarium.v1.NetworkService/GetNetworkTopology"
+	NetworkService_ListACLPresets_FullMethodName               = "/containarium.v1.NetworkService/ListACLPresets"
+	NetworkService_StartEgressProxy_FullMethodName             = "/containarium.v1.NetworkService/StartEgressProxy"
+	NetworkService_StopEgressProxy_FullMethodName              = "/containarium.v1.NetworkService/StopEgressProxy"
 )
 
 // NetworkServiceClient is the client API for NetworkService service.
@@ -43,6 +44,8 @@ const (
 //
 // NetworkService provides network and firewall management
 type NetworkServiceClient interface {
+	// Reports native creation separately from atomic cross-Tenant policy writes.
+	GetNetworkTenantCapabilities(ctx context.Context, in *GetNetworkTenantCapabilitiesRequest, opts ...grpc.CallOption) (*GetNetworkTenantCapabilitiesResponse, error)
 	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
 	GetNetworkGuardStatus(ctx context.Context, in *GetNetworkGuardStatusRequest, opts ...grpc.CallOption) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
@@ -87,6 +90,16 @@ type networkServiceClient struct {
 
 func NewNetworkServiceClient(cc grpc.ClientConnInterface) NetworkServiceClient {
 	return &networkServiceClient{cc}
+}
+
+func (c *networkServiceClient) GetNetworkTenantCapabilities(ctx context.Context, in *GetNetworkTenantCapabilitiesRequest, opts ...grpc.CallOption) (*GetNetworkTenantCapabilitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNetworkTenantCapabilitiesResponse)
+	err := c.cc.Invoke(ctx, NetworkService_GetNetworkTenantCapabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *networkServiceClient) GetNetworkGuardStatus(ctx context.Context, in *GetNetworkGuardStatusRequest, opts ...grpc.CallOption) (*NetworkGuardStatus, error) {
@@ -255,6 +268,8 @@ func (c *networkServiceClient) StopEgressProxy(ctx context.Context, in *StopEgre
 //
 // NetworkService provides network and firewall management
 type NetworkServiceServer interface {
+	// Reports native creation separately from atomic cross-Tenant policy writes.
+	GetNetworkTenantCapabilities(context.Context, *GetNetworkTenantCapabilitiesRequest) (*GetNetworkTenantCapabilitiesResponse, error)
 	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
 	GetNetworkGuardStatus(context.Context, *GetNetworkGuardStatusRequest) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
@@ -301,6 +316,9 @@ type NetworkServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNetworkServiceServer struct{}
 
+func (UnimplementedNetworkServiceServer) GetNetworkTenantCapabilities(context.Context, *GetNetworkTenantCapabilitiesRequest) (*GetNetworkTenantCapabilitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNetworkTenantCapabilities not implemented")
+}
 func (UnimplementedNetworkServiceServer) GetNetworkGuardStatus(context.Context, *GetNetworkGuardStatusRequest) (*NetworkGuardStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNetworkGuardStatus not implemented")
 }
@@ -368,6 +386,24 @@ func RegisterNetworkServiceServer(s grpc.ServiceRegistrar, srv NetworkServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&NetworkService_ServiceDesc, srv)
+}
+
+func _NetworkService_GetNetworkTenantCapabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNetworkTenantCapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkServiceServer).GetNetworkTenantCapabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkService_GetNetworkTenantCapabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkServiceServer).GetNetworkTenantCapabilities(ctx, req.(*GetNetworkTenantCapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _NetworkService_GetNetworkGuardStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -665,6 +701,10 @@ var NetworkService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.NetworkService",
 	HandlerType: (*NetworkServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetNetworkTenantCapabilities",
+			Handler:    _NetworkService_GetNetworkTenantCapabilities_Handler,
+		},
 		{
 			MethodName: "GetNetworkGuardStatus",
 			Handler:    _NetworkService_GetNetworkGuardStatus_Handler,
