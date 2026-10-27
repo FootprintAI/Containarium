@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	mrand "math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,54 +202,89 @@ func TestCreateBox_DifferentBoxesShareReservedSpace(t *testing.T) {
 	}
 }
 
-// The reservation of a running backup shrinks as the backup writes: statfs
-// already excludes the bytes it has written, so counting its full estimate
-// again would refuse a backup that fits. Free space here drops as the first
-// backup "writes".
-func TestCreateBox_ReservationCreditsBytesAlreadyWritten(t *testing.T) {
+// #3116 safety: free space that drops because ANOTHER process writes must
+// never reduce what a running backup holds. A reserves 100 of 200 free and
+// has written nothing; an unrelated process then writes 100 (free = 100).
+// B (needs 100) must be refused: admitting it would commit 200 on 100 free.
+func TestCreateBox_ForeignWritesAreNotCreditedToARunningBackup(t *testing.T) {
 	id, _ := age.GenerateX25519Identity()
 	const usage = 100 << 20
-	for _, tc := range []struct {
-		name      string
-		startFree uint64
-		wantErr   bool
-	}{
-		// 205 free, 10 written: 195 free; A still holds 90, B needs 100.
-		// Counting A's full 100 would refuse (200 > 195).
-		{"fits once written bytes are credited", 205 << 20, false},
-		// 185 free, 10 written: 175 free; 90 + 100 > 175.
-		{"does not fit even with the credit", 185 << 20, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			gb := newGateBox(buildArchive(t, incusLikeEntries()), usage)
-			var free atomic.Uint64
-			free.Store(tc.startFree)
-			m := newBoxManager(t, gb, withFreeSpace(func(string) (diskSpace, error) {
-				return diskSpace{Free: free.Load(), Device: 1}, nil
-			}))
-			out := make(chan createResult, 2)
-			startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
-			enter(t, gb)
-			free.Add(^uint64(10<<20 - 1)) // the first backup writes 10 MiB
-			startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
-			if tc.wantErr {
-				if r := recv(t, out); !errors.Is(r.err, ErrInsufficientSpace) {
-					t.Fatalf("second box: err = %v, want ErrInsufficientSpace", r.err)
+	gb := newGateBox(buildArchive(t, incusLikeEntries()), usage)
+	var free atomic.Uint64
+	free.Store(200 << 20)
+	m := newBoxManager(t, gb, withFreeSpace(func(string) (diskSpace, error) {
+		return diskSpace{Free: free.Load(), Device: 1}, nil
+	}))
+	out := make(chan createResult, 2)
+	startCreate(m, id.Recipient().String(), "alice", "alice-container", out)
+	enter(t, gb)
+	free.Store(100 << 20) // a foreign writer takes 100 MiB
+	startCreate(m, id.Recipient().String(), "bob", "bob-container", out)
+	if r := recv(t, out); !errors.Is(r.err, ErrInsufficientSpace) {
+		t.Fatalf("second box: err = %v, want ErrInsufficientSpace", r.err)
+	}
+	close(gb.release)
+	if r := recv(t, out); r.err != nil {
+		t.Fatalf("first box: %v", r.err)
+	}
+}
+
+// The safety invariant, over many random interleavings run through the real
+// pre-flight: right after each admission, free space covers the unwritten
+// remainder of every backup in flight. Backups write (free drops by what
+// they write, up to their estimate), foreign processes write, backups end.
+func TestBoxPreflight_NeverOverAdmits(t *testing.T) {
+	for seed := uint64(1); seed <= 500; seed++ {
+		rng := mrand.New(mrand.NewPCG(seed, seed*7919))
+		var free uint64 = uint64(100+rng.IntN(400)) << 20
+		type run struct {
+			release       func()
+			need, written uint64
+		}
+		runs := map[string]*run{}
+		usages := map[string]int64{}
+		names := []string{"b0", "b1", "b2", "b3"}
+		for _, n := range names {
+			usages[n] = int64(20+rng.IntN(150)) << 20
+		}
+		gb := newGateBox(nil, 0)
+		gb.usages = usages
+		m := newBoxManager(t, gb, withFreeSpace(func(string) (diskSpace, error) {
+			return diskSpace{Free: free, Device: 1}, nil
+		}))
+		for step := 0; step < 60; step++ {
+			switch rng.IntN(4) {
+			case 0: // try to start a backup
+				n := names[rng.IntN(len(names))]
+				rel, err := m.boxPreflight(n)
+				if err != nil {
+					continue
 				}
-				close(gb.release)
-				if r := recv(t, out); r.err != nil {
-					t.Fatalf("first box: %v", r.err)
+				runs[n] = &run{release: rel, need: uint64(usages[n])}
+				var remaining uint64
+				for _, r := range runs {
+					remaining += r.need - r.written
 				}
-				return
+				if free < remaining {
+					t.Fatalf("seed %d step %d: admitted %s with %d free but %d still to be written", seed, step, n, free, remaining)
+				}
+			case 1: // an in-flight backup writes
+				for _, r := range runs {
+					w := min(uint64(rng.IntN(40))<<20, r.need-r.written, free)
+					r.written += w
+					free -= w
+					break
+				}
+			case 2: // a foreign process writes
+				free -= min(uint64(rng.IntN(60))<<20, free)
+			case 3: // a backup ends; its written bytes stay on disk
+				for n, r := range runs {
+					r.release()
+					delete(runs, n)
+					break
+				}
 			}
-			enter(t, gb) // admitted: it reached its export
-			close(gb.release)
-			for i := 0; i < 2; i++ {
-				if r := recv(t, out); r.err != nil {
-					t.Errorf("backup of %s: %v", r.box, r.err)
-				}
-			}
-		})
+		}
 	}
 }
 
@@ -280,25 +316,27 @@ func TestCreateBox_ReservationsPerDeviceAreIndependent(t *testing.T) {
 	}
 }
 
-// The release func is idempotent, and a late second call from a finished
-// backup must not drop a later backup's claim on the same box.
-func TestCreateBox_ReleaseIsOnceAndTokenScoped(t *testing.T) {
+// A repeated or late release from a finished backup must not drop a later
+// backup's claim on the same box.
+func TestCreateBox_ReleaseIsClaimScoped(t *testing.T) {
 	gb := newGateBox(nil, 1<<20)
 	m := newBoxManager(t, gb)
 	rel1, err := m.boxPreflight("alice-container")
 	if err != nil {
 		t.Fatal(err)
 	}
+	stale := m.boxClaims.inFlight["alice-container"]
 	rel1()
+	rel1() // a repeated call
 	rel2, err := m.boxPreflight("alice-container")
 	if err != nil {
 		t.Fatalf("claim after release: %v", err)
 	}
-	rel1() // late double call from the first backup
+	rel1()                   // a late call by the first backup
+	m.releaseBoxClaim(stale) // and the helper itself, with the stale claim
 	if _, err := m.boxPreflight("alice-container"); !errors.Is(err, ErrBoxBackupInProgress) {
-		t.Fatalf("after a late release by the first backup the second's claim is gone: err = %v", err)
+		t.Fatalf("a stale release dropped the second backup's claim: err = %v", err)
 	}
-	rel2()
 	rel2()
 	rel3, err := m.boxPreflight("alice-container")
 	if err != nil {
