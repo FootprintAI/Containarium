@@ -117,6 +117,10 @@
       "description": "NetworkPolicyService — the control-plane CRUD for per-tenant network\nisolation policies (Phase A of the eBPF network-isolation design, #315).\n\nThis is the policy *store* surface: operators (and the cloud control plane)\nset/get/list/delete a tenant's NetworkPolicy here; the per-veth TC_INGRESS\nBPF loader (a later increment) consumes the stored policies and programs the\nkernel. Admin-only — policies are fleet-shaping config, not tenant-editable."
     },
     {
+      "name": "NotifyService",
+      "description": "NotifyService — where the daemon pushes a `code run --approvals ask`\npermission request that is waiting on the developer (#2185,\ndocs/product/phone-approval.md Story 3).\n\nOne channel per user. The daemon itself sends the push: it reads each live\nrun's input journal on the user's box and publishes to the channel, so the\nchannel's access token never reaches a box. The token is stored with the\ntenant secrets store as a broker-only secret named\nCONTAINARIUM_NOTIFY_NTFY_TOKEN_\u003crandom\u003e, a new one per token (the channel\nswitches to it in one write), and is never returned by any RPC.\n\nWhich user: the request's username, or the caller's own when empty. Reads\nneed secrets:read and writes secrets:write, as for the tenant's secrets."
+    },
+    {
       "name": "PentestService",
       "description": "PentestService provides automated penetration testing and vulnerability scanning"
     },
@@ -1910,7 +1914,7 @@
         "parameters": [
           {
             "name": "id",
-            "description": "Backup to restore.",
+            "description": "Backup to restore. A SNAPSHOT backup restarts its source box on a new\nPVC in the same namespace, retaining the old PVC. connection, clean,\nage_identity and target_container must be unset for snapshot restores.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -3585,6 +3589,101 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-runs/{runName}/inputs": {
+      "get": {
+        "summary": "List a box code run's open permission requests",
+        "description": "Returns the run's open permission requests (id, tool, one-line prompt, complete input, created and expiry times) and its per-run request counts, read from the run's journal on the box. The journal is written by the box's own user, so it is advisory: the box acts only on an answer signed for the tool call it asked. A journal over 8 MiB is refused (RESOURCE_EXHAUSTED). Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ListRunInputs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListRunInputsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
+    "/v1/containers/{username}/code-runs/{runName}/inputs/{requestId}:answer": {
+      "post": {
+        "summary": "Answer a box code run's permission request",
+        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_AnswerRunInput",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AnswerRunInputResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "requestId",
+            "description": "A request_id from ListRunInputs.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AnswerRunInputBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/code-runs/{runName}/log": {
       "get": {
         "summary": "Tail a box code run's log",
@@ -3690,6 +3789,39 @@
             "schema": {
               "$ref": "#/definitions/StopBoxRunBody"
             }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
+    "/v1/containers/{username}/code-runs:approval-key": {
+      "get": {
+        "summary": "Get a box's approval public key",
+        "description": "Returns the hex Ed25519 public key the daemon signs this box's permission-request answers with; `code run --approvals ask` passes it to the box. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_GetRunApprovalKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetRunApprovalKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
           }
         ],
         "tags": [
@@ -5868,6 +6000,134 @@
         ],
         "tags": [
           "Network"
+        ]
+      }
+    },
+    "/v1/notify/channel": {
+      "get": {
+        "summary": "Get notification channel",
+        "description": "Return the user's push channel. has_token says whether a token is stored; the token itself is never returned. NOT_FOUND when none is set.",
+        "operationId": "NotifyService_GetNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      },
+      "delete": {
+        "summary": "Delete notification channel",
+        "description": "Remove the user's push channel and its stored token. No further pushes are sent.",
+        "operationId": "NotifyService_DeleteNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      },
+      "put": {
+        "summary": "Set notification channel",
+        "description": "Create or replace the user's push channel for waiting permission requests. Only ntfy is supported. A token, when given, is stored as a broker-only tenant secret and requires an https server; it is never returned. An empty username means the caller.",
+        "operationId": "NotifyService_SetNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetNotifyChannelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Notify"
+        ]
+      }
+    },
+    "/v1/notify/channel/test": {
+      "post": {
+        "summary": "Send a test notification",
+        "description": "Publish one test push through the user's channel and report whether the server accepted it.",
+        "operationId": "NotifyService_TestNotifyChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TestNotifyChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TestNotifyChannelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Notify"
         ]
       }
     },
@@ -10923,6 +11183,40 @@
         }
       }
     },
+    "AnswerRunInputBody": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/definitions/RunInputAnswer"
+        },
+        "requestSha256": {
+          "type": "string",
+          "format": "byte",
+          "description": "SHA-256 (32 bytes) of tool, a NUL byte, and input, exactly as the caller\nshowed them (from ListRunInputs) to whoever answered. The daemon signs it\nas given; the box accepts the answer only if it matches the tool call the\nbox asked, so an answer to a request the agent rewrote in the journal\nnever counts, and an allow permits exactly that input."
+        }
+      },
+      "description": "AnswerRunInputRequest answers one permission request of a box run. Fields\nname the run by (username, run_name); crew runs (#2124) will add their own\nrun id."
+    },
+    "AnswerRunInputResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/RunInputAnswerOutcome"
+        },
+        "closedAnswer": {
+          "$ref": "#/definitions/RunInputAnswer",
+          "description": "For ANSWERED and ALREADY_CLOSED: the answer the box journaled (DENY for\nan expiry)."
+        },
+        "closeReason": {
+          "$ref": "#/definitions/RunInputCloseReason"
+        },
+        "closedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the box journaled the response, for ANSWERED and ALREADY_CLOSED."
+        }
+      }
+    },
     "Any": {
       "type": "object",
       "properties": {
@@ -11268,10 +11562,11 @@
       "enum": [
         "BACKUP_DESTINATION_UNSPECIFIED",
         "BACKUP_DESTINATION_LOCAL",
-        "BACKUP_DESTINATION_GCS"
+        "BACKUP_DESTINATION_GCS",
+        "BACKUP_DESTINATION_SNAPSHOT"
       ],
       "default": "BACKUP_DESTINATION_UNSPECIFIED",
-      "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
+      "description": "BackupDestination selects archive storage or a Kubernetes PVC snapshot.\nFor LOCAL and GCS, the logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination.\n - BACKUP_DESTINATION_SNAPSHOT: Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.\nEncryption and durability are provided by the CSI storage backend."
     },
     "BackupEngine": {
       "type": "string",
@@ -11282,7 +11577,7 @@
         "BACKUP_ENGINE_BOX"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported\nas an Incus instance backup tarball, encrypted like any other dump. It\nis restored by importing it as a new box, never by a database engine."
+      "description": "BackupEngine identifies the database or box backup implementation.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling.\n - BACKUP_ENGINE_BOX: A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,\nwith destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot\nencryption and durability are controlled by the CSI storage backend.\nBox backups are never restored by a database engine."
     },
     "BackupKeyMode": {
       "type": "string",
@@ -13483,6 +13778,9 @@
     "DeleteNetworkPolicySignatureResponse": {
       "type": "object"
     },
+    "DeleteNotifyChannelResponse": {
+      "type": "object"
+    },
     "DeletePassthroughRouteResponse": {
       "type": "object",
       "properties": {
@@ -15252,6 +15550,14 @@
         }
       }
     },
+    "GetNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/NotifyChannel"
+        }
+      }
+    },
     "GetPentestConfigResponse": {
       "type": "object",
       "properties": {
@@ -15354,6 +15660,15 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count"
+        }
+      }
+    },
+    "GetRunApprovalKeyResponse": {
+      "type": "object",
+      "properties": {
+        "publicKey": {
+          "type": "string",
+          "description": "Hex Ed25519 public key that AnswerRunInput signs this box's answers with.\n`code run --approvals ask` passes it to the box's approval server."
         }
       }
     },
@@ -16221,6 +16536,24 @@
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
+    "HostSecurityPosture": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        },
+        "measuredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Host clock at the start of the posture measurement, not the send time."
+        }
+      },
+      "description": "HostSecurityPosture is one measured snapshot of the host's hardening checks.\nChecks use their unprefixed probe names; false includes a check that could not\nbe measured, with the reason in detail. An empty snapshot is not proof of a\npassing posture. Receivers must evaluate required checks and freshness."
+    },
     "IngestOutcome": {
       "type": "string",
       "enum": [
@@ -16869,6 +17202,44 @@
             "type": "object",
             "$ref": "#/definitions/Revocation"
           }
+        }
+      }
+    },
+    "ListRunInputsResponse": {
+      "type": "object",
+      "properties": {
+        "open": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RunInput"
+          },
+          "description": "Open requests, oldest first. Empty once the run has exited: nothing is\nwaiting on an answer then. A request past expires_at is not listed."
+        },
+        "running": {
+          "type": "boolean",
+          "description": "Whether the run is still running."
+        },
+        "requests": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-run counts of all requests in the journal (the PRD's demand\ninstrumentation): total, and closed by each outcome."
+        },
+        "allowed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "denied": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "expired": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "cancelled": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -17676,6 +18047,47 @@
       ],
       "default": "NODE_ISOLATION_UNSPECIFIED",
       "description": "NodeIsolation is the isolation class of a cluster's nodes: the\nboundary that contains a tenant kernel exploit. Cluster-level and\nimmutable after create.\n\nVM is the default and the only class safe on a shared multi-tenant\nhost. CONTAINER runs each node as an Incus system container sharing\nthe host kernel — weaker by construction, so it is operator-gated:\nthe daemon permits it only where the operator has declared the host\na single trust domain. UNSPECIFIED resolves to VM server-side; the\nweaker class is never reached by omission.\n\nDesign: docs/architecture/cluster-container-node-pools.md.\n\n - NODE_ISOLATION_VM: Each node is an Incus VM — hardware-virtualized kernel boundary.\n - NODE_ISOLATION_CONTAINER: Each node is an Incus system container sharing the host kernel.\nRequires the operator opt-in on the target host."
+    },
+    "NotifyChannel": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/NotifyChannelKind"
+        },
+        "server": {
+          "type": "string",
+          "description": "Base URL of the ntfy server, e.g. https://ntfy.example.com."
+        },
+        "topic": {
+          "type": "string",
+          "description": "ntfy topic: 1-64 letters, digits, '-' or '_'."
+        },
+        "hasToken": {
+          "type": "boolean",
+          "description": "A token is stored for this channel."
+        },
+        "redactCommand": {
+          "type": "boolean",
+          "description": "Pushes carry the tool name only, never its command."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "NotifyChannel is a user's push channel as stored. It never carries the token."
+    },
+    "NotifyChannelKind": {
+      "type": "string",
+      "enum": [
+        "NOTIFY_CHANNEL_KIND_UNSPECIFIED",
+        "NOTIFY_CHANNEL_KIND_NTFY"
+      ],
+      "default": "NOTIFY_CHANNEL_KIND_UNSPECIFIED",
+      "description": "NotifyChannelKind is the push transport.\n\n - NOTIFY_CHANNEL_KIND_NTFY: ntfy (https://ntfy.sh or self-hosted): POST to \u003cserver\u003e with a topic."
     },
     "OSType": {
       "type": "string",
@@ -19074,6 +19486,10 @@
         "driverToken": {
           "type": "string",
           "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
+        },
+        "posture": {
+          "$ref": "#/definitions/HostSecurityPosture",
+          "description": "Absent means no posture measurement was reported, never \"passing\". Status\nprobes populate this on every report while retaining the posture-prefixed\nentries in checks for older receivers. Token-only refresh requests omit it\nand must not clear a receiver's previously stored posture."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
@@ -19754,6 +20170,84 @@
           "$ref": "#/definitions/CrewRun"
         }
       }
+    },
+    "RunInput": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "description": "Opaque id, \"req-\" plus 16 hex digits; pass it to AnswerRunInput."
+        },
+        "kind": {
+          "$ref": "#/definitions/RunInputKind"
+        },
+        "tool": {
+          "type": "string",
+          "description": "The tool the agent wants to use, e.g. \"Bash\"."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "One-line summary: the tool and its command, path or URL, cut at 500\nbytes (raw; a client escapes control characters before printing)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "An unanswered request is denied at this time."
+        },
+        "input": {
+          "type": "string",
+          "description": "The tool's complete input as JSON (at most 16 KiB): what an allow\npermits, and what a client must show before sending one."
+        }
+      },
+      "description": "RunInput is one open request."
+    },
+    "RunInputAnswer": {
+      "type": "string",
+      "enum": [
+        "RUN_INPUT_ANSWER_UNSPECIFIED",
+        "RUN_INPUT_ANSWER_ALLOW",
+        "RUN_INPUT_ANSWER_DENY"
+      ],
+      "default": "RUN_INPUT_ANSWER_UNSPECIFIED",
+      "description": "RunInputAnswer is a decision on a permission request."
+    },
+    "RunInputAnswerOutcome": {
+      "type": "string",
+      "enum": [
+        "RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED",
+        "RUN_INPUT_ANSWER_OUTCOME_ANSWERED",
+        "RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED",
+        "RUN_INPUT_ANSWER_OUTCOME_EXPIRED",
+        "RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED"
+      ],
+      "default": "RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED",
+      "description": "RunInputAnswerOutcome is what AnswerRunInput did.\n\n - RUN_INPUT_ANSWER_OUTCOME_ANSWERED: The answer was written and the run's journal then showed a response to\nit. The journal is writable by the agent, so this is the run's report,\nnot proof that the run took the answer.\n - RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED: The request was already closed; nothing was written. closed_answer and\nclose_reason say how.\n - RUN_INPUT_ANSWER_OUTCOME_EXPIRED: The request is past expires_at; nothing was written.\n - RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED: The answer was written but the run's journal showed no response to it in\ntime.\nThe box may have refused it (for one, the prompt it was signed for is not\nthe prompt the box asked); the request stays open until answered or\nexpired."
+    },
+    "RunInputCloseReason": {
+      "type": "string",
+      "enum": [
+        "RUN_INPUT_CLOSE_REASON_UNSPECIFIED",
+        "RUN_INPUT_CLOSE_REASON_ANSWERED",
+        "RUN_INPUT_CLOSE_REASON_EXPIRED",
+        "RUN_INPUT_CLOSE_REASON_CANCELLED",
+        "RUN_INPUT_CLOSE_REASON_NO_KEY",
+        "RUN_INPUT_CLOSE_REASON_TOO_LARGE"
+      ],
+      "default": "RUN_INPUT_CLOSE_REASON_UNSPECIFIED",
+      "description": "RunInputCloseReason says how a request was closed, as journaled by the box.\n\n - RUN_INPUT_CLOSE_REASON_ANSWERED: Someone answered it.\n - RUN_INPUT_CLOSE_REASON_EXPIRED: Nobody answered before expires_at; it was denied.\n - RUN_INPUT_CLOSE_REASON_CANCELLED: The run ended while the request was open.\n - RUN_INPUT_CLOSE_REASON_NO_KEY: The run had no usable approval key, so it was denied at once.\n - RUN_INPUT_CLOSE_REASON_TOO_LARGE: The tool input was too large to be shown for approval, so it was denied\nat once."
+    },
+    "RunInputKind": {
+      "type": "string",
+      "enum": [
+        "RUN_INPUT_KIND_UNSPECIFIED",
+        "RUN_INPUT_KIND_PERMISSION"
+      ],
+      "default": "RUN_INPUT_KIND_UNSPECIFIED",
+      "description": "RunInputKind is what a request asks for.\n\n - RUN_INPUT_KIND_PERMISSION: Allow or deny one tool call."
     },
     "SSHAuthMethod": {
       "type": "string",
@@ -20649,6 +21143,44 @@
         "signature": {
           "$ref": "#/definitions/NetworkPolicySignature",
           "title": "stored form, with the assigned id"
+        }
+      }
+    },
+    "SetNotifyChannelRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Owner of the channel; empty means the caller."
+        },
+        "kind": {
+          "$ref": "#/definitions/NotifyChannelKind",
+          "description": "Required; only NOTIFY_CHANNEL_KIND_NTFY."
+        },
+        "server": {
+          "type": "string"
+        },
+        "topic": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string",
+          "description": "Access token for the topic. Empty keeps the stored one (if any) unless\nclear_token is set. Never logged or returned."
+        },
+        "clearToken": {
+          "type": "boolean",
+          "description": "Remove the stored token. Rejected together with token."
+        },
+        "redactCommand": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SetNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/NotifyChannel"
         }
       }
     },
@@ -21761,9 +22293,33 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input handed to the assignee — the same shape as\nRunCrewRequest.input_json / RunAgentSkillRequest.input_json. Empty = {}."
+        },
+        "resources": {
+          "$ref": "#/definitions/TaskNodeResources",
+          "description": "Optional minimum host capabilities, checked against this daemon's last\nmeasured profile before graph execution. Nonzero requirements are local\nonly: remote backends and other pools are rejected. These are host\neligibility constraints, not per-box allocations or resource reservations.\nAbsent or all-zero requirements preserve legacy placement behavior."
         }
       },
       "description": "TaskNode is one subtask of a TaskGraph."
+    },
+    "TaskNodeResources": {
+      "type": "object",
+      "properties": {
+        "minCpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum measured CPU core count; zero means no CPU constraint.\nMust be nonnegative."
+        },
+        "minMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Minimum measured total RAM in bytes, not currently free RAM.\nZero means no RAM constraint; must be nonnegative."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "description": "Require a successful GPU passthrough measurement in the profile.\nThis does not allocate a GPU or change the skill's recipe."
+        }
+      },
+      "description": "TaskNodeResources describes minimum measured hardware for a graph node.\nFor a crew node the constraint applies to the host of the whole crew;\nmember box limits and ordinary admission checks remain unchanged."
     },
     "TaskNodeResult": {
       "type": "object",
@@ -21826,6 +22382,23 @@
         }
       },
       "description": "TerminateUserSessionsResponse reports what was ended."
+    },
+    "TestNotifyChannelRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        }
+      }
+    },
+    "TestNotifyChannelResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable result, e.g. \"test push accepted by https://ntfy.example.com\"."
+        }
+      }
     },
     "TestWebhookRequest": {
       "type": "object",

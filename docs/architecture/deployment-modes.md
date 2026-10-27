@@ -177,6 +177,7 @@ Every outbound dependency is opt-in, and each is off unless configured:
 - model providers (an in-network OpenAI-compatible upstream can be registered instead);
 - Caddy ACME for public certificates;
 - `CONTAINARIUM_AUDIT_ANCHOR_BUCKET` (without it, anchors go to the local file only);
+- `CONTAINARIUM_AUDIT_ANCHOR_TSA_URL`, an RFC 3161 timestamp authority (it can point inside the network; without it, no anchor is stamped);
 - a cloud KMS (`CONTAINARIUM_KMS_BACKEND` is `none` by default; `vault` can point inside the network);
 - the cloud client.
 

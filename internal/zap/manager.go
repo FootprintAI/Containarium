@@ -2,6 +2,7 @@ package zap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -16,6 +17,11 @@ type ManagerConfig struct {
 	Interval time.Duration // scan interval (default 30 days)
 }
 
+// ErrZapNotInstalled is returned when a scan is requested on a host where ZAP
+// has not been installed. Scans are rejected up front rather than enqueued
+// to fail repeatedly in the workers.
+var ErrZapNotInstalled = errors.New("ZAP is not installed in the security container (run the InstallZap RPC/API for this host first)")
+
 // Manager orchestrates periodic ZAP scans using a PostgreSQL job queue
 type Manager struct {
 	store      *Store
@@ -23,6 +29,9 @@ type Manager struct {
 	scanner    *Scanner
 	config     ManagerConfig
 	cancel     context.CancelFunc
+
+	// zapInstalled reports whether ZAP is installed; overridable in tests.
+	zapInstalled func() bool
 }
 
 // NewManager creates a new ZAP manager
@@ -35,12 +44,14 @@ func NewManager(
 		config.Interval = 30 * 24 * time.Hour // 30 days
 	}
 
-	return &Manager{
+	m := &Manager{
 		store:      store,
 		routeStore: routeStore,
 		scanner:    NewScanner(),
 		config:     config,
 	}
+	m.zapInstalled = m.scanner.Available
+	return m
 }
 
 // Start begins the worker pool and periodic scan enqueue loop
@@ -99,6 +110,10 @@ func (m *Manager) scanCycleLoop(ctx context.Context) {
 // runScanCycle creates a scan run and enqueues jobs for all targets
 func (m *Manager) runScanCycle(ctx context.Context) {
 	scanRunID, targetsCount, err := m.enqueueScan(ctx, "scheduled", "")
+	if errors.Is(err, ErrZapNotInstalled) {
+		log.Printf("ZAP scan cycle: skipped: %v", err)
+		return
+	}
 	if err != nil {
 		log.Printf("ZAP scan cycle: failed to enqueue: %v", err)
 		return
@@ -119,6 +134,10 @@ func (m *Manager) runScanCycle(ctx context.Context) {
 // containerName scopes the scan to a single container (filters route targets to
 // that container's routes) and is recorded on the run. Empty = cluster-wide.
 func (m *Manager) enqueueScan(ctx context.Context, trigger, containerName string) (string, int, error) {
+	// Pre-flight: do not create a run or enqueue jobs that cannot succeed.
+	if !m.zapInstalled() {
+		return "", 0, ErrZapNotInstalled
+	}
 	scanRunID, err := m.store.CreateScanRun(ctx, trigger, containerName)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create scan run: %w", err)

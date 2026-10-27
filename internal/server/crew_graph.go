@@ -11,6 +11,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -76,6 +77,11 @@ func (s *CrewServer) runCrewGraph(ctx context.Context, req *pb.RunCrewRequest, c
 	}
 	if limit > taskgraph.MaxNodes {
 		return nil, status.Errorf(codes.InvalidArgument, "concurrency must not exceed %d", taskgraph.MaxNodes)
+	}
+	for _, node := range req.Graph.Nodes {
+		if _, err := s.validateLocalNodeResources(node, req); err != nil {
+			return nil, err
+		}
 	}
 	run := &pb.CrewRun{Id: runID, CrewId: crew.Id, TraceId: genTraceID(), Owner: s.owner,
 		State: pb.CrewRunState_CREW_RUN_STATE_RUNNING, Graph: req.Graph,
@@ -162,7 +168,20 @@ func (s *CrewServer) runCrewGraph(ctx context.Context, req *pb.RunCrewRequest, c
 					}
 					events <- e
 				}()
-				e.output, e.err = execute(workerCtx, nodes[id], childID, input, req)
+				// Recheck after dependencies finish: a profile may have been
+				// refreshed since preflight. Never let pool fallback place a
+				// locally validated node on an unvalidated peer.
+				backend, err := s.validateLocalNodeResources(nodes[id], req)
+				if err != nil {
+					e.err = err
+					return
+				}
+				nodeReq := req
+				if backend != "" {
+					nodeReq = proto.Clone(req).(*pb.RunCrewRequest)
+					nodeReq.BackendId, nodeReq.Pool = backend, ""
+				}
+				e.output, e.err = execute(workerCtx, nodes[id], childID, input, nodeReq)
 			}(r.NodeId, r.RunId, string(input))
 		}
 		if err := persist(); err != nil && saveErr == nil {

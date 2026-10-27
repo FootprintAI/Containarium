@@ -93,25 +93,39 @@ func TestHostIPv4For_StaticThenLeaseThenNone(t *testing.T) {
 	}
 	leases := newLeaseReader(dir, time.Now())
 
-	// Static assignment wins even when a lease exists.
-	ip, ok := hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc", StaticIP: netip.MustParseAddr("10.100.0.5")}, leases)
+	guest := [4]byte{10, 100, 0, 10}
+	// Static assignment wins, whatever the lease or the guest says.
+	ip, ok := hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc", StaticIP: netip.MustParseAddr("10.100.0.5")}, leases, [4]byte{10, 100, 0, 99}, true)
 	if !ok || ip != [4]byte{10, 100, 0, 5} {
 		t.Errorf("static: %v %v", ip, ok)
 	}
-	// Else the bridge's lease for the MAC (case-insensitive).
-	ip, ok = hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3E:AA:BB:CC"}, leases)
-	if !ok || ip != [4]byte{10, 100, 0, 10} {
-		t.Errorf("lease: %v %v", ip, ok)
+	// Else the bridge's lease for the MAC (case-insensitive) — but only when it
+	// agrees with the guest-reported address (S4: a neighbour can move a lease
+	// with a forged DHCP release/request; the guest alone is not trusted either).
+	ip, ok = hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3E:AA:BB:CC"}, leases, guest, true)
+	if !ok || ip != guest {
+		t.Errorf("lease agreeing with guest: %v %v", ip, ok)
+	}
+	for name, tc := range map[string]struct {
+		guest    [4]byte
+		hasGuest bool
+	}{
+		"lease disagrees with guest (poisoned lease, or guest renumbered)": {[4]byte{10, 100, 0, 77}, true},
+		"no guest address to cross-check":                                  {[4]byte{}, false},
+	} {
+		if ip, ok := hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc"}, leases, tc.guest, tc.hasGuest); ok {
+			t.Errorf("%s: = %v, want unknown", name, ip)
+		}
 	}
 	// No lease for the MAC, unknown network, or missing lease file: unknown —
-	// never a guess.
+	// never a guess, even when the guest reports something.
 	for _, nic := range []hostNIC{
 		{Network: "incusbr0", HWAddr: "00:16:3e:00:00:00"},
 		{Network: "nosuchbr", HWAddr: "00:16:3e:aa:bb:cc"},
 		{HWAddr: "00:16:3e:aa:bb:cc"},
 		{},
 	} {
-		if ip, ok := hostIPv4For(nic, leases); ok {
+		if ip, ok := hostIPv4For(nic, leases, guest, true); ok {
 			t.Errorf("hostIPv4For(%+v) = %v, want unknown", nic, ip)
 		}
 	}

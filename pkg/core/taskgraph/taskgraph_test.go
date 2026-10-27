@@ -45,6 +45,38 @@ func edge(node, dependsOn string) *pb.TaskEdge {
 	return &pb.TaskEdge{NodeId: node, DependsOn: dependsOn}
 }
 
+// Resource minima must be structurally valid even when validation runs on a
+// client without a host profile. Capacity eligibility is checked at execution.
+func TestValidate_NodeResources(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resources *pb.TaskNodeResources
+		invalid   bool
+	}{
+		{"absent", nil, false},
+		{"empty", &pb.TaskNodeResources{}, false},
+		{"cpu", &pb.TaskNodeResources{MinCpuCores: 4}, false},
+		{"memory", &pb.TaskNodeResources{MinMemoryBytes: 8 << 30}, false},
+		{"gpu", &pb.TaskNodeResources{RequiresGpu: true}, false},
+		{"negative cpu", &pb.TaskNodeResources{MinCpuCores: -1}, true},
+		{"negative memory", &pb.TaskNodeResources{MinMemoryBytes: -1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, node := range []*pb.TaskNode{skillNode("resource-node", "coder"), crewNode("resource-node", "build-crew")} {
+				node.Resources = tc.resources
+				_, err := Validate(&pb.TaskGraph{Nodes: []*pb.TaskNode{node}}, knownSkills, knownCrews)
+				if tc.invalid {
+					if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), node.Id) {
+						t.Fatalf("invalid requirements must identify the node: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("valid resource requirements rejected: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // chain returns n skill nodes where each depends on the one before it.
 func chain(n int) *pb.TaskGraph {
 	g := &pb.TaskGraph{Goal: "chain"}
