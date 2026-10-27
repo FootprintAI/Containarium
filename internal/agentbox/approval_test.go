@@ -296,3 +296,19 @@ func TestApprovalAnswerAfterTheDeadlineIsNotAccepted(t *testing.T) {
 		t.Errorf("wait = %q, %q; want deny, expired", a, reason)
 	}
 }
+
+// A prompt cut inside a multi-byte character is the same string in memory and
+// in the journal, so an answer a client signs for the journaled prompt is
+// accepted (#2184 review: the journal's JSON encoding replaced the split byte,
+// and no legitimate answer could verify).
+func TestApprovalAnswerForATruncatedMultibytePromptIsAccepted(t *testing.T) {
+	s := newTestApprovalServer(t, testPub, 5*time.Second)
+	answerWhenAsked(t, s, func(id string, p []byte) string {
+		return coderun.FormatAnswer(testPriv, "code", id, p, coderun.AnswerAllow)
+	})
+
+	text, _ := callTool(t, s.handleApprove, bashCall(strings.Repeat("a", 493)+"é"+strings.Repeat("b", 20)))
+	if d := decisionOf(t, text); d.Behavior != "allow" {
+		t.Fatalf("decision = %+v, want allow for an answer signed over the journaled prompt", d)
+	}
+}

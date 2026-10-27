@@ -109,7 +109,7 @@ func TestCodeAnswerIdempotentCasesExitNonZero(t *testing.T) {
 			ClosedAnswer: pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, CloseReason: pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_ANSWERED,
 			ClosedAt: timestamppb.New(time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC))}, "already closed: deny (answered) at 2026-10-27T08:00:00Z"},
 		"expired":       {&pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_EXPIRED}, "has expired"},
-		"not confirmed": {&pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED}, "has not taken it"},
+		"not confirmed": {&pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED}, "has not reported taking it"},
 	}
 	for name, c := range cases {
 		api := &fakeRunInputs{list: &pb.ListRunInputsResponse{Running: true}, answer: c.resp}
@@ -159,6 +159,43 @@ func TestInlineAnswersAllowTheOldestPrintedRequest(t *testing.T) {
 	waitFor(t, func() bool { return strings.Contains(diag.String(), "allowed req-0000000000000001") })
 	if strings.Count(diag.String(), "permission request req-0000000000000001") != 1 {
 		t.Errorf("a request was printed more than once:\n%s", diag.String())
+	}
+}
+
+// The answer is bound to the prompt that was printed, not to whatever the
+// journal says by the time the user types: if the prompt of a printed request
+// changes, it is printed again, and the answer binds the latest printed text
+// (#2184 review: the agent can show one prompt and then restore another).
+func TestInlineAnswersBindThePrintedPromptWhenTheJournalChanges(t *testing.T) {
+	defer func(d time.Duration) { codeInputPollInterval = d }(codeInputPollInterval)
+	codeInputPollInterval = time.Hour // refreshes only when the test asks
+	now := time.Now()
+	api := &fakeRunInputs{
+		list:   &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0000000000000001", "Bash: ls")}},
+		answer: &pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED},
+	}
+	diag := &syncBuffer{}
+	w := &inlineAnswers{api: api, box: "alice", run: "code", diag: diag, shown: map[string]string{}}
+	w.refresh()
+
+	// The journal now shows the real prompt, but nothing printed it yet.
+	api.mu.Lock()
+	api.list = &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0000000000000001", "Bash: rm -rf ~/repo")}}
+	api.mu.Unlock()
+	w.read(context.Background(), strings.NewReader("a\n"))
+
+	sent := api.sent()
+	if len(sent) != 1 || !bytes.Equal(sent[0].GetPromptSha256(), coderun.PromptDigest("Bash: ls")) {
+		t.Fatalf("sent %v, want the answer bound to the printed prompt \"Bash: ls\"", sent)
+	}
+	// The read's own refresh prints the changed prompt, so the next answer
+	// binds what is on screen then.
+	if !strings.Contains(diag.String(), "Bash: rm -rf ~/repo") {
+		t.Errorf("the changed prompt was not printed:\n%s", diag.String())
+	}
+	w.read(context.Background(), strings.NewReader("a\n"))
+	if sent := api.sent(); len(sent) != 2 || !bytes.Equal(sent[1].GetPromptSha256(), coderun.PromptDigest("Bash: rm -rf ~/repo")) {
+		t.Fatalf("second answer %v, want it bound to the reprinted prompt", sent)
 	}
 }
 

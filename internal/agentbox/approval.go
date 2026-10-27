@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -333,7 +334,28 @@ func describeToolCall(tool string, input json.RawMessage) string {
 	}
 	p := tool + ": " + detail
 	if len(p) > approvalPromptMax {
-		p = p[:approvalPromptMax] + "…"
+		cut := approvalPromptMax
+		for cut > 0 && !utf8.RuneStart(p[cut]) {
+			cut--
+		}
+		p = p[:cut] + "…"
 	}
-	return p
+	return journalForm(p)
+}
+
+// journalForm is s as a client reads it back from the journal. Answers are
+// verified against the digest of the prompt held here, and a client signs the
+// digest of the prompt it read from the journal, so the two must be the same
+// string: JSON encoding replaces invalid UTF-8, so the prompt is passed
+// through that encoding before anything is hashed or shown.
+func journalForm(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return s
+	}
+	var out string
+	if err := json.Unmarshal(b, &out); err != nil {
+		return s
+	}
+	return out
 }

@@ -20037,7 +20037,7 @@
         "RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED"
       ],
       "default": "RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED",
-      "description": "RunInputAnswerOutcome is what AnswerRunInput did.\n\n - RUN_INPUT_ANSWER_OUTCOME_ANSWERED: The answer was written and the box journaled its response to it.\n - RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED: The request was already closed; nothing was written. closed_answer and\nclose_reason say how.\n - RUN_INPUT_ANSWER_OUTCOME_EXPIRED: The request is past expires_at; nothing was written.\n - RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED: The answer was written but the box journaled no response to it in time.\nThe box may have refused it (for one, the prompt it was signed for is not\nthe prompt the box asked); the request stays open until answered or\nexpired."
+      "description": "RunInputAnswerOutcome is what AnswerRunInput did.\n\n - RUN_INPUT_ANSWER_OUTCOME_ANSWERED: The answer was written and the run's journal then showed a response to\nit. The journal is writable by the agent, so this is the run's report,\nnot proof that the run took the answer.\n - RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED: The request was already closed; nothing was written. closed_answer and\nclose_reason say how.\n - RUN_INPUT_ANSWER_OUTCOME_EXPIRED: The request is past expires_at; nothing was written.\n - RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED: The answer was written but the run's journal showed no response to it in\ntime.\nThe box may have refused it (for one, the prompt it was signed for is not\nthe prompt the box asked); the request stays open until answered or\nexpired."
     },
     "RunInputCloseReason": {
       "type": "string",

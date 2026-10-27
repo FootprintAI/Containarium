@@ -33,9 +33,10 @@ import (
 //
 // The journal is written by the box's user, which the agent runs as, so
 // everything read from it is advisory: a forged line can make a request look
-// closed or show another prompt, but the box only acts on an answer signed
-// for the prompt it holds in memory. Whether an answer counts is the box's
-// check, not one made here.
+// closed, show another prompt, or report a response the run never made (so
+// ANSWERED is the run's report, not proof), but the box only acts on an
+// answer signed for the prompt it holds in memory. Whether an answer counts
+// is the box's check, not one made here.
 
 // approvalKeyContext separates this derivation from every other use of the
 // daemon secret.

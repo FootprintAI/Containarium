@@ -50,7 +50,8 @@ answer bound to the prompt you are looking at, answer inline in 'code attach'.
 
 Answering a request that is already answered or has expired changes nothing,
 prints how it was closed, and exits non-zero; so does an answer the run has
-not taken within a few seconds.
+not reported taking within a few seconds. That report comes from the run's
+journal, which the agent can write, so it is not proof the tool call ran.
 
 Answers through the daemon API (--server).`,
 	Args: cobra.ExactArgs(3),
@@ -148,8 +149,9 @@ var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // startInlineAnswers lets a human at a terminal answer the run's permission
 // requests while its output streams (#2184): each new open request is printed
-// to diag (stdout stays the run's output), and a line "a" or "d" on in
-// answers the oldest one printed, bound to the prompt printed for it. It
+// to diag (stdout stays the run's output), and printed again if its prompt
+// changes; a line "a" or "d" on in answers the oldest one printed, bound to
+// the prompt last printed for it. It
 // needs the daemon (--server); without one, or on a daemon without the RPCs,
 // it prints one note and stays off. The returned func stops it.
 func startInlineAnswers(ctx context.Context, newClient func() (runInputsAPI, error), box, run string, in io.Reader, diag io.Writer) func() {
@@ -159,7 +161,7 @@ func startInlineAnswers(ctx context.Context, newClient func() (runInputsAPI, err
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	w := &inlineAnswers{api: c, box: box, run: run, diag: diag, shown: map[string]bool{}}
+	w := &inlineAnswers{api: c, box: box, run: run, diag: diag, shown: map[string]string{}}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -177,11 +179,14 @@ func startInlineAnswers(ctx context.Context, newClient func() (runInputsAPI, err
 }
 
 type inlineAnswers struct {
-	api       runlog.RunInputs
-	box, run  string
-	diag      io.Writer
-	mu        sync.Mutex
-	shown     map[string]bool
+	api      runlog.RunInputs
+	box, run string
+	diag     io.Writer
+	mu       sync.Mutex
+	// shown maps each printed request id to the prompt last printed for it:
+	// an answer binds that text, never a later journal read the user has not
+	// seen.
+	shown     map[string]string
 	open      []*pb.RunInput // oldest first, as last listed
 	reportErr bool
 }
@@ -210,29 +215,37 @@ func (w *inlineAnswers) refresh() {
 	}
 	w.open = resp.GetOpen()
 	for _, r := range w.open {
-		if w.shown[r.GetRequestId()] {
+		prev, printed := w.shown[r.GetRequestId()]
+		if printed && prev == r.GetPrompt() {
 			continue
 		}
-		w.shown[r.GetRequestId()] = true
+		w.shown[r.GetRequestId()] = r.GetPrompt()
+		what := "permission request"
+		if printed {
+			// The journal is the agent's to write: say so when a prompt
+			// already on screen changes, and bind answers to the new text.
+			what = "permission request CHANGED"
+		}
 		left := ""
 		if r.GetExpiresAt() != nil {
 			left = fmt.Sprintf(" (expires in %s)", time.Until(r.GetExpiresAt().AsTime()).Round(time.Second))
 		}
-		fmt.Fprintf(w.diag, "[containarium code] permission request %s: %s%s — type a + Enter to allow, d + Enter to deny\n",
-			coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()), left)
+		fmt.Fprintf(w.diag, "[containarium code] %s %s: %s%s — type a + Enter to allow, d + Enter to deny\n",
+			what, coderun.PlainText(r.GetRequestId()), coderun.PlainText(r.GetPrompt()), left)
 	}
 }
 
-// oldest is the oldest open request that has been printed.
-func (w *inlineAnswers) oldest() *pb.RunInput {
+// oldest is the oldest open request that has been printed, with the prompt
+// printed for it.
+func (w *inlineAnswers) oldest() (id, prompt string, ok bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range w.open {
-		if w.shown[r.GetRequestId()] {
-			return r
+		if p, printed := w.shown[r.GetRequestId()]; printed {
+			return r.GetRequestId(), p, true
 		}
 	}
-	return nil
+	return "", "", false
 }
 
 func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
@@ -250,12 +263,12 @@ func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
 		default:
 			continue
 		}
-		r := w.oldest()
-		if r == nil {
+		id, prompt, ok := w.oldest()
+		if !ok {
 			fmt.Fprintln(w.diag, "[containarium code] no open permission request to answer")
 			continue
 		}
-		res, err := runlog.AnswerShown(w.api, w.box, w.run, r.GetRequestId(), r.GetPrompt(), a)
+		res, err := runlog.AnswerShown(w.api, w.box, w.run, id, prompt, a)
 		if err != nil {
 			fmt.Fprintf(w.diag, "[containarium code] %v\n", err)
 			continue

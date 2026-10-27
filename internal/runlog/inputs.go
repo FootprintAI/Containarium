@@ -161,8 +161,9 @@ func Answer(api RunInputs, box, run, id string, a pb.RunInputAnswer) (AnswerResu
 	return res, nil
 }
 
-// WriteAnswerResult prints r and returns ErrNotAnswered unless the box took
-// the answer.
+// WriteAnswerResult prints r and returns ErrNotAnswered unless the run
+// reported taking the answer (its journal showed a response; the journal is
+// the agent's to write, so that is a report, not proof).
 func WriteAnswerResult(w io.Writer, r AnswerResult) error {
 	id := coderun.PlainText(r.RequestID)
 	switch r.Resp.GetOutcome() {
@@ -175,7 +176,7 @@ func WriteAnswerResult(w io.Writer, r AnswerResult) error {
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_EXPIRED:
 		fmt.Fprintf(w, "%s has expired (it is denied); nothing changed\n", id)
 	case pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED:
-		fmt.Fprintf(w, "%s %s was sent for: %s\nbut the run has not taken it. It may have been refused because that is not the prompt the run asked; the request stays open until answered or expired.\n",
+		fmt.Fprintf(w, "%s %s was sent for: %s\nbut the run has not reported taking it. It may have been refused because that is not the prompt the run asked; the request stays open until answered or expired.\n",
 			answerWord(r.Answer), id, coderun.PlainText(r.Prompt))
 	default:
 		fmt.Fprintf(w, "%s: unexpected outcome %v\n", id, r.Resp.GetOutcome())

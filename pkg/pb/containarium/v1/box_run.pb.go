@@ -406,14 +406,17 @@ type RunInputAnswerOutcome int32
 
 const (
 	RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED RunInputAnswerOutcome = 0
-	// The answer was written and the box journaled its response to it.
+	// The answer was written and the run's journal then showed a response to
+	// it. The journal is writable by the agent, so this is the run's report,
+	// not proof that the run took the answer.
 	RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED RunInputAnswerOutcome = 1
 	// The request was already closed; nothing was written. closed_answer and
 	// close_reason say how.
 	RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED RunInputAnswerOutcome = 2
 	// The request is past expires_at; nothing was written.
 	RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_EXPIRED RunInputAnswerOutcome = 3
-	// The answer was written but the box journaled no response to it in time.
+	// The answer was written but the run's journal showed no response to it in
+	// time.
 	// The box may have refused it (for one, the prompt it was signed for is not
 	// the prompt the box asked); the request stays open until answered or
 	// expired.
