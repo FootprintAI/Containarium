@@ -16,6 +16,9 @@ func TestEmbeddedLockParses(t *testing.T) {
 	if l.Repo != "FootprintAI/open-sdlc-skills" {
 		t.Errorf("repo = %q", l.Repo)
 	}
+	if source, ok := l.Source("sdlc"); !ok || source.Repo != l.Repo || source.Ref != l.Ref || source.SHA256 != l.SHA256 {
+		t.Errorf("embedded sdlc source = %+v, %v; compatibility pin = %q@%q %q", source, ok, l.Repo, l.Ref, l.SHA256)
+	}
 }
 
 func TestParse_RejectsPartialPins(t *testing.T) {
@@ -34,6 +37,47 @@ func TestParse_RejectsPartialPins(t *testing.T) {
 		if _, err := Parse(text); err == nil {
 			t.Errorf("%s: parsed, want an error", name)
 		}
+	}
+}
+
+func TestParse_MultipleSources(t *testing.T) {
+	text := "set.sdlc=architect\nset.qa=qa\n" +
+		"[sdlc]\nrepo=a/sdlc\nref=" + strings.Repeat("a", 40) + "\nsha256=" + strings.Repeat("b", 64) + "\n" +
+		"[domain]\nrepo=a/domain\nref=" + strings.Repeat("c", 40) + "\nsha256=" + strings.Repeat("d", 64) + "\n"
+	l, err := Parse(text)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(l.Sources) != 2 || l.Sources[0].ID != "sdlc" || l.Sources[1].ID != "domain" {
+		t.Fatalf("sources = %+v", l.Sources)
+	}
+	if got, ok := l.Source("domain"); !ok || got.Repo != "a/domain" || got.Ref != strings.Repeat("c", 40) || got.SHA256 != strings.Repeat("d", 64) {
+		t.Errorf("domain source = %+v, %v", got, ok)
+	}
+	if l.Repo != "a/sdlc" || l.Ref != strings.Repeat("a", 40) || l.SHA256 != strings.Repeat("b", 64) {
+		t.Errorf("compatibility pin = %q %q %q", l.Repo, l.Ref, l.SHA256)
+	}
+}
+
+func TestParse_SourceSectionsAreValidated(t *testing.T) {
+	ref := strings.Repeat("a", 40)
+	sha := strings.Repeat("b", 64)
+	good := "[sdlc]\nrepo=a/b\nref=" + ref + "\nsha256=" + sha + "\n"
+	cases := map[string]string{
+		"bad source id":    "[Bad_ID]\nrepo=a/b\nref=" + ref + "\nsha256=" + sha + "\n",
+		"duplicate source": good + good,
+		"missing repo":     "[sdlc]\nref=" + ref + "\nsha256=" + sha + "\n",
+		"missing ref":      "[sdlc]\nrepo=a/b\nsha256=" + sha + "\n",
+		"missing digest":   "[sdlc]\nrepo=a/b\nref=" + ref + "\n",
+		"duplicate key":    good + "sha256=" + sha + "\n",
+		"mixed formats":    "repo=old/flat\n" + good,
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(text); err == nil {
+				t.Fatal("parsed, want an error")
+			}
+		})
 	}
 }
 
