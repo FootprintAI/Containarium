@@ -343,16 +343,67 @@ func ApprovalStatusLines(s ApprovalSummary, running bool, now time.Time) string 
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// ApprovalStatus reads the run's journal off the box and renders
+// maxApprovalJournalBytes bounds how much of a journal `code status` reads,
+// matching the daemon's cap on the same file (ListRunInputs, #2184). A journal
+// the agent can write must not be able to grow the client without limit.
+const maxApprovalJournalBytes = 8 << 20
+
+// approvalJournalFollow is the longest the box waits for more journal once the
+// end is reached. tail_log blocks for this long on its last window, so it is
+// kept short; a journal is read as it stands, not followed.
+const approvalJournalFollow = 100 * time.Millisecond
+
+// ErrJournalTooLarge reports that a journal is over maxApprovalJournalBytes.
+// readApprovalJournal still returns what it read.
+var ErrJournalTooLarge = errors.New("approval journal is over the size limit")
+
+// readApprovalJournal reads path window by window through r — the same
+// offset-based tail_log read `code attach` uses, whose every reply is capped
+// (256 KiB), so one call sees only the start of a longer journal (#3182). The
+// bytes are joined before they are parsed, so a line or a rune split by a
+// window boundary is whole again. A missing file is ErrFileNotFound.
+func readApprovalJournal(ctx context.Context, r LogReader, path string) ([]byte, error) {
+	var buf []byte
+	var offset int64
+	for {
+		data, end, truncated, err := r.Read(ctx, path, offset, approvalJournalFollow)
+		if err != nil {
+			if isNotExistMessage(err.Error()) {
+				return nil, fmt.Errorf("read %s: %w", path, ErrFileNotFound)
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		buf = append(buf, data...)
+		if !truncated {
+			return buf, nil
+		}
+		if end <= offset {
+			return buf, fmt.Errorf("read %s: no progress at offset %d", path, offset)
+		}
+		if len(buf) >= maxApprovalJournalBytes {
+			return buf, fmt.Errorf("%w (%d MiB)", ErrJournalTooLarge, maxApprovalJournalBytes>>20)
+		}
+		offset = end
+	}
+}
+
+// ApprovalStatus reads the run's whole journal off the box and renders
 // ApprovalStatusLines — the one function `code status` and the MCP code_status
 // tool share. A run that never used approvals has no journal and renders "".
+// A journal over the size limit is summarized from the part read, with a note
+// saying so.
 func (s *Session) ApprovalStatus(ctx context.Context, name string, running bool, now time.Time) (string, error) {
-	blob, err := s.ReadFile(ctx, ApprovalJournalPath(name))
-	if err != nil {
+	blob, err := readApprovalJournal(ctx, s, ApprovalJournalPath(name))
+	tooLarge := errors.Is(err, ErrJournalTooLarge)
+	if err != nil && !tooLarge {
 		if errors.Is(err, ErrFileNotFound) {
 			return "", nil
 		}
 		return "", err
 	}
-	return ApprovalStatusLines(SummarizeApprovals(ParseInputJournal([]byte(blob))), running, now), nil
+	out := ApprovalStatusLines(SummarizeApprovals(ParseInputJournal(blob)), running, now)
+	if tooLarge {
+		out += fmt.Sprintf("\nnote: the journal is over %d MiB; the counts cover only its first %d MiB", maxApprovalJournalBytes>>20, maxApprovalJournalBytes>>20)
+	}
+	return out, nil
 }
