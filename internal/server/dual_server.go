@@ -47,6 +47,7 @@ import (
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/nicguard"
+	"github.com/footprintai/containarium/internal/notify"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/poolcapacity"
@@ -307,6 +308,7 @@ type DualServer struct {
 	containerServer          *ContainerServer
 	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
 	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
+	notifyServer             *NotifyServer            // pushes waiting permission requests (#2185); nil without Postgres
 	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
@@ -690,6 +692,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// enforcement yet.
 	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
 	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
+
+	// NotifyService (#2185) is registered only once its Postgres store is
+	// up (below); nil leaves the RPCs unimplemented and the watcher off.
+	var notifyServer *NotifyServer
 
 	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
 	// policy. It starts fail-closed; the real store is chosen by
@@ -1205,6 +1211,26 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
 				log.Printf("Tracker connection store ready")
+			}
+
+			// Notification channels (#2185): where a waiting `code run
+			// --approvals ask` request is pushed. Own pgxpool, like the
+			// tracker store; failure only disables NotifyService.
+			if notifyPool, notifyErr := pgGate.connect(postgresConnString, 3, 3*time.Second); notifyErr != nil {
+				log.Printf("Warning: Failed to connect to Postgres for notify store: %v", notifyErr)
+			} else if ntfStore, nerr := notify.NewPGStore(context.Background(), notifyPool); nerr != nil {
+				log.Printf("Warning: Failed to init notify store: %v. Notifications disabled.", nerr)
+				notifyPool.Close()
+			} else {
+				// A nil *secrets.Store must stay a nil interface: the
+				// service then refuses tokens instead of dereferencing it.
+				var notifySecrets notifySecretStore
+				if containerServer.secretsStore != nil {
+					notifySecrets = containerServer.secretsStore
+				}
+				notifyServer = NewNotifyServer(ntfStore, notifySecrets, containerServer.boxRunExecFn, containerServer.boxRunDir())
+				pb.RegisterNotifyServiceServer(grpcServer, notifyServer)
+				log.Printf("Notify channel store ready")
 			}
 
 			// Connect to app store
@@ -3098,6 +3124,7 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		notifyServer:           notifyServer,
 		modelGateway:           modelGW,
 		anonManager:            anonManager,
 		config:                 config,
@@ -3483,6 +3510,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	}
 	if ds.retentionReporter != nil {
 		go ds.retentionReporter.Run(ctx, retentionSweepInterval)
+	}
+	if ds.notifyServer != nil {
+		go ds.notifyServer.RunNotifyWatcher(ctx)
 	}
 	if ds.credentialWatcher != nil {
 		ds.credentialWatcher.Start(ctx)
