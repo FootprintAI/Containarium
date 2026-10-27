@@ -1858,11 +1858,6 @@ skipAppHosting:
 				metricsCollector = mc
 				log.Printf("OTel metrics collector configured (target: %s)", config.VictoriaMetricsURL)
 
-				// Bridge DNS drift gauges and their built-in alerts (#2194).
-				if err := attachBridgeDNSMetrics(bridgeDNS, mc.MeterProvider()); err != nil {
-					log.Printf("Warning: bridge DNS metrics disabled: %v", err)
-				}
-
 				// Per-stage create latency (Phase 0 of
 				// docs/architecture/two-digit-ms-sandbox-spawn.md).
 				if obs, err := metrics.NewCreateStageObserver(mc.MeterProvider()); err != nil {
@@ -2246,7 +2241,7 @@ skipAppHosting:
 			if !containerServer.nativeTenantLocalLXC() || tenantGuard == nil || !npServer.Durable() {
 				return false
 			}
-			return nativeTenantGuardReady(tenantGuardStatusToProto(tenantGuard.Status()), time.Now())
+			return nativeTenantGuardCapable(tenantGuardStatusToProto(tenantGuard.Status()), time.Now())
 		}
 		npServer.tenantStoreDurable = func() bool { return npServer.Durable() }
 		if tenantGuard != nil && containerServer.nativeTenantLocalLXC() {
@@ -2508,6 +2503,10 @@ skipAppHosting:
 	threatDetectServer.SetFindingStore(threatDetectStore)
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
+		// The watcher loads the exec-watch object from the network-policy
+		// setting, so the self-measurement attests it too while it is loaded
+		// (#3120); Running is read live, so a failed load attests nothing.
+		wireExecWatcherIntegrity(containerServer, execWatcher)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
@@ -3519,10 +3518,6 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
-		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
-		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
-		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
-		ds.containerServer.SetBridgeDNSDisabled(ds.config.BridgeDNSReconcileDisabled)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a

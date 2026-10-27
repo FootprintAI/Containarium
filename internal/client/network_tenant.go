@@ -13,8 +13,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // networkTenantSourceFromProto maps the wire enum to the provider-source
@@ -134,7 +134,7 @@ func (c *HTTPClient) PatchTenantAccess(req *pb.PatchTenantAccessRequest) (*pb.Pa
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tenant access patch status %d: %s", resp.StatusCode, fmt.Sprintf("%s", body[:min(len(body), 512)]))
+		return nil, fmt.Errorf("tenant access patch status %d: %s", resp.StatusCode, string(body[:min(len(body), 512)]))
 	}
 	out := &pb.PatchTenantAccessResponse{}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, out); err != nil {

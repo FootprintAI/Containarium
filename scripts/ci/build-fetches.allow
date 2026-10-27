@@ -74,6 +74,7 @@ scripts/install-buf.sh	curl	c7f76bed5dfe	curl --fail --location --silent --show-
 scripts/install-lab-phase-b.sh	curl	54ebe4065cdf	curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt
 scripts/install-sdlc-skills.sh	curl	36cefc91790e	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz" -o "$tmp/sdlc-ski
 scripts/install-sdlc-skills.sh	curl	57ccb9e2751d	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz.sha256" -o "$tmp/s
+scripts/install-sdlc-skills.sh	curl	c93c04c35a74	curl -fsSL "$lock_url" -o "$tmp/sdlc-skills.lock" </dev/null; then
 scripts/install-xcaddy.sh	curl	4b000e8befa4	curl --fail --location --silent --show-error --retry 3 "https://github
 scripts/k8s-sentinel-e2e.sh	docker pull	cd4534cb0b59	docker pull -q "$AGENT_BOX_IMAGE" >/dev/null
 scripts/redeploy-workhorse.sh	curl	d0e0477500f1	curl -fsSL "$url" -o "$src" || die "download failed"

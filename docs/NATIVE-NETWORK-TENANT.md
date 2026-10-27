@@ -46,23 +46,29 @@ tenanted is the operator's choice, via `CONTAINARIUM_NATIVE_ACCOUNT_TENANCY`:
 - Set: the create is placed in the reserved `account:<username>` namespace, so
   choosing a username cannot join an administrator-created shared network. A
   non-admin may never name a Tenant (not even an `account:` key). The tenancy
-  still refuses VM/Windows and pool/backend placements explicitly, and region
+  still refuses VM/Windows and resolved remote placements explicitly, and region
   remains the accepted no-op hint it is on a standalone daemon.
 
 A non-admin create that resolves to a remote peer (via pool/backend) is refused
 with a clear error while account tenancy is armed; it is never silently
 downgraded to an un-tenanted box on the peer. An admin cannot explicitly
 allocate `account:` through this parameter. Existing Boxes are never relabeled.
-Guard ACLs and network-policy lookups canonicalize `account:<user>` to `<user>`
-(incus.CanonicalNetworkTenant), so a policy or ACL stored under the bare
-username keeps matching an account-namespaced box and the other way round — an
-ENFORCE policy never silently stops applying because of the namespace spelling.
+Guard ACLs, membership readback and eBPF tenant IDs retain the complete
+`account:<user>` key, distinct from an administrator's `<user>` shared domain.
+Ingress policies and source lists use these exact identities. For egress-only
+upgrade compatibility, an account without an explicit egress policy inherits
+its bare user's stored policy, including ENFORCE, metadata and deny settings,
+under its own tenant ID. An account record containing only ingress edits keeps
+that inheritance. An explicit account egress policy overrides it; ingress
+permissions are never inherited from the shared domain. Existing instances and
+stored policies are not rewritten.
 Admin omitted-field creation retains the legacy cloud/name resolver and existing
 optional Guard behavior. No network boundary is derived from a display name,
 encryption tenant_id or arbitrary user label.
 
-Explicit VM/Windows, K8s, backend and pool placement requests with a named
-Tenant are rejected before allocation/forwarding. Direct local CLI mode cannot
+Explicit VM/Windows, K8s and resolved remote placement requests with a named
+Tenant are rejected before allocation/forwarding. Pool resolution runs first;
+an explicit local backend or pool resolving locally remains supported. Direct local CLI mode cannot
 honor the daemon's authorization and required Guard hook, and rejects
 --network-tenant before any --force deletion. No backend silently drops the
 field.
@@ -72,8 +78,7 @@ field.
 1. Validate explicit identity and authority before storage/placement side effects.
 2. Persist the native key in the initial Incus create config. Defer requested
    boot.autostart until required attachment succeeds.
-3. Invoke PrepareNetworkTenant with that identical key (canonicalized to its
-   bare tenant for the ACL name). It requires ENFORCE, supported
+3. Invoke PrepareNetworkTenant with that identical key. It requires ENFORCE, supported
    nftables/NIC ACLs and a readable policy source. Compute the existing Tenant
    ACL and attach it with default-drop ingress before the first Start.
 4. Only after attachment succeeds, restore requested autostart and call Start.
@@ -83,8 +88,10 @@ field.
 
 The daemon also checks current Guard readiness before an explicitly tenanted
 create, so create --force does not delete an old Box for a known-unavailable
-native path. A later synchronous attachment still fails closed if readiness
-changes. ACL attachment is not a TCP/listener/application reachability test.
+native path. Creation readiness checks mode, driver and pass freshness; another box
+with a failed NIC attachment does not remove host capability. A stale gather
+or unsupported host still refuses creation. The later synchronous attachment
+fails closed if readiness changes. ACL attachment is not a TCP/listener/application reachability test.
 
 ## Capability and older clients/servers
 

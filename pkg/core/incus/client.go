@@ -490,12 +490,10 @@ const ContainerNameSuffix = "-container"
 // the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
 // attribution label; then the <tenant>-container naming convention. ""
 // when none yields a tenant — the container is then left unmanaged and
-// reported, never guessed. An account-namespace label canonicalizes to its
-// bare username (CanonicalNetworkTenant), so a policy or ACL keyed "workload"
-// keeps matching a box created under "account:workload".
+// reported, never guessed. Account and shared-domain identities stay distinct.
 func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
-		return CanonicalNetworkTenant(t)
+		return t
 	}
 	if t := strings.TrimSpace(cloudOrgID); t != "" {
 		return t
@@ -1843,6 +1841,19 @@ func (c *Client) GetRawInstance(name string) (map[string]string, string, error) 
 		return nil, "", fmt.Errorf("failed to get instance %s: %w", name, err)
 	}
 	return inst.Config, etag, nil
+}
+
+// GetRawInstanceDevices returns an instance's expanded (profile-merged) device
+// map: device name -> its config keys. The network-policy enforcer reads the
+// primary NIC's `network`/`parent` and `ipv4.address` from it (#2618) — host-side
+// configuration that root inside the instance cannot change, unlike the
+// addresses the instance state reports from inside its own netns.
+func (c *Client) GetRawInstanceDevices(name string) (map[string]map[string]string, error) {
+	inst, _, err := c.server.GetInstance(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance %s: %w", name, err)
+	}
+	return inst.ExpandedDevices, nil
 }
 
 // GetConsoleLog returns the instance's boot-time console ring-buffer log.

@@ -35,6 +35,17 @@ func nativeTenantGuardReady(g *pb.GuardStatus, now time.Time) bool {
 	return true
 }
 
+// nativeTenantGuardCapable gates creation on a recent supported pass, not on
+// another box's attachment. Gather/support failures mark the pass stale; every
+// new box still requires its own synchronous successful attachment before Start.
+func nativeTenantGuardCapable(g *pb.GuardStatus, now time.Time) bool {
+	if g == nil || g.Mode != pb.GuardMode_GUARD_MODE_ENFORCE || g.FirewallDriver != "nftables" || g.Unsupported || g.StaleSince != "" {
+		return false
+	}
+	stamp, err := time.Parse(time.RFC3339, g.LastPass)
+	return err == nil && now.Sub(stamp) <= 180*time.Second && now.Sub(stamp) >= -30*time.Second
+}
+
 func (s *NetworkServer) GetNetworkTenantCapabilities(ctx context.Context, _ *pb.GetNetworkTenantCapabilitiesRequest) (*pb.GetNetworkTenantCapabilitiesResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err

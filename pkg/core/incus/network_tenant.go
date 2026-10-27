@@ -46,22 +46,15 @@ const NativeTenantBackendScope = "local-lxc"
 // revoke naming it is rejected as a no-op.
 const TenantAccessAbsentRevision = "absent"
 
-// AccountNetworkTenantPrefix marks the reserved per-user account namespace.
-// It exists so a caller-chosen name can never collide with an operator-managed
-// shared domain. Guard ACLs and enforcer policy lookups canonicalize through
-// CanonicalNetworkTenant, so a policy stored for "workload" keeps matching a
-// box created in "account:workload" (and vice versa) — an egress policy never
-// silently stops applying because of the namespace spelling.
+// AccountNetworkTenantPrefix reserves the per-user namespace independently of
+// administrator-managed shared domains. Never strip it for ACL or tenant IDs.
 const AccountNetworkTenantPrefix = "account:"
 
-// CanonicalNetworkTenant folds the account namespace onto its bare username
-// for policy and ACL lookups. An empty key stays empty; a shared-domain key
-// is returned unchanged.
-func CanonicalNetworkTenant(key string) string {
-	if bare, ok := strings.CutPrefix(key, AccountNetworkTenantPrefix); ok {
-		return bare
-	}
-	return key
+// LegacyAccountPolicyKey supplies an optional egress-only compatibility lookup.
+// The returned key must never be used as an account's enforcement identity.
+func LegacyAccountPolicyKey(key string) (string, bool) {
+	bare, ok := strings.CutPrefix(key, AccountNetworkTenantPrefix)
+	return bare, ok && bare != ""
 }
 
 // NetworkTenantIdentity resolves only current Provider state, never request data.
@@ -73,7 +66,7 @@ func NetworkTenantIdentity(info *ContainerInfo) (string, NetworkTenantSource) {
 		return "", NetworkTenantSourceUnknown
 	}
 	if strings.TrimSpace(info.Tenant) != "" {
-		return CanonicalNetworkTenant(strings.TrimSpace(info.Tenant)), NetworkTenantSourceNative
+		return strings.TrimSpace(info.Tenant), NetworkTenantSourceNative
 	}
 	if cloud := strings.TrimSpace(info.Labels[CloudOrgIDLabel]); cloud != "" {
 		return cloud, NetworkTenantSourceCloud

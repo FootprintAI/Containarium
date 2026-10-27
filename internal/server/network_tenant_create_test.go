@@ -42,13 +42,13 @@ func TestNativeTenantAuthorizationAndPlacement(t *testing.T) {
 		{"native label injection", false, true, false, &pb.CreateContainerRequest{Labels: map[string]string{incus.TenantLabelKey: "team-a"}}, codes.InvalidArgument, ""},
 		{"cloud bypass", false, true, false, &pb.CreateContainerRequest{Labels: map[string]string{incus.CloudOrgIDLabel: "team-a"}}, codes.PermissionDenied, ""},
 		{"conflicting cloud", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Labels: map[string]string{incus.CloudOrgIDLabel: "team-b"}}, codes.InvalidArgument, ""},
-		{"non-admin pool refused while tenanted", false, true, true, &pb.CreateContainerRequest{Pool: "pool"}, codes.FailedPrecondition, ""},
-		{"non-admin backend refused while tenanted", false, true, true, &pb.CreateContainerRequest{BackendId: "remote"}, codes.FailedPrecondition, ""},
+		{"non-admin pool refused while tenanted", false, false, true, &pb.CreateContainerRequest{Pool: "pool"}, codes.FailedPrecondition, ""},
+		{"non-admin backend refused while tenanted", false, false, true, &pb.CreateContainerRequest{BackendId: "remote"}, codes.FailedPrecondition, ""},
 		{"VM", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Isolation: pb.IsolationType_ISOLATION_TYPE_VM}, codes.InvalidArgument, ""},
 		{"Windows", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", OsType: pb.OSType_OS_TYPE_WINDOWS_2022}, codes.InvalidArgument, ""},
 		{"K8s", true, false, false, &pb.CreateContainerRequest{NetworkTenant: "team-a"}, codes.FailedPrecondition, ""},
-		{"remote", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", BackendId: "remote"}, codes.FailedPrecondition, ""},
-		{"pool", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Pool: "pool"}, codes.FailedPrecondition, ""},
+		{"remote", true, false, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", BackendId: "remote"}, codes.FailedPrecondition, ""},
+		{"pool", true, false, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Pool: "pool"}, codes.FailedPrecondition, ""},
 		{"region accepted as no-op", true, true, false, &pb.CreateContainerRequest{NetworkTenant: "team-a", Region: "region"}, codes.OK, "team-a"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

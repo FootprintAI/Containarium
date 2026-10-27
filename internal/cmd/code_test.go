@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
+	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -477,7 +478,7 @@ func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
 		"claude-install":      claudeInstallScriptFor("1.2.3"),
 		"claude-install-bare": claudeInstallScriptFor(""),
 		"agent-box":           agentBoxInstallScript("v0.89.0"),
-		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0"),
+		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0", sdlcskills.SkillSets{}),
 		"bootstrap":           bootstrapScript("https://example.test/b.tar.gz"),
 		"verify":              claudeVerifyScript(),
 

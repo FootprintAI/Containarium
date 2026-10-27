@@ -32,16 +32,15 @@ type accessPlan struct {
 type tenantAccessClient interface {
 	GetNetworkPolicy(tenant string) (*pb.GetNetworkPolicyResponse, error)
 	PatchTenantAccess(req *pb.PatchTenantAccessRequest) (*pb.PatchTenantAccessResponse, error)
+	Close() error
 }
 
 func newTenantAccessClient() (tenantAccessClient, error) {
 	if serverAddr == "" {
 		return nil, errServerRequired()
 	}
-	if httpMode {
-		return client.NewHTTPClient(serverAddr, authToken)
-	}
-	return client.NewGRPCClient(serverAddr, certsDir, insecure)
+	// The network-policy command family uses the daemon HTTP API.
+	return client.NewHTTPClient(serverAddr, authToken)
 }
 
 func init() {
@@ -51,6 +50,7 @@ func init() {
 		if err != nil {
 			return err
 		}
+		defer func() { _ = c.Close() }()
 		pairs := [][2]string{{args[0], args[1]}}
 		if accessBoth {
 			pairs = append(pairs, [2]string{args[1], args[0]})
@@ -92,6 +92,7 @@ func init() {
 		if err != nil {
 			return err
 		}
+		defer func() { _ = c.Close() }()
 		f, err := os.Open(args[0])
 		if err != nil {
 			return err

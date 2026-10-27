@@ -40,12 +40,33 @@ reports PENDING, GUARD_VERIFIED or DEGRADED. A commit, ACL reconciliation and a
 TCP connectivity test are distinct; connectivityTested is always false. Do not
 infer immediate enforcement of a degraded revocation.
 
-Minting a token with the required scope: create an admin token whose scope list
-includes network-policy:write alongside containers:write (legacy unrestricted
-admin credentials keep working). A token minted before this change with an
-explicit scope list that omits network-policy:write loses every policy write —
-Set, Patch, Delete and the signature mutations — on upgrade; re-mint it before
-relying on those writes.
+Scopes are exact membership checks. Use the admin role plus:
+
+| Operation | Scopes |
+| --- | --- |
+| Explicit create, including capability preflight | containers:read, containers:write |
+| Policy preview/read | network-policy:read |
+| Reviewed policy-only apply | network-policy:write |
+| Complete create and preview/apply workflow | containers:read, containers:write, network-policy:read, network-policy:write |
+
+On the daemon host, mint the complete workflow credential with the existing
+protected signing-secret file (substitute your configured path):
+
+```bash
+containarium token generate --username operator --roles admin --expiry 2h \
+  --secret-file /path/to/jwt.secret \
+  --scopes containers:read,containers:write,network-policy:read,network-policy:write
+```
+
+Do not put the signing secret on the command line. Legacy unrestricted admin
+credentials retain their existing behavior. Explicit-scope tokens that omit
+network-policy:write lose Set, Patch, Delete and signature mutations on upgrade;
+re-mint them before relying on those writes. The cloud adopt credential must
+also carry admin plus containers:write because cloud attribution affects
+network identity; tenant credentials cannot re-attribute their own boxes.
+
+The network-policy access subcommands use the same HTTP --server address as
+the rest of network-policy; --http is not required.
 
 Tests cover direction, exact preservation including egress_mode/deny rules,
 revision conflicts, concurrent previews, all-or-none absent-row rollback, signed

@@ -73,11 +73,19 @@ func parsePatchTenantAccessArgs(args map[string]interface{}) (*pb.PatchTenantAcc
 		if !ok {
 			return nil, fmt.Errorf("changes[%d] must be an object", i)
 		}
+		add, err := tenantAccessSources(m, "add_sources")
+		if err != nil {
+			return nil, fmt.Errorf("changes[%d]: %w", i, err)
+		}
+		remove, err := tenantAccessSources(m, "remove_sources")
+		if err != nil {
+			return nil, fmt.Errorf("changes[%d]: %w", i, err)
+		}
 		ch := &pb.TenantAccessChange{
 			Destination:      strings.TrimSpace(getStringArg(m, "destination", "")),
 			ExpectedRevision: getStringArg(m, "expected_revision", ""),
-			AddSources:       getStringSliceArg(m, "add_sources"),
-			RemoveSources:    getStringSliceArg(m, "remove_sources"),
+			AddSources:       add,
+			RemoveSources:    remove,
 		}
 		if ch.Destination == "" {
 			return nil, fmt.Errorf("changes[%d].destination is required", i)
@@ -88,6 +96,27 @@ func parsePatchTenantAccessArgs(args map[string]interface{}) (*pb.PatchTenantAcc
 		req.Changes = append(req.Changes, ch)
 	}
 	return req, nil
+}
+
+// tenantAccessSources validates the complete list before any backend call.
+func tenantAccessSources(args map[string]interface{}, key string) ([]string, error) {
+	raw, present := args[key]
+	if !present {
+		return nil, nil
+	}
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings", key)
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		source, ok := item.(string)
+		if !ok || strings.TrimSpace(source) == "" {
+			return nil, fmt.Errorf("%s must contain only non-empty strings", key)
+		}
+		out = append(out, source)
+	}
+	return out, nil
 }
 
 func tenantNetworkHandler(operation string) ToolHandler {

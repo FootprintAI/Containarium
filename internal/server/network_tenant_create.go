@@ -27,6 +27,9 @@ func authorizeNetworkTenantCreate(ctx context.Context, req *pb.CreateContainerRe
 		return err
 	}
 
+	if !admin && accountTenancy && !localLXC && req.NetworkTenant == "" && (req.BackendId != "" || req.Pool != "") {
+		return status.Error(codes.FailedPrecondition, "account network Tenant requires the local LXC backend")
+	}
 	autoAssigned := false
 	if !admin && accountTenancy && localLXC && req.NetworkTenant == "" {
 		req.NetworkTenant = "account:" + req.Username
@@ -53,9 +56,6 @@ func authorizeNetworkTenantCreate(ctx context.Context, req *pb.CreateContainerRe
 		}
 		if req.Isolation == pb.IsolationType_ISOLATION_TYPE_VM || req.OsType == pb.OSType_OS_TYPE_WINDOWS_2022 {
 			return status.Error(codes.InvalidArgument, "network Tenant contract supports Linux LXC only")
-		}
-		if req.BackendId != "" || req.Pool != "" {
-			return status.Error(codes.FailedPrecondition, "network Tenant contract requires the local LXC backend")
 		}
 		// req.Region is not checked: it is a documented no-op hint on a
 		// standalone daemon and never selects a peer, so it cannot move an

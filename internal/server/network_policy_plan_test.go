@@ -68,11 +68,16 @@ func TestPlanReconcile(t *testing.T) {
 	}
 	views := []containerView{
 		// alice running with veth + IP
-		{Name: "alice-container", Tenant: "alice", TenantID: 1, IP: [4]byte{10, 100, 0, 10}, HasIP: true, Ifindex: 11, HasVeth: true, Running: true},
+		// Its host-known address (lease) is the guest-reported one here; bob's is
+		// not, to pin which one box_ip follows (#2618 B1).
+		{Name: "alice-container", Tenant: "alice", TenantID: 1, IP: [4]byte{10, 100, 0, 10}, HasIP: true, HostIP: [4]byte{10, 100, 0, 10}, HasHostIP: true, Ifindex: 11, HasVeth: true, Running: true},
 		// alice second container (same tenant) → egress emitted once
-		{Name: "alice-web-container", Tenant: "alice", TenantID: 1, IP: [4]byte{10, 100, 0, 11}, HasIP: true, Ifindex: 12, HasVeth: true, Running: true},
-		// bob running, no policy → default log-only config, no egress
-		{Name: "bob-container", Tenant: "bob", TenantID: 2, IP: [4]byte{10, 100, 0, 20}, HasIP: true, Ifindex: 20, HasVeth: true, Running: true},
+		{Name: "alice-web-container", Tenant: "alice", TenantID: 1, IP: [4]byte{10, 100, 0, 11}, HasIP: true, HostIP: [4]byte{10, 100, 0, 11}, HasHostIP: true, Ifindex: 12, HasVeth: true, Running: true},
+		// bob running, no policy → default log-only config, no egress. The guest
+		// reports 10.100.0.20 but the host leased 10.100.0.21 to its MAC.
+		{Name: "bob-container", Tenant: "bob", TenantID: 2, IP: [4]byte{10, 100, 0, 20}, HasIP: true, HostIP: [4]byte{10, 100, 0, 21}, HasHostIP: true, Ifindex: 20, HasVeth: true, Running: true},
+		// an instance with no tenant (validate-only): marking entry, no ip_tenant row
+		{Name: "stray-instance", ValidateOnly: true, HostIP: [4]byte{10, 100, 0, 99}, HasHostIP: true, Ifindex: 30, HasVeth: true, Running: true},
 		// stopped container → IP mapped but no veth_policy/attach
 		{Name: "carol-container", Tenant: "carol", TenantID: 3, IP: [4]byte{10, 100, 0, 30}, HasIP: true, Running: false},
 	}
@@ -87,9 +92,15 @@ func TestPlanReconcile(t *testing.T) {
 		t.Errorf("stopped carol IP should still map to tenant 3")
 	}
 
-	// veth_policy: only the 3 running+veth containers.
-	if len(plan.vethPolicy) != 3 {
-		t.Fatalf("vethPolicy size = %d, want 3: %v", len(plan.vethPolicy), plan.vethPolicy)
+	// veth_policy: the 3 running+veth tenant containers plus the validate-only one.
+	if len(plan.vethPolicy) != 4 {
+		t.Fatalf("vethPolicy size = %d, want 4: %v", len(plan.vethPolicy), plan.vethPolicy)
+	}
+	if cfg := plan.vethPolicy[30]; cfg != netbpf.ValidateOnlyConfig([4]byte{10, 100, 0, 99}) || plan.ifName[30] != "stray-instance" {
+		t.Errorf("validate-only cfg = %+v (name %q), want ValidateOnlyConfig(10.100.0.99)", cfg, plan.ifName[30])
+	}
+	if _, tagged := plan.ipTenant[[4]byte{10, 100, 0, 99}]; tagged {
+		t.Error("a validate-only instance must not get an ip_tenant row")
 	}
 	if _, ok := plan.vethPolicy[20]; !ok {
 		t.Error("bob's veth (ifindex 20) should be present with default config")
@@ -99,6 +110,19 @@ func TestPlanReconcile(t *testing.T) {
 	}
 	if cfg := plan.vethPolicy[20]; cfg.TenantID != 2 || cfg.AllowIntra != 0 {
 		t.Errorf("bob default cfg = %+v, want tenant=2 allowIntra=0", cfg)
+	}
+	// #2618: the program validates a box's source address against box_ip, which
+	// must be the HOST-known address (device config / DHCP lease), never the one
+	// the guest reports — root in the box controls the latter. Every running veth
+	// with a host-known address carries it, with a stored policy or on the default.
+	if cfg := plan.vethPolicy[11]; cfg.BoxIP != [4]byte{10, 100, 0, 10} {
+		t.Errorf("alice veth cfg.BoxIP = %v, want 10.100.0.10", cfg.BoxIP)
+	}
+	if cfg := plan.vethPolicy[20]; cfg.BoxIP != [4]byte{10, 100, 0, 21} {
+		t.Errorf("bob default cfg.BoxIP = %v, want the host-leased 10.100.0.21, not the guest-reported .20", cfg.BoxIP)
+	}
+	if plan.ipTenant[[4]byte{10, 100, 0, 20}] != 2 {
+		t.Error("ip_tenant keeps the guest-reported address (destination tagging), unchanged by #2618")
 	}
 	if plan.ifName[11] != "alice-container" {
 		t.Errorf("ifName[11] = %q, want alice-container", plan.ifName[11])

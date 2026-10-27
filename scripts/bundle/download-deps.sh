@@ -27,7 +27,8 @@
 #                  builder
 #   APT_PACKAGES   space-separated packages to bundle with their dependency
 #                  closure (default: the list below)
-#   APT_BATCH_SIZE packages per `apt-get download` call (default 25); each
+#   APT_BATCH_SIZE packages per `apt-get download` call (1-500, default 25;
+#                  anything else fails fast); each
 #                  batch is logged, so a stall shows which batch it is in
 #   GITHUB_STEP_SUMMARY  when set (GitHub Actions), the step's result,
 #                  duration and package count are appended to it
@@ -72,9 +73,16 @@ case "$DEPS_ONLY" in
   *) echo "DEPS_ONLY must be all, toolchains or apt (got: $DEPS_ONLY)" >&2; exit 1 ;;
 esac
 
+# Fail fast, never silently fall back: an out-of-range value is a typo or a
+# broken caller, and quietly using 25 would hide it. Unset or empty keeps the
+# default. The check is a regex on the string, before any arithmetic: a
+# 2^64-ish value wraps to 0 (division by zero) and 2^63-1 yields a negative
+# batch count. Max 500 (three digits): each `apt-get download` argument is
+# ~40 bytes, so 500 is ~20 KB, far below ARG_MAX (~2 MB), and large enough that
+# the default closure is a single batch while a stall still shows its batch.
 APT_BATCH_SIZE="${APT_BATCH_SIZE:-25}"
-if ! [[ "$APT_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
-  echo "APT_BATCH_SIZE must be a positive integer (got: $APT_BATCH_SIZE)" >&2
+if ! [[ "$APT_BATCH_SIZE" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$APT_BATCH_SIZE" -gt 500 ]; then
+  printf 'APT_BATCH_SIZE must be an integer from 1 to 500 (got: %q)\n' "${APT_BATCH_SIZE:0:40}" >&2
   exit 1
 fi
 
