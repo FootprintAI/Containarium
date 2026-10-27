@@ -397,15 +397,7 @@ static __always_inline void track_inbound(struct __sk_buff *skb, __u32 ifindex,
     // (ingress_ifindex 0) or entered on a known uplink; anything else unmarked
     // — an unconfigured veth, a foreign namespace on the bridge, a rewritten
     // mark — fails closed.
-    __u32 mark = skb->mark;
-    if (mark & NETPOLICY_MARK_SEEN) {
-        if (!(mark & NETPOLICY_MARK_VALIDATED))
-            return;
-    } else {
-        __u32 iif = skb->ingress_ifindex;
-        if (iif != 0 && !bpf_map_lookup_elem(&trusted_iif, &iif))
-            return;
-    }
+    // MUTATION A (temporary, #2618 B3/B4/B5): seed trust check removed
 
     struct inbound_key k = {};
     k.ifindex = ifindex;
