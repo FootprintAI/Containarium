@@ -378,7 +378,9 @@ static __always_inline void track_inbound(struct __sk_buff *skb, __u32 ifindex,
     // a managed veth (SEEN) is trusted only if that hook validated its source
     // (VALIDATED). A frame with neither bit came from the host or from outside
     // the bridge.
-    // MUTATION (temporary, #2618 B3): seed source validation removed
+    __u32 mark = skb->mark;
+    if ((mark & NETPOLICY_MARK_SEEN) && !(mark & NETPOLICY_MARK_VALIDATED))
+        return;
 
     struct inbound_key k = {};
     k.ifindex = ifindex;
