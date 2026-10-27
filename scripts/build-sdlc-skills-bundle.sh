@@ -50,9 +50,11 @@ got="$(git -C "$src" rev-parse HEAD)"
 # CONTRIBUTING) and dot-dirs are not skills; _shared/ is read at runtime by the
 # skills and is copied as-is.
 count=0
+namespaces=" "
 for d in "$src"/*/; do
   ns="$(basename "$d")"
   [[ "$ns" == _shared ]] && continue
+  namespaces+="$ns "
   for f in "$d"*.md; do
     [[ -f "$f" ]] || continue
     name="$(basename "$f" .md)"
@@ -62,6 +64,29 @@ for d in "$src"/*/; do
   done
 done
 [[ "$count" -gt 0 ]] || { echo "build-sdlc-skills-bundle: no role skills found at $REF" >&2; exit 1; }
+# Skill sets (#3048): the lock's `set.<id>=<ns>,<ns>` lines say which namespaces
+# each set id selects (install-sdlc-skills.sh SKILL_SETS). Once a lock declares
+# any, they must partition the namespaces in the archive: every namespace in
+# exactly one set, no set naming a namespace that is not there. A new upstream
+# namespace therefore fails the build until it is assigned, instead of being
+# silently unselectable.
+if grep -q '^set\.' "$LOCK"; then
+  assigned=" "
+  while IFS='=' read -r key val; do
+    id="${key#set.}"
+    [[ "$id" =~ ^[a-z0-9-]+$ ]] || { echo "build-sdlc-skills-bundle: bad set id '$id' in the lock (want [a-z0-9-]+)" >&2; exit 1; }
+    IFS=',' read -r -a nss <<< "$val"
+    [[ "${#nss[@]}" -gt 0 ]] || { echo "build-sdlc-skills-bundle: set '$id' has no namespaces" >&2; exit 1; }
+    for ns in "${nss[@]}"; do
+      [[ "$namespaces" == *" $ns "* ]] || { echo "build-sdlc-skills-bundle: set '$id' names namespace '$ns', which is not in $REF" >&2; exit 1; }
+      [[ "$assigned" != *" $ns "* ]] || { echo "build-sdlc-skills-bundle: namespace '$ns' is in more than one set" >&2; exit 1; }
+      assigned+="$ns "
+    done
+  done < <(grep '^set\.' "$LOCK")
+  for ns in $namespaces; do
+    [[ "$assigned" == *" $ns "* ]] || { echo "build-sdlc-skills-bundle: namespace '$ns' is in no set; add it to a set.<id> line in the lock" >&2; exit 1; }
+  done
+fi
 if [[ -d "$src/_shared" ]]; then
   mkdir -p "$stage/_shared"
   cp "$src/_shared/"*.md "$stage/_shared/"
