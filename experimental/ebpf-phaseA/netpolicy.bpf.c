@@ -453,8 +453,7 @@ static __always_inline int inbound_reply(__u32 ifindex, __u32 box_ip, __u32 peer
     k.proto = proto;
     if (proto == IPPROTO_TCP) {
         if (l4->tcp_syn && !l4->tcp_ack)
-            return 0;
-        return 1; // MUTATION C (temporary, #2618 round 2): any non-SYN TCP is an established reply
+            return 0; // a fresh SYN opens a flow; it is never a reply
         k.box_port = l4->sport;
         k.peer_port = l4->dport;
     } else if (proto == IPPROTO_UDP) {
