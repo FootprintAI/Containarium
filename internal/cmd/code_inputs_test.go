@@ -19,19 +19,33 @@ import (
 
 // fakeRunInputs is a daemon with one run's requests.
 type fakeRunInputs struct {
-	mu      sync.Mutex
-	list    *pb.ListRunInputsResponse
-	answer  *pb.AnswerRunInputResponse
-	answers []*pb.AnswerRunInputRequest
+	mu   sync.Mutex
+	list *pb.ListRunInputsResponse
+	// lists, when set, are returned in turn by successive ListRunInputs calls
+	// (the last one repeats).
+	lists    []*pb.ListRunInputsResponse
+	answer   *pb.AnswerRunInputResponse
+	answers  []*pb.AnswerRunInputRequest
+	onAnswer func() // runs as the answer is sent
 }
 
 func (f *fakeRunInputs) ListRunInputs(*pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.lists) > 0 {
+		l := f.lists[0]
+		if len(f.lists) > 1 {
+			f.lists = f.lists[1:]
+		}
+		return l, nil
+	}
 	return f.list, nil
 }
 
 func (f *fakeRunInputs) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	if f.onAnswer != nil {
+		f.onAnswer()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.answers = append(f.answers, req)
@@ -75,26 +89,92 @@ func TestCodePendingListsOpenRequests(t *testing.T) {
 	}
 }
 
-// `code answer` signs for the prompt it reads and prints, and succeeds only
-// when the run took the answer.
-func TestCodeAnswerBindsThePrintedPrompt(t *testing.T) {
-	now := time.Now()
-	api := &fakeRunInputs{
-		list: &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0123456789abcdef", "Bash: make deploy")}},
-		answer: &pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED,
-			ClosedAnswer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, CloseReason: pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_ANSWERED},
-	}
+func deployRequest(now time.Time) *pb.ListRunInputsResponse {
+	return &pb.ListRunInputsResponse{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0123456789abcdef", "Bash: make deploy")}}
+}
+
+var answeredAllow = &pb.AnswerRunInputResponse{Outcome: pb.RunInputAnswerOutcome_RUN_INPUT_ANSWER_OUTCOME_ANSWERED,
+	ClosedAnswer: pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, CloseReason: pb.RunInputCloseReason_RUN_INPUT_CLOSE_REASON_ANSWERED}
+
+// `code answer` prints the prompt and has an allow confirmed BEFORE anything
+// is sent, and the answer is signed for the printed prompt (#2184 review: the
+// prompt used to be printed only after the answer was sent).
+func TestCodeAnswerConfirmsThePrintedPromptBeforeSending(t *testing.T) {
+	api := &fakeRunInputs{list: deployRequest(time.Now()), answer: answeredAllow}
 	var out bytes.Buffer
-	if err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, &out); err != nil {
+	var shownAtSend string
+	api.onAnswer = func() { shownAtSend = out.String() }
+
+	err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW,
+		answerConfirm{tty: true, in: strings.NewReader("y\n")}, &out)
+	if err != nil {
 		t.Fatalf("codeAnswer: %v", err)
+	}
+	if !strings.Contains(shownAtSend, "request req-0123456789abcdef: Bash: make deploy\nallow? [y/N] ") {
+		t.Errorf("at send time the output was %q, want the prompt and the confirmation question", shownAtSend)
 	}
 	sent := api.sent()
 	if len(sent) != 1 || !bytes.Equal(sent[0].GetPromptSha256(), coderun.PromptDigest("Bash: make deploy")) ||
 		sent[0].GetAnswer() != pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW || sent[0].GetRunName() != "code" {
-		t.Fatalf("sent %v, want an allow bound to the listed prompt", sent)
+		t.Fatalf("sent %v, want an allow bound to the printed prompt", sent)
 	}
 	if !strings.Contains(out.String(), "allowed req-0123456789abcdef: Bash: make deploy") {
 		t.Errorf("output = %q", out.String())
+	}
+}
+
+func TestCodeAnswerAllowNeedsConfirmation(t *testing.T) {
+	cases := map[string]answerConfirm{
+		"answered no":           {tty: true, in: strings.NewReader("n\n")},
+		"no answer at all":      {tty: true, in: strings.NewReader("")},
+		"no terminal, no --yes": {in: strings.NewReader("y\n")},
+	}
+	for name, c := range cases {
+		api := &fakeRunInputs{list: deployRequest(time.Now()), answer: answeredAllow}
+		err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, c, &bytes.Buffer{})
+		if err == nil {
+			t.Errorf("%s: allowed without confirmation", name)
+		}
+		if len(api.sent()) != 0 {
+			t.Errorf("%s: an answer was sent", name)
+		}
+	}
+}
+
+// --yes sends an allow without a terminal; a deny is never asked about.
+func TestCodeAnswerYesAndDenyNeedNoQuestion(t *testing.T) {
+	for name, c := range map[string]struct {
+		a   pb.RunInputAnswer
+		yes bool
+	}{
+		"allow --yes": {pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, true},
+		"deny":        {pb.RunInputAnswer_RUN_INPUT_ANSWER_DENY, false},
+	} {
+		api := &fakeRunInputs{list: deployRequest(time.Now()), answer: answeredAllow}
+		var out bytes.Buffer
+		if err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", c.a, answerConfirm{yes: c.yes}, &out); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if len(api.sent()) != 1 || strings.Contains(out.String(), "[y/N]") {
+			t.Errorf("%s: sent %d answers, output %q", name, len(api.sent()), out.String())
+		}
+	}
+}
+
+// If the prompt changes between printing it and sending, nothing is sent.
+func TestCodeAnswerRefusesWhenThePromptChangedAfterPrinting(t *testing.T) {
+	now := time.Now()
+	api := &fakeRunInputs{lists: []*pb.ListRunInputsResponse{
+		{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0123456789abcdef", "Bash: ls")}},
+		{Running: true, Open: []*pb.RunInput{openRequest(now, "req-0123456789abcdef", "Bash: rm -rf ~/repo")}},
+	}, answer: answeredAllow}
+	err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW,
+		answerConfirm{tty: true, in: strings.NewReader("y\n")}, &bytes.Buffer{})
+	if !errors.Is(err, runlog.ErrPromptChanged) {
+		t.Fatalf("err = %v, want ErrPromptChanged", err)
+	}
+	if len(api.sent()) != 0 {
+		t.Error("an answer was sent for a prompt the user did not see")
 	}
 }
 
@@ -114,7 +194,7 @@ func TestCodeAnswerIdempotentCasesExitNonZero(t *testing.T) {
 	for name, c := range cases {
 		api := &fakeRunInputs{list: &pb.ListRunInputsResponse{Running: true}, answer: c.resp}
 		var out bytes.Buffer
-		err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, &out)
+		err := codeAnswer(api, "alice", "code", "req-0123456789abcdef", pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW, answerConfirm{}, &out)
 		if !errors.Is(err, runlog.ErrNotAnswered) {
 			t.Errorf("%s: err = %v, want ErrNotAnswered", name, err)
 		}

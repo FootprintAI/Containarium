@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,7 +35,7 @@ func TestHandleCodeAnswer_BindsTheListedPrompt(t *testing.T) {
 	defer server.Close()
 
 	out, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
-		"box": "alice", "name": "task", "request_id": "req-0123456789abcdef", "answer": "deny",
+		"box": "alice", "name": "task", "request_id": "req-0123456789abcdef", "prompt": "Bash: make deploy", "answer": "deny",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "denied req-0123456789abcdef: Bash: make deploy\n", out)
@@ -53,7 +54,7 @@ func TestHandleCodeAnswer_AlreadyClosedIsAnError(t *testing.T) {
 	defer server.Close()
 
 	_, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
-		"box": "alice", "request_id": "req-0123456789abcdef", "answer": "allow",
+		"box": "alice", "request_id": "req-0123456789abcdef", "prompt": "Bash: x", "answer": "allow",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already closed: deny (expired)")
@@ -63,8 +64,29 @@ func TestHandleCodeAnswer_RequiresArgs(t *testing.T) {
 	c := NewClient("http://127.0.0.1:0", "t")
 	_, err := handleCodeAnswer(c, map[string]interface{}{"box": "alice", "answer": "allow"})
 	require.Error(t, err)
-	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "answer": "yes"})
+	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "prompt": "p", "answer": "yes"})
 	require.Error(t, err)
+	_, err = handleCodeAnswer(c, map[string]interface{}{"box": "alice", "request_id": "req-0123456789abcdef", "answer": "allow"})
+	require.ErrorContains(t, err, "`prompt` is required")
+}
+
+// A prompt that differs from the request's current one is refused before
+// anything is sent (#2184 review).
+func TestHandleCodeAnswer_ChangedPromptIsRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("an answer was sent: %s %s", r.Method, r.URL.Path)
+			return
+		}
+		_, _ = w.Write([]byte(`{"running":true,"open":[{"requestId":"req-0123456789abcdef","prompt":"Bash: rm -rf ~/repo"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := handleCodeAnswer(NewClient(server.URL, "test-token"), map[string]interface{}{
+		"box": "alice", "request_id": "req-0123456789abcdef", "prompt": "Bash: ls", "answer": "allow",
+	})
+	require.ErrorContains(t, err, "prompt changed")
+	assert.Contains(t, err.Error(), "Bash: rm -rf ~/repo")
 }
 
 func TestHandleCodePending(t *testing.T) {
@@ -80,4 +102,15 @@ func TestHandleCodePending(t *testing.T) {
 	assert.Contains(t, out, "req-0123456789abcdef")
 	assert.Contains(t, out, "Bash: ls")
 	assert.Contains(t, out, "open 1)")
+	// protojson varies its whitespace, so decode the JSON part.
+	_, raw, ok := strings.Cut(out, "---\n")
+	require.True(t, ok, out)
+	var data struct {
+		Open []struct {
+			Prompt string `json:"prompt"`
+		} `json:"open"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &data))
+	require.Len(t, data.Open, 1)
+	assert.Equal(t, "Bash: ls", data.Open[0].Prompt)
 }

@@ -133,25 +133,39 @@ func AnswerShown(api RunInputs, box, run, id, prompt string, a pb.RunInputAnswer
 	return AnswerResult{RequestID: id, Answer: a, Prompt: prompt, Resp: resp}, nil
 }
 
-// Answer answers request id the way `code answer` and the MCP code_answer tool
-// do: it reads the request's prompt now and binds the answer to it. What gets
-// allowed is that prompt, which the caller must print (WriteAnswerResult does);
-// it can differ from an earlier `code pending` view if the journal changed.
-func Answer(api RunInputs, box, run, id string, a pb.RunInputAnswer) (AnswerResult, error) {
+// ErrPromptChanged marks an answer that was not sent because the request's
+// prompt is no longer the one the answering party saw.
+var ErrPromptChanged = errors.New("the request's prompt changed")
+
+// OpenPrompt returns request id's prompt when the request is open on run.
+func OpenPrompt(api RunInputs, box, run, id string) (prompt string, open bool, err error) {
 	list, err := api.ListRunInputs(&pb.ListRunInputsRequest{Username: box, RunName: run})
 	if err != nil {
-		return AnswerResult{}, fmt.Errorf("read the permission requests of run %s: %w", run, err)
+		return "", false, fmt.Errorf("read the permission requests of run %s: %w", run, err)
 	}
-	prompt, open := "", false
 	for _, in := range list.GetOpen() {
 		if in.GetRequestId() == id {
-			prompt, open = in.GetPrompt(), true
-			break
+			return in.GetPrompt(), true, nil
 		}
 	}
-	// A request that is not open is closed, expired or unknown: the daemon
-	// reports which without writing anything, so the digest is unused.
-	res, err := AnswerShown(api, box, run, id, prompt, a)
+	return "", false, nil
+}
+
+// Answer answers request id for seen, the raw prompt the answering party saw
+// (the prompt `code answer` printed and had confirmed, or the one the MCP
+// caller got from code_pending). It re-reads the request first: if it is open
+// with another prompt now, nothing is sent and the error wraps
+// ErrPromptChanged. A request that is not open is closed, expired or unknown:
+// the daemon reports which without writing anything.
+func Answer(api RunInputs, box, run, id, seen string, a pb.RunInputAnswer) (AnswerResult, error) {
+	current, open, err := OpenPrompt(api, box, run, id)
+	if err != nil {
+		return AnswerResult{}, err
+	}
+	if open && current != seen {
+		return AnswerResult{}, fmt.Errorf("%w; nothing was sent. It is now: %s", ErrPromptChanged, coderun.PlainText(current))
+	}
+	res, err := AnswerShown(api, box, run, id, seen, a)
 	if err != nil {
 		return AnswerResult{}, err
 	}

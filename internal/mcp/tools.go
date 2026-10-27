@@ -1238,8 +1238,9 @@ func (s *Server) registerTools() {
 			Description: "List the open permission requests of a code run started with " +
 				"--approvals ask: request id, age, time left before it expires into a deny, " +
 				"and the prompt (tool and command or path), plus the run's request counts. " +
-				"Same output as `containarium code pending`. The list is read from a journal " +
-				"the agent on the box can write, so it is advisory.",
+				"Same table as `containarium code pending`, then `---` and the same data as " +
+				"JSON, whose `prompt` fields are what code_answer takes. The list is read from " +
+				"a journal the agent on the box can write, so it is advisory.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box"},
@@ -1253,17 +1254,20 @@ func (s *Server) registerTools() {
 		{
 			Name: "code_answer",
 			Description: "Answer one open permission request of a code run: allow or deny. " +
-				"The request's prompt is read again and returned with the result; the answer " +
-				"is signed for exactly that prompt, and the run acts on it only if that is the " +
-				"prompt it asked. Answering a request already closed or expired changes nothing " +
-				"and reports how it was closed, as an error. Same as `containarium code answer`.",
+				"Pass `prompt` exactly as code_pending returned it for this request: the answer " +
+				"is signed for that prompt, and the run acts on it only if that is the prompt it " +
+				"asked. If the request's prompt has changed since, nothing is sent and the call " +
+				"fails with the new prompt. Answering a request already closed or expired changes " +
+				"nothing and reports how it was closed, as an error. Same signing as " +
+				"`containarium code answer`.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
-				"required": []string{"box", "request_id", "answer"},
+				"required": []string{"box", "request_id", "prompt", "answer"},
 				"properties": map[string]interface{}{
 					"box":        map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
 					"name":       map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
 					"request_id": map[string]interface{}{"type": "string", "description": "Request id, from code_pending."},
+					"prompt":     map[string]interface{}{"type": "string", "description": "The request's prompt exactly as the JSON part of code_pending returned it."},
 					"answer":     map[string]interface{}{"type": "string", "enum": []string{"allow", "deny"}, "description": "allow or deny."},
 				},
 			},
@@ -3522,11 +3526,21 @@ func handleCodePending(client API, args map[string]interface{}) (string, error) 
 	if err := runlog.WriteRunInputs(&b, run, resp, time.Now()); err != nil {
 		return "", err
 	}
+	// The table escapes control characters for reading; code_answer needs the
+	// raw prompt, which the JSON form carries losslessly.
+	raw, err := protojson.Marshal(resp)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString("---\n")
+	b.Write(raw)
+	b.WriteString("\n")
 	return b.String(), nil
 }
 
 // handleCodeAnswer answers one permission request (#2184) through
-// runlog.Answer, the function `code answer` calls.
+// runlog.Answer, the function `code answer` calls, signed for the prompt the
+// caller got from code_pending.
 func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	box := strings.TrimSpace(getStringArg(args, "box", ""))
 	id := strings.TrimSpace(getStringArg(args, "request_id", ""))
@@ -3537,7 +3551,11 @@ func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	res, err := runlog.Answer(client, box, codeRunNameArg(args), id, a)
+	prompt, ok := args["prompt"].(string)
+	if !ok {
+		return "", fmt.Errorf("`prompt` is required: the request's prompt as code_pending returned it")
+	}
+	res, err := runlog.Answer(client, box, codeRunNameArg(args), id, prompt, a)
 	if err != nil {
 		return "", err
 	}

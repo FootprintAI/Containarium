@@ -42,11 +42,16 @@ var codeAnswerCmd = &cobra.Command{
 	Use:   "answer <box> <request_id> allow|deny",
 	Short: "Answer one permission request of a run",
 	Long: `Answers one open permission request of a run started with
-'code run --approvals ask'. The request's prompt is read again and printed
-with the result: the answer is signed for exactly that prompt, so the run
-acts on it only if that is the prompt it asked. If the journal changed since
-you ran 'code pending', what you answer is what this command prints; for an
-answer bound to the prompt you are looking at, answer inline in 'code attach'.
+'code run --approvals ask'.
+
+The request's prompt is read again and printed before anything is sent, and
+the answer is signed for exactly that prompt: the run acts on it only if that
+is the prompt it asked. An allow needs confirmation: at a terminal you are
+asked "allow? [y/N]" under the printed prompt. Without a terminal, pass --yes;
+the allow is then signed for whatever the prompt is at that moment, which you
+have not seen, so prefer answering at a terminal or inline in 'code attach'.
+A deny is sent without asking. If the prompt changes between printing and
+sending, nothing is sent.
 
 Answering a request that is already answered or has expired changes nothing,
 prints how it was closed, and exits non-zero; so does an answer the run has
@@ -58,12 +63,16 @@ Answers through the daemon API (--server).`,
 	RunE: runCodeAnswer,
 }
 
+var codeAnswerYes bool
+
 func init() {
 	codeCmd.AddCommand(codePendingCmd)
 	codeCmd.AddCommand(codeAnswerCmd)
 	for _, c := range []*cobra.Command{codePendingCmd, codeAnswerCmd} {
 		c.Flags().StringVar(&codeName, "name", "", "run name (default: \""+defaultCodeRunName+"\")")
 	}
+	codeAnswerCmd.Flags().BoolVar(&codeAnswerYes, "yes", false,
+		"send an allow without asking (needed without a terminal); the allow is signed for the prompt current at that moment, unseen")
 }
 
 // runInputsAPI is what pending/answer/attach and `code run --approvals ask`
@@ -123,14 +132,39 @@ func runCodeAnswer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	return codeAnswer(c, box, codeRunName(), id, a, cmd.OutOrStdout())
+	return codeAnswer(c, box, codeRunName(), id, a, answerConfirm{yes: codeAnswerYes, tty: stdinIsTerminal(), in: cmd.InOrStdin()}, cmd.OutOrStdout())
 }
 
-// codeAnswer answers through runlog.Answer, the function the MCP code_answer
-// tool also calls. Anything but a fresh answer the run took is an error, so
-// the command exits non-zero.
-func codeAnswer(api runlog.RunInputs, box, run, id string, a pb.RunInputAnswer, w io.Writer) error {
-	res, err := runlog.Answer(api, box, run, id, a)
+// answerConfirm is how `code answer` gets a human's yes for an allow.
+type answerConfirm struct {
+	yes bool      // --yes: do not ask
+	tty bool      // stdin is a terminal
+	in  io.Reader // where the y/N answer is read
+}
+
+// codeAnswer prints the request's prompt, has an allow confirmed, and sends
+// the answer signed for the printed prompt through runlog.Answer, the
+// function the MCP code_answer tool also calls. Anything but a fresh answer
+// the run reported taking is an error, so the command exits non-zero.
+func codeAnswer(api runlog.RunInputs, box, run, id string, a pb.RunInputAnswer, confirm answerConfirm, w io.Writer) error {
+	prompt, open, err := runlog.OpenPrompt(api, box, run, id)
+	if err != nil {
+		return err
+	}
+	if open {
+		fmt.Fprintf(w, "request %s: %s\n", coderun.PlainText(id), coderun.PlainText(prompt))
+		if a == pb.RunInputAnswer_RUN_INPUT_ANSWER_ALLOW && !confirm.yes {
+			if !confirm.tty {
+				return fmt.Errorf("an allow needs confirmation: run 'code answer' at a terminal, or pass --yes to allow whatever the prompt is when it is sent")
+			}
+			fmt.Fprint(w, "allow? [y/N] ")
+			line, _ := bufio.NewReader(confirm.in).ReadString('\n')
+			if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
+				return fmt.Errorf("not confirmed; nothing was sent")
+			}
+		}
+	}
+	res, err := runlog.Answer(api, box, run, id, prompt, a)
 	if err != nil {
 		return err
 	}
