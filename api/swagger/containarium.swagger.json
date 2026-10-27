@@ -2894,7 +2894,7 @@
     "/v1/containers/{containerName}/traffic/history": {
       "get": {
         "summary": "Query traffic history",
-        "description": "Returns historical connection data from persistent storage.",
+        "description": "Returns historical connection data from persistent storage. Without a container_name (GET /v1/traffic/history) the query spans every box on the backend; that form is admin-only, needs start_time, and is limited to a 7-day window. Each row names its box. Returns FAILED_PRECONDITION when traffic persistence is not enabled on the host.",
         "operationId": "TrafficService_QueryTrafficHistory",
         "responses": {
           "200": {
@@ -2913,14 +2913,14 @@
         "parameters": [
           {
             "name": "containerName",
-            "description": "Container name (required)",
+            "description": "Container name. When empty the query spans every box on this backend\n(host-wide): that reveals other tenants' connection history, so it\nrequires the admin role, an explicit start_time, and a window of at most\n7 days.",
             "in": "path",
             "required": true,
             "type": "string"
           },
           {
             "name": "startTime",
-            "description": "Start time for query range",
+            "description": "Start of the query range (inclusive: started_at \u003e= start_time).\nRequired for a host-wide query.",
             "in": "query",
             "required": false,
             "type": "string",
@@ -2928,7 +2928,7 @@
           },
           {
             "name": "endTime",
-            "description": "End time for query range",
+            "description": "End of the query range (inclusive: started_at \u003c= end_time).\nDefaults to now when unset.",
             "in": "query",
             "required": false,
             "type": "string",
@@ -9396,6 +9396,86 @@
         ],
         "tags": [
           "Tracker"
+        ]
+      }
+    },
+    "/v1/traffic/history": {
+      "get": {
+        "summary": "Query traffic history",
+        "description": "Returns historical connection data from persistent storage. Without a container_name (GET /v1/traffic/history) the query spans every box on the backend; that form is admin-only, needs start_time, and is limited to a 7-day window. Each row names its box. Returns FAILED_PRECONDITION when traffic persistence is not enabled on the host.",
+        "operationId": "TrafficService_QueryTrafficHistory2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/QueryTrafficHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name. When empty the query spans every box on this backend\n(host-wide): that reveals other tenants' connection history, so it\nrequires the admin role, an explicit start_time, and a window of at most\n7 days.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startTime",
+            "description": "Start of the query range (inclusive: started_at \u003e= start_time).\nRequired for a host-wide query.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "endTime",
+            "description": "End of the query range (inclusive: started_at \u003c= end_time).\nDefaults to now when unset.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "destIp",
+            "description": "Filter by destination IP (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "destPort",
+            "description": "Filter by destination port (optional, 0 = all)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "offset",
+            "description": "Pagination: offset",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "limit",
+            "description": "Pagination: limit (default: 100, max: 1000)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Traffic"
         ]
       }
     },
@@ -18649,6 +18729,11 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count matching query"
+        },
+        "oldestRecordTime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "started_at of the oldest record held in the queried scope (the box, or\nevery box for a host-wide query), regardless of the filters. Lets a\ncaller tell \"no matching traffic\" (set, but older than the window or\nsimply not matching) from \"nothing collected\" (unset)."
         }
       }
     },
