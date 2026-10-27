@@ -43,6 +43,11 @@ func threatdetectPool(t *testing.T) *pgxpool.Pool {
 	// setup and produced spurious "relation does not exist" / duplicate
 	// pg_type failures. audit.NewStore's initSchema is idempotent and safe
 	// to call against a table this package doesn't own.
+	// security_actions (#2636) references security_findings, so it goes
+	// first.
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS security_actions`); err != nil {
+		t.Fatalf("reset (security_actions): %v", err)
+	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS security_findings`); err != nil {
 		t.Fatalf("reset (security_findings): %v", err)
 	}
@@ -371,6 +376,40 @@ func TestFindingStore_UpsertDedupesOpenFinding(t *testing.T) {
 	}
 }
 
+// The stored severity follows the same escalate-only rule as the in-memory
+// store: MEDIUM then HIGH ends HIGH (in the returned finding and the row),
+// and a later MEDIUM does not lower it (#2424).
+func TestFindingStore_UpsertEscalatesSeverityNeverLowers(t *testing.T) {
+	ctx := context.Background()
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+
+	var id int64
+	for i, step := range []struct{ in, want pb.ThreatSeverity }{
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+		{pb.ThreatSeverity_THREAT_SEVERITY_HIGH, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+	} {
+		f := sampleFinding()
+		f.Severity = step.in
+		got, err := fs.Upsert(ctx, f)
+		if err != nil {
+			t.Fatalf("Upsert #%d: %v", i+1, err)
+		}
+		if got.Severity != step.want {
+			t.Fatalf("Upsert #%d severity = %v, want %v", i+1, got.Severity, step.want)
+		}
+		id = got.ID
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT severity FROM security_findings WHERE id = $1`, id).Scan(&stored); err != nil {
+		t.Fatalf("read severity: %v", err)
+	}
+	if stored != pb.ThreatSeverity_THREAT_SEVERITY_HIGH.String() {
+		t.Fatalf("stored severity = %q, want HIGH", stored)
+	}
+}
+
 func drainEvent(t *testing.T, sub *events.Subscriber) {
 	t.Helper()
 	select {
@@ -419,5 +458,45 @@ func TestFindingStore_UpsertConcurrentRaceConvergesToOneRow(t *testing.T) {
 	}
 	if count != n {
 		t.Fatalf("summed count after %d concurrent upserts = %d, want %d", n, count, n)
+	}
+}
+
+// ListFilter.Rule and .BackendID narrow in the query itself (#2634): the
+// sentry-health loop's takeover of a stale SENTRY_UNAVAILABLE row must not
+// be pushed out of the 200-row page by open findings of other rules. Both
+// stores must honour the filters identically.
+func TestFindingStores_ListFiltersByRuleAndBackend(t *testing.T) {
+	pool := threatdetectPool(t)
+	fs, auditStore, bus := newStores(t, pool)
+	mem, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	ctx := context.Background()
+	for name, st := range map[string]interface {
+		FindingSink
+		FindingReader
+	}{"postgres": fs, "mem": mem} {
+		t.Run(name, func(t *testing.T) {
+			want, err := st.Upsert(ctx, &Finding{Rule: pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE, Severity: pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, BackendID: "backend-1", Subject: "eBPF object not loaded"})
+			if err != nil {
+				t.Fatalf("Upsert stale: %v", err)
+			}
+			if _, err := st.Upsert(ctx, &Finding{Rule: pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE, Severity: pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, BackendID: "backend-2", Subject: "other backend"}); err != nil {
+				t.Fatalf("Upsert other backend: %v", err)
+			}
+			for i := 0; i < 210; i++ {
+				if _, err := st.Upsert(ctx, &Finding{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, Severity: pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, BackendID: "backend-1", TenantID: fmt.Sprintf("%s-t%d", name, i)}); err != nil {
+					t.Fatalf("Upsert filler %d: %v", i, err)
+				}
+			}
+			got, err := st.List(ctx, ListFilter{State: FindingStateOpen, Rule: pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE, BackendID: "backend-1", Limit: 200})
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != 1 || got[0].ID != want.ID {
+				t.Fatalf("List(rule, backend) = %+v, want only finding %d", got, want.ID)
+			}
+		})
 	}
 }

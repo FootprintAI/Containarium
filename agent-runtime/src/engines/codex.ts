@@ -1,6 +1,7 @@
 import { Codex, type Thread, type ThreadItem } from "@openai/codex-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
+import { describeRunEnding } from "./ending.js";
 
 // CodexThreadFactory starts the Codex thread a run streams; a seam for tests.
 export type CodexThreadFactory = () => Pick<Thread, "runStreamed">;
@@ -17,6 +18,12 @@ export type CodexThreadFactory = () => Pick<Thread, "runStreamed">;
 // awaited (thread.run) so each completed item is journaled as it lands
 // (#2095); the result is the same thread.run() computes: the last agent
 // message is the final response, turn.failed throws.
+//
+// Output schema (#2002): the skill's agent_card.output_schema_json is passed
+// as the turn's outputSchema — the SDK's native mechanism (codex exec
+// --output-schema), which shapes the final agent message provider-side. The
+// runtime does not re-validate the message locally; conformance is the
+// provider's, as with the Claude engine's structured output.
 export class CodexEngine implements Engine {
   readonly name = "codex";
 
@@ -32,14 +39,27 @@ export class CodexEngine implements Engine {
       ? `${cfg.systemPrompt}\n\n---\nTask:\n${task}`
       : task;
 
-    const { events } = await thread.runStreamed(prompt);
+    return this.turn(thread, prompt, cfg, journal);
+  }
+
+  // turn streams one turn on the thread. Its result's followUp runs the next
+  // turn on the same thread, so the model has this one in context (#2513).
+  private async turn(
+    thread: Pick<Thread, "runStreamed">,
+    prompt: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult> {
+    const { events } = await thread.runStreamed(prompt, cfg.outputSchema ? { outputSchema: cfg.outputSchema } : undefined);
     let finalResponse = "";
     let usage: unknown;
+    let turnCompleted = false;
     for await (const event of events) {
       if (event.type === "item.completed") {
         if (event.item.type === "agent_message") finalResponse = event.item.text;
         journalCodexItem(event.item, journal);
       } else if (event.type === "turn.completed") {
+        turnCompleted = true;
         usage = event.usage;
       } else if (event.type === "turn.failed") {
         throw new Error(event.error.message);
@@ -47,7 +67,20 @@ export class CodexEngine implements Engine {
         journal.append({ kind: "error", text: event.message });
       }
     }
-    return { outputJson: finalResponse.trim(), usage };
+    // #2513: the Codex SDK reports no stop reason; what the stream does say is
+    // whether the turn completed. See ending.ts for the row's shape.
+    const ending = describeRunEnding({
+      finalMessage: finalResponse,
+      hasFinalOutput: finalResponse.trim() !== "",
+      abnormal: !turnCompleted,
+      fields: [{ name: "finish_reason", value: turnCompleted ? "turn_completed" : "no_turn_completed" }],
+    });
+    if (ending) journal.append({ kind: "status", text: ending });
+    return {
+      outputJson: finalResponse.trim(),
+      usage,
+      followUp: (next, nextJournal) => this.turn(thread, next, cfg, nextJournal),
+    };
   }
 }
 

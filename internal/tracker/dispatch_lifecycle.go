@@ -148,7 +148,8 @@ func (r *dispatchRun) RunEnded(ctx context.Context, outcome RunOutcome) {
 	r.d.observeEnd(row)
 
 	if !outcome.failed() {
-		r.d.projectLabels(ctx, row, []string{LabelAgentDone}, []string{LabelAgentQueued, LabelAgentRunning, ScopeLabelPrefix + row.Scope})
+		add, remove := terminalLabels(row)
+		r.d.projectLabels(ctx, row, add, remove)
 		return
 	}
 	if _, err := r.d.projectFailure(ctx, row, 0); err != nil {
@@ -158,12 +159,19 @@ func (r *dispatchRun) RunEnded(ctx context.Context, outcome RunOutcome) {
 
 // projectLabels writes the row's state onto the issue. The row is
 // authoritative: a forge failure leaves labels_pending for the retry
-// (#2026) rather than losing the state.
+// (#2026) rather than losing the state, and a write that lands clears
+// it (the forge now shows the row's current state).
 func (d *Dispatcher) projectLabels(ctx context.Context, row Dispatch, add, remove []string) {
-	if err := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, add, remove); err != nil {
+	conn, err := d.forgeConn(ctx, row.Username)
+	if err == nil {
+		err = d.Provider.SetLabels(ctx, conn, row.IssueNumber, add, remove)
+	}
+	if err != nil {
 		log.Printf("[tracker] dispatch %s: label #%d: %v", row.ID, row.IssueNumber, err)
 		d.markLabelsPending(ctx, row)
+		return
 	}
+	d.labelsLanded(ctx, row)
 }
 
 func (d *Dispatcher) markLabelsPending(ctx context.Context, row Dispatch) {

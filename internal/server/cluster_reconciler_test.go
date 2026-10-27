@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Reconciler coverage (#1414): the REAL Manager and MemStore drive a

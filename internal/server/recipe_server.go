@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	"github.com/footprintai/containarium/internal/guardrailrate"
+	"github.com/footprintai/containarium/internal/guardrailstage"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -50,6 +54,58 @@ type RecipeServer struct {
 	containers *ContainerServer
 	network    *NetworkServer // may be nil when app hosting / routing is off
 	gateway    *recipeGateway // nil unless the daemon serves the model-gateway
+	boxes      recipeBoxes    // nil = the ContainerServer; tests substitute a fake
+
+	// The guardrail deploy gate (#2368, recipe_guardrail_gate.go). nil
+	// provider or "" root: a gated recipe is refused; ungated recipes are
+	// unaffected.
+	guardrailPolicy      guardrailpolicy.PolicyProvider
+	guardrailStagingRoot string
+	// guardrailSnapshotParent is where verification snapshots are made ("" =
+	// os.TempDir(); --guardrail-snapshot-dir). guardrailSnapshot makes them
+	// (nil = the stager's Snapshot; a seam for tests).
+	guardrailSnapshotParent string
+	guardrailSnapshot       func(area *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error)
+	// guardrailDeployLimit rate-limits gated deploys per subject (#2404;
+	// nil = disabled).
+	guardrailDeployLimit *guardrailrate.Limiter
+}
+
+// recipeBoxes is the box surface deploy drives.
+type recipeBoxes interface {
+	CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error)
+	Exec(containerName string, command []string) error
+	// PushFile streams a file into the box (never buffering it whole).
+	PushFile(containerName, path string, content io.ReadSeeker, mode string) error
+	Get(username string) (*incus.ContainerInfo, error)
+}
+
+// containerServerBoxes is recipeBoxes over the daemon's ContainerServer.
+type containerServerBoxes struct{ s *ContainerServer }
+
+// CreateContainer provisions under the daemon's own authority: deploy's
+// callers authorise the caller for the box name before they get here (see
+// deploy), so the public RPC's containers:write check is not repeated
+// against the caller's claims (#2504). Going through the RPC made an
+// agents:run-only token fail the first run of every skill on a daemon.
+func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+	return c.s.createContainerAuthorized(ctx, req)
+}
+func (c containerServerBoxes) Exec(name string, command []string) error {
+	return c.s.manager.Exec(name, command)
+}
+func (c containerServerBoxes) PushFile(name, path string, content io.ReadSeeker, mode string) error {
+	return c.s.manager.PushFile(name, path, content, mode)
+}
+func (c containerServerBoxes) Get(username string) (*incus.ContainerInfo, error) {
+	return c.s.manager.Get(username)
+}
+
+func (s *RecipeServer) boxOps() recipeBoxes {
+	if s.boxes != nil {
+		return s.boxes
+	}
+	return containerServerBoxes{s.containers}
 }
 
 // SetGatewayProvisioning enables managed model-gateway seeding for recipes that
@@ -296,10 +352,18 @@ func (s *RecipeServer) DeployRecipe(ctx context.Context, req *pb.DeployRecipeReq
 	return s.deploy(ctx, req)
 }
 
-// deploy is the provisioning body shared by DeployRecipe and the
-// AgentSkillService. Callers must perform their own authorization first;
-// the inner CreateContainer still enforces containers:write + tenant authz.
+// deploy is the provisioning body shared by DeployRecipe and the skill and
+// crew run paths. Every caller MUST authorise the caller for req.Name before
+// calling it — DeployRecipe with containers:write, a skill run with
+// agents:run and a crew run with crews:run, each followed by
+// AuthorizeTenant(ctx, req.Name) — because the create below runs under the
+// daemon's own authority and does not re-check the caller's scopes (#2504).
+// What is left here is the one check no caller can forget on our behalf: an
+// authenticated subject must be present at all.
 func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) (*pb.DeployRecipeResponse, error) {
+	if _, _, ok := auth.SubjectFromGRPCContext(ctx); !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
 	recipe, err := s.catalog.Get(req.RecipeId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
@@ -333,8 +397,24 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			req.BackendId)
 	}
 
+	// Guardrail gate (#2368): verified BEFORE the container exists, so a
+	// refused deploy leaves nothing behind. dataset is the verified
+	// snapshot; it is what gets copied into the box below.
+	var dataset *guardrailstage.Snapshot
+	if recipe.GetGuardrailGate() != nil {
+		if dataset, err = s.checkGuardrailGate(ctx, recipe, req); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err := dataset.Remove(); err != nil {
+				log.Printf("[recipe] remove guardrail snapshot %s: %v", dataset.Dir, err)
+			}
+		}()
+	}
+
 	// 1. Provision the dedicated container locally (reuses all of
-	//    CreateContainer's validation, image allowlist, GPU wiring, etc.).
+	//    CreateContainer's validation, image allowlist, GPU wiring, etc. —
+	//    everything but its scope check, see containerServerBoxes).
 	//    Caller labels (e.g. a control plane's tenant-attribution labels) are
 	//    forwarded so a recipe-deployed box is labeled the same as a plain
 	//    CreateContainer — otherwise a label-filtering front-end can't see it.
@@ -350,11 +430,21 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	if req.Gpu != "" {
 		createReq.Gpus = []string{req.Gpu}
 	}
-	if _, err := s.containers.CreateContainer(ctx, createReq); err != nil {
+	if _, err := s.boxOps().CreateContainer(ctx, createReq); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to provision container: %v", err)
 	}
 
 	containerName := req.Name + "-container"
+
+	// Gated: place exactly the verified bytes at dataset_path before
+	// post_start. (Async is refused for a gated recipe, so this always
+	// precedes post_start.)
+	if dataset != nil {
+		if err := deliverGuardrailDataset(s.boxOps(), containerName, recipe.GetGuardrailGate().GetDatasetPath(), dataset.Dir); err != nil {
+			log.Printf("[recipe] guardrail gate: deliver dataset to %s: %v", containerName, err)
+			return nil, status.Errorf(codes.Internal, "could not deliver the verified dataset to %s", containerName)
+		}
+	}
 
 	// Managed model-gateway: if the recipe opts in (or the deploy overrides the
 	// provider via inference_provider, #1728) and the daemon brokers that
@@ -375,7 +465,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
-				if err := s.containers.manager.Exec(containerName, []string{"bash", "-c", script}); err != nil {
+				if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
 					log.Printf("[recipe] async post_start failed on %s (recipe %q): %v", containerName, recipe.Id, err)
 					return
 				}
@@ -384,7 +474,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 				log.Printf("[recipe] async expose warnings on %s: %s", containerName, strings.Join(warnings, "; "))
 			}
 		}()
-		info, _ := s.containers.manager.Get(req.Name)
+		info, _ := s.boxOps().Get(req.Name)
 		var container *pb.Container
 		if info != nil {
 			st := boxlxc.StatusFromInfo(info)
@@ -400,7 +490,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
 		script := buildPostStartScript(recipe, params, gatewayEnv)
-		if err := s.containers.manager.Exec(containerName, []string{"bash", "-c", script}); err != nil {
+		if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
 	}
@@ -417,7 +507,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		msg += "; warnings: " + strings.Join(warnings, "; ")
 	}
 
-	info, _ := s.containers.manager.Get(req.Name)
+	info, _ := s.boxOps().Get(req.Name)
 	var container *pb.Container
 	if info != nil {
 		st := boxlxc.StatusFromInfo(info)

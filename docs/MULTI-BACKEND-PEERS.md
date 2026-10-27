@@ -31,7 +31,7 @@ The peer system allows a single Containarium deployment to manage containers acr
 │ • Direct IP reachable  │    │ • IP not reachable from sentinel  │
 │                        │    │                                    │
 │  Incus containers:     │    │  Incus containers:                │
-│  ├─ hsin-container     │    │  ├─ test-4090-container (GPU)     │
+│  ├─ erin-container     │    │  ├─ test-4090-container (GPU)     │
 │  ├─ api-container      │    │  └─ ml-training-container         │
 │  └─ devbox-container   │    │                                    │
 └────────────────────────┘    └──────────────────────────────────┘

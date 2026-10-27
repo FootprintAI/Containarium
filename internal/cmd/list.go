@@ -8,6 +8,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/spf13/cobra"
 )
 
@@ -164,12 +165,13 @@ func printTableFormat(containers []incus.ContainerInfo, running, stopped int, wi
 	// MON column: ✓ when the container has app-emitted OTel
 	// stamped in (environment.OTEL_EXPORTER_OTLP_ENDPOINT
 	// non-empty). 3-char column keeps the table compact.
+	// ISO column: lxc / vm / "-" when the backend did not report it (#2196).
 	if withLabels {
-		fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "MON", "IP ADDRESS", "CPU/MEMORY", "LABELS")
-		fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
+		fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "ISO", "MON", "IP ADDRESS", "CPU/MEMORY", "LABELS")
+		fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", "---", strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
 	} else {
-		fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "MON", "IP ADDRESS", "CPU/MEMORY")
-		fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15))
+		fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "ISO", "MON", "IP ADDRESS", "CPU/MEMORY")
+		fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", "---", strings.Repeat("-", 20), strings.Repeat("-", 15))
 	}
 
 	if len(containers) == 0 {
@@ -194,12 +196,13 @@ func printTableFormat(containers []incus.ContainerInfo, running, stopped int, wi
 			mon = "✓"
 			monCount++
 		}
+		iso := ostype.IsolationShort(ostype.IsolationFromInstanceType(c.InstanceType))
 
 		if withLabels {
 			labelStr := formatLabels(c.Labels)
-			fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", c.Name, c.State, mon, ip, resources, labelStr)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, mon, ip, resources, labelStr)
 		} else {
-			fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", c.Name, c.State, mon, ip, resources)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", c.Name, c.State, iso, mon, ip, resources)
 		}
 	}
 
@@ -328,11 +331,11 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 
 		// Print table header
 		if withLabels {
-			fmt.Printf("%-25s %-12s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "IP ADDRESS", "CPU/MEMORY", "LABELS")
-			fmt.Printf("%-25s %-12s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "ISO", "IP ADDRESS", "CPU/MEMORY", "LABELS")
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
 		} else {
-			fmt.Printf("%-25s %-12s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "IP ADDRESS", "CPU/MEMORY")
-			fmt.Printf("%-25s %-12s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), strings.Repeat("-", 20), strings.Repeat("-", 15))
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "ISO", "IP ADDRESS", "CPU/MEMORY")
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15))
 		}
 
 		for _, c := range groupContainers {
@@ -345,12 +348,13 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 			if c.CPU == "" && c.Memory == "" {
 				resources = "-"
 			}
+			iso := ostype.IsolationShort(ostype.IsolationFromInstanceType(c.InstanceType))
 
 			if withLabels {
 				labelStr := formatLabels(c.Labels)
-				fmt.Printf("%-25s %-12s %-20s %-15s %s\n", c.Name, c.State, ip, resources, labelStr)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, ip, resources, labelStr)
 			} else {
-				fmt.Printf("%-25s %-12s %-20s %-15s\n", c.Name, c.State, ip, resources)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", c.Name, c.State, iso, ip, resources)
 			}
 
 			totalCount++

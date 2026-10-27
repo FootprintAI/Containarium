@@ -65,7 +65,12 @@ resource "google_compute_instance" "sentinel" {
     # change here (e.g. failtoban's --max-failures/--ban-duration) silently
     # never reached already-running sentinels (issue #933) — some sentinels
     # kept running months-stale, far more aggressive settings indefinitely.
-    sshpiper-service-unit = file("${path.module}/scripts/sshpiper.service.tmpl")
+    sshpiper-service-unit = local.sshpiper_service_unit
+    ssh-upstream-policy   = local.ssh_upstream_policy_json
+    # The anonymous-box door's unit, same live-metadata reconcile as above
+    # (#2198). Present only when the door is configured; the startup script
+    # treats an absent key as "disable and remove the unit".
+    sshpiper-anon-service-unit = local.sshpiper_anon_service_unit
     startup-script = templatefile("${path.module}/scripts/startup-sentinel.sh", {
       admin_users             = keys(var.admin_ssh_keys)
       containarium_version    = var.containarium_version
@@ -77,6 +82,9 @@ resource "google_compute_instance" "sentinel" {
       sentinel_auth_secret    = var.sentinel_auth_secret
       sentinel_admin_secret   = var.sentinel_admin_secret
       enable_peer_mtls        = var.enable_peer_mtls
+
+      # Local SSH session sink retention (#2415); its own alignment group.
+      ssh_session_log_retention_days = var.ssh_session_log_retention_days
     })
   }
 
@@ -96,6 +104,12 @@ resource "google_compute_instance" "sentinel" {
   allow_stopping_for_update = true
 
   lifecycle {
+    # Cross-variable validation belongs in a precondition to preserve the
+    # module's Terraform >=1.2 floor (input validation cross-references need 1.9).
+    precondition {
+      condition     = var.ssh_upstream_risk_per_attempt <= var.ssh_upstream_failure_budget
+      error_message = "Per-attempt SSH risk must fit within the shared failure budget."
+    }
     ignore_changes = [
       metadata["ssh-keys"],
     ]

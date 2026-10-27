@@ -85,10 +85,15 @@ done
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
 SSHPIPER_VERSION="v1.6.1"
+# sha256 from the v1.6.1 release checksums.txt; keep in step with
+# .github/workflows/ssh-ban.yml (scripts/ci/check-sentinel-sshpiper-checksum.sh).
+SSHPIPER_SHA256="95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
       -o sshpiper.tar.gz
+    # A mismatch fails the boot step (set -e) before anything is extracted.
+    echo "$${SSHPIPER_SHA256}  sshpiper.tar.gz" | sha256sum -c -
     tar xzf sshpiper.tar.gz
     mv sshpiperd /usr/local/bin/sshpiperd
     chmod +x /usr/local/bin/sshpiperd
@@ -116,21 +121,32 @@ fi
 cat > /etc/systemd/system/sshpiper.service <<'EOF'
 [Unit]
 Description=SSHPiper reverse proxy
-After=network.target
+After=network.target containarium-sentinel.service
+BindsTo=containarium-sentinel.service
+PartOf=containarium-sentinel.service
 
 [Service]
 ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
+  --login-grace-time 90s \
+  /usr/local/bin/containarium sentinel ssh-authz-plugin \
+  --ssh-authz-grace 5m \
+  --ssh-authz-timeout 3s \
+  -- \
   /usr/local/bin/containarium sentinel ssh-session-plugin \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
   -- \
-  yaml \
-  --config /etc/sshpiper/config.yaml \
+  /usr/local/bin/containariumd sentinel ssh-upstream-plugin \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
+  --plugin /usr/local/bin/yaml \
+  --plugin-arg=--config \
+  --plugin-arg=/etc/sshpiper/config.yaml \
   -- \
-  failtoban \
+  /usr/local/bin/containariumd sentinel ssh-ban-plugin \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
   --max-failures 20 \
   --ban-duration 1h
 Restart=always
@@ -139,6 +155,34 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# SSH session sink rotation + retention (#2415, ISO 27001 A.8.15). See the
+# module variant of this script for the full rationale: `create` + SIGHUP to the
+# plugin (never copytruncate), delaycompress so the shipper can finish the
+# rotated file's tail, and an ANCHORED pkill so sshpiperd itself is not signalled.
+# Retention is N days. This script is not rendered with a retention template
+# variable, so it reads the optional instance-metadata attribute
+# `ssh-session-log-retention-days` and defaults to 90.
+SSH_SESSION_LOG_RETENTION_DAYS="$(curl -fsS -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-session-log-retention-days' 2>/dev/null || echo 90)"
+case "$SSH_SESSION_LOG_RETENTION_DAYS" in
+    ''|*[!0-9]*|0) SSH_SESSION_LOG_RETENTION_DAYS=90 ;;
+esac
+cat > /etc/logrotate.d/containarium-ssh-sessions <<LOGROTATE_EOF
+/var/log/containarium/ssh-sessions.jsonl {
+    daily
+    rotate $SSH_SESSION_LOG_RETENTION_DAYS
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 root root
+    postrotate
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+    endscript
+}
+LOGROTATE_EOF
+chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
 
 systemctl daemon-reload
 systemctl enable sshpiper
@@ -157,6 +201,27 @@ if [ -n "$CONTAINARIUM_BINARY_URL" ]; then
     ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
     echo "Containariumd version: $(/usr/local/bin/containariumd version 2>/dev/null || echo 'unknown')"
 fi
+
+# Install the shared controller policy before either guarded listener admits SSH.
+install -d -m 0700 /etc/containarium/ssh-upstream
+cat > /etc/containarium/ssh-upstream/policy.candidate.json <<'EOF'
+{"initialDelay":"1s","maxDelay":"30s","window":"600s","setupTimeout":"30s","failureBudget":2,"riskPerAttempt":1,"maxBackends":1024,"maxPending":32,"maxConnections":4096,"jitter":0.25,"egressGroup":"sentinel"}
+EOF
+chmod 0600 /etc/containarium/ssh-upstream/policy.candidate.json
+if [ ! -f /etc/containarium/ssh-upstream/policy.json ]; then
+    mv /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.json
+elif cmp -s /etc/containarium/ssh-upstream/policy.json /etc/containarium/ssh-upstream/policy.candidate.json; then
+    rm -f /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.pending.json
+else
+    mv /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.pending.json
+    logger -t ssh-upstream-reconcile "SSH upstream policy staged; apply through the maintenance procedure"
+fi
+install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
+cat > /etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf <<'EOF'
+[Service]
+Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json
+ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service
+EOF
 
 # Install and start sentinel service
 if [ -f /usr/local/bin/containariumd ]; then

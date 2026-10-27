@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/footprintai/containarium/internal/auth"
 	"github.com/gorilla/websocket"
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
@@ -34,29 +33,17 @@ func NewConsoleHandler() (*ConsoleHandler, error) {
 	}
 
 	return &ConsoleHandler{
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					// No Origin header at all — this is the expected shape
-					// for a non-browser client (the containarium CLI), which
-					// is the only client this endpoint is built for today.
-					return true
-				}
-				for _, allowed := range getTerminalAllowedOrigins() {
-					if origin == allowed {
-						return true
-					}
-				}
-				log.Printf("console WebSocket connection rejected: origin %s not in allowed list", origin)
-				return false
-			},
-			Subprotocols:    []string{auth.WSSubprotocolBearer},
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
+		upgrader:    newConsoleUpgrader(),
 		incusClient: client,
 	}, nil
+}
+
+// newConsoleUpgrader builds the console-attach upgrader. It deliberately
+// reuses the terminal upgrader so both WebSocket routes share one Origin rule
+// (see checkTerminalOrigin), one refusal body and one status/header shape.
+// There is no intentional difference between the two routes.
+func newConsoleUpgrader() websocket.Upgrader {
+	return newTerminalUpgrader()
 }
 
 // parseConsoleUsername extracts the username from a

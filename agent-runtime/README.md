@@ -63,11 +63,21 @@ default model makes it a budget-friendly way to exercise the mechanism end-to-en
 | --- | --- |
 | `system_prompt.txt` | the engine's system prompt |
 | `input.json` | the task |
-| `agent-card.json` | discovery / output schema |
+| `agent-card.json` | discovery; its `outputSchemaJson` is the artifact's enforced schema |
 | `token` | scoped platform JWT (for the platform MCP; not the model key) |
 
 …and writes `artifact.json` (`{outputJson, engine, model, usage, error?}`,
 mode 0600) for the daemon to return.
+
+When the skill's `agent_card.output_schema_json` is set, the engine hands it
+to its provider's structured-output mechanism and `outputJson` is the
+provider-validated result (#2002): Claude via the Agent SDK's `outputFormat`
+(validated, re-prompted on mismatch; a run that never conforms fails with
+`error` set rather than writing prose), Codex via the turn's `outputSchema`.
+Gemini is prompt-only for now — its API accepts a response schema alongside
+function calling only on Gemini 3 preview models — and journals that gap as a
+`status` line. A malformed schema fails the seed load, never a silent
+unenforced run.
 
 ## Run journal
 

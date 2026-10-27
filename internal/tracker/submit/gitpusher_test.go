@@ -2,6 +2,7 @@ package submit
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"strings"
@@ -168,6 +169,57 @@ func TestGitPusher_ErrorNeverEchoesCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), spec.Credential) {
 		t.Errorf("error %q contains the raw credential", err.Error())
+	}
+}
+
+// TestGitPusher_AuthHeaderByCredentialType pins the http.extraHeader each
+// credential type gets (#2271): a ghs_ installation token goes as Basic
+// x-access-token:<token>; anything else keeps the bearer form exactly as
+// before. In both cases the header lives only in env, never argv.
+func TestGitPusher_AuthHeaderByCredentialType(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		credential string
+		wantHeader string
+	}{
+		{
+			name:       "installation token",
+			credential: "ghs_installationtoken",
+			wantHeader: "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_installationtoken")),
+		},
+		{"classic PAT", "ghp_classicpat", "AUTHORIZATION: bearer ghp_classicpat"},
+		{"fine-grained PAT", "github_pat_finegrained", "AUTHORIZATION: bearer github_pat_finegrained"},
+		{"GitLab token", "glpat-gitlabtoken", "AUTHORIZATION: bearer glpat-gitlabtoken"},
+		{"unprefixed", "s3cr3t-token-value", "AUTHORIZATION: bearer s3cr3t-token-value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []recordedCall
+			pusher := &ExecGitPusher{run: fakeRunner(&calls)}
+			spec := validSpec()
+			spec.Credential = tc.credential
+			if _, err := pusher.PushBundle(context.Background(), spec); err != nil {
+				t.Fatalf("PushBundle: %v", err)
+			}
+			encoded := strings.TrimPrefix(tc.wantHeader, "AUTHORIZATION: Basic ")
+			for i, c := range calls {
+				if !contains(c.env, "GIT_CONFIG_KEY_2=http.extraHeader") || !contains(c.env, "GIT_CONFIG_VALUE_2="+tc.wantHeader) {
+					t.Errorf("call %d: env lacks extraHeader %q; env=%v", i, tc.wantHeader, c.env)
+				}
+				argv := strings.Join(c.args, " ")
+				if strings.Contains(argv, tc.credential) || strings.Contains(argv, encoded) {
+					t.Errorf("call %d: credential found in argv %q", i, argv)
+				}
+			}
+		})
+	}
+}
+
+func TestWrapGitErr_RedactsEncodedInstallationToken(t *testing.T) {
+	cred := "ghs_installationtoken"
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + cred))
+	err := wrapGitErr("push", errors.New("boom"), "header was Basic "+encoded+" and raw "+cred, cred)
+	if strings.Contains(err.Error(), encoded) || strings.Contains(err.Error(), cred) {
+		t.Errorf("error %q leaks the credential", err.Error())
 	}
 }
 

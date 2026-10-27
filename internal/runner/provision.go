@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MaxRunnerCount is the upper bound on how many runners a single
@@ -96,7 +97,8 @@ type Options struct {
 	// Named Repo for compatibility with existing callers.
 	Repo string
 
-	// PAT is a GitHub Personal Access Token with `repo` scope.
+	// PAT is a GitHub Personal Access Token with the `repo` scope for a
+	// repository target, or `admin:org` for an organization target.
 	// Used both to mint registration tokens (inside the box, via
 	// the install script) and to query the runners-list API to
 	// confirm registration succeeded.
@@ -113,6 +115,12 @@ type Options struct {
 	// runner. Default: "containarium,ephemeral". Workflows target
 	// with `runs-on: [self-hosted, <labels>...]`.
 	Labels string
+
+	// RunnerGroup is the organization runner group each runner joins
+	// (config.sh --runnergroup). Organization targets only: GitHub has no
+	// repository-level groups. Empty leaves the runner in the org's
+	// default group, and passes nothing extra to the install script.
+	RunnerGroup string
 
 	// NameTemplate is the Go-style template used to build each
 	// runner's box name. Two placeholders are supported and
@@ -317,11 +325,35 @@ func ValidateOptions(opts Options) error {
 		return fmt.Errorf("github_pat is required (PAT with the %q scope for this %s target)",
 			target.RequiredPATScope(), target.Scope)
 	}
+	if err := validateRunnerGroup(target, opts.RunnerGroup); err != nil {
+		return err
+	}
 	if opts.Count <= 0 {
 		return fmt.Errorf("count must be > 0, got %d", opts.Count)
 	}
 	if opts.Count > MaxRunnerCount {
 		return fmt.Errorf("count %d exceeds maximum of %d (open a manual ticket if you really need a bigger pool)", opts.Count, MaxRunnerCount)
+	}
+	return nil
+}
+
+// validateRunnerGroup checks an optional runner group against the target.
+// A group on a repository target is refused rather than ignored: config.sh
+// would fail on the box anyway, minutes later and far from the flag that
+// caused it.
+func validateRunnerGroup(target Target, group string) error {
+	if group == "" {
+		return nil
+	}
+	if target.Scope != ScopeOrg {
+		return fmt.Errorf("runner group requires an organization target (a bare owner such as %q), not the repository %q: GitHub runner groups exist only at organization scope",
+			target.Owner, target.String())
+	}
+	if strings.TrimSpace(group) == "" {
+		return fmt.Errorf("runner group must not be blank")
+	}
+	if strings.IndexFunc(group, unicode.IsControl) >= 0 {
+		return fmt.Errorf("runner group must not contain control characters")
 	}
 	return nil
 }
@@ -511,6 +543,9 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 			"GH_PAT":        opts.PAT,
 			"RUNNER_NAME":   name,
 			"RUNNER_LABELS": opts.Labels,
+		}
+		if opts.RunnerGroup != "" {
+			env["RUNNER_GROUP"] = opts.RunnerGroup
 		}
 		if err := deps.SSH.Install(installCtx, sshUser, InstallScript, env); err != nil {
 			st.State = "failed"

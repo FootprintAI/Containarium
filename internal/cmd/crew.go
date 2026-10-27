@@ -20,7 +20,8 @@ one trace id, and returns the run.
   containarium crew get hello-crew
   containarium crew run hello-crew --input '{"q":"hi"}' --server <host>
   containarium crew status <run-id> --server <host>
-  containarium crew logs <run-id> --follow --server <host>`,
+  containarium crew logs <run-id> --follow --server <host>
+  containarium crew plan validate plan.yaml`,
 }
 
 func init() {
@@ -28,11 +29,14 @@ func init() {
 }
 
 type crewAPI interface {
+	RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error)
+	PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error)
 	ListCrews() ([]*pb.Crew, error)
 	GetCrew(id string) (*pb.Crew, error)
-	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error)
+	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error)
 	GetCrewRun(id string) (*pb.CrewRun, error)
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
+	ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error)
 	Close() error
 }
 

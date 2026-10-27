@@ -131,3 +131,58 @@ func TestGenerateToken_RunIDOmittedKeepsWireShape(t *testing.T) {
 		t.Fatalf("run_id present on the wire for GenerateToken: %v", payload)
 	}
 }
+
+// TestGenerateDelegatedTokenWithRun_RunBindingClaims (#2268): every field
+// of the RunBinding lands in its own claim and round-trips; an empty field
+// stays off the wire entirely.
+func TestGenerateDelegatedTokenWithRun_RunBindingClaims(t *testing.T) {
+	tm := newTestTokenManager(t)
+	run := RunBinding{RunID: "run-1", TrackerConn: "default", Tenant: "alice"}
+	tok, _, err := tm.GenerateDelegatedTokenWithRun("agent-product-define", nil, time.Hour, &Actor{Subject: "alice"}, run, ScopeTrackerWrite)
+	if err != nil {
+		t.Fatalf("GenerateDelegatedTokenWithRun: %v", err)
+	}
+	claims, err := tm.ValidateToken(tok)
+	if err != nil {
+		t.Fatalf("ValidateToken: %v", err)
+	}
+	if claims.RunID != "run-1" || claims.TrackerConn != "default" || claims.RunTenant != "alice" {
+		t.Fatalf("claims = run_id %q tracker_conn %q run_tenant %q, want run-1/default/alice", claims.RunID, claims.TrackerConn, claims.RunTenant)
+	}
+	if claims.Username != "agent-product-define" {
+		t.Fatalf("subject = %q, want the box, not the tenant", claims.Username)
+	}
+
+	// An empty binding is identical on the wire to a plain delegated token.
+	tok, _, err = tm.GenerateDelegatedTokenWithRun("agent-product-define", nil, time.Hour, nil, RunBinding{}, ScopeTrackerWrite)
+	if err != nil {
+		t.Fatalf("GenerateDelegatedTokenWithRun(empty): %v", err)
+	}
+	payload := decodeJWTPayload(t, tok)
+	for _, k := range []string{"run_id", "tracker_conn", "run_tenant"} {
+		if _, present := payload[k]; present {
+			t.Errorf("%s present on the wire for an empty RunBinding: %v", k, payload)
+		}
+	}
+}
+
+// TestGenerateToken_RunTenantOmittedKeepsWireShape: no mint path other
+// than the run one can put a run_tenant on a token — in particular not the
+// delegate exchange (GenerateDelegatedToken), so the claim cannot be
+// laundered from a run token onto a derived credential.
+func TestGenerateToken_RunTenantOmittedKeepsWireShape(t *testing.T) {
+	tm := newTestTokenManager(t)
+	plain, err := tm.GenerateToken("alice", []string{"user"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	delegated, err := tm.GenerateDelegatedToken("bob", nil, time.Hour, &Actor{Subject: "agent-product-define"}, ScopeTrackerWrite)
+	if err != nil {
+		t.Fatalf("GenerateDelegatedToken: %v", err)
+	}
+	for name, tok := range map[string]string{"GenerateToken": plain, "GenerateDelegatedToken": delegated} {
+		if _, present := decodeJWTPayload(t, tok)["run_tenant"]; present {
+			t.Errorf("run_tenant present on the wire for %s", name)
+		}
+	}
+}

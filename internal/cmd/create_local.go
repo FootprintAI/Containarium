@@ -3,10 +3,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -41,8 +44,24 @@ func cleanupJumpServerAccountLocal(username string) {
 	_ = container.DeleteJumpServerAccount(username, false)
 }
 
+func localPodmanPrivileged(enablePodman bool) (bool, error) {
+	if !enablePodman {
+		return false, nil
+	}
+
+	// Direct Incus access is root-equivalent; apply policy as the system principal.
+	baseCtx := context.Background()
+	ctx := auth.ContextWithSystemIdentity(baseCtx)
+	return server.AuthorizePrivilegedPodman(ctx)
+}
+
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, _ string) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, _ string) (*incus.ContainerInfo, error) {
+	enablePodmanPrivileged, err := localPodmanPrivileged(enablePodman)
+	if err != nil {
+		return nil, err
+	}
+
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -59,11 +78,12 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		SSHKeys:                sshKeys,
 		Labels:                 labelMap,
 		EnablePodman:           enablePodman,
-		EnablePodmanPrivileged: enablePodman, // Enable privileged mode for proper Podman-in-LXC
+		EnablePodmanPrivileged: enablePodmanPrivileged, // Enable privileged mode for proper Podman-in-LXC
 		AutoStart:              true,
 		Verbose:                verbose,
 		Stack:                  stack,
 		OSType:                 osType,
+		Isolation:              isolation,
 		Monitoring:             monitoring,
 		GitSource:              git.Source,
 		GitRef:                 git.Ref,

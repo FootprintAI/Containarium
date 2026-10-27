@@ -154,11 +154,64 @@ recipes:
         description: Unprivileged user Claude Code and the bootstrap bundle are installed for. Must already exist in the image.
         type: string
         default: ubuntu
+      - name: sdlc_skills
+        label: Install SDLC skills
+        description: 'Deprecated, removed after one release: use skill_sets. "true" is skill_sets=all and "false" is skill_sets=none; skill_sets wins when both are set. A release that predates the skills asset is skipped with a message.'
+        type: string
+        default: "true"
+      - name: skill_sets
+        label: Skill sets
+        description: 'Which pinned open-sdlc-skills sets to install into the box user''s ~/.claude/skills: a comma-separated list of set ids (the control plane sends sdlc and qa), "all", or the literal "none" (empty means unset, so none cannot be spelled as empty). Empty falls back to sdlc_skills, whose default installs everything. An unknown id fails the step and names the known ids; narrowing the list on a redeploy removes the dropped sets. Which namespaces a set covers is defined in pkg/core/sdlcskills/sdlc-skills.lock.'
+        type: string
     post_start:
       - 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
       - 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
       - '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
       - 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
+      - |
+        # SDLC role skills (#2065), pinned in pkg/core/sdlcskills/sdlc-skills.lock and
+        # shipped as a release asset. Installed AS the box user into its own
+        # ~/.claude/skills. A hash mismatch or unsafe archive fails the deploy; a
+        # release cut before the asset existed has no installer (HTTP 404) and is
+        # skipped, so pinning an older release keeps working; any other fetch
+        # failure fails the deploy rather than silently shipping no skills.
+        # Selection (#3048): skill_sets wins; empty falls back to the deprecated
+        # sdlc_skills alias (false => none, anything else => all). The installer
+        # validates the value again and resolves set ids through the lock.
+        SETS="${CONTAINARIUM_PARAM_SKILL_SETS:-}"
+        if [ -z "$SETS" ]; then
+          if [ "${CONTAINARIUM_PARAM_SDLC_SKILLS:-true}" = "false" ]; then
+            echo "recipe parameter sdlc_skills is deprecated; use skill_sets=none" >&2
+            SETS=none
+          else
+            SETS=all
+          fi
+        fi
+        # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
+        runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" RELEASE="$CONTAINARIUM_PARAM_RELEASE" SETS="$SETS" bash -c '
+          set -euo pipefail
+          tmp="$(mktemp)"
+          code="$(curl -sSL -o "$tmp" -w "%{http_code}" "https://raw.githubusercontent.com/FootprintAI/Containarium/$RELEASE/scripts/install-sdlc-skills.sh")"
+          case "$code" in
+            200)
+              if ! grep -q "^# skill-sets: v1$" "$tmp"; then
+                # An installer that predates skill sets would ignore SKILL_SETS and install everything.
+                case "$SETS" in
+                  all) ;;
+                  none) echo "release $RELEASE SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; rm -f "$tmp"; exit 0 ;;
+                  *) echo "release $RELEASE SDLC skills installer predates skill sets; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
+                esac
+              fi
+              SKILL_SETS="$SETS" bash "$tmp" ;;
+            404)
+              case "$SETS" in
+                all|none) echo "release $RELEASE has no SDLC skills installer; skipping" >&2 ;;
+                *) echo "release $RELEASE has no SDLC skills installer; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
+              esac ;;
+            *) echo "fetching the SDLC skills installer for $RELEASE failed: HTTP $code" >&2; exit 1 ;;
+          esac
+          rm -f "$tmp"
+        '
       - |
         # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
         if [ -n "$CONTAINARIUM_PARAM_BOOTSTRAP_URL" ]; then

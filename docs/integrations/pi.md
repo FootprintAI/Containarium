@@ -80,7 +80,10 @@ If you pass `--idle-stop 30m`, the box auto-stops after 30 minutes idle and
 wakes on access. An active SSH/exec session counts as activity, so an attached
 pi session is never stopped mid-run — but a detached, backgrounded `pi -p` with
 no live session can be. Size the threshold for the longest unattended run you
-expect, or leave `--idle-stop` off for agent boxes.
+expect, or leave `--idle-stop` off for agent boxes. (Leaving it off means no
+auto-stop on a self-hosted daemon; on the hosted platform an org billed per
+seat defaults to a 30-minute idle-stop when it is empty, so set a threshold
+that fits the run there too.)
 
 ## 2. Install pi in the box
 

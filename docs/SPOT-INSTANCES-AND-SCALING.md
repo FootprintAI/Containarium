@@ -212,7 +212,7 @@ gcloud compute instances start containarium-jump
          ▼                 ▼                 ▼
    ┌──────────┐      ┌──────────┐      ┌──────────┐
    │ Jump-1   │      │ Jump-2   │      │ Jump-3   │
-   │ 35.1.1.1 │      │ 35.2.2.2 │      │ 35.3.3.3 │
+   │192.0.2.1 │      │192.0.2.2 │      │192.0.2.3 │
    ├──────────┤      ├──────────┤      ├──────────┤
    │ Team A   │      │ Team B   │      │ Team C   │
    │ 50 users │      │ 50 users │      │ 50 users │
@@ -250,7 +250,7 @@ Host containarium-jump
 
 **Option B: DNS Round-Robin**
 ```
-jump.company.com → 35.1.1.1, 35.2.2.2, 35.3.3.3
+jump.company.com → 192.0.2.1, 192.0.2.2, 192.0.2.3
 ```
 
 **Option C: Load Balancer (Best)**

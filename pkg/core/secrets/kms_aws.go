@@ -180,8 +180,8 @@ func NewAWSKMS(cfg AWSConfig) (*AWSKMS, error) {
 // for Decrypt. kek_id reflects the region + key for
 // cross-deployment safety.
 func (a *AWSKMS) Wrap(ctx context.Context, plaintextDEK []byte) ([]byte, string, error) {
-	if len(plaintextDEK) != DEKSize {
-		return nil, "", fmt.Errorf("DEK must be %d bytes; got %d", DEKSize, len(plaintextDEK))
+	if err := checkWrapPlaintext(plaintextDEK); err != nil {
+		return nil, "", err
 	}
 	body := map[string]string{
 		"KeyId":     a.cfg.KeyID,
@@ -226,8 +226,8 @@ func (a *AWSKMS) Unwrap(ctx context.Context, wrappedDEK []byte, kekID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("aws kms decrypt: base64: %w", err)
 	}
-	if len(dek) != DEKSize {
-		return nil, fmt.Errorf("aws kms decrypt: DEK has %d bytes; want %d", len(dek), DEKSize)
+	if len(dek) == 0 {
+		return nil, errors.New("aws kms decrypt: empty plaintext in response")
 	}
 	return dek, nil
 }

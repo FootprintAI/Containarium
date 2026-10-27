@@ -1,0 +1,63 @@
+name: docs-claims
+
+# Docs claims hygiene (#2558): README security claims must be covered by
+# docs/security/CLAIMS.md, docs must not name real deployments, and every
+# design doc must carry a Status line. Each gate has a --self-test with seeded
+# failures that must be rejected.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
+      - 'scripts/ci/check-claims.sh'
+      - 'scripts/ci/check-doc-names.sh'
+      - 'scripts/ci/check-design-status.sh'
+      - 'scripts/ci/claim-phrases.txt'
+      - 'scripts/ci/doc-names.allow'
+      - '.github/workflows/docs-claims.yml'
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
+      - 'scripts/ci/check-claims.sh'
+      - 'scripts/ci/check-doc-names.sh'
+      - 'scripts/ci/check-design-status.sh'
+      - 'scripts/ci/claim-phrases.txt'
+      - 'scripts/ci/doc-names.allow'
+      - '.github/workflows/docs-claims.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-claims:
+    name: claims + names + design status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Gate self-tests (seeded failures must be rejected)
+        run: |
+          scripts/ci/check-claims.sh --self-test
+          scripts/ci/check-doc-names.sh --self-test
+          scripts/ci/check-design-status.sh --self-test
+
+      - name: README security claims are covered by CLAIMS.md
+        run: scripts/ci/check-claims.sh
+
+      - name: No deployment names in docs
+        run: scripts/ci/check-doc-names.sh
+
+      - name: Every design doc has a Status line
+        run: scripts/ci/check-design-status.sh

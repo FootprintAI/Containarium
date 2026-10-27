@@ -11,7 +11,9 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -22,11 +24,739 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// NetworkPolicyAppliedState says whether this daemon has a tenant's policy
+// loaded, and so whether the effective modes can be read at all.
+type NetworkPolicyAppliedState int32
+
+const (
+	// The daemon cannot tell (e.g. the enforcer is running but has not yet
+	// completed a reconcile pass). Effective modes are UNSPECIFIED.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED NetworkPolicyAppliedState = 0
+	// No eBPF enforcer is running on this daemon (not configured, or it failed
+	// to load), so nothing is enforced or observed. Effective modes are
+	// UNSPECIFIED.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING NetworkPolicyAppliedState = 1
+	// The enforcer is running but no running box of this tenant has a policy
+	// loaded (no running boxes, or none could be attached). Effective modes are
+	// UNSPECIFIED.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_NOT_LOADED NetworkPolicyAppliedState = 2
+	// Every running box of the tenant has its policy loaded; the effective
+	// modes are what the kernel holds for all of them.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_LOADED NetworkPolicyAppliedState = 3
+	// Some, but not all, of the tenant's running boxes have the policy loaded
+	// (boxes_not_loaded > 0). The effective modes are what the kernel holds for
+	// the loaded boxes only; the traffic of the other boxes is not policed, so
+	// the tenant is NOT fully covered.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED NetworkPolicyAppliedState = 4
+	// The last completed reconcile pass is too old to trust (older than three
+	// reconcile intervals): the reconciler is stalled, e.g. every pass fails
+	// to read the containers or the policy store. What the kernel holds now is
+	// unknown, so the effective modes and box counts are UNSPECIFIED;
+	// last_reconciled_at shows how old the last good pass is.
+	NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_STALE NetworkPolicyAppliedState = 5
+)
+
+// Enum value maps for NetworkPolicyAppliedState.
+var (
+	NetworkPolicyAppliedState_name = map[int32]string{
+		0: "NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED",
+		1: "NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING",
+		2: "NETWORK_POLICY_APPLIED_STATE_NOT_LOADED",
+		3: "NETWORK_POLICY_APPLIED_STATE_LOADED",
+		4: "NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED",
+		5: "NETWORK_POLICY_APPLIED_STATE_STALE",
+	}
+	NetworkPolicyAppliedState_value = map[string]int32{
+		"NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED":          0,
+		"NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING": 1,
+		"NETWORK_POLICY_APPLIED_STATE_NOT_LOADED":           2,
+		"NETWORK_POLICY_APPLIED_STATE_LOADED":               3,
+		"NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED":     4,
+		"NETWORK_POLICY_APPLIED_STATE_STALE":                5,
+	}
+)
+
+func (x NetworkPolicyAppliedState) Enum() *NetworkPolicyAppliedState {
+	p := new(NetworkPolicyAppliedState)
+	*p = x
+	return p
+}
+
+func (x NetworkPolicyAppliedState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NetworkPolicyAppliedState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_policy_proto_enumTypes[0].Descriptor()
+}
+
+func (NetworkPolicyAppliedState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_policy_proto_enumTypes[0]
+}
+
+func (x NetworkPolicyAppliedState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NetworkPolicyAppliedState.Descriptor instead.
+func (NetworkPolicyAppliedState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{0}
+}
+
+// NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.
+type NetworkPolicyUncoveredPath int32
+
+const (
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED NetworkPolicyUncoveredPath = 0
+	// IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_IPV6 NetworkPolicyUncoveredPath = 1
+	// Domain entries: egress_domains are re-resolved on a refresh loop (at
+	// most every 60 seconds, sooner for a shorter record TTL), so an address a
+	// domain moves to is denied, and an address it left still allowed, until
+	// the next refresh and reconcile.
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG NetworkPolicyUncoveredPath = 2
+	// The host kernel is known to be too old for egress enforcement (TCX attach
+	// needs 6.6 or newer), so the egress program cannot be attached here whatever
+	// the other fields say. Reported in every state, including when no enforcer
+	// is running. A kernel release that cannot be read or parsed is unknown and
+	// is not reported as unsupported (#2972).
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED NetworkPolicyUncoveredPath = 3
+	// The tenant's egress allow-list in the kernel is not what its policy says:
+	// the last reconcile pass failed to add or remove at least one entry. In
+	// enforce mode a missing entry denies traffic the policy allows, and an entry
+	// that could not be removed keeps allowing traffic the policy no longer does.
+	// The failed entries are retried on the next pass.
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE NetworkPolicyUncoveredPath = 4
+)
+
+// Enum value maps for NetworkPolicyUncoveredPath.
+var (
+	NetworkPolicyUncoveredPath_name = map[int32]string{
+		0: "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
+		1: "NETWORK_POLICY_UNCOVERED_PATH_IPV6",
+		2: "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
+		3: "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED",
+		4: "NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE",
+	}
+	NetworkPolicyUncoveredPath_value = map[string]int32{
+		"NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED":                 0,
+		"NETWORK_POLICY_UNCOVERED_PATH_IPV6":                        1,
+		"NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG":          2,
+		"NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED":          3,
+		"NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE": 4,
+	}
+)
+
+func (x NetworkPolicyUncoveredPath) Enum() *NetworkPolicyUncoveredPath {
+	p := new(NetworkPolicyUncoveredPath)
+	*p = x
+	return p
+}
+
+func (x NetworkPolicyUncoveredPath) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NetworkPolicyUncoveredPath) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_policy_proto_enumTypes[1].Descriptor()
+}
+
+func (NetworkPolicyUncoveredPath) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_policy_proto_enumTypes[1]
+}
+
+func (x NetworkPolicyUncoveredPath) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NetworkPolicyUncoveredPath.Descriptor instead.
+func (NetworkPolicyUncoveredPath) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{1}
+}
+
+// NetworkPolicySource says which policy a tenant's loaded state came from.
+type NetworkPolicySource int32
+
+const (
+	// Unknown: nothing is loaded for the tenant, the daemon has not completed a
+	// pass, or the host's default egress posture is off and the tenant has no
+	// stored policy.
+	NetworkPolicySource_NETWORK_POLICY_SOURCE_UNSPECIFIED NetworkPolicySource = 0
+	// The tenant has no stored policy and runs the host's default egress
+	// allow-list (log_only).
+	NetworkPolicySource_NETWORK_POLICY_SOURCE_HOST_DEFAULT NetworkPolicySource = 1
+	// The tenant runs a policy stored through SetNetworkPolicy.
+	NetworkPolicySource_NETWORK_POLICY_SOURCE_STORED NetworkPolicySource = 2
+)
+
+// Enum value maps for NetworkPolicySource.
+var (
+	NetworkPolicySource_name = map[int32]string{
+		0: "NETWORK_POLICY_SOURCE_UNSPECIFIED",
+		1: "NETWORK_POLICY_SOURCE_HOST_DEFAULT",
+		2: "NETWORK_POLICY_SOURCE_STORED",
+	}
+	NetworkPolicySource_value = map[string]int32{
+		"NETWORK_POLICY_SOURCE_UNSPECIFIED":  0,
+		"NETWORK_POLICY_SOURCE_HOST_DEFAULT": 1,
+		"NETWORK_POLICY_SOURCE_STORED":       2,
+	}
+)
+
+func (x NetworkPolicySource) Enum() *NetworkPolicySource {
+	p := new(NetworkPolicySource)
+	*p = x
+	return p
+}
+
+func (x NetworkPolicySource) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NetworkPolicySource) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_policy_proto_enumTypes[2].Descriptor()
+}
+
+func (NetworkPolicySource) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_policy_proto_enumTypes[2]
+}
+
+func (x NetworkPolicySource) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NetworkPolicySource.Descriptor instead.
+func (NetworkPolicySource) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{2}
+}
+
+// PlanNetworkPolicyRequest selects the tenant and the look-back window.
+type PlanNetworkPolicyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tenant to plan for (required).
+	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Look-back window in minutes. <= 0 means 60; capped at 10080 (one week).
+	SinceMinutes  int32 `protobuf:"varint,2,opt,name=since_minutes,json=sinceMinutes,proto3" json:"since_minutes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanNetworkPolicyRequest) Reset() {
+	*x = PlanNetworkPolicyRequest{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanNetworkPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanNetworkPolicyRequest) ProtoMessage() {}
+
+func (x *PlanNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanNetworkPolicyRequest.ProtoReflect.Descriptor instead.
+func (*PlanNetworkPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *PlanNetworkPolicyRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *PlanNetworkPolicyRequest) GetSinceMinutes() int32 {
+	if x != nil {
+		return x.SinceMinutes
+	}
+	return 0
+}
+
+// PlanDestination is one destination the tenant's policy denied or dropped,
+// aggregated over the window.
+type PlanDestination struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Destination IPv4 address.
+	Ip string `protobuf:"bytes,1,opt,name=ip,proto3" json:"ip,omitempty"`
+	// Destination port (0 when the flow had none, e.g. ICMP).
+	Port uint32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	// IP protocol: "tcp", "udp", or the number for anything else.
+	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// Number of denied/dropped flows seen (per-flow audit rows).
+	Count uint32 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	// True when at least one of the flows was actually dropped (enforce armed),
+	// false when all were only logged (log-only or enforcement not armed).
+	Dropped bool `protobuf:"varint,5,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	// When the most recent such flow was seen.
+	LastSeen      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanDestination) Reset() {
+	*x = PlanDestination{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanDestination) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanDestination) ProtoMessage() {}
+
+func (x *PlanDestination) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanDestination.ProtoReflect.Descriptor instead.
+func (*PlanDestination) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PlanDestination) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *PlanDestination) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *PlanDestination) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *PlanDestination) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *PlanDestination) GetDropped() bool {
+	if x != nil {
+		return x.Dropped
+	}
+	return false
+}
+
+func (x *PlanDestination) GetLastSeen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSeen
+	}
+	return nil
+}
+
+// PlanNetworkPolicyResponse is the aggregated would-block / blocked set.
+type PlanNetworkPolicyResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Window actually used, in minutes (after defaulting and capping).
+	SinceMinutes int32 `protobuf:"varint,2,opt,name=since_minutes,json=sinceMinutes,proto3" json:"since_minutes,omitempty"`
+	// Destinations the policy denied, busiest first. Excludes any destination
+	// the tenant's current egress CIDRs (or the preset's implicit resolver)
+	// already allow, so stale rows from before an allow-list edit do not show.
+	Destinations []*PlanDestination `protobuf:"bytes,3,rep,name=destinations,proto3" json:"destinations,omitempty"`
+	// Audit rows examined.
+	RowsScanned uint32 `protobuf:"varint,4,opt,name=rows_scanned,json=rowsScanned,proto3" json:"rows_scanned,omitempty"`
+	// True when the row cap was hit, so the list may be missing the oldest
+	// flows in the window.
+	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// Caveats the caller should show, e.g. that destinations allowed by
+	// egress_domains are not subtracted.
+	Notes         []string `protobuf:"bytes,6,rep,name=notes,proto3" json:"notes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanNetworkPolicyResponse) Reset() {
+	*x = PlanNetworkPolicyResponse{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanNetworkPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanNetworkPolicyResponse) ProtoMessage() {}
+
+func (x *PlanNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanNetworkPolicyResponse.ProtoReflect.Descriptor instead.
+func (*PlanNetworkPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PlanNetworkPolicyResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *PlanNetworkPolicyResponse) GetSinceMinutes() int32 {
+	if x != nil {
+		return x.SinceMinutes
+	}
+	return 0
+}
+
+func (x *PlanNetworkPolicyResponse) GetDestinations() []*PlanDestination {
+	if x != nil {
+		return x.Destinations
+	}
+	return nil
+}
+
+func (x *PlanNetworkPolicyResponse) GetRowsScanned() uint32 {
+	if x != nil {
+		return x.RowsScanned
+	}
+	return 0
+}
+
+func (x *PlanNetworkPolicyResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *PlanNetworkPolicyResponse) GetNotes() []string {
+	if x != nil {
+		return x.Notes
+	}
+	return nil
+}
+
+// GetNetworkPolicyStatusRequest names the tenant to report on.
+type GetNetworkPolicyStatusRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tenant to report on (required).
+	Tenant        string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNetworkPolicyStatusRequest) Reset() {
+	*x = GetNetworkPolicyStatusRequest{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNetworkPolicyStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNetworkPolicyStatusRequest) ProtoMessage() {}
+
+func (x *GetNetworkPolicyStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNetworkPolicyStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetNetworkPolicyStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetNetworkPolicyStatusRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+// GetNetworkPolicyStatusResponse carries the tenant's applied state.
+type GetNetworkPolicyStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *NetworkPolicyStatus   `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNetworkPolicyStatusResponse) Reset() {
+	*x = GetNetworkPolicyStatusResponse{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNetworkPolicyStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNetworkPolicyStatusResponse) ProtoMessage() {}
+
+func (x *GetNetworkPolicyStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNetworkPolicyStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetNetworkPolicyStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetNetworkPolicyStatusResponse) GetStatus() *NetworkPolicyStatus {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+// NetworkPolicyStatus is a tenant's applied network policy on this daemon.
+type NetworkPolicyStatus struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Whether the policy is loaded here; the modes below are only meaningful
+	// when it is LOADED or PARTIALLY_LOADED (for PARTIALLY_LOADED they cover
+	// the loaded boxes only).
+	State NetworkPolicyAppliedState `protobuf:"varint,2,opt,name=state,proto3,enum=containarium.v1.NetworkPolicyAppliedState" json:"state,omitempty"`
+	// Mode the kernel applies to the cross-tenant, intra-tenant, metadata,
+	// virtual-patch and signature checks, after the host's enforce guard.
+	// UNSPECIFIED = unknown.
+	EffectiveMode NetworkPolicyMode `protobuf:"varint,3,opt,name=effective_mode,json=effectiveMode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"effective_mode,omitempty"`
+	// Mode the kernel applies to the egress allow-list, after the host's
+	// enforce guard. UNSPECIFIED = unknown.
+	EffectiveEgressMode NetworkPolicyMode `protobuf:"varint,4,opt,name=effective_egress_mode,json=effectiveEgressMode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"effective_egress_mode,omitempty"`
+	// End of the last successful reconcile pass on this daemon. Passes run
+	// about every 10 seconds (and on container events) and rewrite the kernel
+	// config each time, so this is refreshed continuously: it is NOT the time
+	// the policy last changed. A value older than a few reconcile intervals
+	// means the reconciler is stalled; past three intervals the daemon reports
+	// STALE. Unset when no pass has completed (or the enforcer is not running).
+	LastReconciledAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=last_reconciled_at,json=lastReconciledAt,proto3" json:"last_reconciled_at,omitempty"`
+	// Whether this host arms enforcement (CONTAINARIUM_NETWORK_POLICY_ENFORCE).
+	// When false, a requested ENFORCE is loaded as LOG_ONLY.
+	EnforcementArmed bool `protobuf:"varint,6,opt,name=enforcement_armed,json=enforcementArmed,proto3" json:"enforcement_armed,omitempty"`
+	// Running boxes of the tenant whose policy is loaded.
+	BoxesLoaded uint32 `protobuf:"varint,7,opt,name=boxes_loaded,json=boxesLoaded,proto3" json:"boxes_loaded,omitempty"`
+	// Running boxes of the tenant whose policy could not be loaded (veth not
+	// resolved, map write or attach failed). Their traffic is not policed.
+	BoxesNotLoaded uint32 `protobuf:"varint,8,opt,name=boxes_not_loaded,json=boxesNotLoaded,proto3" json:"boxes_not_loaded,omitempty"`
+	// Traffic the loaded policy does not decide.
+	UncoveredPaths []NetworkPolicyUncoveredPath `protobuf:"varint,9,rep,packed,name=uncovered_paths,json=uncoveredPaths,proto3,enum=containarium.v1.NetworkPolicyUncoveredPath" json:"uncovered_paths,omitempty"`
+	// Which policy the loaded state comes from: the host default or a stored
+	// policy. Only meaningful when state is LOADED or PARTIALLY_LOADED.
+	PolicySource  NetworkPolicySource `protobuf:"varint,10,opt,name=policy_source,json=policySource,proto3,enum=containarium.v1.NetworkPolicySource" json:"policy_source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkPolicyStatus) Reset() {
+	*x = NetworkPolicyStatus{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkPolicyStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkPolicyStatus) ProtoMessage() {}
+
+func (x *NetworkPolicyStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkPolicyStatus.ProtoReflect.Descriptor instead.
+func (*NetworkPolicyStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *NetworkPolicyStatus) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *NetworkPolicyStatus) GetState() NetworkPolicyAppliedState {
+	if x != nil {
+		return x.State
+	}
+	return NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED
+}
+
+func (x *NetworkPolicyStatus) GetEffectiveMode() NetworkPolicyMode {
+	if x != nil {
+		return x.EffectiveMode
+	}
+	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+}
+
+func (x *NetworkPolicyStatus) GetEffectiveEgressMode() NetworkPolicyMode {
+	if x != nil {
+		return x.EffectiveEgressMode
+	}
+	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+}
+
+func (x *NetworkPolicyStatus) GetLastReconciledAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastReconciledAt
+	}
+	return nil
+}
+
+func (x *NetworkPolicyStatus) GetEnforcementArmed() bool {
+	if x != nil {
+		return x.EnforcementArmed
+	}
+	return false
+}
+
+func (x *NetworkPolicyStatus) GetBoxesLoaded() uint32 {
+	if x != nil {
+		return x.BoxesLoaded
+	}
+	return 0
+}
+
+func (x *NetworkPolicyStatus) GetBoxesNotLoaded() uint32 {
+	if x != nil {
+		return x.BoxesNotLoaded
+	}
+	return 0
+}
+
+func (x *NetworkPolicyStatus) GetUncoveredPaths() []NetworkPolicyUncoveredPath {
+	if x != nil {
+		return x.UncoveredPaths
+	}
+	return nil
+}
+
+func (x *NetworkPolicyStatus) GetPolicySource() NetworkPolicySource {
+	if x != nil {
+		return x.PolicySource
+	}
+	return NetworkPolicySource_NETWORK_POLICY_SOURCE_UNSPECIFIED
+}
+
 var File_containarium_v1_network_policy_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\n" +
-	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\xd8\x11\n" +
+	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"W\n" +
+	"\x18PlanNetworkPolicyRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12#\n" +
+	"\rsince_minutes\x18\x02 \x01(\x05R\fsinceMinutes\"\xba\x01\n" +
+	"\x0fPlanDestination\x12\x0e\n" +
+	"\x02ip\x18\x01 \x01(\tR\x02ip\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x1a\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x14\n" +
+	"\x05count\x18\x04 \x01(\rR\x05count\x12\x18\n" +
+	"\adropped\x18\x05 \x01(\bR\adropped\x127\n" +
+	"\tlast_seen\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\"\xf5\x01\n" +
+	"\x19PlanNetworkPolicyResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12#\n" +
+	"\rsince_minutes\x18\x02 \x01(\x05R\fsinceMinutes\x12D\n" +
+	"\fdestinations\x18\x03 \x03(\v2 .containarium.v1.PlanDestinationR\fdestinations\x12!\n" +
+	"\frows_scanned\x18\x04 \x01(\rR\vrowsScanned\x12\x1c\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\x12\x14\n" +
+	"\x05notes\x18\x06 \x03(\tR\x05notes\"7\n" +
+	"\x1dGetNetworkPolicyStatusRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"^\n" +
+	"\x1eGetNetworkPolicyStatusResponse\x12<\n" +
+	"\x06status\x18\x01 \x01(\v2$.containarium.v1.NetworkPolicyStatusR\x06status\"\xf7\x04\n" +
+	"\x13NetworkPolicyStatus\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12@\n" +
+	"\x05state\x18\x02 \x01(\x0e2*.containarium.v1.NetworkPolicyAppliedStateR\x05state\x12I\n" +
+	"\x0eeffective_mode\x18\x03 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\reffectiveMode\x12V\n" +
+	"\x15effective_egress_mode\x18\x04 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x13effectiveEgressMode\x12H\n" +
+	"\x12last_reconciled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastReconciledAt\x12+\n" +
+	"\x11enforcement_armed\x18\x06 \x01(\bR\x10enforcementArmed\x12!\n" +
+	"\fboxes_loaded\x18\a \x01(\rR\vboxesLoaded\x12(\n" +
+	"\x10boxes_not_loaded\x18\b \x01(\rR\x0eboxesNotLoaded\x12T\n" +
+	"\x0funcovered_paths\x18\t \x03(\x0e2+.containarium.v1.NetworkPolicyUncoveredPathR\x0euncoveredPaths\x12I\n" +
+	"\rpolicy_source\x18\n" +
+	" \x01(\x0e2$.containarium.v1.NetworkPolicySourceR\fpolicySource*\xb1\x02\n" +
+	"\x19NetworkPolicyAppliedState\x12,\n" +
+	"(NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED\x10\x00\x125\n" +
+	"1NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING\x10\x01\x12+\n" +
+	"'NETWORK_POLICY_APPLIED_STATE_NOT_LOADED\x10\x02\x12'\n" +
+	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03\x121\n" +
+	"-NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED\x10\x04\x12&\n" +
+	"\"NETWORK_POLICY_APPLIED_STATE_STALE\x10\x05*\x9e\x02\n" +
+	"\x1aNetworkPolicyUncoveredPath\x12-\n" +
+	")NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"NETWORK_POLICY_UNCOVERED_PATH_IPV6\x10\x01\x124\n" +
+	"0NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG\x10\x02\x124\n" +
+	"0NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED\x10\x03\x12=\n" +
+	"9NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE\x10\x04*\x86\x01\n" +
+	"\x13NetworkPolicySource\x12%\n" +
+	"!NETWORK_POLICY_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"NETWORK_POLICY_SOURCE_HOST_DEFAULT\x10\x01\x12 \n" +
+	"\x1cNETWORK_POLICY_SOURCE_STORED\x10\x022\xdb\x18\n" +
 	"\x14NetworkPolicyService\x12\x8d\x02\n" +
 	"\x10SetNetworkPolicy\x12(.containarium.v1.SetNetworkPolicyRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xa3\x01\x92A\x80\x01\n" +
 	"\rNetworkPolicy\x12\x12Set network policy\x1a[Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/network-policies\x12\xee\x01\n" +
@@ -37,7 +767,11 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x13DeleteNetworkPolicy\x12+.containarium.v1.DeleteNetworkPolicyRequest\x1a,.containarium.v1.DeleteNetworkPolicyResponse\"\x94\x01\x92Al\n" +
 	"\rNetworkPolicy\x12\x15Delete network policy\x1aDRemove a tenant's network-isolation policy (idempotent). Admin-only.\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/network-policies/{tenant}\x12\xac\x02\n" +
 	"\x1bPatchNetworkPolicyDenyRules\x123.containarium.v1.PatchNetworkPolicyDenyRulesRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xac\x01\x92A\x7f\n" +
-	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rules\x12\xa9\x02\n" +
+	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rules\x12\x91\x03\n" +
+	"\x11PlanNetworkPolicy\x12).containarium.v1.PlanNetworkPolicyRequest\x1a*.containarium.v1.PlanNetworkPolicyResponse\"\xa4\x02\x92A\xf6\x01\n" +
+	"\rNetworkPolicy\x12\x13Plan network policy\x1a\xcf\x01List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.\x82\xd3\xe4\x93\x02$\x12\"/v1/network-policies/{tenant}/plan\x12\xec\x03\n" +
+	"\x16GetNetworkPolicyStatus\x12..containarium.v1.GetNetworkPolicyStatusRequest\x1a/.containarium.v1.GetNetworkPolicyStatusResponse\"\xf0\x02\x92A\xc0\x02\n" +
+	"\rNetworkPolicy\x12\x19Get network policy status\x1a\x93\x02Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last reconcile time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.\x82\xd3\xe4\x93\x02&\x12$/v1/network-policies/{tenant}/status\x12\xa9\x02\n" +
 	"\x19SetNetworkPolicySignature\x121.containarium.v1.SetNetworkPolicySignatureRequest\x1a2.containarium.v1.SetNetworkPolicySignatureResponse\"\xa4\x01\x92Ay\n" +
 	"\rNetworkPolicy\x12\x1cSet network-policy signature\x1aJCreate or replace a global cleartext exploit signature (#661). Admin-only.\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/network-policy-signatures\x12\xa5\x02\n" +
 	"\x1bListNetworkPolicySignatures\x123.containarium.v1.ListNetworkPolicySignaturesRequest\x1a4.containarium.v1.ListNetworkPolicySignaturesResponse\"\x9a\x01\x92Ar\n" +
@@ -45,45 +779,83 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x1cDeleteNetworkPolicySignature\x124.containarium.v1.DeleteNetworkPolicySignatureRequest\x1a5.containarium.v1.DeleteNetworkPolicySignatureResponse\"\xad\x01\x92A~\n" +
 	"\rNetworkPolicy\x12\x1fDelete network-policy signature\x1aLRemove an operator-managed exploit signature (#661, idempotent). Admin-only.\x82\xd3\xe4\x93\x02&*$/v1/network-policy-signatures/{name}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
+var (
+	file_containarium_v1_network_policy_proto_rawDescOnce sync.Once
+	file_containarium_v1_network_policy_proto_rawDescData []byte
+)
+
+func file_containarium_v1_network_policy_proto_rawDescGZIP() []byte {
+	file_containarium_v1_network_policy_proto_rawDescOnce.Do(func() {
+		file_containarium_v1_network_policy_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_containarium_v1_network_policy_proto_rawDesc), len(file_containarium_v1_network_policy_proto_rawDesc)))
+	})
+	return file_containarium_v1_network_policy_proto_rawDescData
+}
+
+var file_containarium_v1_network_policy_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_network_policy_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_containarium_v1_network_policy_proto_goTypes = []any{
-	(*SetNetworkPolicyRequest)(nil),              // 0: containarium.v1.SetNetworkPolicyRequest
-	(*GetNetworkPolicyRequest)(nil),              // 1: containarium.v1.GetNetworkPolicyRequest
-	(*ListNetworkPoliciesRequest)(nil),           // 2: containarium.v1.ListNetworkPoliciesRequest
-	(*DeleteNetworkPolicyRequest)(nil),           // 3: containarium.v1.DeleteNetworkPolicyRequest
-	(*PatchNetworkPolicyDenyRulesRequest)(nil),   // 4: containarium.v1.PatchNetworkPolicyDenyRulesRequest
-	(*SetNetworkPolicySignatureRequest)(nil),     // 5: containarium.v1.SetNetworkPolicySignatureRequest
-	(*ListNetworkPolicySignaturesRequest)(nil),   // 6: containarium.v1.ListNetworkPolicySignaturesRequest
-	(*DeleteNetworkPolicySignatureRequest)(nil),  // 7: containarium.v1.DeleteNetworkPolicySignatureRequest
-	(*SetNetworkPolicyResponse)(nil),             // 8: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyResponse)(nil),             // 9: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesResponse)(nil),          // 10: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyResponse)(nil),          // 11: containarium.v1.DeleteNetworkPolicyResponse
-	(*SetNetworkPolicySignatureResponse)(nil),    // 12: containarium.v1.SetNetworkPolicySignatureResponse
-	(*ListNetworkPolicySignaturesResponse)(nil),  // 13: containarium.v1.ListNetworkPolicySignaturesResponse
-	(*DeleteNetworkPolicySignatureResponse)(nil), // 14: containarium.v1.DeleteNetworkPolicySignatureResponse
+	(NetworkPolicyAppliedState)(0),               // 0: containarium.v1.NetworkPolicyAppliedState
+	(NetworkPolicyUncoveredPath)(0),              // 1: containarium.v1.NetworkPolicyUncoveredPath
+	(NetworkPolicySource)(0),                     // 2: containarium.v1.NetworkPolicySource
+	(*PlanNetworkPolicyRequest)(nil),             // 3: containarium.v1.PlanNetworkPolicyRequest
+	(*PlanDestination)(nil),                      // 4: containarium.v1.PlanDestination
+	(*PlanNetworkPolicyResponse)(nil),            // 5: containarium.v1.PlanNetworkPolicyResponse
+	(*GetNetworkPolicyStatusRequest)(nil),        // 6: containarium.v1.GetNetworkPolicyStatusRequest
+	(*GetNetworkPolicyStatusResponse)(nil),       // 7: containarium.v1.GetNetworkPolicyStatusResponse
+	(*NetworkPolicyStatus)(nil),                  // 8: containarium.v1.NetworkPolicyStatus
+	(*timestamppb.Timestamp)(nil),                // 9: google.protobuf.Timestamp
+	(NetworkPolicyMode)(0),                       // 10: containarium.v1.NetworkPolicyMode
+	(*SetNetworkPolicyRequest)(nil),              // 11: containarium.v1.SetNetworkPolicyRequest
+	(*GetNetworkPolicyRequest)(nil),              // 12: containarium.v1.GetNetworkPolicyRequest
+	(*ListNetworkPoliciesRequest)(nil),           // 13: containarium.v1.ListNetworkPoliciesRequest
+	(*DeleteNetworkPolicyRequest)(nil),           // 14: containarium.v1.DeleteNetworkPolicyRequest
+	(*PatchNetworkPolicyDenyRulesRequest)(nil),   // 15: containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	(*SetNetworkPolicySignatureRequest)(nil),     // 16: containarium.v1.SetNetworkPolicySignatureRequest
+	(*ListNetworkPolicySignaturesRequest)(nil),   // 17: containarium.v1.ListNetworkPolicySignaturesRequest
+	(*DeleteNetworkPolicySignatureRequest)(nil),  // 18: containarium.v1.DeleteNetworkPolicySignatureRequest
+	(*SetNetworkPolicyResponse)(nil),             // 19: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyResponse)(nil),             // 20: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesResponse)(nil),          // 21: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyResponse)(nil),          // 22: containarium.v1.DeleteNetworkPolicyResponse
+	(*SetNetworkPolicySignatureResponse)(nil),    // 23: containarium.v1.SetNetworkPolicySignatureResponse
+	(*ListNetworkPolicySignaturesResponse)(nil),  // 24: containarium.v1.ListNetworkPolicySignaturesResponse
+	(*DeleteNetworkPolicySignatureResponse)(nil), // 25: containarium.v1.DeleteNetworkPolicySignatureResponse
 }
 var file_containarium_v1_network_policy_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
-	1,  // 1: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
-	2,  // 2: containarium.v1.NetworkPolicyService.ListNetworkPolicies:input_type -> containarium.v1.ListNetworkPoliciesRequest
-	3,  // 3: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:input_type -> containarium.v1.DeleteNetworkPolicyRequest
-	4,  // 4: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:input_type -> containarium.v1.PatchNetworkPolicyDenyRulesRequest
-	5,  // 5: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:input_type -> containarium.v1.SetNetworkPolicySignatureRequest
-	6,  // 6: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:input_type -> containarium.v1.ListNetworkPolicySignaturesRequest
-	7,  // 7: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:input_type -> containarium.v1.DeleteNetworkPolicySignatureRequest
-	8,  // 8: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
-	9,  // 9: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
-	10, // 10: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
-	11, // 11: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
-	8,  // 12: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:output_type -> containarium.v1.SetNetworkPolicyResponse
-	12, // 13: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:output_type -> containarium.v1.SetNetworkPolicySignatureResponse
-	13, // 14: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:output_type -> containarium.v1.ListNetworkPolicySignaturesResponse
-	14, // 15: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:output_type -> containarium.v1.DeleteNetworkPolicySignatureResponse
-	8,  // [8:16] is the sub-list for method output_type
-	0,  // [0:8] is the sub-list for method input_type
-	0,  // [0:0] is the sub-list for extension type_name
-	0,  // [0:0] is the sub-list for extension extendee
-	0,  // [0:0] is the sub-list for field type_name
+	9,  // 0: containarium.v1.PlanDestination.last_seen:type_name -> google.protobuf.Timestamp
+	4,  // 1: containarium.v1.PlanNetworkPolicyResponse.destinations:type_name -> containarium.v1.PlanDestination
+	8,  // 2: containarium.v1.GetNetworkPolicyStatusResponse.status:type_name -> containarium.v1.NetworkPolicyStatus
+	0,  // 3: containarium.v1.NetworkPolicyStatus.state:type_name -> containarium.v1.NetworkPolicyAppliedState
+	10, // 4: containarium.v1.NetworkPolicyStatus.effective_mode:type_name -> containarium.v1.NetworkPolicyMode
+	10, // 5: containarium.v1.NetworkPolicyStatus.effective_egress_mode:type_name -> containarium.v1.NetworkPolicyMode
+	9,  // 6: containarium.v1.NetworkPolicyStatus.last_reconciled_at:type_name -> google.protobuf.Timestamp
+	1,  // 7: containarium.v1.NetworkPolicyStatus.uncovered_paths:type_name -> containarium.v1.NetworkPolicyUncoveredPath
+	2,  // 8: containarium.v1.NetworkPolicyStatus.policy_source:type_name -> containarium.v1.NetworkPolicySource
+	11, // 9: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
+	12, // 10: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
+	13, // 11: containarium.v1.NetworkPolicyService.ListNetworkPolicies:input_type -> containarium.v1.ListNetworkPoliciesRequest
+	14, // 12: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:input_type -> containarium.v1.DeleteNetworkPolicyRequest
+	15, // 13: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:input_type -> containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	3,  // 14: containarium.v1.NetworkPolicyService.PlanNetworkPolicy:input_type -> containarium.v1.PlanNetworkPolicyRequest
+	6,  // 15: containarium.v1.NetworkPolicyService.GetNetworkPolicyStatus:input_type -> containarium.v1.GetNetworkPolicyStatusRequest
+	16, // 16: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:input_type -> containarium.v1.SetNetworkPolicySignatureRequest
+	17, // 17: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:input_type -> containarium.v1.ListNetworkPolicySignaturesRequest
+	18, // 18: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:input_type -> containarium.v1.DeleteNetworkPolicySignatureRequest
+	19, // 19: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
+	20, // 20: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
+	21, // 21: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
+	22, // 22: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
+	19, // 23: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:output_type -> containarium.v1.SetNetworkPolicyResponse
+	5,  // 24: containarium.v1.NetworkPolicyService.PlanNetworkPolicy:output_type -> containarium.v1.PlanNetworkPolicyResponse
+	7,  // 25: containarium.v1.NetworkPolicyService.GetNetworkPolicyStatus:output_type -> containarium.v1.GetNetworkPolicyStatusResponse
+	23, // 26: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:output_type -> containarium.v1.SetNetworkPolicySignatureResponse
+	24, // 27: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:output_type -> containarium.v1.ListNetworkPolicySignaturesResponse
+	25, // 28: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:output_type -> containarium.v1.DeleteNetworkPolicySignatureResponse
+	19, // [19:29] is the sub-list for method output_type
+	9,  // [9:19] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_network_policy_proto_init() }
@@ -97,13 +869,15 @@ func file_containarium_v1_network_policy_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_network_policy_proto_rawDesc), len(file_containarium_v1_network_policy_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   0,
+			NumEnums:      3,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_network_policy_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_network_policy_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_network_policy_proto_enumTypes,
+		MessageInfos:      file_containarium_v1_network_policy_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_network_policy_proto = out.File
 	file_containarium_v1_network_policy_proto_goTypes = nil

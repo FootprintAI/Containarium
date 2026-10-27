@@ -237,3 +237,33 @@ func TestDescribeCredential_BaseURLGetsAPIv4Suffix(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribeCredential_Kind(t *testing.T) {
+	const self = `{"active":true,"revoked":false,"scopes":["api"],"expires_at":"2027-01-01"}`
+	tests := []struct {
+		name       string
+		userBody   string
+		userStatus int
+		wantKind   tracker.CredentialKind
+	}{
+		{"project bot", `{"username":"project_123_bot_abc","bot":true}`, http.StatusOK, tracker.KindProject},
+		{"group bot", `{"username":"group_456_bot_xyz","bot":true}`, http.StatusOK, tracker.KindGroup},
+		{"personal account", `{"username":"alice","bot":false}`, http.StatusOK, tracker.KindPersonal},
+		{"unrecognized bot shape is not guessed", `{"username":"svc_bot","bot":true}`, http.StatusOK, tracker.KindUnspecified},
+		{"user probe forbidden", `{"message":"insufficient scope"}`, http.StatusForbidden, tracker.KindUnspecified},
+		{"user probe malformed body", `not json`, http.StatusOK, tracker.KindUnspecified},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := gitlabFixtureServer(t, self, http.StatusOK, tt.userBody, tt.userStatus)
+			defer srv.Close()
+			info, err := New(nil).DescribeCredential(context.Background(), tracker.Conn{BaseURL: srv.URL, Credential: "glpat-x"})
+			if err != nil {
+				t.Fatalf("DescribeCredential: %v", err)
+			}
+			if info.Kind != tt.wantKind {
+				t.Errorf("Kind = %v, want %v", info.Kind, tt.wantKind)
+			}
+		})
+	}
+}

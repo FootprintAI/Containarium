@@ -7,7 +7,9 @@
 #
 #   helm install containarium ./charts/containarium-k8s \
 #     -f charts/containarium-k8s/values-eks.yaml \
-#     --set daemon.jwtSecret="$(openssl rand -hex 24)"
+#     --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+#     --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+#     --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 #
 # Prereqs: an EKS cluster, the AWS Load Balancer Controller (provisions the
 # NLB from the Service annotations below), the EBS CSI driver plus a "gp3"

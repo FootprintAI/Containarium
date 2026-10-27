@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
+	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -453,6 +454,16 @@ func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	codexSecret, err := engine.For(engine.NameCodex,
+		engine.Options{Credential: engine.SecretCredential{Name: "CODEX_API_KEY"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexGateway, err := engine.For(engine.NameCodex,
+		engine.Options{Credential: engine.GatewayCredential{Provider: "openai"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	modelsJSON, err := engine.RenderPiModelsJSON(engine.PiModelsParams{
 		Provider:    pb.GatewayProvider_GATEWAY_PROVIDER_KAFEIDO,
 		GatewayBase: "http://10.0.0.1:8866/v1/model/kafeido",
@@ -467,12 +478,18 @@ func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
 		"claude-install":      claudeInstallScriptFor("1.2.3"),
 		"claude-install-bare": claudeInstallScriptFor(""),
 		"agent-box":           agentBoxInstallScript("v0.89.0"),
+		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0", sdlcskills.SkillSets{}),
 		"bootstrap":           bootstrapScript("https://example.test/b.tar.gz"),
 		"verify":              claudeVerifyScript(),
 
 		"pi-install":        piGateway.InstallScript(engine.InstallOptions{Version: engine.PiVersion, ModelsJSON: string(modelsJSON)}),
 		"pi-verify-gateway": piGateway.VerifyScript(),
 		"pi-verify-secret":  piSecret.VerifyScript(),
+
+		"codex-install":        codexSecret.InstallScript(engine.InstallOptions{Version: "0.50.0"}),
+		"codex-install-bare":   codexSecret.InstallScript(engine.InstallOptions{}),
+		"codex-verify-secret":  codexSecret.VerifyScript(),
+		"codex-verify-gateway": codexGateway.VerifyScript(),
 		"claude-verify-gateway": mustEngine(t, engine.NameClaude,
 			engine.GatewayCredential{Provider: "anthropic"}).VerifyScript(),
 		// A token with quotes in it is the shape that breaks naive quoting.

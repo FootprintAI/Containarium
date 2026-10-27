@@ -177,6 +177,9 @@ type fakePlatformSources struct {
 	api       platformstats.APISnapshot
 	provision platformstats.ProvisionSnapshot
 	peers     []PeerState
+	backup    []BackupHealthState
+	// backupReadFailures is the cumulative BackupHealthReadFailures value.
+	backupReadFailures int64
 }
 
 func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
@@ -189,6 +192,14 @@ func (f *fakePlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
 
 func (f *fakePlatformSources) Peers() []PeerState {
 	return f.peers
+}
+
+func (f *fakePlatformSources) BackupHealth() []BackupHealthState {
+	return f.backup
+}
+
+func (f *fakePlatformSources) BackupHealthReadFailures() int64 {
+	return f.backupReadFailures
 }
 
 // flattenPoints returns every emitted datapoint (gauge OR cumulative
@@ -1115,6 +1126,145 @@ func TestNoTenantLabels_ConnectivitySeries(t *testing.T) {
 	}
 }
 
+// pointsByNameAndUsername indexes flattened points by (series name,
+// username label value), the backup-health analog of pointsByNameAndPeer.
+func pointsByNameAndUsername(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		u, _ := p.attrs.Value(attribute.Key(LabelUsername))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][u.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformBackupHealth is #2294's acceptance
+// criterion: enabling the platform group with a wired PlatformSources
+// emits containarium.backup.last_success_age_seconds, one point per
+// tenant with a stored backup, as the seconds elapsed between that
+// tenant's LastSuccessAt and the collector's clock at observe time.
+func TestExportedSeries_PlatformBackupHealth(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	src := &fakePlatformSources{backup: []BackupHealthState{
+		{Username: "alice", LastSuccessAt: now.Add(-30 * time.Minute)},
+		{Username: "bob", LastSuccessAt: now.Add(-25 * time.Hour)}, // stale — exactly the case the alert exists for
+	}}
+
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{
+		Sources: &fakeSources{sr: sampleResources()}, PlatformSources: src,
+		Labels: sampleLabels(), Groups: []pb.CloudMetricsGroup{platform},
+		Now: func() time.Time { return now },
+	})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	byNameUser := pointsByNameAndUsername(flattenPoints(t, rm))
+
+	wantAge := map[string]float64{
+		"alice": (30 * time.Minute).Seconds(),
+		"bob":   (25 * time.Hour).Seconds(),
+	}
+	for user, want := range wantAge {
+		p, ok := byNameUser[MetricBackupLastSuccessAgeSeconds][user]
+		if !ok {
+			t.Fatalf("missing %s{username=%q}", MetricBackupLastSuccessAgeSeconds, user)
+		}
+		if p.fval != want {
+			t.Errorf("%s{username=%q} = %v, want %v", MetricBackupLastSuccessAgeSeconds, user, p.fval, want)
+		}
+	}
+}
+
+// A tenant that has never been backed up at all is absent from the
+// series, same posture as a deleted container in the #1071 group — there
+// is no age to report, and a fabricated value (0, or a zero-value
+// time.Time's age) would misrepresent "never backed up" as either
+// "perfectly fresh" or "catastrophically stale".
+func TestExportedSeries_PlatformBackupHealth_UnknownTenantEmitsNothing(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{}, sampleLabels())
+	for _, p := range flattenPoints(t, rm) {
+		if p.name == MetricBackupLastSuccessAgeSeconds {
+			t.Errorf("backup series emitted %+v with zero tenants reporting backup history", p)
+		}
+	}
+}
+
+// TestExportedSeries_PlatformGroupNilSourcesEmitsNothing already covers
+// "no PlatformSources wired" for API/provisioning; this extends it to
+// the backup series specifically, since it is the newest addition to
+// that same guard.
+func TestExportedSeries_PlatformGroup_BackupZeroWhenNotWired(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, nil, sampleLabels())
+	for _, p := range flattenPoints(t, rm) {
+		if p.name == MetricBackupLastSuccessAgeSeconds {
+			t.Errorf("backup series %q emitted with no PlatformSources wired", p.name)
+		}
+	}
+}
+
+// TestBackupHealthSeries_CarriesUsernameLabelByDesign is the explicit,
+// positive counterpart to every other TestNoTenantLabels_* test in this
+// file: it locks in that this ONE series — and only this one — carries a
+// username label, as the deliberate, reviewed exception documented on
+// BackupHealthState. If a future series starts leaking a tenant
+// identifier by accident, the TestNoTenantLabels_* tests for THAT series
+// still catch it; this test exists so nobody "fixes" this series to
+// match them without reading why first.
+func TestBackupHealthSeries_CarriesUsernameLabelByDesign(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform},
+		&fakeSources{sr: sampleResources()},
+		&fakePlatformSources{backup: []BackupHealthState{{Username: "alice", LastSuccessAt: time.Now().Add(-time.Hour)}}},
+		sampleLabels())
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+		LabelUsername:  "alice",
+	}
+	var found bool
+	for _, p := range flattenPoints(t, rm) {
+		if p.name != MetricBackupLastSuccessAgeSeconds {
+			continue
+		}
+		found = true
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries unexpected label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing expected label %q", p.name, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no backup health series emitted")
+	}
+}
+
 // sampleContainerMetrics is a representative two-container fixture for
 // the #1071 container-series tests below.
 func sampleContainerMetrics() map[string]*pb.ContainerMetrics {
@@ -1433,5 +1583,44 @@ func TestUnreportedThrottlingEmitsNoSeries(t *testing.T) {
 	// it just carries no throttling data.
 	if _, ok := byNameContainer[MetricContainerCPUUsageSeconds]["unreported-container"]; !ok {
 		t.Error("unreported-container lost its cpu.usage_seconds series — only the throttling series should be withheld")
+	}
+}
+
+// #2305: a failing backup-index read empties the age series for every
+// tenant at once, which looks exactly like "no backups exist". The read
+// failure counter is the distinct signal: it is present at zero when reads
+// are fine and carries the cumulative count once they are not.
+func TestExportedSeries_BackupHealthReadFailures(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	for _, tc := range []struct {
+		name string
+		n    int64
+	}{
+		{"healthy reads still emit a zero so absence is not ambiguous", 0},
+		{"persistent failure shows the cumulative count", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()},
+				&fakePlatformSources{backupReadFailures: tc.n}, sampleLabels())
+			var found bool
+			for _, p := range flattenPoints(t, rm) {
+				if p.name != MetricBackupHealthReadFailures {
+					continue
+				}
+				found = true
+				if p.ival != tc.n {
+					t.Errorf("%s = %d, want %d", p.name, p.ival, tc.n)
+				}
+				iter := p.attrs.Iter()
+				for iter.Next() {
+					if string(iter.Attribute().Key) == LabelUsername {
+						t.Errorf("%s must not carry a tenant label", p.name)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("%s not emitted", MetricBackupHealthReadFailures)
+			}
+		})
 	}
 }

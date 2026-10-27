@@ -42,6 +42,116 @@ message BoxRun {
   string log_path = 6;
   // How the log is written: FRAMED logs are demuxed by TailBoxRunLog.
   CaptureMode capture_mode = 7;
+  // The engine's own session identifier (#2193), read back from the box
+  // shortly after the run starts: Claude Code's session id, or pi's session
+  // file name. Empty when the engine exposes none, or when discovery hasn't
+  // found one yet (a race with a just-started run — poll ListBoxRuns again).
+  // Pass it to StartBoxRun's session_id to resume this exact conversation.
+  string session_id = 8;
+  // The tools available to this run, measured on the box by the run's own wrapper
+  // (a probe before the engine starts and one after it ends, written to a sidecar
+  // whatever the engine's exit status), never reported by the agent. Empty for a
+  // run with no readable sidecar (an older run, or a box without the probe).
+  repeated BoxRunTool tools = 9;
+}
+
+// BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
+// what was AVAILABLE, not what was USED: knowing use would need process tracing.
+message BoxRunTool {
+  // The tool's name from the daemon's fixed allowlist (for example "go", "buf").
+  string name = 1;
+  // The first line of the tool's own version command, reduced to printable ASCII
+  // and length-capped (the value ends up in public pull requests). Empty when the
+  // tool printed nothing usable.
+  string version = 2;
+  // How the tool compares between the probe before the run and the one after it.
+  BoxRunToolProvenance provenance = 3;
+  // Where the resolved binary lives, as a class only (never a filesystem path).
+  BoxRunToolLocation location = 4;
+}
+
+// BoxRunToolProvenance compares a tool across the two probes of one run.
+enum BoxRunToolProvenance {
+  BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED = 0;
+  // Present at the start with the same version at the end.
+  BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START = 1;
+  // Not on the PATH at the start, found at the end: installed during the run.
+  BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN = 2;
+  // On the PATH at both ends, but a different version or a different location.
+  BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN = 3;
+}
+
+// BoxRunToolLocation classifies where a tool's binary resolved.
+enum BoxRunToolLocation {
+  BOX_RUN_TOOL_LOCATION_UNSPECIFIED = 0;
+  // Outside the run user's home: part of the box image or its system packages.
+  BOX_RUN_TOOL_LOCATION_SYSTEM = 1;
+  // Under the run user's home: installed by the owner or by a run.
+  BOX_RUN_TOOL_LOCATION_HOME = 2;
+}
+
+// StartBoxRunRequest starts (or resumes) a coding-agent run on a box through
+// the daemon API — no SSH client, no agent-box RPC (#2193): the daemon
+// root-execs the same on-disk contract `containarium code run` leaves via
+// agent-box's process_start, so ListBoxRuns and TailBoxRunLog read a
+// daemon-started run exactly like one `code run` started.
+//
+// The engine and its credential source are never request fields: they come
+// from the box's own ~/.containarium/code.json (`code install`, #1727) —
+// this RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of
+// scope by the same rule #2030 settled for `code install`: this starts or
+// resumes an already-authenticated session only.
+message StartBoxRunRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The task to give the agent.
+  string prompt = 2;
+  // Resume this specific session id instead of starting a fresh one
+  // (claude --resume <id>; pi --session <id>). Also becomes this run's
+  // run_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING
+  // or UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually
+  // exclusive with continue_session.
+  string session_id = 3;
+  // Resume the engine's own "most recent session in this box's working
+  // directory" instead of starting a fresh one (`code run --continue`'s
+  // meaning, unchanged). Mutually exclusive with session_id.
+  bool continue_session = 4;
+  // Names this run exactly <run_name> instead of the default (the session id
+  // when resuming, else "code"). Must match [A-Za-z0-9._-]{1,128} and not be
+  // "." or ".."; anything else is INVALID_ARGUMENT, as is a name ending in
+  // ".stderr" or in ".<digits>" (those alias a run's stderr log and the
+  // rotation suffix of a finished run). The same collision rules
+  // apply to the name as to any other: a finished run under it is rotated
+  // aside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an
+  // explicit name never collides with the default "code" run, so a caller
+  // that picks a unique name per run keeps every log. ListBoxRuns,
+  // TailBoxRunLog and the CLI address the run by this name. Empty keeps the
+  // previous naming. Capability "box_run_name" in SystemInfo.capabilities.
+  string run_name = 5;
+  // When true the engine runs with `--output-format json` (Claude Code only;
+  // any other engine is FAILED_PRECONDITION, before anything on the box is
+  // touched). The run's log (<run_name>.log) is then exactly the engine's one
+  // JSON result object (type, subtype, is_error, result, session_id, usage,
+  // ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+  // TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
+  // the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+  // (nested keys are ignored; truncated or invalid JSON, or an object over
+  // 1 MiB, yields no id). The object appears when the run ends: the log is
+  // empty while it runs. Default false leaves the plain-text behaviour
+  // unchanged.
+  //
+  // NORMATIVE: a caller that needs the session id reliably MUST set
+  // structured_output. Without it BoxRun.session_id of a fresh run is
+  // best-effort directory discovery (exactly one new transcript must appear
+  // while the run lives; a member's interactive session or another run
+  // starting meanwhile makes it ambiguous) and may be missing. A
+  // continue_session run gets no discovered id at all. Capability
+  // "box_run_structured_output" in SystemInfo.capabilities.
+  bool structured_output = 6;
+}
+
+message StartBoxRunResponse {
+  BoxRun run = 1;
 }
 
 message ListBoxRunsRequest {
@@ -94,4 +204,37 @@ message TailBoxRunLogResponse {
   reserved 5;
   // This window held stderr frames of a FRAMED log, which are not in chunk.
   bool stderr_dropped = 6;
+}
+
+// BoxRunStopSignal is the signal StopBoxRun actually sent.
+enum BoxRunStopSignal {
+  BOX_RUN_STOP_SIGNAL_UNSPECIFIED = 0;
+  // The run had already exited, so nothing was signaled.
+  BOX_RUN_STOP_SIGNAL_NONE = 1;
+  BOX_RUN_STOP_SIGNAL_SIGTERM = 2;
+  BOX_RUN_STOP_SIGNAL_SIGKILL = 3;
+}
+
+// StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
+// to the run's whole process group. Idempotent: stopping a run that has
+// already exited signals nothing and succeeds.
+message StopBoxRunRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // Send SIGKILL instead of SIGTERM.
+  bool force = 3;
+}
+
+message StopBoxRunResponse {
+  // The run's record after the stop. A run stopped by this call is reported
+  // as exited with the conventional 128+signal status (143 for SIGTERM, 137
+  // for SIGKILL).
+  BoxRun run = 1;
+  BoxRunStopSignal signal = 2;
+  // True once the run's process group is gone. False means the signal was
+  // sent but the process had not exited when the call returned (SIGTERM
+  // ignored); call again with force.
+  bool exited = 3;
 }

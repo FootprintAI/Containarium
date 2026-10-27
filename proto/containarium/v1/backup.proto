@@ -41,12 +41,92 @@ enum BackupEngine {
 
   BACKUP_ENGINE_POSTGRES = 1;
 
-  // A dump produced by a tenant-supplied backup hook (#1831): an opaque
-  // byte stream the daemon captured from the hook's stdout. The daemon
-  // does not know its format, so a HOOK record can be listed, fetched,
-  // integrity-checked and deleted, but is never restored or restore-tested
-  // by the platform — apply it with the tenant's own tooling.
+  // A dump produced by a tenant-supplied backup hook (#1831): a byte
+  // stream the daemon captured from the hook's stdout. Unless the hook
+  // declared its format (see HookFormat, #2405) the daemon does not know
+  // it, so an opaque HOOK record can be listed, fetched, integrity-checked
+  // and deleted, but is never restored or restore-tested by the platform —
+  // apply it with the tenant's own tooling.
   BACKUP_ENGINE_HOOK = 2;
+
+  // A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported
+  // as an Incus instance backup tarball, encrypted like any other dump. It
+  // is restored by importing it as a new box, never by a database engine.
+  BACKUP_ENGINE_BOX = 3;
+}
+
+// BackupKeyMode names who holds the key that opens an encrypted backup
+// (#2402). It replaces reading `encrypted && age_recipient != ""` as a
+// mode: a reader that needs to know whether a backup is platform-managed
+// checks this field, not a combination of others.
+enum BackupKeyMode {
+  // On a record: not encrypted. On a request: the daemon default —
+  // MANAGED when the daemon has a key wrapper configured (BOTH when a
+  // legacy recipient also resolves), otherwise the AGE_RECIPIENT /
+  // plaintext behaviour of #1831 / #1836.
+  BACKUP_KEY_MODE_UNSPECIFIED = 0;
+
+  // Encrypted to a tenant-held age recipient only (#1831). The platform
+  // holds no key; restore needs the matching identity from the caller.
+  BACKUP_KEY_MODE_AGE_RECIPIENT = 1;
+
+  // Encrypted to a per-backup ephemeral age identity whose secret is
+  // wrapped by the daemon's KMS wrapper and stored on the record
+  // (wrapped_key / kek_id). The daemon can wrap but not unwrap; only a
+  // holder of the KMS decrypt role can open the backup. Requesting this
+  // on a daemon with no wrapper is an error, not a fallback.
+  BACKUP_KEY_MODE_MANAGED = 2;
+
+  // Both of the above in one age file: either the legacy identity or
+  // the unwrapped managed identity decrypts it. Requires a recipient.
+  BACKUP_KEY_MODE_BOTH = 3;
+}
+
+// HookFormat is what a backup hook declares it writes to stdout (#2405).
+//
+// The declaration is a promise made by whoever configures the hook; the
+// daemon does not inspect the bytes at create time. It decides what the
+// platform may do with a HOOK record afterwards.
+enum HookFormat {
+  // Unset. On a CreateBackupRequest with a hook it means OPAQUE; on a
+  // record it means the record is not a hook backup.
+  HOOK_FORMAT_UNSPECIFIED = 0;
+
+  // Undeclared output: stored, listed, integrity-checked, fetched and
+  // deleted, never restored or restore-tested by the platform. What a
+  // hook record written before this field existed reads as.
+  HOOK_FORMAT_OPAQUE = 1;
+
+  // A `pg_dump -Fc` custom-format archive, the same bytes a database-mode
+  // backup produces. Restore-testable with VerifyBackup, and restorable
+  // into an explicitly named target container other than its source
+  // (never in place: the daemon cannot reach the source's Postgres).
+  HOOK_FORMAT_PG_CUSTOM = 2;
+}
+
+// BackupScope names what a backup captures (#2800, slice 1 of #2372).
+//
+// The zero value is today's database backup, so every client and every
+// stored record that predates this enum keeps meaning exactly what it
+// meant. A BOX backup is the off-host, durable copy of a whole box; a ZFS
+// snapshot (ContainerService) is the host-local, in-place one. See
+// docs/architecture/container-snapshots.md for the split.
+enum BackupScope {
+  // Unset: a database backup, identical to BACKUP_SCOPE_DATABASE. What
+  // every request and record written before this field existed reads as.
+  BACKUP_SCOPE_UNSPECIFIED = 0;
+
+  // A logical database dump (pg_dump, or a tenant backup hook): today's
+  // behaviour.
+  BACKUP_SCOPE_DATABASE = 1;
+
+  // The whole box: its root filesystem and attached volumes, minus /tmp,
+  // /var/tmp, /var/cache and /run, with container config and device
+  // metadata in a manifest; snapshot history is not included. The box is
+  // the request's `username` (the box "<username>-container"). A BOX
+  // request carries no database `connection` and no `hook`, and must name
+  // an explicit encryption key_mode: plaintext is refused for BOX.
+  BACKUP_SCOPE_BOX = 2;
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -117,6 +197,31 @@ message BackupRecord {
   // For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook
   // that produced the dump. Empty for pg_dump records.
   string hook = 14;
+
+  // Managed key mode (#2402). wrapped_key is the per-backup age
+  // identity's secret string, wrapped by the daemon's KMS; kek_id is the
+  // key version it was wrapped under (for GCP, the full CryptoKeyVersion
+  // resource name, so a version with backups still under it can be
+  // guarded against destruction). Both empty unless key_mode is MANAGED
+  // or BOTH. The daemon never unwraps wrapped_key: whoever restores or
+  // verifies unwraps it under their own KMS credentials and supplies
+  // the identity in the request, as for any encrypted record.
+  bytes wrapped_key = 15;
+  string kek_id = 16;
+  // Who holds the key: UNSPECIFIED for a plaintext record,
+  // AGE_RECIPIENT for a record encrypted to a tenant-held recipient only
+  // (including every record written before this field existed).
+  BackupKeyMode key_mode = 17;
+
+  // For BACKUP_ENGINE_HOOK: the format the hook declared for its output
+  // (#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for
+  // pg_dump records.
+  HookFormat hook_format = 18;
+
+  // What the backup captured (#2800). Always set on a record the daemon
+  // returns: DATABASE for every database backup, including records
+  // written before this field existed.
+  BackupScope scope = 19;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -255,6 +360,33 @@ message CreateBackupRequest {
   // operator only ever hold ciphertext. Restore needs the matching
   // identity, which the platform never stores.
   string age_recipient = 7;
+
+  // Who should hold the key (#2402). UNSPECIFIED takes the daemon
+  // default: MANAGED when the daemon has a key wrapper configured
+  // (CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also
+  // resolves, otherwise AGE_RECIPIENT with a recipient or plaintext
+  // without. An explicit mode the daemon cannot satisfy — MANAGED or
+  // BOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH
+  // with no recipient (INVALID_ARGUMENT) — is rejected, never silently
+  // downgraded.
+  BackupKeyMode key_mode = 8;
+
+  // Declared format of the hook's output (#2405). UNSPECIFIED means
+  // OPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a
+  // `pg_dump -Fc` archive: the record then gets a relation-count manifest
+  // read from the archive's table of contents (when pg_restore is
+  // available in the container) and can be restore-tested. Rejected
+  // without `hook`.
+  HookFormat hook_format = 9;
+
+  // What to back up (#2800). UNSPECIFIED and DATABASE are today's database
+  // backup, unchanged. BOX backs up the whole box named by `username`; it
+  // is rejected with INVALID_ARGUMENT when `connection`, `hook` or
+  // `hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is
+  // never plaintext, so the mode is named, not defaulted). `destination`,
+  // `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
+  // database backup.
+  BackupScope scope = 10;
 }
 
 message CreateBackupResponse {
@@ -323,6 +455,14 @@ message RestoreBackupRequest {
   // for an encrypted record; the daemon refuses the restore without it
   // because it holds no decryption key of its own.
   string age_identity = 4;
+
+  // Container to restore into, by its container name
+  // ("<username>-container"). Empty restores into the backup's own source
+  // container, in place (#2403). The caller must be authorized for the
+  // target's tenant as well as the backup's. A hook record declared
+  // HOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target
+  // other than its source (#2405).
+  string target_container = 5;
 }
 
 message RestoreBackupResponse {
@@ -335,20 +475,32 @@ message RestoreBackupResponse {
 //
 // The target is always a container other than the one the backup came
 // from — verification must never touch the source database. Supply a
-// disposable container as the target; the daemon rejects a request whose
-// target resolves to the source container.
+// different tenant's disposable container as the target (admin only), or
+// the backup's own tenant for a daemon-managed isolated verification container.
 message VerifyBackupRequest {
   // Backup to verify.
   string id = 1;
 
-  // Tenant whose container is used as the throwaway restore target.
-  // Required, and must differ from the backup's own tenant container.
+  // Required target tenant. The backup's own tenant selects a fresh,
+  // daemon-managed isolated Postgres 16 container, deleted after verification.
+  // A different tenant selects that tenant's existing container (admin only).
   string target_username = 2;
 
   // Connection parameters for the *target* container's Postgres. The
   // scratch database name is generated by the daemon, so
-  // connection.database is ignored here.
+  // connection.database is ignored here. All connection fields are ignored
+  // for the daemon-managed target, which uses generated local credentials.
   PgConnection connection = 3;
+
+  // For a record with encrypted=true: the age X25519 identity
+  // ("AGE-SECRET-KEY-1…") that matches the record's age_recipient
+  // (#1831). Used to decrypt for this one call and never stored or
+  // logged, same contract as RestoreBackupRequest.age_identity.
+  // Required for an encrypted record — the daemon refuses to even
+  // attempt the test without it, because it holds no decryption key of
+  // its own. A wrong identity comes back as a FAILED verification
+  // result, not an RPC error (#2295).
+  string age_identity = 4;
 }
 
 message VerifyBackupResponse {
@@ -420,7 +572,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Create a backup";
-      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.";
+      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.";
       tags: "Backups";
     };
   }
@@ -470,7 +622,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Verify a backup";
-      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.";
+      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.";
       tags: "Backups";
     };
   }

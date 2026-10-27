@@ -19,9 +19,19 @@
 #   GO_VERSION     pinned in the script (override if bumping)
 #   NODE_VERSION
 #   PNPM_VERSION
-#   BUF_VERSION
+#   BUF_VERSION     pinned in scripts/buf-version.env (not overridden)
 #   GOLANGCI_LINT_VERSION
 #   RUNNER_VERSION
+#   DEPS_ONLY      all (default) | toolchains | apt — run only one half,
+#                  e.g. toolchains on a non-Debian laptop, apt on an Ubuntu
+#                  builder
+#   APT_PACKAGES   space-separated packages to bundle with their dependency
+#                  closure (default: the list below)
+#   APT_BATCH_SIZE packages per `apt-get download` call (1-500, default 25;
+#                  anything else fails fast); each
+#                  batch is logged, so a stall shows which batch it is in
+#   GITHUB_STEP_SUMMARY  when set (GitHub Actions), the step's result,
+#                  duration and package count are appended to it
 #
 # Outputs (under $STAGING_DIR):
 #
@@ -36,11 +46,11 @@
 # Idempotent — re-runs skip already-downloaded files (checks file
 # existence; does NOT re-validate checksums beyond what curl returns).
 #
-# NOTE on apt downloads: requires `apt-get download` + `apt-rdepends`,
-# which only work on a Debian/Ubuntu host. On non-Debian hosts the
-# function emits a placeholder + warning, and the operator is expected
-# to drop pre-downloaded .debs into $STAGING_DIR/apt/ manually (see
-# scripts/bundle/README.md).
+# NOTE on apt downloads: requires `apt-get` and `dpkg-deb` on an Ubuntu host
+# of the target release (after `apt-get update`), and
+# the Zabbly repo for incus (scripts/bundle/add-zabbly-repo.sh). Any apt error,
+# a missing tool, or a dependency the bundle cannot satisfy fails the script
+# (#3061). See scripts/bundle/README.md.
 
 set -euo pipefail
 
@@ -53,9 +63,38 @@ ARCH="${ARCH:-amd64}"
 GO_VERSION="${GO_VERSION:-1.25.10}"
 NODE_VERSION="${NODE_VERSION:-22.11.0}"
 PNPM_VERSION="${PNPM_VERSION:-9.12.3}"
-BUF_VERSION="${BUF_VERSION:-1.38.0}"
+source "$(dirname "$0")/../buf-version.env"
 GOLANGCI_LINT_VERSION="${GOLANGCI_LINT_VERSION:-2.1.6}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.319.1}"
+
+DEPS_ONLY="${DEPS_ONLY:-all}"
+case "$DEPS_ONLY" in
+  all|toolchains|apt) ;;
+  *) echo "DEPS_ONLY must be all, toolchains or apt (got: $DEPS_ONLY)" >&2; exit 1 ;;
+esac
+
+# Fail fast, never silently fall back: an out-of-range value is a typo or a
+# broken caller, and quietly using 25 would hide it. Unset or empty keeps the
+# default. The check is a regex on the string, before any arithmetic: a
+# 2^64-ish value wraps to 0 (division by zero) and 2^63-1 yields a negative
+# batch count. Max 500 (three digits): each `apt-get download` argument is
+# ~40 bytes, so 500 is ~20 KB, far below ARG_MAX (~2 MB), and large enough that
+# the default closure is a single batch while a stall still shows its batch.
+APT_BATCH_SIZE="${APT_BATCH_SIZE:-25}"
+if ! [[ "$APT_BATCH_SIZE" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$APT_BATCH_SIZE" -gt 500 ]; then
+  printf 'APT_BATCH_SIZE must be an integer from 1 to 500 (got: %q)\n' "${APT_BATCH_SIZE:0:40}" >&2
+  exit 1
+fi
+
+# What install.sh would apt-get install on a connected host: runner-kit deps,
+# ZFS, and incus/incus-client/incus-extra from the Zabbly stable repo.
+APT_PACKAGES="${APT_PACKAGES:-curl wget gnupg ca-certificates software-properties-common jq zfsutils-linux build-essential libicu-dev git incus incus-client incus-extra}"
+
+# Network bounds for every apt call (#3118). Without them one stalled HTTPS
+# connection held `apt-get download` silent for 46 minutes. A connection idle
+# for 30s now fails and is retried 3 times; apt's error then names the URL.
+APT_NET_OPTS=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+APT_PKG_COUNT=""   # resolved package count, for the job summary
 
 # Colors
 GREEN='\033[0;32m'
@@ -151,10 +190,9 @@ download_pnpm() {
 
 # ---- buf ----
 download_buf() {
-  # buf ships per-platform binaries via GitHub releases.
-  local file="buf-${BUF_OS}-${BUF_ARCH}"
-  fetch "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/${file}" \
-        "$STAGING_DIR/toolchains/buf-${BUF_VERSION}-${OS}-${ARCH}"
+  # Share CI's pin and checksum validation, including on cached-file reruns.
+  "$(dirname "$0")/../install-buf.sh" \
+    "$STAGING_DIR/toolchains/buf-${BUF_VERSION}-${OS}-${ARCH}" "$BUF_OS" "$BUF_ARCH"
 }
 
 # ---- golangci-lint ----
@@ -172,73 +210,206 @@ download_actions_runner() {
 }
 
 # ---- apt packages ----
-# Downloads the .debs install.sh would pull on a connected host:
-#   - incus, incus-client, incus-extra (from Zabbly)
-#   - zfsutils-linux (from Ubuntu main)
-#   - curl, wget, gnupg, ca-certificates, software-properties-common,
-#     jq, build-essential, libicu-dev (runner-kit deps)
-# `apt-rdepends` resolves transitive deps; `apt-get download` pulls them.
+# Downloads the .debs install.sh would pull on a connected host, plus their
+# whole Depends/Pre-Depends closure, into $STAGING_DIR/apt/.
+#
+# Fails loudly (#3061). It used to filter apt's `E:` lines and discard the
+# exit status, so a release bundle shipped an empty apt/ from a green step.
+# The causes are handled on purpose here:
+#
+#   - The closure came from `apt-rdepends`, which lists virtual names
+#     (debconf-2.0, logind, default-dbus-system-bus, ...) and removed
+#     alternatives (mime-support) but never follows a virtual name to the
+#     package that provides it. One such name made the single
+#     `apt-get download` call fail and fetch nothing, and skipping them would
+#     still have left out dbus, libpam-systemd and friends. apt's own
+#     resolver now picks the set: `apt-get install -s` against an empty dpkg
+#     status lists every package a fresh host would need, providers of
+#     virtual names included, and exactly those name=version pairs are
+#     downloaded. Recommends are not followed (--no-install-recommends).
+#   - incus, incus-client and incus-extra come from the Zabbly stable repo,
+#     as on a connected install (hacks/install.sh); Ubuntu has no
+#     incus-extra. Add the repo first with scripts/bundle/add-zabbly-repo.sh.
+#     A requested package apt cannot locate fails the resolver step.
+#   - check_apt_closure then proves the result independently of apt: a .deb
+#     for every requested package, and every Depends/Pre-Depends group of
+#     every downloaded .deb met inside the bundle.
+#
+# Run it on the Ubuntu release the bundle targets (24.04), after
+# `apt-get update`: the .debs are only valid for that release.
 download_apt_packages() {
-  if [ "$OS" != "linux" ]; then
-    log_warn "Skipping apt downloads on non-linux OS"
-    return 0
-  fi
-
-  if ! command -v apt-get >/dev/null 2>&1; then
-    log_warn "apt-get not present — cannot download .debs on this host."
-    log_warn "Drop pre-downloaded .deb files into: $STAGING_DIR/apt/"
-    log_warn "See scripts/bundle/README.md for the apt-prep workflow."
-    # Write a sentinel so the bundle build doesn't silently produce an
-    # empty apt/ directory.
-    touch "$STAGING_DIR/apt/.MANUAL_APT_DOWNLOAD_REQUIRED"
-    return 0
-  fi
-
-  if ! command -v apt-rdepends >/dev/null 2>&1; then
-    log_warn "apt-rdepends not installed; install with: apt-get install apt-rdepends"
-    log_warn "Falling back to direct apt-get download (no transitive deps)."
-  fi
-
-  log_info "Downloading apt packages into $STAGING_DIR/apt/"
-  # Use a subshell so the cd doesn't leak.
-  (
-    cd "$STAGING_DIR/apt"
-
-    local pkgs=(
-      curl wget gnupg ca-certificates software-properties-common
-      jq zfsutils-linux build-essential libicu-dev git
-      incus incus-client incus-extra
-    )
-
-    if command -v apt-rdepends >/dev/null 2>&1; then
-      local all_deps=""
-      for pkg in "${pkgs[@]}"; do
-        all_deps+="$(apt-rdepends "$pkg" 2>/dev/null | grep -v '^ ' | sort -u) "
-      done
-      # shellcheck disable=SC2086
-      apt-get download $all_deps 2>&1 | grep -v '^E:' || true
-    else
-      apt-get download "${pkgs[@]}" 2>&1 | grep -v '^E:' || true
+  local tool missing_tool=0
+  for tool in apt-get dpkg-deb; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      log_error "$tool not found; the apt step needs it"
+      missing_tool=1
     fi
-  )
-  log_success "apt packages downloaded"
+  done
+  if [ "$missing_tool" = 1 ]; then
+    log_error "Run the apt step on an Ubuntu builder of the target release, or run"
+    log_error "with DEPS_ONLY=toolchains and put the .debs into $STAGING_DIR/apt/ yourself."
+    return 1
+  fi
+
+  local apt_dir="$STAGING_DIR/apt" work sim
+  local pkgs=() fetch=()
+  read -r -a pkgs <<<"$APT_PACKAGES"
+  if [ "${#pkgs[@]}" -eq 0 ]; then
+    log_error "APT_PACKAGES is empty"
+    return 1
+  fi
+
+  work="$(mktemp -d)"
+  # shellcheck disable=SC2064  # expand now: $work is local
+  trap "rm -rf '$work'; trap - RETURN" RETURN
+  : >"$work/status"   # empty dpkg status: resolve as for a host with nothing installed
+
+  log_info "Resolving the install set of: ${pkgs[*]}"
+  if ! sim="$(apt-get install -s --no-install-recommends "${APT_NET_OPTS[@]}" \
+                -o Dir::State::status="$work/status" -o Debug::NoLocking=1 \
+                "${pkgs[@]}")"; then
+    log_error "apt could not resolve the package set (see the apt error above)."
+    log_error "Is every repo configured? incus* need scripts/bundle/add-zabbly-repo.sh."
+    return 1
+  fi
+  # `Inst <name> (<version> <origin> [<arch>])`
+  mapfile -t fetch < <(awk '$1 == "Inst" { v = $3; sub(/^\(/, "", v); print $2 "=" v }' <<<"$sim")
+  if [ "${#fetch[@]}" -eq 0 ]; then
+    log_error "apt resolved an empty install set"
+    return 1
+  fi
+
+  # Batched (#3118): the log shows which batch is in flight, so a stall is
+  # placed to a few packages instead of the whole set.
+  APT_PKG_COUNT="${#fetch[@]}"
+  local batches=$(( (${#fetch[@]} + APT_BATCH_SIZE - 1) / APT_BATCH_SIZE ))
+  local b i batch=()
+  log_info "Resolved ${#fetch[@]} packages; downloading into $apt_dir/ in $batches batch(es) of up to $APT_BATCH_SIZE"
+  for (( b = 1, i = 0; i < ${#fetch[@]}; b++, i += APT_BATCH_SIZE )); do
+    batch=("${fetch[@]:i:APT_BATCH_SIZE}")
+    log_info "batch $b/$batches: ${#batch[@]} packages (${batch[0]%%=*} .. ${batch[-1]%%=*})"
+    if ! (cd "$apt_dir" && apt-get download "${APT_NET_OPTS[@]}" "${batch[@]}"); then
+      log_error "apt-get download failed in batch $b/$batches (apt's error above names the host)"
+      return 1
+    fi
+  done
+
+  check_apt_closure "$apt_dir" "${pkgs[@]}"
+  log_success "apt packages downloaded: $(find "$apt_dir" -maxdepth 1 -name '*.deb' | wc -l) .deb files"
+}
+
+# check_apt_closure DIR REQUIRED...
+# Fails unless DIR holds a .deb for every REQUIRED package and every
+# Depends/Pre-Depends group of every .deb in DIR is met by a package in DIR
+# or one of its Provides. Matching is by name: the versions are whatever apt
+# resolved from one archive snapshot, and dpkg checks them at install time.
+check_apt_closure() {
+  local dir="$1"; shift
+  local -A have=() pkgname=()
+  local debs=() deb p field value group alt ok n
+  local groups=() alts=() unmet=() absent=()
+  shopt -s nullglob
+  debs=("$dir"/*.deb)
+  shopt -u nullglob
+  if [ "${#debs[@]}" -eq 0 ]; then
+    log_error "No .deb files in $dir"
+    return 1
+  fi
+
+  for deb in "${debs[@]}"; do
+    p="$(dpkg-deb -f "$deb" Package)"
+    pkgname[$deb]="$p"
+    have[$p]=1
+    value="$(dpkg-deb -f "$deb" Provides | tr '\n' ' ')"
+    IFS=',' read -r -a groups <<<"$value"
+    for alt in "${groups[@]}"; do
+      alt="$(dep_name "$alt")"
+      [ -n "$alt" ] && have[$alt]=1
+    done
+  done
+
+  for n in "$@"; do
+    if ! printf '%s\n' "${pkgname[@]}" | grep -qxF -- "$n"; then
+      absent+=("$n")
+    fi
+  done
+
+  for deb in "${debs[@]}"; do
+    for field in Pre-Depends Depends; do
+      value="$(dpkg-deb -f "$deb" "$field" | tr '\n' ' ')"
+      [ -z "${value// /}" ] && continue
+      IFS=',' read -r -a groups <<<"$value"
+      for group in "${groups[@]}"; do
+        ok=0
+        IFS='|' read -r -a alts <<<"$group"
+        for alt in "${alts[@]}"; do
+          alt="$(dep_name "$alt")"
+          if [ -n "$alt" ] && [ -n "${have[$alt]:-}" ]; then ok=1; break; fi
+        done
+        if [ "$ok" = 0 ]; then
+          unmet+=("${pkgname[$deb]} $field:${group}")
+        fi
+      done
+    done
+  done
+
+  if [ "${#absent[@]}" -gt 0 ]; then
+    log_error "No .deb downloaded for requested package(s): ${absent[*]}"
+  fi
+  if [ "${#unmet[@]}" -gt 0 ]; then
+    log_error "${#unmet[@]} dependency group(s) not met inside the bundle:"
+    for n in "${unmet[@]}"; do log_error "  $n"; done
+  fi
+  if [ "${#absent[@]}" -gt 0 ] || [ "${#unmet[@]}" -gt 0 ]; then
+    return 1
+  fi
+  log_success "Dependency closure OK: ${#debs[@]} .deb files, every Depends/Pre-Depends met"
+}
+
+# dep_name " libfoo:any (>= 1.2) " -> libfoo
+dep_name() {
+  local a="$1"
+  a="${a%%(*}"; a="${a%%\[*}"; a="${a%%<*}"
+  a="${a//[[:space:]]/}"
+  echo "${a%%:*}"
+}
+
+# write_summary EXIT_STATUS: one line in the GitHub job summary, so a slow or
+# failed step is visible without opening the log (#3118).
+write_summary() {
+  local rc="$1" result pkgs=""
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  if [ "$rc" -eq 0 ]; then result="ok in ${SECONDS}s"; else result="failed after ${SECONDS}s (exit $rc)"; fi
+  [ -n "$APT_PKG_COUNT" ] && pkgs=", $APT_PKG_COUNT apt packages in batches of $APT_BATCH_SIZE"
+  echo "**Download bundle dependencies** ($DEPS_ONLY): $result$pkgs." \
+       "Expected: a few minutes on a healthy run; build-bundle times out at 30 minutes." \
+       >>"$GITHUB_STEP_SUMMARY" || true
 }
 
 main() {
+  SECONDS=0
+  trap 'write_summary $?' EXIT
   log_info "Staging dir: $STAGING_DIR"
   log_info "Target:      $OS/$ARCH"
+  log_info "Steps:       $DEPS_ONLY"
   log_info "Versions:    Go $GO_VERSION  Node $NODE_VERSION  pnpm $PNPM_VERSION"
   log_info "             buf $BUF_VERSION  golangci-lint $GOLANGCI_LINT_VERSION"
   log_info "             actions-runner $RUNNER_VERSION"
   echo
 
-  download_go
-  download_node
-  download_pnpm
-  download_buf
-  download_golangci_lint
-  download_actions_runner
-  download_apt_packages
+  case "$DEPS_ONLY" in
+    all|toolchains)
+      download_go
+      download_node
+      download_pnpm
+      download_buf
+      download_golangci_lint
+      download_actions_runner
+      ;;
+  esac
+  case "$DEPS_ONLY" in
+    all|apt) download_apt_packages ;;
+  esac
 
   echo
   log_success "All downloads complete. Staging tree:"

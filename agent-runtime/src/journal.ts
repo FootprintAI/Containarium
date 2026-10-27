@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Engine, EngineConfig, EngineResult } from "./engine.js";
 import type { JournalEvent } from "./journal.schema.js";
+import { runWithFinalJsonReprompt } from "./reprompt.js";
 
 // The per-run journal (#2095): an append-only JSON-lines file per run per
 // member box at /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl, written
@@ -195,11 +196,12 @@ export function journalSecrets(env: Readonly<Record<string, string | undefined>>
 // runJournaled runs one task through the engine bracketed by status lines:
 // "run started", then whatever the engine journals, then "run ended exit=N"
 // (0 on success; on failure the error is journaled first, exit=1, and the
-// error is rethrown).
+// error is rethrown). A run that changed files but returned no final message
+// is re-prompted once inside the bracket (runWithFinalJsonReprompt, #2513).
 export async function runJournaled(engine: Engine, task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
   journal.append({ kind: "status", text: "run started" });
   try {
-    const res = await engine.run(task, cfg, journal);
+    const res = await runWithFinalJsonReprompt(engine, task, cfg, journal);
     journal.append({ kind: "status", text: "run ended exit=0" });
     return res;
   } catch (e) {

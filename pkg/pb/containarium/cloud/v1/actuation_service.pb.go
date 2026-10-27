@@ -43,6 +43,7 @@
 package cloudv1
 
 import (
+	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -58,6 +59,60 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// AssignmentKind selects how the host reconciles an Assignment.
+type AssignmentKind int32
+
+const (
+	// Treated as ASSIGNMENT_KIND_CONTAINER.
+	AssignmentKind_ASSIGNMENT_KIND_UNSPECIFIED AssignmentKind = 0
+	// Run the container described by the assignment's container fields.
+	AssignmentKind_ASSIGNMENT_KIND_CONTAINER AssignmentKind = 1
+	// End every live session of user_id on this host's boxes (the
+	// deactivation fan-out of docs/architecture/ssh-live-authorization.md).
+	AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS AssignmentKind = 2
+)
+
+// Enum value maps for AssignmentKind.
+var (
+	AssignmentKind_name = map[int32]string{
+		0: "ASSIGNMENT_KIND_UNSPECIFIED",
+		1: "ASSIGNMENT_KIND_CONTAINER",
+		2: "ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS",
+	}
+	AssignmentKind_value = map[string]int32{
+		"ASSIGNMENT_KIND_UNSPECIFIED":             0,
+		"ASSIGNMENT_KIND_CONTAINER":               1,
+		"ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS": 2,
+	}
+)
+
+func (x AssignmentKind) Enum() *AssignmentKind {
+	p := new(AssignmentKind)
+	*p = x
+	return p
+}
+
+func (x AssignmentKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AssignmentKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_cloud_v1_actuation_service_proto_enumTypes[0].Descriptor()
+}
+
+func (AssignmentKind) Type() protoreflect.EnumType {
+	return &file_containarium_cloud_v1_actuation_service_proto_enumTypes[0]
+}
+
+func (x AssignmentKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AssignmentKind.Descriptor instead.
+func (AssignmentKind) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{0}
+}
 
 // NetworkPolicyMode controls whether an org's egress policy is enforced or only
 // observed on the host. Mirrors the OSS daemon's NetworkPolicyMode (the host's
@@ -97,11 +152,11 @@ func (x NetworkPolicyMode) String() string {
 }
 
 func (NetworkPolicyMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_cloud_v1_actuation_service_proto_enumTypes[0].Descriptor()
+	return file_containarium_cloud_v1_actuation_service_proto_enumTypes[1].Descriptor()
 }
 
 func (NetworkPolicyMode) Type() protoreflect.EnumType {
-	return &file_containarium_cloud_v1_actuation_service_proto_enumTypes[0]
+	return &file_containarium_cloud_v1_actuation_service_proto_enumTypes[1]
 }
 
 func (x NetworkPolicyMode) Number() protoreflect.EnumNumber {
@@ -110,7 +165,61 @@ func (x NetworkPolicyMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use NetworkPolicyMode.Descriptor instead.
 func (NetworkPolicyMode) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{0}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{1}
+}
+
+// EgressMode is the egress allow-list's own enforcement mode, separate from
+// NetworkPolicy.mode (vendored from the cloud repo, FootprintAI cloud #3109):
+// an org soaks a narrowed egress list in LOG_ONLY without switching off the
+// cross-org drop, which stays ENFORCE. Same values as NetworkPolicyMode.
+type EgressMode int32
+
+const (
+	// Not set: the egress list follows NetworkPolicy.mode.
+	EgressMode_EGRESS_MODE_UNSPECIFIED EgressMode = 0
+	EgressMode_EGRESS_MODE_LOG_ONLY    EgressMode = 1 // log egress to unlisted destinations; drop nothing
+	EgressMode_EGRESS_MODE_ENFORCE     EgressMode = 2 // drop egress to unlisted destinations
+)
+
+// Enum value maps for EgressMode.
+var (
+	EgressMode_name = map[int32]string{
+		0: "EGRESS_MODE_UNSPECIFIED",
+		1: "EGRESS_MODE_LOG_ONLY",
+		2: "EGRESS_MODE_ENFORCE",
+	}
+	EgressMode_value = map[string]int32{
+		"EGRESS_MODE_UNSPECIFIED": 0,
+		"EGRESS_MODE_LOG_ONLY":    1,
+		"EGRESS_MODE_ENFORCE":     2,
+	}
+)
+
+func (x EgressMode) Enum() *EgressMode {
+	p := new(EgressMode)
+	*p = x
+	return p
+}
+
+func (x EgressMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EgressMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_cloud_v1_actuation_service_proto_enumTypes[2].Descriptor()
+}
+
+func (EgressMode) Type() protoreflect.EnumType {
+	return &file_containarium_cloud_v1_actuation_service_proto_enumTypes[2]
+}
+
+func (x EgressMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EgressMode.Descriptor instead.
+func (EgressMode) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{2}
 }
 
 // HeartbeatRequest is intentionally empty for v1. The host's identity
@@ -422,8 +531,16 @@ type Assignment struct {
 	// Carried so the host stamps them at create. EMPTY for now — the cloud has no
 	// per-container secrets model yet; this is the forward contract the OSS host
 	// already applies (as container env) once the cloud populates it.
-	SecretEnv     map[string]string      `protobuf:"bytes,16,rep,name=secret_env,json=secretEnv,proto3" json:"secret_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	SecretEnv map[string]string      `protobuf:"bytes,16,rep,name=secret_env,json=secretEnv,proto3" json:"secret_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	UpdatedAt *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// What this assignment asks the host to do (#2516). UNSPECIFIED is read
+	// as CONTAINER, so a cloud that never sets it keeps today's meaning.
+	Kind AssignmentKind `protobuf:"varint,21,opt,name=kind,proto3,enum=containarium.cloud.v1.AssignmentKind" json:"kind,omitempty"`
+	// Person whose sessions to end. Set only when
+	// kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS. On such an assignment
+	// the existing org_id (field 5), when set, limits the termination to that
+	// org's boxes (#2546); empty keeps the whole-host behaviour.
+	UserId        string `protobuf:"bytes,22,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -549,6 +666,20 @@ func (x *Assignment) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Assignment) GetKind() AssignmentKind {
+	if x != nil {
+		return x.Kind
+	}
+	return AssignmentKind_ASSIGNMENT_KIND_UNSPECIFIED
+}
+
+func (x *Assignment) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route
 // model: Domain, TargetPort, Protocol).
 type PortRoute struct {
@@ -634,7 +765,12 @@ type NetworkPolicy struct {
 	// instance's cloud credentials).
 	AllowMetadata bool `protobuf:"varint,5,opt,name=allow_metadata,json=allowMetadata,proto3" json:"allow_metadata,omitempty"`
 	// Enforcement mode. Unspecified is treated as LOG_ONLY.
-	Mode          NetworkPolicyMode `protobuf:"varint,6,opt,name=mode,proto3,enum=containarium.cloud.v1.NetworkPolicyMode" json:"mode,omitempty"`
+	Mode NetworkPolicyMode `protobuf:"varint,6,opt,name=mode,proto3,enum=containarium.cloud.v1.NetworkPolicyMode" json:"mode,omitempty"`
+	// Mode of the egress allow-list (egress_cidrs + egress_domains), separate
+	// from `mode` so egress can be soaked in LOG_ONLY while cross-org traffic
+	// stays dropped. UNSPECIFIED means "follow mode". Field number matches the
+	// cloud repo's contract (egress_mode = 7).
+	EgressMode    EgressMode `protobuf:"varint,7,opt,name=egress_mode,json=egressMode,proto3,enum=containarium.cloud.v1.EgressMode" json:"egress_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -709,6 +845,13 @@ func (x *NetworkPolicy) GetMode() NetworkPolicyMode {
 		return x.Mode
 	}
 	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+}
+
+func (x *NetworkPolicy) GetEgressMode() EgressMode {
+	if x != nil {
+		return x.EgressMode
+	}
+	return EgressMode_EGRESS_MODE_UNSPECIFIED
 }
 
 // AssignmentBatch is a full-state snapshot, not a delta. Each batch
@@ -990,6 +1133,63 @@ func (x *HostCapabilityCheck) GetDetail() string {
 	return ""
 }
 
+// HostSecurityPosture is one measured snapshot of the host's hardening checks.
+// Checks use their unprefixed probe names; false includes a check that could not
+// be measured, with the reason in detail. An empty snapshot is not proof of a
+// passing posture. Receivers must evaluate required checks and freshness.
+type HostSecurityPosture struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Checks []*HostCapabilityCheck `protobuf:"bytes,1,rep,name=checks,proto3" json:"checks,omitempty"`
+	// Host clock at the start of the posture measurement, not the send time.
+	MeasuredAt    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=measured_at,json=measuredAt,proto3" json:"measured_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostSecurityPosture) Reset() {
+	*x = HostSecurityPosture{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostSecurityPosture) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostSecurityPosture) ProtoMessage() {}
+
+func (x *HostSecurityPosture) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostSecurityPosture.ProtoReflect.Descriptor instead.
+func (*HostSecurityPosture) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *HostSecurityPosture) GetChecks() []*HostCapabilityCheck {
+	if x != nil {
+		return x.Checks
+	}
+	return nil
+}
+
+func (x *HostSecurityPosture) GetMeasuredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.MeasuredAt
+	}
+	return nil
+}
+
 // ReportHostStatusRequest is a BYO host's push of its self-measured
 // capability profile + `doctor` self-check. Host-bearer authed; the host id
 // comes from the bearer, never the body.
@@ -1009,14 +1209,19 @@ type ReportHostStatusRequest struct {
 	// driver_token is a freshly-minted admin JWT from this host's own jwt.secret
 	// (#557). If non-empty the cloud reseals it and overwrites the stored driver
 	// token, keeping the cloud-stored credential from expiring after 30 days.
-	DriverToken   string `protobuf:"bytes,12,opt,name=driver_token,json=driverToken,proto3" json:"driver_token,omitempty"`
+	DriverToken string `protobuf:"bytes,12,opt,name=driver_token,json=driverToken,proto3" json:"driver_token,omitempty"`
+	// Absent means no posture measurement was reported, never "passing". Status
+	// probes populate this on every report while retaining the posture-prefixed
+	// entries in checks for older receivers. Token-only refresh requests omit it
+	// and must not clear a receiver's previously stored posture.
+	Posture       *HostSecurityPosture `protobuf:"bytes,13,opt,name=posture,proto3" json:"posture,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportHostStatusRequest) Reset() {
 	*x = ReportHostStatusRequest{}
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1028,7 +1233,7 @@ func (x *ReportHostStatusRequest) String() string {
 func (*ReportHostStatusRequest) ProtoMessage() {}
 
 func (x *ReportHostStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1041,7 +1246,7 @@ func (x *ReportHostStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportHostStatusRequest.ProtoReflect.Descriptor instead.
 func (*ReportHostStatusRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{12}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ReportHostStatusRequest) GetAgentVersion() string {
@@ -1128,6 +1333,13 @@ func (x *ReportHostStatusRequest) GetDriverToken() string {
 	return ""
 }
 
+func (x *ReportHostStatusRequest) GetPosture() *HostSecurityPosture {
+	if x != nil {
+		return x.Posture
+	}
+	return nil
+}
+
 type ReportHostStatusResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
@@ -1137,7 +1349,7 @@ type ReportHostStatusResponse struct {
 
 func (x *ReportHostStatusResponse) Reset() {
 	*x = ReportHostStatusResponse{}
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1149,7 +1361,7 @@ func (x *ReportHostStatusResponse) String() string {
 func (*ReportHostStatusResponse) ProtoMessage() {}
 
 func (x *ReportHostStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1162,7 +1374,7 @@ func (x *ReportHostStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportHostStatusResponse.ProtoReflect.Descriptor instead.
 func (*ReportHostStatusResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{13}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ReportHostStatusResponse) GetReceivedAt() *timestamppb.Timestamp {
@@ -1192,7 +1404,7 @@ type SSHCAKey struct {
 
 func (x *SSHCAKey) Reset() {
 	*x = SSHCAKey{}
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1416,7 @@ func (x *SSHCAKey) String() string {
 func (*SSHCAKey) ProtoMessage() {}
 
 func (x *SSHCAKey) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1429,7 @@ func (x *SSHCAKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SSHCAKey.ProtoReflect.Descriptor instead.
 func (*SSHCAKey) Descriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{14}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SSHCAKey) GetKeyId() string {
@@ -1253,7 +1465,7 @@ type GetSSHTrustBundleRequest struct {
 
 func (x *GetSSHTrustBundleRequest) Reset() {
 	*x = GetSSHTrustBundleRequest{}
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1265,7 +1477,7 @@ func (x *GetSSHTrustBundleRequest) String() string {
 func (*GetSSHTrustBundleRequest) ProtoMessage() {}
 
 func (x *GetSSHTrustBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1278,7 +1490,7 @@ func (x *GetSSHTrustBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSSHTrustBundleRequest.ProtoReflect.Descriptor instead.
 func (*GetSSHTrustBundleRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{15}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetSSHTrustBundleRequest) GetKnownVersion() string {
@@ -1310,7 +1522,7 @@ type GetSSHTrustBundleResponse struct {
 
 func (x *GetSSHTrustBundleResponse) Reset() {
 	*x = GetSSHTrustBundleResponse{}
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1322,7 +1534,7 @@ func (x *GetSSHTrustBundleResponse) String() string {
 func (*GetSSHTrustBundleResponse) ProtoMessage() {}
 
 func (x *GetSSHTrustBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1335,7 +1547,7 @@ func (x *GetSSHTrustBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSSHTrustBundleResponse.ProtoReflect.Descriptor instead.
 func (*GetSSHTrustBundleResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{16}
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetSSHTrustBundleResponse) GetUnchanged() bool {
@@ -1377,7 +1589,7 @@ var File_containarium_cloud_v1_actuation_service_proto protoreflect.FileDescript
 
 const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\n" +
-	"-containarium/cloud/v1/actuation_service.proto\x12\x15containarium.cloud.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x12\n" +
+	"-containarium/cloud/v1/actuation_service.proto\x12\x15containarium.cloud.v1\x1a\x1fcontainarium/v1/ssh_authz.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x12\n" +
 	"\x10HeartbeatRequest\"|\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -1391,7 +1603,7 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x1cReportContainerStateResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt\"\x19\n" +
-	"\x17WatchAssignmentsRequest\"\xa1\x04\n" +
+	"\x17WatchAssignmentsRequest\"\xf5\x04\n" +
 	"\n" +
 	"Assignment\x12#\n" +
 	"\rassignment_id\x18\x01 \x01(\tR\fassignmentId\x12!\n" +
@@ -1409,7 +1621,9 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\n" +
 	"secret_env\x18\x10 \x03(\v20.containarium.cloud.v1.Assignment.SecretEnvEntryR\tsecretEnv\x129\n" +
 	"\n" +
-	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x1a<\n" +
+	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x129\n" +
+	"\x04kind\x18\x15 \x01(\x0e2%.containarium.cloud.v1.AssignmentKindR\x04kind\x12\x17\n" +
+	"\auser_id\x18\x16 \x01(\tR\x06userId\x1a<\n" +
 	"\x0eSecretEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"`\n" +
@@ -1417,14 +1631,16 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1f\n" +
 	"\vtarget_port\x18\x02 \x01(\x05R\n" +
 	"targetPort\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\x83\x02\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xc7\x02\n" +
 	"\rNetworkPolicy\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
 	"\fegress_cidrs\x18\x03 \x03(\tR\vegressCidrs\x12%\n" +
 	"\x0eegress_domains\x18\x04 \x03(\tR\regressDomains\x12%\n" +
 	"\x0eallow_metadata\x18\x05 \x01(\bR\rallowMetadata\x12<\n" +
-	"\x04mode\x18\x06 \x01(\x0e2(.containarium.cloud.v1.NetworkPolicyModeR\x04mode\"\xe6\x01\n" +
+	"\x04mode\x18\x06 \x01(\x0e2(.containarium.cloud.v1.NetworkPolicyModeR\x04mode\x12B\n" +
+	"\vegress_mode\x18\a \x01(\x0e2!.containarium.cloud.v1.EgressModeR\n" +
+	"egressMode\"\xe6\x01\n" +
 	"\x0fAssignmentBatch\x12C\n" +
 	"\vassignments\x18\x01 \x03(\v2!.containarium.cloud.v1.AssignmentR\vassignments\x12=\n" +
 	"\fgenerated_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x12O\n" +
@@ -1440,7 +1656,11 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x13HostCapabilityCheck\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xdd\x03\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x96\x01\n" +
+	"\x13HostSecurityPosture\x12B\n" +
+	"\x06checks\x18\x01 \x03(\v2*.containarium.cloud.v1.HostCapabilityCheckR\x06checks\x12;\n" +
+	"\vmeasured_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"measuredAt\"\xa3\x04\n" +
 	"\x17ReportHostStatusRequest\x12#\n" +
 	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12\x1b\n" +
 	"\tcpu_cores\x18\x02 \x01(\x05R\bcpuCores\x12 \n" +
@@ -1456,7 +1676,8 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\rself_check_ok\x18\n" +
 	" \x01(\bR\vselfCheckOk\x12B\n" +
 	"\x06checks\x18\v \x03(\v2*.containarium.cloud.v1.HostCapabilityCheckR\x06checks\x12!\n" +
-	"\fdriver_token\x18\f \x01(\tR\vdriverToken\"W\n" +
+	"\fdriver_token\x18\f \x01(\tR\vdriverToken\x12D\n" +
+	"\aposture\x18\r \x01(\v2*.containarium.cloud.v1.HostSecurityPostureR\aposture\"W\n" +
 	"\x18ReportHostStatusResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt\"X\n" +
@@ -1472,11 +1693,20 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x128\n" +
 	"\aca_keys\x18\x03 \x03(\v2\x1f.containarium.cloud.v1.SSHCAKeyR\x06caKeys\x12\x19\n" +
 	"\bkrl_spec\x18\x04 \x01(\tR\akrlSpec\x12=\n" +
-	"\fgenerated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt*{\n" +
+	"\fgenerated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt*}\n" +
+	"\x0eAssignmentKind\x12\x1f\n" +
+	"\x1bASSIGNMENT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19ASSIGNMENT_KIND_CONTAINER\x10\x01\x12+\n" +
+	"'ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS\x10\x02*{\n" +
 	"\x11NetworkPolicyMode\x12#\n" +
 	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
-	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xfe\x06\n" +
+	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x02*\\\n" +
+	"\n" +
+	"EgressMode\x12\x1b\n" +
+	"\x17EGRESS_MODE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14EGRESS_MODE_LOG_ONLY\x10\x01\x12\x17\n" +
+	"\x13EGRESS_MODE_ENFORCE\x10\x022\xdb\a\n" +
 	"\x10ActuationService\x12\x82\x01\n" +
 	"\n" +
 	"EnrollHost\x12(.containarium.cloud.v1.EnrollHostRequest\x1a).containarium.cloud.v1.EnrollHostResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/enroll\x12\x94\x01\n" +
@@ -1484,7 +1714,8 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\tHeartbeat\x12'.containarium.cloud.v1.HeartbeatRequest\x1a(.containarium.cloud.v1.HeartbeatResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/actuation/heartbeat\x12\xb9\x01\n" +
 	"\x14ReportContainerState\x122.containarium.cloud.v1.ReportContainerStateRequest\x1a3.containarium.cloud.v1.ReportContainerStateResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/actuation/containers/{container_id}/state\x12l\n" +
 	"\x10WatchAssignments\x12..containarium.cloud.v1.WatchAssignmentsRequest\x1a&.containarium.cloud.v1.AssignmentBatch0\x01\x12\x9e\x01\n" +
-	"\x11GetSSHTrustBundle\x12/.containarium.cloud.v1.GetSSHTrustBundleRequest\x1a0.containarium.cloud.v1.GetSSHTrustBundleResponse\"&\x82\xd3\xe4\x93\x02 \x12\x1e/v1/actuation/ssh-trust-bundleBJZHgithub.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1b\x06proto3"
+	"\x11GetSSHTrustBundle\x12/.containarium.cloud.v1.GetSSHTrustBundleRequest\x1a0.containarium.cloud.v1.GetSSHTrustBundleResponse\"&\x82\xd3\xe4\x93\x02 \x12\x1e/v1/actuation/ssh-trust-bundle\x12[\n" +
+	"\fAuthorizeSSH\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponseBJZHgithub.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1b\x06proto3"
 
 var (
 	file_containarium_cloud_v1_actuation_service_proto_rawDescOnce sync.Once
@@ -1498,62 +1729,74 @@ func file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP() []byte {
 	return file_containarium_cloud_v1_actuation_service_proto_rawDescData
 }
 
-var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
-	(NetworkPolicyMode)(0),               // 0: containarium.cloud.v1.NetworkPolicyMode
-	(*HeartbeatRequest)(nil),             // 1: containarium.cloud.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),            // 2: containarium.cloud.v1.HeartbeatResponse
-	(*ReportContainerStateRequest)(nil),  // 3: containarium.cloud.v1.ReportContainerStateRequest
-	(*ReportContainerStateResponse)(nil), // 4: containarium.cloud.v1.ReportContainerStateResponse
-	(*WatchAssignmentsRequest)(nil),      // 5: containarium.cloud.v1.WatchAssignmentsRequest
-	(*Assignment)(nil),                   // 6: containarium.cloud.v1.Assignment
-	(*PortRoute)(nil),                    // 7: containarium.cloud.v1.PortRoute
-	(*NetworkPolicy)(nil),                // 8: containarium.cloud.v1.NetworkPolicy
-	(*AssignmentBatch)(nil),              // 9: containarium.cloud.v1.AssignmentBatch
-	(*EnrollHostRequest)(nil),            // 10: containarium.cloud.v1.EnrollHostRequest
-	(*EnrollHostResponse)(nil),           // 11: containarium.cloud.v1.EnrollHostResponse
-	(*HostCapabilityCheck)(nil),          // 12: containarium.cloud.v1.HostCapabilityCheck
-	(*ReportHostStatusRequest)(nil),      // 13: containarium.cloud.v1.ReportHostStatusRequest
-	(*ReportHostStatusResponse)(nil),     // 14: containarium.cloud.v1.ReportHostStatusResponse
-	(*SSHCAKey)(nil),                     // 15: containarium.cloud.v1.SSHCAKey
-	(*GetSSHTrustBundleRequest)(nil),     // 16: containarium.cloud.v1.GetSSHTrustBundleRequest
-	(*GetSSHTrustBundleResponse)(nil),    // 17: containarium.cloud.v1.GetSSHTrustBundleResponse
-	nil,                                  // 18: containarium.cloud.v1.Assignment.SecretEnvEntry
-	(*timestamppb.Timestamp)(nil),        // 19: google.protobuf.Timestamp
+	(AssignmentKind)(0),                  // 0: containarium.cloud.v1.AssignmentKind
+	(NetworkPolicyMode)(0),               // 1: containarium.cloud.v1.NetworkPolicyMode
+	(EgressMode)(0),                      // 2: containarium.cloud.v1.EgressMode
+	(*HeartbeatRequest)(nil),             // 3: containarium.cloud.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),            // 4: containarium.cloud.v1.HeartbeatResponse
+	(*ReportContainerStateRequest)(nil),  // 5: containarium.cloud.v1.ReportContainerStateRequest
+	(*ReportContainerStateResponse)(nil), // 6: containarium.cloud.v1.ReportContainerStateResponse
+	(*WatchAssignmentsRequest)(nil),      // 7: containarium.cloud.v1.WatchAssignmentsRequest
+	(*Assignment)(nil),                   // 8: containarium.cloud.v1.Assignment
+	(*PortRoute)(nil),                    // 9: containarium.cloud.v1.PortRoute
+	(*NetworkPolicy)(nil),                // 10: containarium.cloud.v1.NetworkPolicy
+	(*AssignmentBatch)(nil),              // 11: containarium.cloud.v1.AssignmentBatch
+	(*EnrollHostRequest)(nil),            // 12: containarium.cloud.v1.EnrollHostRequest
+	(*EnrollHostResponse)(nil),           // 13: containarium.cloud.v1.EnrollHostResponse
+	(*HostCapabilityCheck)(nil),          // 14: containarium.cloud.v1.HostCapabilityCheck
+	(*HostSecurityPosture)(nil),          // 15: containarium.cloud.v1.HostSecurityPosture
+	(*ReportHostStatusRequest)(nil),      // 16: containarium.cloud.v1.ReportHostStatusRequest
+	(*ReportHostStatusResponse)(nil),     // 17: containarium.cloud.v1.ReportHostStatusResponse
+	(*SSHCAKey)(nil),                     // 18: containarium.cloud.v1.SSHCAKey
+	(*GetSSHTrustBundleRequest)(nil),     // 19: containarium.cloud.v1.GetSSHTrustBundleRequest
+	(*GetSSHTrustBundleResponse)(nil),    // 20: containarium.cloud.v1.GetSSHTrustBundleResponse
+	nil,                                  // 21: containarium.cloud.v1.Assignment.SecretEnvEntry
+	(*timestamppb.Timestamp)(nil),        // 22: google.protobuf.Timestamp
+	(*v1.AuthorizeSSHRequest)(nil),       // 23: containarium.v1.AuthorizeSSHRequest
+	(*v1.AuthorizeSSHResponse)(nil),      // 24: containarium.v1.AuthorizeSSHResponse
 }
 var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
-	19, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
-	19, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
-	19, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
-	7,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
-	18, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
-	19, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
-	0,  // 6: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
-	6,  // 7: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
-	19, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
-	8,  // 9: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
-	12, // 10: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
-	19, // 11: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
-	15, // 12: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
-	19, // 13: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
-	10, // 14: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
-	13, // 15: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
-	1,  // 16: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
-	3,  // 17: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
-	5,  // 18: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
-	16, // 19: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
-	11, // 20: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
-	14, // 21: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
-	2,  // 22: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
-	4,  // 23: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
-	9,  // 24: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
-	17, // 25: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	22, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
+	22, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
+	22, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
+	9,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
+	21, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
+	22, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
+	0,  // 6: containarium.cloud.v1.Assignment.kind:type_name -> containarium.cloud.v1.AssignmentKind
+	1,  // 7: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
+	2,  // 8: containarium.cloud.v1.NetworkPolicy.egress_mode:type_name -> containarium.cloud.v1.EgressMode
+	8,  // 9: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
+	22, // 10: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
+	10, // 11: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
+	14, // 12: containarium.cloud.v1.HostSecurityPosture.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
+	22, // 13: containarium.cloud.v1.HostSecurityPosture.measured_at:type_name -> google.protobuf.Timestamp
+	14, // 14: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
+	15, // 15: containarium.cloud.v1.ReportHostStatusRequest.posture:type_name -> containarium.cloud.v1.HostSecurityPosture
+	22, // 16: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
+	18, // 17: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
+	22, // 18: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
+	12, // 19: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
+	16, // 20: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
+	3,  // 21: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
+	5,  // 22: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
+	7,  // 23: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
+	19, // 24: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
+	23, // 25: containarium.cloud.v1.ActuationService.AuthorizeSSH:input_type -> containarium.v1.AuthorizeSSHRequest
+	13, // 26: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
+	17, // 27: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
+	4,  // 28: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
+	6,  // 29: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
+	11, // 30: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
+	20, // 31: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
+	24, // 32: containarium.cloud.v1.ActuationService.AuthorizeSSH:output_type -> containarium.v1.AuthorizeSSHResponse
+	26, // [26:33] is the sub-list for method output_type
+	19, // [19:26] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_containarium_cloud_v1_actuation_service_proto_init() }
@@ -1566,8 +1809,8 @@ func file_containarium_cloud_v1_actuation_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_cloud_v1_actuation_service_proto_rawDesc), len(file_containarium_cloud_v1_actuation_service_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   18,
+			NumEnums:      3,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -14,6 +14,7 @@ import (
 
 var upgradeForce bool
 var upgradeGithubTag string
+var upgradeAllowDowngrade bool
 
 var backendsUpgradeCmd = &cobra.Command{
 	Use:   "upgrade [backend-id]",
@@ -31,6 +32,11 @@ from GitHub Releases instead — same verify/smoke-test/swap sequence, but no
 sentinel involved. Opt-in; omit it for the default sentinel-served upgrade.
 See #1028.
 
+A --github-tag older than the running daemon version is refused unless you
+also pass --allow-downgrade (a deliberate rollback). Only a tag and a running
+version that both parse as semver can be refused; "latest" and dev builds are
+not blocked. See #3059.
+
 The upgrade is asynchronous: on a successful swap the daemon restarts, so this
 command returns an upgrade id immediately. Confirm the result with
 'containarium backends versions' once the daemon is back. See #354.
@@ -46,6 +52,8 @@ func init() {
 		"Upgrade even if the sentinel-served binary already matches the running one.")
 	backendsUpgradeCmd.Flags().StringVar(&upgradeGithubTag, "github-tag", "",
 		"Pull this GitHub release tag directly from GitHub Releases instead of the sentinel-served binary (e.g. v0.82.0).")
+	backendsUpgradeCmd.Flags().BoolVar(&upgradeAllowDowngrade, "allow-downgrade", false,
+		"Allow --github-tag to name a release older than the running version (a deliberate rollback). Without it such a tag is refused.")
 }
 
 // triggerUpgradeReq is the typed /v1/backends/upgrade request body. snake_case
@@ -54,6 +62,8 @@ type triggerUpgradeReq struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Force     bool   `json:"force,omitempty"`
 	GithubTag string `json:"github_tag,omitempty"`
+	// AllowDowngrade permits a github_tag older than the running version (#3059).
+	AllowDowngrade bool `json:"allow_downgrade,omitempty"`
 }
 
 // triggerUpgradeResp mirrors the TriggerUpgrade response (camelCase via the
@@ -64,6 +74,7 @@ type triggerUpgradeResp struct {
 	CurrentVersion string `json:"currentVersion"`
 	Message        string `json:"message"`
 	BackendID      string `json:"backendId"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
@@ -80,7 +91,7 @@ func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
 		backendID = args[0]
 	}
 
-	reqBody, _ := json.Marshal(triggerUpgradeReq{BackendID: backendID, Force: upgradeForce, GithubTag: upgradeGithubTag})
+	reqBody, _ := json.Marshal(triggerUpgradeReq{BackendID: backendID, Force: upgradeForce, GithubTag: upgradeGithubTag, AllowDowngrade: upgradeAllowDowngrade})
 	url := strings.TrimSuffix(serverAddr, "/") + "/v1/backends/upgrade"
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(reqBody))
@@ -115,6 +126,9 @@ func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Upgrade %s on %s (job %s)\n", out.Status, target, out.UpgradeID)
 	if out.CurrentVersion != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "  from version: %s\n", out.CurrentVersion)
+	}
+	if out.TargetVersion != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  to version:   %s\n", out.TargetVersion)
 	}
 	if out.Message != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", out.Message)

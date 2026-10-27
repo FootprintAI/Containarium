@@ -12,6 +12,11 @@
 // TC_ACT_OK. Nothing is dropped. Phase B flips would-deny to TC_ACT_SHOT when
 // the per-veth mode is ENFORCE.
 //
+// The sender hook judges what a box OPENS. Its answers to flows that peers
+// opened toward it are recognised through the inbound_flows map, which the
+// egress hook (packets toward the box) seeds from validated sources (#2618);
+// a box may only send with its own address (source validation, same issue).
+//
 // Build (the multiarch -I lets clang's bpf target find <asm/types.h>):
 //   clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
 //       -c netpolicy.bpf.c -o netpolicy.bpf.o
@@ -39,6 +44,16 @@
 #define DENY_REASON_POLICY        0  // failed allow-list / intra-tenant / metadata
 #define DENY_REASON_VIRTUAL_PATCH 1  // matched an explicit virtual-patch deny rule (#660)
 #define DENY_REASON_SIGNATURE     2  // matched a cleartext exploit signature (#661, Tier 2)
+#define DENY_REASON_SPOOFED_SOURCE 3 // the box sent with a source address that is not its own (#2618)
+
+// Verdict carried in deny_event.verdict — mirror netbpf.DenyVerdict* in Go. The
+// verdict the program actually applied: with a separate egress_mode an
+// allow-list miss can be logged while the tenant's mode is ENFORCE (and the
+// reverse), so the consumer must not infer it from the tenant-wide mode. 0 is
+// what an older object leaves in the former pad, so it means "not reported".
+#define DENY_VERDICT_UNKNOWN 0
+#define DENY_VERDICT_LOGGED  1
+#define DENY_VERDICT_DROPPED 2
 
 // Per-veth policy config, keyed by the veth's host ifindex. The loader writes
 // one entry per managed container veth.
@@ -47,8 +62,46 @@ struct policy_cfg {
     __u8  mode;          // MODE_LOG_ONLY | MODE_ENFORCE
     __u8  allow_intra;   // 1 = same-tenant container↔container allowed
     __u8  allow_metadata; // 1 = may reach 169.254.169.254 (default 0 = denied)
-    __u8  pad;
+    __u8  egress_mode;   // mode of the egress allow-list decision ONLY; 0 = follow
+                         // `mode` (the former pad byte, so an older loader that
+                         // writes 0 here keeps today's behaviour). `mode` keeps
+                         // governing the cross-tenant, intra-tenant, metadata,
+                         // virtual-patch and signature checks.
+    __u32 box_ip;        // the box's own IPv4, network byte order (#2618), from a
+                         // HOST-authoritative source (the NIC's ipv4.address or the
+                         // bridge's DHCP lease), never the guest's own report.
+                         // APPENDED: an object built before it has an 8-byte value
+                         // and the loader fits the value to the map. 0 = unknown:
+                         // this veth validates nothing, so frames from it never seed
+                         // an inbound flow (they are SEEN but not VALIDATED).
+    __u8  flags;         // POLICY_FLAG_* (#2618). APPENDED after box_ip.
+    __u8  pad[3];
 };
+
+// POLICY_FLAG_VALIDATE_ONLY: the veth belongs to an instance the daemon does not
+// police (the control plane, an instance with no tenant). Its sender hook only
+// marks frames (SEEN, and VALIDATED when the source is its box_ip) and passes —
+// no accounting, no policy, no events, never a drop. Every Incus instance on the
+// bridge gets at least this entry, so a frame WITHOUT the SEEN mark can only
+// have come from the host itself or from outside the bridge.
+#define POLICY_FLAG_VALIDATE_ONLY 1
+
+// skb->mark bits the sender hook sets on every frame from a managed veth (#2618).
+// The egress hook reads them to decide whether a frame may seed an inbound flow:
+// SEEN without VALIDATED is a container frame whose source did not match its
+// veth's box_ip (a forgery, or an unknown address) and is never trusted —
+// whatever that container's mode, and however the frame reached the box (bridged
+// or routed through the host). A frame with neither bit did not pass any managed
+// veth's hook: the host's own traffic, or traffic routed in from outside.
+//
+// A box cannot forge these bits: the mark is host-side skb metadata, and the
+// kernel scrubs it when a packet crosses a netns (veth xmit). The two top bits
+// are used so that a firewall mark an operator sets in the low bits is left
+// alone; the bits are preserved across bridge forwarding and host routing within
+// the host netns. Writing skb->mark from a TC classifier needs no particular
+// kernel; the attach path (TCX) already needs 6.6.
+#define NETPOLICY_MARK_SEEN      0x40000000u
+#define NETPOLICY_MARK_VALIDATED 0x80000000u
 
 // Cloud metadata service IP (169.254.169.254). Compared against the packet's
 // network-byte-order daddr via bpf_htonl. #315 Phase D.
@@ -110,16 +163,26 @@ struct {
     __uint(max_entries, 4096);
 } ip_tenant SEC(".maps");
 
-// Stats counters the validator reads (like Phase 0). 0=seen, 1=would_deny.
+// Stats counters the validator reads (like Phase 0). 0=seen, 1=would_deny,
+// 2=inbound_miss (#2618: a reply-shaped packet the box sent whose inbound flow
+// was not in the map or had idled out — an evicted or expired entry, or a
+// box-initiated ACK-only segment; an operator signal for LRU pressure).
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
     __type(value, __u64);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);
 } stats SEC(".maps");
 
-#define STAT_SEEN       0
-#define STAT_WOULD_DENY 1
+#define STAT_SEEN         0
+#define STAT_WOULD_DENY   1
+#define STAT_INBOUND_MISS 2
+
+static __always_inline void bump(__u32 idx) {
+    __u64 *v = bpf_map_lookup_elem(&stats, &idx);
+    if (v)
+        __sync_fetch_and_add(v, 1);
+}
 
 // Per-flow accounting (issue #627). Every observed flow on a managed veth gets a
 // cumulative bytes/packets tally here, keyed by its 5-tuple, so the daemon can
@@ -167,6 +230,229 @@ struct {
     __uint(max_entries, 65536);
 } flows SEC(".maps");
 
+// --- #2618: replies to connections opened TOWARD the box -----------------------
+//
+// The sender hook judges every packet a box sends and keeps no connection
+// state, so a box's SYN-ACK, data or echo reply to a peer that connected IN is
+// judged as if the box had opened a new flow — and dropped under enforce with
+// an empty allow-list. An egress policy says what a box may OPEN, not whether
+// it may answer; this map records the flows peers open toward the box so the
+// sender hook can recognise the answers.
+//
+// Soundness rules (the naive "judge only a fresh SYN" is an exfil channel: a
+// box is root in its netns and can send ACK-flagged segments with a payload to
+// anyone, which #3070's forged-ACK guard pins):
+//   - written ONLY on the egress hook (packets toward the box), so nothing the
+//     box sends creates or keeps an entry; the trust is in the inbound
+//     direction. A validated TCP segment of any shape, a UDP datagram or an ICMP
+//     echo request creates or refreshes the entry: re-creating a TCP entry from
+//     a mid-stream segment is exactly as sound as from a SYN (the same peer
+//     could send a SYN), and it makes an LRU eviction self-healing — the peer's
+//     next segment restores the entry instead of the connection dying;
+//   - ONLY when the packet's source is validated, which the frame's skb->mark
+//     says (NETPOLICY_MARK_*): a frame that passed a managed veth's sender hook
+//     carries SEEN, and VALIDATED only when its source was that veth's own
+//     box_ip. SEEN without VALIDATED is never trusted — a neighbour cannot forge
+//     a SYN "from" an external address P and so open the target's egress to P,
+//     whatever the neighbour's own mode (its hook drops the forgery only under
+//     enforce, but it always withholds VALIDATED) and whether the frame was
+//     bridged or routed through the host. A frame with neither bit came from
+//     the host itself or from outside the bridge and is trusted, as today;
+//   - consulted on the sender hook AFTER the virtual-patch and metadata
+//     checks (both still win, fail closed), with a reply-only shape per
+//     protocol (see inbound_reply) and a per-protocol idle timeout;
+//   - a packet with IP options or any fragmentation is neither a seed nor a
+//     reply (its "ports" would be sender-chosen bytes); it falls through to the
+//     ordinary checks.
+struct inbound_key {
+    __u32 ifindex;    // the box's host veth (1:1 with a box)
+    __u32 box_ip;     // network byte order
+    __u32 peer_ip;    // network byte order
+    __u16 box_port;   // host byte order; 0 for ICMP
+    __u16 peer_port;  // host byte order; the echo id for ICMP
+    __u8  proto;
+    __u8  pad[3];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct inbound_key);
+    __type(value, __u64);               // last inbound packet, bpf_ktime_get_ns
+    __uint(max_entries, 65536);
+} inbound_flows SEC(".maps");
+
+// Idle timeouts, checked on lookup. Inbound packets alone refresh an entry, so a
+// box can only keep answering a peer while that peer keeps talking to it: on a
+// TCP connection the peer's ACKs do that for as long as the box sends. Because
+// any validated inbound TCP segment re-creates a lapsed entry, an idle shell
+// still works when the peer types again; what a lapse costs is only a server
+// push after a silence longer than this. 4h keeps stale residency in the
+// shared LRU short. UDP and ICMP echo follow conntrack's order of magnitude.
+#define INBOUND_IDLE_TCP_NS  (14400ULL * 1000000000ULL) // 4h
+#define INBOUND_IDLE_UDP_NS  (120ULL * 1000000000ULL)   // 120s
+#define INBOUND_IDLE_ICMP_NS (30ULL * 1000000000ULL)    // 30s
+
+static __always_inline __u64 inbound_idle_ns(__u8 proto) {
+    if (proto == IPPROTO_TCP)
+        return INBOUND_IDLE_TCP_NS;
+    if (proto == IPPROTO_UDP)
+        return INBOUND_IDLE_UDP_NS;
+    return INBOUND_IDLE_ICMP_NS;
+}
+
+// The ICMP echo header. <linux/icmp.h> is not usable from the bpf target (it
+// pulls <linux/if.h> and with it glibc's <sys/socket.h>), so the 8 header bytes
+// the program needs are declared here; the layout is RFC 792's.
+struct icmp_echo_hdr {
+    __u8   type;
+    __u8   code;
+    __be16 checksum;
+    __be16 id;
+    __be16 sequence;
+};
+#define ICMP_ECHOREPLY 0
+#define ICMP_ECHO      8
+
+// l4_info is the L4 header both hooks parse once. ok=0 means the L4 header is
+// not where a plain packet keeps it — the IP header carries options (ihl != 5),
+// the packet is a fragment (MF set or a non-zero offset), or the header is not
+// in the packet. Such a packet never counts as a reply and never seeds a flow
+// (its bytes at the port offsets are whatever the sender put there); ports stay
+// 0 and it falls through to the ordinary checks. The accounting and virtual-
+// patch paths keep their historical ihl=5 read (a follow-up issue tracks that).
+struct l4_info {
+    __u16 sport;     // host byte order (TCP/UDP), else 0
+    __u16 dport;
+    __u16 icmp_id;   // host byte order, echo request/reply only
+    __u8  ok;
+    __u8  tcp_syn;
+    __u8  tcp_ack;
+    __u8  icmp_type;
+    __u8  icmp_echo; // 1 = type is echo request or echo reply (icmp_id valid)
+};
+
+// IP_FRAG_MASK covers the MF flag and the 13-bit fragment offset (DF is fine).
+#define IP_FRAG_MASK 0x3FFF
+
+static __always_inline void parse_l4(struct iphdr *ip, void *data_end, struct l4_info *l4) {
+    if (ip->ihl != 5 || (bpf_ntohs(ip->frag_off) & IP_FRAG_MASK))
+        return; // options or a fragment: not parsed, fails closed
+    if (ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+        if ((void *)(tcp + 1) <= data_end) {
+            l4->ok = 1;
+            l4->sport = bpf_ntohs(tcp->source);
+            l4->dport = bpf_ntohs(tcp->dest);
+            l4->tcp_syn = tcp->syn;
+            l4->tcp_ack = tcp->ack;
+        }
+    } else if (ip->protocol == IPPROTO_UDP) {
+        struct udphdr *udp = (void *)ip + sizeof(*ip);
+        if ((void *)(udp + 1) <= data_end) {
+            l4->ok = 1;
+            l4->sport = bpf_ntohs(udp->source);
+            l4->dport = bpf_ntohs(udp->dest);
+        }
+    } else if (ip->protocol == IPPROTO_ICMP) {
+        struct icmp_echo_hdr *icmp = (void *)ip + sizeof(*ip);
+        if ((void *)(icmp + 1) <= data_end) {
+            l4->ok = 1;
+            l4->icmp_type = icmp->type;
+            if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+                l4->icmp_echo = 1;
+                l4->icmp_id = bpf_ntohs(icmp->id);
+            }
+        }
+    }
+}
+
+// track_inbound runs on the egress hook for a packet toward the box (src=peer,
+// dst=box): creates or refreshes the flow's entry — only when the source is
+// validated (see the rules above).
+static __always_inline void track_inbound(struct __sk_buff *skb, __u32 ifindex,
+                                          __u32 peer_ip, __u32 box_ip,
+                                          __u8 proto, const struct l4_info *l4) {
+    if (!l4->ok)
+        return;
+    // Source validation, carried from the sender hook in the mark: a frame from
+    // a managed veth (SEEN) is trusted only if that hook validated its source
+    // (VALIDATED). A frame with neither bit came from the host or from outside
+    // the bridge.
+    __u32 mark = skb->mark;
+    if ((mark & NETPOLICY_MARK_SEEN) && !(mark & NETPOLICY_MARK_VALIDATED))
+        return;
+
+    struct inbound_key k = {};
+    k.ifindex = ifindex;
+    k.box_ip = box_ip;
+    k.peer_ip = peer_ip;
+    k.proto = proto;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        k.box_port = l4->dport;
+        k.peer_port = l4->sport;
+    } else if (proto == IPPROTO_ICMP) {
+        if (!l4->icmp_echo || l4->icmp_type != ICMP_ECHO)
+            return; // only an echo request creates or refreshes; errors never do
+        k.peer_port = l4->icmp_id;
+    } else {
+        return;
+    }
+
+    __u64 now = bpf_ktime_get_ns();
+    __u64 *seen = bpf_map_lookup_elem(&inbound_flows, &k);
+    if (seen) {
+        *seen = now;
+        return;
+    }
+    bpf_map_update_elem(&inbound_flows, &k, &now, BPF_ANY);
+}
+
+// inbound_reply runs on the sender hook for a packet the box sends (src=box,
+// dst=peer) and reports whether it answers a flow a validated peer opened: the
+// reverse tuple is in inbound_flows, within its idle timeout, and the packet has
+// a reply shape — TCP: anything but a SYN without ACK; UDP: the same 5-tuple;
+// ICMP: an echo reply carrying the request's id (ICMP errors stay judged). Never
+// writes the map.
+static __always_inline int inbound_reply(__u32 ifindex, __u32 box_ip, __u32 peer_ip,
+                                         __u8 proto, const struct l4_info *l4) {
+    if (!l4->ok)
+        return 0;
+    struct inbound_key k = {};
+    k.ifindex = ifindex;
+    k.box_ip = box_ip;
+    k.peer_ip = peer_ip;
+    k.proto = proto;
+    if (proto == IPPROTO_TCP) {
+        if (l4->tcp_syn && !l4->tcp_ack)
+            return 0; // a fresh SYN opens a flow; it is never a reply
+        k.box_port = l4->sport;
+        k.peer_port = l4->dport;
+    } else if (proto == IPPROTO_UDP) {
+        k.box_port = l4->sport;
+        k.peer_port = l4->dport;
+    } else if (proto == IPPROTO_ICMP) {
+        if (!l4->icmp_echo || l4->icmp_type != ICMP_ECHOREPLY)
+            return 0;
+        k.peer_port = l4->icmp_id;
+    } else {
+        return 0;
+    }
+    __u64 *seen = bpf_map_lookup_elem(&inbound_flows, &k);
+    if (!seen) {
+        bump(STAT_INBOUND_MISS); // evicted, never seeded, or a box-initiated non-SYN
+        return 0;
+    }
+    // Read the stamp before the clock: a refresh on another CPU between the two
+    // reads could otherwise make now - last underflow and drop a valid reply.
+    __u64 last = *seen;
+    __u64 now = bpf_ktime_get_ns();
+    if (now > last && now - last > inbound_idle_ns(proto)) {
+        bump(STAT_INBOUND_MISS); // idled out; the peer's next packet re-creates it
+        return 0;
+    }
+    return 1;
+}
+
 // Perf event ring for denied flows; the daemon's consumer turns each into an
 // audit row (action=net_deny).
 struct {
@@ -186,7 +472,8 @@ struct deny_event {
     __u8  proto;
     __u8  reason;        // DENY_REASON_* (was pad; size unchanged) #660
     __u16 sig_id;        // matched signature id when reason==SIGNATURE, else 0 (#661)
-    __u16 pad2;
+    __u8  verdict;       // DENY_VERDICT_* actually applied (was pad2's low byte; size unchanged) #2970
+    __u8  pad2;
 };
 
 // --- Tier 2 (#661): cleartext exploit-signature scanning --------------------
@@ -330,12 +617,6 @@ static __always_inline __u32 scan_inbound(struct __sk_buff *skb, __u32 off, __u3
     return ctx.match_id;
 }
 
-static __always_inline void bump(__u32 idx) {
-    __u64 *v = bpf_map_lookup_elem(&stats, &idx);
-    if (v)
-        __sync_fetch_and_add(v, 1);
-}
-
 // account_flow tallies one packet against its 5-tuple in the flows map (#627).
 // First packet of a flow creates the entry; subsequent packets bump the
 // cumulative byte/packet counters and the last-seen timestamp.
@@ -425,33 +706,50 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     if (!cfg)
         return TC_ACT_OK; // unmanaged veth — not ours to police.
 
-    bump(STAT_SEEN);
-
     __u32 saddr = ip->saddr;
     __u32 daddr = ip->daddr;
 
-    // Parse L4 ports once (host byte order), bounds-checked for the verifier.
-    // Used both for per-flow accounting (#627) and the deny audit event below.
-    // ICMP and other L4 protocols carry 0 ports. NOTE: assumes no IP options
-    // (ihl=5), same as the deny path historically did.
-    __u16 sport = 0, dport = 0;
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        if ((void *)(tcp + 1) <= data_end) {
-            sport = bpf_ntohs(tcp->source);
-            dport = bpf_ntohs(tcp->dest);
-        }
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        if ((void *)(udp + 1) <= data_end) {
-            sport = bpf_ntohs(udp->source);
-            dport = bpf_ntohs(udp->dest);
-        }
-    }
+    // Source validation (#2618), first and for EVERY managed veth whatever its
+    // mode or flags: stamp the frame so the receiving veth's egress hook can tell
+    // a validated container frame from a forged one. SEEN says "a managed veth
+    // sent this"; VALIDATED says "with its own host-assigned address". A veth
+    // with no known address never validates. The mark is cleared of VALIDATED
+    // first so nothing upstream could have pre-set it (the kernel scrubs the
+    // mark on the netns crossing, so the box itself cannot).
+    __u32 mark = (skb->mark & ~NETPOLICY_MARK_VALIDATED) | NETPOLICY_MARK_SEEN;
+    if (cfg->box_ip && saddr == cfg->box_ip)
+        mark |= NETPOLICY_MARK_VALIDATED;
+    skb->mark = mark;
+
+    // A validate-only veth (control plane, untenanted instance): marked above,
+    // and nothing else — not accounted, not judged, never dropped.
+    if (cfg->flags & POLICY_FLAG_VALIDATE_ONLY)
+        return TC_ACT_OK;
+
+    bump(STAT_SEEN);
+
+    // Parse L4 once (ports in host byte order, TCP flags, ICMP echo id),
+    // bounds-checked for the verifier. Used for per-flow accounting (#627), the
+    // reply check (#2618) and the deny audit event below. ICMP and other L4
+    // protocols carry 0 ports; so does a packet with IP options or a fragment
+    // (parse_l4 leaves it unparsed, which the accounting and virtual-patch paths
+    // historically also did by assuming ihl=5).
+    struct l4_info l4 = {};
+    parse_l4(ip, data_end, &l4);
+    __u16 sport = l4.sport, dport = l4.dport;
 
     // Usage accounting for the traffic view (#627): tally EVERY flow, allowed or
     // not. Done before the policy decision so a would-deny flow is still counted.
     account_flow(skb, ifindex, saddr, daddr, sport, dport, ip->protocol);
+
+    // A managed box may only send with its own address. A forged source is never
+    // allowed by anything below — not the allow-list, not a reply — because a
+    // neighbour forging another box's or an external address is how the
+    // inbound-flow map could be seeded with lies. 0.0.0.0 is exempt from the
+    // DENY (DHCP discover/request before the box has an address) but is not
+    // VALIDATED above. Only when the loader told us the address; `mode` decides
+    // the verdict (the mark above is withheld either way).
+    int spoofed = cfg->box_ip && saddr != cfg->box_ip && saddr != 0;
 
     // Virtual-patch deny rules (#660) override EVERYTHING: a destination that
     // matches a tenant's deny rule (optionally scoped to dport/proto) is blocked
@@ -475,8 +773,14 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     // Decide whether this flow is allowed under the sender's policy.
     int allowed = 0;
+    // Which mode decides a would-deny: `mode` for every check except a miss on
+    // the egress allow-list, which uses egress_mode (falling back to `mode`).
+    __u8 deny_mode = cfg->mode;
 
-    if (vpatch_deny) {
+    if (spoofed) {
+        allowed = 0; // forged source — nothing below may allow it (#2618).
+        deny_reason = DENY_REASON_SPOOFED_SOURCE;
+    } else if (vpatch_deny) {
         allowed = 0; // explicit virtual-patch deny — skip the allow checks entirely.
     } else
     // Cloud metadata service is deny-by-default and overrides the egress
@@ -485,6 +789,12 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     // allow can't win.
     if (daddr == bpf_htonl(METADATA_IPV4)) {
         allowed = cfg->allow_metadata ? 1 : 0;
+    } else if (inbound_reply(ifindex, saddr, daddr, ip->protocol, &l4)) {
+        // An answer on a flow a validated peer opened toward the box (#2618):
+        // SYN-ACK, data, FIN, RST, a UDP answer, an echo reply. After the
+        // virtual-patch and metadata checks (they win), before the cross-tenant,
+        // intra-tenant and allow-list checks (which judge what the box OPENS).
+        allowed = 1;
     } else {
         __u32 *dst_tenant = bpf_map_lookup_elem(&ip_tenant, &daddr);
         if (dst_tenant) {
@@ -501,6 +811,8 @@ int netpolicy_ingress(struct __sk_buff *skb) {
             k.addr = daddr;
             if (bpf_map_lookup_elem(&egress_cidr, &k))
                 allowed = 1;
+            else if (cfg->egress_mode)
+                deny_mode = cfg->egress_mode; // allow-list miss: its own mode
         }
     }
 
@@ -518,18 +830,22 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     ev.proto = ip->protocol;
     ev.dport = dport; // parsed once above
     ev.reason = deny_reason; // policy miss vs. explicit virtual-patch deny (#660)
+    // The verdict applied below, so a split mode/egress_mode is audited from
+    // the packet's real fate rather than the tenant-wide mode (#2970).
+    ev.verdict = (deny_mode == MODE_ENFORCE) ? DENY_VERDICT_DROPPED : DENY_VERDICT_LOGGED;
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 
-    if (cfg->mode == MODE_ENFORCE)
+    if (deny_mode == MODE_ENFORCE)
         return TC_ACT_SHOT; // Phase B path; Phase A never sets ENFORCE here.
     return TC_ACT_OK;
 }
 
 // netpolicy_egress runs on the container veth's TC_EGRESS hook — packets the
 // host transmits TOWARD the container, i.e. the container's RECEIVE direction
-// (#631). It does accounting ONLY (no policy: enforcement happens on the
-// sender's egress, which the ingress hook above already sees); it always passes.
+// (#631). It does accounting, the Tier 2 signature scan (#661) and the
+// inbound-flow bookkeeping (#2618); enforcement of what the box sends happens on
+// the sender's hook above. It passes everything but a signature match.
 //
 // The reply packet's tuple is the mirror of the request: src=peer, dst=container.
 // To land the rx bytes on the same flow entry the request created, rebuild the
@@ -556,21 +872,12 @@ int netpolicy_egress(struct __sk_buff *skb) {
     struct policy_cfg *cfg = bpf_map_lookup_elem(&veth_policy, &ifindex);
     if (!cfg)
         return TC_ACT_OK;
+    if (cfg->flags & POLICY_FLAG_VALIDATE_ONLY)
+        return TC_ACT_OK; // not policed: no accounting, scan or inbound tracking
 
-    __u16 sport = 0, dport = 0;
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        if ((void *)(tcp + 1) <= data_end) {
-            sport = bpf_ntohs(tcp->source);
-            dport = bpf_ntohs(tcp->dest);
-        }
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        if ((void *)(udp + 1) <= data_end) {
-            sport = bpf_ntohs(udp->source);
-            dport = bpf_ntohs(udp->dest);
-        }
-    }
+    struct l4_info l4 = {};
+    parse_l4(ip, data_end, &l4);
+    __u16 sport = l4.sport, dport = l4.dport;
 
     // Swap to request orientation: container is the reply's destination.
     account_reply(skb, ifindex,
@@ -602,6 +909,7 @@ int netpolicy_egress(struct __sk_buff *skb) {
                     ev.dport = dport; // the container's service port (tcp->dest)
                     ev.reason = DENY_REASON_SIGNATURE;
                     ev.sig_id = (__u16)sig;
+                    ev.verdict = (cfg->mode == MODE_ENFORCE) ? DENY_VERDICT_DROPPED : DENY_VERDICT_LOGGED;
                     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
                     if (cfg->mode == MODE_ENFORCE)
                         return TC_ACT_SHOT; // drop the exploit before it reaches the service
@@ -609,6 +917,14 @@ int netpolicy_egress(struct __sk_buff *skb) {
             }
         }
     }
+
+    // #2618: remember the flow this packet opens or continues toward the box, so
+    // the sender hook can recognise the box's answers. After the signature scan:
+    // a dropped exploit does not count as the peer still talking.
+    track_inbound(skb, ifindex,
+                  ip->saddr,  // peer
+                  ip->daddr,  // the box
+                  ip->protocol, &l4);
     return TC_ACT_OK;
 }
 

@@ -94,9 +94,25 @@ type fakeSSHServer struct {
 	// immediately. authAttempts counts valid-key auth attempts seen.
 	rejectFirstN int32
 	authAttempts int32
+	// userCA, when set, switches the server to certificate-only auth: it
+	// accepts a user certificate signed by this CA (principal-checked, like
+	// the sentinel's sshpiper trusted_user_ca_keys) and rejects every plain
+	// key, authKey included.
+	userCA ssh.PublicKey
 }
 
 func newFakeSSHServer(t *testing.T, authKey ssh.PublicKey, stdout, stderr string, exitCode uint32) *fakeSSHServer {
+	t.Helper()
+	return startFakeSSHServer(t, &fakeSSHServer{authKey: authKey, stdout: stdout, stderr: stderr, exitCode: exitCode})
+}
+
+// newFakeCertSSHServer starts a certificate-only server trusting userCA.
+func newFakeCertSSHServer(t *testing.T, userCA ssh.PublicKey, stdout string) *fakeSSHServer {
+	t.Helper()
+	return startFakeSSHServer(t, &fakeSSHServer{userCA: userCA, stdout: stdout})
+}
+
+func startFakeSSHServer(t *testing.T, s *fakeSSHServer) *fakeSSHServer {
 	t.Helper()
 	_, hostPEM, err := generateEphemeralSSHKey("fakehost")
 	if err != nil {
@@ -110,7 +126,7 @@ func newFakeSSHServer(t *testing.T, authKey ssh.PublicKey, stdout, stderr string
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeSSHServer{ln: ln, hostKey: hostSigner, authKey: authKey, stdout: stdout, stderr: stderr, exitCode: exitCode}
+	s.ln, s.hostKey = ln, hostSigner
 	s.wg.Add(1)
 	go s.serve()
 	return s
@@ -126,7 +142,16 @@ func (s *fakeSSHServer) close() {
 func (s *fakeSSHServer) serve() {
 	defer s.wg.Done()
 	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if s.userCA != nil {
+				checker := ssh.CertChecker{
+					IsUserAuthority: func(auth ssh.PublicKey) bool {
+						return string(auth.Marshal()) == string(s.userCA.Marshal())
+					},
+				}
+				// A plain key falls through to the nil UserKeyFallback → rejected.
+				return checker.Authenticate(conn, key)
+			}
 			if string(key.Marshal()) != string(s.authKey.Marshal()) {
 				return nil, errUnauthorizedKey
 			}

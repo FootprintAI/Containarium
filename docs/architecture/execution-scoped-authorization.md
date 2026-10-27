@@ -24,10 +24,15 @@ The pieces that exist today:
 | Per-run seed dir / workspace | `seedDirFor(runID)`, `workspaceDirFor(runID)` (#1860) | filesystem |
 | Per-run journal | `/var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl` (#2095) | filesystem, read back by `TailRunLog` (#2096) |
 | Run-claim enforcement on delegation | `taskRunID` in `SendAgentTask`, run-bound read check in `TailRunLog` (#2112) | `run_id` claim vs. request `run_id` |
+| No delegation out of a run | `runForbiddenScopes` strips `tokens:delegate` at mint; `ExchangeDelegatedToken` refuses a run-bound caller (#2069) | a run token cannot obtain a token without its `run_id` |
 
 The rule those add up to: **a run-bound caller may only name its own run.** An
 absent `run_id` on a run-bound caller's request is stamped from the claim; a
-different one is refused with `PermissionDenied`.
+different one is refused with `PermissionDenied`. Every one of these checks
+applies only to a token that carries a `run_id`, so the last row is what keeps
+them load-bearing: a run token cannot exchange itself for a `run_id`-less one
+(#2069, `TestExchangeDelegatedToken_RunTokenCannotMintRunlessToken`,
+`TestMintedAgentTokenScopes_TokensDelegateNeverGranted`).
 
 ## D1 (2026-09-28): the in-box A2A server trusts only the daemon
 
@@ -203,14 +208,6 @@ the manual place to watch the would-deny events on a backend.
 
 ## Not closed here
 
-- **#2069 — delegation out of a run.** `ExchangeDelegatedToken` lets a token
-  with `tokens:delegate` mint a token with **no** `run_id`, and every run guard
-  (`taskRunID` included) only applies `if runID != ""`. D1 makes the daemon the
-  only way to post a task, which makes #2112's claim check load-bearing — and
-  therefore makes #2069 the remaining way to walk around it: a box that could
-  mint a `run_id`-less token could ask the daemon to deliver a task under
-  someone else's `run_id`. No shipped skill grants `tokens:delegate`, so it is
-  not reachable today; the fix belongs in #2069 (`runForbiddenScopes`), not here.
 - **A box naming another run on itself.** A box knows its own secret, so it can
   post to its own A2A port under any `run_id`. `TailRunLog` bounds the damage:
   it only reads the journal of a box that is a member of the named run. Closing

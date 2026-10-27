@@ -6,10 +6,11 @@ import { CodexEngine } from "./codex.js";
 
 const cfg: EngineConfig = { model: "", systemPrompt: "persona", agentBoxCommand: "agent-box", agentBoxArgs: [], maxTurns: 3 };
 
-function fakeThread(events: ThreadEvent[], seen?: string[]) {
+function fakeThread(events: ThreadEvent[], seen?: string[], seenOptions?: unknown[]) {
   return () => ({
-    async runStreamed(input: string) {
+    async runStreamed(input: string, turnOptions?: unknown) {
       seen?.push(input);
+      seenOptions?.push(turnOptions);
       return {
         events: (async function* () {
           for (const e of events) yield e;
@@ -71,11 +72,101 @@ describe("CodexEngine journal", () => {
       { kind: "tool_use", tool: "mcp__s__t", input: "{}" },
       { kind: "tool_result", tool: "mcp__s__t", text: "denied" },
       { kind: "error", text: "soft failure" },
+      { kind: "status", text: "model ended without a final message: finish_reason=turn_completed" },
     ]);
+  });
+
+  // #2513: the Codex SDK reports no stop reason, so the ending row names what
+  // the stream did carry — whether turn.completed arrived — plus a bounded
+  // preview of the final agent message.
+  it("names the ending when the turn completes after file edits with no final message", async () => {
+    const j = new CaptureJournal();
+    await new CodexEngine(
+      fakeThread([
+        { type: "item.completed", item: { id: "1", type: "file_change", changes: [{ path: "text/slug.go", kind: "add" }], status: "completed" } },
+        { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } },
+      ]),
+    ).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({ kind: "status", text: "model ended without a final message: finish_reason=turn_completed" });
+  });
+
+  it("names a stream that ends without turn.completed, with a truncated final message", async () => {
+    const j = new CaptureJournal();
+    const final = '{"files":[' + "y".repeat(300);
+    await new CodexEngine(fakeThread([{ type: "item.completed", item: { id: "1", type: "agent_message", text: final } }])).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: `model ended abnormally after its final message: finish_reason=no_turn_completed final_message=${JSON.stringify(final.slice(0, 200))} final_message_chars=${final.length}`,
+    });
   });
 
   it("throws on turn.failed, like thread.run()", async () => {
     const engine = new CodexEngine(fakeThread([{ type: "turn.failed", error: { message: "quota" } }]));
     await expect(engine.run("task", cfg, new CaptureJournal())).rejects.toThrow("quota");
+  });
+});
+
+// #2002: the Codex SDK's native schema mechanism is the turn's outputSchema
+// (codex exec --output-schema); the skill's agent_card.output_schema_json is
+// handed to it so the final agent message is shaped by the provider, not by
+// prose.
+describe("CodexEngine output schema", () => {
+  const schema = { type: "object", properties: { files: { type: "array" } }, required: ["files"] };
+  const done: ThreadEvent[] = [
+    { type: "item.completed", item: { id: "1", type: "agent_message", text: '{"files":[]}' } },
+    { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } },
+  ];
+
+  it("passes the schema to the turn as outputSchema", async () => {
+    const seenOptions: unknown[] = [];
+    const engine = new CodexEngine(fakeThread(done, undefined, seenOptions));
+    const res = await engine.run("task", { ...cfg, outputSchema: schema }, new CaptureJournal());
+    expect(seenOptions).toEqual([{ outputSchema: schema }]);
+    expect(res.outputJson).toBe('{"files":[]}');
+  });
+
+  it("passes no turn options when the skill declares no schema", async () => {
+    const seenOptions: unknown[] = [];
+    await new CodexEngine(fakeThread(done, undefined, seenOptions)).run("task", cfg, new CaptureJournal());
+    expect(seenOptions).toEqual([undefined]);
+  });
+});
+
+// #2513 item 2: a follow-up continues the same thread, so the model answers
+// the re-prompt with the turn it just had in context.
+describe("CodexEngine follow-up", () => {
+  const usage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
+
+  it("sends the follow-up on the same thread and returns its final message", async () => {
+    const seen: string[] = [];
+    let started = 0;
+    const turns: ThreadEvent[][] = [
+      [
+        { type: "item.completed", item: { id: "1", type: "file_change", changes: [{ path: "text/slug.go", kind: "add" }], status: "completed" } },
+        { type: "turn.completed", usage },
+      ],
+      [
+        { type: "item.completed", item: { id: "2", type: "agent_message", text: ' {"files":["text/slug.go"]} ' } },
+        { type: "turn.completed", usage },
+      ],
+    ];
+    const engine = new CodexEngine(() => {
+      started++;
+      return {
+        async runStreamed(input: string) {
+          seen.push(input);
+          const events = turns.shift() ?? [];
+          return { events: (async function* () { for (const e of events) yield e; })() };
+        },
+      };
+    });
+    const j = new CaptureJournal();
+    const first = await engine.run("task", cfg, j);
+    expect(first.outputJson).toBe("");
+    const second = await first.followUp!("give me the JSON", j);
+    expect(second.outputJson).toBe('{"files":["text/slug.go"]}');
+    expect(started).toBe(1);
+    expect(seen).toEqual(["persona\n\n---\nTask:\ntask", "give me the JSON"]);
+    expect(j.entries.at(-1)).toEqual({ kind: "assistant", text: ' {"files":["text/slug.go"]} ' });
   });
 });

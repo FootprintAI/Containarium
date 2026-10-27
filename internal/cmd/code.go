@@ -15,6 +15,7 @@ import (
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/gatewayprovider"
 	"github.com/footprintai/containarium/internal/sshkey"
+	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -92,6 +93,8 @@ var (
 
 	// `code install` only (#2030).
 	codeBootstrapURL      string
+	codeNoSDLCSkills      bool
+	codeSkillSets         string
 	codeRelease           string
 	codeClaudeCodeVersion string
 
@@ -103,6 +106,7 @@ var (
 	codeProviderBaseURL string
 	codeModel           string
 	codePiVersion       string
+	codeCodexVersion    string
 )
 
 // Test seams. Production never reassigns these; they exist so the install
@@ -137,6 +141,10 @@ before this flag existed behaves exactly as it did.
   --engine claude   Claude Code (the default)
   --engine pi       pi (https://pi.dev), which runs inside the box — see
                     docs/integrations/pi.md
+  --engine codex    OpenAI's Codex CLI (https://developers.openai.com/codex/cli),
+                    which also runs inside the box — see docs/integrations/codex.md.
+                    --credential gateway is not supported for codex yet; use
+                    --credential secret.
 
 --credential picks where the engine's model credential comes from; it defaults
 to secret, again the pre-existing behaviour.
@@ -182,7 +190,9 @@ Examples:
       --provider kafeido --model kafeido-coder
   containarium code install alice --engine pi --credential secret \
       --secret-name OPENAI_API_KEY --provider-base-url https://api.openai.com/v1 \
-      --model gpt-5`,
+      --model gpt-5
+  containarium code install alice --engine codex --credential secret \
+      --secret-name CODEX_API_KEY`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeInstall,
 }
@@ -215,6 +225,11 @@ func init() {
 
 	codeInstallCmd.Flags().StringVar(&codeBootstrapURL, "bootstrap-url", "",
 		"URL of a .tar.gz bundle to apply after the toolchain lands — unpacked into a temp dir on the box and its apply.sh run as the box user (skipped when empty)")
+	codeInstallCmd.Flags().BoolVar(&codeNoSDLCSkills, "no-sdlc-skills", false,
+		"deprecated alias for --skill-sets none")
+	_ = codeInstallCmd.Flags().MarkDeprecated("no-sdlc-skills", "use --skill-sets none")
+	codeInstallCmd.Flags().StringVar(&codeSkillSets, "skill-sets", "",
+		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -239,10 +254,14 @@ func init() {
 		"model id to pin runs to; also the gateway token's allowed_models ceiling")
 	codeInstallCmd.Flags().StringVar(&codePiVersion, "pi-version", engine.PiVersion,
 		"pin the pi version installed with --engine pi")
+	codeInstallCmd.Flags().StringVar(&codeCodexVersion, "codex-version", "",
+		"pin the Codex CLI version installed with --engine codex (default: whatever npm considers current)")
 
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
+	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",
+		"resume this specific session id instead of starting a fresh one (`claude --resume <id>`, `pi --session <id>`) — mutually exclusive with --continue; also becomes this run's --name unless --name is given explicitly")
 	codeRunCmd.Flags().StringVar(&codeRunTokenTTL, "token-ttl", "",
 		"lifetime of the gateway token minted for this run (e.g. 2h); capped server-side. Default 24h")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
@@ -255,6 +274,14 @@ func init() {
 func codeRunName() string {
 	if codeName != "" {
 		return codeName
+	}
+	// #2193: resuming a specific session with no explicit --name uses the
+	// session id as the run name too — the same name attach/status/stop
+	// already need to find this run by, and what the daemon's StartBoxRun
+	// does for the same reason (a resumed session's collision check is keyed
+	// on its own id, not on the shared "code" default every fresh run uses).
+	if codeRunSession != "" {
+		return codeRunSession
 	}
 	return defaultCodeRunName
 }
@@ -284,7 +311,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 	if !connectcore.IsRunning(c.State) {
-		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium start %s`)",
+		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium wake %s`)",
 			box, connectcore.PrettyState(c.State), box)
 	}
 	target, err := connectcore.BuildTarget(c, codeUser, codeHost, codePort)
@@ -449,6 +476,22 @@ func defaultAgentBoxRelease() string {
 	return v
 }
 
+// codeInstallSkillSets resolves --skill-sets and its deprecated alias
+// --no-sdlc-skills (= none) into one validated selection (#3048).
+func codeInstallSkillSets() (sdlcskills.SkillSets, error) {
+	sets, err := sdlcskills.ParseSkillSets(codeSkillSets)
+	if err != nil {
+		return sdlcskills.SkillSets{}, fmt.Errorf("--skill-sets: %w", err)
+	}
+	if codeNoSDLCSkills {
+		if strings.TrimSpace(codeSkillSets) != "" && !sets.None() {
+			return sdlcskills.SkillSets{}, fmt.Errorf("--no-sdlc-skills means --skill-sets none; it conflicts with --skill-sets %q", codeSkillSets)
+		}
+		return sdlcskills.ParseSkillSets("none")
+	}
+	return sets, nil
+}
+
 func codeInstallRelease() (string, error) {
 	r := strings.TrimSpace(codeRelease)
 	if r == "" {
@@ -516,6 +559,45 @@ else
   echo "WARNING: no mcp-server-` + agentBoxAssetArch + ` in that release; runs bound to a tracker connection will have no tracker tools" >&2
 fi
 echo "agent-box installed at $HOME/.local/bin/agent-box"`
+}
+
+// sdlcSkillsInstallScript fetches the release's install-sdlc-skills.sh and runs
+// it as the box user (#2065), landing the pinned open-sdlc-skills role skills in
+// ~/.claude/skills. The release tag was already validated against
+// releaseTagPattern, so it is safe inside the double-quoted URL.
+//
+// Only a 404 means "this release predates the skills asset" and is skipped with
+// a message; any other fetch failure fails the install, so a network blip never
+// silently ships a box with no skills. A hash mismatch or unsafe archive is the
+// installer's own failure and propagates.
+//
+// sets is a validated selection (sdlcskills.SkillSets): its charset cannot carry
+// shell syntax, so it is safe inside the double quotes too. An installer that
+// predates SKILL_SETS would ignore it and install everything, so a narrowed
+// selection against one fails instead.
+func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
+	return `set -e
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
+case "$code" in
+  200)
+    if ! grep -q '^# skill-sets: v1$' "$tmp"; then
+      # An installer that predates skill sets would ignore SKILL_SETS and install everything.
+      case "` + sets.String() + `" in
+        all) ;;
+        none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
+        *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+      esac
+    fi
+    SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
+  404)
+    case "` + sets.String() + `" in
+      all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+      *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
+    esac ;;
+  *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
+esac`
 }
 
 // releaseTagPattern is what may be interpolated into the asset URL above.
@@ -611,6 +693,10 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	skillSets, err := codeInstallSkillSets()
+	if err != nil {
+		return err
+	}
 	mint, err := codeInstallPreflight(ctx, box, plan, diag)
 	if err != nil {
 		return err
@@ -632,6 +718,15 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("install agent-box (%s) on %q: %w", release, box, err)
 	}
 	fmt.Fprintf(diag, "✓ agent-box installed on %s (from %s)\n", box, release)
+
+	// The role skills are Claude Code skills (~/.claude/skills), so only the
+	// Claude engine gets them (#2065).
+	if plan.engine.Name() == engine.NameClaude {
+		if _, err := run(sdlcSkillsInstallScript(release, skillSets)); err != nil {
+			return fmt.Errorf("install SDLC skills (%s) on %q: %w", release, box, err)
+		}
+		fmt.Fprintf(diag, "✓ SDLC skills (%s) installed on %s (from %s)\n", skillSets, box, release)
+	}
 
 	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
 		if _, err := run(bootstrapScript(url)); err != nil {

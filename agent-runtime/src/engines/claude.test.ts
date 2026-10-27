@@ -7,9 +7,11 @@ import { ClaudeEngine, type ClaudeQuery } from "./claude.js";
 const cfg: EngineConfig = { model: "", systemPrompt: "", agentBoxCommand: "agent-box", agentBoxArgs: [], maxTurns: 3 };
 
 // Only the fields the engine reads; the SDK's full message types carry ids and
-// usage the journal never looks at.
-function fakeQuery(messages: unknown[]): ClaudeQuery {
-  return async function* () {
+// usage the journal never looks at. `seen` captures each query() params
+// object, for tests that assert what the engine asked the SDK for.
+function fakeQuery(messages: unknown[], seen?: Parameters<ClaudeQuery>[0][]): ClaudeQuery {
+  return async function* (params) {
+    seen?.push(params);
     for (const m of messages) yield m as SDKMessage;
   };
 }
@@ -39,6 +41,7 @@ describe("ClaudeEngine journal", () => {
     ]);
     expect(res.outputJson).toBe('Looking.{"files":1}');
     expect(res.usage).toEqual({ output_tokens: 3 });
+    expect(res.authenticationSucceeded).toBe(true);
   });
 
   it("journals a string tool_result and an unknown tool id", async () => {
@@ -47,7 +50,10 @@ describe("ClaudeEngine journal", () => {
       fakeQuery([user({ type: "tool_result", tool_use_id: "nope", content: "plain" }), { type: "result", subtype: "success", is_error: false }]),
     );
     await engine.run("task", cfg, j);
-    expect(j.entries).toEqual([{ kind: "tool_result", tool: "unknown", text: "plain" }]);
+    expect(j.entries).toEqual([
+      { kind: "tool_result", tool: "unknown", text: "plain" },
+      { kind: "status", text: "model ended without a final message: stop_reason=unknown result=success" },
+    ]);
   });
 
   it("journals an error result", async () => {
@@ -55,7 +61,341 @@ describe("ClaudeEngine journal", () => {
     const engine = new ClaudeEngine(
       fakeQuery([{ type: "result", subtype: "error_max_turns", is_error: true, errors: ["hit the turn cap"] }]),
     );
+    const res = await engine.run("task", cfg, j);
+    expect(res.authenticationSucceeded).toBe(false);
+    expect(j.entries).toEqual([
+      { kind: "error", text: "error_max_turns: hit the turn cap" },
+      { kind: "status", text: "model ended without a final message: stop_reason=unknown result=error_max_turns" },
+    ]);
+  });
+});
+
+// #2513: a run that edited files and stopped without its final JSON left only
+// tool rows behind. The journal now names how the model's turn ended — the
+// SDK's stop reason, terminal reason and result subtype — plus a bounded
+// preview of the final message, whenever there is no final message or the
+// ending was anything but an ordinary end_turn.
+describe("ClaudeEngine ending row", () => {
+  it("names the stop reason when the run edits files and ends without a final message", async () => {
+    const j = new CaptureJournal();
+    const engine = new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "text", text: "Editing the file." }),
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__write_file", input: { path: "text/slug.go" } }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: [{ type: "text", text: "bytes_written: 649" }] }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", terminal_reason: "completed" },
+      ]),
+    );
     await engine.run("task", cfg, j);
-    expect(j.entries).toEqual([{ kind: "error", text: "error_max_turns: hit the turn cap" }]);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: "model ended without a final message: stop_reason=end_turn terminal_reason=completed result=success",
+    });
+  });
+
+  it("names the stop reason and a truncated final message when the model is cut off", async () => {
+    const j = new CaptureJournal();
+    const final = '{"files":[{"path":"text/slug.go","content":"' + "x".repeat(500);
+    const engine = new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__read_file", input: {} }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: "ok" }),
+        assistant({ type: "text", text: final }),
+        { type: "result", subtype: "success", is_error: false, result: final, stop_reason: "max_tokens" },
+      ]),
+    );
+    await engine.run("task", cfg, j);
+    const row = j.entries.at(-1);
+    expect(row).toEqual({
+      kind: "status",
+      text: `model ended abnormally after its final message: stop_reason=max_tokens result=success final_message=${JSON.stringify(final.slice(0, 200))} final_message_chars=${final.length}`,
+    });
+    // Bounded: the row never carries the whole message.
+    expect(row && "text" in row ? row.text.length : Infinity).toBeLessThan(400);
+  });
+
+  it("names a run that ends with no result message at all", async () => {
+    const j = new CaptureJournal();
+    await new ClaudeEngine(fakeQuery([assistant({ type: "text", text: "half" })])).run("task", cfg, j);
+    expect(j.entries.at(-1)).toEqual({
+      kind: "status",
+      text: 'model ended abnormally after its final message: stop_reason=unknown result=none final_message="half"',
+    });
+  });
+
+  it("writes no ending row for an ordinary end_turn with a final message", async () => {
+    const j = new CaptureJournal();
+    await new ClaudeEngine(
+      fakeQuery([assistant({ type: "text", text: '{"files":[]}' }), { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", terminal_reason: "completed" }]),
+    ).run("task", cfg, j);
+    expect(j.entries).toEqual([{ kind: "assistant", text: '{"files":[]}' }]);
+  });
+});
+
+// #2002: a skill's agent_card.output_schema_json is enforced by the SDK's
+// structured-output mechanism (outputFormat json_schema — the SDK validates the
+// final output against the schema and re-prompts on mismatch), not requested in
+// prose. The artifact is the SDK-validated structured_output; a run that never
+// produced one is rejected rather than returning whatever text the model wrote.
+describe("ClaudeEngine output schema", () => {
+  const schema = {
+    type: "object",
+    properties: { files: { type: "array" }, summary: { type: "string" } },
+    required: ["files", "summary"],
+  };
+  const schemaCfg: EngineConfig = { ...cfg, outputSchema: schema };
+  const structured = { files: [{ path: "README.md", content: "# hi\n" }], summary: "added a heading" };
+  const success = (extra: Record<string, unknown> = {}) => ({ type: "result", subtype: "success", is_error: false, result: "", ...extra });
+
+  it("passes the schema to the SDK as a json_schema outputFormat", async () => {
+    const seen: Parameters<ClaudeQuery>[0][] = [];
+    const engine = new ClaudeEngine(fakeQuery([success({ structured_output: structured })], seen));
+    await engine.run("task", schemaCfg, new CaptureJournal());
+    expect(seen[0]?.options?.outputFormat).toEqual({ type: "json_schema", schema });
+  });
+
+  it("sends no outputFormat when the skill declares no schema", async () => {
+    const seen: Parameters<ClaudeQuery>[0][] = [];
+    const engine = new ClaudeEngine(fakeQuery([success()], seen));
+    await engine.run("task", cfg, new CaptureJournal());
+    expect(seen[0]?.options?.outputFormat).toBeUndefined();
+  });
+
+  it("returns the SDK-validated structured_output as the artifact, not the assistant prose", async () => {
+    const j = new CaptureJournal();
+    // The exact failure from the issue: a fabricated tool call written as prose.
+    const prose = 'print(default_api.write_file(path = file_path, content = modified_content))';
+    const engine = new ClaudeEngine(fakeQuery([assistant({ type: "text", text: prose }), success({ structured_output: structured, usage: { output_tokens: 9 } })]));
+    const res = await engine.run("task", schemaCfg, j);
+    expect(JSON.parse(res.outputJson)).toEqual(structured);
+    expect(res.usage).toEqual({ output_tokens: 9 });
+    // The prose is still journaled — it is what the model said — it just never
+    // becomes the artifact.
+    expect(j.entries).toEqual([{ kind: "assistant", text: prose }]);
+  });
+
+  it("rejects a run whose output never conformed (SDK retries exhausted)", async () => {
+    const j = new CaptureJournal();
+    const engine = new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "text", text: "not json" }),
+        { type: "result", subtype: "error_max_structured_output_retries", is_error: true, errors: ["output did not match the schema"] },
+      ]),
+    );
+    await expect(engine.run("task", schemaCfg, j)).rejects.toThrow(/error_max_structured_output_retries.*did not match/);
+    expect(j.entries).toEqual([
+      { kind: "assistant", text: "not json" },
+      { kind: "error", text: "error_max_structured_output_retries: output did not match the schema" },
+      { kind: "status", text: 'model ended abnormally after its final message: stop_reason=unknown result=error_max_structured_output_retries final_message="not json"' },
+    ]);
+  });
+
+  it("rejects any other error result too when a schema is declared, instead of returning prose", async () => {
+    const engine = new ClaudeEngine(fakeQuery([assistant({ type: "text", text: "half done" }), { type: "result", subtype: "error_max_turns", is_error: true, errors: [] }]));
+    await expect(engine.run("task", schemaCfg, new CaptureJournal())).rejects.toThrow(/error_max_turns/);
+  });
+
+  it("rejects a success result that carries no structured_output when a schema is declared", async () => {
+    // The SDK docs call this out: subtype success with no structured_output is a
+    // failure to treat as such, not text to pass along.
+    const engine = new ClaudeEngine(fakeQuery([assistant({ type: "text", text: '{"files":1}' }), success()]));
+    await expect(engine.run("task", schemaCfg, new CaptureJournal())).rejects.toThrow(/no structured output/);
+  });
+
+  it("rejects a run that ends without any result message when a schema is declared", async () => {
+    const engine = new ClaudeEngine(fakeQuery([assistant({ type: "text", text: "..." })]));
+    await expect(engine.run("task", schemaCfg, new CaptureJournal())).rejects.toThrow(/no structured output/);
+  });
+});
+
+it("rejects the SDK authentication_failed category without journaling its body", async () => {
+  const journal = new CaptureJournal();
+  const engine = new ClaudeEngine(fakeQuery([
+    { type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: "FAKE_PROVIDER_BODY_NEVER_ECHO" }] } },
+  ]));
+  await expect(engine.run("task", cfg, journal)).rejects.toThrow("coding-engine authentication failed");
+  expect(journal.entries).toEqual([]);
+});
+
+for (const outputSchema of [undefined, { type: "object" }]) {
+  describe(`authentication classification schema=${Boolean(outputSchema)}`, () => {
+    for (const source of ["oauth", "user", "project", "org", "temporary"]) {
+      it.each([true, false])(`prioritizes SDK typed result error over subtype success with source ${source}, is_error=%s`, async (is_error) => {
+        const journal = new CaptureJournal();
+        const engine = new ClaudeEngine(
+          fakeQuery([
+            { type: "system", subtype: "init", apiKeySource: source },
+            {
+              type: "result",
+              subtype: "success",
+              is_error,
+              api_error_status: 401,
+              result: "FAKE_PROVIDER_SECRET",
+              structured_output: {},
+            },
+          ]),
+        );
+        const error = await engine
+          .run("task", { ...cfg, outputSchema }, journal)
+          .catch((e) => e as Error);
+        expect(error).toMatchObject({
+          message: "coding-engine authentication failed",
+          source: source === "oauth" ? "oauth" : "key",
+        });
+        expect(JSON.stringify(journal.entries)).not.toContain(
+          "FAKE_PROVIDER_SECRET",
+        );
+      });
+    }
+    it("does not treat a non-auth error result as recovery", async () => {
+      const engine = new ClaudeEngine(
+        fakeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            api_error_status: 500,
+            structured_output: {},
+          },
+        ]),
+      );
+      const result = await engine.run(
+        "task",
+        { ...cfg, outputSchema },
+        new CaptureJournal(),
+      );
+      expect(result.authenticationSucceeded).toBe(false);
+    });
+  });
+}
+for (const source of ["oauth", "key", undefined] as const) {
+  it(`handles a pre-init typed 401 with launch provenance ${source ?? "unknown"}`, async () => {
+    const query: ClaudeQuery = async function* () {
+      throw { status: 401, message: "FAKE_PROVIDER_SECRET" };
+    };
+    await expect(
+      new ClaudeEngine(query).run(
+        "task",
+        { ...cfg, authenticationSource: source },
+        new CaptureJournal(),
+      ),
+    ).rejects.toMatchObject({
+      source: source ?? "unknown",
+      message: "coding-engine authentication failed",
+    });
+  });
+}
+it("obtains SDK provenance before a pre-init auth failure", async () => {
+  const query: ClaudeQuery = () =>
+    Object.assign(
+      (async function* () {
+        throw { status: 401 };
+      })(),
+      {
+        accountInfo: async () => ({
+          apiKeySource: "oauth",
+          apiProvider: "firstParty",
+        }),
+      },
+    );
+  await expect(
+    new ClaudeEngine(query).run("task", cfg, new CaptureJournal()),
+  ).rejects.toMatchObject({ source: "oauth" });
+});
+it("does not overwrite third-party/gateway provenance with a cached OAuth init source", async () => {
+  const query: ClaudeQuery = () =>
+    Object.assign(
+      (async function* () {
+        yield { type: "system", subtype: "init", apiKeySource: "oauth" };
+        throw { status: 401 };
+      })() as ReturnType<ClaudeQuery>,
+      {
+        accountInfo: async () => ({
+          apiKeySource: "oauth",
+          apiProvider: "gateway",
+        }),
+      },
+    );
+  await expect(
+    new ClaudeEngine(query).run("task", cfg, new CaptureJournal()),
+  ).rejects.toMatchObject({ source: "key" });
+});
+it("closes the SDK query when account metadata fails before iteration", async () => {
+  let closed = false;
+  const query: ClaudeQuery = () =>
+    Object.assign(
+      (async function* () {
+        yield {} as SDKMessage;
+      })(),
+      {
+        accountInfo: async () => {
+          throw { status: 401 };
+        },
+        close: () => {
+          closed = true;
+        },
+      },
+    );
+  await expect(
+    new ClaudeEngine(query).run(
+      "task",
+      { ...cfg, authenticationSource: "oauth" },
+      new CaptureJournal(),
+    ),
+  ).rejects.toMatchObject({ source: "oauth" });
+  expect(closed).toBe(true);
+});
+it("falls back to init provenance if optional account metadata is unavailable", async () => {
+ const query:ClaudeQuery=()=>Object.assign((async function*(){yield{type:"system",subtype:"init",apiKeySource:"user"};yield{type:"result",subtype:"success",is_error:false};})() as ReturnType<ClaudeQuery>,{accountInfo:async()=>{throw Error("FAKE_METADATA_BODY");}});
+ const result=await new ClaudeEngine(query).run("task",cfg,new CaptureJournal());
+ expect(result.authenticationSource).toBe("key");expect(result.authenticationSucceeded).toBe(true);
+});
+
+// #2513 item 2: a follow-up resumes the same SDK session, so the model answers
+// the re-prompt with the run it just had in context.
+describe("ClaudeEngine follow-up", () => {
+  it("resumes the run's session with the follow-up prompt and returns its text", async () => {
+    const seen: Parameters<ClaudeQuery>[0][] = [];
+    const turns: unknown[][] = [
+      [
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__write_file", input: { path: "text/slug.go" } }),
+        user({ type: "tool_result", tool_use_id: "tu1", content: "bytes_written: 649" }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1" },
+      ],
+      [
+        assistant({ type: "text", text: '{"files":["text/slug.go"]}' }),
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1" },
+      ],
+    ];
+    const engine = new ClaudeEngine(async function* (params) {
+      seen.push(params);
+      for (const m of turns.shift() ?? []) yield m as SDKMessage;
+    });
+    const j = new CaptureJournal();
+    const first = await engine.run("task", cfg, j);
+    expect(first.outputJson).toBe("");
+    const second = await first.followUp!("give me the JSON", j);
+    expect(second.outputJson).toBe('{"files":["text/slug.go"]}');
+    expect(seen.map((p) => p.prompt)).toEqual(["task", "give me the JSON"]);
+    expect(seen[0]!.options?.resume).toBeUndefined();
+    expect(seen[1]!.options?.resume).toBe("sess-1");
+    expect(seen[1]!.options?.mcpServers).toEqual(seen[0]!.options?.mcpServers);
+  });
+
+  it("offers no follow-up to a run with an output schema, even with a session id (#3107)", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn", session_id: "sess-1", structured_output: { ok: true } },
+      ]),
+    ).run("task", { ...cfg, outputSchema: { type: "object" } }, new CaptureJournal());
+    expect(res.outputJson).toBe('{"ok":true}');
+    expect(res.followUp).toBeUndefined();
+  });
+
+  it("offers no follow-up when the SDK never named a session", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([{ type: "result", subtype: "success", is_error: false, result: "", stop_reason: "end_turn" }]),
+    ).run("task", cfg, new CaptureJournal());
+    expect(res.followUp).toBeUndefined();
   });
 });

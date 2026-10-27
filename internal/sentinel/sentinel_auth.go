@@ -97,8 +97,17 @@ func newSignedRequest(method, url string, body io.Reader) (*http.Request, error)
 	if err != nil {
 		return nil, err
 	}
-	// Prefer ed25519 (#688) when a signing key is configured; else fall
-	// back to the legacy shared-secret HMAC.
+	SignRequest(req)
+	return req, nil
+}
+
+// SignRequest stamps the sentinel's request signature on req: ed25519
+// (#688) when a signing key is configured, else the legacy shared-secret
+// HMAC. Exported so sibling processes on the sentinel that talk to a
+// daemon with the sentinel's identity — the anonymous-box door plugin
+// (#2198) — sign exactly the way keysync and certsync do, from the same
+// environment, with no second secret.
+func SignRequest(req *http.Request) {
 	if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
 		auth.SignSentinelRequestEd25519(req, priv)
 	} else if secret := loadSentinelSecret(); len(secret) >= auth.SentinelMinSecretLen {
@@ -106,7 +115,6 @@ func newSignedRequest(method, url string, body io.Reader) (*http.Request, error)
 	} else {
 		logSentinelMisconfigOncePerInterval()
 	}
-	return req, nil
 }
 
 func logSentinelMisconfigOncePerInterval() {

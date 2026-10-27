@@ -27,10 +27,10 @@ const tailLogContentMarker = "--- content ---\n"
 // found.
 const agentBoxPathPrefix = `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"`
 
-// agentBoxRemoteCommand is the remote command dial() runs. exec replaces the
-// wrapping shell so agent-box owns the stdio MCP speaks over, and so a signal
-// reaches the helper rather than an intermediate shell.
-const agentBoxRemoteCommand = `sh -c '` + agentBoxPathPrefix + ` exec agent-box'`
+// AgentBoxRemoteCommand is the remote command used by code run and quickstart's
+// MCP configs. exec replaces the wrapping shell so agent-box owns the stdio MCP
+// speaks over, and so a signal reaches the helper rather than an intermediate shell.
+const AgentBoxRemoteCommand = `sh -c '` + agentBoxPathPrefix + ` exec agent-box'`
 
 // agentBoxProbeCommand answers one question after a failed handshake: is the
 // helper there at all? Distinguishing "not installed" from "installed but the
@@ -110,7 +110,7 @@ func Connect(ctx context.Context, sshArgs []string) (*Session, error) {
 }
 
 func (s *Session) dial(ctx context.Context) (mcpConn, error) {
-	args := append(append([]string{}, s.sshArgs...), agentBoxRemoteCommand)
+	args := append(append([]string{}, s.sshArgs...), AgentBoxRemoteCommand)
 	c, err := dialMCP(args)
 	if err != nil {
 		return nil, fmt.Errorf("start agent-box over ssh: %w", err)
@@ -244,6 +244,21 @@ func (s *Session) ProcessStart(ctx context.Context, name, command, cwd, captureM
 		Name: kv["name"], Command: kv["command"], LogPath: kv["log_path"],
 		PID: pid, StartedAt: startedAt,
 	}, nil
+}
+
+// ShellExec runs command on the box via agent-box's shell_exec tool and
+// returns its raw text result (agent-box's own key:value-plus-stdout framing,
+// unparsed — callers that need a single value, like HomeDir, parse it
+// themselves). Exported for #2193's session-id discovery, which backgrounds
+// a poll loop on the box; any other caller needing one-off box-side command
+// execution over this session belongs here too, rather than growing its own
+// shell_exec callTool wrapper.
+func (s *Session) ShellExec(ctx context.Context, command string) (string, error) {
+	text, err := s.callTool(ctx, "shell_exec", map[string]any{"command": command}, true)
+	if err != nil {
+		return "", fmt.Errorf("shell_exec: %w", err)
+	}
+	return text, nil
 }
 
 // Read implements LogReader by calling tail_log. followSeconds bounds how

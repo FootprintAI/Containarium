@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -21,7 +22,9 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	"github.com/footprintai/containarium/pkg/core/pki"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // State represents the current sentinel mode.
@@ -40,6 +43,12 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 
 // Config holds the sentinel configuration.
 type Config struct {
+	// SSHUpstreamPolicy enables the shared private upstream controller when set.
+	SSHUpstreamPolicy string
+	SSHUpstreamState  string
+	SSHUpstreamSocket string
+	// Private manager-to-sshpiperd bridge. Empty disables it for embedders.
+	SSHAuthzSocket     string
 	HealthPort         int
 	CheckInterval      time.Duration
 	HTTPPort           int
@@ -62,6 +71,12 @@ type Config struct {
 	RecoveryBackoffMax     time.Duration
 	CertSyncInterval       time.Duration // interval for syncing TLS certs from backend (0 = default 6h)
 	KeySyncInterval        time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
+	// InFleetCertScope is the set of domains the in-fleet backend (the
+	// --spot-vm / --backend-addr host, backend ID "gcp") is registered
+	// for. Its certificate sync may only supply certificates inside this
+	// scope; when empty, none of its certificates are served. Tunnel
+	// backends are scoped by their primary registration instead.
+	InFleetCertScope CertScope
 	// PrimaryReachabilityInterval is how often checkTunnelPrimaries probes
 	// every tunnel-promoted primary's Hostname/Aliases end-to-end (0 =
 	// default 30s). See #1872: registration in PrimaryRegistry proves the
@@ -92,16 +107,32 @@ type Config struct {
 	// Zero disables the self-check. Only armed in ConnMux/hybrid mode
 	// (httpsDispatch != nil).
 	SelfCheckFailureThreshold int
+
+	// FailbackChecks is how many CONSECUTIVE healthy checks a backend with a
+	// better (lower) Priority than the current primary must show before the
+	// sentinel switches back to it (#2476). 0 = defaultFailbackChecks; it is
+	// never below HealthyThreshold; negative disables failback.
+	FailbackChecks int
 }
 
 // Manager is the core sentinel orchestrator.
 // It health-checks backend VMs and switches between proxy and maintenance modes.
 // Supports multiple backends (GCP + tunnel) in hybrid mode.
 type Manager struct {
-	config   Config
-	provider CloudProvider // primary provider (GCP in hybrid mode)
+	// sshBanSockets overrides local plugin endpoints in isolated tests.
+	sshBanSockets           map[pb.SSHBanListener]string
+	sshUpstream             *sshcontrol.Controller
+	sshUpstreamMu           sync.RWMutex
+	sshUpstreamStartupFault atomic.Bool
+	config                  Config
+	provider                CloudProvider // primary provider (GCP in hybrid mode)
 
 	state atomic.Value // holds State
+
+	// selfDialLogNanos is when the self-dial refusal was last logged (unix
+	// nanos); the log line is rate-limited so a flood of connections that all
+	// hit it cannot flood the journal.
+	selfDialLogNanos atomic.Int64
 
 	// Multi-backend support
 	mu       sync.RWMutex
@@ -180,6 +211,19 @@ type Manager struct {
 	recoveryBackoff     time.Duration
 	nextRecoveryAttempt time.Time
 
+	// watchOnly holds additional GCP-backed instances this sentinel
+	// watches for preemption/stop and attempts to restart, entirely
+	// independent of the primary+failover HTTP proxy pool above. Unlike
+	// the "gcp" backend, these never become m.primary and are never
+	// considered by SelectPrimary — they may be wholly unrelated hosts
+	// (different tenants, different zone) that just happen to also run
+	// on preemptible capacity. Each entry owns its own recovery/backoff
+	// timeline (see watch_recovery.go) so independent targets can't
+	// corrupt one another's state the way a single shared timeline
+	// would. Populated via AddWatchOnlyBackend before Run() starts the
+	// per-target goroutines; read-only afterward, so no lock needed.
+	watchOnly []*watchedBackend
+
 	// Backend-failover observability (#1358). failoverTotal is atomic and
 	// backendHealth is mutex-guarded because both are written by the
 	// health-check loop and read by the /metrics HTTP goroutine. The older
@@ -187,6 +231,7 @@ type Manager struct {
 	// loop writes" convention; these are new, so they use the safe form
 	// rather than extending that assumption to a concurrently-read map.
 	failoverTotal   atomic.Int64
+	failbackTotal   atomic.Int64
 	backendHealthMu sync.RWMutex
 	backendHealth   map[string]bool
 
@@ -197,6 +242,10 @@ type Manager struct {
 	// test failing. Same injection pattern as byocDial below. nil = the real
 	// method; tests substitute a stub.
 	switchToProxyFn func(*Backend) error
+
+	// checkHealthFn is the seam over CheckHealth so healthCheckAll can be driven
+	// tick by tick in tests (the real probe dials the backend). nil = CheckHealth.
+	checkHealthFn func(ip string) bool
 
 	// selfCheckFn is the seam over selfCheckProxyPath so runSelfCheckLoop's
 	// wiring is testable without a real listener. nil = the real method
@@ -215,6 +264,11 @@ type Manager struct {
 	// Production wiring calls SetHMACSecret() with the env var
 	// CONTAINARIUM_SENTINEL_AUTH_SECRET at startup.
 	hmacSecret []byte
+
+	// authHealth records, per primary, whether its last request to a
+	// daemon-AUTH-gated route authenticated or got 401 (#2892). Zero value
+	// is ready to use. See primary_auth_health.go.
+	authHealth primaryAuthTracker
 
 	// adminSecret gates POST /sentinel/tunnel-tokens (registering a
 	// freshly-minted tunnel-join token at runtime). Deliberately a
@@ -238,6 +292,12 @@ type Manager struct {
 	// silently forget it. Empty means DefaultTunnelTokenStorePath; tests
 	// override via SetTunnelTokenStorePath to use a tmp dir.
 	tunnelTokenStorePath string
+
+	// auditIngestTokenStorePath / auditIngestTokenStoreMu: the per-backend
+	// audit-ingest token file (#2415). Empty path means
+	// DefaultAuditIngestTokenStorePath; tests override it.
+	auditIngestTokenStorePath string
+	auditIngestTokenStoreMu   sync.Mutex
 	// tunnelTokenStoreMu serializes the WHOLE load-modify-save sequence in
 	// persistTunnelToken/unpersistTunnelToken (cloud#999 step 4 review
 	// follow-up): without it, a register racing a deregister (or two
@@ -395,6 +455,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		keyStore:   NewKeyStore(),
 		exitFn:     func() { os.Exit(1) },
 	}
+	m.certStore.SetScopeResolver(m.certScopeFor)
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
 			// #nosec G706 -- both args are ints (len(raw) and a
@@ -616,6 +677,11 @@ func (m *Manager) SetHTTPSListener(ln *chanListener) {
 //
 // Optional query parameter:
 //
+// Pool data is daemon-only (#3119): a request without a valid daemon signature
+// (same HMAC secret as /sentinel/primaries) gets the peers without `pool`, and
+// ?pool= is ignored, so the route cannot be used to enumerate or probe pool
+// names. The rest of this comment describes the signed caller's view.
+//
 //	?pool=<name>  Return only peers in the named pool. Pass ?pool= (empty value)
 //	              to return only peers without a pool tag. Omit the parameter
 //	              entirely to return all peers (back-compat default).
@@ -628,7 +694,12 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			Pool      Pool   `json:"pool,omitempty"`
 		}
 
+		// Signed daemon callers only; an unconfigured secret trusts nobody.
+		signed := len(m.hmacSecret) >= auth.SentinelMinSecretLen &&
+			auth.VerifySentinelRequest(r, m.hmacSecret, time.Now()) == nil
+
 		poolFilter, hasPoolFilter := r.URL.Query()["pool"]
+		hasPoolFilter = hasPoolFilter && signed
 		var wantPool Pool
 		if hasPoolFilter {
 			wantPool = Pool(poolFilter[0])
@@ -643,12 +714,15 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			if hasPoolFilter && b.Pool != wantPool {
 				continue
 			}
-			peers = append(peers, peerInfo{
+			pi := peerInfo{
 				ID:        b.ID,
 				ProxyPath: "/peer/" + b.ID,
 				Healthy:   b.Healthy,
-				Pool:      b.Pool,
-			})
+			}
+			if signed {
+				pi.Pool = b.Pool
+			}
+			peers = append(peers, pi)
 		}
 
 		// Marshal first so we can sign the exact bytes the daemon will
@@ -732,6 +806,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				return
 			}
 			stored := m.primaries.Register(p)
+			// Only reachable behind daemonAuthGate: the request authenticated,
+			// so its pool may now be tied to its source address (#2892).
+			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
 			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
@@ -742,6 +819,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			m.authHealth.bind(updated.Pool, requestSourceAddr(r))
 			_ = json.NewEncoder(w).Encode(updated)
 
 		case r.Method == http.MethodDelete && rest != "":
@@ -749,6 +827,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			// Kept after deregistration: a daemon restarted with a new secret
+			// deregisters with the old one, then 401s re-registering.
+			m.authHealth.bind(Pool(rest), requestSourceAddr(r))
 			log.Printf("[sentinel] primary unregistered: pool=%q", rest)
 			w.WriteHeader(http.StatusNoContent)
 
@@ -760,6 +841,20 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
+	stopUpstream := m.superviseSSHUpstream(ctx, 5*time.Second)
+	defer stopUpstream()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if m.config.SSHAuthzSocket != "" {
+		stop, err := m.startSSHAuthzBridge(m.config.SSHAuthzSocket)
+		if err != nil {
+			// Audit-only must not bring down the sentinel on a sink failure.
+			log.Printf("[sentinel] ssh authz bridge unavailable: %v", err)
+		} else {
+			defer stop()
+		}
+	}
 	log.Printf("[sentinel] starting (check-interval=%s, health-port=%d, forwarded-ports=%v, hybrid=%v)",
 		m.config.CheckInterval, m.config.HealthPort, m.config.ForwardedPorts, m.config.HybridMode)
 
@@ -812,6 +907,13 @@ func (m *Manager) Run(ctx context.Context) error {
 	// can't also stall event processing.
 	go m.runSelfCheckLoop(ctx)
 
+	// Watch-only backends (see AddWatchOnlyBackend / watch_recovery.go):
+	// one independent goroutine per target, each with its own event
+	// watcher and backoff timeline. Never touches m.backends/m.primary.
+	for _, wb := range m.watchOnly {
+		go m.runWatchOnlyRecovery(ctx, wb)
+	}
+
 	// End-to-end reachability probe for tunnel-promoted primaries (#1872):
 	// registering in PrimaryRegistry only proves the sentinel can route
 	// SNI to a primary, not that the primary's own Caddy actually serves
@@ -851,7 +953,7 @@ func (m *Manager) initGCPBackend(ctx context.Context) error {
 	}
 
 	b := &Backend{
-		ID:       "gcp",
+		ID:       inFleetBackendID,
 		Type:     BackendGCP,
 		IP:       ip,
 		Provider: m.provider,
@@ -863,7 +965,27 @@ func (m *Manager) initGCPBackend(ctx context.Context) error {
 	m.startSyncLoops(ctx, b)
 
 	log.Printf("[sentinel] GCP backend registered: %s", ip)
+	if m.config.InFleetCertScope.Empty() {
+		log.Printf("[sentinel] WARNING: no domains declared for the in-fleet backend (--backend-hostname / --backend-alias / --backend-base-domain); none of its certificates will be served")
+	}
 	return nil
+}
+
+// inFleetBackendID is the backend ID of the in-fleet backend registered by
+// initGCPBackend.
+const inFleetBackendID = "gcp"
+
+// certScopeFor returns the domains backendID is registered for: the
+// configured InFleetCertScope for the in-fleet backend, the primary
+// registration for a tunnel backend, and an empty scope otherwise.
+func (m *Manager) certScopeFor(backendID string) CertScope {
+	if backendID == inFleetBackendID {
+		return m.config.InFleetCertScope
+	}
+	if m.primaries == nil {
+		return CertScope{}
+	}
+	return m.primaries.ScopeForBackend(backendID)
 }
 
 // startSyncLoops starts cert and key sync loops for a backend.
@@ -875,7 +997,7 @@ func (m *Manager) startSyncLoops(parentCtx context.Context, b *Backend) {
 	if certInterval == 0 {
 		certInterval = 6 * time.Hour
 	}
-	go m.certStore.RunSyncLoop(ctx, b.IP, m.config.HealthPort, certInterval)
+	go m.certStore.RunSyncLoop(ctx, b.ID, b.IP, m.config.HealthPort, certInterval)
 
 	keyInterval := m.config.KeySyncInterval
 	if keyInterval == 0 {
@@ -894,7 +1016,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 
 	anyHealthy := false
 	for _, b := range backends {
-		healthy := CheckHealth(b.IP, m.config.HealthPort, 5*time.Second)
+		healthy := m.probeBackend(b.IP)
 
 		if healthy {
 			b.unhealthyCount = 0
@@ -902,6 +1024,11 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.healthyCount >= m.config.HealthyThreshold && !b.Healthy {
 				b.Healthy = true
 				m.recordBackendHealth(b.ID, true)
+				if controller := m.sshUpstreamController(); controller != nil {
+					if _, err := controller.HintSSHUpstreamRecovery(ctx, &pb.HintSSHUpstreamRecoveryRequest{BackendId: b.ID}); err != nil {
+						log.Printf("[sentinel] SSH recovery hint: %v", err)
+					}
+				}
 				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
 			}
 		} else {
@@ -963,6 +1090,74 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			}
 		}
 	}
+
+	// Return to the preferred backend once it has recovered and stayed healthy
+	// (#2476); failoverPrimary only ever moves traffic AWAY from it.
+	if anyHealthy {
+		m.maybeFailback()
+	}
+}
+
+// probeBackend is one health probe of a backend, through the test seam if set.
+func (m *Manager) probeBackend(ip string) bool {
+	if m.checkHealthFn != nil {
+		return m.checkHealthFn(ip)
+	}
+	return CheckHealth(ip, m.config.HealthPort, 5*time.Second)
+}
+
+// defaultFailbackChecks is 4 consecutive healthy checks: with the default 15 s
+// interval that is about a minute of stability, a hold-down long enough that a
+// flapping primary does not make traffic oscillate between backends.
+const defaultFailbackChecks = 4
+
+// failbackChecks is the effective threshold: negative = disabled (returns -1),
+// 0 = the default, and never below HealthyThreshold (a backend cannot be failed
+// back to before it is even counted healthy).
+func (m *Manager) failbackChecks() int {
+	n := m.config.FailbackChecks
+	if n < 0 {
+		return -1
+	}
+	if n == 0 {
+		n = defaultFailbackChecks
+	}
+	if n < m.config.HealthyThreshold {
+		n = m.config.HealthyThreshold
+	}
+	return n
+}
+
+// maybeFailback switches the primary back to a healthy backend with a better
+// (lower) Priority than the current one, once it has been healthy for
+// failbackChecks consecutive checks. Backends of equal priority never displace
+// each other. Called only from the health-check goroutine, which is also the
+// only writer of Backend.healthyCount.
+func (m *Manager) maybeFailback() {
+	need := m.failbackChecks()
+	if need < 0 || m.currentState() != StateProxy {
+		return
+	}
+	m.mu.RLock()
+	cur := m.primary
+	m.mu.RUnlock()
+	if cur == nil {
+		return
+	}
+	best := m.backends.SelectPrimary()
+	if best == nil || best == cur || best.Priority >= cur.Priority || best.healthyCount < need {
+		return
+	}
+	checks := best.healthyCount
+	if err := m.doSwitchToProxy(best); err != nil {
+		// The primary is unchanged; try again on the next check. Not logged as
+		// a failback: nothing moved, and a consumer counting "failback:" lines
+		// must not count a refused switch.
+		log.Printf("[sentinel] switch back to %s (%s) refused, staying on %s: %v", best.ID, best.IP, cur.ID, err)
+		return
+	}
+	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
+	m.recordFailback()
 }
 
 // doSwitchToProxy calls the injected seam when one is set, else the real
@@ -1016,7 +1211,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	m.mu.Unlock()
 
 	// Immediate cert sync from the primary backend
-	if err := m.certStore.Sync(backend.IP, m.config.HealthPort); err != nil {
+	if err := m.certStore.Sync(backend.ID, backend.IP, m.config.HealthPort); err != nil {
 		log.Printf("[sentinel] cert sync on proxy switch failed: %v", err)
 	} else {
 		log.Printf("[sentinel] cert sync on proxy switch: %d certs", m.certStore.SyncedCount())
@@ -1044,7 +1239,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	forwardedPorts := m.config.ForwardedPorts
 	if m.httpsDispatch != nil {
 		forwardedPorts = excludePort(forwardedPorts, m.config.HTTPSPort)
-		m.startHTTPSProxy(backend.IP)
+		m.startHTTPSProxy(backend)
 	}
 
 	// Simple-proxy mode with --proxy-protocol: route :80/:443 through a
@@ -1131,12 +1326,93 @@ func (m *Manager) switchToMaintenance() error {
 // Routing precedence per connection:
 //  1. If the TLS ClientHello carries an SNI hostname registered in
 //     m.primaries, forward to that primary's IP:Port.
-//  2. Otherwise (no SNI, unknown hostname, or non-TLS), forward to backendIP
-//     as before — preserves single-pool / unpooled behavior.
-func (m *Manager) startHTTPSProxy(backendIP string) {
-	fallback := net.JoinHostPort(backendIP, fmt.Sprintf("%d", m.config.HTTPSPort))
-	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandler(fallback))
-	log.Printf("[sentinel] HTTPS proxy started → fallback %s (SNI routing via primary registry)", fallback)
+//  2. Otherwise (no SNI, unknown hostname, or non-TLS), forward to the
+//     backend as before — preserves single-pool / unpooled behavior.
+//
+// How step 2 reaches the backend depends on its type. A tunnel backend's
+// IP is a loopback alias (127.0.0.N) on THIS host, and in ConnMux mode nothing
+// listens on alias:443 except the mux itself (it listens on the wildcard), so
+// a TCP dial to it connects straight back to the sentinel: the connection is
+// routed again, falls back again, and one client connection fans out into an
+// unbounded chain that exhausts memory in a fraction of a second (a 384M
+// cgroup cap is reached in well under a second). A tunnel backend is therefore
+// reached through its tunnel, exactly like a tunnel-promoted primary. Only a
+// backend that is genuinely remote (GCP, in-VPC) is TCP-dialled.
+func (m *Manager) startHTTPSProxy(backend *Backend) {
+	target := net.JoinHostPort(backend.IP, fmt.Sprintf("%d", m.config.HTTPSPort))
+	fb := m.tcpFallbackDial(target)
+	desc := "fallback " + target
+	if backend.Type == BackendTunnel && m.tunnelRegistry != nil {
+		spotID := strings.TrimPrefix(backend.ID, "tunnel-")
+		port := m.config.HTTPSPort
+		fb = func() (net.Conn, error) { return m.tunnelRegistry.DialTunnel(spotID, port) }
+		desc = fmt.Sprintf("fallback via tunnel %s:%d", spotID, port)
+	}
+	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandlerDial(fb))
+	log.Printf("[sentinel] HTTPS proxy started → %s (SNI routing via primary registry)", desc)
+}
+
+// fallbackDial opens the passthrough connection for traffic that matches no
+// registered primary.
+type fallbackDial func() (net.Conn, error)
+
+// errSelfDial is returned for a fallback target that is the sentinel's own
+// HTTPS listener; dialling it would loop (see startHTTPSProxy).
+var errSelfDial = errors.New("fallback target is this sentinel's own HTTPS listener")
+
+// logSelfDialRefused logs a refusal at most once every 30 s; kind says which
+// route tried to dial the sentinel's own listener ("fallback", "primary route").
+func (m *Manager) logSelfDialRefused(kind string) {
+	now := time.Now().UnixNano()
+	last := m.selfDialLogNanos.Load()
+	if now-last < int64(30*time.Second) || !m.selfDialLogNanos.CompareAndSwap(last, now) {
+		return
+	}
+	log.Printf("[sentinel] refusing to dial this sentinel's own HTTPS listener (loopback:%d) for the %s; "+
+		"the connection takes the next route, or is dropped if none is routable", m.config.HTTPSPort, kind)
+}
+
+// tcpFallbackDial returns a fallbackDial that TCP-dials target through
+// dialTCP, so it can never connect back to the sentinel's own mux.
+func (m *Manager) tcpFallbackDial(target string) fallbackDial {
+	return func() (net.Conn, error) { return m.dialTCP(target) }
+}
+
+// dialTCP dials target, refusing any connection that lands on the sentinel's
+// own HTTPS listener (loopback on the HTTPS port: 127.0.0.0/8 is local and the
+// mux listens on the wildcard, so such a connection is always the mux itself,
+// never a backend). Two checks, because a target need not be an IP literal:
+// a literal is refused before dialling, and anything else (a hostname that
+// resolves to loopback) is caught on the connected socket's remote address.
+func (m *Manager) dialTCP(target string) (net.Conn, error) {
+	if m.isOwnHTTPSListener(target) {
+		return nil, errSelfDial
+	}
+	conn, err := sentinelDialer.Dial("tcp", target)
+	if err != nil {
+		return nil, err
+	}
+	if ra, ok := conn.RemoteAddr().(*net.TCPAddr); ok && m.config.HTTPSPort != 0 &&
+		ra.Port == m.config.HTTPSPort && ra.IP.IsLoopback() {
+		_ = conn.Close()
+		return nil, errSelfDial
+	}
+	return conn, nil
+}
+
+// isOwnHTTPSListener reports whether target is a loopback IP literal on the
+// sentinel's HTTPS port. netip is used so an IPv6 literal with a zone
+// ("fe80::1%lo") is parsed, not skipped.
+func (m *Manager) isOwnHTTPSListener(target string) bool {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || m.config.HTTPSPort == 0 {
+		return false
+	}
+	if p, err := strconv.Atoi(port); err != nil || p != m.config.HTTPSPort {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Unmap().IsLoopback()
 }
 
 // selfCheckSNI is the ServerName the self-check probe presents. It is
@@ -1279,6 +1555,12 @@ func (m *Manager) runSelfCheckLoop(ctx context.Context) {
 // registry (avoids a sentinel-side TCP listener that would collide with
 // ConnMux on :443); BackendID empty → TCP dial to Primary.IP:Port.
 func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
+	return m.buildSNIRoutingHandlerDial(m.tcpFallbackDial(fallbackTarget))
+}
+
+// buildSNIRoutingHandlerDial is buildSNIRoutingHandler with the fallback
+// connection supplied by fallback (a TCP dial, or a tunnel stream).
+func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Conn) {
 	return func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 
@@ -1316,13 +1598,20 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 				} else {
 					// In-VPC primary: TCP dial.
 					target := net.JoinHostPort(p.IP, fmt.Sprintf("%d", p.Port))
-					dst, err = sentinelDialer.Dial("tcp", target)
+					dst, err = m.dialTCP(target)
+					if errors.Is(err, errSelfDial) {
+						m.logSelfDialRefused("primary route")
+						dst = nil // never dial our own mux; fall through to the fallback
+					}
 				}
 			}
 		}
 		if dst == nil {
 			// No primary match (or yamux/TCP failed): fall back.
-			dst, err = sentinelDialer.Dial("tcp", fallbackTarget)
+			dst, err = fallback()
+			if errors.Is(err, errSelfDial) {
+				m.logSelfDialRefused("fallback")
+			}
 		}
 		if err != nil || dst == nil {
 			return
@@ -1791,6 +2080,9 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 		if n := m.primaries.UnregisterByBackendID(backendID); n > 0 {
 			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %s", n, backendID)
 		}
+	}
+	if m.certStore != nil {
+		m.certStore.DropBackend(backendID)
 	}
 	removed := m.backends.Remove(backendID)
 	if removed == nil {

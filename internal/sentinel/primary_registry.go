@@ -297,3 +297,33 @@ func (r *PrimaryRegistry) All() []*Primary {
 	}
 	return out
 }
+
+// ScopeForBackend returns the domains the primary registered by backendID
+// covers (hostname, aliases, base domains), or an empty scope when that
+// backend holds no live primary registration.
+func (r *PrimaryRegistry) ScopeForBackend(backendID string) CertScope {
+	if backendID == "" {
+		return CertScope{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	now := r.now()
+	var scope CertScope
+	for _, p := range r.primaries {
+		if p.BackendID != backendID || r.isStale(p, now) {
+			continue
+		}
+		if scope.Hostname == "" {
+			scope.Hostname = strings.ToLower(p.Hostname)
+		} else {
+			scope.Aliases = append(scope.Aliases, strings.ToLower(p.Hostname))
+		}
+		for _, a := range p.Aliases {
+			scope.Aliases = append(scope.Aliases, strings.ToLower(a))
+		}
+		for _, bd := range p.BaseDomains {
+			scope.BaseDomains = append(scope.BaseDomains, strings.ToLower(bd))
+		}
+	}
+	return scope
+}

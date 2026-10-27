@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"encoding/json"
+	"github.com/footprintai/containarium/internal/auth"
 	"net/http/httptest"
 	"testing"
 
@@ -21,6 +22,7 @@ type testPeer struct {
 // correctly while preserving back-compat (no param = return everything).
 func TestPeersHandlerPoolFilter(t *testing.T) {
 	m := &Manager{backends: NewBackendPool()}
+	m.SetHMACSecret([]byte(peersTestSecret))
 
 	m.backends.Add(&Backend{ID: "tunnel-a", Type: BackendTunnel, Healthy: true, Pool: "prod"})
 	m.backends.Add(&Backend{ID: "tunnel-b", Type: BackendTunnel, Healthy: true, Pool: "dev"})
@@ -30,6 +32,7 @@ func TestPeersHandlerPoolFilter(t *testing.T) {
 	call := func(query string) []testPeer {
 		t.Helper()
 		req := httptest.NewRequest("GET", "/sentinel/peers"+query, nil)
+		auth.SignSentinelRequest(req, []byte(peersTestSecret)) // pool data is daemon-only (#3119)
 		rec := httptest.NewRecorder()
 		m.PeersHandler()(rec, req)
 		assert.Equal(t, 200, rec.Code)
@@ -162,7 +165,7 @@ func TestRegisterPropagatesPool(t *testing.T) {
 	withRecordedAliases(t)
 
 	r := NewTunnelRegistry()
-	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
+	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil, TunnelTransportTLS)
 	require.NoError(t, err)
 
 	spot := r.Get("spot-1")
@@ -170,7 +173,7 @@ func TestRegisterPropagatesPool(t *testing.T) {
 	assert.Equal(t, Pool("prod"), spot.Pool)
 
 	// Empty pool stays empty (back-compat).
-	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
+	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil, TunnelTransportTLS)
 	require.NoError(t, err)
 	spot2 := r.Get("spot-2")
 	require.NotNil(t, spot2)

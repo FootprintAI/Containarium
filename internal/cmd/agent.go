@@ -30,8 +30,11 @@ func init() {
 // duplicating method calls.
 type agentAPI interface {
 	ListAgentSkills() ([]*pb.AgentSkill, error)
+	ListAgentEngines() (*pb.ListAgentEnginesResponse, error)
 	GetAgentSkill(id string) (*pb.AgentSkill, error)
-	RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.RunAgentSkillResponse, error)
+	ProvisionSkillBox(skillID, backendID, pool string) (*pb.ProvisionSkillBoxResponse, error)
+	GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBoxCredentialStatusResponse, error)
+	RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string, engine pb.AgentEngine) (*pb.RunAgentSkillResponse, error)
 	EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAgentTaskResponse, error)
 	StartAgentWorker(skillID, backendID, pool, workerID string) (*pb.StartAgentWorkerResponse, error)
 	SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error)

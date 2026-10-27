@@ -26,7 +26,7 @@ func TestHandleCodeRuns(t *testing.T) {
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 2, out)
-	assert.Equal(t, []string{"task", "exited", "0", "2026-09-28T10:00:00Z", "2026-09-28T10:01:00Z", "/tmp/agent-box/task.log"},
+	assert.Equal(t, []string{"task", "exited", "0", "2026-09-28T10:00:00Z", "2026-09-28T10:01:00Z", "-", "/tmp/agent-box/task.log"},
 		strings.Fields(lines[1]))
 }
 

@@ -96,8 +96,10 @@ func (f *fakeGCPKMS) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ct := f.symEncrypt(pt)
+		// As Cloud KMS does: `name` is the resource name of the
+		// CryptoKeyVersion used (no API-version prefix).
 		resp := map[string]any{
-			"name":       path[:idx] + "/cryptoKeyVersions/1",
+			"name":       strings.TrimPrefix(path[:idx], "v1/") + "/cryptoKeyVersions/1",
 			"ciphertext": base64.StdEncoding.EncodeToString(ct),
 		}
 		_ = json.NewEncoder(w).Encode(resp)
@@ -246,17 +248,17 @@ func TestGCPKMS_RejectsRowFromDifferentBackend(t *testing.T) {
 	}
 }
 
-func TestGCPKMS_RejectsBadDEKSize(t *testing.T) {
+func TestGCPKMS_RejectsEmptyOrOversizedPlaintext(t *testing.T) {
 	srv, _ := newFakeGCPKMS(t)
 	defer srv.Close()
 	k, _ := NewGCPKMS(GCPConfig{
 		KeyName: testKeyName, Token: "access-token-xyz", Endpoint: srv.URL,
 	})
-	for _, badSize := range []int{0, 16, 64} {
+	for _, badSize := range []int{0, MaxWrapPlaintext + 1} {
 		dek := make([]byte, badSize)
 		_, _, err := k.Wrap(context.Background(), dek)
 		if err == nil {
-			t.Fatalf("Wrap with DEK size %d should fail", badSize)
+			t.Fatalf("Wrap with plaintext size %d should fail", badSize)
 		}
 	}
 }

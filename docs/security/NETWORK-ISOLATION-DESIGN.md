@@ -46,7 +46,7 @@ Postgres port.
 | Cross-tenant connection (e.g. alice → bob's Postgres) | **No.** |
 | Container-to-internet exfil to attacker-controlled domain | **No.** No egress allowlist; ClamAV catches files-at-rest, not network exfil. |
 | Container-to-host metadata-service abuse (cloud) | **Partial.** Cloud metadata server filtering is host-firewall-dependent; Containarium doesn't enforce. |
-| Container forging source IP / MAC | Partial. Incus default profile restricts MAC; no IP-source-spoof check on the bridge. |
+| Container forging source IP / MAC | Partial. Incus default profile restricts MAC. With the eBPF enforcer loaded, a managed box may only send with its own IPv4 — a forged source is dropped under enforce, logged under `log_only` (#2618); unmanaged bridge members are unaffected. |
 | Inbound from outside the backend | **Mitigated.** Caddy + sshpiper are the only ingress; everything else is dropped at the cloud firewall. |
 
 The first three rows are the gap eBPF closes.
@@ -248,6 +248,27 @@ traffic, so Phase A starts from the corrected per-container-veth
 - **Default OFF.** Same opt-in stance as the rest of the zero-trust
   rollouts (KMS, image digest verify). No upgrade can degrade an
   existing deployment.
+- **Default egress posture: staged default-deny (#2577).** The target is
+  deny-by-default egress with a per-tenant allow-list, reached in stages;
+  nothing is armed for a tenant until its stage has passed.
+  1. *(shipped)* A tenant with no stored policy runs the default
+     allow-list in `log_only` (DNS via the egress preset, git hosts, language
+     registries and OS mirrors of the supported base images; the model
+     gateway and control plane are added per deployment with
+     `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` / `_CIDRS`).
+     `CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off` restores the empty log-only
+     fallback. It never arms drops, so it cannot cause an outage.
+  2. Soak: review `network_policy.deny_logged` and fix the list.
+  3. Arm `enforce` per tenant. Replies to inbound connections are handled and
+     source spoofing is blocked as of #2618 (the real-Incus e2e proof is its
+     follow-up); #2846 and, for inbound-serving boxes, #2968 still apply.
+  4. CI proof that a default-policy box cannot reach an arbitrary host and
+     can reach its allow-listed ones, with denials in the audit chain. Until
+     it exists the wording "default-deny egress" stays unusable
+     (`CLAIMS.md`).
+
+  Hosts that cannot run the eBPF enforcer report "not enforced" and do not
+  get the claim.
 
 ## Cloud extension
 
@@ -410,6 +431,100 @@ Properties / limits:
   conntrack never attributes the container, so eBPF is the sole
   source and is used. Container-granularity, so there's no
   per-flow timing race.
+
+## Replies to inbound connections, and source validation (#2618)
+
+The sender hook sees and judges a container's *entire* outbound, and
+originally kept no connection state, so a reply the box sends back to a
+peer that opened a connection *into* it — a TCP SYN-ACK and its data, an
+ICMP echo reply — was judged as a new outbound flow. With an enforce
+policy and an empty allow-list those replies are dropped, which breaks
+reverse-proxied services and host management and inflated deny counts in
+`log_only`. An egress policy is meant to govern what a box may *open*,
+not whether it may *answer*.
+
+The fix keeps a small reverse-flow map and validates sources so it
+cannot be poisoned:
+
+- **`inbound_flows` (`BPF_MAP_TYPE_LRU_HASH`).** Key is the flow in
+  request orientation — `{ifindex, box_ip, peer_ip, box_port,
+  peer_port, proto}`, with the ICMP echo id in the port slot; value is
+  `last_seen_ns`.
+- **Written only on the veth egress hook** (packets *toward* the box) and
+  only from a validated source. A validated TCP segment of any shape, a
+  UDP datagram or an ICMP echo request creates or refreshes the entry.
+  Nothing the box sends writes the map — the trust is in the inbound
+  direction. Re-creating a TCP entry from a mid-stream segment is as
+  sound as from a SYN (the same peer could send one) and makes an LRU
+  eviction self-healing: the peer's next segment restores the entry
+  instead of the connection dying (see "Availability" below).
+- **Consulted on the sender hook** after the virtual-patch and metadata
+  checks (both still win and fail closed) and before the cross-tenant,
+  intra-tenant and allow-list checks. A packet passes as a reply only
+  with the reverse tuple and a per-protocol reply shape: TCP anything
+  but a fresh SYN-without-ACK; UDP the same 5-tuple; ICMP an echo reply
+  carrying the request's id (ICMP errors stay judged). Each protocol has
+  an idle timeout checked on lookup (TCP 4h, UDP 120s, ICMP 30s). A
+  reply-shaped packet with no live entry bumps an `inbound_miss` counter
+  the daemon reads for LRU-pressure signal.
+- **Source validation makes the seed sound,** and the verdict travels
+  with the packet rather than being re-derived at the receiving end. A
+  managed box's NIC has no `security.ipv4_filtering` on a default backend
+  (only the tenant guard sets it — see `multi-tenant-isolation.md`), so a
+  neighbour could otherwise forge a SYN "from" an arbitrary external
+  address P, seed the target's map and open its egress to P. So:
+  - the sender hook runs on **every** managed veth, whatever its mode or
+    whether the instance is policed, and stamps each frame with two bits
+    in `skb->mark`: `SEEN` (a managed veth sent it) and `VALIDATED` (its
+    source was that veth's own `box_ip`). A forged source is also dropped
+    (enforce) / logged (`log_only`, action `network_policy.spoofed_source`)
+    on a policed veth; `0.0.0.0` (DHCP) is exempt from the drop but is not
+    `VALIDATED`.
+  - the egress hook seeds a flow only from a frame that is **not** `SEEN`
+    (the host's own traffic, or routed in from outside the bridge) or is
+    `SEEN` **and** `VALIDATED`. `SEEN`-without-`VALIDATED` — a container's
+    forgery — never seeds, whatever the neighbour's mode and whether the
+    frame was bridged or routed through the host. Carrying the verdict in
+    the mark, rather than re-checking `skb->ingress_ifindex` at the
+    receiving hook, is what makes this hold for routed frames and for
+    instances with no policy of their own; the kernel scrubs the mark when
+    a packet crosses a netns, so a box cannot forge the bits.
+
+  `box_ip` comes from a **host-authoritative** source — the NIC device's
+  static `ipv4.address`, else the bridge's `dnsmasq` DHCP lease for the
+  NIC's MAC — never from the address the instance reports about itself
+  (which root in the box controls). A box the host knows no address for
+  gets `box_ip` 0: it validates nothing, cannot answer inbound under
+  enforce, and never seeds. This is option (a) of the issue's decision; it
+  does not depend on the tenant guard. The naive "judge only fresh SYNs"
+  alternative is unsound (a box is root in its netns and can send
+  ACK-flagged segments with a payload, an exfil channel) and is not used.
+- **Validate-only instances.** The control plane and any instance with no
+  tenant are not policed, but they still get a `veth_policy` entry that
+  only stamps the mark — no accounting, no policy, never a drop — so every
+  Incus instance on the bridge marks its frames and a frame without the
+  mark can only be the host's own or routed in from outside.
+- **Availability.** The LRU map is shared host-wide (65,536 entries). Any
+  box allowed to send to a neighbour can churn it, which evicts other
+  tenants' idle entries; re-seeding TCP from any validated inbound segment
+  (above) makes that self-healing rather than fatal, and the `inbound_miss`
+  counter surfaces the pressure. Per-box inner maps (hash-of-maps keyed by
+  ifindex) would isolate the churn and are a possible follow-up; the shared
+  map with re-seeding is what ships.
+- **IP options and fragments** fail closed: a packet with `ihl != 5` or any
+  fragmentation is parsed as neither a seed nor a reply, so a box cannot
+  match a seeded tuple while really addressing other ports. The older
+  virtual-patch and accounting paths still assume `ihl == 5` (a pre-existing
+  gap, tracked separately).
+- **Not IPv6.** The sender hook manages IPv4 only; IPv6 (and ARP) pass
+  untouched, so source validation and egress enforcement do not apply to
+  IPv6 — pre-existing, and the egress allow-list is IPv4-only too.
+- **Backward-compatible.** `box_ip` and `flags` are appended to
+  `struct policy_cfg`, so an object built before this change loads
+  unchanged (the loader fits the shorter value and detects the missing
+  support from the object's BTF, needing both the new members and the
+  `inbound_flows` map). On such a host the daemon warns that a box cannot
+  serve inbound traffic under enforce until `netpolicy.bpf.o` is rebuilt.
 
 ## What this is NOT
 

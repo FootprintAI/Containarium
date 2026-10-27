@@ -38,10 +38,11 @@ syntax = "proto3";
 
 package containarium.cloud.v1;
 
-option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1";
-
+import "containarium/v1/ssh_authz.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1";
 
 // HeartbeatRequest is intentionally empty for v1. The host's identity
 // comes from the bearer; there's nothing else the cloud needs to
@@ -152,6 +153,26 @@ message Assignment {
   map<string, string> secret_env = 16;
 
   google.protobuf.Timestamp updated_at = 20;
+
+  // What this assignment asks the host to do (#2516). UNSPECIFIED is read
+  // as CONTAINER, so a cloud that never sets it keeps today's meaning.
+  AssignmentKind kind = 21;
+  // Person whose sessions to end. Set only when
+  // kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS. On such an assignment
+  // the existing org_id (field 5), when set, limits the termination to that
+  // org's boxes (#2546); empty keeps the whole-host behaviour.
+  string user_id = 22;
+}
+
+// AssignmentKind selects how the host reconciles an Assignment.
+enum AssignmentKind {
+  // Treated as ASSIGNMENT_KIND_CONTAINER.
+  ASSIGNMENT_KIND_UNSPECIFIED = 0;
+  // Run the container described by the assignment's container fields.
+  ASSIGNMENT_KIND_CONTAINER = 1;
+  // End every live session of user_id on this host's boxes (the
+  // deactivation fan-out of docs/architecture/ssh-live-authorization.md).
+  ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS = 2;
 }
 
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route
@@ -169,8 +190,19 @@ message PortRoute {
 // (allow-list + cloud-metadata block) the bridges don't provide.
 enum NetworkPolicyMode {
   NETWORK_POLICY_MODE_UNSPECIFIED = 0; // host treats as LOG_ONLY
-  NETWORK_POLICY_MODE_LOG_ONLY = 1;    // observe + audit denied flows; drop nothing
-  NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied egress
+  NETWORK_POLICY_MODE_LOG_ONLY = 1; // observe + audit denied flows; drop nothing
+  NETWORK_POLICY_MODE_ENFORCE = 2; // actually drop denied egress
+}
+
+// EgressMode is the egress allow-list's own enforcement mode, separate from
+// NetworkPolicy.mode (vendored from the cloud repo, FootprintAI cloud #3109):
+// an org soaks a narrowed egress list in LOG_ONLY without switching off the
+// cross-org drop, which stays ENFORCE. Same values as NetworkPolicyMode.
+enum EgressMode {
+  // Not set: the egress list follows NetworkPolicy.mode.
+  EGRESS_MODE_UNSPECIFIED = 0;
+  EGRESS_MODE_LOG_ONLY = 1; // log egress to unlisted destinations; drop nothing
+  EGRESS_MODE_ENFORCE = 2; // drop egress to unlisted destinations
 }
 
 // NetworkPolicy is one org's egress policy, applied on the host by the eBPF
@@ -196,6 +228,11 @@ message NetworkPolicy {
   bool allow_metadata = 5;
   // Enforcement mode. Unspecified is treated as LOG_ONLY.
   NetworkPolicyMode mode = 6;
+  // Mode of the egress allow-list (egress_cidrs + egress_domains), separate
+  // from `mode` so egress can be soaked in LOG_ONLY while cross-org traffic
+  // stays dropped. UNSPECIFIED means "follow mode". Field number matches the
+  // cloud repo's contract (egress_mode = 7).
+  EgressMode egress_mode = 7;
 }
 
 // AssignmentBatch is a full-state snapshot, not a delta. Each batch
@@ -271,6 +308,16 @@ message HostCapabilityCheck {
   string detail = 3;
 }
 
+// HostSecurityPosture is one measured snapshot of the host's hardening checks.
+// Checks use their unprefixed probe names; false includes a check that could not
+// be measured, with the reason in detail. An empty snapshot is not proof of a
+// passing posture. Receivers must evaluate required checks and freshness.
+message HostSecurityPosture {
+  repeated HostCapabilityCheck checks = 1;
+  // Host clock at the start of the posture measurement, not the send time.
+  google.protobuf.Timestamp measured_at = 2;
+}
+
 // ReportHostStatusRequest is a BYO host's push of its self-measured
 // capability profile + `doctor` self-check. Host-bearer authed; the host id
 // comes from the bearer, never the body.
@@ -290,6 +337,11 @@ message ReportHostStatusRequest {
   // (#557). If non-empty the cloud reseals it and overwrites the stored driver
   // token, keeping the cloud-stored credential from expiring after 30 days.
   string driver_token = 12;
+  // Absent means no posture measurement was reported, never "passing". Status
+  // probes populate this on every report while retaining the posture-prefixed
+  // entries in checks for older receivers. Token-only refresh requests omit it
+  // and must not clear a receiver's previously stored posture.
+  HostSecurityPosture posture = 13;
 }
 
 message ReportHostStatusResponse {
@@ -425,8 +477,14 @@ service ActuationService {
   //   - Unauthenticated: missing / invalid host-bearer.
   //   - Unimplemented: this daemon has no SSH CA configured.
   rpc GetSSHTrustBundle(GetSSHTrustBundleRequest) returns (GetSSHTrustBundleResponse) {
-    option (google.api.http) = {
-      get: "/v1/actuation/ssh-trust-bundle"
-    };
+    option (google.api.http) = {get: "/v1/actuation/ssh-trust-bundle"};
   }
+
+  // AuthorizeSSH is the managed-mode answer to SSHAuthzService.Authorize
+  // (#2516): the daemon forwards the sentinel's question with its host
+  // bearer and relays the answer. It reuses containarium.v1's messages so
+  // the daemon never translates, hence the lint exemption.
+  //
+  // Auth: requires a valid `host-bearer` header.
+  rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse);
 }

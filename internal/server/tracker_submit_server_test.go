@@ -10,10 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -205,6 +207,10 @@ func setUpSubmitConnection(t *testing.T, user string, provider *fakeWriterProvid
 	// passing nil really means "leave it unset".
 	if box != nil {
 		s.submitBoxRunner = box
+		// #2798: a submit seals a Proof Pack generated in the run's box
+		// into the audit chain before it pushes.
+		s.proofPackExecer = &fakeProofBox{commit: box.headSHA, probeRC: 12}
+		s.auditStore = mustTestAuditStore(t)
 	}
 	if pusher != nil {
 		s.submitPusher = pusher
@@ -370,7 +376,7 @@ func TestSubmitTrackerChange_OpenChangeFails(t *testing.T) {
 // "open" the change (fakeWriterProvider records the OpenChangeRequest),
 // and check the response and what each fake was actually called with.
 func TestSubmitTrackerChange_HappyPath(t *testing.T) {
-	const user = "tracker-rpc-submit-happy"
+	user := "tracker-rpc-submit-happy-" + uuid.NewString()
 	bundleBytes, headSHA := realBundleBytes(t)
 	wantBranch := "agent/run-abc123de/1-conformance-change"
 	provider := &fakeWriterProvider{
@@ -380,6 +386,14 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	box := &fakeSubmitBox{bundleBytes: bundleBytes, headSHA: headSHA}
 	pusher := &fakeSubmitPusher{result: submit.PushResult{Branch: wantBranch, SHA: headSHA}}
 	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
+	s.auditStore = mustTestAuditStore(t)
+	// #3001: the dispatcher's row for this run, which the submit annotates.
+	dispatch, err := s.trackerStore.InsertDispatch(ctx, tracker.Dispatch{
+		Username: user, Connection: "default", IssueNumber: 1, Scope: "product", SkillID: "code-review", RunID: "run-abc123",
+	})
+	if err != nil {
+		t.Fatalf("seed dispatch row: %v", err)
+	}
 
 	resp, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: user, Connection: "default", Issue: 1, Title: "My change", Description: "does the thing",
@@ -392,6 +406,23 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	}
 	if resp.GetChange().GetUrl() != "https://github.com/acme/widgets/pull/6" {
 		t.Errorf("response change url = %q, want the provider's URL echoed", resp.GetChange().GetUrl())
+	}
+
+	// #3001: the dispatch row now names the change, and the listing a
+	// control plane mirrors carries it.
+	row, err := s.trackerStore.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatalf("GetDispatch: %v", err)
+	}
+	if row.ChangeURL != "https://github.com/acme/widgets/pull/6" || row.ChangeNumber != 6 {
+		t.Errorf("dispatch row change = {%q, %d}, want the submitted change recorded by run id", row.ChangeURL, row.ChangeNumber)
+	}
+	listed, err := s.ListTrackerDispatches(kmsKeyTestCtx(user, "member", "tracker:admin"), &pb.ListTrackerDispatchesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("ListTrackerDispatches: %v", err)
+	}
+	if len(listed.GetDispatches()) != 1 || listed.GetDispatches()[0].GetChangeUrl() != "https://github.com/acme/widgets/pull/6" || listed.GetDispatches()[0].GetChangeNumber() != 6 {
+		t.Errorf("listed dispatches = %v, want one row carrying change_url / change_number", listed.GetDispatches())
 	}
 
 	// PushBundle must have been called with the run's actual recorded
@@ -428,6 +459,16 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(provider.openChangeReq.Description, "via Containarium") {
 		t.Errorf("OpenChangeRequest.Description = %q, want the platform stamp", provider.openChangeReq.Description)
+	}
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.submit_change", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows for tracker.submit_change = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != "run-abc123" {
+		t.Errorf("audit RunID = %q, want run-abc123", rows[0].RunID)
 	}
 }
 

@@ -38,6 +38,9 @@ const (
 	// CoreSecurityContainer is the name of the core ClamAV security container
 	CoreSecurityContainer = "containarium-core-security"
 
+	// CoreGuacamoleContainer is the name of the core Guacamole container
+	CoreGuacamoleContainer = "containarium-core-guacamole"
+
 	// CoreVictoriaMetricsContainer is the name of the core Victoria Metrics + Grafana container
 	CoreVictoriaMetricsContainer = "containarium-core-victoriametrics"
 
@@ -73,8 +76,18 @@ const coreBridgeName = "incusbr0"
 // deterministic IP that survives a daemon-driven recreate keeps those
 // references self-consistent. Only caddy is pinned today (it's the one those
 // references point at); the map is keyed by container name so others can opt in.
+//
+// Postgres and the metrics container opt in so that the pg_hba.conf written when
+// Postgres is first installed can name the one address Grafana will connect from,
+// instead of admitting the whole subnet. As with caddy this applies when the
+// container is created; an existing container keeps the address it has.
 var coreStaticIPHostOffsets = map[string]uint32{
-	CoreCaddyContainer: 241,
+	CoreCaddyContainer:           241,
+	CorePostgresContainer:        242,
+	CoreVictoriaMetricsContainer: 243,
+	CoreOTelCollectorContainer:   244,
+	CoreSecurityContainer:        245,
+	CoreGuacamoleContainer:       246,
 }
 
 // coreStaticIP returns the deterministic static IP for a core container within
@@ -129,6 +142,14 @@ type CoreServices struct {
 	caddyIP           string
 	victoriaMetricsIP string
 	otelCollectorIP   string
+
+	// pgPing opens one real connection with the given credentials. It is a
+	// field only so tests can script the result; production uses pgxPing.
+	pgPing func(context.Context, pgPingArgs) error
+
+	// pgLoginProbe logs in to Postgres the way the daemon will; nil means the
+	// real network login. A field only so tests can script the result.
+	pgLoginProbe func(context.Context) error
 }
 
 // NewCoreServices creates a new core services manager
@@ -137,7 +158,19 @@ func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *Core
 		config.PostgresUser = DefaultPostgresUser
 	}
 	if config.PostgresPassword == "" {
-		config.PostgresPassword = DefaultPostgresPassword
+		// Resolve the password the same way the daemon's own connection does
+		// (secret file, then env, then the dev default). No caller sets this
+		// field, so without this the first-install CREATE USER, the readiness
+		// probe and Grafana's config all used the compiled-in default even on
+		// a host configured with its own password (#2091). Quiet: this runs
+		// several times per start and the daemon already logs the default
+		// warning once.
+		pw, _, err := resolvePostgresPasswordQuiet()
+		if err != nil {
+			log.Printf("ERROR: %v — falling back to the compiled-in default for core services", err)
+			pw = DefaultPostgresPassword
+		}
+		config.PostgresPassword = pw
 	}
 	if config.PostgresDB == "" {
 		config.PostgresDB = DefaultPostgresDB
@@ -149,7 +182,25 @@ func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *Core
 	return &CoreServices{
 		incusClient: incusClient,
 		config:      config,
+		pgPing:      pgxPing,
 	}
+}
+
+// pinCoreIP gives a container being created the deterministic address it has in
+// coreStaticIPHostOffsets, so a recreate reuses it. Best effort: when the
+// address cannot be computed it logs and leaves the container on DHCP, which is
+// what happened before containers other than caddy were pinned.
+func (cs *CoreServices) pinCoreIP(config *incus.ContainerConfig, name string) {
+	staticIP, err := coreStaticIP(cs.config.NetworkCIDR, name)
+	if err != nil {
+		log.Printf("Warning: could not compute stable IP for %s (%v); using DHCP", name, err)
+		return
+	}
+	if staticIP == "" {
+		return
+	}
+	config.NIC = &incus.NICDevice{Name: "eth0", Network: coreBridgeName, IPv4Address: staticIP}
+	log.Printf("Assigning stable IP %s to %s", staticIP, name)
 }
 
 // ensureCoreReservation sets a ZFS reservation on a core container's dataset so
@@ -234,6 +285,8 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 		},
 	}
 
+	cs.pinCoreIP(&config, CorePostgresContainer)
+
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create postgres container: %w", err)
 	}
@@ -317,32 +370,15 @@ func (cs *CoreServices) setupPostgres(ctx context.Context) error {
 	}
 
 	// Configure PostgreSQL to listen on all interfaces
-	pgConfPath := "/etc/postgresql/16/main/postgresql.conf"
-	pgHbaPath := "/etc/postgresql/16/main/pg_hba.conf"
-
-	// Update listen_addresses
 	if err := cs.incusClient.Exec(CorePostgresContainer, []string{
 		"bash", "-c", fmt.Sprintf("sed -i \"s/#listen_addresses = 'localhost'/listen_addresses = '*'/\" %s", pgConfPath),
 	}); err != nil {
 		return fmt.Errorf("failed to update postgresql.conf: %w", err)
 	}
 
-	// Allow connections from container network
-	networkPrefix := cs.config.NetworkCIDR
-	hbaEntry := fmt.Sprintf("host    all             all             %s            md5", networkPrefix)
-	if err := cs.incusClient.Exec(CorePostgresContainer, []string{
-		"bash", "-c", fmt.Sprintf("echo '%s' >> %s", hbaEntry, pgHbaPath),
-	}); err != nil {
-		return fmt.Errorf("failed to update pg_hba.conf: %w", err)
-	}
-
-	// Restart PostgreSQL
-	if err := cs.incusClient.Exec(CorePostgresContainer, []string{"systemctl", "restart", "postgresql"}); err != nil {
-		return fmt.Errorf("failed to restart postgresql: %w", err)
-	}
-
-	// Wait for PostgreSQL to be ready
-	if err := cs.waitForPostgres(ctx); err != nil {
+	// Limit who may log in to the core clients, turn on connection logging,
+	// restart, and prove the daemon can still log in.
+	if err := cs.configurePostgresAccess(ctx); err != nil {
 		return err
 	}
 
@@ -377,13 +413,8 @@ func (cs *CoreServices) waitForPostgres(ctx context.Context) error {
 
 // getPostgresConnString returns the PostgreSQL connection string
 func (cs *CoreServices) getPostgresConnString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cs.config.PostgresUser,
-		cs.config.PostgresPassword,
-		cs.postgresIP,
-		DefaultPostgresPort,
-		cs.config.PostgresDB,
-	)
+	return PostgresDSN(cs.config.PostgresUser, cs.config.PostgresPassword,
+		cs.postgresIP, DefaultPostgresPort, cs.config.PostgresDB)
 }
 
 // GetPostgresIP returns the PostgreSQL container IP
@@ -901,6 +932,9 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			// Close anonymous dashboard access on hosts provisioned before
 			// the template turned it off (#2079); no-op once converged.
 			cs.backfillGrafanaAnonymous()
+			// Keep Grafana's database password equal to the daemon's (#2091);
+			// no-op once converged, and only written when it actually connects.
+			cs.backfillGrafanaDBPassword()
 			// Always re-provision the Grafana dashboard to pick up new panels
 			cs.updateGrafanaDashboard()
 			return cs.victoriaMetricsIP, nil
@@ -920,6 +954,7 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			return "", err
 		}
 		cs.backfillGrafanaAnonymous()
+		cs.backfillGrafanaDBPassword()
 		cs.updateGrafanaDashboard()
 		return cs.victoriaMetricsIP, nil
 	}
@@ -939,6 +974,8 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			Size: "10GB",
 		},
 	}
+
+	cs.pinCoreIP(&config, CoreVictoriaMetricsContainer)
 
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create victoriametrics container: %w", err)
@@ -1065,7 +1102,7 @@ WantedBy=multi-user.target
 	}
 
 	// Configure Grafana (anonymous access off — see renderGrafanaIni)
-	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, DefaultPostgresPassword)
+	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, cs.config.PostgresPassword, cs.grafanaAdminPasswordForProvisioning())
 
 	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, grafanaIniPath, []byte(grafanaIni), "0644"); err != nil {
 		return fmt.Errorf("failed to write grafana.ini: %w", err)
@@ -1581,6 +1618,8 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		},
 	}
 
+	cs.pinCoreIP(&config, CoreSecurityContainer)
+
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return fmt.Errorf("failed to create security container: %w", err)
 	}
@@ -1607,75 +1646,13 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 	return nil
 }
 
-// setupSecurity installs ClamAV in the security container
+// setupSecurity prepares the security container. ClamAV is deliberately NOT
+// installed here any more (#2631): the central scanner mounted tenant rootfs
+// into this container, could not read them, and has been removed; malware
+// scanning moves inside each tenant's own box. The container stays because the
+// ZAP scanner is installed into it (internal/zap).
 func (cs *CoreServices) setupSecurity(ctx context.Context) error {
-	log.Printf("Installing ClamAV...")
-
-	time.Sleep(5 * time.Second)
-
-	commands := [][]string{
-		{"apt-get", "update"},
-		{"apt-get", "install", "-y", "clamav", "clamav-daemon", "clamav-freshclam"},
-	}
-
-	for _, cmd := range commands {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	// Configure clamd to exclude pseudo-filesystem directories in scan mounts.
-	// clamdscan does not support --exclude-dir, so we set ExcludePath in clamd.conf.
-	excludeCmds := [][]string{
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/sys' >> /etc/clamav/clamd.conf`},
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/proc' >> /etc/clamav/clamd.conf`},
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/dev' >> /etc/clamav/clamd.conf`},
-	}
-	for _, cmd := range excludeCmds {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			log.Printf("Warning: failed to configure clamd ExcludePath: %v", err)
-		}
-	}
-
-	// Enable and start freshclam (virus database updater).
-	for _, cmd := range [][]string{
-		{"systemctl", "enable", "clamav-freshclam"},
-		{"systemctl", "start", "clamav-freshclam"},
-	} {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	// Wait for freshclam to download virus DB before starting clamd.
-	// clamd has a systemd ConditionPathExistsGlob that fails if the DB isn't ready.
-	log.Printf("Waiting for ClamAV virus database download...")
-	dbReady := false
-	for i := 0; i < 30; i++ { // up to 5 minutes
-		out, _, _ := cs.incusClient.ExecWithOutput(CoreSecurityContainer, []string{
-			"bash", "-c", "ls /var/lib/clamav/daily.c?d /var/lib/clamav/daily.inc 2>/dev/null | head -1",
-		})
-		if strings.TrimSpace(out) != "" {
-			dbReady = true
-			break
-		}
-		time.Sleep(10 * time.Second)
-	}
-	if !dbReady {
-		log.Printf("Warning: ClamAV virus DB not ready after 5 minutes, starting clamd anyway")
-	}
-
-	// Now start clamd (virus DB should be available).
-	for _, cmd := range [][]string{
-		{"systemctl", "enable", "clamav-daemon"},
-		{"systemctl", "start", "clamav-daemon"},
-	} {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	log.Printf("ClamAV security container setup complete")
+	log.Printf("Security container ready (no ClamAV: malware scanning runs inside the tenant's own box, #2631)")
 	return nil
 }
 

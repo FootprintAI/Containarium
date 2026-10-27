@@ -4,8 +4,6 @@ package containarium.v1;
 
 import "containarium/v1/container.proto";
 import "containarium/v1/config.proto";
-import "containarium/v1/app.proto";
-import "containarium/v1/network.proto";
 import "containarium/v1/alert.proto";
 import "containarium/v1/secrets.proto";
 import "containarium/v1/box_run.proto";
@@ -432,6 +430,23 @@ service ContainerService {
     };
   }
 
+  // SetContainerToolAccess records the tool-access level for platform-started
+  // (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+  // FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+  // user.containarium.tool_access, so it survives daemon restart with no
+  // separate store, and is read back on list/get as Container.tool_access.
+  rpc SetContainerToolAccess(SetContainerToolAccessRequest) returns (SetContainerToolAccessResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/tool-access"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Record the tool-access level for platform-started runs";
+      description: "Sets the container's tool-access level (#2944). Only platform-started (headless) agent runs are governed by it; the owner's own login is unaffected. UNSPECIFIED clears it.";
+      tags: "Container Operations";
+    };
+  }
+
   // SetContainerAttribution merges labels onto an EXISTING container's config
   // (cloud #746). The hosted control plane stamps attribution labels
   // (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -465,6 +480,19 @@ service ContainerService {
     };
   }
 
+  // SetSSHKeys replaces the caller-managed SSH public keys of a container
+  rpc SetSSHKeys(SetSSHKeysRequest) returns (SetSSHKeysResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/ssh-keys"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set SSH keys (replace all)";
+      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. Revocation is registry-wide: a dropped key is revoked in the ssh_keys registry for every account holding it (as RemoveSSHKey does), so it is also revoked for the same user's other boxes where it remains in the file. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
+      tags: "SSH Management";
+    };
+  }
+
   // RemoveSSHKey removes an SSH public key from a container
   rpc RemoveSSHKey(RemoveSSHKeyRequest) returns (RemoveSSHKeyResponse) {
     option (google.api.http) = {
@@ -474,6 +502,23 @@ service ContainerService {
       summary: "Remove SSH key";
       description: "Removes an SSH public key from a container's authorized_keys file, revoking SSH access for that key. The ssh_public_key should be URL-encoded.";
       tags: "SSH Management";
+    };
+  }
+
+  // StartBoxRun starts (or resumes) a coding-agent run on a box through the
+  // daemon API, with no SSH client needed (#2193) — the host-with-no-SSH
+  // case ListBoxRuns/TailBoxRunLog could read but not drive. Same access as
+  // connecting to the box: ssh:write, and the box owner or one of its
+  // collaborators.
+  rpc StartBoxRun(StartBoxRunRequest) returns (StartBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start a box's code run";
+      description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
     };
   }
 
@@ -502,6 +547,21 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Tail a box code run's log";
       description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+  // `containarium code stop`, for a caller with no SSH client. Same access as
+  // StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+  rpc StopBoxRun(StopBoxRunRequest) returns (StopBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs/{run_name}:stop"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stop a box's code run";
+      description: "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.";
       tags: "Code Runs";
     };
   }
@@ -540,6 +600,24 @@ service ContainerService {
       summary: "List collaborators";
       description: "Returns all collaborators with access to a container.";
       tags: "Collaborators";
+    };
+  }
+
+  // TerminateUserSessions ends every live SSH session a user holds on this
+  // backend: their owner box and every box they reach as a collaborator,
+  // in-box and on the host jump account. Nothing is deleted and no
+  // authorized_keys file changes; the user can connect again (#2522).
+  // Callers need ssh:write; the admin role (which service tokens carry) may
+  // name any user, any other caller only themselves.
+  rpc TerminateUserSessions(TerminateUserSessionsRequest) returns (TerminateUserSessionsResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{username}/sessions:terminate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Terminate user sessions";
+      description: "Ends every live SSH session the user holds on this backend (owner box and collaborator boxes). Deletes nothing; the user can connect again. Requires ssh:write; the admin role may name any user, any other caller only themselves.";
+      tags: "SSHSessions";
     };
   }
 

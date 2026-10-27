@@ -27,7 +27,7 @@
 # source with a current Go toolchain, plus a targeted grpc pin below, closes
 # that gap without waiting on an upstream rebuild.
 
-FROM golang:1.26.8-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 ARG SSHPIPER_VERSION=v1.6.1
 ENV CGO_ENABLED=0
 RUN apt-get update \
@@ -49,10 +49,19 @@ RUN git clone --depth 1 --branch "${SSHPIPER_VERSION}" https://github.com/tg123/
 # finding); replace-pin it in both modules so the image's Trivy scan below
 # doesn't fail on a real, currently-unfixed-upstream CVE with no better
 # stable version to move to.
-RUN go mod edit -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
+#
+# golang.org/x/net is pinned the same way: v1.6.1 resolves v0.58.0, inside
+# CVE-2026-78669's range (fixed in v0.60.0), and Go 1.26.9 closes the matching
+# stdlib findings CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 that failed
+# the v0.101.0 sidecar Trivy gate.
+RUN go mod edit \
+        -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
+        -replace golang.org/x/net=golang.org/x/net@v0.60.0 \
     && go mod tidy
 RUN cd cmd/sshpiperd \
-    && go mod edit -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
+    && go mod edit \
+        -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
+        -replace golang.org/x/net=golang.org/x/net@v0.60.0 \
     && go mod tidy
 
 RUN mkdir -p /out/plugins \
@@ -63,7 +72,11 @@ RUN mkdir -p /out/plugins \
     && ( cd cmd/sshpiperd && go build -trimpath -ldflags "-s -w -X main.mainver=${SSHPIPER_VERSION}" -o /out/sshpiperd . )
 
 FROM debian:bookworm-slim
+# apt-get upgrade: picks up security patches that shipped since
+# debian:bookworm-slim's last rebuild (e.g. libpcre2 deb12u2, which failed the
+# release Trivy gate on v0.99.0). Same fix as images/agent-box/Dockerfile.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /usr/sbin/nologin sshpiper

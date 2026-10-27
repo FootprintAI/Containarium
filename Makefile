@@ -1,4 +1,6 @@
-.PHONY: help proto build build-bpf clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
+.PHONY: help proto build build-bpf build-macos11 clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime bundle-sdlc-skills build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
+
+.PHONY: proto-lint proto-breaking docs-gates
 
 # Variables
 # BINARY_NAME is the containarium CLIENT (cmd/containarium, always built with
@@ -36,8 +38,8 @@ PKG_DIR=pkg/pb
 # the shell's own ${VAR} (real environment, escaped past Make with $$) rather
 # than Make's $(VAR) — parameter expansion never re-interprets its result as
 # a further command, closing the shell-injection half of the class too.
-$(foreach v,VERSION GIT_COMMIT BUILD_TIME,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
-export VERSION GIT_COMMIT BUILD_TIME
+$(foreach v,VERSION GIT_COMMIT BUILD_TIME BUF PROTO_AGAINST,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
+export VERSION GIT_COMMIT BUILD_TIME BUF PROTO_AGAINST
 
 LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.GitCommit=$${GIT_COMMIT} \
 	-X github.com/footprintai/containarium/pkg/version.BuildTime=$${BUILD_TIME}"
@@ -60,8 +62,19 @@ GOFLAGS=-v
 # invocation before `make build-release`.
 BPF_SRC := experimental/ebpf-phaseA/netpolicy.bpf.c
 BPF_OBJ := internal/netbpf/netpolicy.bpf.o
+# Second object (#2637): the exec-telemetry tracepoint program. Built by the
+# same target and embedded under the same tag, but from vmlinux.h (CO-RE),
+# which `build-bpf` generates from the build host's kernel BTF with bpftool —
+# gitignored, never checked in (#2711 Q1). Override BPFTOOL / BTF_VMLINUX
+# when the wrapper on PATH does not match the running kernel.
+EXEC_BPF_SRC := experimental/ebpf-phaseA/execwatch.bpf.c
+EXEC_BPF_OBJ := internal/netbpf/execwatch.bpf.o
+BPF_VMLINUX_H := internal/netbpf/vmlinux.h
+BPFTOOL ?= bpftool
+BTF_VMLINUX ?= /sys/kernel/btf/vmlinux
 GO_TAGS :=
-ifneq ($(wildcard $(BPF_OBJ)),)
+# embed_bpf.go embeds BOTH objects, so the tag is only usable when both exist.
+ifneq ($(and $(wildcard $(BPF_OBJ)),$(wildcard $(EXEC_BPF_OBJ))),)
 	GO_TAGS := -tags embed_bpf
 endif
 
@@ -76,14 +89,9 @@ help: ## Show this help message
 
 proto: ## Generate Go code from protobuf definitions
 	@echo "==> Generating protobuf code..."
-	@if command -v buf > /dev/null; then \
-		buf generate; \
-	else \
-		echo "Error: buf is not installed. Install with: brew install bufbuild/buf/buf"; \
-		exit 1; \
-	fi
+	@./scripts/buf-command.sh generate
 	@echo "==> Generating vendored externalgrpc stubs (#1415)..."
-	@cd third_party/proto && buf generate
+	@cd third_party/proto && ../../scripts/buf-command.sh generate
 	@echo "==> Protobuf code generated successfully"
 
 swagger-ui: ## Download and install Swagger UI static files
@@ -98,18 +106,38 @@ web-ui: ## Build Web UI static files for embedding
 
 proto-lint: ## Lint protobuf definitions
 	@echo "==> Linting protobuf definitions..."
-	@buf lint
+	@./scripts/buf-command.sh lint
 
 proto-breaking: ## Check for breaking changes in protobuf definitions
 	@echo "==> Checking for breaking changes..."
-	@buf breaking --against '.git#branch=main'
+	@./scripts/buf-command.sh breaking --against "$${PROTO_AGAINST:-.git#branch=main}"
 
-build-bpf: ## Compile the eBPF network-policy object for embedding (Linux; needs clang + kernel UAPI headers)
+build-bpf: ## Compile both eBPF objects for embedding (Linux; needs clang, kernel UAPI headers, bpftool + kernel BTF)
 	@echo "==> Compiling eBPF object $(BPF_OBJ)..."
 	@clang -O2 -g -target bpfel \
 		-I/usr/include/$(shell uname -m)-linux-gnu \
 		-c $(BPF_SRC) -o $(BPF_OBJ)
-	@echo "==> eBPF object built: $(BPF_OBJ) ($$(wc -c < $(BPF_OBJ)) bytes). Re-run make to pick up -tags embed_bpf."
+	@echo "==> eBPF object built: $(BPF_OBJ) ($$(wc -c < $(BPF_OBJ)) bytes)."
+	@echo "==> Generating $(BPF_VMLINUX_H) from kernel BTF (#2637)..."
+	@command -v $(BPFTOOL) >/dev/null 2>&1 || { \
+		echo "error: build-bpf: bpftool not found (looked for '$(BPFTOOL)')." >&2; \
+		echo "       execwatch.bpf.c needs vmlinux.h generated from kernel BTF. Install bpftool" >&2; \
+		echo "       (Ubuntu: apt-get install linux-tools-common linux-tools-\$$(uname -r)) or pass BPFTOOL=<path>." >&2; \
+		exit 1; }
+	@$(BPFTOOL) version >/dev/null 2>&1 || { \
+		echo "error: build-bpf: '$(BPFTOOL)' is present but cannot run (an Ubuntu wrapper without linux-tools-\$$(uname -r)?)." >&2; \
+		echo "       Install linux-tools-\$$(uname -r) or pass BPFTOOL=/usr/lib/linux-tools/<version>/bpftool." >&2; \
+		exit 1; }
+	@test -r $(BTF_VMLINUX) || { \
+		echo "error: build-bpf: kernel BTF not found at $(BTF_VMLINUX)." >&2; \
+		echo "       execwatch.bpf.c needs CONFIG_DEBUG_INFO_BTF; build on a BTF kernel or pass BTF_VMLINUX=<vmlinux-btf-file>." >&2; \
+		exit 1; }
+	@$(BPFTOOL) btf dump file $(BTF_VMLINUX) format c > $(BPF_VMLINUX_H).tmp && mv $(BPF_VMLINUX_H).tmp $(BPF_VMLINUX_H)
+	@echo "==> Compiling eBPF object $(EXEC_BPF_OBJ)..."
+	@clang -O2 -g -target bpfel \
+		-I$(dir $(BPF_VMLINUX_H)) \
+		-c $(EXEC_BPF_SRC) -o $(EXEC_BPF_OBJ)
+	@echo "==> eBPF object built: $(EXEC_BPF_OBJ) ($$(wc -c < $(EXEC_BPF_OBJ)) bytes). Re-run make to pick up -tags embed_bpf."
 
 build: proto web-ui swagger-ui ## Build both containariumd (server, today's binary) and containarium (client) (includes Swagger UI)
 	@echo "==> Building containariumd..."
@@ -206,6 +234,10 @@ bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release 
 	@scripts/verify-agent-runtime-bundle.sh $(BUILD_DIR)/agent-runtime-bundle.tar.gz
 	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
 
+bundle-sdlc-skills: ## Package the pinned SDLC role skills (pkg/core/sdlcskills/sdlc-skills.lock) as a release asset; fails if the lock's sha256 does not match a rebuild (#2065)
+	@echo "==> Packaging SDLC skills..."
+	@scripts/build-sdlc-skills-bundle.sh $(BUILD_DIR)
+
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."
 	@mkdir -p $(BUILD_DIR)
@@ -279,6 +311,18 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 13 relea
 	@echo "==> Release artifacts ready in $(BUILD_DIR)/:"
 	@ls -1 $(BUILD_DIR)/
 
+# ---- macOS 11 client (best effort) -----------------------------------------
+# Stock Go >= 1.25 only targets macOS 12+. scripts/build-macos11.sh builds the
+# CLIENT with a privately patched toolchain (Go 1.24's certificate verification
+# + linker minos 11.0) so Big Sur machines get a working binary. Published as a
+# separate containarium-darwin-<arch>-macos11 asset, never in place of the
+# normal one. Checksums are appended (>>) to the SHA256SUMS.txt build-release
+# wrote, same as build-caddy.
+build-macos11: ## Build containarium client for macOS 11 (amd64 + arm64), append to SHA256SUMS.txt
+	@mkdir -p $(BUILD_DIR)
+	@./scripts/build-macos11.sh $(BUILD_DIR) "$${VERSION:-dev}"
+	@cd $(BUILD_DIR) && shasum -a 256 $(BINARY_NAME)-darwin-amd64-macos11 $(BINARY_NAME)-darwin-arm64-macos11 >> SHA256SUMS.txt
+
 # ---- Pre-built Caddy release asset (#1617) ---------------------------------
 # One Caddy binary with caddy-l4 (SNI passthrough) + EVERY supported DNS-01
 # provider baked in, published alongside the binaries above so setupCaddy
@@ -304,7 +348,7 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 13 relea
 CADDY_VERSION=v2.11.4
 build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
 	@echo "==> Installing xcaddy..."
-	@GOBIN=$$(go env GOPATH)/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+	@scripts/install-xcaddy.sh $$(go env GOPATH)/bin/xcaddy
 	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
 	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
 	    --with github.com/mholt/caddy-l4 \
@@ -499,3 +543,7 @@ version: ## Show version information
 	@echo "Build platform: $(shell go env GOOS)/$(shell go env GOARCH)"
 
 .DEFAULT_GOAL := help
+
+docs-gates: ## Docs claims hygiene (#2558): README claims vs CLAIMS.md, deployment names, design Status lines
+	@scripts/ci/check-claims.sh --self-test && scripts/ci/check-doc-names.sh --self-test && scripts/ci/check-design-status.sh --self-test
+	@scripts/ci/check-claims.sh && scripts/ci/check-doc-names.sh && scripts/ci/check-design-status.sh

@@ -58,6 +58,7 @@ const seed: Seed = {
   agentCard: { name: "hello-agent" },
   tokenPath: null,
   platformMcp: null,
+  outputSchema: null,
 };
 
 interface Harness {

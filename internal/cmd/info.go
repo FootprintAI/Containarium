@@ -131,6 +131,11 @@ func showSystemInfo() error {
 	fmt.Printf("  Stopped:         %d\n", stopped)
 	fmt.Println()
 
+	// CPU budget + admission-gate posture (#2284); empty in local mode or
+	// against a daemon that predates the field.
+	fmt.Print(renderCPUBudget(serverInfo.CPUBudget))
+	fmt.Print(renderStoragePools(serverInfo.StoragePools))
+
 	// Show container list if any exist
 	if len(containers) > 0 {
 		fmt.Println("Container List:")

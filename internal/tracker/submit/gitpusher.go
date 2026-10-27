@@ -2,10 +2,14 @@ package submit
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -39,19 +43,34 @@ type PushSpec struct {
 	// Credential is supplied to git as an http.extraHeader through
 	// process environment only (GIT_CONFIG_COUNT/KEY_N/VALUE_N) — never
 	// argv — so it is absent from the host process table. See
-	// TestGitPusher_EnvAndArgv.
+	// TestGitPusher_EnvAndArgv. The header's form depends on the
+	// credential type — see authHeader.
 	Credential string
 	// RunID, IssueNumber, and Title feed BranchName. See PushSpec's own
 	// doc comment above for why there is no separate branch field.
 	RunID       string
 	IssueNumber int64
 	Title       string
+	// Files are committed on top of HeadSHA, as one commit with message
+	// FilesMessage, and that commit is pushed instead (#2798: the sealed
+	// Proof Pack). Empty pushes HeadSHA as it is.
+	Files        []File
+	FilesMessage string
+}
+
+// File is one file PushBundle commits on top of the bundle's head.
+type File struct {
+	Path    string
+	Content []byte
 }
 
 // PushResult is what a successful PushBundle produced.
 type PushResult struct {
 	Branch string
 	SHA    string
+	// BaseSHA is the commit the pushed one was built on; set by
+	// PushFiles, which resolves it from the remote itself.
+	BaseSHA string
 }
 
 // GitPusher pushes a bundle's commits to a daemon-chosen branch on the
@@ -129,6 +148,11 @@ func (p *ExecGitPusher) PushBundle(ctx context.Context, spec PushSpec) (PushResu
 	if spec.BaseSHA == "" || spec.HeadSHA == "" {
 		return PushResult{}, ErrEmptyBundle
 	}
+	for _, f := range spec.Files {
+		if err := checkFilePath(f.Path); err != nil {
+			return PushResult{}, err
+		}
+	}
 
 	tmp, err := os.MkdirTemp("", "containarium-submit-*")
 	if err != nil {
@@ -155,13 +179,96 @@ func (p *ExecGitPusher) PushBundle(ctx context.Context, spec PushSpec) (PushResu
 		return PushResult{}, wrapGitErr("fetch bundle", err, stderr, spec.Credential)
 	}
 
+	pushSHA := spec.HeadSHA
+	if len(spec.Files) > 0 {
+		if pushSHA, err = commitFiles(ctx, run, env, tmp, spec); err != nil {
+			return PushResult{}, err
+		}
+	}
+
 	branch := BranchName(spec.RunID, spec.IssueNumber, spec.Title)
-	refspec := spec.HeadSHA + ":refs/heads/" + branch
+	refspec := pushSHA + ":refs/heads/" + branch
 	if _, stderr, err := run(ctx, env, []string{"-C", tmp, "push", spec.RemoteURL, refspec}); err != nil {
 		return PushResult{}, wrapGitErr("push to remote", err, stderr, spec.Credential)
 	}
 
-	return PushResult{Branch: branch, SHA: spec.HeadSHA}, nil
+	return PushResult{Branch: branch, SHA: pushSHA}, nil
+}
+
+// filesCommitter is the identity of the commit commitFiles makes; the
+// hardened environment has no git config to take one from.
+var filesCommitter = []string{
+	"GIT_AUTHOR_NAME=Containarium", "GIT_AUTHOR_EMAIL=noreply@containarium.invalid",
+	"GIT_COMMITTER_NAME=Containarium", "GIT_COMMITTER_EMAIL=noreply@containarium.invalid",
+}
+
+var commitIDPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// checkFilePath accepts a clean, relative, slash-separated path that stays
+// inside the tree and names nothing under .git.
+func checkFilePath(p string) error {
+	bad := p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, `\`) || path.Clean(p) != p
+	for _, el := range strings.Split(p, "/") {
+		bad = bad || el == ".." || el == "." || strings.EqualFold(el, ".git")
+	}
+	if bad {
+		return fmt.Errorf("submit: refusing to commit file at %q", p)
+	}
+	return nil
+}
+
+// commitFiles writes spec.Files into one commit on top of spec.HeadSHA in
+// the bare repository repo, through a private index file, and returns the
+// commit's id. A file already at one of the paths is replaced.
+func commitFiles(ctx context.Context, run gitRunFunc, env []string, repo string, spec PushSpec) (string, error) {
+	dir, err := os.MkdirTemp("", "containarium-submit-files-*")
+	if err != nil {
+		return "", fmt.Errorf("submit: create files dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	idxEnv := append(append([]string(nil), env...), "GIT_INDEX_FILE="+filepath.Join(dir, "index"))
+	git := func(step string, e []string, args ...string) (string, error) {
+		out, stderr, err := run(ctx, e, append([]string{"-C", repo}, args...))
+		if err != nil {
+			return "", wrapGitErr(step, err, stderr, spec.Credential)
+		}
+		return strings.TrimSpace(out), nil
+	}
+
+	if _, err := git("read head tree", idxEnv, "read-tree", spec.HeadSHA); err != nil {
+		return "", err
+	}
+	for i, f := range spec.Files {
+		src := filepath.Join(dir, fmt.Sprintf("file-%d", i))
+		if err := os.WriteFile(src, f.Content, 0o600); err != nil {
+			return "", fmt.Errorf("submit: stage %s: %w", f.Path, err)
+		}
+		blob, err := git("hash file", env, "hash-object", "-w", "--no-filters", "--", src)
+		if err != nil {
+			return "", err
+		}
+		if !commitIDPattern.MatchString(blob) {
+			return "", fmt.Errorf("submit: hash-object printed %q, not an object id", blob)
+		}
+		if _, err := git("add file to index", idxEnv, "update-index", "--add", "--cacheinfo", "100644,"+blob+","+f.Path); err != nil {
+			return "", err
+		}
+	}
+	tree, err := git("write tree", idxEnv, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	commit, err := git("commit files", append(append([]string(nil), env...), filesCommitter...),
+		"commit-tree", tree, "-p", spec.HeadSHA, "-m", spec.FilesMessage)
+	if err != nil {
+		return "", err
+	}
+	// An empty id would make the push refspec ":refs/heads/<branch>", a
+	// deletion.
+	if !commitIDPattern.MatchString(commit) {
+		return "", fmt.Errorf("submit: commit-tree printed %q, not a commit id", commit)
+	}
+	return commit, nil
 }
 
 // hardenedEnv builds the COMPLETE environment for every git invocation
@@ -190,15 +297,42 @@ func hardenedEnv(home, credential string) []string {
 		"GIT_CONFIG_KEY_1=transfer.fsckObjects",
 		"GIT_CONFIG_VALUE_1=true",
 		"GIT_CONFIG_KEY_2=http.extraHeader",
-		// Same header shape as pkg/core/container/git_source.go's
-		// buildGitFetchScript, for one consistent credential-injection
-		// convention across the box-side fetch and the host-side push.
-		"GIT_CONFIG_VALUE_2=AUTHORIZATION: bearer " + credential,
+		"GIT_CONFIG_VALUE_2=" + authHeader(credential),
 	}
 	if path, ok := os.LookupEnv("PATH"); ok {
 		env = append(env, "PATH="+path)
 	}
 	return env
+}
+
+// installationTokenPrefix is GitHub's documented prefix for a GitHub App
+// installation token — the same prefix convention
+// internal/tracker/github's breadthFromTokenPrefix and DescribeCredential
+// classify credentials by. Not imported from there: this package must not
+// depend on internal/tracker (see runIDShortLen in branch.go).
+const installationTokenPrefix = "ghs_"
+
+// authHeader is the http.extraHeader value that authenticates credential
+// to the remote.
+//
+// A GitHub App installation token (ghs_…) gets Basic auth with the
+// literal username "x-access-token" — the form GitHub documents for
+// installation tokens over git HTTPS; a bearer header carrying one is not
+// that form (#2271).
+//
+// Everything else (PATs, GitLab tokens) keeps the bearer form, the same
+// header shape as pkg/core/container/git_source.go's buildGitFetchScript.
+func authHeader(credential string) string {
+	if strings.HasPrefix(credential, installationTokenPrefix) {
+		return "AUTHORIZATION: Basic " + installationTokenBasic(credential)
+	}
+	return "AUTHORIZATION: bearer " + credential
+}
+
+// installationTokenBasic is the Basic-auth credential for an installation
+// token: base64("x-access-token:<token>").
+func installationTokenBasic(token string) string {
+	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 }
 
 // wrapGitErr folds a failed step's context and stderr into one error,
@@ -210,6 +344,9 @@ func wrapGitErr(step string, err error, stderr, credential string) error {
 	msg := strings.TrimSpace(stderr)
 	if credential != "" {
 		msg = strings.ReplaceAll(msg, credential, "[redacted]")
+		// The installation-token header carries the credential base64-
+		// encoded, which the raw-substring redaction above would miss.
+		msg = strings.ReplaceAll(msg, installationTokenBasic(credential), "[redacted]")
 	}
 	if msg == "" {
 		return fmt.Errorf("submit: %s: %w", step, err)

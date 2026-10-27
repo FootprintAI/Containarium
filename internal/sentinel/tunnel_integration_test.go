@@ -92,6 +92,8 @@ func TestTunnelIntegration(t *testing.T) {
 
 	registry := NewTunnelRegistry()
 	tunnelServer := NewTunnelServer("", policyAny(token), registry, 0)
+	id := newTestTunnelIdentity(t)
+	tunnelServer.SetTunnelIdentity(id)
 
 	// These callbacks run on the tunnel server's own goroutines, which
 	// OUTLIVE this function: a session closing after the test returns still
@@ -122,7 +124,7 @@ func TestTunnelIntegration(t *testing.T) {
 		}
 	}
 
-	go func() { _ = tunnelServer.Serve(ctx, connMux.TunnelListener()) }()
+	serveTunnelServer(t, ctx, tunnelServer, connMux.TunnelListener())
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -130,8 +132,11 @@ func TestTunnelIntegration(t *testing.T) {
 	// 3. Start tunnel client on the "spot VM"
 	// ---------------------------------------------------------------
 
+	// The client's TLS session reaches the tunnel server through the mux,
+	// which routes it by ALPN.
 	client := &TunnelClient{
 		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", muxPort),
+		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "integration-spot",
 		Ports:        []int{spotDaemonPort, spotHTTPSPort},

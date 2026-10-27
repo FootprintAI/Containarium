@@ -25,7 +25,10 @@ import (
 // daemon resolves from EgressDomains; intra-tenant peer traffic is gated by
 // AllowIntraTenant.
 type CompiledPolicy struct {
-	Tenant           string
+	Tenant string
+	// IsHostDefault marks the host's default egress policy (DefaultPolicy), as
+	// opposed to one compiled from a stored policy (#2996).
+	IsHostDefault    bool
 	AllowIntraTenant bool
 	EgressCIDRs      []netip.Prefix // parsed, masked-to-network, deduped, sorted
 	EgressDomains    []string       // lowercased, trimmed, deduped, sorted
@@ -40,6 +43,32 @@ type CompiledPolicy struct {
 	// here (not filtered) so the package stays time-pure; the daemon drops expired
 	// rules with DenyRule.Expired(now) before pushing them to the kernel.
 	DenyRules []DenyRule
+	// AllowFromTenants (#2359) lists tenants whose boxes may reach this
+	// tenant's boxes; trimmed, deduped, sorted, never the tenant itself.
+	// Consumed by the tenant network guard, not by the eBPF program.
+	AllowFromTenants []string
+	// EgressPreset (#2440) is the ready-made egress posture; UNSPECIFIED is
+	// "just the lists". The implicit allow it implies (the DNS resolver) is
+	// added by ImplicitEgress, because the address is the daemon's to know.
+	EgressPreset pb.EgressPreset
+	// EgressMode is the enforcement mode of the egress allow-list alone; Mode
+	// keeps governing every other check. Carried as given: UNSPECIFIED means
+	// "follow Mode" and is resolved by EffectiveEgressMode, so a stored policy
+	// written before the field existed keeps behaving exactly as it did.
+	EgressMode pb.NetworkPolicyMode
+}
+
+// EffectiveEgressMode is the mode the egress allow-list decision runs under:
+// EgressMode when set, otherwise Mode (already resolved UNSPECIFIED→LOG_ONLY by
+// Compile).
+func (c CompiledPolicy) EffectiveEgressMode() pb.NetworkPolicyMode {
+	if c.EgressMode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED {
+		return c.EgressMode
+	}
+	if c.Mode == pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED {
+		return pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+	}
+	return c.Mode
 }
 
 // DenyRule is one normalized virtual-patch block rule (#660). The destination
@@ -89,6 +118,10 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 	if err != nil {
 		return CompiledPolicy{}, err
 	}
+	allowFrom, err := compileAllowFromTenants(tenant, p.GetAllowFromTenants())
+	if err != nil {
+		return CompiledPolicy{}, err
+	}
 
 	// Unspecified defaults to log-only in Phase A; reject unknown enum values.
 	mode := p.GetMode()
@@ -102,6 +135,22 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		return CompiledPolicy{}, fmt.Errorf("network policy: unknown mode %d", int32(mode))
 	}
 
+	// egress_mode: UNSPECIFIED is kept (it means "follow mode"); unknown values
+	// are rejected like an unknown mode.
+	switch p.GetEgressMode() {
+	case pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED,
+		pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE:
+	default:
+		return CompiledPolicy{}, fmt.Errorf("network policy: unknown egress mode %d", int32(p.GetEgressMode()))
+	}
+
+	switch p.GetEgressPreset() {
+	case pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED, pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY:
+	default:
+		return CompiledPolicy{}, fmt.Errorf("network policy: unknown egress preset %d", int32(p.GetEgressPreset()))
+	}
+
 	return CompiledPolicy{
 		Tenant:           tenant,
 		AllowIntraTenant: p.GetAllowIntraTenant(),
@@ -111,7 +160,47 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		Mode:             mode,
 		LogOnly:          mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
 		DenyRules:        deny,
+		AllowFromTenants: allowFrom,
+		EgressPreset:     p.GetEgressPreset(),
+		EgressMode:       p.GetEgressMode(),
 	}, nil
+}
+
+// ImplicitEgress returns the destinations the policy allows without the
+// operator listing them: for ALLOW_LIST_ONLY, the box's DNS resolver, which is
+// the bridge gateway. Name resolution is itself egress, so an enforced
+// allow-list that omits it blackholes the box (the runbook's standing
+// warning); the preset makes that mistake impossible. The gateway is the
+// daemon's to know, so it is passed in; an invalid address yields nothing and
+// the caller logs it. Callers fold the result into the egress set; it is not
+// stored on the policy, so `get` shows what the operator wrote.
+func ImplicitEgress(p CompiledPolicy, gateway netip.Addr) []netip.Prefix {
+	if p.EgressPreset != pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY || !gateway.IsValid() || !gateway.Is4() {
+		return nil
+	}
+	return []netip.Prefix{netip.PrefixFrom(gateway, 32)}
+}
+
+// compileAllowFromTenants trims, drops empties, dedups and sorts the list,
+// and refuses the tenant's own name — same-tenant traffic is
+// allow_intra_tenant's switch, and a self entry would read as if it did
+// something.
+func compileAllowFromTenants(tenant string, in []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range in {
+		t := strings.TrimSpace(raw)
+		if t == "" || seen[t] {
+			continue
+		}
+		if t == tenant {
+			return nil, fmt.Errorf("network policy: allow_from_tenants must not list the tenant itself (%q); use allow_intra_tenant for same-tenant traffic", t)
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // ToProto renders a CompiledPolicy back into a NetworkPolicy message — the
@@ -147,6 +236,9 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		AllowMetadata:    c.AllowMetadata,
 		Mode:             c.Mode,
 		DenyRules:        deny,
+		AllowFromTenants: append([]string(nil), c.AllowFromTenants...),
+		EgressPreset:     c.EgressPreset,
+		EgressMode:       c.EgressMode,
 	}
 }
 

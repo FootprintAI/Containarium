@@ -22,6 +22,7 @@ If a procedure here is wrong, update it.
 - [Pinning and verifying container image digests](#pinning-and-verifying-container-image-digests)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
 - [Pinning per-tenant network policy](#pinning-per-tenant-network-policy)
+- [Guardrail and egress policy stores unavailable (Postgres down)](#guardrail-and-egress-policy-stores-unavailable-postgres-down)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
 - [Verifying the audit-log hash chain](#verifying-the-audit-log-hash-chain)
 
@@ -261,17 +262,109 @@ Set in the daemon's systemd unit:
 Environment="CONTAINARIUM_POSTGRES_PASSWORD_FILE=/etc/containarium/postgres.password"
 ```
 
-To rotate, update the file in place and restart the daemon. No code
-or config change required:
-
-```bash
-echo -n "$NEW_PG_PASSWORD" | sudo tee /etc/containarium/postgres.password > /dev/null
-sudo chmod 0600 /etc/containarium/postgres.password
-sudo systemctl restart containarium
-```
-
 The daemon refuses to start if the file is world-readable — same
 contract as the JWT token file (Phase C-HIGH-7).
+
+**First install.** Set the password file (or env var) *before* the first
+start. The daemon creates the core Postgres role with the password it
+resolves, so a host configured up front never has the compiled-in default.
+(Before #2091 the role was always created with the default, whatever was
+configured.)
+
+### Rotating a running host
+
+The file is only what the daemon *presents*. The password the database
+*accepts* lives in Postgres, so rotating means changing both, in this order.
+Changing only the file and restarting leaves the daemon unable to log in.
+
+Letters and digits (`A-Za-z0-9`) are the simplest choice. The daemon escapes
+the password when it builds its connection URL, and Grafana's config quotes
+values it would read as comments, so `@ / : #` are handled. Avoid single quotes
+and backslashes: the `ALTER ROLE` statement in step 2 is written as SQL and
+does not escape them.
+
+1. **Stage the new password** in the file (mode 0600, root) and make sure the
+   daemon's environment points at it, as above. Nothing reads it until the
+   daemon restarts.
+
+2. **Change it in Postgres.** Pipe the statement on stdin so the password
+   never appears in a process argument list:
+
+   ```bash
+   printf "ALTER ROLE containarium WITH PASSWORD '%s';\n" "$(cat /etc/containarium/postgres.password)" \
+     | sudo incus exec containarium-core-postgres -- sudo -u postgres psql
+   ```
+
+   From here new connections made with the old password fail, and so does
+   Grafana's, until steps 3 and 4 finish. Existing daemon connections keep
+   working. Do the next steps straight away.
+
+3. **Restart the daemon.** It reads the file, reconnects, and brings Grafana's
+   database password in line on its own: it rewrites `[database] password` in
+   Grafana's config and restarts Grafana, but only if the new password
+   actually connects to Grafana's database, so a host that was rotated by hand
+   is never overwritten with something wrong.
+
+   ```bash
+   sudo systemctl restart containarium
+   ```
+
+   (On a daemon older than #2091, edit `[database] password` in
+   `/etc/grafana/grafana.ini` inside the metrics container and restart
+   `grafana-server` yourself.)
+
+4. **Verify** the old password is rejected and the new one works, and that
+   Grafana is healthy. Neither check should print a password:
+
+   ```bash
+   sudo incus exec containarium-core-postgres -- \
+     env PGPASSWORD=containarium psql -w -h <postgres-ip> -U containarium -d containarium -Atc 'select 1' \
+     && echo "STILL ACCEPTS THE DEFAULT" || echo "default rejected"
+   sudo incus exec containarium-core-victoriametrics -- curl -s localhost:3000/api/health
+   ```
+
+### The Grafana admin login
+
+A new host generates a random Grafana admin password at first provisioning and
+saves it to `/etc/containarium/grafana-admin.password` (mode 0600; override the
+path with `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`). If the daemon cannot save
+it, it leaves the key out, logs a warning, and Grafana falls back to its own
+default login with a prompt to change it at first login: change it straight
+away, because the dashboard port is reachable from every tenant on the bridge.
+
+A host provisioned before #2091 still has the literal login `admin` /
+`containarium`. Grafana only reads `admin_password` the first time it starts, so
+the daemon cannot change a live account for you. Reset it yourself, and save the
+new value where the operator can find it:
+
+```bash
+NEW=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+printf '%s\n' "$NEW" | sudo install -m 0600 -o root -g root /dev/stdin /etc/containarium/grafana-admin.password
+sudo incus exec containarium-core-victoriametrics -- \
+  grafana-cli --config /etc/grafana/grafana.ini admin reset-admin-password "$NEW"
+unset NEW
+```
+
+### Restrict who can connect
+
+A default install lets every address on the container bridge, tenants
+included, attempt to log in to the core Postgres. After rotating, narrow the
+`pg_hba.conf` rule to the clients that need it, using `scram-sha-256`. On a
+standard host those are the daemon (the bridge gateway address) and Grafana
+(the metrics container). A client you leave out is locked out, so list the
+live ones first:
+
+```bash
+sudo incus exec containarium-core-postgres -- sudo -u postgres psql -Atc \
+  "select client_addr, usename, datname, count(*) from pg_stat_activity
+   where backend_type='client backend' group by 1,2,3"
+```
+
+Replace the bridge-wide `md5` line with one `scram-sha-256` line per client,
+reload (`select pg_reload_conf();`), and turn on connection logging
+(`alter system set log_connections = on;`, then reload) so an unexpected client
+shows up. Blocking tenant traffic to the core services at the network layer is
+the stronger control; see the core-guard runbook.
 
 ---
 
@@ -372,7 +465,7 @@ Daemon startup log should show:
 Detected PostgreSQL at: <auto-detect skipped, URL was provided>
 ```
 
-If you see `Detected PostgreSQL at: 10.100.0.2 (password
+If you see `Detected PostgreSQL at: <private-ip> (password
 source: default)` instead, the URL didn't take — check the
 unit for stray `CONTAINARIUM_POSTGRES_*` overrides.
 
@@ -1077,8 +1170,10 @@ dependency will **break the tenant** once armed. So soak first:
 3. For every legitimate destination, add it to the allow-list (`--egress-cidr` /
    `--egress-domain`). **Include the tenant's DNS resolver / bridge gateway** —
    an enforce policy that omits its resolver blackholes the container (name
-   resolution itself is egress). Re-run `set` until the would-deny stream is
-   empty for normal operation.
+   resolution itself is egress). The [allow-list-only preset](#allow-list-only-preset-and-plan)
+   adds the resolver for you, and `network-policy plan` lists the destinations
+   to add. Re-run `set` until the would-deny stream is empty for normal
+   operation.
 4. Flip the policy to `--mode enforce` and set opt-in #2. Denied flows now drop,
    audited as `action=network_policy.deny_dropped`:
    ```bash
@@ -1087,6 +1182,50 @@ dependency will **break the tenant** once armed. So soak first:
 
 `--mode enforce` and `--mode log_only` can be flipped per tenant at any time; you
 can keep some tenants observing while others enforce.
+
+### Allow-list-only preset and plan
+
+Locking a tenant's egress down to an allow-list is already what `--mode enforce`
+with `--egress-cidr` / `--egress-domain` does. Two things made it awkward: the
+resolver had to be remembered, and the allow-list had to be written from memory.
+
+```bash
+# 1. Preset: the allow-list is the whole policy, and the box's DNS resolver (the
+#    bridge gateway) is allowed implicitly, so a forgotten resolver cannot
+#    blackhole name resolution. The mode is yours: soak in log_only first.
+containarium network-policy set alice --egress-preset allow-list-only --mode log_only
+
+# 2. Let the tenant work, then ask what the policy would have blocked:
+containarium network-policy plan alice --since 24h
+#   DESTINATION      PORT   PROTO  COUNT   STATE    LAST SEEN
+#   140.82.112.3     443    tcp    212     logged   2026-10-10T12:00:00Z
+#   ...
+#   --egress-cidr 140.82.112.3/32 --egress-cidr ...
+
+# 3. Review the addresses, re-run set with the ones you accept, repeat until the
+#    plan is empty for normal work, then flip to enforce.
+containarium network-policy set alice --egress-preset allow-list-only \
+    --egress-cidr 140.82.112.3/32 --mode enforce
+```
+
+What to know:
+
+- `set` declares the whole allow-policy, so leaving `--egress-preset` off a later
+  `set` clears the preset, like every other field.
+- The implicit entry is the bridge gateway, `/32`, and it is not stored on the
+  policy: `get` shows what you wrote. The gateway also hosts the daemon, so a
+  preset tenant can reach the host's listeners on the bridge address, exactly as
+  if you had listed it by hand as this runbook has always advised.
+- `plan` reads the deny audit rows (`deny_logged` and `deny_dropped`), so it
+  needs the daemon's audit store and an enabled enforcer; with enforcement
+  unarmed, `logged` is the honest state. It subtracts destinations your current
+  `--egress-cidr` entries already cover. Destinations allowed only through
+  `--egress-domain` are not subtracted, and it says so. Counts are denied flows,
+  not packets, and a busy tenant can hit the 5000-row cap per action (reported).
+- `plan` lists addresses a tenant *reached*. That is evidence for writing the
+  list, not a statement that they are safe; review it before pasting.
+- Under the preset a reverse-tunnel relay is simply not on the list, so it is
+  blocked in enforce mode and shows up in `plan` while soaking.
 
 ### Cloud metadata is denied by default
 
@@ -1109,6 +1248,109 @@ The container drops back to log_only on the next reconcile (≤ a few seconds);
 the egress map entries are pruned automatically.
 
 ---
+
+## Guardrail and egress policy stores unavailable (Postgres down)
+
+The guardrail policy (`containarium guardrail policy`, `/v1/guardrail/policy`)
+and the coding-tool egress policy (`containarium code egress-policy`,
+`/v1/code/egress-policy`) are stored in the daemon's Postgres. When Postgres
+is configured, both **fail closed** until their Postgres store is installed:
+the daemon never answers from an empty in-memory store, because an empty
+store would read as "no guardrail policy" (turning the inbound scan and the
+deploy gate off) and "every tenant unrestricted", and would drop admin writes
+at the next restart. Outside Kubernetes the daemon fills in a default
+Postgres address, so this applies to most hosts.
+
+**Symptom.** Postgres is down or unreachable when the daemon starts (or the
+store's table setup fails):
+
+- `containarium guardrail policy get` / `set` fail; the REST route answers
+  HTTP 500 (`read guardrail policy failed`). Guardrail-gated recipe deploys
+  are refused (`cannot read the server guardrail policy`), and the model
+  gateway cannot load the inbound policy.
+- `containarium code egress-policy get` / `set` / `delete` fail with
+  `UNAVAILABLE` (HTTP 503).
+- The daemon log has `guardrail policy store UNAVAILABLE` and
+  `Failed to create Postgres coding-tool egress policy store`, then one line
+  per retry: `policy store still UNAVAILABLE (its APIs fail closed): ...;
+  next attempt in 10s`.
+- `containarium doctor` on the host prints, after the host checks:
+
+  ```
+  Daemon readiness (advisory — does not affect the exit code):
+    ! guardrail policy store — unavailable: ...
+    ! coding-tool egress policy store — unavailable: ...
+  ```
+
+  `doctor` reads this from the local daemon's REST gateway
+  (`--daemon-url`, default `http://localhost:8080`), which serves the
+  standard `grpc.health.v1` status at `GET /v1/health?service=<name>`: one
+  status per policy service, `containarium.v1.GuardrailPolicyService` and
+  `containarium.v1.CodingToolEgressPolicyService` (200 `SERVING`, 503
+  `NOT_SERVING`). The endpoint needs no token. A cloud-enrolled daemon also
+  reports both as advisory `readiness: <service>` checks in its status
+  report. Neither changes the doctor exit code or `self_check_ok`.
+
+**Recovery.** Start Postgres (or fix connectivity). The daemon retries the
+store install in the background: first after 5 s, then doubling to every
+60 s. On the first attempt after Postgres answers it installs the Postgres
+store, logs `Policy stores recovered`, and both readiness lines turn to
+`✓ ... — ready`. No restart is needed; the deploy gate and the model gateway
+pick up the installed store on their next read. Policies stored before the
+outage are in Postgres and come back unchanged. Restarting the daemon also
+works, and is the only option on a daemon older than this change.
+
+The retry only ever installs the Postgres store. If you want a host with no
+durable policy storage, run it without Postgres configured: then the
+in-memory store is the store, and a policy set is lost on restart.
+
+## Daemon starting while core Postgres is down
+
+Every database-backed store shares one **startup Postgres check** (#2824).
+That covers secrets, tracker, app hosting, routes, passthrough,
+collaborators, the security/pentest/ZAP scan stores, audit, alerts, the
+credential-expiry watch and the threat-detection finding store. The check
+pings Postgres until `CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT` (a Go duration,
+default `20s`) runs out. If Postgres has not answered by then, the daemon
+skips every one of those stores at once, opens its listeners and serves
+**DEGRADED**. Before this change each store retried on its own, one after
+another, and the API stayed dark for minutes.
+
+While DEGRADED:
+
+- The log has one line,
+  `DEGRADED: startup Postgres check failed within 20s (...); skipping database-backed stores`.
+- `containarium doctor` prints
+  `! core Postgres (database-backed stores) — unavailable (DEGRADED): ...`.
+- `GET /v1/health?service=containarium.core_postgres` answers 503
+  `NOT_SERVING` (200 `SERVING` when the startup check passed). A
+  cloud-enrolled daemon also reports this as an advisory readiness check.
+- Behaviour is the same degraded behaviour as before, only reached sooner.
+  The skipped stores' APIs are not registered. With no audit store, no
+  audit path accepts writes it cannot persist and the threat-detection
+  sentry is not built. The secrets store stays off, and its
+  REQUIRE_ENVELOPE/KMS checks run unchanged on the next normal start. The
+  guardrail and egress policy stores keep their own background retry
+  (previous section).
+
+**Recovery.** By default you restart the daemon once Postgres is back. To
+have it restart itself, set `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`:
+
+- A daemon whose startup check failed then pings Postgres in the background,
+  backing off from 5 s to 60 s.
+- Once Postgres answers **3 pings in a row**, the daemon shuts down
+  gracefully and exits with status **75**. The supervisor starts it again,
+  and every store is wired through the normal path.
+- Flap guard: it never exits before `CONTAINARIUM_POSTGRES_RECOVERY_MIN_UPTIME`
+  (default `2m`), and any failed ping resets the count.
+- A daemon whose startup check passed never exits for this.
+
+**Supervisor requirement.** The self-restart needs a supervisor that
+restarts the daemon after a non-zero exit. Every unit this repository ships
+has `Restart=on-failure`: `containarium service install`,
+`scripts/containarium.service` and the Terraform startup scripts. If you run
+your own unit, check for `Restart=on-failure` (or `always`), and check that
+75 is not listed in `SuccessExitStatus=`. Otherwise leave the flag off.
 
 ## Auditing recent administrative actions
 
@@ -1196,6 +1438,167 @@ filesystem permissions — it defends against a Postgres-privileged
 attacker, not a host-root one who could edit both. Back it up
 off-host (it's a plain append-only JSON-lines file) for anything
 stronger.
+
+### Anchoring to a bucket
+
+The local anchor file is only as trustworthy as the host: a host-root
+attacker can edit it and the database together. To keep a copy the host
+cannot rewrite, point the daemon at a GCS bucket:
+
+```bash
+CONTAINARIUM_AUDIT_ANCHOR_BUCKET=gs://<bucket>[/<prefix>]
+```
+
+The daemon then writes each anchor to the local file first and to the
+bucket second, one object per checkpoint (`<prefix>/<20-digit checkpoint>.json`),
+using the host's `gcloud` credentials. Lock the bucket's retention policy
+(Bucket Lock) so an object can be neither deleted nor overwritten until its
+retention period ends; the daemon warns at startup when the policy is
+missing or unlocked, and anchors anyway.
+
+Check the database and the local file against the bucket:
+
+```bash
+containarium audit verify-anchor --anchor-bucket gs://<bucket>[/<prefix>]
+```
+
+`--anchor-bucket` defaults to `CONTAINARIUM_AUDIT_ANCHOR_BUCKET`; with
+neither set, `verify-anchor` checks the local file only, as before. The
+command reads every checkpoint in the bucket, not just the highest one:
+
+| Result | Meaning | Exit |
+| --- | --- | --- |
+| ✗ | A bucket checkpoint's root differs from the database row's hash, or the row no longer exists. | non-zero |
+| ✗ | A bucket checkpoint and the local file record different roots, or the bucket has a checkpoint the local file lacks. | non-zero |
+| ✗ | A bucket checkpoint is above the database's highest row id, or its content does not match its name. The daemon cannot have written it. | non-zero |
+| ✗ | A checkpoint only the local file holds (not in the bucket) differs from the database row, or the row no longer exists. The database is checked against the local file for these exactly as it is without `--anchor-bucket`, so turning the bucket on never weakens the local check. | non-zero |
+| ✗ | The chain is internally inconsistent after the latest checkpoint in either copy. | non-zero |
+| ⚠ | The local file holds checkpoints the bucket does not (an upload is still being retried, or the prefix is wrong or empty). The bucket does not vouch for them; they are checked against the database only. | 0 |
+| ⚠ | The bucket has no retention policy, or an unlocked one, or it could not be read. | 0 |
+| ⚠ | An object under the prefix is not named like an anchor; it is ignored. | 0 |
+
+An unreachable bucket or a permission error on the listing is an error,
+never a clean result.
+
+#### What the bucket check does and does not prove
+
+With a **locked** retention policy, it proves that every anchor the daemon
+uploaded is still as uploaded, and that the database and the local file
+agree with each one. That catches:
+
+- a database writer rewriting or deleting a row at or below an uploaded
+  checkpoint, even with every later hash recomputed;
+- a host-root attacker editing or truncating the local anchor file;
+- an object planted in the bucket to hide the real latest anchor (the
+  retention lock stops deletes and overwrites, not new objects, so every
+  object is checked rather than trusting the highest name).
+
+It does **not** protect against:
+
+- a rewrite of rows after the latest uploaded checkpoint, until the next
+  anchoring tick (15 minutes by default) uploads a newer one;
+- a checkpoint whose upload failed and was superseded: it exists only in the
+  local file, so only the local file vouches for it (the database is still
+  compared with it, but a host-root attacker can edit both);
+- a bucket whose retention policy is missing or unlocked: anyone with delete
+  rights can then remove or replace anchors, and the check can only warn;
+- a host-root attacker who stops the daemon, or who alters the `containarium`
+  binary or the host's `gcloud` that performs this check. Run it from a
+  machine you trust, with its own read-only credentials;
+- anyone who controls the cloud project and can wait out the retention
+  period.
+
+An attacker holding the host's `gcloud` credentials can also pre-plant an
+object at a checkpoint id the daemon has not anchored yet. The daemon's
+create-only upload of that checkpoint then fails (HTTP 412, logged as an
+anchor conflict on each tick), so the operator first sees a failing upload in
+the daemon log. `verify-anchor` reports the same object as ✗ (above the
+database's highest row id, missing from the local file, or a root that
+differs from the database), so a planted object never passes as an anchor.
+
+Nothing runs this check on a schedule; an operator or a monitor has to.
+
+#### After a retention purge
+
+Once retention is in enforce mode (see
+[DATA-FLOW-AND-RETENTION.md](DATA-FLOW-AND-RETENTION.md#the-hash-chained-audit-log)),
+the oldest `audit_logs` rows are removed and the daemon stores a **chain
+base**: the id and hash of the last purged row. What changes for the checks
+above:
+
+- `audit verify` starts from the base instead of the first row, and prints
+  that it did. A clean result means "intact since the base", not "intact since
+  the first row ever written".
+- `audit verify-anchor`, with or without `--anchor-bucket`, no longer treats a
+  checkpoint below the base as a deleted row. Those checkpoints are still
+  compared between the bucket and the local file, and the checkpoint at the
+  base is compared with the base hash; the output counts them as "below the
+  chain base". A checkpoint at or above the base is compared with the database
+  as before.
+- A purge never removes the latest anchored row or anything after it, and is
+  refused when that row no longer matches its anchor.
+
+The base records where verification starts, not why the rows before it are
+gone. A database writer who deletes the oldest rows and writes a matching base
+looks like a purge to both commands: by the database alone, a rewritten chain
+base is indistinguishable from a legitimate purge. What tells them apart is the
+anchor bucket, and the comparison is yours to make: `audit verify-anchor
+--anchor-bucket` reports how many checkpoints lie "below the chain base", and
+you compare that with the bucket's own listing. The bucket's checkpoints are
+write-once, so rows that vanished while the bucket still holds anchors for
+them, or a base far above the bucket's latest checkpoint, are not explained by
+any purge. `verify-anchor` does not flag either of those: they are manual
+judgements. If an attacker moves the base over those rows, the checkpoints sit
+below the base, the database is no longer compared with them, and the only
+automatic check left is the comparison between the bucket and the local anchor
+file, which needs a non-empty local record at the same checkpoint. What
+`verify-anchor` does fail is a bucket object below the base that the local file
+has no record of (the missing-locally rule, also for an object with an empty
+root or when the local file is empty) or whose root differs from the local
+file's. Check an unexpected base against the
+audit log (`containarium audit query --action retention.sweep` and
+`--action retention.sweep.result`): every authorised purge writes a
+`retention.sweep` entry before it deletes (with `previous_base_id`, the base it
+started from) and, if it removed rows, a `retention.sweep.result` entry after
+it with `base_id`, the new base. The `base_id` of the latest result entry
+equals the stored base, and its `previous_base_id` equals the `base_id` of the
+result before it, unless a result entry could not be written (the daemon log
+says so, and the sweep report notes it). A base with no matching entry and no
+such note is the thing to investigate.
+
+Those entries are ordinary rows of the chain and use the gateway-logs window
+(90 days by default), so a later purge removes them like any other admin event.
+The base outlives them. To keep the proof of authorisation longer than that
+window, export the `retention.sweep`, `retention.sweep.result`,
+`retention.mode.set`, `retention.policy.set`, `retention.hold.set` and
+`retention.hold.release` entries before they age out
+(`containarium audit query --action <action> --raw > <file>`) and store the
+exports with the anchor copies. Whether admin events should be kept longer
+than gateway logs is an open decision (#2979); today they are not.
+
+### Integrity self-measurement heartbeat
+
+The daemon also emits a self-measurement digest to its log on a periodic
+heartbeat. Set `CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL` in the daemon's
+systemd `Environment=` or `EnvironmentFile` to a Go duration such as `30s`,
+`5m`, or `1h`. It defaults to `5m`. Invalid, zero, and negative values fall
+back to that default; values below `30s` are clamped to `30s` to avoid a log
+flood. The daemon logs the effective interval when the heartbeat starts.
+
+When `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` selects the built-in object
+(`embedded`, `1`, `true`, `yes` or `on`), the measurement's `programDigests`
+holds one entry named `embedded`: the SHA-256 of the object bundled in the
+binary, which is the object the enforcer loads. With a file path, the entry is
+named by that path and digests the file.
+
+When the exec watcher has actually loaded and attached its object (the
+threat-detection sentry is enabled and the exec telemetry status is `ok`), the
+daemon runs a second object from the same setting, and `programDigests`
+carries one more entry for it: `execwatch-embedded` (the bundled exec-watch object) for the same aliases, or, with a file path, an
+entry named by the sibling `execwatch.bpf.o` path in the same directory. It is
+checked on every heartbeat and left out whenever the watcher is not running
+(load or attach failed, status `unavailable`, or the enforcer did not start).
+A verifier that rejects unknown `programDigests` names must accept it.
 
 ---
 

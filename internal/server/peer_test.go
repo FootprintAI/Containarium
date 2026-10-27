@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
+	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 )
 
 func TestNewPeerPool(t *testing.T) {
@@ -367,5 +368,49 @@ func TestIsDiscoveredPeer(t *testing.T) {
 	}
 	if isDiscoveredPeer("short") {
 		t.Error("expected short string to not be discovered peer")
+	}
+}
+
+// #2858: a peer's podmanEnabled must survive the peer decode. Both the list
+// and the get-fallback paths turn the decoded ContainerInfo into the response
+// via StatusFromInfo + toProtoContainer, so the chain is asserted here. A peer
+// that omits the field (an older daemon) reports true, as every box did before
+// the flag was recorded; dropping the field would report false for every box
+// on every peer.
+func TestPeerPool_ListContainers_PodmanEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field map[string]interface{}
+		want  bool
+	}{
+		{"older peer omits the field", nil, true},
+		{"enabled", map[string]interface{}{"podmanEnabled": true}, true},
+		{"disabled", map[string]interface{}{"podmanEnabled": false}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c := map[string]interface{}{"name": "alice-container", "username": "alice", "state": "CONTAINER_STATE_RUNNING"}
+				for k, v := range tc.field {
+					c[k] = v
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"containers": []interface{}{c}})
+			}))
+			defer srv.Close()
+
+			pool := NewPeerPool("local", "", nil, "")
+			pool.mu.Lock()
+			pool.peers["test-peer"] = &PeerClient{ID: "test-peer", Addr: srv.Listener.Addr().String(), Healthy: true, client: srv.Client()}
+			pool.mu.Unlock()
+
+			containers, _ := pool.ListContainers("")
+			if len(containers) != 1 {
+				t.Fatalf("expected 1 container, got %d", len(containers))
+			}
+			st := boxlxc.StatusFromInfo(&containers[0])
+			if got := toProtoContainer(&st).PodmanEnabled; got != tc.want {
+				t.Errorf("PodmanEnabled = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

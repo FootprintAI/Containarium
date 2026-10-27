@@ -1,6 +1,8 @@
 [Unit]
 Description=SSHPiper reverse proxy
-After=network.target
+After=network.target containarium-sentinel.service
+BindsTo=containarium-sentinel.service
+PartOf=containarium-sentinel.service
 # On a fresh deploy the routing config.yaml isn't written until the first
 # container exists (keysync). sshpiper may therefore fail to start for a
 # while; without disabling the start-rate limiter, Restart=always gives up
@@ -14,16 +16,37 @@ ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
+  --login-grace-time 90s \
+  /usr/local/bin/containarium sentinel ssh-authz-plugin \
+  --ssh-authz-grace 5m \
+  --ssh-authz-timeout 3s \
+%{ if ssh_authz_enforce ~}
+  --ssh-authz-enforce \
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
+  -- \
   /usr/local/bin/containarium sentinel ssh-session-plugin \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
   -- \
-  yaml \
-  --config /etc/sshpiper/config.yaml \
+  /usr/local/bin/containariumd sentinel ssh-upstream-plugin \
+  --listener main \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
+  --plugin /usr/local/bin/yaml \
+  --plugin-arg=--config \
+  --plugin-arg=/etc/sshpiper/config.yaml \
   -- \
-  failtoban \
-  --max-failures 100 \
-  --ban-duration 5m
+  /usr/local/bin/containariumd sentinel ssh-ban-plugin \
+  --listener main \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
+  --max-failures ${ssh_ban_max_failures} \
+%{ for prefix in ssh_ban_ignore_cidrs ~}
+  --ignore-ip ${prefix} \
+%{ endfor ~}
+%{ if ssh_ban_audit_records ~}
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+%{ endif ~}
+  --ban-duration ${ssh_ban_duration_seconds}s
 Restart=always
 RestartSec=5
 

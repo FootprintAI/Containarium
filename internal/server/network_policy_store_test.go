@@ -102,3 +102,44 @@ func TestEncodeDecodeDenyRules(t *testing.T) {
 		}
 	}
 }
+
+// allow_from_tenants (#2359) round-trips through the in-memory store and is
+// copied, not aliased, so a caller mutating its slice cannot change stored
+// state.
+func TestMemStore_AllowFromTenantsRoundTrip(t *testing.T) {
+	s := NewMemNetworkPolicyStore()
+	in := []string{"bob", "carol"}
+	if err := s.Set(context.Background(), &pb.NetworkPolicy{Tenant: "alice", AllowFromTenants: in}); err != nil {
+		t.Fatal(err)
+	}
+	in[0] = "mallory"
+	got, err := s.Get(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AllowFromTenants) != 2 || got.AllowFromTenants[0] != "bob" || got.AllowFromTenants[1] != "carol" {
+		t.Errorf("AllowFromTenants = %v, want [bob carol]", got.AllowFromTenants)
+	}
+	list, err := s.List(context.Background())
+	if err != nil || len(list) != 1 || len(list[0].AllowFromTenants) != 2 {
+		t.Errorf("List = %v, %v", list, err)
+	}
+}
+
+func TestMemStore_EgressModeRoundTrip(t *testing.T) {
+	s := NewMemNetworkPolicyStore()
+	if err := s.Set(context.Background(), &pb.NetworkPolicy{
+		Tenant:     "alice",
+		Mode:       pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+		EgressMode: pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetEgressMode() != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY {
+		t.Errorf("EgressMode = %v, want LOG_ONLY", got.GetEgressMode())
+	}
+}

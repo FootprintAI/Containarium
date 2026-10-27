@@ -96,9 +96,11 @@ containarium monitoring export status
 ## 5. Verify metrics are visible
 
 Within ~2 minutes, in Cloud Monitoring → Metrics Explorer, query
-`workload.googleapis.com/containarium.host.cpu.load_1m` (or any of the
-other seven host series, or `workload.googleapis.com/containarium.export.
-heartbeat`) filtered to your project — a real, moving data point confirms
+`prometheus.googleapis.com/containarium.host.cpu.load_1m/gauge` (or any of
+the other seven host series, or
+`prometheus.googleapis.com/containarium.export.heartbeat/gauge`) filtered to
+your project (hosts below v0.100.0 write `workload.googleapis.com/containarium.*`
+instead; see "Metric names and resource type" in the dead-man runbook) — a real, moving data point confirms
 the pipeline end to end.
 
 ## 6. Create one working alert (the dead-man heartbeat)
@@ -183,6 +185,16 @@ gcloud monitoring dashboards create \
   --project="${PROJECT_ID}" \
   --config-from-file=deploy/monitoring/gcm-containarium-hosts.json
 ```
+
+The dashboard's filters select the series a v0.100.0-or-later host writes
+(`prometheus.googleapis.com/<name>/gauge` or `/counter`, resource
+`prometheus_target`; see "Metric names and resource type" in the
+[dead-man runbook](METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md)). Hosts below
+v0.100.0 still write the deprecated `workload.googleapis.com/...` type on
+`gce_instance`, which these widgets do not show; a mixed fleet needs a copy of
+the dashboard with those filters until the old hosts are upgraded.
+`deploy/monitoring/dashboard_test.go` pins every filter to the exporter's
+instrument names and kinds.
 
 Re-run the same command with `dashboards update` (matching the dashboard's
 assigned name) after pulling a change to the committed JSON, so the live

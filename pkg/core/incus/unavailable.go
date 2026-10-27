@@ -2,6 +2,7 @@ package incus
 
 import (
 	"errors"
+	"io"
 	"time"
 
 	"github.com/lxc/incus/v7/shared/api"
@@ -51,8 +52,12 @@ func (*UnavailableBackend) ExecWithExitCode(string, []string) (string, string, i
 }
 func (*UnavailableBackend) WriteFile(string, string, []byte, string) error { return ErrUnavailable }
 func (*UnavailableBackend) ReadFile(string, string) ([]byte, error)        { return nil, ErrUnavailable }
+func (*UnavailableBackend) ListDir(string, string) ([]string, error)       { return nil, ErrUnavailable }
 func (*UnavailableBackend) SetConfig(string, string, string) error         { return ErrUnavailable }
 func (*UnavailableBackend) SetCPULimit(string, string) error               { return ErrUnavailable }
+func (*UnavailableBackend) SetCPUConfig(string, string, string) error      { return ErrUnavailable }
+func (*UnavailableBackend) FreezeContainer(string) error                   { return ErrUnavailable }
+func (*UnavailableBackend) UnfreezeContainer(string) error                 { return ErrUnavailable }
 func (*UnavailableBackend) UnsetConfig(string, string) error               { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceSize(string, string, string) error     { return ErrUnavailable }
 func (*UnavailableBackend) UpdateContainerConfig(string, string, string) error {
@@ -85,12 +90,19 @@ func (*UnavailableBackend) PublishImage(string, string, map[string]string) (stri
 func (*UnavailableBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
 	return nil, false, ErrUnavailable
 }
+func (*UnavailableBackend) ExportInstance(string) (io.ReadCloser, error) { return nil, ErrUnavailable }
+func (*UnavailableBackend) ImportInstance(string, string, io.Reader, ImportOptions) error {
+	return ErrUnavailable
+}
 
 // Network ACLs + NIC devices (core-infra network guard).
 func (*UnavailableBackend) GetNetworkACL(string) (*api.NetworkACL, error)     { return nil, ErrUnavailable }
 func (*UnavailableBackend) CreateNetworkACL(ACLConfig) error                  { return ErrUnavailable }
 func (*UnavailableBackend) UpdateNetworkACL(string, ACLConfig) error          { return ErrUnavailable }
+func (*UnavailableBackend) ListNetworkACLs() ([]api.NetworkACL, error)        { return nil, ErrUnavailable }
+func (*UnavailableBackend) DeleteNetworkACL(string) error                     { return ErrUnavailable }
 func (*UnavailableBackend) AttachACLToContainer(string, string, string) error { return ErrUnavailable }
+func (*UnavailableBackend) SetOwnedACL(string, string, string, string) error  { return ErrUnavailable }
 func (*UnavailableBackend) EnsureNICDevice(string, NICDevice) error           { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceConfig(string, string, map[string]string) error {
 	return ErrUnavailable

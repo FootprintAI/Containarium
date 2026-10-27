@@ -91,7 +91,7 @@ func newRunGatewayRig(t *testing.T, ownerKeys map[string]string) *runGatewayRig 
 	rig.url = srv.URL + "/v1/model/openai/v1/chat/completions"
 
 	rig.s = &AgentSkillServer{
-		gateway: &gatewayProvisioning{provider: "openai", httpPort: 8080, secret: secret},
+		gateway: &gatewayProvisioning{httpPort: 8080, secret: secret},
 	}
 	return rig
 }
@@ -148,7 +148,7 @@ func TestRunKeyOwner(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runKeyOwner(tc.ctx, tc.box)
+			got := runKeyOwner(tc.ctx, tc.box, "")
 			if got != tc.want {
 				t.Errorf("runKeyOwner = %q, want %q", got, tc.want)
 			}
@@ -166,7 +166,7 @@ func TestRunKeyOwner(t *testing.T) {
 func TestMintRunGatewayToken_OwnedRunCarriesKeyOwner(t *testing.T) {
 	rig := newRunGatewayRig(t, nil)
 
-	tok, minted, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", boxWithLabels(nil))
+	tok, minted, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", "", boxWithLabels(nil), "")
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestMintRunGatewayToken_SpendsOwnersKey(t *testing.T) {
 		"user:bob|openai":   "BOB-KEY",
 	})
 
-	tok, _, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", boxWithLabels(nil))
+	tok, _, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", "", boxWithLabels(nil), "")
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestMintRunGatewayToken_UnownedRunKeepsGlobalKeyAndLogsOnce(t *testing.T) {
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
-	tok, _, err := rig.s.mintRunGatewayToken(context.Background(), "agent-hello", "hello", "run-sys", boxWithLabels(nil))
+	tok, _, err := rig.s.mintRunGatewayToken(context.Background(), "agent-hello", "hello", "run-sys", "openai", "", boxWithLabels(nil), "")
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestMintRunGatewayToken_RevokeByKeyOwnerKillsLiveRunToken(t *testing.T) {
 
 	mint := func(ctx context.Context, runID string) string {
 		t.Helper()
-		tok, _, err := rig.s.mintRunGatewayToken(ctx, "agent-hello", "hello", runID, boxWithLabels(nil))
+		tok, _, err := rig.s.mintRunGatewayToken(ctx, "agent-hello", "hello", runID, "openai", "", boxWithLabels(nil), "")
 		if err != nil {
 			t.Fatalf("mintRunGatewayToken(%s): %v", runID, err)
 		}

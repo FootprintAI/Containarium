@@ -7,6 +7,9 @@
 # this repo.
 #
 # topology: pipeline | orchestrator | freeform
+# roles (optional, #2799): one per skill_id, in the same order, each
+# coder | reviewer | pack_producer. A pack_producer is never the coder's skill
+# or box, and runs last in a pipeline.
 # RunCrew validates that every A2A edge the topology implies is permitted by
 # the members' allowed_peers (and thus by the Phase 2 network policy) before
 # provisioning anything — so a crew's wiring can never ask for a hop the trust
@@ -54,6 +57,22 @@ crews:
       - diff-drafter   # diff-drafter.allowed_peers includes diff-reviewer,
       - diff-reviewer  # so the pipeline edge drafter -> reviewer is permitted.
 
+  # two-engine-crew (#2225): the acceptance test fixture for the agent-router
+  # PRD's Story 4 — a two-member crew whose members name two different
+  # engines, proving several engines can run on one daemon at once. Pipeline
+  # topology (not freeform): driveCrew only ever delivers the crew's input to
+  # entry skill ids[0] itself, so a freeform crew's second member would never
+  # actually run unless the first agent chose to delegate to it. Pipeline
+  # guarantees BOTH members run, in order, which is what the e2e lane
+  # (scripts/two-engine-crew-e2e.sh) needs to observe both engines.
+  - id: two-engine-crew
+    name: Two-Engine Crew
+    description: Reference crew for per-skill engine routing — hello-agent-claude runs on the claude engine, then hands off to hello-agent-codex on the codex engine, both against the same daemon.
+    topology: pipeline
+    skill_ids:
+      - hello-agent-claude  # hello-agent-claude.allowed_peers includes
+      - hello-agent-codex   # hello-agent-codex, so this pipeline edge is permitted.
+
   # engineer-crew (Containarium-cloud#2003, Phase 3 Story 1 of the
   # coding-agent issue-to-PR PRD): a GitHub issue in, a reviewed change with
   # a PR title/body out. Reuses diff-crew's own reviewer stage unchanged in
@@ -67,8 +86,15 @@ crews:
   # needed to make this runnable.
   - id: engineer-crew
     name: Engineer Crew
-    description: Turns a GitHub issue into a reviewed file change with a PR title and body. issue-implementer reads the issue-shaped task and makes the change; diff-reviewer finalizes it against its own checkout of the same commit.
+    description: Turns a GitHub issue into a reviewed file change with a PR title and body. issue-implementer reads the issue-shaped task and makes the change; diff-reviewer finalizes it against its own checkout of the same commit; test-runner runs the repository's tests on the final files in its own box and produces the Proof Pack.
     topology: pipeline
     skill_ids:
       - issue-implementer  # issue-implementer.allowed_peers includes
       - diff-reviewer      # diff-reviewer, so this pipeline edge is permitted.
+      - test-runner        # not an A2A peer: no edge to it is required.
+    # #2799: roles are parallel to skill_ids. test-runner is the pack
+    # producer: after the reviewer returns the final files, the daemon writes
+    # them into test-runner's own checkout and runs the repository's test
+    # commands there, so the Proof Pack never comes from the coder's box.
+    # RunCrew rejects a crew whose pack_producer is the coder's skill or box.
+    roles: [coder, reviewer, pack_producer]

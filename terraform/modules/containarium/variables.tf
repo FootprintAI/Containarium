@@ -3,6 +3,78 @@
 # =============================================================================
 # Unified variable definitions for both dev and production consumers.
 
+variable "ssh_upstream_failure_budget" {
+  description = "Aggregate backend jail-risk budget, shared by main and anonymous SSH. Default leaves one unit below the tested maxretry=3 profile."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.ssh_upstream_failure_budget >= 1 && var.ssh_upstream_failure_budget <= 65536 && floor(var.ssh_upstream_failure_budget) == var.ssh_upstream_failure_budget
+    error_message = "Upstream failure budget must be an integer from 1 to 65536."
+  }
+}
+
+variable "ssh_upstream_risk_per_attempt" {
+  description = "Conservative matching jail records per admitted SSH setup; verify against the actual backend filter."
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.ssh_upstream_risk_per_attempt >= 1 && var.ssh_upstream_risk_per_attempt <= 65536 && floor(var.ssh_upstream_risk_per_attempt) == var.ssh_upstream_risk_per_attempt
+    error_message = "Per-attempt risk must be an integer from 1 to 65536."
+  }
+}
+
+variable "ssh_upstream_window_seconds" {
+  description = "Verified backend findtime, in seconds. Exhausted risk waits for this window; initial installation also waits once."
+  type        = number
+  default     = 600
+  validation {
+    condition     = var.ssh_upstream_window_seconds >= 1 && var.ssh_upstream_window_seconds <= 86400 && floor(var.ssh_upstream_window_seconds) == var.ssh_upstream_window_seconds
+    error_message = "Upstream risk window must be an integer from 1 to 86400 seconds."
+  }
+}
+
+variable "ssh_ban_max_failures" {
+  description = "Sentinel SSH failed-callback threshold per source IP."
+  type        = number
+  default     = 100
+  validation {
+    condition     = var.ssh_ban_max_failures >= 1 && var.ssh_ban_max_failures <= 4294967295 && floor(var.ssh_ban_max_failures) == var.ssh_ban_max_failures
+    error_message = "SSH ban max failures must be a positive uint32 integer."
+  }
+}
+
+variable "ssh_ban_duration_seconds" {
+  description = "Fixed sentinel SSH failure window from the first connection."
+  type        = number
+  default     = 300
+  validation {
+    condition     = var.ssh_ban_duration_seconds >= 1 && var.ssh_ban_duration_seconds <= 86400 && floor(var.ssh_ban_duration_seconds) == var.ssh_ban_duration_seconds
+    error_message = "SSH ban duration must be an integer from 1 to 86400 seconds."
+  }
+}
+
+variable "ssh_ban_ignore_cidrs" {
+  description = "Narrow IPv4/IPv6 CIDRs exempt from sentinel IP banning, never key authentication."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for prefix in var.ssh_ban_ignore_cidrs : can(cidrhost(prefix, 0)) && can(regex("^[0-9a-fA-F:.]+/[0-9]+$", prefix)) && !can(regex("(?i)::ffff:", prefix))])
+    error_message = "SSH ban exemptions must be IPv4/IPv6 CIDRs without whitespace, flags, or mapped IPv4 addresses."
+  }
+}
+
+variable "ssh_ban_audit_records" {
+  description = "Record failed SSH authentications and bans from both listeners' ssh-ban-plugin into the SSH session records file the shipper already delivers to the backend's audit chain (#2419). Needs a containariumd whose ssh-ban-plugin has --records-file; an older binary rejects the flag and sshpiper will not start, so this is off by default. See docs/SENTINEL-SSH-SESSION-AUDIT.md."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_enforce" {
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # Project & Region
 # -----------------------------------------------------------------------------
@@ -172,6 +244,18 @@ variable "fail2ban_whitelist_cidr" {
   default     = "10.0.0.0/8"
 }
 
+variable "ssh_authz_keys_command" {
+  description = "Install sshd AuthorizedKeysCommand on the jump host so direct SSH logins (not through the sentinel) are checked against the daemon's SSH authorization, and start the daemon with --ssh-authz-keys-command (#2527). Off by default."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_keys_enforce" {
+  description = "With ssh_authz_keys_command: when the daemon cannot be asked, the AuthorizedKeysCommand exits 1 (enforce) instead of 0 (audit-only)."
+  type        = bool
+  default     = false
+}
+
 variable "jwt_secret" {
   description = "JWT secret for REST API authentication. If empty, auto-generated at boot."
   type        = string
@@ -228,6 +312,23 @@ variable "sentinel_admin_secret" {
   type        = string
   sensitive   = true
   default     = ""
+}
+
+# `ssh_session_log_retention_days` bounds the sentinel's LOCAL copy of the SSH
+# session records (/var/log/containarium/ssh-sessions.jsonl, one JSONL line per
+# accepted/closed session) via logrotate (#2415, ISO 27001 A.8.15). The
+# authoritative copy is the tamper-evident audit chain on each backend, which
+# has its own retention; this value is how long the file on the sentinel VM
+# itself is kept after rotation.
+variable "ssh_session_log_retention_days" {
+  description = "Days of rotated SSH session records to keep on the sentinel VM (logrotate `rotate N` with `daily`). Default 90."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.ssh_session_log_retention_days >= 1 && var.ssh_session_log_retention_days == floor(var.ssh_session_log_retention_days)
+    error_message = "ssh_session_log_retention_days must be a whole number of days, at least 1."
+  }
 }
 
 # `enable_peer_mtls` turns on the Phase 0.5 peer-CA path. When true,
@@ -457,6 +558,47 @@ variable "proxy_protocol_trusted_cidrs" {
 
 variable "zfs_encryption_keyfile" {
   description = "Absolute path on the backend VM for the ZFS native encryption keyfile (e.g. /etc/containarium/zfs.key). When non-empty, the data-disk ZFS pool is created with encryption=on and reads the 32-byte raw key from this path on every boot. The keyfile is generated automatically on first boot if missing. Operators MUST back this file up off-host — losing it makes the pool unrecoverable. Empty (default) = no ZFS-layer encryption, relies on PD/CMEK only. See docs/SECURITY-ENCRYPTION-AT-REST.md."
+  type        = string
+  default     = ""
+}
+
+# Anonymous-box door (`ssh new.<domain>`, docs/architecture/ssh-new-anonymous-box.md).
+# Both empty (default) = no door: no second sshpiperd unit is installed, and
+# an already-installed one is disabled and removed on the next reconcile.
+variable "anon_door_addr" {
+  description = "Listen address for the anonymous-box door's own sshpiperd, as host:port. Production uses a dedicated IP on :22 (`<door ip>:22`, with new.<domain> pointing at it); a dev sentinel with no spare IP uses a second port on the existing one (`0.0.0.0:2022`). Empty = door disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_door_addr == "" || can(regex("^[^:]+:[0-9]+$", var.anon_door_addr))
+    error_message = "anon_door_addr must be host:port (e.g. 0.0.0.0:2022) or empty."
+  }
+}
+
+variable "anon_daemon_url" {
+  description = "REST base URL of the anon-pool daemon the door creates boxes on (the dedicated pool=anon backend started with CONTAINARIUM_ANON_DOOR=enable), e.g. http://<private ip>:8080. Required when anon_door_addr is set."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_daemon_url == "" || can(regex("^https?://", var.anon_daemon_url))
+    error_message = "anon_daemon_url must start with http:// or https://, or be empty."
+  }
+}
+
+# Bridge DNS carve-outs for the backend daemon (#2232, #2189). With app
+# hosting on, the bridge resolves every name under base_domain to core-caddy;
+# names core-caddy does not serve — the control plane's API host, the
+# sentinel's SSH apex — must be carved out or boxes cannot reach them.
+variable "dns_passthrough_hosts" {
+  description = "Hostnames under base_domain that boxes must resolve upstream instead of at core-caddy (rendered as one --dns-passthrough-host flag each), e.g. the control plane's hostname. Empty = only ssh_host is carved out."
+  type        = list(string)
+  default     = []
+}
+
+variable "ssh_host" {
+  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial, and carved out of the base-domain bridge record. Empty = direct mode, and the SSH apex is NOT carved out."
   type        = string
   default     = ""
 }

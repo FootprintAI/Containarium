@@ -16,7 +16,7 @@
 # remain the binary release (`make build-release`).
 
 # --- build the daemon ------------------------------------------------------
-FROM golang:1.26.7-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -34,7 +34,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 
 # --- runtime ---------------------------------------------------------------
 FROM debian:bookworm-slim
+# apt-get upgrade: picks up security patches that shipped since
+# debian:bookworm-slim's last rebuild (e.g. libpcre2 deb12u2, which failed the
+# release Trivy gate on v0.99.0). Same fix as images/agent-box/Dockerfile.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /usr/sbin/nologin containarium

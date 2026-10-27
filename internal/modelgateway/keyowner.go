@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Per-owner key resolution — whose upstream key a proxied call spends.
@@ -111,23 +113,53 @@ func (f KeyResolverFunc) KeyFor(ctx context.Context, keyOwner, provider string) 
 //     because an owner whose key was removed would otherwise silently spend
 //     the platform's. The mint path refusing to issue a key_owner token
 //     without a key (FootprintAI/Containarium#1726) is what keeps case 3 from
-//     happening in normal operation.
+//     happening in normal operation. With Config.DisableGlobalKeyFallback the
+//     fallback does not exist: a key_owner token resolves through its owner or
+//     not at all, whether or not a resolver is wired.
 //  4. neither -> ("", false), and handleModel refuses the call without ever
 //     touching an upstream.
 func (g *Gateway) resolveKey(ctx context.Context, claims *GatewayClaims, provider string) (string, bool) {
+	key, ok, _ := g.resolveKeyOwner(ctx, claims, provider)
+	return key, ok
+}
+
+// resolveKeyOwner is resolveKey that also says whose key it returned, for the
+// run's call log (#2928): the owner's own (ORG or MEMBER by the namespace of
+// key_owner), or the operator's when the daemon-global key stood in. The owner
+// is meaningful only when ok.
+func (g *Gateway) resolveKeyOwner(ctx context.Context, claims *GatewayClaims, provider string) (string, bool, pb.GatewayKeyOwner) {
+	if claims.KeyOwner != "" && g.cfg.DisableGlobalKeyFallback {
+		if g.cfg.KeyResolver != nil {
+			if key, ok := g.cfg.KeyResolver.KeyFor(ctx, claims.KeyOwner, provider); ok && key != "" {
+				return key, true, ownerKind(claims.KeyOwner)
+			}
+		}
+		return "", false, pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_UNSPECIFIED
+	}
 	if claims.KeyOwner != "" && g.cfg.KeyResolver != nil {
 		if key, ok := g.cfg.KeyResolver.KeyFor(ctx, claims.KeyOwner, provider); ok && key != "" {
-			return key, true
+			return key, true, ownerKind(claims.KeyOwner)
 		}
 		if global := g.cfg.ProviderKeys[provider]; global != "" {
 			g.cfg.Logger.Printf("model-gateway: key_owner=%s has no %s key; falling back to the daemon-global key (this call is billed to the operator, not the owner)",
 				claims.KeyOwner, provider)
-			return global, true
+			return global, true, pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_OPERATOR_FALLBACK
 		}
-		return "", false
+		return "", false, pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_UNSPECIFIED
 	}
 	key := g.cfg.ProviderKeys[provider]
-	return key, key != ""
+	return key, key != "", pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_OPERATOR_FALLBACK
+}
+
+// ownerKind is the type of a namespaced key_owner; never the id.
+func ownerKind(keyOwner string) pb.GatewayKeyOwner {
+	switch {
+	case strings.HasPrefix(keyOwner, KeyOwnerOrgPrefix):
+		return pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_ORG
+	case strings.HasPrefix(keyOwner, KeyOwnerUserPrefix):
+		return pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_MEMBER
+	}
+	return pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_OPERATOR_FALLBACK
 }
 
 // OwnerRevocationChecker reports the instant before which every gateway token
@@ -162,7 +194,7 @@ type ownerRevoker interface {
 // un-revoke verb.
 //
 // Requires Config.OwnerRevocations to be a store that can record revocations
-// (MemOwnerRevocations, or the daemon's durable equivalent); with a read-only
+// (MemOwnerRevocations, or the daemon's durable auth.PgOwnerRevocationStore); with a read-only
 // or absent store this returns an error rather than pretending to have revoked
 // anything.
 func (g *Gateway) RevokeByKeyOwner(ctx context.Context, keyOwner, reason string) error {

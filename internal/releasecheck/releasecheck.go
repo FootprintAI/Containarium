@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,4 +127,19 @@ func UpdateAvailable(current, latest string) bool {
 		return false
 	}
 	return cv.LT(lv)
+}
+
+// TargetSummary renders the version a sentinel-path upgrade would install
+// (target, from GetLatestRelease.target_version) for CLI/MCP output, flagging
+// when the sentinel is behind the latest GitHub release — an upgrade then
+// can't reach latest until the sentinel fetches it. #2171.
+func TargetSummary(target, latest string) string {
+	if target == "" {
+		return "unknown (sentinel doesn't report it — older sentinel, or none configured)"
+	}
+	v := "v" + strings.TrimPrefix(target, "v")
+	if UpdateAvailable(target, latest) {
+		return fmt.Sprintf("%s — behind the latest release %s; run `containarium sentinel fetch-release --tag %s` first", v, latest, latest)
+	}
+	return v
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -398,7 +399,18 @@ func (p *PeerPool) discover() {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Printf("[peers] discovery failed: %v", err)
+		return
+	}
+	// The sentinel returns pool tags (and honours ?pool=) only to a caller
+	// with a valid daemon signature (#3119). Without a secret we still
+	// discover peers, but they arrive untagged.
+	if secret := loadSentinelHMACSecret(); len(secret) >= auth.SentinelMinSecretLen {
+		auth.SignSentinelRequest(req, secret)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[peers] discovery failed: %v", err)
 		return
@@ -766,6 +778,9 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			Labels    map[string]string `json:"labels"`
 			GpuDevice string            `json:"gpuDevice"`
 			BackendID string            `json:"backendId"`
+			// A pointer so a peer that predates the field (omits it) is
+			// distinguishable from an explicit false (#2858).
+			PodmanEnabled *bool `json:"podmanEnabled"`
 		} `json:"containers"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
@@ -783,16 +798,21 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 			state = "Stopped"
 		}
 
+		// Absent = an older peer: report true, as every box did before the
+		// flag was recorded.
+		podmanEnabled := c.PodmanEnabled == nil || *c.PodmanEnabled
+
 		containers = append(containers, incus.ContainerInfo{
-			Name:      c.Name,
-			State:     state,
-			IPAddress: c.Network.IPAddress,
-			CPU:       c.Resources.CPU,
-			Memory:    c.Resources.Memory,
-			Disk:      c.Resources.Disk,
-			GPU:       c.GpuDevice,
-			Labels:    c.Labels,
-			BackendID: pc.ID, // Tag with peer's backend ID
+			Name:          c.Name,
+			PodmanEnabled: podmanEnabled,
+			State:         state,
+			IPAddress:     c.Network.IPAddress,
+			CPU:           c.Resources.CPU,
+			Memory:        c.Resources.Memory,
+			Disk:          c.Resources.Disk,
+			GPU:           c.GpuDevice,
+			Labels:        c.Labels,
+			BackendID:     pc.ID, // Tag with peer's backend ID
 		})
 	}
 	return containers, nil
@@ -889,14 +909,20 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 // ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
 // GET requests use a 5s timeout to avoid blocking the UI; POST/PUT use 30s for mutations.
 func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte) ([]byte, int, error) {
-	url := fmt.Sprintf("%s://%s%s", pc.urlScheme(), pc.Addr, path)
-
 	timeout := 5 * time.Second
 	if method != "GET" {
 		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return pc.ForwardRequestCtx(ctx, method, path, authToken, body)
+}
+
+// ForwardRequestCtx is ForwardRequest with a caller-supplied context, so a
+// caller with its own (shorter) budget can cancel the in-flight request
+// instead of leaving it running to the fixed default timeout.
+func (pc *PeerClient) ForwardRequestCtx(ctx context.Context, method, path, authToken string, body []byte) ([]byte, int, error) {
+	url := fmt.Sprintf("%s://%s%s", pc.urlScheme(), pc.Addr, path)
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -925,6 +951,50 @@ func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte
 		return nil, resp.StatusCode, err
 	}
 	return respBody, resp.StatusCode, nil
+}
+
+// installForwardTimeout bounds one forwarded ClamAV install: a package download
+// plus the first signature fetch inside the box.
+const installForwardTimeout = 20 * time.Minute
+
+// errPeerRouteMissing: the peer answered 404 for a route it should serve, i.e. a
+// backend older than the feature. Callers report it as "backend too old", not as
+// a failed operation.
+var errPeerRouteMissing = errors.New("peer has no such route (backend too old)")
+
+// ForwardInstallClamav asks the peer that OWNS a box to install ClamAV inside it
+// (POST /v1/security/clamav-install, #2659) and returns the peer's typed answer
+// (#2683).
+//
+// Two differences from ForwardRequest, both because an install takes minutes:
+// the HTTP client's overall 30 s timeout is lifted for this call (the context,
+// not the client, bounds it), and the body is marshalled rather than formatted
+// by hand so a name cannot break or inject into the JSON.
+func (pc *PeerClient) ForwardInstallClamav(ctx context.Context, authToken, containerName string) (*pb.InstallClamavResponse, error) {
+	payload, err := json.Marshal(map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	long := *pc
+	lc := *pc.client
+	lc.Timeout = 0
+	long.client = &lc
+
+	body, status, err := long.ForwardRequestCtx(ctx, "POST", "/v1/security/clamav-install", authToken, payload)
+	if err != nil {
+		return nil, fmt.Errorf("forward install to %s: %w", pc.ID, err)
+	}
+	if status == http.StatusNotFound {
+		return nil, fmt.Errorf("peer %s: %w", pc.ID, errPeerRouteMissing)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for install", pc.ID, status)
+	}
+	var resp pb.InstallClamavResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode install reply from %s: %w", pc.ID, err)
+	}
+	return &resp, nil
 }
 
 // ForwardGetMetrics fetches container metrics from a peer.
@@ -957,6 +1027,38 @@ func (pc *PeerClient) ForwardDebugContainer(authToken string, username string) (
 	return body, nil
 }
 
+// ForwardListStacks returns the stack IDs the peer's own catalog defines, read
+// from its GET /v1/stacks (#2952). That endpoint exists on every daemon, so this
+// works against a peer of any version and, unlike a forwarded dry run, can never
+// be misread by an older peer as a real create. An empty result is returned as
+// such: the caller decides what an empty catalog means.
+func (pc *PeerClient) ForwardListStacks(ctx context.Context, authToken string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body, status, err := pc.ForwardRequestCtx(ctx, "GET", "/v1/stacks", authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward list-stacks to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for list-stacks", pc.ID, status)
+	}
+	var result struct {
+		Stacks []struct {
+			ID string `json:"id"`
+		} `json:"stacks"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse list-stacks from %s: %w", pc.ID, err)
+	}
+	ids := make([]string, 0, len(result.Stacks))
+	for _, st := range result.Stacks {
+		if st.ID != "" {
+			ids = append(ids, st.ID)
+		}
+	}
+	return ids, nil
+}
+
 // refreshCachedInfo fetches system info from a peer and caches key fields.
 func (pc *PeerClient) refreshCachedInfo() {
 	body, err := pc.ForwardGetSystemInfo("")
@@ -982,7 +1084,15 @@ func (pc *PeerClient) refreshCachedInfo() {
 
 // ForwardGetSystemInfo fetches system info from a peer.
 func (pc *PeerClient) ForwardGetSystemInfo(authToken string) ([]byte, error) {
-	body, status, err := pc.ForwardRequest("GET", "/v1/system/info", authToken, nil)
+	return pc.ForwardGetSystemInfoCtx(context.Background(), authToken)
+}
+
+// ForwardGetSystemInfoCtx is ForwardGetSystemInfo bounded by ctx (the fixed
+// per-request default still applies on top of it).
+func (pc *PeerClient) ForwardGetSystemInfoCtx(ctx context.Context, authToken string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body, status, err := pc.ForwardRequestCtx(ctx, "GET", "/v1/system/info", authToken, nil)
 	if err != nil {
 		return nil, fmt.Errorf("forward system-info to %s: %w", pc.ID, err)
 	}
@@ -1267,45 +1377,26 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []m
 		if err != nil {
 			continue
 		}
-		var resp struct {
-			Info struct {
-				TotalCpus            json.Number `json:"totalCpus"`
-				TotalMemoryBytes     json.Number `json:"totalMemoryBytes"`
-				AvailableMemoryBytes json.Number `json:"availableMemoryBytes"`
-				TotalDiskBytes       json.Number `json:"totalDiskBytes"`
-				AvailableDiskBytes   json.Number `json:"availableDiskBytes"`
-				CpuLoad1Min          json.Number `json:"cpuLoad1min"`
-				CpuLoad5Min          json.Number `json:"cpuLoad5min"`
-				CpuLoad15Min         json.Number `json:"cpuLoad15min"`
-				ContainersRunning    json.Number `json:"containersRunning"`
-				ContainersStopped    json.Number `json:"containersStopped"`
-			} `json:"info"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
+		// protojson against the contract (int64 as strings, enums by name);
+		// DiscardUnknown so a newer peer's extra fields never drop it.
+		var resp pb.GetSystemInfoResponse
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &resp); err != nil {
 			continue
 		}
-		totalCpus, _ := resp.Info.TotalCpus.Int64()
-		totalMem, _ := resp.Info.TotalMemoryBytes.Int64()
-		availMem, _ := resp.Info.AvailableMemoryBytes.Int64()
-		totalDisk, _ := resp.Info.TotalDiskBytes.Int64()
-		availDisk, _ := resp.Info.AvailableDiskBytes.Int64()
-		load1, _ := resp.Info.CpuLoad1Min.Float64()
-		load5, _ := resp.Info.CpuLoad5Min.Float64()
-		load15, _ := resp.Info.CpuLoad15Min.Float64()
-		cRunning, _ := resp.Info.ContainersRunning.Int64()
-		cStopped, _ := resp.Info.ContainersStopped.Int64()
+		in := resp.GetInfo()
 		results = append(results, metricsPackage.PeerSystemMetrics{
 			BackendID:         peer.ID,
-			TotalCPUs:         totalCpus,
-			TotalMemoryBytes:  totalMem,
-			UsedMemoryBytes:   totalMem - availMem,
-			TotalDiskBytes:    totalDisk,
-			UsedDiskBytes:     totalDisk - availDisk,
-			CPULoad1Min:       load1,
-			CPULoad5Min:       load5,
-			CPULoad15Min:      load15,
-			ContainersRunning: cRunning,
-			ContainersStopped: cStopped,
+			TotalCPUs:         int64(in.GetTotalCpus()),
+			TotalMemoryBytes:  in.GetTotalMemoryBytes(),
+			UsedMemoryBytes:   in.GetTotalMemoryBytes() - in.GetAvailableMemoryBytes(),
+			TotalDiskBytes:    in.GetTotalDiskBytes(),
+			UsedDiskBytes:     in.GetTotalDiskBytes() - in.GetAvailableDiskBytes(),
+			CPULoad1Min:       in.GetCpuLoad_1Min(),
+			CPULoad5Min:       in.GetCpuLoad_5Min(),
+			CPULoad15Min:      in.GetCpuLoad_15Min(),
+			ContainersRunning: int64(in.GetContainersRunning()),
+			ContainersStopped: int64(in.GetContainersStopped()),
+			StoragePools:      storagePoolUsagesFromProto(in.GetStoragePools()),
 		})
 	}
 	return results

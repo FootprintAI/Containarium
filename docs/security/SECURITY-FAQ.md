@@ -89,13 +89,31 @@ should be treated as carrying the same "not hardened against a
 determined anonymous tenant" caveat as the OSS answer above — not a
 weaker one, and not a stronger one.
 
+**The anonymous tier is the exception.** The `ssh new.<domain>` door
+(v0.94.0, `docs/architecture/ssh-new-anonymous-box.md`) hands out a box
+to *any* SSH key with no signup at all — the most anonymous caller we
+have — and for exactly that reason it never lands on the shared-kernel
+substrate: every anonymous box is an Incus **QEMU/KVM virtual machine**
+with its own kernel, on a backend dedicated to that pool, with egress
+limited to DNS/HTTP/HTTPS by a NIC ACL, a hard TTL, no public ports or
+routes until claimed, and creation rate limits, a global cap and a kill
+switch in front of it. A tenant who gets root in that guest kernel has
+not got the host. **This does not close the gap above:** the
+email-signup free tier still runs as LXC containers on the shared
+kernel. Claiming an anonymous box keeps it a VM.
+
 ## Why not just add a VM-backed instance type?
 
-Incus supports QEMU/KVM VMs alongside containers, so it's
-architecturally reachable — it isn't built today. If your workload
-needs hardware-enforced isolation, treat that as a real gap to raise
-with us (or track upstream), not something the current eBPF/RBAC
-layering papers over.
+It exists as of v0.94.0: `containarium create --isolation vm` (the
+`IsolationType` field on the API) makes a Linux box an Incus QEMU/KVM
+VM instead of an LXC container, on any backend with KVM available. The
+anonymous tier uses it unconditionally (previous section). It is *not*
+the default for signed-up tenants: a VM boots slower, costs more, and
+the per-tenant identity, storage and networking features documented
+elsewhere were built for the container path first. If your workload
+needs hardware-enforced isolation, ask for `--isolation vm` on a
+KVM-capable backend rather than treating the eBPF/RBAC layering as a
+substitute.
 
 ## If isolation is weaker than a hypervisor, why choose Containarium?
 
@@ -115,6 +133,98 @@ costs you:
 
 Pick Containarium because those trade-offs match your workload, not
 because a sales page told you the isolation is stronger than it is.
+
+## Can a box be made to accept SSH passwords?
+
+Not through the platform, and not for long by hand. There is deliberately no
+per-tenant opt-out: no setting, flag or exemption turns password login on for
+a box (decided in #2437). A password-enabled box is not a risk to its tenant
+alone, because on a direct in-network backend it is reachable from the LAN and
+from every other box of the same tenant, and the public ingress is key-only
+whatever a box allows, so there is no outside-login need a password would
+serve. If a tenant has a concrete need, raise it as an issue; the design
+sketched there (a platform-owned exemption that is audited and keeps a visible
+finding open) is the starting point.
+
+The public SSH path never reaches a box's own sshd. The sentinel's sshpiper
+offers clients only public-key authentication and pipes each session to the
+backend host's sshd, which is key-only and checked by the host posture
+check; the session enters the box through `incus exec`, not a network hop.
+A password set inside a box is therefore unreachable from the internet on
+every sentinel-fronted backend.
+
+Inside the box, every box is provisioned with a managed drop-in
+(`/etc/ssh/sshd_config.d/00-containarium.conf`) that sets
+`PasswordAuthentication no`, `KbdInteractiveAuthentication no` and
+`PermitEmptyPasswords no`. It sorts before every distro and cloud-init
+drop-in, so it wins under sshd's first-match rule, and it is baked into
+base images.
+
+A box owner has root (`NOPASSWD` sudo) and can delete that file, add one
+that sorts earlier, or run a second sshd — nothing written inside a box is
+a security boundary against its own root. So the daemon runs a posture
+reconciler (every 10 minutes by default; `CONTAINARIUM_SSHD_POSTURE_*`)
+that re-reads each running box's effective sshd configuration through the
+incus file API, rewrites the managed drop-in if it is missing or altered,
+and records the event as a `BOX_SSHD_PASSWORD_AUTH` security finding
+(`containarium security findings`). A box that is still permissive after
+the re-assert (something of the tenant's outranks the drop-in) stays an
+open HIGH finding until an operator deals with it.
+
+The same pass also looks for a *second* SSH server. Each running box is
+probed once per pass for listening TCP sockets held by `sshd`, `dropbear`
+or `tinysshd`, and anything that is not the distro sshd on a port its
+`sshd_config` declares is recorded as a HIGH `BOX_ROGUE_SSH_LISTENER`
+finding with the port, bind address, pid and binary. That covers a
+hand-started `sshd -p 2222`, a dropbear, and the stock sshd started with
+its own `-f` or `-o`. It is record-only: the platform never kills a
+tenant's process. It finds the casual and the accidental, not an owner
+who renames the binary or embeds an SSH server in another program, and
+it can be turned off with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
+What this does not cover is a tenant exposing a listener the probe cannot
+recognise — a renamed SSH server, or any other service — to the internet
+over a reverse tunnel from inside the box. That is an egress question, and
+the answer is an allow-list rather than a list of known-bad relays: tunnel
+services are hostnames behind shared cloud and CDN addresses, so a
+bad-destination list cannot name them reliably. A tenant whose boxes must
+not reach arbitrary hosts gets the allow-list-only egress preset:
+
+```bash
+containarium network-policy set <tenant> --egress-preset allow-list-only --mode log_only
+containarium network-policy plan <tenant> --since 24h   # what the tenant reached that you have not allowed
+containarium network-policy set <tenant> --egress-preset allow-list-only \
+    --egress-cidr <reviewed destinations> --mode enforce
+```
+
+Under it a tunnel relay is blocked just by not being on the list, and while
+the tenant soaks in `log_only` the relay shows up in `plan`. The box's DNS
+resolver is allowed automatically. See "Allow-list-only preset and plan" in
+[`OPERATOR-SECURITY-RUNBOOK.md`](OPERATOR-SECURITY-RUNBOOK.md) and
+`NETWORK-ISOLATION-DESIGN.md`. An operator who has vetted one specific relay
+address can still add it with `containarium security bad-destinations add`
+so the sentry flags flows to it.
+
+## Does the platform read my files to scan for malware?
+
+The malware scan is designed to run **inside your own box, with the box's own
+privileges, started by the box's owner** (#2631). The platform does not mount,
+stream or read a tenant's files in order to scan them; it receives only the
+verdict record — status, signature names and counts, duration and scanner
+version — and file paths are not reported by default.
+
+That is a commitment about the scan feature, not a claim that the platform is
+technically unable to read tenant data. As described above, root on the host
+owns everything, and operators with host access retain it. Because the scan runs
+in the box, its verdict is **self-reported**: a compromised box can report
+"clean", so Containarium does not use a clean verdict to lift a network
+quarantine or as platform assurance. A box that has never been scanned is
+shown as never scanned, not clean.
+
+Details, statuses and the exact fields stored are in
+[`TENANT-MALWARE-SCAN.md`](TENANT-MALWARE-SCAN.md). The previous central scanner
+could not read tenant files and recorded every scan as incomplete; it was removed
+in favour of the in-box scan (#2631).
 
 ## Where do I go for the operational detail?
 

@@ -17,7 +17,10 @@ func withTestHomeRoot(t *testing.T, homeRoot string, userExistsFn func(string) b
 	origExists := authorizedKeysUserExists
 	authorizedKeysHomeRoot = homeRoot
 	authorizedKeysUserExists = userExistsFn
+	origChown := authorizedKeysChown
+	authorizedKeysChown = func(string, string) error { return nil }
 	t.Cleanup(func() {
+		authorizedKeysChown = origChown
 		authorizedKeysHomeRoot = origHome
 		authorizedKeysUserExists = origExists
 	})

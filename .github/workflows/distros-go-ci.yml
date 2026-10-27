@@ -30,15 +30,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           # Pinned to match the version the daemon's release workflow
           # uses; drift would mean release-built daemon and CI-tested
           # distro stop sharing a toolchain.
-          go-version: '1.26.7'
+          go-version: '1.26.10'
+          cache-name: shared
 
       - name: Verify module hygiene
         # `go mod tidy` should be a no-op on a clean PR. If it changes

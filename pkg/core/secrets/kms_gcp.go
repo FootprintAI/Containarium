@@ -53,12 +53,18 @@ import (
 //   →  {"plaintext": "<base64(DEK)>",
 //       "plaintextCrc32c": "..."}
 //
-// kek_id encodes the full resource name so a row migrated
-// under one project / key can't be unwrapped by a daemon
-// reconfigured against a different one. GCP's own key
-// version is opaque to us (baked into the ciphertext); on
-// rotation, decrypt requests for old ciphertext continue
-// to succeed automatically.
+// kek_id encodes the full resource name of the KEY VERSION
+// the Encrypt response named (#2402) — "gcp:" + the
+// CryptoKeyVersion path — so a row migrated under one
+// project / key can't be unwrapped by a daemon reconfigured
+// against a different one, and so a version that still has
+// wrapped values under it can be guarded against destruction.
+// Decrypt is always addressed to the CryptoKey (Cloud KMS
+// picks the version from the ciphertext); readers that need
+// the CryptoKey back out of a kek_id use GCPCryptoKeyFromKEKID,
+// which also accepts the pre-#2402 shape (key name only). On
+// rotation, decrypt of old ciphertext continues to succeed
+// automatically.
 
 // GCPConfig configures the GCP Cloud KMS backend.
 type GCPConfig struct {
@@ -96,8 +102,6 @@ type GCPConfig struct {
 type GCPKMS struct {
 	cfg    GCPConfig
 	client *http.Client
-	kekID  string // cached, set in NewGCPKMS
-
 	// tokMu guards the brief token cache used when cfg.TokenFile is set.
 	tokMu     sync.Mutex
 	cachedTok string
@@ -112,6 +116,26 @@ type GCPKMS struct {
 // can parse a kek_id's key resource name back out without duplicating
 // the literal.
 const GCPKEKPrefix = "gcp:"
+
+// gcpVersionSegment separates a CryptoKey resource name from the version
+// suffix Cloud KMS appends in an Encrypt response's `name`.
+const gcpVersionSegment = "/cryptoKeyVersions/"
+
+// GCPCryptoKeyFromKEKID returns the CryptoKey resource name a GCP kek_id
+// was wrapped under — the thing to address a decrypt to — stripping the
+// "gcp:" prefix and any CryptoKeyVersion suffix. ok is false for a kek_id
+// that is not GCP's. Accepts both the #2402 shape ("gcp:<key>/
+// cryptoKeyVersions/<n>") and rows written before it ("gcp:<key>").
+func GCPCryptoKeyFromKEKID(kekID string) (keyName string, ok bool) {
+	name, ok := strings.CutPrefix(kekID, GCPKEKPrefix)
+	if !ok || name == "" {
+		return "", false
+	}
+	if i := strings.Index(name, gcpVersionSegment); i >= 0 {
+		name = name[:i]
+	}
+	return name, true
+}
 
 // gcpDefaultEndpoint is the public Cloud KMS endpoint.
 // Override via GCPConfig.Endpoint for private endpoints
@@ -149,15 +173,9 @@ func NewGCPKMS(cfg GCPConfig) (*GCPKMS, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
-	// kek_id is fully determined by the key resource path.
-	// Rows wrapped under different keys (or different
-	// projects) get distinct kek_ids; cross-deployment
-	// confusion is structurally impossible.
-	kekID := GCPKEKPrefix + cfg.KeyName
 	return &GCPKMS{
 		cfg:    cfg,
 		client: &http.Client{Timeout: cfg.Timeout},
-		kekID:  kekID,
 	}, nil
 }
 
@@ -165,15 +183,20 @@ func NewGCPKMS(cfg GCPConfig) (*GCPKMS, error) {
 // Cloud KMS returns an opaque base64 ciphertext we store
 // verbatim — like Vault's "vault:v<n>:..." blob it carries
 // enough self-description (within the bytes) for decrypt
-// to figure out which key version produced it.
+// to figure out which key version produced it — and the
+// resource name of the CryptoKeyVersion it used, which
+// becomes the kek_id (#2402). Rows wrapped under different
+// keys, projects or versions get distinct kek_ids;
+// cross-deployment confusion is structurally impossible.
 func (g *GCPKMS) Wrap(ctx context.Context, plaintextDEK []byte) ([]byte, string, error) {
-	if len(plaintextDEK) != DEKSize {
-		return nil, "", fmt.Errorf("DEK must be %d bytes; got %d", DEKSize, len(plaintextDEK))
+	if err := checkWrapPlaintext(plaintextDEK); err != nil {
+		return nil, "", err
 	}
 	body := map[string]string{
 		"plaintext": base64.StdEncoding.EncodeToString(plaintextDEK),
 	}
 	var resp struct {
+		Name       string `json:"name"`
 		Ciphertext string `json:"ciphertext"`
 	}
 	if err := g.do(ctx, "encrypt", body, &resp); err != nil {
@@ -182,11 +205,18 @@ func (g *GCPKMS) Wrap(ctx context.Context, plaintextDEK []byte) ([]byte, string,
 	if resp.Ciphertext == "" {
 		return nil, "", errors.New("gcp kms encrypt: empty ciphertext in response")
 	}
+	// The contract is a key VERSION name: without one the
+	// row could never be tied to the version that must not
+	// be destroyed while it exists, so refuse rather than
+	// record the bare key as if it were a version.
+	if !strings.HasPrefix(resp.Name, g.cfg.KeyName+gcpVersionSegment) {
+		return nil, "", fmt.Errorf("gcp kms encrypt: response did not name a key version (CryptoKeyVersion) of %s (got %q)", g.cfg.KeyName, resp.Name)
+	}
 	// We store the base64 ciphertext string verbatim;
 	// Unwrap just passes it back to Cloud KMS as the
 	// decrypt-request payload. No re-encoding round-trip
 	// in the hot path.
-	return []byte(resp.Ciphertext), g.kekID, nil
+	return []byte(resp.Ciphertext), GCPKEKPrefix + resp.Name, nil
 }
 
 // Unwrap reverses Wrap. The kek_id must start with the
@@ -211,8 +241,8 @@ func (g *GCPKMS) Unwrap(ctx context.Context, wrappedDEK []byte, kekID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("gcp kms decrypt: base64: %w", err)
 	}
-	if len(dek) != DEKSize {
-		return nil, fmt.Errorf("gcp kms decrypt: DEK has %d bytes; want %d", len(dek), DEKSize)
+	if len(dek) == 0 {
+		return nil, errors.New("gcp kms decrypt: empty plaintext in response")
 	}
 	return dek, nil
 }

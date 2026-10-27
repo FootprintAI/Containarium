@@ -81,6 +81,168 @@ func (BoxRunOutcome) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{0}
 }
 
+// BoxRunToolProvenance compares a tool across the two probes of one run.
+type BoxRunToolProvenance int32
+
+const (
+	BoxRunToolProvenance_BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED BoxRunToolProvenance = 0
+	// Present at the start with the same version at the end.
+	BoxRunToolProvenance_BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START BoxRunToolProvenance = 1
+	// Not on the PATH at the start, found at the end: installed during the run.
+	BoxRunToolProvenance_BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN BoxRunToolProvenance = 2
+	// On the PATH at both ends, but a different version or a different location.
+	BoxRunToolProvenance_BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN BoxRunToolProvenance = 3
+)
+
+// Enum value maps for BoxRunToolProvenance.
+var (
+	BoxRunToolProvenance_name = map[int32]string{
+		0: "BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED",
+		1: "BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START",
+		2: "BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN",
+		3: "BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN",
+	}
+	BoxRunToolProvenance_value = map[string]int32{
+		"BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED":        0,
+		"BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START":   1,
+		"BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN":   2,
+		"BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN": 3,
+	}
+)
+
+func (x BoxRunToolProvenance) Enum() *BoxRunToolProvenance {
+	p := new(BoxRunToolProvenance)
+	*p = x
+	return p
+}
+
+func (x BoxRunToolProvenance) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BoxRunToolProvenance) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_box_run_proto_enumTypes[1].Descriptor()
+}
+
+func (BoxRunToolProvenance) Type() protoreflect.EnumType {
+	return &file_containarium_v1_box_run_proto_enumTypes[1]
+}
+
+func (x BoxRunToolProvenance) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BoxRunToolProvenance.Descriptor instead.
+func (BoxRunToolProvenance) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{1}
+}
+
+// BoxRunToolLocation classifies where a tool's binary resolved.
+type BoxRunToolLocation int32
+
+const (
+	BoxRunToolLocation_BOX_RUN_TOOL_LOCATION_UNSPECIFIED BoxRunToolLocation = 0
+	// Outside the run user's home: part of the box image or its system packages.
+	BoxRunToolLocation_BOX_RUN_TOOL_LOCATION_SYSTEM BoxRunToolLocation = 1
+	// Under the run user's home: installed by the owner or by a run.
+	BoxRunToolLocation_BOX_RUN_TOOL_LOCATION_HOME BoxRunToolLocation = 2
+)
+
+// Enum value maps for BoxRunToolLocation.
+var (
+	BoxRunToolLocation_name = map[int32]string{
+		0: "BOX_RUN_TOOL_LOCATION_UNSPECIFIED",
+		1: "BOX_RUN_TOOL_LOCATION_SYSTEM",
+		2: "BOX_RUN_TOOL_LOCATION_HOME",
+	}
+	BoxRunToolLocation_value = map[string]int32{
+		"BOX_RUN_TOOL_LOCATION_UNSPECIFIED": 0,
+		"BOX_RUN_TOOL_LOCATION_SYSTEM":      1,
+		"BOX_RUN_TOOL_LOCATION_HOME":        2,
+	}
+)
+
+func (x BoxRunToolLocation) Enum() *BoxRunToolLocation {
+	p := new(BoxRunToolLocation)
+	*p = x
+	return p
+}
+
+func (x BoxRunToolLocation) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BoxRunToolLocation) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_box_run_proto_enumTypes[2].Descriptor()
+}
+
+func (BoxRunToolLocation) Type() protoreflect.EnumType {
+	return &file_containarium_v1_box_run_proto_enumTypes[2]
+}
+
+func (x BoxRunToolLocation) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BoxRunToolLocation.Descriptor instead.
+func (BoxRunToolLocation) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{2}
+}
+
+// BoxRunStopSignal is the signal StopBoxRun actually sent.
+type BoxRunStopSignal int32
+
+const (
+	BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_UNSPECIFIED BoxRunStopSignal = 0
+	// The run had already exited, so nothing was signaled.
+	BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_NONE    BoxRunStopSignal = 1
+	BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_SIGTERM BoxRunStopSignal = 2
+	BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_SIGKILL BoxRunStopSignal = 3
+)
+
+// Enum value maps for BoxRunStopSignal.
+var (
+	BoxRunStopSignal_name = map[int32]string{
+		0: "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
+		1: "BOX_RUN_STOP_SIGNAL_NONE",
+		2: "BOX_RUN_STOP_SIGNAL_SIGTERM",
+		3: "BOX_RUN_STOP_SIGNAL_SIGKILL",
+	}
+	BoxRunStopSignal_value = map[string]int32{
+		"BOX_RUN_STOP_SIGNAL_UNSPECIFIED": 0,
+		"BOX_RUN_STOP_SIGNAL_NONE":        1,
+		"BOX_RUN_STOP_SIGNAL_SIGTERM":     2,
+		"BOX_RUN_STOP_SIGNAL_SIGKILL":     3,
+	}
+)
+
+func (x BoxRunStopSignal) Enum() *BoxRunStopSignal {
+	p := new(BoxRunStopSignal)
+	*p = x
+	return p
+}
+
+func (x BoxRunStopSignal) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BoxRunStopSignal) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_box_run_proto_enumTypes[3].Descriptor()
+}
+
+func (BoxRunStopSignal) Type() protoreflect.EnumType {
+	return &file_containarium_v1_box_run_proto_enumTypes[3]
+}
+
+func (x BoxRunStopSignal) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BoxRunStopSignal.Descriptor instead.
+func (BoxRunStopSignal) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{3}
+}
+
 // BoxRun is one current run record on a box.
 type BoxRun struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -95,7 +257,18 @@ type BoxRun struct {
 	// The log file TailBoxRunLog reads, inside the box.
 	LogPath string `protobuf:"bytes,6,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`
 	// How the log is written: FRAMED logs are demuxed by TailBoxRunLog.
-	CaptureMode   CaptureMode `protobuf:"varint,7,opt,name=capture_mode,json=captureMode,proto3,enum=containarium.v1.CaptureMode" json:"capture_mode,omitempty"`
+	CaptureMode CaptureMode `protobuf:"varint,7,opt,name=capture_mode,json=captureMode,proto3,enum=containarium.v1.CaptureMode" json:"capture_mode,omitempty"`
+	// The engine's own session identifier (#2193), read back from the box
+	// shortly after the run starts: Claude Code's session id, or pi's session
+	// file name. Empty when the engine exposes none, or when discovery hasn't
+	// found one yet (a race with a just-started run — poll ListBoxRuns again).
+	// Pass it to StartBoxRun's session_id to resume this exact conversation.
+	SessionId string `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// The tools available to this run, measured on the box by the run's own wrapper
+	// (a probe before the engine starts and one after it ends, written to a sidecar
+	// whatever the engine's exit status), never reported by the agent. Empty for a
+	// run with no readable sidecar (an older run, or a box without the probe).
+	Tools         []*BoxRunTool `protobuf:"bytes,9,rep,name=tools,proto3" json:"tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -179,6 +352,275 @@ func (x *BoxRun) GetCaptureMode() CaptureMode {
 	return CaptureMode_CAPTURE_MODE_UNSPECIFIED
 }
 
+func (x *BoxRun) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *BoxRun) GetTools() []*BoxRunTool {
+	if x != nil {
+		return x.Tools
+	}
+	return nil
+}
+
+// BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
+// what was AVAILABLE, not what was USED: knowing use would need process tracing.
+type BoxRunTool struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The tool's name from the daemon's fixed allowlist (for example "go", "buf").
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The first line of the tool's own version command, reduced to printable ASCII
+	// and length-capped (the value ends up in public pull requests). Empty when the
+	// tool printed nothing usable.
+	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// How the tool compares between the probe before the run and the one after it.
+	Provenance BoxRunToolProvenance `protobuf:"varint,3,opt,name=provenance,proto3,enum=containarium.v1.BoxRunToolProvenance" json:"provenance,omitempty"`
+	// Where the resolved binary lives, as a class only (never a filesystem path).
+	Location      BoxRunToolLocation `protobuf:"varint,4,opt,name=location,proto3,enum=containarium.v1.BoxRunToolLocation" json:"location,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BoxRunTool) Reset() {
+	*x = BoxRunTool{}
+	mi := &file_containarium_v1_box_run_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoxRunTool) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoxRunTool) ProtoMessage() {}
+
+func (x *BoxRunTool) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_box_run_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoxRunTool.ProtoReflect.Descriptor instead.
+func (*BoxRunTool) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *BoxRunTool) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BoxRunTool) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *BoxRunTool) GetProvenance() BoxRunToolProvenance {
+	if x != nil {
+		return x.Provenance
+	}
+	return BoxRunToolProvenance_BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED
+}
+
+func (x *BoxRunTool) GetLocation() BoxRunToolLocation {
+	if x != nil {
+		return x.Location
+	}
+	return BoxRunToolLocation_BOX_RUN_TOOL_LOCATION_UNSPECIFIED
+}
+
+// StartBoxRunRequest starts (or resumes) a coding-agent run on a box through
+// the daemon API — no SSH client, no agent-box RPC (#2193): the daemon
+// root-execs the same on-disk contract `containarium code run` leaves via
+// agent-box's process_start, so ListBoxRuns and TailBoxRunLog read a
+// daemon-started run exactly like one `code run` started.
+//
+// The engine and its credential source are never request fields: they come
+// from the box's own ~/.containarium/code.json (`code install`, #1727) —
+// this RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of
+// scope by the same rule #2030 settled for `code install`: this starts or
+// resumes an already-authenticated session only.
+type StartBoxRunRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The box owner's username (the box is <username>-container).
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// The task to give the agent.
+	Prompt string `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// Resume this specific session id instead of starting a fresh one
+	// (claude --resume <id>; pi --session <id>). Also becomes this run's
+	// run_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING
+	// or UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually
+	// exclusive with continue_session.
+	SessionId string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Resume the engine's own "most recent session in this box's working
+	// directory" instead of starting a fresh one (`code run --continue`'s
+	// meaning, unchanged). Mutually exclusive with session_id.
+	ContinueSession bool `protobuf:"varint,4,opt,name=continue_session,json=continueSession,proto3" json:"continue_session,omitempty"`
+	// Names this run exactly <run_name> instead of the default (the session id
+	// when resuming, else "code"). Must match [A-Za-z0-9._-]{1,128} and not be
+	// "." or ".."; anything else is INVALID_ARGUMENT, as is a name ending in
+	// ".stderr" or in ".<digits>" (those alias a run's stderr log and the
+	// rotation suffix of a finished run). The same collision rules
+	// apply to the name as to any other: a finished run under it is rotated
+	// aside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an
+	// explicit name never collides with the default "code" run, so a caller
+	// that picks a unique name per run keeps every log. ListBoxRuns,
+	// TailBoxRunLog and the CLI address the run by this name. Empty keeps the
+	// previous naming. Capability "box_run_name" in SystemInfo.capabilities.
+	RunName string `protobuf:"bytes,5,opt,name=run_name,json=runName,proto3" json:"run_name,omitempty"`
+	// When true the engine runs with `--output-format json` (Claude Code only;
+	// any other engine is FAILED_PRECONDITION, before anything on the box is
+	// touched). The run's log (<run_name>.log) is then exactly the engine's one
+	// JSON result object (type, subtype, is_error, result, session_id, usage,
+	// ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+	// TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
+	// the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+	// (nested keys are ignored; truncated or invalid JSON, or an object over
+	// 1 MiB, yields no id). The object appears when the run ends: the log is
+	// empty while it runs. Default false leaves the plain-text behaviour
+	// unchanged.
+	//
+	// NORMATIVE: a caller that needs the session id reliably MUST set
+	// structured_output. Without it BoxRun.session_id of a fresh run is
+	// best-effort directory discovery (exactly one new transcript must appear
+	// while the run lives; a member's interactive session or another run
+	// starting meanwhile makes it ambiguous) and may be missing. A
+	// continue_session run gets no discovered id at all. Capability
+	// "box_run_structured_output" in SystemInfo.capabilities.
+	StructuredOutput bool `protobuf:"varint,6,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *StartBoxRunRequest) Reset() {
+	*x = StartBoxRunRequest{}
+	mi := &file_containarium_v1_box_run_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartBoxRunRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartBoxRunRequest) ProtoMessage() {}
+
+func (x *StartBoxRunRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_box_run_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartBoxRunRequest.ProtoReflect.Descriptor instead.
+func (*StartBoxRunRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *StartBoxRunRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetContinueSession() bool {
+	if x != nil {
+		return x.ContinueSession
+	}
+	return false
+}
+
+func (x *StartBoxRunRequest) GetRunName() string {
+	if x != nil {
+		return x.RunName
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetStructuredOutput() bool {
+	if x != nil {
+		return x.StructuredOutput
+	}
+	return false
+}
+
+type StartBoxRunResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Run           *BoxRun                `protobuf:"bytes,1,opt,name=run,proto3" json:"run,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartBoxRunResponse) Reset() {
+	*x = StartBoxRunResponse{}
+	mi := &file_containarium_v1_box_run_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartBoxRunResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartBoxRunResponse) ProtoMessage() {}
+
+func (x *StartBoxRunResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_box_run_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartBoxRunResponse.ProtoReflect.Descriptor instead.
+func (*StartBoxRunResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *StartBoxRunResponse) GetRun() *BoxRun {
+	if x != nil {
+		return x.Run
+	}
+	return nil
+}
+
 type ListBoxRunsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box owner's username (the box is <username>-container).
@@ -189,7 +631,7 @@ type ListBoxRunsRequest struct {
 
 func (x *ListBoxRunsRequest) Reset() {
 	*x = ListBoxRunsRequest{}
-	mi := &file_containarium_v1_box_run_proto_msgTypes[1]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +643,7 @@ func (x *ListBoxRunsRequest) String() string {
 func (*ListBoxRunsRequest) ProtoMessage() {}
 
 func (x *ListBoxRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_box_run_proto_msgTypes[1]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +656,7 @@ func (x *ListBoxRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoxRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListBoxRunsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListBoxRunsRequest) GetUsername() string {
@@ -235,7 +677,7 @@ type ListBoxRunsResponse struct {
 
 func (x *ListBoxRunsResponse) Reset() {
 	*x = ListBoxRunsResponse{}
-	mi := &file_containarium_v1_box_run_proto_msgTypes[2]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -247,7 +689,7 @@ func (x *ListBoxRunsResponse) String() string {
 func (*ListBoxRunsResponse) ProtoMessage() {}
 
 func (x *ListBoxRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_box_run_proto_msgTypes[2]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -260,7 +702,7 @@ func (x *ListBoxRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoxRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListBoxRunsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListBoxRunsResponse) GetRuns() []*BoxRun {
@@ -296,7 +738,7 @@ type TailBoxRunLogRequest struct {
 
 func (x *TailBoxRunLogRequest) Reset() {
 	*x = TailBoxRunLogRequest{}
-	mi := &file_containarium_v1_box_run_proto_msgTypes[3]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -308,7 +750,7 @@ func (x *TailBoxRunLogRequest) String() string {
 func (*TailBoxRunLogRequest) ProtoMessage() {}
 
 func (x *TailBoxRunLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_box_run_proto_msgTypes[3]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -321,7 +763,7 @@ func (x *TailBoxRunLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TailBoxRunLogRequest.ProtoReflect.Descriptor instead.
 func (*TailBoxRunLogRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{3}
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TailBoxRunLogRequest) GetUsername() string {
@@ -381,7 +823,7 @@ type TailBoxRunLogResponse struct {
 
 func (x *TailBoxRunLogResponse) Reset() {
 	*x = TailBoxRunLogResponse{}
-	mi := &file_containarium_v1_box_run_proto_msgTypes[4]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -393,7 +835,7 @@ func (x *TailBoxRunLogResponse) String() string {
 func (*TailBoxRunLogResponse) ProtoMessage() {}
 
 func (x *TailBoxRunLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_box_run_proto_msgTypes[4]
+	mi := &file_containarium_v1_box_run_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -406,7 +848,7 @@ func (x *TailBoxRunLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TailBoxRunLogResponse.ProtoReflect.Descriptor instead.
 func (*TailBoxRunLogResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TailBoxRunLogResponse) GetChunk() []byte {
@@ -444,11 +886,143 @@ func (x *TailBoxRunLogResponse) GetStderrDropped() bool {
 	return false
 }
 
+// StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
+// to the run's whole process group. Idempotent: stopping a run that has
+// already exited signals nothing and succeeds.
+type StopBoxRunRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The box owner's username (the box is <username>-container).
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// The run's name, as ListBoxRuns reports it.
+	RunName string `protobuf:"bytes,2,opt,name=run_name,json=runName,proto3" json:"run_name,omitempty"`
+	// Send SIGKILL instead of SIGTERM.
+	Force         bool `protobuf:"varint,3,opt,name=force,proto3" json:"force,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopBoxRunRequest) Reset() {
+	*x = StopBoxRunRequest{}
+	mi := &file_containarium_v1_box_run_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopBoxRunRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopBoxRunRequest) ProtoMessage() {}
+
+func (x *StopBoxRunRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_box_run_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopBoxRunRequest.ProtoReflect.Descriptor instead.
+func (*StopBoxRunRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *StopBoxRunRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *StopBoxRunRequest) GetRunName() string {
+	if x != nil {
+		return x.RunName
+	}
+	return ""
+}
+
+func (x *StopBoxRunRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+type StopBoxRunResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run's record after the stop. A run stopped by this call is reported
+	// as exited with the conventional 128+signal status (143 for SIGTERM, 137
+	// for SIGKILL).
+	Run    *BoxRun          `protobuf:"bytes,1,opt,name=run,proto3" json:"run,omitempty"`
+	Signal BoxRunStopSignal `protobuf:"varint,2,opt,name=signal,proto3,enum=containarium.v1.BoxRunStopSignal" json:"signal,omitempty"`
+	// True once the run's process group is gone. False means the signal was
+	// sent but the process had not exited when the call returned (SIGTERM
+	// ignored); call again with force.
+	Exited        bool `protobuf:"varint,3,opt,name=exited,proto3" json:"exited,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopBoxRunResponse) Reset() {
+	*x = StopBoxRunResponse{}
+	mi := &file_containarium_v1_box_run_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopBoxRunResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopBoxRunResponse) ProtoMessage() {}
+
+func (x *StopBoxRunResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_box_run_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopBoxRunResponse.ProtoReflect.Descriptor instead.
+func (*StopBoxRunResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *StopBoxRunResponse) GetRun() *BoxRun {
+	if x != nil {
+		return x.Run
+	}
+	return nil
+}
+
+func (x *StopBoxRunResponse) GetSignal() BoxRunStopSignal {
+	if x != nil {
+		return x.Signal
+	}
+	return BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_UNSPECIFIED
+}
+
+func (x *StopBoxRunResponse) GetExited() bool {
+	if x != nil {
+		return x.Exited
+	}
+	return false
+}
+
 var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\"\xdb\x02\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\"\xad\x03\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -457,9 +1031,30 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\texit_code\x18\x04 \x01(\x05H\x00R\bexitCode\x88\x01\x01\x128\n" +
 	"\aoutcome\x18\x05 \x01(\x0e2\x1e.containarium.v1.BoxRunOutcomeR\aoutcome\x12\x19\n" +
 	"\blog_path\x18\x06 \x01(\tR\alogPath\x12?\n" +
-	"\fcapture_mode\x18\a \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureModeB\f\n" +
+	"\fcapture_mode\x18\a \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureMode\x12\x1d\n" +
 	"\n" +
-	"_exit_code\"0\n" +
+	"session_id\x18\b \x01(\tR\tsessionId\x121\n" +
+	"\x05tools\x18\t \x03(\v2\x1b.containarium.v1.BoxRunToolR\x05toolsB\f\n" +
+	"\n" +
+	"_exit_code\"\xc2\x01\n" +
+	"\n" +
+	"BoxRunTool\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12E\n" +
+	"\n" +
+	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
+	"provenance\x12?\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xda\x01\n" +
+	"\x12StartBoxRunRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
+	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\x12)\n" +
+	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\x12\x19\n" +
+	"\brun_name\x18\x05 \x01(\tR\arunName\x12+\n" +
+	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\"@\n" +
+	"\x13StartBoxRunResponse\x12)\n" +
+	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"0\n" +
 	"\x12ListBoxRunsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\"B\n" +
 	"\x13ListBoxRunsResponse\x12+\n" +
@@ -476,12 +1071,34 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"end_offset\x18\x02 \x01(\x03R\tendOffset\x12\x1c\n" +
 	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12\x14\n" +
 	"\x05ended\x18\x04 \x01(\bR\x05ended\x12%\n" +
-	"\x0estderr_dropped\x18\x06 \x01(\bR\rstderrDroppedJ\x04\b\x05\x10\x06*\x86\x01\n" +
+	"\x0estderr_dropped\x18\x06 \x01(\bR\rstderrDroppedJ\x04\b\x05\x10\x06\"`\n" +
+	"\x11StopBoxRunRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x19\n" +
+	"\brun_name\x18\x02 \x01(\tR\arunName\x12\x14\n" +
+	"\x05force\x18\x03 \x01(\bR\x05force\"\x92\x01\n" +
+	"\x12StopBoxRunResponse\x12)\n" +
+	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\x129\n" +
+	"\x06signal\x18\x02 \x01(\x0e2!.containarium.v1.BoxRunStopSignalR\x06signal\x12\x16\n" +
+	"\x06exited\x18\x03 \x01(\bR\x06exited*\x86\x01\n" +
 	"\rBoxRunOutcome\x12\x1f\n" +
 	"\x1bBOX_RUN_OUTCOME_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17BOX_RUN_OUTCOME_RUNNING\x10\x01\x12\x1a\n" +
 	"\x16BOX_RUN_OUTCOME_EXITED\x10\x02\x12\x1b\n" +
-	"\x17BOX_RUN_OUTCOME_UNKNOWN\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x17BOX_RUN_OUTCOME_UNKNOWN\x10\x03*\xcb\x01\n" +
+	"\x14BoxRunToolProvenance\x12'\n" +
+	"#BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED\x10\x00\x12,\n" +
+	"(BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START\x10\x01\x12,\n" +
+	"(BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN\x10\x02\x12.\n" +
+	"*BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN\x10\x03*}\n" +
+	"\x12BoxRunToolLocation\x12%\n" +
+	"!BOX_RUN_TOOL_LOCATION_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cBOX_RUN_TOOL_LOCATION_SYSTEM\x10\x01\x12\x1e\n" +
+	"\x1aBOX_RUN_TOOL_LOCATION_HOME\x10\x02*\x97\x01\n" +
+	"\x10BoxRunStopSignal\x12#\n" +
+	"\x1fBOX_RUN_STOP_SIGNAL_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18BOX_RUN_STOP_SIGNAL_NONE\x10\x01\x12\x1f\n" +
+	"\x1bBOX_RUN_STOP_SIGNAL_SIGTERM\x10\x02\x12\x1f\n" +
+	"\x1bBOX_RUN_STOP_SIGNAL_SIGKILL\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_box_run_proto_rawDescOnce sync.Once
@@ -495,29 +1112,43 @@ func file_containarium_v1_box_run_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_box_run_proto_rawDescData
 }
 
-var file_containarium_v1_box_run_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_box_run_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_containarium_v1_box_run_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_containarium_v1_box_run_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_containarium_v1_box_run_proto_goTypes = []any{
 	(BoxRunOutcome)(0),            // 0: containarium.v1.BoxRunOutcome
-	(*BoxRun)(nil),                // 1: containarium.v1.BoxRun
-	(*ListBoxRunsRequest)(nil),    // 2: containarium.v1.ListBoxRunsRequest
-	(*ListBoxRunsResponse)(nil),   // 3: containarium.v1.ListBoxRunsResponse
-	(*TailBoxRunLogRequest)(nil),  // 4: containarium.v1.TailBoxRunLogRequest
-	(*TailBoxRunLogResponse)(nil), // 5: containarium.v1.TailBoxRunLogResponse
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
-	(CaptureMode)(0),              // 7: containarium.v1.CaptureMode
+	(BoxRunToolProvenance)(0),     // 1: containarium.v1.BoxRunToolProvenance
+	(BoxRunToolLocation)(0),       // 2: containarium.v1.BoxRunToolLocation
+	(BoxRunStopSignal)(0),         // 3: containarium.v1.BoxRunStopSignal
+	(*BoxRun)(nil),                // 4: containarium.v1.BoxRun
+	(*BoxRunTool)(nil),            // 5: containarium.v1.BoxRunTool
+	(*StartBoxRunRequest)(nil),    // 6: containarium.v1.StartBoxRunRequest
+	(*StartBoxRunResponse)(nil),   // 7: containarium.v1.StartBoxRunResponse
+	(*ListBoxRunsRequest)(nil),    // 8: containarium.v1.ListBoxRunsRequest
+	(*ListBoxRunsResponse)(nil),   // 9: containarium.v1.ListBoxRunsResponse
+	(*TailBoxRunLogRequest)(nil),  // 10: containarium.v1.TailBoxRunLogRequest
+	(*TailBoxRunLogResponse)(nil), // 11: containarium.v1.TailBoxRunLogResponse
+	(*StopBoxRunRequest)(nil),     // 12: containarium.v1.StopBoxRunRequest
+	(*StopBoxRunResponse)(nil),    // 13: containarium.v1.StopBoxRunResponse
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(CaptureMode)(0),              // 15: containarium.v1.CaptureMode
 }
 var file_containarium_v1_box_run_proto_depIdxs = []int32{
-	6, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
-	6, // 1: containarium.v1.BoxRun.ended_at:type_name -> google.protobuf.Timestamp
-	0, // 2: containarium.v1.BoxRun.outcome:type_name -> containarium.v1.BoxRunOutcome
-	7, // 3: containarium.v1.BoxRun.capture_mode:type_name -> containarium.v1.CaptureMode
-	1, // 4: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	14, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
+	14, // 1: containarium.v1.BoxRun.ended_at:type_name -> google.protobuf.Timestamp
+	0,  // 2: containarium.v1.BoxRun.outcome:type_name -> containarium.v1.BoxRunOutcome
+	15, // 3: containarium.v1.BoxRun.capture_mode:type_name -> containarium.v1.CaptureMode
+	5,  // 4: containarium.v1.BoxRun.tools:type_name -> containarium.v1.BoxRunTool
+	1,  // 5: containarium.v1.BoxRunTool.provenance:type_name -> containarium.v1.BoxRunToolProvenance
+	2,  // 6: containarium.v1.BoxRunTool.location:type_name -> containarium.v1.BoxRunToolLocation
+	4,  // 7: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	4,  // 8: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
+	4,  // 9: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	3,  // 10: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_box_run_proto_init() }
@@ -532,8 +1163,8 @@ func file_containarium_v1_box_run_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_box_run_proto_rawDesc), len(file_containarium_v1_box_run_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   5,
+			NumEnums:      4,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -2,10 +2,13 @@ package sentinel
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,9 +16,25 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+// tunnelTLSRequiredError is the answer a cleartext peer gets. It is written
+// as the ordinary handshake response so an older client prints a readable
+// reason instead of hanging.
+const tunnelTLSRequiredError = "tls required; upgrade the tunnel client and set --sentinel-pin"
+
+// DefaultTunnelAPIBindAddr is the IP the per-backend API listener
+// (ExternalPortBase+N, forwarding to the backend's port 8080) binds to by
+// default. Everything on the sentinel reaches a backend through its loopback
+// alias or the tunnel registry; set TunnelServer.APIBindAddr to an internal
+// address only when a daemon on another host lists this port in --peers.
+const DefaultTunnelAPIBindAddr = "127.0.0.1"
+
 // TunnelServer listens for incoming tunnel connections from remote spot instances.
 // Each connected spot gets a loopback alias, and the server opens local TCP proxy
 // listeners that forward traffic through the yamux session to the spot.
+//
+// A session arrives over TLS: a ClientHello offering TunnelALPN, terminated
+// here with the identity set by SetTunnelIdentity. A peer that opens in the
+// clear is answered with tunnelTLSRequiredError and closed.
 type TunnelServer struct {
 	listenAddr string
 	policy     *TokenPolicy
@@ -26,6 +45,14 @@ type TunnelServer struct {
 	// it — see loopbackPortsFor. Zero disables the exclusion (e.g. in tests
 	// that don't run a ConnMux).
 	httpsPort int
+
+	// APIBindAddr is the IP the per-backend API listener binds to.
+	// NewTunnelServer sets DefaultTunnelAPIBindAddr; empty means the same.
+	APIBindAddr string
+
+	// tlsConfig terminates TLS tunnel sessions. Nil until SetTunnelIdentity
+	// is called; TLS peers are closed while it is nil.
+	tlsConfig *tls.Config
 
 	// Callbacks for Manager integration
 	OnConnect    func(spot *TunnelSpot)
@@ -38,6 +65,11 @@ type TunnelServer struct {
 	mu        sync.Mutex
 	proxies   map[string]proxySet
 	cancelCtx context.CancelFunc
+
+	// goroutines counts every goroutine the server starts on behalf of a
+	// tunnel session (connection handlers, session monitors, proxy loops and
+	// proxied connections), so Wait can report when none is left.
+	goroutines sync.WaitGroup
 }
 
 // proxySet is one registration's listeners plus the generation that owns them.
@@ -58,13 +90,81 @@ type proxySet struct {
 // TunnelServer never runs alongside a ConnMux (e.g. in a test).
 func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelRegistry, httpsPort int) *TunnelServer {
 	return &TunnelServer{
-		listenAddr: listenAddr,
-		policy:     policy,
-		registry:   registry,
-		httpsPort:  httpsPort,
-		proxies:    make(map[string]proxySet),
+		listenAddr:  listenAddr,
+		policy:      policy,
+		registry:    registry,
+		httpsPort:   httpsPort,
+		APIBindAddr: DefaultTunnelAPIBindAddr,
+		proxies:     make(map[string]proxySet),
 	}
 }
+
+// SetTunnelIdentity installs the identity presented to TLS tunnel peers.
+// Call it before Serve.
+func (ts *TunnelServer) SetTunnelIdentity(id *TunnelIdentity) {
+	ts.tlsConfig = tunnelTLSServerConfig(id)
+}
+
+// tunnelTLSServerConfig is the listener side of the tunnel transport: the
+// identity's certificate, TLS 1.3 only, the tunnel ALPN protocol, and no
+// client certificate (the peer is authenticated by the token inside). It
+// is separate from the HTTPS configs that serve the certificate store.
+func tunnelTLSServerConfig(id *TunnelIdentity) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{id.TLSCertificate()},
+		NextProtos:   []string{TunnelALPN},
+		MinVersion:   tls.VersionTLS13,
+		ClientAuth:   tls.NoClientCert,
+	}
+}
+
+// acceptTransport classifies a freshly accepted connection by its first
+// byte and returns the connection the handshake is read from. A TLS record
+// (0x16) is terminated with the tunnel identity and must negotiate
+// TunnelALPN. Anything else is answered with tunnelTLSRequiredError before
+// its handshake line is read and counted as refused. The caller closes the
+// returned connection on error.
+func (ts *TunnelServer) acceptTransport(conn net.Conn) (net.Conn, TunnelTransport, error) {
+	first := make([]byte, 1)
+	if _, err := io.ReadFull(conn, first); err != nil {
+		return conn, "", fmt.Errorf("read first byte: %w", err)
+	}
+	conn = &peekedConn{Conn: conn, peeked: first}
+
+	if first[0] != 0x16 {
+		ts.registry.noteCleartextRefused()
+		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: tunnelTLSRequiredError})
+		return conn, "", errors.New("cleartext tunnel session refused: tls required")
+	}
+
+	if ts.tlsConfig == nil {
+		return conn, "", errors.New("TLS tunnel session but no tunnel identity is configured")
+	}
+	tlsConn := tls.Server(conn, ts.tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return tlsConn, "", fmt.Errorf("tunnel TLS handshake: %w", err)
+	}
+	if proto := tlsConn.ConnectionState().NegotiatedProtocol; proto != TunnelALPN {
+		return tlsConn, "", fmt.Errorf("tunnel TLS session negotiated ALPN %q, want %q", proto, TunnelALPN)
+	}
+	return tlsConn, TunnelTransportTLS, nil
+}
+
+// spawn runs f on a goroutine tracked by Wait.
+func (ts *TunnelServer) spawn(f func()) {
+	ts.goroutines.Add(1)
+	go func() {
+		defer ts.goroutines.Done()
+		f()
+	}()
+}
+
+// Wait blocks until every goroutine the server started for a tunnel session
+// has exited. It does not stop anything: cancel the context passed to Serve
+// and close or unregister the sessions first, or it waits for them forever.
+// Tests use it on cleanup so no session goroutine (notably monitorSession,
+// whose cleanup logs and runs `ip addr del`) outlives the test that owns it.
+func (ts *TunnelServer) Wait() { ts.goroutines.Wait() }
 
 // Run starts the tunnel server on its own port. Blocks until ctx is cancelled.
 func (ts *TunnelServer) Run(ctx context.Context) error {
@@ -105,7 +205,7 @@ func (ts *TunnelServer) Serve(ctx context.Context, ln net.Listener) error {
 				continue
 			}
 		}
-		go ts.handleConnection(ctx, conn)
+		ts.spawn(func() { ts.handleConnection(ctx, conn) })
 	}
 }
 
@@ -113,8 +213,15 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	log.Printf("[tunnel-server] new connection from %s", remoteAddr)
 
-	// Set deadline for handshake
+	// Set deadline for the transport setup and the handshake
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	conn, transport, err := ts.acceptTransport(conn)
+	if err != nil {
+		log.Printf("[tunnel-server] %s: %v", remoteAddr, err)
+		_ = conn.Close()
+		return
+	}
 
 	// Read handshake
 	hs, err := readHandshake(conn)
@@ -124,8 +231,9 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Validate
-	if err := validateHandshake(hs, ts.policy); err != nil {
+	// Validate. The handshake must be v2 and its proof must match the
+	// keying material this end exports from the same session.
+	if err := ts.validate(conn, hs); err != nil {
 		log.Printf("[tunnel-server] handshake validation failed from %s: %v", remoteAddr, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = conn.Close()
@@ -152,7 +260,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Register in the registry (assigns loopback alias)
-	localIP, gen, err := ts.registry.Register(hs, session)
+	localIP, gen, err := ts.registry.Register(hs, session, transport)
 	if err != nil {
 		log.Printf("[tunnel-server] registration failed for %s: %v", hs.SpotID, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
@@ -168,7 +276,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	log.Printf("[tunnel-server] spot %q authenticated, assigned %s, ports %v", hs.SpotID, localIP, hs.Ports)
+	log.Printf("[tunnel-server] spot %q authenticated over %s, assigned %s, ports %v", hs.SpotID, transport, localIP, hs.Ports)
 
 	// Start local TCP proxy listeners for each port. Skip the sentinel's own
 	// HTTPS ConnMux port for every backend, not just tunnel-promoted
@@ -193,7 +301,21 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// Monitor session — when it closes, clean up. The generation is what
 	// keeps this cleanup from firing against a LATER registration of the same
 	// spot (#769).
-	go ts.monitorSession(hs.SpotID, gen, session)
+	ts.spawn(func() { ts.monitorSession(hs.SpotID, gen, session) })
+}
+
+// validate checks a handshake read from a TLS tunnel session against the
+// keying material exported from that session.
+func (ts *TunnelServer) validate(conn net.Conn, hs *TunnelHandshake) error {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return errors.New("tls tunnel session without tls state")
+	}
+	ekm, err := tunnelTokenEKM(tlsConn.ConnectionState())
+	if err != nil {
+		return err
+	}
+	return validateHandshakeV2(hs, ts.policy, ekm)
 }
 
 // loopbackPortsFor returns the subset of ports that should get a per-spot
@@ -219,8 +341,9 @@ func loopbackPortsFor(ports []int, httpsPort, publicPort int) []int {
 // Connections to these listeners are proxied through the yamux session.
 // If binding to localIP fails (e.g., loopback alias not available on non-Linux),
 // it falls back to 127.0.0.1.
-// For the health port (8080), it also binds on 0.0.0.0:externalPort so that
-// the primary daemon on another VM can reach this tunnel backend's API.
+// For the health port (8080), it also binds on APIBindAddr:externalPort
+// (loopback by default), giving this tunnel backend's API a stable
+// per-backend port on the sentinel.
 func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uint64, localIP string, externalPort int, ports []int, session *yamux.Session) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -260,19 +383,22 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s (remote port %d)", addr, spotID, port)
 		}
 		listeners = append(listeners, ln)
-		go ts.proxyLoop(ctx, ln, port, session, spotID)
+		ts.spawn(func() { ts.proxyLoop(ctx, ln, port, session, spotID) })
 
-		// For the health/API port (8080), also bind on an externally reachable port
-		// so the primary daemon can reach this tunnel backend
+		// For the health/API port (8080), also bind the per-backend API port.
 		if port == 8080 && externalPort > 0 {
-			extAddr := fmt.Sprintf("0.0.0.0:%d", externalPort)
+			bindIP := ts.APIBindAddr
+			if bindIP == "" {
+				bindIP = DefaultTunnelAPIBindAddr
+			}
+			extAddr := net.JoinHostPort(bindIP, strconv.Itoa(externalPort))
 			extLn, extErr := net.Listen("tcp", extAddr)
 			if extErr != nil {
 				log.Printf("[tunnel-server] failed to bind external port %s for spot %s: %v", extAddr, spotID, extErr)
 			} else {
-				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (for peer discovery)", extAddr, spotID)
+				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (per-backend API port)", extAddr, spotID)
 				listeners = append(listeners, extLn)
-				go ts.proxyLoop(ctx, extLn, port, session, spotID)
+				ts.spawn(func() { ts.proxyLoop(ctx, extLn, port, session, spotID) })
 			}
 		}
 	}
@@ -293,7 +419,7 @@ func (ts *TunnelServer) proxyLoop(ctx context.Context, ln net.Listener, port int
 				return
 			}
 		}
-		go ts.proxyConnection(localConn, port, session, spotID)
+		ts.spawn(func() { ts.proxyConnection(localConn, port, session, spotID) })
 	}
 }
 

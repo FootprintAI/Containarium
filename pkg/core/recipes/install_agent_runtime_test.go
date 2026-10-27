@@ -14,7 +14,7 @@ import (
 // its error, and the PREFIX dir.
 func runInstallScript(t *testing.T, withMCPServer bool) (out string, prefix string, err error) {
 	t.Helper()
-	for _, tool := range []string{"bash", "curl", "tar"} {
+	for _, tool := range []string{"bash", "curl", "tar", "flock"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s not available", tool)
 		}
@@ -34,7 +34,7 @@ func runInstallScript(t *testing.T, withMCPServer bool) (out string, prefix stri
 	if err := os.MkdirAll(filepath.Join(stage, "dist"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"dist/index.js", "package.json"} {
+	for _, f := range []string{"dist/index.js", "dist/credential-state-cli.js", "package.json"} {
 		if err := os.WriteFile(filepath.Join(stage, f), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestInstallAgentRuntime_ShipsMCPServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, bin := range []string{"agent-box", "mcp-server", "agent-runtime"} {
+	for _, bin := range []string{"agent-box", "mcp-server", "agent-runtime", "agent-runtime-credential-state"} {
 		fi, statErr := os.Stat(filepath.Join(prefix, bin))
 		if statErr != nil {
 			t.Errorf("%s not installed: %v", bin, statErr)

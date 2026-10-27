@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
@@ -307,7 +308,7 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	lease := testLease("run-audit")
 
 	var issue runLeaseIssueDetail
-	if err := json.Unmarshal([]byte(runLeaseIssuePayload(lease)), &issue); err != nil {
+	if err := json.Unmarshal([]byte(runLeaseIssuePayload(lease, pb.AgentEngine_AGENT_ENGINE_CLAUDE)), &issue); err != nil {
 		t.Fatalf("unmarshal issue payload: %v", err)
 	}
 	if issue.RunID != "run-audit" {
@@ -315,6 +316,12 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	}
 	if issue.Box != lease.Box {
 		t.Errorf("issue box = %q, want %q", issue.Box, lease.Box)
+	}
+	// #2222: the run's resolved engine rides the same audit row, as its
+	// EnvValue name — what an auditor reading the daemon's own
+	// CONTAINARIUM_AGENT_ENGINE export would see.
+	if issue.Engine != "claude" {
+		t.Errorf("issue engine = %q, want claude", issue.Engine)
 	}
 	if len(issue.Credentials) != 2 {
 		t.Fatalf("issue credentials = %d, want both minted credentials", len(issue.Credentials))
@@ -449,7 +456,7 @@ func TestRunLeaseAuditRows(t *testing.T) {
 
 		// Exactly the call provisionSkillBox makes after a successful seed.
 		lease := testLease("run-issue")
-		s.auditRunLease(ctx, "agent.run_lease_issue", lease.RunID, runLeaseIssuePayload(lease))
+		s.auditRunLease(ctx, "agent.run_lease_issue", lease.RunID, runLeaseIssuePayload(lease, pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED))
 
 		issue := audits.byAction("agent.run_lease_issue")
 		if len(issue) != 1 {
@@ -493,7 +500,8 @@ func TestRunLeaseAuditRows(t *testing.T) {
 //
 // (*container.Manager).Exec type-asserts its backend to the concrete
 // *incus.Client, so the seed exec ALWAYS fails on a fake backend — which is
-// exactly the failure this harness exists to exercise.
+// exactly the failure this harness exists to exercise. A test that needs the
+// seed to succeed sets s.boxOps (see TestProvisionSkillBox_GitFetch, #2161).
 func newSkillBoxHarness(t *testing.T, store auth.RevocationStore) (*AgentSkillServer, *pb.AgentSkill) {
 	t.Helper()
 	s, skill, _ := newSkillBoxHarnessInspectable(t, store)
@@ -523,7 +531,7 @@ func newSkillBoxHarnessInspectable(t *testing.T, store auth.RevocationStore) (*A
 		catalog: catalog,
 		recipes: NewRecipeServer(cs, nil),
 		tokens:  tm,
-		gateway: &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: []byte("test-shared-secret")},
+		gateway: &gatewayProvisioning{engines: agentengine.Gateway{DefaultProvider: "anthropic"}, httpPort: 8080, secret: []byte("test-shared-secret")},
 	}
 	s.SetRevocationStore(store)
 	return s, skill, backend
@@ -537,7 +545,7 @@ func TestProvisionSkillBox_EndsPartialLeaseOnSeedFailure(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, skill := newSkillBoxHarness(t, store)
 
-	_, _, lease, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "", "")
+	_, _, lease, _, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "", "")
 	if err == nil {
 		t.Fatal("provisionSkillBox must fail when the seed exec fails")
 	}
@@ -614,29 +622,26 @@ func TestRunAgentSkill_ResponseCarriesRunID(t *testing.T) {
 // agentTokenTTL old failed "invalid gateway token: expired" regardless of
 // what was actually reseeded.
 //
-// What this test CAN observe against the fake backend: the kill step runs
-// (it uses ExecWithExitCode, part of the incus.Backend interface, unlike
-// ExecWithOutput which type-asserts to the concrete client and always fails
-// on a mock — see Manager.ExecWithOutput's own doc comment). What it CANNOT
-// observe: the subsequent launch call, because startServeMode's launch step
-// deliberately keeps using ExecWithOutput (unchanged production behavior),
-// which fails against every fake backend by construction — the same
-// limitation TestProvisionSkillBox_GitSourceSet_SeedFailsBeforeFetch
-// documents for the seed step. That a kill actually frees the port and lets
-// a fresh process bind it was verified live on the asia workhorse (restart
-// both stale boxes, confirm a single fresh agent-runtime process replaces
-// the ~25h-old one) rather than in this unit test.
+// The launch used to go through ExecWithOutput, which type-asserts the concrete
+// incus client and always failed on a fake backend, so this test could only see
+// the kill step. It now goes through ExecWithExitCode like the kill (#2936), so
+// the whole kill-then-launch order is observable. That a kill actually frees
+// the port and lets a fresh process bind it was verified live on the asia
+// workhorse (restart both stale boxes, confirm a single fresh agent-runtime
+// process replaces the ~25h-old one) rather than in this unit test.
 func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, _, backend := newSkillBoxHarnessInspectable(t, store)
+	ctx := context.Background()
 
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1", "hello-agent")
-
-	if len(backend.execCalls) != 1 {
-		t.Fatalf("execCalls = %d, want 1 (the kill step — the launch step uses ExecWithOutput, unreachable on this fake); got %+v",
-			len(backend.execCalls), backend.execCalls)
+	if err := s.startServeMode(ctx, "agent-hello-agent", "/etc/containarium/agent/runs/run-1", "hello-agent", agentengine.Resolved{}, ""); err != nil {
+		t.Fatalf("startServeMode: %v", err)
 	}
-	kill := backend.execCalls[0]
+
+	if len(backend.execCalls) < 2 {
+		t.Fatalf("execCalls = %d, want the kill step then the launch; got %+v", len(backend.execCalls), backend.execCalls)
+	}
+	kill, launch := backend.execCalls[0], backend.execCalls[1]
 	if kill.ContainerName != "agent-hello-agent" {
 		t.Errorf("kill container = %q, want agent-hello-agent", kill.ContainerName)
 	}
@@ -644,11 +649,22 @@ func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 	if !strings.Contains(killScript, "agent-runtime") || !strings.Contains(killScript, "pkill") {
 		t.Errorf("kill command = %v, want it to pkill a prior agent-runtime instance", kill.Command)
 	}
+	if !strings.Contains(strings.Join(launch.Command, " "), "setsid agent-runtime") {
+		t.Errorf("second command = %v, want the launch, strictly after the kill", launch.Command)
+	}
 
 	// A second call (a later run against the same reused box) must kill
 	// again — the fix is not a one-shot guard, it runs on every call.
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2", "hello-agent")
-	if len(backend.execCalls) != 2 {
-		t.Fatalf("after a second call, execCalls = %d, want 2", len(backend.execCalls))
+	if err := s.startServeMode(ctx, "agent-hello-agent", "/etc/containarium/agent/runs/run-2", "hello-agent", agentengine.Resolved{}, ""); err != nil {
+		t.Fatalf("second startServeMode: %v", err)
+	}
+	kills := 0
+	for _, c := range backend.execCalls {
+		if strings.Contains(strings.Join(c.Command, " "), "pkill") {
+			kills++
+		}
+	}
+	if kills != 2 {
+		t.Fatalf("after a second call, kill steps = %d, want 2", kills)
 	}
 }

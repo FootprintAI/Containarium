@@ -23,29 +23,51 @@ import (
 // a change to three functions and not to the streaming core.
 
 // prepareCodeRun reads the box's code.json, mints this run's credential if it
-// needs one, writes it, and returns the command process_start should spawn.
+// needs one, writes it, and returns the command process_start should spawn
+// plus the resolved engine (the caller needs it afterwards to discover this
+// run's session id, #2193 — the glob it polls is engine-specific).
 //
 // The order matters: the credential file is on the box BEFORE process_start, so
 // the run's very first action can already read it. Minting after the process
 // starts would be a race the run usually loses.
-func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName string, diag io.Writer) (string, error) {
+func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName string, diag io.Writer) (string, engine.Engine, error) {
 	cfg, err := readBoxCodeConfig(ctx, sess, diag)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	eng, err := cfg.EngineFor()
 	if err != nil {
-		return "", fmt.Errorf("%s on %q: %w", engine.CodeConfigPath, box, err)
+		return "", nil, fmt.Errorf("%s on %q: %w", engine.CodeConfigPath, box, err)
 	}
 
 	if cfg.Credential == engine.KindGateway {
 		if err := mintAndWriteRunToken(ctx, sess, box, runName, cfg, eng, diag); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 
-	return eng.RunCommand(codeRunPrompt, codeRunStreamJSON, codeRunContinue), nil
+	reportModelTrafficScanning(eng, diag)
+
+	return eng.RunCommand(codeRunPrompt, codeRunStreamJSON, codeRunContinue, codeRunSession), eng, nil
+}
+
+// reportModelTrafficScanning prints, once at run start, whether this run's
+// model responses are scanned by the inbound guardrail (#2367), so a missing
+// alert is never read as "clean". Only a gateway run consults the server
+// policy; a failed read is reported as unknown and never blocks the run.
+func reportModelTrafficScanning(eng engine.Engine, diag io.Writer) {
+	cred := eng.Credential().Kind()
+	effective := pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED
+	if cred == engine.KindGateway {
+		if api, done, err := newGuardrailStatusAPI(); err == nil {
+			if resp, gerr := api.GetGuardrailStatus(); gerr == nil {
+				effective = resp.GetResponsePolicy()
+			}
+			done()
+		}
+	}
+	fmt.Fprintln(diag, engine.ScanningLine(engine.ModelTrafficScanning(cred, effective)))
 }
 
 // readBoxCodeConfig reads code.json off the box.

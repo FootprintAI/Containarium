@@ -6,6 +6,14 @@ name: eBPF load path
 # just that it compiles. See docs/EBPF-CI-LOADING-LANE-DESIGN.md (#1663,
 # split from #1660, umbrella #1645) for the full design.
 #
+# Since #2637 the same lane also proves the SECOND object,
+# internal/netbpf/execwatch.bpf.o (exec telemetry): it loads under this
+# kernel's verifier with CO-RE against the runner's BTF, attaches to the
+# sched/sched_process_exec tracepoint, emits exactly one event for an exec
+# inside a watched cgroup and none for a host exec, counts (not crashes on)
+# a 10k-exec burst, and logs the measured per-exec overhead
+# (execwatch_load_test.go).
+#
 # release.yml already proves the OTHER half (`make build-bpf` succeeds in
 # CI); this lane exists because nothing anywhere proved the load/attach
 # half, and a verifier-rejected instruction or a broken AttachTCX call would
@@ -33,6 +41,9 @@ on:
     paths:
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/server/exec_watcher.go'
+      - 'internal/server/exec_stamp*.go'
+      - 'internal/server/process_kill*.go'
       - '.github/workflows/ebpf-load.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215, same
@@ -41,6 +52,9 @@ on:
     paths:
       - 'internal/netbpf/**'
       - 'experimental/ebpf-phaseA/**'
+      - 'internal/server/exec_watcher.go'
+      - 'internal/server/exec_stamp*.go'
+      - 'internal/server/process_kill*.go'
       - '.github/workflows/ebpf-load.yml'
 
 permissions:
@@ -52,20 +66,22 @@ concurrency:
 
 jobs:
   ebpf-load:
-    name: Load + attach the real eBPF network-policy object
+    name: Load + attach the real eBPF objects (network policy, exec telemetry)
     runs-on: ubuntu-latest
     # No image pull, no Incus — this is a compile + a few `ip` commands + a
-    # short Go test. Generous headroom over the expected ~1-2 minutes for a
-    # first-run apt-get on a cold cache.
-    timeout-minutes: 15
+    # Go test. The exec-telemetry overhead measurement (#2637) runs a paced
+    # exec load for 60 s with and without the program attached, so the test
+    # step itself takes a few minutes; headroom on top for a cold apt cache.
+    timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       # release.yml's already-proven recipe (see its "Compile eBPF
       # network-policy object" step) — copied verbatim rather than shared
@@ -76,15 +92,58 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
 
-      - name: Compile the eBPF network-policy object
+      - name: Compile both eBPF objects
         run: |
           set -euo pipefail
-          make build-bpf
+          make build-bpf BPFTOOL="$BPFTOOL"
           test -s internal/netbpf/netpolicy.bpf.o || {
             echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
             exit 1
           }
+          test -s internal/netbpf/execwatch.bpf.o || {
+            echo "::error::make build-bpf reported success but execwatch.bpf.o is missing or empty"
+            exit 1
+          }
+          test -s internal/netbpf/vmlinux.h || {
+            echo "::error::make build-bpf did not generate vmlinux.h"
+            exit 1
+          }
+
+      # A netpolicy object from before #2974, whose policy_cfg's last byte was
+      # padding (#2987): the loader must detect that it ignores egress_mode.
+      # Built from the netpolicy.bpf.c at #2974's parent commit, fetched by
+      # sha (the checkout is shallow), with the same flags as `make build-bpf`.
+      - name: Compile the pre-egress_mode network-policy object
+        run: |
+          set -euo pipefail
+          OLD_SHA=85b5919fdfda6314a841b88a8861666042404848
+          git fetch --no-tags --depth=1 origin "$OLD_SHA"
+          OLD_SRC="$RUNNER_TEMP/netpolicy-pre-egress-mode.bpf.c"
+          OLD_OBJ="$RUNNER_TEMP/netpolicy-pre-egress-mode.bpf.o"
+          git show "$OLD_SHA:experimental/ebpf-phaseA/netpolicy.bpf.c" > "$OLD_SRC"
+          if grep -q egress_mode "$OLD_SRC"; then
+            echo "::error::the pinned pre-#2974 source already declares egress_mode"
+            exit 1
+          fi
+          clang -O2 -g -target bpfel -I/usr/include/"$(uname -m)"-linux-gnu -c "$OLD_SRC" -o "$OLD_OBJ"
+          test -s "$OLD_OBJ"
+          echo "NETBPF_PRE_EGRESS_MODE_OBJECT=$OLD_OBJ" >> "$GITHUB_ENV"
 
       # sudo -E env "PATH=$PATH" is incus-create.yml's own fix for #1614:
       # plain `sudo go test` drops $PATH (no `go` binary found) and, if it
@@ -101,7 +160,7 @@ jobs:
         working-directory: internal/netbpf
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" go test -tags=ebpf_load -v -count=1 -timeout 5m . | tee ebpf-load-test.log
+          sudo -E env "PATH=$PATH" go test -tags=ebpf_load -v -count=1 -timeout 12m . | tee ebpf-load-test.log
 
       # A skip here means the build tag or the environment silently didn't
       # engage — a lane whose entire purpose is proving real-kernel behavior
@@ -121,6 +180,18 @@ jobs:
             exit 1
           fi
           echo "No skips — the load/attach/evaluate path actually ran."
+
+      # Per-exec capture cost on the exec ring consumer (#2765 follow-up):
+      # the boot-clock stamp the watcher takes on every exec against the
+      # /proc/<pid>/stat read it replaced, which now runs once per kill.
+      # A smoke, not a gate: it fails only if the benchmark cannot run, and
+      # the numbers land in the log for the verification doc.
+      - name: Benchmark the per-exec capture cost
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench 'BenchmarkExecCapture|BenchmarkExecWatcherOnExecEvent' \
+            -benchtime 200000x -count 3 ./internal/server/ | tee exec-capture-bench.log
+          grep -q '^BenchmarkExecCapture/bootclock' exec-capture-bench.log
 
       - name: Collect diagnostics on failure
         if: failure()

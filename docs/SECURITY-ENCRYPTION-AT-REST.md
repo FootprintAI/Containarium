@@ -38,6 +38,66 @@ container data itself — protection comes from the underlying disk layer
   the source disk's encryption posture. If the source uses CMEK, the
   snapshot uses CMEK. If not, Google-managed.
 
+## Coding-agent sign-in credentials inside a box
+
+A box running a coding engine (`containarium code install`, or a skill box
+from the `coding-agent` recipe) is signed in by a human, inside the box,
+through the engine's own flow. This section says what the platform does
+and does not do with the credential that sign-in leaves behind. Everything
+below is stated from the code; the one fact the code cannot settle is
+marked **to be confirmed by the operator**.
+
+**Where it lives.** Claude Code's device-code/browser sign-in writes
+`~/.claude/.credentials.json` in the signed-in user's home directory inside
+the box. A user who chooses the headless path instead places their own
+provider key in the `env` block of `~/.claude/settings.json`. Both are
+ordinary files in the box's root filesystem, written by the engine or the
+user, never by the platform (`codeSignInHelp` in `internal/cmd/code.go`).
+
+**What the platform does:**
+
+- Never writes, reads, logs, or transmits the credential value. The
+  credential-status probe (`internal/coderun/engine/claude.go`,
+  `claudeCredentialStatusScript`) checks whether the file exists and the
+  names of env vars, and reports a source name only.
+- Reads exactly one field out of the sign-in file: the numeric `expiresAt`
+  timestamp. `grep -o` extracts only that match, which the probe compares
+  with the box's clock and never prints. A past timestamp reports
+  `CODE_CREDENTIAL_SOURCE_EXPIRED`; no timestamp reports `INTERACTIVE`.
+- Watches for expiry. When Postgres is configured, the daemon probes every
+  running skill box every 15 minutes, keeps the last-seen source in the
+  `code_credential_watch_state` table, and sends **one** `CodeCredentialExpired`
+  alert per flip into expired to the operator webhook (see
+  [ALERTING-SETUP.md](ALERTING-SETUP.md#credential-expiry-alert)).
+
+**What the platform does not do:**
+
+- It does **not** encrypt this file. The secrets store
+  (`internal/secrets/store.go`: AES-256-GCM under the daemon's master key,
+  or a KMS envelope when a KMS key is configured) covers only values stored
+  through it: `containarium secrets set` and the model gateway's provider
+  keys. The sign-in file never passes through that store. Bringing it under
+  the envelope is not implemented.
+- It does not restrict access beyond the box itself. Anyone with a shell in
+  the box as that user, and any privileged process on the host, can read
+  the file.
+- The database backup path (`CreateBackup`, which dumps databases) does not
+  include it. Anything that copies the box's root filesystem does: a
+  move to another backend, a snapshot, or a backup hook that archives
+  the home directory.
+
+**At rest on disk.** The file is protected at rest only by whatever
+encryption sits under the box's root filesystem: the persistent-disk layer
+and the optional ZFS native encryption described in the tables above. The
+platform adds nothing of its own.
+
+> **To be confirmed by the operator:** whether the hosts that run your
+> boxes actually have disk encryption enabled (GCP PD default or CMEK,
+> `zfs_encryption_keyfile` / `--zfs-encryption-keyfile`, LUKS, or
+> self-encrypting drives). The code cannot see this, so this document makes
+> no claim either way for a given deployment. Until it is confirmed, treat
+> the sign-in file as plaintext on disk.
+
 ## Customer-managed keys (CMEK)
 
 The terraform module accepts a `kms_key_self_link` variable that wires

@@ -207,3 +207,9 @@ variable "sentinel_boot_disk_size" {
     error_message = "Sentinel boot disk size must be between 10 and 100 GB"
   }
 }
+
+variable "ssh_session_log_retention_days" {
+  description = "Days of rotated SSH session records to keep on the sentinel VM (#2415). Passed to the module; default 90."
+  type        = number
+  default     = 90
+}

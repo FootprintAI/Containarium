@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/footprintai/containarium/internal/server"
@@ -39,7 +38,6 @@ func getPostgresConnString() string {
 		return ""
 	}
 	log.Printf("[postgres] DSN source: auto-detect default, password source: %s", pwSource)
-	return fmt.Sprintf("postgres://%s:%s@10.100.0.2:%d/%s?sslmode=disable",
-		server.DefaultPostgresUser, password,
-		server.DefaultPostgresPort, server.DefaultPostgresDB)
+	return server.PostgresDSN(server.DefaultPostgresUser, password,
+		"10.100.0.2", server.DefaultPostgresPort, server.DefaultPostgresDB)
 }

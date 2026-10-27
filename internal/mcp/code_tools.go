@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Platform-MCP wrappers for `containarium code` (#1698). Every operation here
@@ -105,6 +107,7 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 	streamJSON := getBoolArg(args, "stream_json", false)
 	name := codeRunNameArg(args)
+	sessionID := strings.TrimSpace(getStringArg(args, "session_id", ""))
 
 	sess, done, err := mcpCodeSession(client, box)
 	if err != nil {
@@ -112,22 +115,81 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 	defer done()
 
+	command := coderun.BuildClaudeRunCommand(prompt, streamJSON)
+	if sessionID != "" {
+		// Mirrors claudeEngine.RunCommand's --resume handling (#2193). This
+		// tool only ever builds a Claude command (it predates the engine
+		// seam, #1727) — session resume is applied the same way here.
+		command += " --resume " + coderun.ShellQuoteSingle(sessionID)
+	}
+
 	ctx := context.Background()
+	// Snapshot the engine's session directory before the run starts, so
+	// discovery adopts only a session this run creates (a resumed run's id is
+	// the literal sessionID and needs none).
+	discover := sessionID == "" && mcpSnapshotSessionDirectory(ctx, sess, name)
 	started, err := sess.ProcessStart(ctx,
 		name,
-		coderun.BuildClaudeRunCommand(prompt, streamJSON),
+		command,
 		"",
 		coderun.CaptureModeFor(streamJSON),
 	)
 	if err != nil {
 		return "", fmt.Errorf("start run on %q: %w", box, err)
 	}
+	if discover {
+		mcpStartSessionDiscovery(ctx, sess, name)
+	}
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return fmt.Sprintf(
-		"✓ started %q (pid %d) on %s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
+		"✓ started %q (pid %d) on %s\n%s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
 			"(the run continues on the box — call code_attach with name=%q and offset=%d for more)",
-		started.Name, started.PID, box, started.LogPath, next, out, started.Name, next), nil
+		started.Name, started.PID, box,
+		// This tool only builds the Claude tenant-secret command, so its
+		// traffic never crosses the gateway.
+		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED)),
+		started.LogPath, next, out, started.Name, next), nil
+}
+
+// mcpSessionSidecar is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func mcpSessionSidecar(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// mcpSnapshotSessionDirectory records the engine's existing session entries
+// before the run starts (see engine/session_discovery.go). False means no
+// snapshot, so discovery must be skipped: an absent id, never a wrong one.
+func mcpSnapshotSessionDirectory(ctx context.Context, sess *coderun.Session, name string) bool {
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
+	if !ok {
+		return false
+	}
+	_, err = sess.ShellExec(ctx, cmd)
+	return err == nil
+}
+
+// mcpStartSessionDiscovery best-effort backgrounds the lookup of this run's
+// session id on the box (#2193), the MCP-tool twin of code_run.go's
+// startSessionDiscovery. This tool only ever builds a Claude command (see
+// handleCodeRun), so the engine is fixed; a lookup failure is never fatal —
+// code_runs simply reports no session id for this run, which the AC already
+// allows.
+func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, name string) {
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		return
+	}
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
+	if !ok {
+		return
+	}
+	_, _ = sess.ShellExec(ctx, cmd)
 }
 
 // handleCodeAttach resumes a run's output from a byte offset. Passing back the

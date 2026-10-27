@@ -3,6 +3,7 @@ syntax = "proto3";
 package containarium.v1;
 
 import "containarium/v1/container.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -98,11 +99,12 @@ message SecurityConfig {
   // Enable seccomp filtering
   bool enable_seccomp = 4;
 
-  // Require SSH keys (don't allow password auth)
-  bool require_ssh_keys = 5;
-
-  // Minimum password length if passwords are allowed
-  int32 min_password_length = 6;
+  // Fields 5 and 6 were require_ssh_keys and min_password_length. Nothing
+  // ever read them: this file declares no service, so SecurityConfig is not
+  // reachable over the API. Box SSH is key-only by construction instead
+  // (the provisioner's sshd drop-in plus the posture reconciler, #2424).
+  reserved 5, 6;
+  reserved "require_ssh_keys", "min_password_length";
 }
 
 // GetConfigRequest is the request to get current configuration
@@ -231,15 +233,120 @@ message SystemInfo {
   // core-infra containers (Postgres, Caddy, control-plane — not tenant
   // workload) are deliberately excluded, the same exclusion the CPU
   // admission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.
-  // An operator combining this with total_cpus to size an overcommit factor
-  // must still separately budget the host's own known core-infra CPU
-  // footprint on top of it.
+  // The platform's own footprint is reported separately in
+  // core_committed_cpu_cores (#2284) so an operator sizing a factor can
+  // see both halves instead of guessing the second.
   //
   // 0 on the K8s runtime, same as total_cpus (the Incus resource read
   // no-ops there) — "not applicable to this runtime," not "nothing
   // committed." See #1571/#1578 for the design this closes the visibility
   // half of.
   double committed_cpu_cores = 24;
+
+  // core_committed_cpu_cores is the sum of this host's CORE-ROLE containers'
+  // committed CPU (Postgres, Caddy, VictoriaMetrics, control plane, ... —
+  // the platform's own processes), the half committed_cpu_cores leaves out.
+  // Together with committed_cpu_cores and total_cpus it gives the full
+  // tenant / core / physical picture the admission gate reasons about only
+  // half of, so a saturated host is visible as such (#2284). 0 on the K8s
+  // runtime, like the other two.
+  double core_committed_cpu_cores = 25;
+
+  // cpu_admission_mode is the CPU overcommit admission gate's posture on
+  // this backend (docs/CPU-CAPACITY-ADMISSION.md): disabled, advisory
+  // (logs what it would reject, admits everything) or enforcing. Surfaced so
+  // a client can tell that a host past its ceiling is NOT being protected —
+  // advisory mode otherwise fails silently (#2284). UNSPECIFIED means the
+  // backend predates this field, not that the gate is off.
+  CPUAdmissionMode cpu_admission_mode = 26;
+
+  // cpu_overcommit_factor is the gate's configured ceiling multiple of
+  // total_cpus (the --cpu-overcommit-factor flag). 0 when the gate is
+  // disabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;
+  // the host is over it when committed_cpu_cores exceeds that.
+  double cpu_overcommit_factor = 27;
+
+  // headroom is the spare scheduling capacity this backend currently
+  // advertises (#680), or null when nothing is advertised (withdrawn or
+  // never published) — null stays distinguishable from "offering zero".
+  // Carried on SystemInfo so ListBackends' existing GetSystemInfo fan-out
+  // surfaces a peer's advertisement with no extra forwarded call (#2135).
+  CapacityHeadroom headroom = 28;
+
+  // capability_profile is this backend's last-recorded hardware capability
+  // profile (#681), or null until ProfileBackend has run — null stays
+  // distinguishable from "profiled CPU-only". Carried here for the same
+  // peer fan-out as headroom (#2135).
+  CapabilityProfile capability_profile = 29;
+
+  // capabilities lists the optional API features this daemon supports, as
+  // the stable names in internal/server's DaemonCap* constants. A client
+  // checks for a name BEFORE sending a request field an older daemon would
+  // reject (the REST mux rejects unknown JSON fields). Absent from an older
+  // daemon: an empty list means "none of the optional features", so a
+  // client must treat a missing name as unsupported. Names are only ever
+  // added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
+  // "box_run_structured_output" (StartBoxRunRequest.structured_output).
+  // An open string set rather than an enum so a newer daemon's extra names
+  // never fail to decode in an older client.
+  repeated string capabilities = 30;
+
+  // storage_pools is every Incus storage pool's fill as the daemon's pool
+  // capacity monitor last read it (#2823), so a nearly full pool is visible
+  // per pool rather than hidden in the summed disk fields above. Served from
+  // the monitor's snapshot (no extra Incus call); empty when the monitor has
+  // not read yet or the daemon predates the field.
+  repeated StoragePoolCapacity storage_pools = 31;
+}
+
+// StoragePoolCapacity is one storage pool's fill (#2823).
+message StoragePoolCapacity {
+  // Storage pool name.
+  string pool = 1;
+
+  // The pool's driver as a typed constant.
+  StorageDriver driver = 2;
+
+  // Bytes used and usable size, as Incus reports them for the pool. For ZFS,
+  // Incus derives the size as used + available, so ZFS slop space is already
+  // excluded (read from the Incus driver; not verified on a live pool).
+  int64 used_bytes = 3;
+  int64 total_bytes = 4;
+
+  // Fill level against the daemon's fixed thresholds (warning >= 85%,
+  // critical >= 95% of used_bytes / total_bytes).
+  StoragePoolCapacityLevel level = 5;
+
+  // When the monitor read the pool.
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+// StoragePoolCapacityLevel is a storage pool's fill level (#2823).
+enum StoragePoolCapacityLevel {
+  // The pool did not report a size.
+  STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED = 0;
+  // Below the warning threshold.
+  STORAGE_POOL_CAPACITY_LEVEL_OK = 1;
+  // At or above 85%.
+  STORAGE_POOL_CAPACITY_LEVEL_WARNING = 2;
+  // At or above 95%: containers on the pool may soon stop writing.
+  STORAGE_POOL_CAPACITY_LEVEL_CRITICAL = 3;
+}
+
+// CPUAdmissionMode is the CPU overcommit admission gate's posture
+// (docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of
+// bare flags so a client switches on typed constants and cannot mistake
+// "factor set but not enforced" for protection (#2284).
+enum CPUAdmissionMode {
+  // The backend did not report a posture (pre-#2284 daemon).
+  CPU_ADMISSION_MODE_UNSPECIFIED = 0;
+  // No factor configured: the gate never runs (the default).
+  CPU_ADMISSION_MODE_DISABLED = 1;
+  // A factor is configured but over-ceiling creates are only logged, never
+  // rejected.
+  CPU_ADMISSION_MODE_ADVISORY = 2;
+  // Over-ceiling creates are rejected with ResourceExhausted.
+  CPU_ADMISSION_MODE_ENFORCING = 3;
 }
 
 // StorageDriver identifies the incus storage-pool driver backing a backend's
@@ -405,6 +512,13 @@ message GetLatestReleaseResponse {
 
   // True when latest_release is a newer semver than current_version.
   bool update_available = 3;
+
+  // Version of the binary the sentinel currently serves, i.e. what a default
+  // (sentinel-path) TriggerUpgrade would install. Can lag latest_release
+  // until an operator runs `containarium sentinel fetch-release`. Empty when
+  // unknown: no sentinel configured, an older sentinel without
+  // /containarium/version, or the lookup failed. #2171.
+  string target_version = 4;
 }
 
 // ValidateGPURequest asks a backend to prove GPU passthrough works from inside
@@ -455,6 +569,13 @@ message TriggerUpgradeRequest {
   // air-gapped hosts, which have no GitHub egress and must keep the
   // sentinel path regardless — this field existing changes nothing for them.
   string github_tag = 3;
+
+  // Permit github_tag to name a release older than the running daemon
+  // version (a deliberate rollback). Default false: such a tag is refused
+  // with FAILED_PRECONDITION. Only both-parse-as-semver comparisons can
+  // refuse; "latest", dev builds and unparseable versions are not blocked.
+  // Has no effect on the sentinel-served path.
+  bool allow_downgrade = 4;
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
@@ -476,6 +597,10 @@ message TriggerUpgradeResponse {
 
   // Echoes the targeted backend ("" = local).
   string backend_id = 5;
+
+  // Version this upgrade will install: the sentinel-served binary's version,
+  // or the requested github_tag. Best-effort — empty when unknown. #2171.
+  string target_version = 6;
 }
 
 // GetUpgradeStatusRequest polls an upgrade started by TriggerUpgrade.
@@ -499,6 +624,10 @@ message GetUpgradeStatusResponse {
 
   // RFC3339 completion time when status is "completed" or "failed".
   string completed_at = 4;
+
+  // Version the upgrade was installing, as recorded when it was triggered.
+  // Empty when unknown, including after a restart dropped the job. #2171.
+  string target_version = 5;
 }
 
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or
@@ -508,6 +637,20 @@ enum NetworkPolicyMode {
   NETWORK_POLICY_MODE_UNSPECIFIED = 0; // treated as LOG_ONLY in Phase A
   NETWORK_POLICY_MODE_LOG_ONLY = 1;    // observe + audit denied flows; drop nothing
   NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied flows
+}
+
+// EgressPreset names a ready-made egress posture so a tenant lockdown is one
+// field rather than a rule set (#2440).
+enum EgressPreset {
+  // No preset: the policy is exactly what its egress lists say. The behaviour
+  // before this enum existed.
+  EGRESS_PRESET_UNSPECIFIED = 0;
+  // Allow-list only: egress is limited to egress_cidrs and egress_domains plus
+  // the box's DNS resolver (the bridge gateway), which is added implicitly so
+  // an allow-list cannot blackhole name resolution. Everything else is denied
+  // in ENFORCE mode and audited in LOG_ONLY, so the preset can be soaked
+  // before it is armed. The mode is not changed by the preset.
+  EGRESS_PRESET_ALLOW_LIST_ONLY = 1;
 }
 
 // NetworkPolicy is a tenant's network-isolation policy, enforced at each of the
@@ -554,6 +697,31 @@ message NetworkPolicy {
   // expires_at is in the past is dropped at compile time, so the patch
   // self-removes once the fix lands.
   repeated NetworkPolicyDenyRule deny_rules = 8;
+  // Tenants whose containers may reach this tenant's containers over the
+  // bridge (#2359). Consumed by the tenant network guard
+  // (docs/architecture/tenant-network-guard.md): every box of a listed
+  // tenant becomes an allowed ingress source on this tenant's NIC ACL.
+  // This is the only way to open tenant ingress to another tenant; the
+  // per-container ACL (UpdateContainerACL) no longer carries ingress rules.
+  // Normalised on set: trimmed, deduplicated, sorted; the tenant itself is
+  // rejected (use allow_intra_tenant). One-directional: listing bob here
+  // lets bob reach us, not the reverse.
+  repeated string allow_from_tenants = 9;
+
+  // Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly
+  // as its lists say. See EgressPreset.
+  EgressPreset egress_preset = 10;
+
+  // Enforcement mode for the egress allow-list ONLY. `mode` keeps governing
+  // the cross-tenant, intra-tenant, metadata, virtual-patch and signature
+  // checks; this field decides whether a flow to a destination outside the
+  // allow-list (egress_cidrs + resolved egress_domains) is dropped or only
+  // logged. It lets an operator soak a narrower allow-list in LOG_ONLY while
+  // the cross-tenant drop stays in ENFORCE. UNSPECIFIED (the default, and what
+  // every policy written before this field carries) means "follow `mode`", so
+  // existing policies behave exactly as before. The daemon-wide enforce guard
+  // downgrades ENFORCE here exactly as it does for `mode`.
+  NetworkPolicyMode egress_mode = 11;
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a

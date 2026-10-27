@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -43,9 +44,51 @@ type ThreatDetectionServer struct {
 	// than panicking, same as badDestRule.
 	store threatdetect.FindingReader
 
-	mu                sync.Mutex // guards the two fields below — SetUnavailable can flip them after Start()
+	// policies and responder back the process-policy RPCs (#2636); see
+	// threatdetect_policy_server.go. Either may be nil.
+	policies  *threatdetect.ProcessPolicyStore
+	miningCfg *threatdetect.MiningThresholdsConfig
+	responder *ProcessResponder
+
+	// minerSigRule backs the miner-signature RPCs (#2638); like badDestRule
+	// it exists whether or not the sentry is armed. See
+	// threatdetect_minersig_server.go.
+	minerSigRule *threatdetect.MinerSignatureRule
+
+	mu                sync.Mutex // guards the fields below — SetUnavailable / SetCPUSamplerStatus run after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string
+	cpuSamplerStatus  string              // GetSentryStatus.cpu_sampler (#2645); "" until wired
+	execTelemetry     execTelemetrySource // exec telemetry (#2637); nil until wired
+	execHash          execHashSource      // miner-signature exec hasher (#2768); nil until wired
+
+	// responderDegradedReason is why the process responder is ALERT-only
+	// ("" when it can apply THROTTLE/FREEZE). Reported as DEGRADED even when
+	// the finding store itself is persisted (#2719).
+	responderDegradedReason string
+}
+
+// execTelemetrySource is what the server needs from the ExecWatcher (#2637):
+// its status line, the kernel's lost count, and a subscription for
+// StreamExecEvents. An interface so the handler is testable with a fake.
+type execTelemetrySource interface {
+	Status() string
+	Lost() int64
+	Subscribe(container string, since time.Duration, buffer int) (replay []ExecEventRecord, ch <-chan ExecEventRecord, cancel func())
+}
+
+// execHashSource is what the server reads from the exec hasher (#2768): the
+// count of hash requests dropped on a full queue.
+type execHashSource interface {
+	Dropped() int64
+}
+
+// SetExecHashSource wires the exec hasher: GetSentryStatus reports its
+// Dropped as exec_hashes_dropped.
+func (s *ThreatDetectionServer) SetExecHashSource(src execHashSource) {
+	s.mu.Lock()
+	s.execHash = src
+	s.mu.Unlock()
 }
 
 // NewThreatDetectionServer builds the server. engine must be non-nil iff
@@ -61,6 +104,25 @@ func NewThreatDetectionServer(engine *threatdetect.Engine, sentryEnabled, ebpfAv
 		ebpfAvailable:     ebpfAvailable,
 		unavailableReason: unavailableReason,
 	}
+}
+
+// SetCPUSamplerStatus records which source feeds the mining-behavior
+// rule's CPU samples (#2645) — "metrics-collector", "standalone (30s)" or
+// "unavailable (<reason>)" — surfaced as GetSentryStatus.cpu_sampler.
+func (s *ThreatDetectionServer) SetCPUSamplerStatus(status string) {
+	s.mu.Lock()
+	s.cpuSamplerStatus = status
+	s.mu.Unlock()
+}
+
+// SetExecTelemetry wires the exec watcher (#2637): GetSentryStatus reports
+// its Status as exec_telemetry and its Lost as exec_events_lost, and
+// StreamExecEvents subscribes to it. nil (never constructed) reads as
+// "unavailable (not started)".
+func (s *ThreatDetectionServer) SetExecTelemetry(src execTelemetrySource) {
+	s.mu.Lock()
+	s.execTelemetry = src
+	s.mu.Unlock()
 }
 
 // SetBadDestinationRule wires the known-bad-destination rule (#1641) into
@@ -96,6 +158,52 @@ func (s *ThreatDetectionServer) SetUnavailable(reason string) {
 	s.unavailableReason = reason
 }
 
+// SetResponderDegraded records why the process responder (#2636) will not
+// apply a response — it runs ALERT-only — or "" when it can. A non-empty
+// reason turns an otherwise-OK status DEGRADED, so an operator who set
+// THROTTLE or FREEZE sees that the policy is inert, and the sentry-health
+// loop raises a finding for it (#2719). The reason becomes part of the
+// finding subject, so it must be stable: name the fault, not the error text.
+func (s *ThreatDetectionServer) SetResponderDegraded(reason string) {
+	s.mu.Lock()
+	s.responderDegradedReason = reason
+	s.mu.Unlock()
+}
+
+// processResponderDegradedReason derives SetResponderDegraded's reason from
+// the daemon wiring: findingsPersisted is the finding store on Postgres,
+// actionsPersisted the security_actions store on Postgres, disabledReason
+// non-empty when the responder could not be constructed at all. Every
+// condition that leaves the responder ALERT-only (or absent) has a reason.
+//
+// The !findingsPersisted cause never reaches an operator: the engine is then
+// degraded too, and sentryStatus's engine-degraded branch takes precedence
+// with degradedNoPersistenceReason. It is kept so this function stays a
+// complete account of why the responder cannot act.
+func processResponderDegradedReason(findingsPersisted, actionsPersisted bool, disabledReason string) string {
+	switch {
+	case disabledReason != "":
+		return responderCauseDisabledPrefix + disabledReason
+	case !findingsPersisted:
+		return responderCauseNoFindingPersistence
+	case !actionsPersisted:
+		return responderCauseActionStoreUnavailable
+	}
+	return ""
+}
+
+// Causes processResponderDegradedReason reports; each is stable because it
+// becomes part of the sentry-health finding subject.
+const (
+	responderCauseDisabledPrefix         = "process responder disabled: "
+	responderCauseNoFindingPersistence   = "finding store has no persistence"
+	responderCauseActionStoreUnavailable = "security_actions store unavailable"
+)
+
+// degradedNoPersistenceReason is the GetSentryStatus reason when findings
+// (and therefore process-policy responses) have no Postgres persistence.
+const degradedNoPersistenceReason = "DEGRADED (no persistence): responses disabled"
+
 // GetSentryStatus reports the detection engine's on/off state and every
 // registered rule's health. Never silently reports "no findings" for a
 // backend that can't detect anything — DISABLED and UNAVAILABLE are
@@ -106,52 +214,7 @@ func (s *ThreatDetectionServer) GetSentryStatus(ctx context.Context, _ *pb.GetSe
 	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	ebpfAvailable, unavailableReason := s.ebpfAvailable, s.unavailableReason
-	s.mu.Unlock()
-
-	switch {
-	case !s.sentryEnabled:
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_DISABLED,
-			Reason: "CONTAINARIUM_THREAT_SENTRY is not set",
-		}, nil
-	case !ebpfAvailable:
-		reason := unavailableReason
-		if reason == "" {
-			reason = "eBPF object not loaded"
-		}
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
-			Reason: reason,
-		}, nil
-	case s.engine == nil:
-		// Enabled + available implies an engine was constructed; this is a
-		// wiring bug in dual_server.go, not a runtime condition an operator
-		// caused — surfaced as UNAVAILABLE rather than a 500, since it's the
-		// same "nothing is watching" fact from the operator's point of view.
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
-			Reason: "sentry engine not constructed",
-		}, nil
-	}
-
-	degraded, ruleStatus := s.engine.Status()
-	state := pb.SentryState_SENTRY_STATE_OK
-	reason := ""
-	if degraded {
-		state = pb.SentryState_SENTRY_STATE_DEGRADED
-		reason = "FindingStore has no Postgres connection; findings are not persisted across a restart"
-	}
-	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
-	for _, r := range ruleStatus {
-		rs := &pb.RuleStatus{Rule: r.Rule, Healthy: r.Healthy, LastError: r.LastError}
-		if !r.LastErrorAt.IsZero() {
-			rs.LastErrorAt = timestamppb.New(r.LastErrorAt)
-		}
-		rules = append(rules, rs)
-	}
-	return &pb.GetSentryStatusResponse{State: state, Reason: reason, Rules: rules}, nil
+	return s.sentryStatus(), nil
 }
 
 // ListBadDestinations returns the merged baseline + operator-added
@@ -339,4 +402,182 @@ func findingStateFromProto(s pb.FindingState) threatdetect.FindingState {
 // that needs to distinguish it.
 func isBadDestNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "not found among operator-added entries")
+}
+
+// sentryStatus computes GetSentryStatus's response without the auth gate,
+// for in-process callers: the sentry-health loop (#2634) reads it every tick
+// and uses Reason verbatim as its finding's subject, so the finding and
+// `containarium security sentry status` always name the same fault.
+func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
+	s.mu.Lock()
+	ebpfAvailable, unavailableReason := s.ebpfAvailable, s.unavailableReason
+	s.mu.Unlock()
+
+	switch {
+	case !s.sentryEnabled:
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_DISABLED,
+			Reason: "CONTAINARIUM_THREAT_SENTRY is not set",
+		}
+	case !ebpfAvailable:
+		reason := unavailableReason
+		if reason == "" {
+			reason = "eBPF object not loaded"
+		}
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
+			Reason: reason,
+		}
+	case s.engine == nil:
+		// Enabled + available implies an engine was constructed; this is a
+		// wiring bug in dual_server.go, not a runtime condition an operator
+		// caused — surfaced as UNAVAILABLE rather than a 500, since it's the
+		// same "nothing is watching" fact from the operator's point of view.
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
+			Reason: "sentry engine not constructed",
+		}
+	}
+
+	s.mu.Lock()
+	cpuSampler := s.cpuSamplerStatus
+	execSrc := s.execTelemetry
+	hashSrc := s.execHash
+	responderReason := s.responderDegradedReason
+	s.mu.Unlock()
+	var hashesDropped int64
+	if hashSrc != nil {
+		hashesDropped = hashSrc.Dropped()
+	}
+	if cpuSampler == "" {
+		cpuSampler = cpuSamplerNotStartedStatus
+	}
+	execStatus, execLost := execTelemetryNotStartedStatus, int64(0)
+	if execSrc != nil {
+		execStatus, execLost = execSrc.Status(), execSrc.Lost()
+	}
+
+	degraded, ruleStatus := s.engine.Status()
+	state := pb.SentryState_SENTRY_STATE_OK
+	reason := ""
+	if degraded {
+		state = pb.SentryState_SENTRY_STATE_DEGRADED
+		// The process responder (#2636) shares this condition: with no
+		// persistence it cannot record what it changed, so it is ALERT-only.
+		reason = degradedNoPersistenceReason
+	} else if responderReason != "" {
+		// Findings persist, but the responder is ALERT-only for another
+		// reason (security_actions store failed, responder not built):
+		// a THROTTLE/FREEZE policy is inert, which is not OK (#2719).
+		state = pb.SentryState_SENTRY_STATE_DEGRADED
+		reason = "DEGRADED (" + responderReason + "): responses disabled"
+	}
+	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
+	reasons := []string{}
+	if reason != "" {
+		reasons = append(reasons, reason)
+	}
+	for _, r := range ruleStatus {
+		rs := &pb.RuleStatus{Rule: r.Rule, Healthy: r.Healthy, LastError: r.LastError}
+		if !r.LastErrorAt.IsZero() {
+			rs.LastErrorAt = timestamppb.New(r.LastErrorAt)
+		}
+		rules = append(rules, rs)
+		if !r.Healthy {
+			// A panicking rule leaves the state OK (the others keep running)
+			// but must still show up in the reason, or the status reads clean
+			// while the sentry-health loop holds a finding open (#2634). The
+			// loop's finding subject drops the ": <last_error>" tail.
+			reasons = append(reasons, ruleUnhealthyPrefix(r.Rule)+": "+r.LastError)
+		}
+	}
+	return &pb.GetSentryStatusResponse{
+		State:             state,
+		Reason:            strings.Join(reasons, "; "),
+		Rules:             rules,
+		CpuSampler:        cpuSampler,
+		ExecTelemetry:     execStatus,
+		ExecEventsLost:    execLost,
+		ExecHashesDropped: hashesDropped,
+	}
+}
+
+// StreamExecEvents streams attributed exec events from the host-side exec
+// telemetry (#2637): a replay of the watcher's in-memory ring for `since`,
+// then — with `follow` — live events until the client goes away. Admin +
+// security:read, like the other fleet-wide security verbs: an exec stream
+// shows every tenant's process names and arguments. UNAVAILABLE when exec
+// telemetry is not running here (the reason is the status line); a
+// subscriber that falls behind is disconnected with RESOURCE_EXHAUSTED
+// rather than ever stalling the kernel ring consumer. When exec telemetry
+// stops (daemon shutdown) or its consumer fails, an open --follow stream
+// ends with UNAVAILABLE instead of holding up GracefulStop.
+func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest, stream pb.ThreatDetectionService_StreamExecEventsServer) error {
+	ctx := stream.Context()
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return err
+	}
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	src := s.execTelemetry
+	s.mu.Unlock()
+	if src == nil {
+		return status.Errorf(codes.Unavailable, "exec telemetry %s", execTelemetryNotStartedStatus)
+	}
+	if st := src.Status(); st != execTelemetryOK {
+		return status.Errorf(codes.Unavailable, "exec telemetry %s", st)
+	}
+	var since time.Duration
+	if req.GetSince() != nil {
+		since = req.GetSince().AsDuration()
+	}
+	replay, ch, cancel := src.Subscribe(req.GetContainer(), since, execSubscriberBuffer)
+	defer cancel()
+	for _, rec := range replay {
+		if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
+			return err
+		}
+	}
+	if !req.GetFollow() {
+		return nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case rec, ok := <-ch:
+			if !ok {
+				// The watcher closes a subscription for two reasons: exec
+				// telemetry stopped (daemon shutdown, consumer failure — the
+				// status has left "ok" first) or this subscriber fell behind.
+				if st := src.Status(); st != execTelemetryOK {
+					return status.Errorf(codes.Unavailable, "exec telemetry %s", st)
+				}
+				return status.Error(codes.ResourceExhausted, "exec-events subscriber fell behind and was dropped (the ring consumer never waits); reconnect")
+			}
+			if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// execEventProto renders one attributed exec record as the wire message.
+func execEventProto(rec ExecEventRecord) *pb.ExecEvent {
+	return &pb.ExecEvent{
+		Container: rec.Container,
+		TenantId:  rec.TenantID,
+		At:        timestamppb.New(rec.At),
+		Exec: &pb.ExecEvidence{
+			Pid:           rec.Event.HostPID,
+			Ppid:          rec.Event.PPID,
+			Uid:           rec.Event.UID,
+			Comm:          rec.Event.Comm,
+			Filename:      rec.Event.Filename,
+			Argv:          rec.Event.ArgvString(),
+			ArgvTruncated: rec.Event.ArgvTruncated,
+		},
+	}
 }

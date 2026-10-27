@@ -16,7 +16,13 @@
 #
 #   # hook mode (#1831) — for a database the platform can't reach directly,
 #   # e.g. Postgres nested inside an in-container Docker/compose stack
-#   <tenant>  --hook <in-container-hook-path>  [--label <label>]
+#   <tenant>  --hook <in-container-hook-path>  [--label <label>]  [--hook-format <fmt>]
+#
+# --hook-format (#2405) declares what the hook writes: `opaque` (the default
+# when omitted) or `pg_custom` for a hook that emits a `pg_dump -Fc` archive,
+# which makes the backup restore-testable. It is a promise about the hook's
+# output; the daemon does not check it at create time. The options after the
+# path may come in either order.
 #
 # The optional third field of plain mode names an env variable whose value
 # is passed as --db-password. Omit it when the in-container Postgres uses
@@ -36,8 +42,20 @@
 # Optional:
 #   CONTAINARIUM_BACKUP_CONF  path to config file (default below)
 #   CONTAINARIUM_BIN          path to containarium binary (default below)
-#   CONTAINARIUM_AUTH_TOKEN   JWT for --token (omit when running on daemon host
-#                             with a root service token or peer auth)
+#   CONTAINARIUM_JWT_SECRET_FILE  path to the daemon's JWT signing secret
+#                             (e.g. /etc/containarium/jwt.secret). When set, each
+#                             run mints its own 2h token (#2592) and any
+#                             CONTAINARIUM_AUTH_TOKEN is ignored. If the mint
+#                             fails the run exits non-zero; it never falls back
+#                             to a static token. ON-HOST ONLY: root on the daemon
+#                             host already holds this file (0600 root), so this
+#                             adds no trust. NEVER copy the signing secret to a
+#                             remote runner — those use CONTAINARIUM_AUTH_TOKEN.
+#   CONTAINARIUM_AUTH_TOKEN   static JWT for --token, for remote runners that
+#                             cannot read the secret. Tokens are capped at 30d
+#                             (there are no non-expiring tokens): the owner must
+#                             re-mint it before it lapses or every run fails
+#                             with `invalid token`.
 #   CONTAINARIUM_BACKUP_KEEP  newest backups to keep per (tenant, database)
 #                             after each successful create (default: 7)
 
@@ -53,6 +71,19 @@ KEEP="${CONTAINARIUM_BACKUP_KEEP:-7}"
 if [[ ! -f "$CONF" ]]; then
   echo "[backup] config not found: $CONF" >&2
   exit 1
+fi
+
+if [[ -n "${CONTAINARIUM_JWT_SECRET_FILE:-}" ]]; then
+  # Mint a short-lived token for this run (#2592). A failure is fatal: falling
+  # back to a static token would hide the very expiry this path exists to avoid.
+  if ! TOKEN="$("$CTN" token generate \
+      --username backup-scheduler --roles admin \
+      --scopes backups:write,backups:read \
+      --expiry 2h \
+      --secret-file "$CONTAINARIUM_JWT_SECRET_FILE" --raw)" || [[ -z "$TOKEN" ]]; then
+    echo "[backup] FATAL: could not mint a token from CONTAINARIUM_JWT_SECRET_FILE=$CONTAINARIUM_JWT_SECRET_FILE" >&2
+    exit 1
+  fi
 fi
 
 auth_flags=()
@@ -75,14 +106,26 @@ while IFS= read -r line; do
   prune_database=""
 
   if [[ "${words[1]:-}" == "--hook" ]]; then
-    # Hook mode: <tenant> --hook <path> [--label <label>]
+    # Hook mode: <tenant> --hook <path> [--label <label>] [--hook-format <fmt>]
     hook_path="${words[2]:-}"
     label=""
-    if [[ "${words[3]:-}" == "--label" ]]; then
-      label="${words[4]:-}"
-    fi
+    hook_format=""
+    bad_option=""
+    # Optional "--key value" pairs after the path, in any order.
+    for ((i = 3; i < ${#words[@]}; i += 2)); do
+      case "${words[i]}" in
+        --label) label="${words[i + 1]:-}" ;;
+        --hook-format) hook_format="${words[i + 1]:-}" ;;
+        *) bad_option="${words[i]}" ;;
+      esac
+    done
     if [[ -z "$hook_path" ]]; then
       echo "[backup] WARNING: tenant=$tenant has --hook with no path; skipping" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if [[ -n "$bad_option" ]]; then
+      echo "[backup] WARNING: tenant=$tenant has unknown hook option '$bad_option'; skipping" >&2
       failed=$((failed + 1))
       continue
     fi
@@ -91,7 +134,12 @@ while IFS= read -r line; do
       create_flags+=(--label "$label")
       prune_database="$label"
     fi
-    echo "[backup] start  tenant=$tenant hook=$hook_path"
+    if [[ -n "$hook_format" ]]; then
+      # A promise about the hook's output (#2405); the CLI rejects an
+      # unknown value, which counts as a failed tenant below.
+      create_flags+=(--hook-format "$hook_format")
+    fi
+    echo "[backup] start  tenant=$tenant hook=$hook_path${hook_format:+ format=$hook_format}"
   else
     # Plain mode: <tenant> <database> [PASSWORD_ENV_VAR]
     database="${words[1]:-}"

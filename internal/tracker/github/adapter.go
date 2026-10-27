@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/footprintai/containarium/internal/tracker"
 )
@@ -22,18 +21,24 @@ const defaultAPIBase = "https://api.github.com"
 
 // Adapter talks to the GitHub REST API.
 type Adapter struct {
-	http *http.Client
+	http   *http.Client
+	create *http.Client
 }
 
 var _ tracker.CredentialDescriber = (*Adapter)(nil)
 
-// New returns an Adapter. A nil httpClient gets a sensible default
-// timeout; pass your own for custom transport (tracing, retries).
+// New returns an Adapter. A nil httpClient gets tracker.DefaultHTTPTimeout,
+// which is never shorter than tracker.UpstreamCreateTimeout (#2045); pass
+// your own for custom transport (tracing, retries).
 func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		return &Adapter{
+			http:   tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.DefaultHTTPTimeout}),
+			create: tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.UpstreamCreateTimeout}),
+		}
 	}
-	return &Adapter{http: httpClient}
+	client := tracker.WithSameOriginRedirects(httpClient)
+	return &Adapter{http: client, create: client}
 }
 
 // DescribeCredential reports what the credential can do, per the design
@@ -62,6 +67,7 @@ func (a *Adapter) DescribeCredential(ctx context.Context, conn tracker.Conn) (tr
 		base = defaultAPIBase
 	}
 	breadth := breadthFromTokenPrefix(conn.Credential)
+	kind := kindFromTokenPrefix(conn.Credential)
 
 	if strings.HasPrefix(conn.Credential, "ghs_") {
 		// Installation tokens aren't tied to a user identity — /user
@@ -69,16 +75,16 @@ func (a *Adapter) DescribeCredential(ctx context.Context, conn tracker.Conn) (tr
 		// endpoint every credential type can call with no scope
 		// requirement, so it's the reachability+validity probe here.
 		if err := a.probeRateLimit(ctx, base, conn.Credential); err != nil {
-			return tracker.CredentialInfo{Breadth: breadth}, err
+			return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, err
 		}
-		return tracker.CredentialInfo{Breadth: breadth}, nil
+		return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, nil
 	}
 
 	scopes, err := a.describeViaUser(ctx, base, conn.Credential)
 	if err != nil {
-		return tracker.CredentialInfo{Breadth: breadth}, err
+		return tracker.CredentialInfo{Breadth: breadth, Kind: kind}, err
 	}
-	return tracker.CredentialInfo{Scopes: scopes, Breadth: breadth}, nil
+	return tracker.CredentialInfo{Scopes: scopes, Breadth: breadth, Kind: kind}, nil
 }
 
 // breadthFromTokenPrefix classifies a GitHub credential by its
@@ -96,6 +102,18 @@ func breadthFromTokenPrefix(token string) tracker.CredentialBreadth {
 	}
 }
 
+// kindFromTokenPrefix reports only what the token prefix proves: a
+// ghp_ classic PAT is always owned by a user (KindPersonal). Fine-grained
+// PATs and App installation tokens may be scoped to one repository or
+// many, which the prefix does not reveal, so they stay KindUnspecified
+// rather than being guessed as KindProject.
+func kindFromTokenPrefix(token string) tracker.CredentialKind {
+	if strings.HasPrefix(token, "ghp_") {
+		return tracker.KindPersonal
+	}
+	return tracker.KindUnspecified
+}
+
 func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/user", nil)
 	if err != nil {
@@ -105,7 +123,7 @@ func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]st
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -130,7 +148,7 @@ func (a *Adapter) probeRateLimit(ctx context.Context, base, token string) error 
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 

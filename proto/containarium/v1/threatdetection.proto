@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
@@ -26,6 +27,40 @@ enum ThreatRuleId {
   THREAT_RULE_ID_CROSS_TENANT_FLOW = 2;
   // Burst of policy denies for one tenant within a time window.
   THREAT_RULE_ID_DENY_BURST = 3;
+  // A box's effective sshd configuration permitted password login, or the
+  // platform-managed key-only drop-in had been removed or altered (#2424).
+  // Raised by the box sshd posture reconciler after it re-asserts the
+  // drop-in; the evidence names the offending directive and file.
+  THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH = 4;
+  // A box is listening with an SSH server that is not the distro sshd
+  // service on a port its sshd_config declares (#2439): a second sshd, a
+  // dropbear, or the stock sshd started with its own config. Raised by the
+  // same posture pass as rule 4; record-only, the platform never kills a
+  // tenant's process. The evidence names the port, pid and binary.
+  THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5;
+  // An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not
+  // running cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).
+  // Raised by the daemon's sentry-health loop, not by a rule — a rule cannot
+  // run when the engine cannot. Subject is the GetSentryStatus reason string;
+  // resolved automatically once the sentry reports OK. Tenant and container
+  // are empty: this is a backend-level finding.
+  THREAT_RULE_ID_SENTRY_UNAVAILABLE = 8;
+  // A box held sustained CPU while keeping a long-lived flow to a stratum
+  // port or a listed bad destination (#2635): the shape of a cryptominer.
+  // Subject is the destination ip:port; evidence is one CPUEvidence plus
+  // the qualifying flow. Thresholds: MiningBehaviorThresholds.
+  THREAT_RULE_ID_MINING_BEHAVIOR = 6;
+  // A process exec in a box matched a known-miner signature (#2638): the
+  // binary name, a command-line marker, or the executable's SHA-256 (see
+  // MinerSignature). HIGH. Subject is "<kind>:<pattern>" of the entry that
+  // hit; evidence is the ExecEvidence of the exec, with `matched` set. With
+  // ProcessPolicy.kill_process the responder also SIGKILLs the process.
+  THREAT_RULE_ID_MINER_SIGNATURE = 7;
+  // A process action (throttle or freeze, #2636) reached its TTL with no
+  // operator decision and was released automatically. MEDIUM, so an
+  // unattended containment never silently becomes permanent. Subject is the
+  // container name; the response on the original HIGH finding is EXPIRED.
+  THREAT_RULE_ID_PROCESS_ACTION_EXPIRED = 9;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -46,6 +81,15 @@ message FlowEvidence {
   string protocol = 5;
   int64 bytes = 6;
   int64 packets = 7;
+  // When the flow was first and last seen (#2635). The kernel stamps flows
+  // with a monotonic clock, so last_seen is the flow poll that reported the
+  // flow and first_seen is last_seen minus the flow's own age. Set by the
+  // mining-behavior rule; unset on other rules' evidence.
+  google.protobuf.Timestamp first_seen = 8;
+  google.protobuf.Timestamp last_seen = 9;
+  // What qualified the flow: "port:<n>" for a stratum port, or
+  // "bad-destination:<cidr>" for a listed destination (#2635).
+  string matched = 10;
 }
 
 // DenyEvidence captures an aggregated count of policy-deny events matching a
@@ -59,11 +103,111 @@ message DenyEvidence {
   int64 count = 5;
 }
 
-// Evidence bundles the flow and deny records that triggered a finding.
-// Capped by the store to the most recent entries — see FindingStore.
+// ConfigEvidence captures one configuration directive whose effective value
+// violated policy, attached to a posture finding (#2424).
+message ConfigEvidence {
+  // File the effective value came from, or the directory when the exact
+  // file could not be attributed.
+  string path = 1;
+  // Directive name, e.g. "PasswordAuthentication".
+  string directive = 2;
+  // Effective value at detection time, e.g. "yes".
+  string value = 3;
+  // Whether the platform re-asserted its managed configuration in the
+  // same pass (the violation is closed on the stock service, and this
+  // finding records that it happened).
+  bool remediated = 4;
+  // Free-text detail, e.g. "managed drop-in missing".
+  string note = 5;
+}
+
+// ListenerEvidence is one listening socket held by an SSH server that is not
+// the box's distro sshd service (#2439).
+message ListenerEvidence {
+  // TCP port the listener is bound to.
+  uint32 port = 1;
+  // Bind address as the box's kernel reports it, e.g. "127.0.0.1" or "::".
+  // A loopback bind is the shape a reverse tunnel needs.
+  string bind_address = 2;
+  // Process id inside the box's pid namespace.
+  uint32 pid = 3;
+  // Executable the process runs, e.g. "/usr/sbin/dropbear".
+  string binary = 4;
+  // Why this listener is not the managed sshd, e.g. "port not in
+  // sshd_config" or "started with -f".
+  string note = 5;
+}
+
+// CPUEvidence summarises a container's CPU usage over a detection window
+// (#2635), measured in cores (1.0 = one core fully busy).
+message CPUEvidence {
+  // Mean cores over the window's samples.
+  double mean_cores = 1;
+  // Highest single sample in the window.
+  double peak_cores = 2;
+  // Length of the window the samples cover.
+  int64 window_seconds = 3;
+  // Number of samples the mean was taken over.
+  int32 samples = 4;
+}
+
+// ExecEvidence is one process exec observed by the host-side exec telemetry
+// (#2637): the record the execwatch eBPF program emitted, attributed to a
+// container. A rule that matches an exec (miner-signature, #2638) attaches it
+// to its finding; the same shape is streamed live by StreamExecEvents.
+message ExecEvidence {
+  // Process id in the HOST pid namespace (what `kill` on the host takes).
+  uint32 pid = 1;
+  // Parent process id, host pid namespace.
+  uint32 ppid = 2;
+  // Real uid of the exec'ing task.
+  uint32 uid = 3;
+  // Task comm after the exec (16 bytes max).
+  string comm = 4;
+  // Resolved executable path, as the kernel saw it.
+  string filename = 5;
+  // Argument vector joined with single spaces. Capped at 512 bytes by the
+  // kernel program; never contains environment variables.
+  string argv = 6;
+  // True when argv exceeded 512 bytes and was cut.
+  bool argv_truncated = 7;
+  // Hex SHA-256 of the executable when a rule computed it (#2638); empty
+  // in the live stream.
+  string sha256 = 8;
+  // Which matcher hit, for a finding (#2638); empty in the live stream.
+  string matched = 9;
+}
+
+// Evidence bundles the flow, deny, configuration, listener, CPU and exec
+// records that triggered a finding. Capped by the store to the most recent
+// entries — see FindingStore.
 message Evidence {
   repeated FlowEvidence flows = 1;
   repeated DenyEvidence denies = 2;
+  repeated ConfigEvidence configs = 3;
+  repeated ListenerEvidence listeners = 4;
+  repeated CPUEvidence cpu = 5;
+  repeated ExecEvidence execs = 6;
+}
+
+// MiningBehaviorThresholds tunes the mining-behavior rule (#2635). Persisted
+// as protojson in the daemon config store under
+// "threatdetect.mining_behavior.thresholds". A zero or empty field means
+// "use the default" (in brackets below).
+message MiningBehaviorThresholds {
+  // Absolute CPU bar in cores [1.5]. The effective bar is
+  // min(min_cores, min_fraction_of_limit x the box's limits.cpu); a box with
+  // no CPU limit uses min_cores alone.
+  double min_cores = 1;
+  // Window the CPU mean is taken over [5m].
+  google.protobuf.Duration window = 2;
+  // Minimum age of a qualifying flow, seen within the window [3m].
+  google.protobuf.Duration flow_min_age = 3;
+  // Destination ports treated as stratum (mining pool) ports
+  // [3333, 4444, 5555, 7777, 14444, 14433].
+  repeated uint32 stratum_ports = 4;
+  // Fraction of the box's CPU limit that also trips the bar [0.75].
+  double min_fraction_of_limit = 5;
 }
 
 // Finding is a single security finding raised by the threat-detection
@@ -86,6 +230,185 @@ message Finding {
   Evidence evidence = 10;
   google.protobuf.Timestamp first_seen = 11;
   google.protobuf.Timestamp last_seen = 12;
+  // What the process responder (#2636) did about this finding, if anything.
+  // Unset for findings no policy acts on.
+  FindingResponse response = 13;
+}
+
+// ProcessAction is what a HIGH mining finding does to its container (#2636).
+// Every action is reversible with ReleaseProcessAction; none destroys data.
+enum ProcessAction {
+  PROCESS_ACTION_UNSPECIFIED = 0;
+  // Record the finding, notify, do nothing to the container. The default.
+  PROCESS_ACTION_ALERT = 1;
+  // Record the box's current limits.cpu / limits.cpu.allowance, then set
+  // limits.cpu.allowance to ProcessPolicy.throttle_allowance.
+  PROCESS_ACTION_THROTTLE = 2;
+  // Pause the instance through Incus (cgroup freezer): memory and disk kept,
+  // no process runs until released.
+  PROCESS_ACTION_FREEZE = 3;
+}
+
+// ResponseState is the lifecycle of one FindingResponse.
+enum ResponseState {
+  RESPONSE_STATE_UNSPECIFIED = 0;
+  // The policy was ALERT: nothing was done to the container.
+  RESPONSE_STATE_NONE = 1;
+  // The action is in effect.
+  RESPONSE_STATE_APPLIED = 2;
+  // Incus refused the action; `error` says why. The responder does not retry
+  // — the rule's next sweep re-fires the finding, which is the retry.
+  RESPONSE_STATE_FAILED = 3;
+  // An operator released the action (ReleaseProcessAction).
+  RESPONSE_STATE_RELEASED = 4;
+  // The TTL backstop released the action with no operator decision.
+  RESPONSE_STATE_EXPIRED = 5;
+}
+
+// FindingResponse records what the process responder did about a finding
+// and when, so the finding itself tells the operator whether a box is
+// currently throttled or frozen because of it.
+message FindingResponse {
+  ProcessAction action = 1;
+  ResponseState state = 2;
+  // True when the responder SIGKILLed the matched process (miner-signature
+  // finding with ProcessPolicy.kill_process, #2638).
+  bool process_killed = 3;
+  google.protobuf.Timestamp applied_at = 4;
+  // When the TTL backstop will release the action if no operator does.
+  google.protobuf.Timestamp expires_at = 5;
+  google.protobuf.Timestamp released_at = 6;
+  // Who ended the action: "operator", "ttl", "orphan-sweep" (an apply that
+  // was never confirmed, undone by the sweep) or "container-deleted" (the box
+  // no longer exists, so nothing was restored; #2835). Empty while the
+  // action is in effect.
+  string released_by = 7;
+  // Incus error text when state is FAILED.
+  string error = 8;
+  // Host pid (not a pid inside the box) of the process the responder last
+  // SIGKILLed; set with process_killed. A kill is delivered by the finding
+  // webhook (#2775), so a consumer learns which process died.
+  uint32 killed_pid = 9;
+  // Why the last kill_process attempt did not kill; UNSPECIFIED when nothing
+  // was skipped. The detail (pid, cgroup, error text) stays in the audit row.
+  KillSkipReason kill_skip_reason = 10;
+  // How many processes the responder has killed for this finding. A miner
+  // that respawns is killed again each time; the webhook delivers the first
+  // kill at once and later ones at most once a minute, carrying this count
+  // and the latest killed_pid.
+  uint32 kills = 11;
+  // The box this response is about. A miner-signature finding is keyed per
+  // tenant and pattern, so several boxes of one tenant can share it (#2766);
+  // each box's apply and release is a separate webhook delivery that names
+  // its box here (#2820). On the stored finding it names the box whose
+  // record the finding shows: while any box still holds an applied action
+  // that is a box still holding one, never a released box. Empty on
+  // responses recorded before this field existed.
+  string container = 12;
+}
+
+// KillSkipReason is why a kill_process attempt did not kill the process
+// (#2775). It is what the finding webhook carries; the audit row keeps the
+// full detail.
+enum KillSkipReason {
+  KILL_SKIP_REASON_UNSPECIFIED = 0;
+  // The pid now belongs to a different cgroup than the container's, or to a
+  // different process of the same container: it started after the matched
+  // exec was seen (#2765).
+  KILL_SKIP_REASON_PID_REUSED = 1;
+  // The process exited before the signal.
+  KILL_SKIP_REASON_PROCESS_GONE = 2;
+  // The pid is the container's init; killing it would stop the box.
+  KILL_SKIP_REASON_CONTAINER_INIT = 3;
+  // The effective process policy could not be read.
+  KILL_SKIP_REASON_POLICY_UNREADABLE = 4;
+  // Any other refusal (host or Incus error).
+  KILL_SKIP_REASON_OTHER = 5;
+  // The pid cannot be confirmed as the matched process: the matched exec has
+  // no boot-clock stamp, or the pid's start time could not be read. It is
+  // never signalled (#2765).
+  KILL_SKIP_REASON_START_TIME_UNKNOWN = 6;
+  // The container does not run under Incus: its init has no Incus payload
+  // cgroup ("lxc.payload.<name>"), so the pid cannot be confirmed as one of
+  // the container's processes. kill_process is Incus-only and is refused up
+  // front on any other runtime (#2768); the finding is still raised.
+  KILL_SKIP_REASON_RUNTIME_UNSUPPORTED = 7;
+}
+
+// ProcessPolicy says what a HIGH mining finding does to its container
+// (#2636). Stored per backend (the default) and optionally per container
+// (an override, written by SetProcessPolicy with `container` set); the
+// effective policy is override → backend default → built-in
+// {ALERT, "10%", 24h, kill_process false}. Empty fields inherit from the
+// next level down.
+message ProcessPolicy {
+  ProcessAction action = 1;
+  // limits.cpu.allowance applied by THROTTLE: an Incus allowance such as
+  // "10%" (share under contention) or "10ms/100ms" (hard CFS quota).
+  // Default "10%".
+  string throttle_allowance = 2;
+  // How long an applied action stays in effect with no operator decision
+  // before the TTL backstop releases it. Default 24h.
+  google.protobuf.Duration ttl = 3;
+  // SIGKILL the matched process from the host when a miner-signature finding
+  // fires (#2638), in addition to `action`. Applies to MINER_SIGNATURE
+  // findings only; the mining-behavior rule never kills. The pid is
+  // re-checked against the container's cgroup first, so a reused pid is
+  // never signalled. Default false at every level; unset inherits.
+  optional bool kill_process = 4;
+
+  // Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured
+  // only on the backend default (container empty), rejected on a container
+  // override. Unset on Set leaves the stored thresholds untouched.
+  MiningBehaviorThresholds mining_behavior = 5;
+}
+
+message GetProcessPolicyRequest {
+  // Empty reads the backend default; a container name reads that
+  // container's override (policy is unset when none is stored).
+  string container = 1;
+}
+
+message GetProcessPolicyResponse {
+  // The policy stored at the requested level, unset if none is stored.
+  ProcessPolicy policy = 1;
+  // True when `container` was given and an override is stored for it.
+  bool is_override = 2;
+  // The fully-resolved policy the responder would apply at that level.
+  ProcessPolicy effective = 3;
+}
+
+message SetProcessPolicyRequest {
+  // Empty sets the backend default; a container name sets that container's
+  // override.
+  string container = 1;
+  ProcessPolicy policy = 2;
+  // With `container` set, removes the override instead of writing one.
+  bool clear_override = 3;
+}
+
+message SetProcessPolicyResponse {
+  ProcessPolicy effective = 1;
+}
+
+message ReleaseProcessActionRequest {
+  string container = 1;
+}
+
+message ReleaseProcessActionResponse {
+  // The finding the action belonged to. Resolved, with its response in
+  // state RELEASED, unless finding_kept_open is set. While another box
+  // still holds an applied action on a shared finding, its response is
+  // that box's APPLIED record (#2820); this box's release is `released`.
+  Finding finding = 1;
+  // The finding was left open because another box still holds it: a
+  // miner-signature finding is shared by every box of the tenant running
+  // the same miner, and another box still has an action open on it or a
+  // response queued. It is resolved when the last box is released.
+  bool finding_kept_open = 2;
+  // This box's release record (state RELEASED, container = the released
+  // box), as the finding webhook delivered it (#2820).
+  FindingResponse released = 3;
 }
 
 // SentryState is the overall on/off state of the background threat-detection
@@ -120,9 +443,68 @@ message GetSentryStatusRequest {}
 
 message GetSentryStatusResponse {
   SentryState state = 1;
-  // Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+  // Human-readable explanation, always set for DISABLED/UNAVAILABLE/
+  // DEGRADED, and also set while the state is OK but a rule is unhealthy
+  // ("rule <RULE> unhealthy: <last_error>"). The sentry-health loop (#2634)
+  // uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
   string reason = 2;
   repeated RuleStatus rules = 3;
+  // Source of the per-container CPU samples the mining-behavior rule reads
+  // (#2645): "metrics-collector" (hook on the metrics collector's tick),
+  // "standalone (30s)" (the sentry polls Incus itself because no metrics
+  // collector runs), or "unavailable (<reason>)". Set only while the
+  // sentry is running (OK/DEGRADED).
+  string cpu_sampler = 4;
+  // Host-side exec telemetry (#2637): "ok" while the execwatch eBPF object
+  // is attached and watching, or "unavailable (<reason>)" when the second
+  // object could not be loaded or attached (no BTF, verifier rejection,
+  // missing tracepoint, object not built). The flow rules keep running
+  // either way; the sentry-health loop treats "unavailable" as a fault with
+  // the stable subject "exec-telemetry unavailable". Set only while the
+  // sentry is running (OK/DEGRADED).
+  string exec_telemetry = 5;
+  // Exec events the kernel could not hand over because the ring buffer was
+  // full, cumulative since the object loaded. Non-zero means a burst
+  // outran the consumer; the events are gone, never blocked the exec.
+  int64 exec_events_lost = 6;
+  // Exec hash requests the miner-signature hasher dropped because its queue
+  // was full, cumulative since the daemon started (#2768). Requests are made
+  // only while sha256 entries exist; a dropped exec is never hashed, so a
+  // sha256 entry can miss it (name and argv entries still matched it).
+  // An executable already hashed is served from a cache by (device, inode,
+  // size, mtime, ctime) without being read again, so the queue drains fast
+  // and a non-zero count means a burst of execs the worker could not keep
+  // up with.
+  int64 exec_hashes_dropped = 7;
+}
+
+// ExecEvent is one live exec in a tenant container, as streamed by
+// StreamExecEvents (#2637). Not persisted: the stream is a window onto the
+// kernel's ring, plus a short in-memory replay (StreamExecEventsRequest.since).
+message ExecEvent {
+  string container = 1;
+  string tenant_id = 2;
+  // When the daemon decoded the event (host wall clock).
+  google.protobuf.Timestamp at = 3;
+  ExecEvidence exec = 4;
+}
+
+// StreamExecEventsResponse wraps one ExecEvent per stream message.
+message StreamExecEventsResponse {
+  ExecEvent event = 1;
+}
+
+message StreamExecEventsRequest {
+  // Only this container's execs; empty streams every watched container.
+  string container = 1;
+  // Replay buffered events from this far back before (or instead of) going
+  // live. The daemon keeps a bounded in-memory ring of recent events (no
+  // audit-log writes); older than the ring holds is simply not there.
+  // Unset means no replay.
+  google.protobuf.Duration since = 2;
+  // Keep the stream open for new events after the replay. Unset returns
+  // once the replay is sent — the `exec-events` CLI without --follow.
+  bool follow = 3;
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list (#1641)
@@ -157,6 +539,60 @@ message RemoveBadDestinationRequest {
 }
 
 message RemoveBadDestinationResponse {}
+
+// MinerSignatureKind is what a MinerSignature matches against (#2638).
+enum MinerSignatureKind {
+  MINER_SIGNATURE_KIND_UNSPECIFIED = 0;
+  // Case-insensitive exact name or glob ("cpuminer*") on the basename of the
+  // exec'd file and on the task comm.
+  MINER_SIGNATURE_KIND_NAME = 1;
+  // Case-insensitive marker in the joined argv: a literal substring
+  // ("--donate-level"), or, when the pattern holds a glob character, a
+  // sequence of space-separated glob tokens matched against consecutive
+  // arguments ("-o *:3333"). A glob token without '=' never matches a
+  // key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444"),
+  // and a glob option token ("-o") matches case-sensitively.
+  MINER_SIGNATURE_KIND_ARGV = 2;
+  // Lowercase hex SHA-256 of the executable (/proc/<pid>/exe), computed off
+  // the hot path only when a hash entry exists and nothing cheaper matched.
+  // The shipped baseline carries no hash entries; they are operator-added.
+  MINER_SIGNATURE_KIND_SHA256 = 3;
+}
+
+// MinerSignature is one entry of the miner-signature list: the embedded,
+// versioned baseline or an operator addition.
+message MinerSignature {
+  MinerSignatureKind kind = 1;
+  string pattern = 2;
+  string label = 3;
+  // True for a baseline entry shipped with the daemon; those cannot be
+  // removed.
+  bool builtin = 4;
+}
+
+message ListMinerSignaturesRequest {}
+
+message ListMinerSignaturesResponse {
+  repeated MinerSignature signatures = 1;
+  // Version of the embedded baseline this daemon build ships.
+  string baseline_version = 2;
+}
+
+message AddMinerSignatureRequest {
+  // kind and pattern are required; builtin is ignored.
+  MinerSignature signature = 1;
+}
+
+message AddMinerSignatureResponse {
+  MinerSignature signature = 1;
+}
+
+message RemoveMinerSignatureRequest {
+  MinerSignatureKind kind = 1;
+  string pattern = 2;
+}
+
+message RemoveMinerSignatureResponse {}
 
 // ListFindingsRequest filters ListFindings. Every field is optional; an
 // unset field matches everything. tenant_id is enforced by the server's RBAC
@@ -271,6 +707,107 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Resolve a security finding";
       description: "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.";
+      tags: "Security";
+    };
+  }
+
+  // GetProcessPolicy returns the process policy stored at one level (backend
+  // default, or one container's override) and the effective policy the
+  // responder applies there (#2636).
+  rpc GetProcessPolicy(GetProcessPolicyRequest) returns (GetProcessPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/process-policy"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the process policy";
+      description: "Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.";
+      tags: "Security";
+    };
+  }
+
+  // SetProcessPolicy writes the backend default, or one container's
+  // override (clear_override removes it). Admin-only: the policy decides
+  // what happens to a tenant's box.
+  rpc SetProcessPolicy(SetProcessPolicyRequest) returns (SetProcessPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/security/process-policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the process policy";
+      description: "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL, and whether a miner-signature match also SIGKILLs the process (kill_process, default false). With container set it writes a per-container override; clear_override removes one.";
+      tags: "Security";
+    };
+  }
+
+  // ReleaseProcessAction undoes the open action on a container: restores the
+  // recorded CPU limit or unfreezes it, and resolves the finding.
+  rpc ReleaseProcessAction(ReleaseProcessActionRequest) returns (ReleaseProcessActionResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/process-policy/release"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Release a process action";
+      description: "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.";
+      tags: "Security";
+    };
+  }
+
+  // ListMinerSignatures returns the merged baseline + operator-added
+  // miner-signature list the miner-signature rule (#2638) matches execs
+  // against.
+  rpc ListMinerSignatures(ListMinerSignaturesRequest) returns (ListMinerSignaturesResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/miner-signatures"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List miner signatures";
+      description: "Returns the merged baseline (embedded, versioned) and operator-added miner-signature list: binary names, command-line markers and executable SHA-256 hashes.";
+      tags: "Security";
+    };
+  }
+
+  // AddMinerSignature adds an operator entry to the miner-signature list,
+  // effective immediately and persisted across restarts, without a rebuild.
+  rpc AddMinerSignature(AddMinerSignatureRequest) returns (AddMinerSignatureResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/miner-signatures"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Add a miner signature";
+      description: "Adds an operator-supplied name, argv or sha256 entry to the miner-signature list. Admin only.";
+      tags: "Security";
+    };
+  }
+
+  // RemoveMinerSignature removes an operator-added entry; baseline entries
+  // cannot be removed. kind and pattern travel as query parameters, since an
+  // argv marker can hold slashes and spaces.
+  rpc RemoveMinerSignature(RemoveMinerSignatureRequest) returns (RemoveMinerSignatureResponse) {
+    option (google.api.http) = {
+      delete: "/v1/security/miner-signatures"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Remove an operator-added miner signature";
+      description: "Removes a previously operator-added miner-signature entry (?kind=&pattern=). Baseline entries cannot be removed. Admin only.";
+      tags: "Security";
+    };
+  }
+
+  // StreamExecEvents streams process execs observed in tenant containers by
+  // the host-side eBPF exec telemetry (#2637), optionally replaying the
+  // daemon's short in-memory buffer first. Backs `containarium security
+  // exec-events`. UNAVAILABLE when exec telemetry is not running on this
+  // backend (see GetSentryStatus.exec_telemetry).
+  rpc StreamExecEvents(StreamExecEventsRequest) returns (stream StreamExecEventsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/exec-events"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stream container exec events";
+      description: "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.";
       tags: "Security";
     };
   }

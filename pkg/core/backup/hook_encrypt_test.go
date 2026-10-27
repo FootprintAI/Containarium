@@ -304,19 +304,23 @@ func TestCreate_PlaintextUnchanged(t *testing.T) {
 }
 
 // Verify (restore-test) only understands pg_dump archives it can read. A
-// hook dump is opaque and an encrypted dump is ciphertext the platform
-// cannot open, so both must be refused up front — before a scratch
-// database is created in the target — rather than recorded as a FAILED
-// verification that looks like a corrupt backup.
-func TestVerify_RefusesHookAndEncryptedRecords(t *testing.T) {
-	id, _ := age.GenerateX25519Identity()
+// hook dump is opaque and the platform never understood it in the first
+// place, so it must be refused up front — before a scratch database is
+// created in the target — rather than recorded as a FAILED verification
+// that looks like a corrupt backup.
+//
+// An encrypted record used to be refused the same way unconditionally;
+// since OSS #2295 it can be decrypted and restore-tested given the
+// matching identity — see TestVerify_Encrypted_* in verify_test.go for
+// that coverage (with identity: passes; wrong identity: FAILED result,
+// not an error; no identity at all: still refused exactly like this).
+func TestVerify_RefusesHookRecords(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts CreateOptions
 		want string
 	}{
 		{"hook record", CreateOptions{Hook: "/opt/dump.sh"}, "opaque"},
-		{"encrypted record", CreateOptions{Conn: PgConn{Database: "app"}, AgeRecipient: id.Recipient().String()}, "encrypted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops := newFakeOps([]byte("PGDMP\x00archive"))

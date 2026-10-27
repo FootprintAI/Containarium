@@ -8,8 +8,7 @@ Two layers of integrity protection ship with every air-gapped bundle:
 2. **Inner CHECKSUMS.sha256** — included inside the tarball. Verifies
    that every file inside the bundle matches what we packaged.
 
-Cosign signing (v0.1) adds a third layer; v0 ships unsigned but with
-both SHA256 layers.
+A cosign signature on the tarball adds a third layer.
 
 ## Layer 1 — Outer checksum
 
@@ -36,22 +35,26 @@ Expected output: every file ending in `OK`. A single mismatch indicates
 in-transit corruption (bit-flip on the USB stick, scanner-rewrite by a
 file diode); re-transfer the bundle.
 
-## Layer 3 (v0.1) — Cosign signature
+## Layer 3 — Cosign signature
 
-v0.1 of the bundle ships a `CHECKSUMS.sha256.sig` file alongside, signed
-via Sigstore keyless OIDC. Verify on the sherpa host:
+The release signs the tarball and its `.sha256` with Sigstore keyless OIDC.
+Each has a `.sigstore.json` bundle beside it on the release page. Verify on
+the host:
 
 ```bash
+TAG=vX.Y.Z   # the release you downloaded
 cosign verify-blob \
-  --certificate-identity-regexp 'https://github.com/footprintai/containarium/.*' \
+  --bundle containarium-bundle-${TAG}-linux-amd64.tar.gz.sigstore.json \
+  --certificate-identity "https://github.com/footprintai/containarium/.github/workflows/release.yml@refs/tags/${TAG}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --bundle CHECKSUMS.sha256.sig \
-  CHECKSUMS.sha256
+  containarium-bundle-${TAG}-linux-amd64.tar.gz
 ```
 
-A successful verification proves the checksum file was signed by the
-FootprintAI release workflow (not just any host that happens to have
-network access to GHCR).
+A successful verification proves the tarball was produced by the
+FootprintAI release workflow at that tag (not just any host that happens to
+have network access to GHCR). The tarball's contents are covered by layer 2
+and this signature together. For air-gapped hosts and the trust root, see
+`docs/security/VERIFYING-RELEASES.md`.
 
 ## What about the contents?
 
@@ -59,5 +62,7 @@ Each file in the bundle is whatever the upstream publisher produced —
 the Go tarball is what `go.dev` served, the Node tarball is what
 `nodejs.org` served, the Incus debs are what Zabbly built. We re-host
 without re-signing. If your security review requires verification of
-upstream signatures, the SBOM (shipped in v0.1 as `bundle.sbom.json`
-via `syft`) gives you the input list to audit independently.
+upstream signatures, audit the bundle's contents against
+`CHECKSUMS.sha256`, which lists every file in the bundle. The bundle does
+not ship its own SBOM yet; bundle signing and SBOM coverage are tracked in
+#2561 and #2785.

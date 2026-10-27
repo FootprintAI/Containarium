@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -58,6 +59,14 @@ type VerifyOptions struct {
 	// VerifiedBy is the authenticated subject requesting the test, for
 	// the "who" half of the audit record.
 	VerifiedBy string
+	// AgeIdentity ("AGE-SECRET-KEY-1…") decrypts an Encrypted record for
+	// this one call, same contract as RestoreOptions.AgeIdentity (#1831).
+	// Required for an encrypted record — the platform holds no
+	// decryption key of its own, so verification refuses to even attempt
+	// a restore test without it. Given the wrong identity, decryption
+	// fails and is recorded as a FAILED verification (a result, not an
+	// error) so the failure survives as audit evidence (#2295).
+	AgeIdentity string
 }
 
 // scratchPrefix marks the throwaway databases verification creates, so a
@@ -87,15 +96,24 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		return nil, fmt.Errorf("target container is required: a restore test needs a throwaway container to load into")
 	}
 	// A restore test only means something for a dump the platform can
-	// load. A hook dump is opaque (#1831) and an encrypted dump is
-	// ciphertext the platform cannot open; refuse both here, before a
-	// scratch database exists, rather than recording a FAILED verification
-	// that reads like a corrupt backup.
-	if r.Engine == EngineHook {
+	// load. An undeclared hook dump is opaque (#1831) — refuse it here,
+	// before a scratch database exists, rather than recording a FAILED
+	// verification that reads like a corrupt backup. A hook that declared
+	// a pg_custom archive (#2405) is the same bytes database mode
+	// produces, so it runs every check below unchanged.
+	if r.Engine == EngineBox {
+		return nil, errBoxRecordNotDatabase(r.ID, "restore-tested")
+	}
+	if r.Engine == EngineHook && r.HookFormat != HookFormatPGCustom {
 		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
 	}
-	if r.Encrypted {
-		return nil, fmt.Errorf("backup %s is encrypted to %s: restore-testing an encrypted backup is not supported (the platform holds no decryption key)", r.ID, r.AgeRecipient)
+	// An encrypted dump needs the matching identity to even attempt a
+	// restore test — with none supplied there is nothing to try, same
+	// usage-error class as the hook refusal above (#2295). Supplied, a
+	// wrong identity is a real test outcome (handled below as a FAILED
+	// check), not refused here.
+	if r.Encrypted && strings.TrimSpace(opts.AgeIdentity) == "" {
+		return nil, fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to verify (the platform holds no decryption key)", r.ID, r.AgeRecipient)
 	}
 	// The whole control depends on this: a restore test that can reach
 	// the source container is a destructive operation wearing a
@@ -127,13 +145,35 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		v.Checks = append(v.Checks, Check{Name: check, Passed: true, Detail: detail})
 	}
 
-	// 1. Integrity — a corrupt dump never reaches the engine.
+	// 1. Integrity — a corrupt dump never reaches the engine. For an
+	// encrypted record the checksum covers the ciphertext, so integrity
+	// is verified BEFORE decryption — same ordering as Restore.
 	data, err := m.fetchDump(r)
 	if err != nil {
 		fail("integrity", err.Error())
 		return m.commitVerification(r, v, started)
 	}
-	pass("integrity", fmt.Sprintf("sha256 matches recorded checksum (%d bytes)", len(data)))
+	defer func() { _ = data.Close() }()
+	pass("integrity", fmt.Sprintf("sha256 matches recorded checksum (%d bytes)", data.size))
+
+	// Stage the stream in the target before creating any database. Age
+	// authentication must succeed through EOF before pg_restore can run.
+	inContainerPath := "/tmp/containarium-verify-" + r.ID + ".dump"
+	n, err := m.writeDump(opts.TargetContainer, inContainerPath, data, r.Encrypted, opts.AgeIdentity)
+	if err != nil {
+		var decryptErr *decryptionError
+		if errors.As(err, &decryptErr) {
+			fail("decrypt", fmt.Sprintf("could not decrypt with the supplied identity: %v", err))
+		} else {
+			fail("restore", fmt.Sprintf("could not push dump into target container: %v", err))
+		}
+		return m.commitVerification(r, v, started)
+	}
+	if r.Encrypted {
+		pass("decrypt", fmt.Sprintf("decrypted with the supplied identity (%d plaintext bytes)", n))
+	}
+
+	defer func() { _ = m.ops.Exec(opts.TargetContainer, []string{"rm", "-f", inContainerPath}) }()
 
 	// 2. Create the throwaway database in the target container.
 	if _, stderr, err := m.ops.ExecWithOutput(opts.TargetContainer,
@@ -150,13 +190,7 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 			wrapPg(conn.Password, psqlCmd(conn, "postgres", fmt.Sprintf("DROP DATABASE IF EXISTS %s", quoteIdent(scratch)))))
 	}()
 
-	// 3. Load the dump into the scratch database.
-	inContainerPath := "/tmp/containarium-verify-" + r.ID + ".dump"
-	if err := m.ops.WriteFile(opts.TargetContainer, inContainerPath, data, "0600"); err != nil {
-		fail("restore", fmt.Sprintf("could not push dump into target container: %v", err))
-		return m.commitVerification(r, v, started)
-	}
-	defer func() { _ = m.ops.Exec(opts.TargetContainer, []string{"rm", "-f", inContainerPath}) }()
+	// 3. Load the completely staged dump into the scratch database.
 
 	restoreScript := fmt.Sprintf(
 		"pg_restore -h %s -p %d -U %s -d %s %s",
@@ -237,6 +271,19 @@ func (m *Manager) countUserRelations(container string, conn PgConn, db string) (
 		return 0, fmt.Errorf("unreadable relation count %q", strings.TrimSpace(stdout))
 	}
 	return n, nil
+}
+
+// countArchiveTables reads the table of contents of a custom-format
+// archive at path inside container and counts the user tables it declares
+// (countTOCTables). Used for a pg_custom hook dump, whose source catalog
+// the daemon cannot query (#2405). Needs pg_restore in the container; the
+// caller records no manifest when it is missing.
+func (m *Manager) countArchiveTables(container, path string) (int64, error) {
+	stdout, stderr, err := m.ops.ExecWithOutput(container, wrapPg("", "pg_restore --list "+shellQuote(path)))
+	if err != nil {
+		return 0, fmt.Errorf("pg_restore --list: %s", engineErr(stderr, err))
+	}
+	return countTOCTables(stdout), nil
 }
 
 // scratchName derives a safe, unquoted-identifier-shaped Postgres

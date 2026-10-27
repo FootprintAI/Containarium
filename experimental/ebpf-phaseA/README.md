@@ -147,6 +147,31 @@ export CONTAINARIUM_NETWORK_POLICY_ENFORCE=1   # arm drops
 # restart the daemon
 ```
 
+### Default egress allow-list (#2577, stage 1)
+
+A tenant with **no stored policy** runs a built-in egress allow-list in
+`log_only` (it never drops): git hosts, the language registries and the OS
+mirrors of the supported base images, plus the box's DNS resolver. It is the
+first stage of the staged default-deny plan, so the would-deny log shows real
+surprises instead of every flow.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS` | Unset keeps the default list on. `off` restores the empty log-only fallback. |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS` | Comma-separated extra hostnames (bare names, no scheme or port). |
+| `CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRS` | Comma-separated extra IPv4 CIDRs. IPv6 is refused. |
+
+The model gateway and the control plane are deployment-specific and **not** in
+the built-in list: set them with the two `_DOMAINS` / `_CIDRS` variables, or
+they appear as would-deny rows during the soak. Some hosts redirect to other
+names (for example GitHub release downloads use `*.githubusercontent.com`), so
+expect to extend the list from the first soak. A bad extra is logged and the
+daemon runs the built-in list only. Storing a policy for a tenant replaces the
+default for that tenant; a stored policy that fails validation is skipped (and
+logged), so that tenant runs the default too. The default list's names are
+resolved by the refresh loop shortly after start, not before the daemon comes
+up, so for the first seconds they can still log as would-deny.
+
 Then a tenant's `--mode enforce` policy drops denied flows (`TC_ACT_SHOT`),
 audited as `network_policy.deny_dropped`. Safety properties:
 
@@ -159,6 +184,44 @@ audited as `network_policy.deny_dropped`. Safety properties:
 - **The egress allow-list converges** — a CIDR removed from a policy is deleted
   from the kernel map on the next reconcile, so tightening a policy actually
   takes effect.
+
+### Known limitation: replies to inbound connections (#2618)
+
+The ingress program runs on the container veth's ingress (traffic *leaving*
+the container) and judges each packet by its **destination address alone**
+(plus the metadata and virtual-patch rules). It has no connection-state
+handling, so a *reply* to a connection opened toward the container (a reverse
+proxy fetching from a service in the box, host management over SSH, a health
+probe from the bridge gateway) is evaluated exactly like a new outbound flow
+to the proxy / gateway / host address. This follows from reading the program;
+it has not been confirmed on a live host, so treat it as expected rather than
+measured.
+
+What that means in practice:
+
+- **In `log_only`** such replies show up as would-denies, typically as many
+  different high ports (the client's ephemeral ports) toward the proxy or the
+  bridge gateway. They inflate the deny counts you are asked to review before
+  arming enforcement, and (before #2612) the deny-burst finding.
+- **Before arming enforce for a tenant**, a service reached through the proxy
+  may lose its replies. The only workaround with the current key is to put the
+  proxy / gateway address in the tenant's allow-list, which allows **every
+  port** on that address to the tenant, not just replies. Treat that as a
+  deliberate widening and prefer a host you control.
+- To tell whether a would-deny is a reply: it is toward an address that
+  *contacted* the box (the proxy, the gateway, an operator host) and the
+  destination port is a high ephemeral port.
+
+To confirm on a canary in `log_only`: open an inbound connection to a service
+in the box from the proxy or host, then check the daemon log for a
+`log_only (not dropped)` deny whose destination is that client.
+
+A real fix needs per-flow state (a map of inbound-initiated flows recorded by
+the egress hook, consulted by the ingress hook). Passing every TCP segment
+that lacks a bare SYN is **not** an acceptable shortcut: it would let any
+non-SYN segment out to any destination, defeating default-deny for a
+cooperating remote endpoint. That change belongs in the BPF program and needs
+a live backend to verify.
 
 Validated on a Linux backend: with enforce armed and `--allow-cidr 8.8.8.8/32`,
 `ping 8.8.8.8` succeeds and `ping 1.1.1.1` sees 100% packet loss (dropped), while
@@ -229,3 +292,51 @@ per flow; the LRU map self-evicts idle flows.
 The full on-backend acceptance procedure (verifier acceptance of the egress
 program, `bytes_received` check, history persistence, no-regression, rollback)
 is in [`VALIDATION-traffic-flows.md`](VALIDATION-traffic-flows.md).
+
+## Exec telemetry — `execwatch.bpf.c` (#2637)
+
+A **second object** next to `netpolicy.bpf.o`, for the process guardrail
+(design: [`docs/architecture/process-exec-guardrail.md`](../../docs/architecture/process-exec-guardrail.md),
+component 1). One program on the `sched/sched_process_exec` tracepoint walks
+the exec'ing task's cgroup ancestors (levels 1..12) against the
+`watched_cgroups` hash map (cgroup id → container index, filled by the daemon
+from each running container's init PID → `/proc/<pid>/cgroup` →
+`/sys/fs/cgroup/<path>` inode) and, on a hit, emits one fixed-layout record
+`{host_pid, ppid, uid, cgroup_id, comm[16], filename[256], argv[512],
+argv_truncated}` to the 1 MiB `exec_events` ring buffer. A miss at every level
+(host or core-infra process) emits nothing. `argv` is read from
+`mm->arg_start..arg_end` with CO-RE and capped at 512 bytes; the environment
+block is never read. Ring overflow is counted in `exec_stats[1]`, never
+blocks the exec.
+
+Why a separate object: the exec program is host-global, needs kernel ≥ 5.8
+(ringbuf; 5.6 for `bpf_get_current_ancestor_cgroup_id`) plus kernel BTF for
+the CO-RE reads, and a verifier rejection or missing BTF must not take flow
+enforcement down with it. The network object keeps its 5.4 floor.
+
+Build — `make build-bpf` does all of this: it generates `vmlinux.h` from the
+build host's kernel BTF (`bpftool btf dump file /sys/kernel/btf/vmlinux format c`,
+gitignored, never checked in) and compiles both objects. By hand:
+
+```sh
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+clang -O2 -g -target bpfel -I. -c execwatch.bpf.c -o execwatch.bpf.o
+```
+
+Overhead (lane measurement, `TestExecWatch_OverheadMeasurement`, ubuntu-latest
+8-core runner): 983 execs/s sustained for 60 s, 0 events lost, kernel-side
+1.21 % + ring consumer 1.74 % = 2.95 % of one core = **0.37 % of the host's
+CPU**. The bar is "< 1 % of host CPU at 1,000 execs/s" (decided 2026-10-19);
+bringing the Go consumer under 1 % of a core is a follow-up. A burst the
+consumer cannot drain is counted in `exec_stats[lost]` (10,000 undrained
+execs: 1,272 kept, 8,729 counted), never blocks the exec.
+
+The Go side is `internal/netbpf/execwatch.go` (`LoadExecWatch`, `Attach`,
+`WatchCgroup`/`UnwatchCgroup`, `ConsumeExecEvents`, `ParseExecEvent`); the
+wire layout is pinned by `TestExecEventWireLayout`, and the real-kernel
+proof (loads, one event per watched exec, none for host execs, a 10k burst
+counts rather than panics, the measured per-exec overhead) is
+`internal/netbpf/execwatch_load_test.go` in the `ebpf-load.yml` lane. The
+daemon resolves the object from the same `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT`
+value: `embedded` uses the embedded copy, a path loads the sibling
+`execwatch.bpf.o` next to `netpolicy.bpf.o`.

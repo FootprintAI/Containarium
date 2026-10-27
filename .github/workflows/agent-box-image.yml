@@ -29,7 +29,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,10 +36,13 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
     name: build image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Build agent-box image
         run: docker build -f images/agent-box/Dockerfile -t containarium-agent-box:ci .
       - name: Smoke-check the image
@@ -79,7 +81,7 @@ jobs:
       # in review (#2126): an UNKNOWN-severity tzdata advisory (DLA-4792-1)
       # tripped the gate despite not being CRITICAL/HIGH.
       - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
           image-ref: 'containarium-agent-box:ci'
           format: 'sarif'
@@ -90,7 +92,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
         if: always()
         with:
           sarif_file: trivy-agent-box-results.sarif

@@ -67,17 +67,17 @@ After `terraform apply` completes, you'll see:
 ```
 Outputs:
 
-jump_server_ip = "35.203.123.45"
+jump_server_ip = "198.51.100.11"
 
 jump_servers_ips = {
-  "jump-1" = "35.203.123.45"
-  "jump-2" = "35.203.124.46"
-  "jump-3" = "35.203.125.47"
+  "jump-1" = "198.51.100.11"
+  "jump-2" = "198.51.100.12"
+  "jump-3" = "198.51.100.13"
 }
 
-load_balancer_ip = "35.203.130.50"
+load_balancer_ip = "198.51.100.50"
 
-ssh_command = "ssh admin@35.203.130.50"
+ssh_command = "ssh admin@198.51.100.50"
 ```
 
 **Save these IPs!** You'll need them.
@@ -122,10 +122,10 @@ ls -lh bin/containariumd-linux-amd64
 
 ```bash
 # Copy to jump server
-scp bin/containariumd-linux-amd64 admin@35.203.123.45:/tmp/
+scp bin/containariumd-linux-amd64 admin@198.51.100.11:/tmp/
 
 # SSH and install
-ssh admin@35.203.123.45
+ssh admin@198.51.100.11
 
 # On the jump server (#1781: install as containariumd, symlink the old
 # name for compat with anything still invoking `containarium <verb>`):
@@ -149,7 +149,7 @@ If you deployed 3 jump servers, install on each:
 # Create a script to deploy to all servers
 cat > deploy-cli.sh <<'EOF'
 #!/bin/bash
-SERVERS=("35.203.123.45" "35.203.124.46" "35.203.125.47")
+SERVERS=("198.51.100.11" "198.51.100.12" "198.51.100.13")
 
 for server in "${SERVERS[@]}"; do
   echo "Deploying to $server..."
@@ -168,7 +168,7 @@ chmod +x deploy-cli.sh
 SSH to a jump server and check:
 
 ```bash
-ssh admin@35.203.123.45
+ssh admin@198.51.100.11
 
 # Check Incus is running
 sudo incus --version
@@ -206,7 +206,7 @@ Now you can create containers!
 
 ```bash
 # SSH to jump-1
-ssh admin@35.203.123.45
+ssh admin@198.51.100.11
 
 # Create container for alice (with SSH key)
 sudo containarium create alice --ssh-key ~/.ssh/alice.pub --verbose
@@ -255,19 +255,19 @@ sudo containarium list
 # CONTAINER NAME         STATUS     IP ADDRESS      CPU/MEMORY
 # alice-container        Running    10.0.3.100      4c/4GB
 # dave-container         Running    10.0.3.101      4c/4GB
-# greg-container         Running    10.0.3.102      4c/4GB
+# gail-container         Running    10.0.3.102      4c/4GB
 ```
 
 For horizontal scaling, repeat on jump-2 and jump-3:
 
 ```bash
 # SSH to jump-2
-ssh admin@35.203.124.46
+ssh admin@198.51.100.12
 sudo containarium create bob --ssh-key ~/.ssh/bob.pub
 sudo containarium create eve --ssh-key ~/.ssh/eve.pub
 
 # SSH to jump-3
-ssh admin@35.203.125.47
+ssh admin@198.51.100.13
 sudo containarium create charlie --ssh-key ~/.ssh/charlie.pub
 sudo containarium create frank --ssh-key ~/.ssh/frank.pub
 ```
@@ -280,7 +280,7 @@ Create a script to create many containers:
 # create-team-containers.sh
 #!/bin/bash
 
-JUMP_SERVER="35.203.123.45"
+JUMP_SERVER="198.51.100.11"
 USERS=("alice" "bob" "charlie" "dave" "eve")
 
 for user in "${USERS[@]}"; do
@@ -306,6 +306,21 @@ sudo containarium info alice
 
 #### 4.2. Give Users Their SSH Config
 
+The CLI can generate this config automatically, using the jump account
+created for each box's username (no administrator SSH key needed):
+
+```bash
+# On the laptop, with API credentials already configured:
+containarium ssh-config sync --http --server http://<vm-host>:8080 --identity ~/.ssh/alice_key
+```
+
+Add `Include ~/.containarium/ssh_config` at the top of `~/.ssh/config`, then
+connect with `ssh alice-container`. Use the same key supplied at box creation.
+When the API is tunneled to localhost, add `--jump-host <vm-host>`; a custom
+SSH port can be specified as `--jump-host <vm-host>:2222`.
+
+For deployments that manage SSH config by hand:
+
 Send this to alice:
 
 ```ssh-config
@@ -313,7 +328,7 @@ Send this to alice:
 
 # Jump server
 Host containarium-jump
-    HostName 35.203.123.45
+    HostName 198.51.100.11
     User admin
     IdentityFile ~/.ssh/id_rsa
 
@@ -461,6 +476,86 @@ CONTAINARIUM_WAKE_TRUSTED_PROXIES=130.211.0.0/22,35.191.0.0/16
 
 ---
 
+## Optional: the anonymous-box door (`ssh new.<domain>`)
+
+The door hands a fresh Linux **VM** to any SSH key with no signup, keeps it
+for a few hours, and lets the user claim it by signing up. Design and
+rationale: `docs/architecture/ssh-new-anonymous-box.md`; the security
+position: `docs/security/SECURITY-FAQ.md`. It is off by default and
+needs its own backend — never enable it on a host that also runs tenant
+containers or the core-service LXCs.
+
+### Prerequisites for the anon-pool backend
+
+- **KVM.** The host must expose `/dev/kvm`. On a cloud VM that means
+  nested virtualization on an Intel machine family; check with
+  `ls -l /dev/kvm` and `incus launch images:ubuntu/24.04/cloud probe --vm`
+  (then `incus exec probe -- true` to prove the agent works, and delete it).
+- **nftables firewall driver.** The egress guard is an Incus network ACL
+  on the VM's NIC, which Incus only enforces under nftables:
+  `incus info | grep -A2 firewall` must say `nftables`.
+- **Disk.** VM root disks are 20 GB each; put the storage pool on a data
+  disk sized for `max boxes × 20 GB`, not on the boot disk.
+- The backend's `sshpiper` upstream key must be seeded exactly as for
+  tenant boxes (the door pipes sessions with `/etc/sshpiper/upstream_key`).
+
+### Daemon flags
+
+Start the backend daemon with the pool tag and the door enabled:
+
+```bash
+CONTAINARIUM_ANON_DOOR=enable containarium daemon \
+  --pool=anon \
+  --anon-claim-url-base https://<your cloud domain>/claim \
+  # optional tuning (defaults shown):
+  --anon-max-boxes 20 \
+  --anon-key-creates-per-10min 1 --anon-key-burst 2 \
+  --anon-ip-creates-per-10min 6  --anon-ip-burst 6 \
+  --anon-door-state /var/lib/containarium/anon-door.json
+```
+
+- `--anon-claim-url-base` is what the guest's `/etc/containarium/claim-url`
+  points at; empty writes the bare token and `containarium claim` prints it
+  with a note.
+- `--anon-door-state` persists the kill switch and bans; a malformed file
+  **closes** the door until `containarium anon enable` rewrites it.
+- The daemon logs `AnonymousBox service enabled (VM per key, …)` on start;
+  if it logs `disabled: box backend lacks exec/ttl capabilities` you are
+  on the Kubernetes backend, which cannot run the door.
+
+### Sentinel
+
+Set the two Terraform variables and apply:
+
+```hcl
+anon_door_addr  = "0.0.0.0:2022"            # dev: second port on the existing IP
+# anon_door_addr = "<door ip>:22"           # prod: a dedicated IP, with new.<domain> pointing at it
+anon_daemon_url = "http://<anon daemon private ip>:8080"
+```
+
+The startup script's metadata reconcile installs `sshpiper-anon.service`
+(chain: `ssh-session-plugin → anon-door-plugin → failtoban`) within six
+hours — run `/usr/local/bin/reconcile-sshpiper-anon-service.sh` on the
+sentinel to apply it now — and removes the unit when the variable is
+cleared. The door plugin signs its daemon calls with the sentinel's
+existing `CONTAINARIUM_SENTINEL_AUTH_SECRET` / signing key; no new secret.
+
+### Operating it
+
+```bash
+containarium anon status                      # door open/closed, limits, bans
+containarium anon disable --message "closed for maintenance"
+containarium anon enable
+containarium anon ban SHA256:<fingerprint>    # refuse one key
+containarium anon list                        # live anonymous boxes
+containarium anon claim <token> --tenant <u>  # bind a box to a tenant (the cloud control plane calls the same RPC)
+```
+
+Every step of a key's journey is an `EVENT_TYPE_ANON_*` event on the event
+stream and a `containarium_anon_<step>_total` counter in VictoriaMetrics;
+the design doc has the three dashboard queries. Unclaimed anonymous boxes
+cannot be exposed or routed; claiming lifts that and the TTL.
+
 ## Complete Workflow Summary
 
 ```
@@ -587,8 +682,8 @@ sudo containarium create user3
 make build-linux
 
 # Copy to jump server
-scp bin/containariumd-linux-amd64 admin@35.203.123.45:/tmp/
-ssh admin@35.203.123.45 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+scp bin/containariumd-linux-amd64 admin@198.51.100.11:/tmp/
+ssh admin@198.51.100.11 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 ```
 
 Existing containers are NOT affected.

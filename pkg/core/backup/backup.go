@@ -8,7 +8,7 @@
 //   - The dump is produced by running pg_dump *inside* the tenant's
 //     container (reaching the container's own Postgres over loopback),
 //     writing a compressed custom-format archive to the container's /tmp.
-//   - The archive is pulled to the daemon host (ReadFile), checksummed,
+//   - The archive is pulled to the daemon host (ReadFileStream), checksummed,
 //     and either kept in the host backup directory (LOCAL) or shipped to
 //     an object store and removed from local staging (GCS).
 //   - Metadata is persisted as a small JSON sidecar per backup in the
@@ -21,16 +21,19 @@
 package backup
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/pkg/core/secrets"
 )
 
 // EnginePostgres is the only database engine supported in v1.
@@ -46,6 +49,27 @@ const (
 	DestGCS   Destination = "gcs"
 )
 
+// KeyMode names who holds the key that opens an encrypted backup (#2402).
+// Kept as a typed string in the core so the package stays free of the pb
+// dependency; the server maps it to/from pb.BackupKeyMode.
+//
+//   - KeyModeAgeRecipient: encrypted to a tenant-held age recipient only;
+//     the platform holds no key at all (#1831). Never written to the
+//     sidecar — it is derived from Encrypted + AgeRecipient, so records
+//     written before this type existed read the same (see
+//     Record.EffectiveKeyMode).
+//   - KeyModeManaged: encrypted to a per-backup ephemeral identity whose
+//     secret is wrapped by the daemon's KMS wrapper and stored on the
+//     record. Only a holder of the KMS decrypt role can open it.
+//   - KeyModeBoth: both of the above in one age file; either path decrypts.
+type KeyMode string
+
+const (
+	KeyModeAgeRecipient KeyMode = "age_recipient"
+	KeyModeManaged      KeyMode = "managed"
+	KeyModeBoth         KeyMode = "both"
+)
+
 // ContainerOps is the slice of *container.Manager the backup manager
 // needs. Declared as an interface so tests can supply a fake without an
 // Incus backend.
@@ -55,10 +79,10 @@ type ContainerOps interface {
 	// ExecWithOutput runs a command inside the container and returns
 	// stdout/stderr (pg_dump/pg_restore report errors on stderr).
 	ExecWithOutput(containerName string, command []string) (string, string, error)
-	// ReadFile pulls a file from inside the container into host memory.
-	ReadFile(containerName, path string) ([]byte, error)
-	// WriteFile pushes content to a path inside the container.
-	WriteFile(containerName, path string, content []byte, mode string) error
+	// ReadFileStream returns a stream owned and closed by the caller.
+	ReadFileStream(containerName, path string) (io.ReadCloser, error)
+	// WriteFileStream consumes content through EOF, reporting read errors.
+	WriteFileStream(containerName, path string, content io.Reader, mode string) error
 }
 
 // Uploader ships a staged local file to and from an off-host object
@@ -66,7 +90,7 @@ type ContainerOps interface {
 // supply a fake.
 type Uploader interface {
 	Upload(localPath, destURI string) error
-	Download(destURI, localPath string) error
+	DownloadStream(destURI string, dst io.Writer) error
 	Delete(destURI string) error
 }
 
@@ -105,6 +129,35 @@ type Record struct {
 	// Hook is the in-tenant command that produced a hook backup (#1831);
 	// empty for pg_dump backups.
 	Hook string `json:"hook,omitempty"`
+
+	// Managed key mode (#2402). WrappedKey is the per-backup age identity's
+	// secret string, wrapped by the daemon's KMS wrapper; KEKID is the key
+	// version the wrapper used (for GCP, the full CryptoKeyVersion resource
+	// name, so destruction can be guarded per version). KeyMode is written
+	// only for KeyModeManaged / KeyModeBoth — a recipient-only record keeps
+	// today's sidecar byte for byte, and an old sidecar lacking all three
+	// fields loads unchanged. The daemon never unwraps WrappedKey.
+	WrappedKey []byte  `json:"wrapped_key,omitempty"`
+	KEKID      string  `json:"kek_id,omitempty"`
+	KeyMode    KeyMode `json:"key_mode,omitempty"`
+	// HookFormat is what the hook declared it emits (#2405); empty for
+	// pg_dump records. A hook record written before the field existed
+	// loads as HookFormatOpaque.
+	HookFormat HookFormat `json:"hook_format,omitempty"`
+}
+
+// EffectiveKeyMode is the key mode a reader should act on: the recorded
+// one for managed records, KeyModeAgeRecipient for any other encrypted
+// record (including every sidecar written before KeyMode existed), and
+// "" for plaintext.
+func (r *Record) EffectiveKeyMode() KeyMode {
+	if r.KeyMode != "" {
+		return r.KeyMode
+	}
+	if r.Encrypted && r.AgeRecipient != "" {
+		return KeyModeAgeRecipient
+	}
+	return ""
 }
 
 // PgConn carries the connection parameters pg_dump / pg_restore use
@@ -133,19 +186,52 @@ func (c PgConn) withDefaults() PgConn {
 
 // Manager orchestrates backups. One per daemon.
 type Manager struct {
-	ops      ContainerOps
-	uploader Uploader // may be nil → GCS destinations are rejected
-	dir      string   // host backup directory (dumps for LOCAL + sidecar index for all)
-	clock    func() time.Time
+	ops          ContainerOps
+	uploader     Uploader // may be nil → GCS destinations are rejected
+	dir          string   // host backup directory (dumps for LOCAL + sidecar index for all)
+	maxDumpBytes int64
+	clock        func() time.Time
+
+	// Whole-box backups (#2801). box is nil on a manager built without
+	// WithBoxOps, and then CreateBox refuses. boxStagingDirs are the
+	// directories Incus stages an export in before streaming it (counted
+	// by the free-space pre-flight); maxBoxBytes is the BOX cap, separate
+	// from maxDumpBytes; freeSpace is statDiskSpace outside tests.
+	box            BoxOps
+	boxStagingDirs []string
+	maxBoxBytes    int64
+	freeSpace      func(path string) (diskSpace, error)
+	// wrapper, when set, wraps a per-backup age identity with a KMS
+	// (#2402): backups default to KeyModeManaged (or KeyModeBoth when a
+	// legacy recipient is also given). Nil keeps today's behaviour byte
+	// for byte and refuses an explicit request for a managed mode.
+	wrapper secrets.KMSClient
+}
+
+// Option configures a Manager at construction.
+type Option func(*Manager)
+
+// WithWrapper installs the KMS wrapper for managed key mode (#2402). The
+// wrapper only ever needs the encrypt half of its key: the daemon wraps
+// and never unwraps. A nil wrapper is the same as not calling this.
+func WithWrapper(w secrets.KMSClient) Option {
+	return func(m *Manager) { m.wrapper = w }
 }
 
 // NewManager constructs a backup manager. dir is the host directory where
 // dumps (for LOCAL) and the JSON index (for all destinations) are kept.
 // uploader may be nil when no object store is configured; GCS backups
 // then return a clear error.
-func NewManager(ops ContainerOps, uploader Uploader, dir string) *Manager {
-	return &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now}
+func NewManager(ops ContainerOps, uploader Uploader, dir string, opts ...Option) *Manager {
+	m := &Manager{ops: ops, uploader: uploader, dir: dir, clock: time.Now, maxDumpBytes: DefaultMaxDumpBytes, maxBoxBytes: DefaultMaxBoxBytes, freeSpace: statDiskSpace}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
 }
+
+// HasWrapper reports whether managed key mode is available on this daemon.
+func (m *Manager) HasWrapper() bool { return m.wrapper != nil }
 
 // CreateOptions parameterizes a backup.
 type CreateOptions struct {
@@ -163,10 +249,20 @@ type CreateOptions struct {
 	// hook's basename).
 	Hook  string
 	Label string
+	// HookFormat declares what the hook emits (#2405). Empty means
+	// HookFormatOpaque. Only valid together with Hook.
+	HookFormat HookFormat
 	// AgeRecipient, when set, encrypts the dump to this age recipient
 	// ("age1…") in-process before it is staged or uploaded (#1831). The
 	// platform and the storage backend then hold ciphertext only.
 	AgeRecipient string
+	// KeyMode selects who holds the key (#2402). Empty resolves to the
+	// daemon default: KeyModeManaged when a wrapper is configured
+	// (KeyModeBoth if AgeRecipient is also set), otherwise the #1831
+	// behaviour (AgeRecipient or plaintext). An explicit mode the daemon
+	// cannot satisfy — a managed mode with no wrapper, a recipient mode
+	// with no recipient — is an error, never a silent downgrade.
+	KeyMode KeyMode
 }
 
 // RestoreOptions parameterizes a restore.
@@ -179,6 +275,11 @@ type RestoreOptions struct {
 	// this one call. The platform holds no decryption key; the caller
 	// supplies it and it is never stored or logged (#1831).
 	AgeIdentity string
+	// TargetContainer, when set, is the container restored into instead
+	// of ContainerName (the backup's own container). A HookFormatPGCustom
+	// hook record can only be restored this way, into a target other than
+	// its source (#2405).
+	TargetContainer string
 }
 
 func (m *Manager) now() time.Time {
@@ -186,6 +287,47 @@ func (m *Manager) now() time.Time {
 		return m.clock()
 	}
 	return time.Now()
+}
+
+// resolveKeyMode turns a request's key mode into the one Create will
+// act on (#2402). "" is plaintext — only reachable with no wrapper and no
+// recipient. Every refusal here happens before pg_dump runs, so a
+// mis-specified request leaves nothing behind.
+func (m *Manager) resolveKeyMode(requested KeyMode, recipient string) (KeyMode, error) {
+	hasRecipient := strings.TrimSpace(recipient) != ""
+	switch requested {
+	case "":
+		switch {
+		case m.wrapper != nil && hasRecipient:
+			return KeyModeBoth, nil
+		case m.wrapper != nil:
+			return KeyModeManaged, nil
+		case hasRecipient:
+			return KeyModeAgeRecipient, nil
+		default:
+			return "", nil
+		}
+	case KeyModeAgeRecipient:
+		if !hasRecipient {
+			return "", fmt.Errorf("key mode %s requires an age recipient", requested)
+		}
+		return requested, nil
+	case KeyModeManaged:
+		if m.wrapper == nil {
+			return "", fmt.Errorf("key mode %s requested but this daemon has no key wrapper configured (CONTAINARIUM_BACKUP_KMS_KEY_NAME)", requested)
+		}
+		return requested, nil
+	case KeyModeBoth:
+		if m.wrapper == nil {
+			return "", fmt.Errorf("key mode %s requested but this daemon has no key wrapper configured (CONTAINARIUM_BACKUP_KMS_KEY_NAME)", requested)
+		}
+		if !hasRecipient {
+			return "", fmt.Errorf("key mode %s requires an age recipient alongside the managed key", requested)
+		}
+		return requested, nil
+	default:
+		return "", fmt.Errorf("unknown key mode %q", requested)
+	}
 }
 
 // Create dumps the container's database and stores it at the chosen
@@ -213,23 +355,24 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		}
 		dbLabel = conn.Database
 	}
+	if err := validateHookFormat(opts.HookFormat, hookMode); err != nil {
+		return nil, err
+	}
+	hookFormat := opts.HookFormat
+	if hookMode && hookFormat == "" {
+		hookFormat = HookFormatOpaque
+	}
 	if opts.AgeRecipient != "" {
 		if _, err := parseRecipient(opts.AgeRecipient); err != nil {
 			return nil, err
 		}
 	}
-	switch opts.Destination {
-	case DestLocal:
-		// ok
-	case DestGCS:
-		if m.uploader == nil {
-			return nil, fmt.Errorf("gcs destination requested but no object-store uploader is configured on this daemon")
-		}
-		if !strings.HasPrefix(opts.GCSBucket, "gs://") {
-			return nil, fmt.Errorf("gcs_bucket must be a gs:// URI, got %q", opts.GCSBucket)
-		}
-	default:
-		return nil, fmt.Errorf("unknown or unspecified destination %q", opts.Destination)
+	mode, err := m.resolveKeyMode(opts.KeyMode, opts.AgeRecipient)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.checkDestination(opts.Destination, opts.GCSBucket); err != nil {
+		return nil, err
 	}
 
 	id := fmt.Sprintf("%s-%s-%s", opts.Username, dbLabel, m.now().UTC().Format("20060102T150405Z"))
@@ -265,18 +408,14 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		}
 	}
 
-	// 2. Pull the archive to the host, then clean up the in-container copy.
-	data, err := m.ops.ReadFile(opts.ContainerName, inContainerPath)
+	// 2. Pull the archive to the host, then clean up the in-container copy
+	//    (after the manifest step below, which for a pg_custom hook reads it).
+	defer func() { _ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath}) }()
+	data, err := m.ops.ReadFileStream(opts.ContainerName, inContainerPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read dump from container: %w", err)
 	}
-	_ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath})
-	if len(data) == 0 {
-		if hookMode {
-			return nil, fmt.Errorf("backup hook %s produced no output", opts.Hook)
-		}
-		return nil, fmt.Errorf("pg_dump produced an empty archive (check database name and credentials)")
-	}
+	defer func() { _ = data.Close() }()
 
 	// Record the source's user-relation count as a manifest for later
 	// restore tests to compare against. Best-effort: a source that
@@ -285,8 +424,20 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	var relationCount *int64
 	engine := EnginePostgres
 	if hookMode {
-		// An opaque hook stream has no Postgres catalog to read a manifest from.
 		engine = EngineHook
+		// An opaque hook stream has no Postgres catalog to read a manifest
+		// from. A declared pg_custom archive carries its own table of
+		// contents (#2405): read it from the staged copy, still in the
+		// container. pg_restore may be absent there — then, as for a
+		// source that cannot be queried, the manifest is simply unset.
+		if hookFormat == HookFormatPGCustom {
+			if n, err := m.countArchiveTables(opts.ContainerName, inContainerPath); err != nil {
+				log.Printf("[backup] could not record relation manifest for %s hook %s: %v (verification will have nothing to compare against)",
+					opts.Username, opts.Hook, err)
+			} else {
+				relationCount = &n
+			}
+		}
 	} else if n, err := m.countUserRelations(opts.ContainerName, conn, conn.Database); err != nil {
 		log.Printf("[backup] could not record relation manifest for %s/%s: %v (verification will have nothing to compare against)",
 			opts.Username, conn.Database, err)
@@ -294,72 +445,161 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		relationCount = &n
 	}
 
-	// 2b. Encrypt in-process BEFORE anything is staged or shipped (#1831).
-	//     From here on `data` is the ciphertext: it is what gets checksummed,
-	//     sized, staged and stored, so plaintext never touches the daemon's
-	//     disk or the object store, and fetchDump's integrity gate applies
-	//     to the stored bytes unchanged.
-	encrypted := false
-	if opts.AgeRecipient != "" {
-		ct, err := encryptWithRecipient(data, opts.AgeRecipient)
-		if err != nil {
-			return nil, fmt.Errorf("encrypt dump: %w", err)
-		}
-		data = ct
-		encrypted = true
+	// Wrap the managed identity before staging any bytes. Encryption and
+	// hashing below stream directly to the staging file.
+	plan, err := m.planEncryption(mode, opts.AgeRecipient)
+	if err != nil {
+		return nil, err
 	}
 	ext := ".dump"
-	if encrypted {
+	if plan.encrypted() {
 		ext = ".dump.age"
 	}
-
-	sum := sha256.Sum256(data)
+	localDump, size, checksum, err := m.stageDump(data, id, ext, plan.recipients, m.maxDumpBytes)
+	if err != nil {
+		return nil, err
+	}
 	record := &Record{
 		ID:            id,
 		Username:      opts.Username,
 		Database:      dbLabel,
 		CreatedAt:     m.now().UTC(),
-		SizeBytes:     int64(len(data)),
-		SHA256:        hex.EncodeToString(sum[:]),
+		SizeBytes:     size,
+		SHA256:        checksum,
 		Destination:   opts.Destination,
 		Engine:        engine,
 		RelationCount: relationCount,
-		Encrypted:     encrypted,
 	}
-	if encrypted {
-		record.AgeRecipient = strings.TrimSpace(opts.AgeRecipient)
-	}
+	plan.apply(record)
 	if hookMode {
 		record.Hook = strings.TrimSpace(opts.Hook)
+		record.HookFormat = hookFormat
 	}
+	if err := m.commit(record, localDump, opts.GCSBucket, ext); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
 
-	if err := os.MkdirAll(m.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create backup directory: %w", err)
+// checkDestination refuses a destination this daemon cannot write to,
+// before anything is produced.
+func (m *Manager) checkDestination(dest Destination, gcsBucket string) error {
+	switch dest {
+	case DestLocal:
+		return nil
+	case DestGCS:
+		if m.uploader == nil {
+			return fmt.Errorf("gcs destination requested but no object-store uploader is configured on this daemon")
+		}
+		if !strings.HasPrefix(gcsBucket, "gs://") {
+			return fmt.Errorf("gcs_bucket must be a gs:// URI, got %q", gcsBucket)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown or unspecified destination %q", dest)
 	}
-	localDump := filepath.Join(m.dir, id+ext)
-	if err := os.WriteFile(localDump, data, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to stage dump: %w", err)
-	}
+}
 
-	// 3. For off-host destinations, ship the staged dump and drop the
-	//    local copy (the sidecar index stays local).
-	switch opts.Destination {
+// encryptionPlan is what a resolved key mode turns into: the age recipients
+// the stored file is encrypted to, and the key fields the record carries.
+type encryptionPlan struct {
+	mode              KeyMode
+	recipients        []string
+	recordedRecipient string
+	wrappedKey        []byte
+	kekID             string
+}
+
+func (p encryptionPlan) encrypted() bool { return len(p.recipients) > 0 }
+
+// planEncryption wraps a fresh managed identity when the mode needs one
+// (#2402). It runs before any bytes are staged.
+func (m *Manager) planEncryption(mode KeyMode, ageRecipient string) (encryptionPlan, error) {
+	plan := encryptionPlan{mode: mode, recordedRecipient: strings.TrimSpace(ageRecipient)}
+	if mode == KeyModeManaged || mode == KeyModeBoth {
+		managedRecipient, wrapped, kek, err := wrapNewIdentity(context.Background(), m.wrapper)
+		if err != nil {
+			return encryptionPlan{}, err
+		}
+		plan.wrappedKey, plan.kekID = wrapped, kek
+		plan.recipients = append(plan.recipients, managedRecipient)
+		if mode == KeyModeManaged {
+			// No legacy recipient on the file; the record names the
+			// ephemeral one so an operator can check an unwrapped
+			// identity against it.
+			plan.recordedRecipient = managedRecipient
+		}
+	}
+	if mode == KeyModeBoth || mode == KeyModeAgeRecipient {
+		plan.recipients = append(plan.recipients, ageRecipient)
+	}
+	return plan, nil
+}
+
+// apply sets the record's encryption fields from the plan.
+func (p encryptionPlan) apply(r *Record) {
+	r.Encrypted = p.encrypted()
+	if r.Encrypted {
+		r.AgeRecipient = p.recordedRecipient
+	}
+	if p.mode == KeyModeManaged || p.mode == KeyModeBoth {
+		r.WrappedKey = p.wrappedKey
+		r.KEKID = p.kekID
+		r.KeyMode = p.mode
+	}
+}
+
+// commit moves a staged file to its destination and writes the record.
+//
+// For off-host destinations it ships the staged file and drops the local
+// copy. The sidecar index stays local for every destination; for GCS a copy
+// also goes next to the dump (#2402), so the bucket alone (dump plus
+// wrapped key) is enough to restore after a host loss. Dump first, then
+// sidecar: a sidecar in the bucket always describes an object that is
+// already there.
+func (m *Manager) commit(record *Record, localDump, gcsBucket, ext string) error {
+	id := record.ID
+	switch record.Destination {
 	case DestLocal:
 		record.Location = localDump
 	case DestGCS:
-		destURI := strings.TrimRight(opts.GCSBucket, "/") + "/" + id + ext
+		destURI := strings.TrimRight(gcsBucket, "/") + "/" + id + ext
 		if err := m.uploader.Upload(localDump, destURI); err != nil {
 			_ = os.Remove(localDump)
-			return nil, fmt.Errorf("failed to upload dump to %s: %w", destURI, err)
+			return fmt.Errorf("failed to upload dump to %s: %w", destURI, err)
 		}
 		_ = os.Remove(localDump)
 		record.Location = destURI
 	}
 
 	if err := m.writeSidecar(record); err != nil {
-		return nil, err
+		return err
 	}
-	return record, nil
+	if record.Destination == DestGCS {
+		sidecarURI := sidecarObjectURI(record.Location, id)
+		if err := m.uploader.Upload(m.sidecarPath(id), sidecarURI); err != nil {
+			// A dump object without its sidecar is not something the
+			// bucket can restore from, so leave nothing half-done: the
+			// caller retries and gets a complete backup or a clean error.
+			_ = m.uploader.Delete(record.Location)
+			_ = os.Remove(m.sidecarPath(id))
+			return fmt.Errorf("failed to upload backup metadata to %s: %w", sidecarURI, err)
+		}
+	}
+	return nil
+}
+
+// sidecarObjectURI is where a GCS record's sidecar lives in the bucket:
+// next to the dump, as "<id>.meta.json". Derived from the dump's own URI
+// rather than from a bucket setting so Delete can find it for any record,
+// including one created under a different bucket prefix than the daemon
+// is configured with today. (path.Dir would collapse the "gs://" scheme.)
+func sidecarObjectURI(dumpLocation, id string) string {
+	prefix := dumpLocation
+	if i := strings.LastIndex(dumpLocation, "/"); i >= 0 {
+		prefix = dumpLocation[:i]
+	}
+	return prefix + "/" + id + ".meta.json"
 }
 
 // ListDatabases enumerates the non-template databases visible inside the
@@ -482,12 +722,18 @@ func validateBackupID(id string) error {
 	return nil
 }
 
-// Delete removes a stored dump and its index entry.
+// Delete removes a stored dump and its index entry. For a GCS record the
+// bucket holds two objects (#2402): the dump is deleted first, then its
+// sidecar, so a sidecar never outlives its dump by design — only by a
+// failure, which is returned (and so reported by Prune), never swallowed.
+// A sidecar object that is simply not there (a record written before
+// sidecars were uploaded) is not a failure: there was nothing to delete.
 func (m *Manager) Delete(id string) error {
 	r, err := m.Get(id)
 	if err != nil {
 		return err
 	}
+	var sidecarErr error
 	switch r.Destination {
 	case DestGCS:
 		if m.uploader == nil {
@@ -495,6 +741,13 @@ func (m *Manager) Delete(id string) error {
 		}
 		if err := m.uploader.Delete(r.Location); err != nil {
 			return fmt.Errorf("failed to delete %s: %w", r.Location, err)
+		}
+		sidecarURI := sidecarObjectURI(r.Location, r.ID)
+		if err := m.uploader.Delete(sidecarURI); err != nil && !errors.Is(err, ErrObjectNotFound) {
+			// The dump is gone, so the index entry goes too (below) —
+			// a record that lists a deleted dump is worse than an orphan
+			// sidecar object — but the caller hears about it.
+			sidecarErr = fmt.Errorf("dump deleted but failed to delete its sidecar %s: %w", sidecarURI, err)
 		}
 	default:
 		if err := os.Remove(r.Location); err != nil && !os.IsNotExist(err) {
@@ -504,10 +757,11 @@ func (m *Manager) Delete(id string) error {
 	if err := os.Remove(m.sidecarPath(id)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete index entry: %w", err)
 	}
-	return nil
+	return sidecarErr
 }
 
-// Restore streams a stored dump back into a container's database.
+// Restore streams a stored dump back into a container's database:
+// opts.TargetContainer when set, otherwise opts.ContainerName (in place).
 func (m *Manager) Restore(opts RestoreOptions) error {
 	if opts.ContainerName == "" {
 		return fmt.Errorf("container name is required")
@@ -517,11 +771,29 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		return err
 	}
 
-	// A hook backup is an opaque stream the platform never understood; it
-	// cannot be pg_restore'd. Refuse before touching the target (#1831).
+	target := opts.ContainerName
+	if t := strings.TrimSpace(opts.TargetContainer); t != "" {
+		target = t
+	}
+
+	if r.Engine == EngineBox {
+		return errBoxRecordNotDatabase(r.ID, "restored")
+	}
 	if r.Engine == EngineHook {
-		return fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: fetch it and apply it with the tenant's own tooling (automatic restore is only supported for %s dumps)",
-			r.ID, r.Hook, EnginePostgres)
+		// An opaque hook backup is a stream the platform never understood;
+		// it cannot be pg_restore'd. Refuse before touching the target (#1831).
+		if r.HookFormat != HookFormatPGCustom {
+			return fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: fetch it and apply it with the tenant's own tooling (automatic restore is only supported for %s dumps)",
+				r.ID, r.Hook, EnginePostgres)
+		}
+		// A declared pg_custom hook dump loads like any pg_dump archive, but
+		// only into a target the caller named explicitly (#2405). In place
+		// stays refused: the hook exists because the daemon cannot reach the
+		// source's Postgres, and a restore hook is a separate feature.
+		if target == opts.ContainerName {
+			return fmt.Errorf("backup %s was produced by tenant hook %s as a pg_custom dump: in-place restore into the source container is not supported; restore it into an explicitly named target container other than %s",
+				r.ID, r.Hook, opts.ContainerName)
+		}
 	}
 
 	// Fetch the dump bytes to the host and integrity-check them before
@@ -531,15 +803,9 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	if r.Encrypted {
-		if strings.TrimSpace(opts.AgeIdentity) == "" {
-			return fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to restore (the platform holds no decryption key)", r.ID, r.AgeRecipient)
-		}
-		pt, err := decryptWithIdentity(data, opts.AgeIdentity)
-		if err != nil {
-			return fmt.Errorf("decrypt backup %s: %w", r.ID, err)
-		}
-		data = pt
+	defer func() { _ = data.Close() }()
+	if r.Encrypted && strings.TrimSpace(opts.AgeIdentity) == "" {
+		return fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to restore (the platform holds no decryption key)", r.ID, r.AgeRecipient)
 	}
 
 	conn := opts.Conn.withDefaults()
@@ -548,10 +814,11 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 	}
 
 	inContainerPath := "/tmp/containarium-restore-" + r.ID + ".dump"
-	if err := m.ops.WriteFile(opts.ContainerName, inContainerPath, data, "0600"); err != nil {
+	if _, err := m.writeDump(target, inContainerPath, data, r.Encrypted, opts.AgeIdentity); err != nil {
 		return fmt.Errorf("failed to push dump into container: %w", err)
 	}
-	defer func() { _ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath}) }()
+
+	defer func() { _ = m.ops.Exec(target, []string{"rm", "-f", inContainerPath}) }()
 
 	cleanFlag := ""
 	if opts.Clean {
@@ -562,45 +829,10 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		shellQuote(conn.Host), conn.Port, shellQuote(conn.User),
 		shellQuote(conn.Database), cleanFlag, shellQuote(inContainerPath),
 	)
-	if _, stderr, err := m.ops.ExecWithOutput(opts.ContainerName, wrapPg(conn.Password, restoreScript)); err != nil {
+	if _, stderr, err := m.ops.ExecWithOutput(target, wrapPg(conn.Password, restoreScript)); err != nil {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, strings.TrimSpace(stderr))
 	}
 	return nil
-}
-
-// fetchDump pulls a record's dump bytes to the host (downloading from the
-// object store for off-host destinations) and verifies them against the
-// recorded SHA-256. Shared by Restore and Verify so the integrity gate
-// cannot drift between the two paths.
-func (m *Manager) fetchDump(r *Record) ([]byte, error) {
-	var data []byte
-	var err error
-	switch r.Destination {
-	case DestGCS:
-		if m.uploader == nil {
-			return nil, fmt.Errorf("cannot read GCS backup: no object-store uploader configured")
-		}
-		tmp := filepath.Join(m.dir, "."+r.ID+".restore.tmp")
-		if err := m.uploader.Download(r.Location, tmp); err != nil {
-			return nil, fmt.Errorf("failed to download %s: %w", r.Location, err)
-		}
-		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
-		_ = os.Remove(tmp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read downloaded dump: %w", err)
-		}
-	default:
-		data, err = os.ReadFile(r.Location)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read dump %s: %w", r.Location, err)
-		}
-	}
-
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != r.SHA256 {
-		return nil, fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
-	}
-	return data, nil
 }
 
 func (m *Manager) sidecarPath(id string) string { return filepath.Join(m.dir, id+".meta.json") }
@@ -627,6 +859,11 @@ func (m *Manager) readSidecar(path string) (*Record, error) {
 	var r Record
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, fmt.Errorf("corrupt backup metadata at %s: %w", path, err)
+	}
+	// A hook record written before #2405 declared nothing about its
+	// output: it is opaque, exactly as it was treated when it was taken.
+	if r.Engine == EngineHook && r.HookFormat == "" {
+		r.HookFormat = HookFormatOpaque
 	}
 	return &r, nil
 }

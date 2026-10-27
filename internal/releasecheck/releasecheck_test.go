@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -118,5 +119,30 @@ func TestUpdateAvailable(t *testing.T) {
 		if got := UpdateAvailable(tc.current, tc.latest); got != tc.want {
 			t.Errorf("UpdateAvailable(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
 		}
+	}
+}
+
+func TestTargetSummary(t *testing.T) {
+	cases := []struct {
+		name, target, latest string
+		wantContains         []string
+	}{
+		{name: "unknown", target: "", latest: "v0.91.1", wantContains: []string{"unknown"}},
+		{name: "matches latest", target: "0.91.1", latest: "v0.91.1", wantContains: []string{"v0.91.1"}},
+		{name: "latest unknown", target: "0.91.1", latest: "", wantContains: []string{"v0.91.1"}},
+		{name: "behind latest", target: "0.90.1", latest: "v0.91.1", wantContains: []string{"v0.90.1", "behind", "sentinel fetch-release --tag v0.91.1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TargetSummary(tc.target, tc.latest)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("TargetSummary(%q, %q) = %q, want it to contain %q", tc.target, tc.latest, got, want)
+				}
+			}
+			if tc.name != "behind latest" && strings.Contains(got, "behind") {
+				t.Errorf("TargetSummary(%q, %q) = %q, must not claim behind", tc.target, tc.latest, got)
+			}
+		})
 	}
 }

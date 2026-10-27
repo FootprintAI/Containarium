@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package server
 
 // Node isolation gate (#1428). A cluster's isolation class decides what

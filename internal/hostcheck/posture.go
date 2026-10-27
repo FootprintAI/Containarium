@@ -4,12 +4,15 @@ package hostcheck
 
 import (
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/internal/hostharden"
 )
 
 // Host security-posture checks (#1103).
@@ -47,34 +50,52 @@ import (
 // real host — a posture check that can only be tested on a correctly
 // hardened machine is a posture check nobody will ever run red.
 type posturePaths struct {
-	procMounts       string // /proc/mounts
-	sysBlock         string // /sys/block
-	efiVars          string // /sys/firmware/efi/efivars
-	auditdPID        string // /run/auditd.pid
-	sshdConfig       string // /etc/ssh/sshd_config
-	sshdConfigDir    string // /etc/ssh/sshd_config.d
-	aptPeriodic      string // /etc/apt/apt.conf.d/20auto-upgrades
-	tunnelUnit       string // /etc/systemd/system/containarium-tunnel.service
-	tunnelUnitDropIn string // /etc/systemd/system/containarium-tunnel.service.d
-	incusDataDir     string // /var/lib/incus — the volume that holds tenant data
-	recoveryDir      string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
-	metadataDialer   func() error
+	procMounts        string // /proc/mounts
+	sysBlock          string // /sys/block
+	efiVars           string // /sys/firmware/efi/efivars
+	auditdPID         string // /run/auditd.pid
+	sshdConfig        string // /etc/ssh/sshd_config
+	sshdConfigDir     string // /etc/ssh/sshd_config.d
+	aptPeriodic       string // /etc/apt/apt.conf.d/20auto-upgrades
+	tunnelUnit        string // /etc/systemd/system/containarium-tunnel.service
+	tunnelUnitDropIn  string // /etc/systemd/system/containarium-tunnel.service.d
+	incusDataDir      string // /var/lib/incus — the volume that holds tenant data
+	recoveryDir       string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
+	cgroupSystemSlice string // /sys/fs/cgroup/system.slice — per-unit realized cpu.weight (#2284)
+	imdsBlockUnit     string // /etc/systemd/system/containarium-imds-block.service (#2298)
+	imdsBlockWants    string // /etc/systemd/system/multi-user.target.wants/containarium-imds-block.service — the symlink `systemctl enable` creates
+	metadataDialer    func() error
+	// metadataBlockProbe reports whether the bridge's metadata FORWARD rule
+	// is in the kernel now; a non-nil error means it could not tell.
+	metadataBlockProbe func() (present bool, detail string, err error)
+	// nicGuardProbe reads the tenant-guard facts from Incus (nic_guard.go).
+	nicGuardProbe NICGuardProbe
+	// kernelRelease reads `uname -r`; nil means unknown (egress_prereq.go).
+	kernelRelease func() (string, error)
 }
 
 func defaultPosturePaths() posturePaths {
 	return posturePaths{
-		procMounts:       "/proc/mounts",
-		sysBlock:         "/sys/block",
-		efiVars:          "/sys/firmware/efi/efivars",
-		auditdPID:        "/run/auditd.pid",
-		sshdConfig:       "/etc/ssh/sshd_config",
-		sshdConfigDir:    "/etc/ssh/sshd_config.d",
-		aptPeriodic:      "/etc/apt/apt.conf.d/20auto-upgrades",
-		tunnelUnit:       "/etc/systemd/system/containarium-tunnel.service",
-		tunnelUnitDropIn: "/etc/systemd/system/containarium-tunnel.service.d",
-		incusDataDir:     "/var/lib/incus",
-		recoveryDir:      DefaultRecoveryDir,
-		metadataDialer:   dialMetadataServer,
+		procMounts:        "/proc/mounts",
+		sysBlock:          "/sys/block",
+		efiVars:           "/sys/firmware/efi/efivars",
+		auditdPID:         "/run/auditd.pid",
+		sshdConfig:        "/etc/ssh/sshd_config",
+		sshdConfigDir:     "/etc/ssh/sshd_config.d",
+		aptPeriodic:       "/etc/apt/apt.conf.d/20auto-upgrades",
+		tunnelUnit:        "/etc/systemd/system/containarium-tunnel.service",
+		tunnelUnitDropIn:  "/etc/systemd/system/containarium-tunnel.service.d",
+		incusDataDir:      "/var/lib/incus",
+		recoveryDir:       DefaultRecoveryDir,
+		cgroupSystemSlice: DefaultCgroupSystemSlice,
+		imdsBlockUnit:     hostharden.ImdsBlockUnitPath,
+		imdsBlockWants:    filepath.Join("/etc/systemd/system/multi-user.target.wants", filepath.Base(hostharden.ImdsBlockUnitPath)),
+		metadataDialer:    dialMetadataServer,
+		metadataBlockProbe: func() (bool, string, error) {
+			return hostharden.MetadataBlockPresent(hostharden.DefaultBridge)
+		},
+		nicGuardProbe: defaultNICGuardProbe,
+		kernelRelease: defaultEgressPrereqProbes().kernelRelease,
 	}
 }
 
@@ -98,8 +119,12 @@ func runPosture(p posturePaths) []Check {
 		sshdConfigCheck(p),
 		unattendedUpgradesCheck(p),
 		metadataReachableCheck(p),
+		metadataBlockCheck(p),
 		recoveryConfigDurableCheck(p),
 		tunnelTokenExposedCheck(p),
+		platformCPUWeightCheck(p),
+		nicGuardCheck(p),
+		kernelTCXCheck(p.kernelRelease),
 	}
 	for i := range checks {
 		checks[i].Kind = KindPosture
@@ -318,68 +343,33 @@ func sshdConfigCheck(p posturePaths) Check {
 	return c
 }
 
-// readSSHDConfig concatenates the main config with its drop-in
-// directory, in the order sshd itself would read them: an Include is
-// expanded where it appears, and modern distros put the Include at the
-// TOP of sshd_config. Since first-match-wins (below), drop-ins therefore
-// override the main file — get this order backwards and the check
-// reports the overridden value.
+// readSSHDConfig gathers the main config and its *.conf drop-ins and hands
+// them to sshdpolicy.Merge, which orders them the way sshd reads them
+// (drop-ins first, lexically, then the main file — the Include sits at the
+// top of a modern sshd_config). One parser is shared with the per-box
+// posture reconciler (#2424) so host and box checks cannot disagree.
 func readSSHDConfig(mainPath, dropInDir string) (string, error) {
 	main, err := os.ReadFile(mainPath) // #nosec G304 -- mainPath is a package-owned constant (/etc/ssh/sshd_config), overridden only by tests
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", mainPath, err)
 	}
-	var b strings.Builder
-	entries, derr := os.ReadDir(dropInDir)
-	if derr == nil {
-		names := make([]string, 0, len(entries))
+	var dropIns []sshdpolicy.DropIn
+	if entries, derr := os.ReadDir(dropInDir); derr == nil {
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".conf") {
-				names = append(names, e.Name())
-			}
-		}
-		sort.Strings(names) // sshd globs *.conf; lexical order is what it gets
-		for _, n := range names {
-			d, rerr := os.ReadFile(filepath.Join(dropInDir, filepath.Base(n))) // #nosec G304 -- dropInDir is a package-owned constant; n is Base()-bounded
+			d, rerr := os.ReadFile(filepath.Join(dropInDir, filepath.Base(e.Name()))) // #nosec G304 -- dropInDir is a package-owned constant; name is Base()-bounded
 			if rerr != nil {
 				continue
 			}
-			b.Write(d)
-			b.WriteString("\n")
+			dropIns = append(dropIns, sshdpolicy.DropIn{Name: e.Name(), Content: string(d)})
 		}
 	}
-	b.Write(main)
-	return b.String(), nil
+	return sshdpolicy.Merge(string(main), dropIns), nil
 }
 
-// sshdDirective returns the effective value of key, or def if unset.
-//
-// FIRST occurrence wins — that is OpenSSH's rule for these keywords, and
-// it is the opposite of the "last wins" most config formats use. A
-// last-wins implementation would report the wrong value on any host with
-// a drop-in, which is most modern ones.
-//
-// Match blocks are ignored: a directive inside `Match` is conditional,
-// and treating it as global would misreport. Anything after the first
-// Match line is skipped.
+// sshdDirective is sshdpolicy.Directive (first occurrence wins, Match
+// blocks ignored); kept as a local name so the check reads naturally.
 func sshdDirective(config, key, def string) string {
-	for _, line := range strings.Split(config, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if strings.EqualFold(fields[0], "Match") {
-			break // conditional territory; stop reading globals
-		}
-		if strings.EqualFold(fields[0], key) && len(fields) >= 2 {
-			return fields[1]
-		}
-	}
-	return def
+	return sshdpolicy.Directive(config, key, def)
 }
 
 // --- unattended upgrades ---------------------------------------------
@@ -463,6 +453,79 @@ func metadataReachableCheck(p posturePaths) Check {
 	}
 	c.Detail = "169.254.169.254:80 is reachable from the host: a workload that escapes its container can reach instance credentials"
 	return c
+}
+
+// --- metadata-endpoint block (#2298) -----------------------------------
+
+// metadataBlockCheck reports whether hostharden's container-bridge block of
+// the metadata endpoint is armed: the iptables FORWARD rule is in the kernel
+// now, AND the boot unit that re-applies it is installed and enabled.
+//
+// metadataReachableCheck cannot answer this. It dials from the host itself,
+// and the block deliberately leaves the host's OUTPUT chain alone, so on a
+// cloud host that dial succeeds whether or not the block is in place. A host
+// whose `pool join` / `cloud enroll` block step failed or was skipped looks
+// identical there to one that has it; here it does not.
+//
+// Both halves are needed for a pass: a rule with no enabled unit is gone
+// after the next reboot, and a unit with no rule is not protecting anything
+// now.
+func metadataBlockCheck(p posturePaths) Check {
+	c := Check{Name: "container bridge blocked from cloud metadata endpoint (rule + boot unit)"}
+	fix := "fix: run `containarium hostharden block-metadata --persist " + hostharden.DefaultBridge + "`"
+
+	if p.metadataBlockProbe == nil {
+		c.Detail = "could not determine: no probe configured"
+		return c
+	}
+	present, detail, err := p.metadataBlockProbe()
+	if err != nil {
+		c.Detail = fmt.Sprintf("could not determine whether the FORWARD rule is present: %v", err)
+		return c
+	}
+
+	var missing []string
+	if !present {
+		missing = append(missing, "the FORWARD rule is not in the kernel ("+detail+")")
+	}
+	unitInstalled, err := pathExists(p.imdsBlockUnit, os.Stat)
+	if err != nil {
+		c.Detail = fmt.Sprintf("could not determine: checking %s: %v", p.imdsBlockUnit, err)
+		return c
+	}
+	if !unitInstalled {
+		missing = append(missing, "boot unit "+p.imdsBlockUnit+" is not installed, so the rule will not survive a reboot")
+	} else {
+		enabled, err := pathExists(p.imdsBlockWants, os.Lstat)
+		if err != nil {
+			c.Detail = fmt.Sprintf("could not determine: checking %s: %v", p.imdsBlockWants, err)
+			return c
+		}
+		if !enabled {
+			missing = append(missing, "boot unit is installed but not enabled (no "+p.imdsBlockWants+"), so the rule will not survive a reboot")
+		}
+	}
+	if len(missing) > 0 {
+		c.Detail = strings.Join(missing, "; ") + " — " + fix
+		return c
+	}
+	c.OK = true
+	c.Detail = detail + "; boot unit installed and enabled"
+	return c
+}
+
+// pathExists separates "definitely absent" (false, nil) from "could not
+// look" (a non-nil error), which rule 1 above reports differently.
+func pathExists(path string, stat func(string) (os.FileInfo, error)) (bool, error) {
+	_, err := stat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // --- tunnel token exposure --------------------------------------------

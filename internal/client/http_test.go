@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -191,11 +192,46 @@ func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "us-east", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if gotBody["region"] != "us-east" {
 		t.Errorf("region = %v, want us-east", gotBody["region"])
+	}
+}
+
+// TestHTTPCreateContainer_SendsLabels: --labels reach the daemon over the
+// REST path (#2358 — they used to be parsed and then dropped on the floor
+// before the request was built).
+func TestHTTPCreateContainer_SendsLabels(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":{"name":"c","username":"alice"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	labels := map[string]string{"cloud_org_id": "org-a", "team": "dev"}
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", labels); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	got, _ := gotBody["labels"].(map[string]any)
+	if got["cloud_org_id"] != "org-a" || got["team"] != "dev" {
+		t.Errorf("labels = %v, want %v", gotBody["labels"], labels)
+	}
+
+	// No labels → no field, so an older daemon sees the same body as before.
+	gotBody = nil
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if _, present := gotBody["labels"]; present {
+		t.Errorf("labels present in body = %v, want absent when unset", gotBody["labels"])
 	}
 }
 
@@ -215,7 +251,7 @@ func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, false, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["region"]; present {
@@ -327,5 +363,53 @@ func TestHTTPListContainers_ParsesUnixSecondsCreatedAt(t *testing.T) {
 	}
 	if !containers[0].CreatedAt.Equal(want) {
 		t.Errorf("CreatedAt = %v, want %v", containers[0].CreatedAt, want)
+	}
+}
+
+// TestHTTPListAgentEngines_DecodesReadinessRows (#2223) pins the HTTP path
+// and that the daemon's camelCase JSON enum names decode onto the typed
+// Go/proto values the CLI and MCP tool read — not strings pulled out of a
+// map.
+func TestHTTPListAgentEngines_DecodesReadinessRows(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"engines": [
+				{"engine":"AGENT_ENGINE_CLAUDE","provider":"GATEWAY_PROVIDER_ANTHROPIC","readiness":"AGENT_ENGINE_READINESS_READY","source":"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY","isDefault":true,"skillIds":["hello-agent"]},
+				{"engine":"AGENT_ENGINE_CODEX","provider":"GATEWAY_PROVIDER_OPENAI","readiness":"AGENT_ENGINE_READINESS_NOT_READY","reason":"no key for provider openai"}
+			],
+			"keyOwner": "user:alice"
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	resp, err := c.ListAgentEngines()
+	if err != nil {
+		t.Fatalf("ListAgentEngines: %v", err)
+	}
+	if gotPath != "/v1/agent-engines" {
+		t.Errorf("path = %q, want /v1/agent-engines", gotPath)
+	}
+	if resp.GetKeyOwner() != "user:alice" {
+		t.Errorf("key_owner = %q, want user:alice", resp.GetKeyOwner())
+	}
+	if len(resp.GetEngines()) != 2 {
+		t.Fatalf("engines = %d, want 2", len(resp.GetEngines()))
+	}
+	claude := resp.GetEngines()[0]
+	if claude.GetEngine() != pb.AgentEngine_AGENT_ENGINE_CLAUDE ||
+		claude.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY ||
+		!claude.GetIsDefault() || claude.GetSkillIds()[0] != "hello-agent" {
+		t.Errorf("claude row decoded wrong: %+v", claude)
+	}
+	codex := resp.GetEngines()[1]
+	if codex.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY || codex.GetReason() == "" {
+		t.Errorf("codex row decoded wrong: %+v", codex)
 	}
 }

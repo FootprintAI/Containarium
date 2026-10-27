@@ -16,13 +16,55 @@ policy there fires precisely when that series stops arriving. Nothing on
 the backend needs to survive for the alert to work — that is the whole
 point.
 
+## Metric names and resource type (v0.100.0 and later)
+
+Since the OTLP exporter (#2008, v0.100.0) the series are written through
+Google's Telemetry API, which puts them in the **Prometheus namespace** on a
+**`prometheus_target`** resource. The deprecated exporter used
+`workload.googleapis.com/<name>` on `gce_instance`; a policy or dashboard
+filter written for it silently selects nothing on a current host.
+
+| Instrument kind | Cloud Monitoring metric type | Metric kind |
+|---|---|---|
+| gauge | `prometheus.googleapis.com/<name>/gauge` | `GAUGE` |
+| monotonic counter | `prometheus.googleapis.com/<name>/counter` | `CUMULATIVE` |
+
+The monitored resource is `prometheus_target` with `job`, `instance` (the
+numeric GCE instance id, **not** the instance name), `location` and
+`cluster`. Select by the metric labels (`backend_id`, `hostname`, ...), not by
+resource labels. Metrics also carry `otel_scope_name`. Integer instruments are
+stored as `DOUBLE`.
+
+Observed on a v0.106.0 GCE host: `export.heartbeat`, `host.*`,
+`platform.peers.connected` and `backup.last_success_age_seconds` as
+`/gauge`; `platform.api.*` and `platform.provision.*` as `/counter`. The
+`containarium.sentinel.*` and `containarium.platform.tunnel.state` types below
+follow from the instrument kinds in the code but have **not** been observed on
+a live host: confirm with the descriptor query in "Prerequisites" before
+relying on them.
+
+A fleet that mixes hosts below and above v0.100.0 writes both namespaces; a
+policy needs a condition per namespace (combiner `OR`) until the older hosts
+are upgraded. Always confirm a filter selects data before trusting a policy
+built on it:
+
+```bash
+START=$(date -u -d '10 minutes ago' +%FT%TZ 2>/dev/null || date -u -v-10M +%FT%TZ)  # GNU, else BSD/macOS
+END=$(date -u +%FT%TZ)
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/timeSeries" \
+  --data-urlencode 'filter=<the policy filter>' \
+  --data-urlencode "interval.startTime=${START}" \
+  --data-urlencode "interval.endTime=${END}"
+```
+
 ## The heartbeat series
 
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.export.heartbeat` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.export.heartbeat` |
-| Monitored resource | `gce_instance` (GCP resource detector) |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.export.heartbeat/gauge` |
+| Monitored resource | `prometheus_target` (`job`, `instance` = numeric GCE instance id, `location`, `cluster`) |
 | Kind / value | gauge, constant `1` |
 | Labels | `backend_id`, `hostname`, `daemon_version` |
 | Emit cadence | every export interval (default 60s, floor 60s) |
@@ -43,6 +85,20 @@ instead visible through the *primary's* connectivity series
 alert section below for the same `gcloud`/JSON recipe pattern applied to a
 `tunnel.state = 0` condition instead.
 
+**Do not rely on this alert for a GCE instance that is stopped or deleted
+outright.** For the `gce_instance` resource (what exporters before v0.100.0
+wrote) Cloud Monitoring's metric-absence evaluation excludes
+`TERMINATED`/`DELETED` resources, so `conditionAbsent` did not open an
+incident for an instance that was shut down or removed — only for one that
+was still running but had stopped reporting. Since v0.100.0 the series is
+written against `prometheus_target`, which is not a Compute Engine instance
+entity; whether the same exclusion applies to it has **not been verified**,
+so treat a stopped instance as covered by neither outcome. Catching a stopped/deleted
+instance needs a separate instance-state check (an uptime check, or an
+inventory alert over `compute.instances.list`); read "host down"
+throughout this runbook as "host unreachable while the resource still
+exists," not "resource gone."
+
 ## Prerequisites
 
 1. Export enabled on the backend and confirmed healthy:
@@ -56,9 +112,9 @@ alert section below for the same `gcloud`/JSON recipe pattern applied to a
    exists (it is created on first ingest, usually within ~2 minutes):
 
    ```bash
-   gcloud monitoring metrics-descriptors list \
-     --project="${PROJECT_ID}" \
-     --filter='metric.type = "workload.googleapis.com/containarium.export.heartbeat"'
+   curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/metricDescriptors" \
+     --data-urlencode 'filter=metric.type = "prometheus.googleapis.com/containarium.export.heartbeat/gauge"'
    ```
 
 3. A notification channel to page (email/PagerDuty/Slack/etc.). To list
@@ -87,7 +143,7 @@ channel id.
     {
       "displayName": "Heartbeat absent for 5m (per backend)",
       "conditionAbsent": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.export.heartbeat\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.export.heartbeat/gauge\"",
         "duration": "300s",
         "aggregations": [
           {
@@ -142,7 +198,7 @@ real project with real ingestion — it is not reproducible in CI:
 
 1. With export enabled and the policy created, confirm the series in
    Metrics Explorer (metric
-   `workload.googleapis.com/containarium.export.heartbeat`) shows a flat
+   `prometheus.googleapis.com/containarium.export.heartbeat/gauge`) shows a flat
    line at `1`.
 2. Stop the daemon on the backend (`systemctl stop containarium` or the
    equivalent for your deployment).
@@ -180,8 +236,8 @@ disk full, k8s operator down).
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.platform.provision.failures` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.platform.provision.failures` |
-| Monitored resource | `gce_instance` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.platform.provision.failures/counter` |
+| Monitored resource | `prometheus_target` |
 | Kind / value | cumulative counter |
 | Labels | `backend_id`, `hostname`, `region`, `operation` (`create` \| `delete`) |
 | Emit cadence | every export interval |
@@ -207,7 +263,7 @@ Write the policy to a file (`provision-failure-policy.json`), replacing
     {
       "displayName": "Provisioning failures > 0 for 10m (per backend, per operation)",
       "conditionThreshold": {
-        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.failures\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.provision.failures/counter\"",
         "comparison": "COMPARISON_GT",
         "thresholdValue": 0,
         "duration": "600s",
@@ -264,7 +320,7 @@ gcloud alpha monitoring policies create \
 Also not reproducible in CI — verify against a real project:
 
 1. Confirm the series in Metrics Explorer
-   (`workload.googleapis.com/containarium.platform.provision.failures`)
+   (`prometheus.googleapis.com/containarium.platform.provision.failures/counter`)
    is present (it may be flat at 0 if the backend is healthy — that's
    correct; #1083's collector emits an explicit 0 point rather than
    omitting the series when there are no failures yet).
@@ -285,3 +341,438 @@ Also not reproducible in CI — verify against a real project:
 - **Scope to one backend:** add
   `AND metric.label.backend_id = "<backend-id>"` to the filter, same as
   the heartbeat policy.
+
+## Backup-health alert (#2294)
+
+**Goal:** page an operator when a *specific tenant's* scheduled backup
+goes stale — the systemd-timer path (`docs/DB-BACKUP-OPERATIONS.md`)
+silently breaking (a disabled timer, a wrong hook path, a bad conf line)
+while the host and daemon it runs on stay perfectly healthy. This is
+deliberately a different failure class from the dead-man heartbeat
+above: the heartbeat catches the *host* going dark; this catches the
+*backup schedule* going dark on a *live* host, which the heartbeat
+cannot see at all — `containarium.export.heartbeat` keeps reporting `1`
+the whole time a broken backup timer is failing silently.
+
+**Why per-tenant, and why that's a deliberate, reviewed exception to
+this file's own "no org/tenant UUID labels ever" rule:** see
+`docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`'s "One reviewed exception
+(#2294)" note. Short version: an OSS username is not the Cloud product's
+org/tenant UUID the rule targets, it's already exported via
+`container_name`, and an alert that can't name which tenant broke isn't
+actionable.
+
+### The series
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.backup.last_success_age_seconds` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge` |
+| Monitored resource | `prometheus_target` |
+| Kind / value | gauge, seconds since that tenant's most recent stored backup |
+| Labels | `backend_id`, `hostname`, `region`, `username` |
+| Emit cadence | every export interval, recomputed fresh each tick from the daemon's on-disk backup index — not cached, so it is correct immediately after a daemon restart |
+
+A tenant with **zero** stored backups ever has no point in this series
+at all — there is nothing to report an age against. That is a different,
+and arguably worse, problem than staleness (nobody ever activated
+backups for that tenant in the first place); `conditionAbsent` below
+cannot distinguish the two, which is exactly why it is scoped to tenants
+you already expect a schedule for, not "alert if any tenant is missing."
+
+### Create the alert policy
+
+One policy per tenant you want paged on (the filter below adds
+`metric.label.username`). Replace `${PROJECT_ID}`, `${CHANNEL_ID}`, and
+`${USERNAME}` — and `${THRESHOLD_SECONDS}`, sized to your schedule's
+interval plus slack (e.g. a nightly 02:30 timer with 15-minute jitter:
+`90000` ≈ 25h, generous enough that one slow run never pages, tight
+enough that a truly skipped night does by the next morning):
+
+```json
+{
+  "displayName": "Containarium backup stale: ${USERNAME}",
+  "documentation": {
+    "content": "Tenant ${USERNAME}'s last successful backup is older than ${THRESHOLD_SECONDS}s. Check containarium-backup.service's journal on the host serving this tenant (journalctl -u containarium-backup), confirm the timer is enabled (systemctl list-timers containarium-backup.timer), and confirm the tenant's line in /etc/containarium/backup-tenants.conf still points at a working hook/database. The daemon's own heartbeat may be perfectly healthy while this fires — that is the gap this alert exists to close.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Backup age over threshold for ${USERNAME}",
+      "conditionThreshold": {
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge\" AND metric.label.username = \"${USERNAME}\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": ${THRESHOLD_SECONDS},
+        "duration": "0s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MAX"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  }
+}
+```
+
+Create it:
+
+```bash
+gcloud alpha monitoring policies create \
+  --project="${PROJECT_ID}" \
+  --policy-from-file=backup-stale-policy.json
+```
+
+### Why these values
+
+- **`conditionThreshold`, not `conditionAbsent`**, unlike the heartbeat:
+  the backup-health series is present and updating every tick for as
+  long as the daemon is alive, with a *value* that climbs when stale —
+  a threshold condition on that value is the right primitive, the same
+  reasoning as the provisioning-failure policy above. **This policy
+  alone does NOT cover a dead host or dead daemon**: once nothing is
+  re-observing the gauge, it freezes at whatever age it last reported
+  and never climbs further, so it will not cross the threshold just
+  because the host went dark days ago. That gap is the existing
+  heartbeat dead-man policy's job (`conditionAbsent` on
+  `containarium.export.heartbeat`) — configure both, not one in place
+  of the other; they catch genuinely different failures. That said,
+  the heartbeat policy has its own blind spot for a stopped/deleted
+  instance (see "This alert does not cover a GCE instance that is
+  stopped or deleted outright" above) — a frozen backup-age gauge
+  won't cross its threshold either if the instance stopped before it
+  got there, so neither policy catches that specific case.
+  `conditionAbsent` on the backup series itself only fits "a tenant
+  that already has backup history suddenly has none" and even then
+  behaves like this threshold does once the host is dead (the series
+  simply stops updating rather than vanishing outright) — it is not a
+  substitute for the heartbeat.
+- **`duration: "0s"`**: the series already represents elapsed time, so
+  there is no need to also require the threshold to hold for a window —
+  a single aligned point past the threshold means the backup really is
+  that old, no averaging needed.
+- **`ALIGN_MAX`** over the 60s alignment period is cosmetic here (one
+  point per period regardless of aligner, since the series updates once
+  per export tick) — kept only for consistency with how a threshold
+  condition is conventionally written.
+- **One policy per tenant** (via `metric.label.username` in the filter),
+  deliberately not one fleet-wide policy: different tenants may deserve
+  different thresholds (a tenant backed up hourly vs. nightly), and a
+  fleet-wide policy's documentation text can't name which tenant fired.
+
+### Verify (live)
+
+Not reproducible in CI, same as every policy in this runbook:
+
+1. Activate a tenant's backup per `docs/DB-BACKUP-OPERATIONS.md`,
+   confirm one real backup succeeds, and confirm the series appears in
+   Metrics Explorer near 0 seconds.
+2. Create the policy above for that tenant with a low
+   `${THRESHOLD_SECONDS}` for the test (e.g. `120`).
+3. Wait past the threshold without running another backup. Confirm the
+   policy transitions to **firing** and the notification channel pages —
+   while confirming `containarium.export.heartbeat` for the same host
+   stays healthy throughout, proving this alert caught something the
+   heartbeat structurally cannot.
+4. Run the backup again by hand. Confirm the series resets near 0 on the
+   next export tick and the incident auto-closes.
+
+### Tuning notes
+
+- **Threshold per schedule, not one global value:** size
+  `${THRESHOLD_SECONDS}` to each tenant's actual cadence plus slack, the
+  same way the heartbeat's `duration` is sized to its export interval —
+  a tenant backed up hourly deserves a much tighter threshold than one
+  backed up nightly.
+- **A tenant that's never been activated is invisible to this alert, not
+  silently passing it:** no series point exists for them at all (see
+  above). A `conditionAbsent` policy scoped to that username does
+  **not** reliably fix this: Cloud Monitoring's metric-absence
+  evaluation is generally only meaningful for a label combination that
+  has matched real data at least once — a username that has never
+  appeared in this series at all has no prior time series for the
+  policy to watch go absent, so it can sit silently un-firing forever,
+  exactly the "setup appears configured, nothing ever happens" trap
+  `docs/DB-BACKUP-OPERATIONS.md` already warns about for the backup
+  mechanism itself. If you need "I expected tenant X to have backups
+  and it never does," use an inventory-based check instead — compare
+  the tenants you expect (e.g. `/etc/containarium/backup-tenants.conf`)
+  against which `username` values actually show up in this metric in
+  Metrics Explorer or via the API, not an alert policy on the metric
+  itself.
+
+### Is the backup-health collector itself working? (#2305)
+
+`last_success_age_seconds` goes **empty for every tenant at once** when the
+daemon cannot read its backup index (permissions, disk, corruption) — the
+same shape as "no tenant has ever been backed up", and `conditionThreshold`
+stays silent on a series with no points. The companion counter makes that
+failure visible:
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.backup.health_read_failures` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.backup.health_read_failures/counter` (monitored resource `prometheus_target`; derived from the instrument kind, not yet observed on a live host) |
+| Kind / value | cumulative counter: export ticks on which the backup index could not be read |
+| Labels | `backend_id`, `hostname`, `region` (no tenant label) |
+| Emit cadence | every export interval, **including at zero** — a present flat series means "reading fine" |
+
+Alert when it **increases** (`ALIGN_DELTA` over a few minutes, threshold
+`> 0`); a single transient blip is one count, a persistent fault keeps
+counting every tick. Because it is cumulative it resets on a daemon
+restart, which the delta aligner handles. The daemon log line to look for
+is `[metrics-export] backup health snapshot failed`.
+
+
+## Sentinel alerts (#2484)
+
+**Goal:** page an operator when the *sentinel* — the always-on front door
+— is serving from a fallback backend, or when a backend it fronts
+(including a BYOC tunnel peer) is unhealthy. The sentinel is the best
+observer of its own state, and these are the failure classes the
+heartbeat above cannot see: the sentinel and its backends can all be
+alive while traffic sits on a fallback that cannot serve it (#2476).
+
+**Prerequisite — sentinel export is separate from the daemon export.**
+The `containarium monitoring export` toggle controls the *daemon's*
+export. The sentinel has its own opt-in flag, off by default because
+custom metrics are billed per ingested sample:
+
+```bash
+containarium sentinel ... --metrics-export \
+  [--metrics-export-project "${PROJECT_ID}"] \
+  [--metrics-export-interval 60]
+```
+
+Add the flag to the sentinel's service unit, restart it, and confirm the startup log line
+`metrics export ON → Cloud Monitoring`. If credentials are unusable it
+logs a `WARNING: metrics export disabled` line and keeps serving — check
+for that line when the series never appear. The `containarium.sentinel.primary_preferred`
+series needs a sentinel build that includes #2485 (the first release cut after v0.102.0).
+
+### The series
+
+| Field | Value |
+|---|---|
+| Metric types | `prometheus.googleapis.com/containarium.sentinel.primary_preferred/gauge`, `.../backend_healthy/gauge`, `.../failover_total/counter` |
+| Monitored resource | `prometheus_target` (the sentinel's own instance) |
+| `primary_preferred` | gauge: `1` on the best-priority backend (or nothing elected), `0` on a fallback |
+| `backend_healthy` | gauge: `1` healthy, `0` unhealthy, one series per `backend` |
+| `failover_total` | cumulative counter of primary switches |
+| Labels | `sentinel` (hostname); `backend` on `backend_healthy` only |
+| Emit cadence | every export interval (default 60s, floor 60s) |
+
+Confirm ingestion before creating policies:
+
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/metricDescriptors" \
+  --data-urlencode 'filter=metric.type = starts_with("prometheus.googleapis.com/containarium.sentinel.")'
+```
+
+### Alert 1 — stuck on a fallback
+
+Write `sentinel-fallback-policy.json`, replacing `${PROJECT_ID}` and
+`${CHANNEL_ID}`:
+
+```json
+{
+  "displayName": "Containarium sentinel on a fallback backend (5m)",
+  "documentation": {
+    "content": "The sentinel has been serving from a lower-priority backend for 5 minutes. After a primary recovers the sentinel fails back on its own once it has been stable for the hold-down; if this is still firing, the preferred primary is still unhealthy, or failback is not happening. Check the sentinel journal (do NOT scan the whole journal; filter by unit and a short --since) and `sentinel_backend_healthy` for which backend is down.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "primary_preferred == 0 for 5m",
+      "conditionThreshold": {
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.sentinel.primary_preferred/gauge\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "300s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.sentinel"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=sentinel-fallback-policy.json
+```
+
+### Alert 2 — a backend is unhealthy (per backend)
+
+Write `sentinel-backend-down-policy.json`:
+
+```json
+{
+  "displayName": "Containarium sentinel backend unhealthy (10m)",
+  "documentation": {
+    "content": "The sentinel has seen this backend as unhealthy for 10 minutes. The `backend` label names it: the cloud primary, or a BYOC tunnel peer. For a tunnel peer, check the peer host and its tunnel; for the cloud primary, check the instance and the daemon. This fires even when the sentinel stayed up by failing over, which is why it is separate from the fallback alert.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "backend_healthy == 0 for 10m (per backend)",
+      "conditionThreshold": {
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.sentinel.backend_healthy/gauge\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "600s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.sentinel", "metric.label.backend"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=sentinel-backend-down-policy.json
+```
+
+### Alert 3 (optional) — flapping
+
+A backend that bounces every few minutes may never hold a `0` long
+enough to trip alerts 1 or 2. Alert on the failover rate instead:
+`conditionThreshold` on
+`prometheus.googleapis.com/containarium.sentinel.failover_total/counter` with
+`perSeriesAligner: ALIGN_DELTA`, `alignmentPeriod: 3600s`,
+`comparison: COMPARISON_GT`, `thresholdValue: 3` (more than three
+failovers in an hour), `duration: 0s`. Tune the threshold to how often
+your fleet normally fails over.
+
+### Alert 4 — BYOC peer tunnel down (primary-side)
+
+The sentinel-side `backend_healthy` alert above covers a BYOC peer while
+the sentinel is up. For the complementary view from the *cloud primary*
+(which keeps working if the sentinel's export is off), alert on the
+primary's per-peer `containarium.platform.tunnel.state` (#1084). This
+needs the daemon's `platform` group enabled (see
+`docs/CLOUD-NATIVE-METRICS-EXPORT.md`). Write `byoc-tunnel-down-policy.json`:
+
+```json
+{
+  "displayName": "Containarium BYOC peer tunnel down (10m)",
+  "documentation": {
+    "content": "A registered BYOC peer's tunnel has been down for 10 minutes (peer_id names the enrolled host). The BYOC host cannot export metrics itself, so this is the out-of-band signal. Check the peer host's power/network and its tunnel client.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "tunnel.state == 0 for 10m (per peer)",
+      "conditionThreshold": {
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.platform.tunnel.state/gauge\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "600s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.backend_id", "metric.label.peer_id"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=byoc-tunnel-down-policy.json
+```
+
+### Why these values
+
+- **`COMPARISON_LT 1` with `ALIGN_MIN`**: the gauges are 0/1, and taking
+  the minimum over each 60s window means a single unhealthy sample in the
+  window counts, so a blip shorter than the alignment period is not
+  smoothed away to a healthy average.
+- **5 minutes for the fallback, 10 for a backend**: failback has a
+  deliberate hold-down (several consecutive healthy checks) before it
+  switches back, so a few minutes on a fallback right after a recovery is
+  normal. A backend can be unhealthy without the sentinel being on a fallback,
+  so it is a slower, lower-urgency signal and gets the longer window.
+- **Threshold, not absence**: these series are present whenever the
+  sentinel is exporting. A dead or silent sentinel is a different
+  failure; cover it with a `conditionAbsent` policy on any
+  `containarium.sentinel.*` series (same shape as the heartbeat policy at
+  the top of this runbook), filtered to the sentinel instance.
+- **`primary_preferred` reads `1` when nothing is elected** (maintenance),
+  so alert 1 does not fire during a full outage. That case is the
+  sentinel `state` series (`0` = maintenance); alert on
+  `containarium.sentinel.state < 1` if you want it paged separately.
+
+### Verify (live)
+
+Not reproducible in CI:
+
+1. With export on, confirm all three series in Metrics Explorer, with
+   `primary_preferred` and `backend_healthy` flat at `1`.
+2. Create the policies. To exercise alert 2 safely, pick a non-critical
+   backend (e.g. a tunnel peer) and stop its daemon; after ~12 minutes the
+   policy fires, naming that backend. Restart it and confirm the incident
+   auto-closes.
+3. Do **not** induce a primary failover on a production sentinel just to
+   test alert 1; verify it on a staging sentinel, or by temporarily
+   lowering `duration` and observing a natural failover.
+
+### Tuning notes
+
+- **Decommissioned backends**: the sentinel keeps the last health value of
+  a backend it no longer fronts until it restarts, so a removed backend
+  can leave `backend_healthy == 0` behind and keep alert 2 firing. Restart
+  the sentinel after decommissioning, or scope the filter with
+  `AND metric.label.backend != "<removed-id>"`.
+- **Cost**: `primary_preferred`, `state`, `failover_total` and the process
+  series are one series each per sentinel, plus one `backend_healthy`
+  series per backend: roughly 12 series/minute for a sentinel fronting
+  four backends.
+- **Scope to one sentinel**: add
+  `AND metric.label.sentinel = "<hostname>"` to any filter above.

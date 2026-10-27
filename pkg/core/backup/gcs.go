@@ -1,7 +1,10 @@
 package backup
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -17,6 +20,37 @@ type GcloudUploader struct {
 	// run executes `gcloud <args...>` and returns combined output. A field
 	// so tests can substitute a fake without invoking the real binary.
 	run func(args ...string) (string, error)
+}
+
+// DownloadStream copies object bytes to a caller-controlled, bounded writer.
+// gcloud's stdout is never captured in memory or written outside that bound.
+func (g *GcloudUploader) DownloadStream(destURI string, dst io.Writer) error {
+	if err := validateGSURI(destURI); err != nil {
+		return err
+	}
+	// #nosec G204 -- fixed storage verb, validated URI, executable resolved by LookPath
+	cmd := exec.Command(g.bin, "storage", "cat", destURI)
+	cmd.Stdout = dst
+	diagnostic := &downloadDiagnostic{}
+	cmd.Stderr = diagnostic
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gcloud storage cat: %w: %s", err, strings.TrimSpace(diagnostic.String()))
+	}
+	return nil
+}
+
+// Keep diagnostics bounded too, while continuing to drain stderr.
+type downloadDiagnostic struct{ bytes.Buffer }
+
+func (d *downloadDiagnostic) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := 4096 - d.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = d.Buffer.Write(p)
+	}
+	return n, nil
 }
 
 // NewGcloudUploader locates `gcloud` on PATH. Returns an error if it is
@@ -58,14 +92,34 @@ func (g *GcloudUploader) Download(destURI, localPath string) error {
 	return nil
 }
 
+// ErrObjectNotFound is returned by Uploader.Delete when the object was
+// not there to begin with. Delete callers treat it as "nothing to do" for
+// the sidecar object of a record written before sidecars were uploaded
+// (#2402); every other delete failure is a real one.
+var ErrObjectNotFound = errors.New("object not found")
+
 func (g *GcloudUploader) Delete(destURI string) error {
 	if err := validateGSURI(destURI); err != nil {
 		return err
 	}
 	if out, err := g.run("storage", "rm", destURI); err != nil {
+		if isGcloudNotFound(out) {
+			return fmt.Errorf("gcloud storage rm %s: %w", destURI, ErrObjectNotFound)
+		}
 		return fmt.Errorf("gcloud storage rm: %w: %s", err, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// isGcloudNotFound recognises `gcloud storage rm` (and legacy gsutil)
+// complaining that the URL matched nothing, as opposed to a permission,
+// network or bucket error.
+func isGcloudNotFound(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "matched no objects") ||
+		strings.Contains(s, "no urls matched") ||
+		strings.Contains(s, "notfound") ||
+		strings.Contains(s, "not found")
 }
 
 func validateGSURI(uri string) error {

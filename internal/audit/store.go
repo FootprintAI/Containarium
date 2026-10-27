@@ -53,6 +53,9 @@ type QueryParams struct {
 	Username     string
 	Action       string
 	ResourceType string
+	// ResourceID is an exact-match filter on the row's resource id (#2440:
+	// a tenant's network-policy audit rows carry the tenant here).
+	ResourceID string
 	// #1678 — attribution filters. Each is an exact-match equality filter,
 	// same convention as Username/Action/ResourceType above.
 	Actor   string
@@ -121,6 +124,15 @@ func (s *Store) initSchema(ctx context.Context) error {
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS hash_version SMALLINT NOT NULL DEFAULT 1;
 
+		-- #2415: idempotency key for externally sourced batches (sentinel SSH
+		-- session records). NULL for every row written by Log. Deliberately NOT
+		-- an input to computeRowHash at any version: it has no evidentiary
+		-- value, it only makes a replayed batch a no-op, and keeping it out of
+		-- the digest leaves every existing row and VerifyChain untouched.
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS dedupe_key TEXT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_dedupe_key
+			ON audit_logs(dedupe_key) WHERE dedupe_key IS NOT NULL;
+
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
 			ON audit_logs(timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_username
@@ -139,7 +151,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON audit_logs(run_id);
 	`
 
-	_, err := s.pool.Exec(ctx, schema)
+	_, err := s.pool.Exec(ctx, schema+chainBaseSchema)
 	return err
 }
 
@@ -162,6 +174,13 @@ const auditChainLockKey int64 = 0x0A0D17C4A1
 const defaultVerifyBatch = 1000
 
 func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
+	_, err := s.Append(ctx, entry)
+	return err
+}
+
+// Append is Log, returning the id of the row it appended. A Proof Pack seal
+// (#2798) records that id so `proof-pack verify` can find its row.
+func (s *Store) Append(ctx context.Context, entry *AuditEntry) (int64, error) {
 	ts := entry.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
@@ -182,7 +201,7 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("audit: begin tx: %w", err)
+		return 0, fmt.Errorf("audit: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
 
@@ -202,41 +221,74 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	// This serializes all audit appends against each other. That is the point
 	// — a hash chain is inherently sequential, and a chain that forks under
 	// load is not tamper-evident, only tamper-suggestive.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLockKey); err != nil {
-		return fmt.Errorf("audit: lock chain: %w", err)
+	prevHash, err := lockChainTail(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	_, id, _, err := insertChained(ctx, tx, entry, prevHash, "")
+	if err != nil {
+		return 0, err
 	}
 
-	// Get prev_hash from the chain tail.
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("audit: commit: %w", err)
+	}
+	return id, nil
+}
+
+// lockChainTail takes the chain's advisory lock for the rest of tx and
+// returns the current tail's row_hash (HashEmpty on an empty table). Shared
+// by Log and LogBatch so there is exactly one place that serializes
+// appenders; see the comment in Log for why this is an advisory lock and
+// not SELECT ... FOR UPDATE on the tail row.
+func lockChainTail(ctx context.Context, tx pgx.Tx) (string, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLockKey); err != nil {
+		return "", fmt.Errorf("audit: lock chain: %w", err)
+	}
 	var prevHash string
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1`,
 	).Scan(&prevHash)
 	if err != nil {
-		// First row in the table — no predecessor.
 		if errors.Is(err, pgx.ErrNoRows) {
-			prevHash = HashEmpty
-		} else {
-			return fmt.Errorf("audit: read chain tail: %w", err)
+			return HashEmpty, nil // first row: no predecessor
 		}
+		return "", fmt.Errorf("audit: read chain tail: %w", err)
 	}
+	return prevHash, nil
+}
 
+// insertChained computes entry's row hash against prevHash and inserts it.
+// dedupeKey == "" stores NULL (every plain Log row); a non-empty key makes
+// the insert ON CONFLICT DO NOTHING and reports inserted=false when the key
+// already exists, in which case nothing is written and the caller must keep
+// prevHash unchanged, so a skipped duplicate never becomes anyone's
+// predecessor. The caller must hold the chain lock. id is the inserted row's
+// id (0 when nothing was inserted).
+func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, dedupeKey string) (rowHash string, id int64, inserted bool, err error) {
 	// #1678 — every newly-written row uses CurrentHashVersion; a row's
 	// hash_version is what VerifyChain later replays it under, so old
 	// rows (backfilled to HashVersion1 by initSchema's column default)
 	// stay verifiable without this write path ever touching them.
-	rowHash, err := computeRowHash(entry, prevHash, CurrentHashVersion)
+	rowHash, err = computeRowHash(entry, prevHash, CurrentHashVersion)
 	if err != nil {
-		return fmt.Errorf("audit: compute hash: %w", err)
+		return "", 0, false, fmt.Errorf("audit: compute hash: %w", err)
 	}
 
-	_, err = tx.Exec(ctx, `
+	var key any // nil -> NULL
+	conflict := ""
+	if dedupeKey != "" {
+		key = dedupeKey
+		conflict = ` ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`
+	}
+	// A skipped duplicate (ON CONFLICT DO NOTHING) returns no row.
+	err = tx.QueryRow(ctx, `
 		INSERT INTO audit_logs (
 			timestamp, username, action, resource_type, resource_id,
 			detail, source_ip, status_code, actor, delegation_chain,
-			token_id, org_id, run_id, row_hash, prev_hash, hash_version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-	`,
-		ts,
+			token_id, org_id, run_id, row_hash, prev_hash, hash_version, dedupe_key
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`+conflict+` RETURNING id`,
+		entry.Timestamp,
 		entry.Username,
 		entry.Action,
 		entry.ResourceType,
@@ -252,15 +304,87 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 		rowHash,
 		prevHash,
 		CurrentHashVersion,
-	)
+		key,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return rowHash, 0, false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("audit: insert: %w", err)
+		return "", 0, false, fmt.Errorf("audit: insert: %w", err)
+	}
+	return rowHash, id, true, nil
+}
+
+// BatchEntry is one row of a LogBatch call. DedupeKey must be non-empty:
+// it is what makes the row idempotent.
+type BatchEntry struct {
+	Entry     AuditEntry
+	DedupeKey string
+}
+
+// BatchOutcome is LogBatch's per-entry result.
+type BatchOutcome int
+
+const (
+	// BatchInserted: the row was appended to the chain.
+	BatchInserted BatchOutcome = iota + 1
+	// BatchDuplicate: an entry with this DedupeKey already exists; nothing
+	// was written.
+	BatchDuplicate
+)
+
+// LogBatch appends entries in order inside ONE transaction, taking the
+// chain's advisory lock once for the whole batch (#2415). It returns one
+// outcome per entry, in order. On any error nothing is committed, so a
+// caller can retry the identical batch: entries that already exist report
+// BatchDuplicate and are skipped before they can become a predecessor, so a
+// replay never forks or pads the chain.
+func (s *Store) LogBatch(ctx context.Context, entries []BatchEntry) ([]BatchOutcome, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	for i := range entries {
+		if entries[i].DedupeKey == "" {
+			return nil, fmt.Errorf("audit: batch entry %d has no dedupe key", i)
+		}
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("audit: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
+
+	prevHash, err := lockChainTail(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	outcomes := make([]BatchOutcome, len(entries))
+	for i := range entries {
+		e := entries[i].Entry // copy: don't mutate the caller's slice
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now()
+		}
+		// Truncate to what Postgres stores before hashing (see Log).
+		e.Timestamp = e.Timestamp.Truncate(time.Microsecond)
+
+		rowHash, _, inserted, err := insertChained(ctx, tx, &e, prevHash, entries[i].DedupeKey)
+		if err != nil {
+			return nil, fmt.Errorf("batch entry %d: %w", i, err)
+		}
+		if inserted {
+			outcomes[i] = BatchInserted
+			prevHash = rowHash
+		} else {
+			outcomes[i] = BatchDuplicate
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("audit: commit: %w", err)
+		return nil, fmt.Errorf("audit: commit: %w", err)
 	}
-	return nil
+	return outcomes, nil
 }
 
 // MaxRowID returns the highest id currently in
@@ -293,7 +417,28 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := s.pool.Query(ctx, `
+	// The base and the rows are read in one snapshot: a purge that commits
+	// between two separate reads would move the base after the rows were
+	// chosen, and the first retained row would then look like a break.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return -1, fmt.Errorf("audit: begin verify snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read-only snapshot
+
+	// After a retention purge (#2878) verification starts at the stored base,
+	// not at genesis: a from-id inside the purged range is clamped to it, and
+	// the first retained row must chain from the base hash.
+	base, purged, err := ReadChainBase(ctx, tx)
+	if err != nil {
+		return -1, err
+	}
+	atBase := purged && fromID <= base.ID
+	if atBase {
+		fromID = base.ID
+	}
+
+	rows, err := tx.Query(ctx, `
 		SELECT id, timestamp, username, action, resource_type,
 		       resource_id, detail, source_ip, status_code,
 		       actor, delegation_chain, token_id, org_id, run_id,
@@ -331,9 +476,12 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 	// reach back beyond the WHERE without an extra query. The
 	// VerifyChain helper compares prev_hash to the value passed
 	// in. For a fromID=0 verification, the first row's
-	// prev_hash should be HashEmpty.
+	// prev_hash should be HashEmpty; on a purged chain it is the base hash.
 	expectedRoot := entries[0].PrevHash
-	if fromID == 0 {
+	switch {
+	case atBase:
+		expectedRoot = base.Hash
+	case fromID == 0:
 		expectedRoot = HashEmpty
 	}
 	return VerifyChain(entries, expectedRoot)
@@ -367,6 +515,13 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 		baseQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		countQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		args = append(args, params.ResourceType)
+		argIdx++
+	}
+
+	if params.ResourceID != "" {
+		baseQuery += fmt.Sprintf(" AND resource_id = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND resource_id = $%d", argIdx)
+		args = append(args, params.ResourceID)
 		argIdx++
 	}
 
@@ -469,12 +624,43 @@ func (s *Store) Close() {
 func (s *Store) RowHashAt(ctx context.Context, id int64) (hash string, found bool, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT row_hash FROM audit_logs WHERE id = $1`, id).Scan(&hash)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The last purged row (#2878) is gone, but its hash is the chain
+		// base, so an anchor at exactly that checkpoint can still be checked.
+		base, purged, berr := s.ChainBase(ctx)
+		if berr != nil {
+			return "", false, berr
+		}
+		if purged && base.ID == id {
+			return base.Hash, true, nil
+		}
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("audit: row hash at id=%d: %w", id, err)
 	}
 	return hash, true, nil
+}
+
+// ChainEntryAt returns audit-log row id with its hash-chain columns, and
+// whether it exists. A purged or deleted row is found=false.
+func (s *Store) ChainEntryAt(ctx context.Context, id int64) (ChainEntry, bool, error) {
+	var c ChainEntry
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, timestamp, username, action, resource_type,
+		       resource_id, detail, source_ip, status_code,
+		       actor, delegation_chain, token_id, org_id, run_id,
+		       row_hash, prev_hash, hash_version
+		FROM audit_logs WHERE id = $1`, id).Scan(&c.ID, &c.Timestamp, &c.Username, &c.Action,
+		&c.ResourceType, &c.ResourceID, &c.Detail, &c.SourceIP, &c.StatusCode,
+		&c.Actor, &c.DelegationChain, &c.TokenID, &c.OrgID, &c.RunID,
+		&c.RowHash, &c.PrevHash, &c.HashVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ChainEntry{}, false, nil
+	}
+	if err != nil {
+		return ChainEntry{}, false, fmt.Errorf("audit: chain entry at id=%d: %w", id, err)
+	}
+	return c, true, nil
 }
 
 // AnchorVerifyResult is VerifyChainAgainstAnchor's outcome. Two independent

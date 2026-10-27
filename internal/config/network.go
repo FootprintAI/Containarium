@@ -11,6 +11,21 @@ const (
 	// (docs/architecture/core-infra-network-guard.md). "enforce" attaches
 	// them; anything else is off.
 	EnvCoreGuard = "CONTAINARIUM_CORE_GUARD"
+	// EnvTenantGuard arms the tenant network guard: Incus NIC ACLs that keep
+	// one tenant's containers off another tenant's containers
+	// (docs/architecture/tenant-network-guard.md). Unset is enforce; only
+	// "off" disables (nicguard.ParseMode).
+	EnvTenantGuard = "CONTAINARIUM_TENANT_GUARD"
+	// EnvDefaultEgress selects the egress posture of a tenant with no stored
+	// network policy (#2577, stage 1 of the staged default-deny decision).
+	// Unset is the default allow-list in log_only; only "off" restores the
+	// bare observe-only fallback. It never arms enforcement.
+	EnvDefaultEgress = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS"
+	// EnvDefaultEgressDomains / EnvDefaultEgressCIDRs are comma-separated
+	// additions to that default allow-list: the model gateway and the control
+	// plane, which are deployment-specific.
+	EnvDefaultEgressDomains = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS"
+	EnvDefaultEgressCIDRs   = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRS"
 )
 
 // Network is the typed view of the CONTAINARIUM_NETWORK_* namespace — the eBPF
@@ -31,10 +46,20 @@ type Network struct {
 	// #661) — separate from PolicyEnforce. (EnvNetworkPolicySignatures)
 	PolicySignatures bool
 
-	// CoreGuard is the raw CONTAINARIUM_CORE_GUARD value ("enforce" arms
-	// the core-infra NIC ACLs; anything else is off). Parsed by
-	// coreguard.ParseMode so the daemon never arms by accident.
+	// CoreGuard is the raw CONTAINARIUM_CORE_GUARD value. Parsed by
+	// nicguard.ParseMode: unset is enforce, only "off" disables.
 	CoreGuard string
+
+	// TenantGuard is the raw CONTAINARIUM_TENANT_GUARD value, parsed the
+	// same way. (EnvTenantGuard)
+	TenantGuard string
+
+	// DefaultEgress, DefaultEgressDomains and DefaultEgressCIDRs are the raw
+	// values of the three variables above, parsed by
+	// netpolicy.ParseDefaultEgress.
+	DefaultEgress        string
+	DefaultEgressDomains string
+	DefaultEgressCIDRs   string
 }
 
 // LoadNetwork reads the CONTAINARIUM_NETWORK_* namespace once. The two arming
@@ -46,5 +71,10 @@ func LoadNetwork() Network {
 		PolicyEnforce:    getBool(EnvNetworkPolicyEnforce),
 		PolicySignatures: getBool(EnvNetworkPolicySignatures),
 		CoreGuard:        getString(EnvCoreGuard, ""),
+		TenantGuard:      getString(EnvTenantGuard, ""),
+
+		DefaultEgress:        getString(EnvDefaultEgress, ""),
+		DefaultEgressDomains: getString(EnvDefaultEgressDomains, ""),
+		DefaultEgressCIDRs:   getString(EnvDefaultEgressCIDRs, ""),
 	}
 }

@@ -13,12 +13,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/footprintai/containarium/internal/audit"
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // containerSuffix is the trailing tag every tenant container name carries; the
@@ -59,16 +61,13 @@ type FlowSink interface {
 	PersistEBPFFlows(flows []traffic.EBPFFlow)
 }
 
-// defaultDomainRefreshInterval is how often egress_domains are re-resolved to
-// IPs (Phase C). A fixed interval rather than per-record DNS TTL — TTL-aware
-// refresh (raw DNS) is a future enhancement; for now a short fixed cadence keeps
-// the allow-list reasonably fresh without a DNS library.
-const defaultDomainRefreshInterval = 60 * time.Second
-
 // containerInspector is the slice of the Incus client the enforcer needs.
 type containerInspector interface {
 	ListContainers() ([]incus.ContainerInfo, error)
 	GetRawInstance(name string) (map[string]string, string, error)
+	// GetRawInstanceDevices is the instance's expanded device map, the
+	// host-side source of its NIC's network and static address (#2618).
+	GetRawInstanceDevices(name string) (map[string]map[string]string, error)
 }
 
 // NetworkPolicyEnforcer owns the netbpf.Loader and keeps the kernel's
@@ -89,8 +88,27 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
-	resolver      *DomainResolver // Phase C: egress_domains -> IPs
-	domainRefresh time.Duration
+	// eventDebounce is the trailing debounce on the container-event path
+	// (#3050); the timer path (interval) is not debounced.
+	eventDebounce time.Duration
+	// meter counts reconcile passes (#3050). pass is the reconcile a pass runs;
+	// nil means e.reconcile (a test substitutes a fake).
+	meter *reconcileMeter
+	pass  func(context.Context) error
+
+	// gateway is the bridge gateway, the box's DNS resolver. A policy with an
+	// egress preset (#2440) implicitly allows it; the zero value means the
+	// daemon could not name it and the preset adds nothing.
+	gateway netip.Addr
+
+	// defaultExtras is the operator's addition to the default egress allow-list;
+	// defaultOn is whether a tenant with no stored policy gets that list
+	// (#2577 stage 1). Set before Start.
+	defaultOn      bool
+	defaultExtras  netpolicy.DefaultEgressExtras
+	defaultDomains []string // normalized built-ins + extras: what the resolver caches and the policy looks up
+
+	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
 	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
 	flowPoll        time.Duration // how often to read the BPF flows map
@@ -106,12 +124,37 @@ type NetworkPolicyEnforcer struct {
 
 	loader *netbpf.Loader
 
-	// vethCache maps a running container name -> its host veth name, so a steady
-	// reconcile resolves the ifindex with a cheap local netlink lookup
-	// (VethIndex) instead of an Incus inspect (GetRawInstance) every cycle (#654).
-	// Only touched from gather, which runs serially inside reconcile (the reconcile
-	// loop is single-goroutine), so it needs no lock.
-	vethCache map[string]string
+	// execWatcher is the exec-telemetry userspace half (#2637). It rides this
+	// enforcer's lifecycle and 10 s reconcile (the container list with init
+	// pids is already gathered here) but loads its own BPF object, so its
+	// failure never touches flow enforcement. nil = sentry off.
+	execWatcher *ExecWatcher
+	// lastContainers is the raw ListContainers result of the latest gather,
+	// handed to the exec watcher's reconcile. Only touched from reconcile.
+	lastContainers []incus.ContainerInfo
+
+	// vethCache maps a running container name -> its host veth name and primary
+	// NIC facts, so a steady reconcile resolves the ifindex with a cheap local
+	// netlink lookup (VethIndex) instead of an Incus inspect (GetRawInstance +
+	// GetRawInstanceDevices) every cycle (#654). Only touched from gather, which
+	// runs serially inside reconcile (the reconcile loop is single-goroutine), so
+	// it needs no lock.
+	vethCache map[string]vethInfo
+
+	// leaseDir is where the bridge DHCP lease files live (#2618); the default
+	// is Incus's, tests point it at a fixture.
+	leaseDir string
+
+	// egressModeWarned holds the tenant ids already warned that the loaded
+	// object ignores their egress_mode (#2987), so the warning is not repeated
+	// every pass. Only touched from reconcile.
+	egressModeWarned map[uint32]bool
+
+	// egressNames maps a tenant id to its name for every tenant seen this pass
+	// or still holding allow-list entries, so a failed write is attributed to
+	// its tenant even when the tenant has no box left (#3051). Only touched from
+	// reconcile.
+	egressNames map[uint32]string
 
 	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
@@ -125,6 +168,9 @@ type NetworkPolicyEnforcer struct {
 	egressInstalled   map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
 	denyInstalled     map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
 	ipTenantInstalled map[[4]byte]uint32                  // ip_tenant entries currently in the map (#923: converge deletes)
+	running           bool                                // the BPF program is loaded (Start succeeded, Stop not yet called)
+	applied           map[string]tenantApplied            // per-tenant state the last reconcile pass loaded; nil until a pass completes
+	appliedAt         time.Time                           // when the pass that produced applied ended
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -140,12 +186,15 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		audit:             auditStore,
 		bus:               bus,
 		interval:          defaultNetPolicyReconcileInterval,
+		eventDebounce:     defaultContainerEventDebounce,
+		meter:             globalReconcileMeter(),
 		enforceEnabled:    enforceEnabled,
 		resolver:          NewDomainResolver(nil),
-		domainRefresh:     defaultDomainRefreshInterval,
 		flowPoll:          defaultFlowPollInterval,
 		flowIdleTimeout:   defaultFlowIdleTimeout,
-		vethCache:         make(map[string]string),
+		vethCache:         make(map[string]vethInfo),
+		leaseDir:          defaultIncusLeaseDir,
+		egressNames:       make(map[uint32]string),
 		attached:          make(map[int]string),
 		idName:            make(map[uint32]string),
 		enforced:          make(map[uint32]bool),
@@ -154,6 +203,73 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		ipTenantInstalled: make(map[[4]byte]uint32),
 	}
 }
+
+// SetDefaultEgress turns the default egress posture on for tenants with no
+// stored policy (#2577 stage 1): the built-in allow-list plus extras, always in
+// log_only. extras that do not validate are refused so a typo cannot quietly
+// narrow the list; the caller decides what to run with instead. Must be called
+// before Start.
+func (e *NetworkPolicyEnforcer) SetDefaultEgress(extras netpolicy.DefaultEgressExtras) error {
+	c, err := netpolicy.DefaultPolicy("probe", extras)
+	if err != nil {
+		return err
+	}
+	e.defaultOn, e.defaultExtras, e.defaultDomains = true, extras, c.EgressDomains
+	return nil
+}
+
+// defaultEgressState is how the default egress posture came up at startup.
+type defaultEgressState int
+
+const (
+	defaultEgressOff          defaultEgressState = iota // CONTAINARIUM_NETWORK_DEFAULT_EGRESS=off
+	defaultEgressFull                                   // built-in list plus the operator's extras
+	defaultEgressBuiltinsOnly                           // extras refused; built-in list only
+)
+
+// configureDefaultEgress applies the CONTAINARIUM_NETWORK_DEFAULT_EGRESS*
+// settings to the enforcer and logs the outcome. Extras that do not validate
+// are refused with the reason and the built-in list runs alone, so one typo
+// cannot disable the posture or narrow it silently.
+func configureDefaultEgress(e *NetworkPolicyEnforcer, mode, domains, cidrs string) defaultEgressState {
+	on, extras := netpolicy.ParseDefaultEgress(mode, domains, cidrs)
+	if !on {
+		log.Printf("NetworkPolicy: default egress posture is off (%s=off); tenants with no stored policy run an empty allow-list in log_only", appconfig.EnvDefaultEgress)
+		return defaultEgressOff
+	}
+	if err := e.SetDefaultEgress(extras); err != nil {
+		log.Printf("NetworkPolicy: ignoring %s/%s (%v); using the built-in default allow-list only", appconfig.EnvDefaultEgressDomains, appconfig.EnvDefaultEgressCIDRs, err)
+		if err := e.SetDefaultEgress(netpolicy.DefaultEgressExtras{}); err != nil {
+			// Unreachable while the built-ins are valid; say so rather than
+			// claim a list that is not applied.
+			log.Printf("NetworkPolicy: the built-in default egress allow-list did not load (%v); the default posture is off", err)
+			return defaultEgressOff
+		}
+		log.Printf("NetworkPolicy: built-in default egress allow-list (log_only, no extras) applies to tenants with no stored policy")
+		return defaultEgressBuiltinsOnly
+	}
+	log.Printf("NetworkPolicy: default egress allow-list (log_only) applies to tenants with no stored policy")
+	return defaultEgressFull
+}
+
+// defaultPolicyFor builds the default policy for a tenant, resolved the same
+// way as a stored one. The second result is false when the posture is off.
+func (e *NetworkPolicyEnforcer) defaultPolicyFor(tenant string) (netpolicy.CompiledPolicy, bool) {
+	if !e.defaultOn {
+		return netpolicy.CompiledPolicy{}, false
+	}
+	c, err := netpolicy.DefaultPolicy(tenant, e.defaultExtras)
+	if err != nil {
+		log.Printf("[netpolicy] default policy for %q: %v", tenant, err)
+		return netpolicy.CompiledPolicy{}, false
+	}
+	return e.expandPolicy(c, false), true
+}
+
+// SetImplicitGateway tells the enforcer the bridge gateway address, the
+// DNS resolver every box uses, so a policy with an egress preset (#2440) can
+// allow it without the operator listing it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetImplicitGateway(a netip.Addr) { e.gateway = a }
 
 // SetFlowSink wires the traffic collector so the enforcer can feed it per-flow
 // accounting read from the BPF flows map (#627). Must be called before Start.
@@ -166,6 +282,11 @@ func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 // flowsToEBPF turns into traffic-view rows. Must be called before Start.
 // Nil (default) leaves detection off.
 func (e *NetworkPolicyEnforcer) SetFlowHook(fn func(flows []netbpf.FlowRecord)) { e.flowHook = fn }
+
+// SetExecWatcher wires the exec-telemetry watcher (#2637): Start loads its
+// object after this enforcer's, every reconcile hands it the container list,
+// Stop stops it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetExecWatcher(w *ExecWatcher) { e.execWatcher = w }
 
 // SetDenyHook wires the threat-detection engine's deny-event consumer
 // (#1640). Called synchronously from OnDenyEvent, alongside the existing
@@ -323,37 +444,49 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		return err
 	}
 	e.loader = loader
+	if !loader.SupportsEgressMode() {
+		log.Printf("[netpolicy] loaded BPF object predates egress_mode (#2974): a tenant's egress_mode is applied and reported as its mode; rebuild netpolicy.bpf.o to apply it")
+	}
+	if !loader.SupportsInboundReplies() {
+		log.Printf("[netpolicy] WARNING: loaded BPF object predates inbound-reply handling (#2618): a box with an enforce policy cannot answer connections opened toward it, and no source validation runs; rebuild netpolicy.bpf.o (or use the embedded object) before arming enforce for a tenant whose boxes serve inbound traffic")
+	}
 	e.ctx, e.cancel = context.WithCancel(ctx)
+	e.mu.Lock()
+	e.running = true
+	e.mu.Unlock()
+
+	// Exec telemetry (#2637): the second object. Resolved from the same
+	// operator value; a failure (no BTF, verifier reject, object not built) is
+	// the watcher's own `unavailable (<reason>)` status and nothing else —
+	// the flow program above is already loaded and keeps running.
+	if e.execWatcher != nil {
+		if err := e.execWatcher.Start(e.ctx, e.objPath); err != nil {
+			log.Printf("[netpolicy] exec telemetry unavailable: %v (flow rules unaffected; see `containarium security sentry status`)", err)
+		} else {
+			log.Printf("[netpolicy] exec telemetry started (tracepoint sched/sched_process_exec)")
+		}
+	}
 
 	// Tier 2 (#661): load the built-in exploit signatures + arm the scan gate once
 	// (the set is static; no per-reconcile churn). No-op unless opted in.
 	e.armSignatures()
 
-	// Resolve egress_domains once before the first reconcile so the initial
-	// allow-list already includes domain IPs.
-	e.refreshDomains()
+	// Resolve stored policies' egress_domains once before the first reconcile
+	// so the initial allow-list already includes domain IPs. The default
+	// allow-list's names (#2577) are left to the refresh loop: resolving ~15
+	// names here would hold up daemon startup on a host with slow or no DNS,
+	// and the default is log-only, so a few seconds of would-deny rows for
+	// them cost nothing.
+	e.refreshDomainsForStartup()
 
-	if err := e.reconcile(e.ctx); err != nil {
-		log.Printf("[netpolicy] initial reconcile: %v", err)
-	}
+	e.runPass(reconcileTriggerInitial)
 
-	// Domain refresh loop (Phase C): re-resolve egress_domains on a cadence. The
+	// Domain refresh loop (Phase C): wake when the earliest name is due —
+	// min(record TTL, 60s) per name (#2379) — and re-resolve the due ones. The
 	// next reconcile folds the refreshed IPs into the egress map (and diffEgress
 	// prunes IPs a domain no longer resolves to).
 	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		t := time.NewTicker(e.domainRefresh)
-		defer t.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-t.C:
-				e.refreshDomains()
-			}
-		}
-	}()
+	go e.domainRefreshLoop()
 
 	// Perf consumer: would-deny events -> audit rows.
 	rd, err := perf.NewReader(loader.EventsMap(), 4096)
@@ -400,36 +533,11 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		log.Printf("[netpolicy] traffic-flow accounting enabled (poll=%s)", e.flowPoll)
 	}
 
-	// Reconcile loop + bus trigger.
-	var sub *events.Subscriber
-	if e.bus != nil {
-		sub = e.bus.Subscribe(nil)
-	}
+	// Reconcile loop + bus trigger: the 10 s timer, plus a debounced kick on
+	// container topology events (#3050).
+	kick := containerTopologyKick(e.ctx, e.bus, e.eventDebounce)
 	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		if sub != nil {
-			defer e.bus.Unsubscribe(sub.ID)
-		}
-		tick := time.NewTicker(e.interval)
-		defer tick.Stop()
-		busCh := subEvents(sub) // nil channel (blocks forever) when no bus
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-tick.C:
-				if err := e.reconcile(e.ctx); err != nil {
-					log.Printf("[netpolicy] reconcile: %v", err)
-				}
-			case <-busCh:
-				// Container changed — converge sooner. Errors are logged, not fatal.
-				if err := e.reconcile(e.ctx); err != nil {
-					log.Printf("[netpolicy] reconcile (event): %v", err)
-				}
-			}
-		}
-	}()
+	go e.reconcileLoop(kick)
 
 	mode := "observation-only (log_only)"
 	if e.enforceEnabled {
@@ -441,10 +549,19 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 
 // Stop cancels the loops and closes the loader (detaching every veth).
 func (e *NetworkPolicyEnforcer) Stop() {
+	e.mu.Lock()
+	e.running = false
+	// A later Start reports "not reconciled" until its own first pass.
+	e.applied = nil
+	e.appliedAt = time.Time{}
+	e.mu.Unlock()
 	if e.cancel != nil {
 		e.cancel()
 	}
 	e.wg.Wait()
+	if e.execWatcher != nil {
+		e.execWatcher.Stop()
+	}
 	if e.loader != nil {
 		if err := e.loader.Close(); err != nil {
 			log.Printf("[netpolicy] loader close: %v", err)
@@ -458,49 +575,76 @@ func (e *NetworkPolicyEnforcer) Stop() {
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
 	// #1640: hand every deny event to the threat-detection engine, same as
 	// the audit write below — nil hook is the default (sentry disabled).
-	if e.denyHook != nil {
-		e.denyHook(ev)
-	}
-
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
-	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
+	dropped := e.denyEventDropped(ev)
+	// The hook learns whether the packet was really dropped (#2612): the BPF
+	// program emits the event for a log_only would-deny exactly as for a drop.
+	if e.denyHook != nil {
+		hookEv := ev
+		hookEv.LogOnly = !dropped
+		e.denyHook(hookEv)
+	}
 	// Always log the denied flow. The program emits the event whether or not it
-	// drops, so the action depends on the tenant's effective mode: a DROP under
+	// drops, so the action depends on the verdict it applied: a DROP under
 	// enforce, an observation under log_only. This line is the operator's signal.
 	action := "log_only (not dropped)"
 	if dropped {
 		action = "DROPPED (enforce)"
 	}
-	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
-	signature := ev.Reason == netbpf.DenyReasonSignature
-	kind := "deny"
-	switch {
-	case vpatch:
-		kind = "virtual-patch"
-	case signature:
-		kind = "signature"
-	}
 	var sigName string
-	if signature {
+	if ev.Reason == netbpf.DenyReasonSignature {
 		e.mu.Lock()
 		sigName = e.sigNames[ev.SigID]
 		e.mu.Unlock()
-	}
-	if signature {
 		log.Printf("[netpolicy] signature: tenant=%q src=%s dst=%s dport=%d sig=%d(%s) %s",
 			tenant, ev.Src(), ev.Dst(), ev.Dport, ev.SigID, sigName, action)
 	} else {
+		kind := "deny"
+		switch ev.Reason {
+		case netbpf.DenyReasonVirtualPatch:
+			kind = "virtual-patch"
+		case netbpf.DenyReasonSpoofedSource:
+			kind = "spoofed-source" // the box sent from an address that is not its own (#2618)
+		}
 		log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
 			kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
 	}
 	if e.audit == nil {
 		return
 	}
+	if err := e.audit.Log(ctx, denyAuditEntry(ev, tenant, sigName, dropped)); err != nil {
+		log.Printf("[netpolicy] audit deny event: %v", err)
+	}
+}
+
+// denyEventDropped reports whether the program dropped the packet behind ev.
+// The program reports the verdict it applied (#2970): with a separate
+// egress_mode an allow-list miss follows egress_mode while every other check
+// follows mode, so the tenant-wide mode can be wrong in either direction. The
+// tenant-wide mode (e.enforced) is only the fallback for an event from an
+// object that predates the verdict byte.
+func (e *NetworkPolicyEnforcer) denyEventDropped(ev netbpf.DenyEvent) bool {
+	e.mu.Lock()
+	enforced := e.enforced[ev.TenantID]
+	e.mu.Unlock()
+	return ev.Dropped(enforced)
+}
+
+// denyAuditEntry builds the audit row for one deny event. Each deny reason gets
+// its own audit action so an operator can tell a blocked vulnerable destination
+// (#660), a blocked inbound exploit (#661) and a box sending from a forged
+// address (#2618) apart from a routine allow-list miss; dropped is the verdict
+// the program applied (see denyEventDropped).
+func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *audit.AuditEntry {
+	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
+	signature := ev.Reason == netbpf.DenyReasonSignature
+	spoofed := ev.Reason == netbpf.DenyReasonSpoofedSource
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
-		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) + `}`
+		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) +
+		`,"spoofed_source":` + boolStr(spoofed) + `}`
 	if signature {
 		// A Tier 2 signature match (#661): record which signature, on the INBOUND
 		// (container-receive) path, so the audit names the blocked exploit.
@@ -508,29 +652,26 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 			`","dport":` + itoa(int(ev.Dport)) + `,"sig_id":` + itoa(int(ev.SigID)) +
 			`,"sig_name":"` + sigName + `","dropped":` + boolStr(dropped) + `}`
 	}
-	// Each deny reason gets its own audit action so an operator can tell a blocked
-	// vulnerable destination (#660) and a blocked inbound exploit (#661) apart from
-	// a routine allow-list miss.
-	var action2 string
+	var action string
 	switch {
 	case signature:
-		action2 = "network_policy.signature_match"
+		action = "network_policy.signature_match"
 	case vpatch:
-		action2 = "network_policy.virtual_patch"
+		action = "network_policy.virtual_patch"
+	case spoofed:
+		// The src is the forged address; the tenant names the box that sent it.
+		action = "network_policy.spoofed_source"
 	case dropped:
-		action2 = "network_policy.deny_dropped"
+		action = "network_policy.deny_dropped"
 	default:
-		action2 = "network_policy.deny_logged"
+		action = "network_policy.deny_logged"
 	}
-	entry := &audit.AuditEntry{
+	return &audit.AuditEntry{
 		Username:     "_system",
-		Action:       action2,
+		Action:       action,
 		ResourceType: "network_policy",
 		ResourceID:   tenant,
 		Detail:       detail,
-	}
-	if err := e.audit.Log(ctx, entry); err != nil {
-		log.Printf("[netpolicy] audit deny event: %v", err)
 	}
 }
 
@@ -682,11 +823,19 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	policies, err := e.compiledPolicies(ctx)
+	// Exec telemetry (#2637): converge watched_cgroups with the same container
+	// list this pass gathered (no extra Incus call). Before the policy fetch:
+	// it needs only the container list, so a policy-store (Postgres) outage
+	// must not freeze the watched set.
+	e.reconcileExec()
+	policies, err := e.planPolicies(ctx, views)
 	if err != nil {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+	// An older object ignores the egress_mode byte (#2987): fold it into mode
+	// before writing, so what is written and reported is what the kernel does.
+	e.warnEgressModeIgnored(foldEgressModeForObject(&plan, e.loader.SupportsEgressMode()), idName)
 
 	// Tier 2 (#661 PR-B): pick up operator signature add/remove/toggle. A no-op
 	// when the set is unchanged, so this is cheap every pass.
@@ -702,21 +851,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// egress allow-list: converge the map (add new, delete stale). Deleting
 	// removed CIDRs is what makes a tightened policy actually take effect in
 	// enforce mode.
-	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
-	for _, ee := range toAdd {
-		if err := e.loader.AddEgress(ee); err != nil {
-			log.Printf("[netpolicy] add egress: %v", err)
-			continue
-		}
-		e.egressInstalled[ee] = true
-	}
-	for _, ee := range toDel {
-		if err := e.loader.DeleteEgress(ee); err != nil {
-			log.Printf("[netpolicy] delete egress: %v", err)
-			continue
-		}
-		delete(e.egressInstalled, ee)
-	}
+	egressIncomplete, egressNames := e.applyEgressPass(plan, idName, e.loader)
 	// Virtual-patch deny rules (#660): converge the deny_cidr map the same way —
 	// upsert desired entries, delete keys no longer desired (a removed/expired
 	// rule must actually stop blocking). Only when the loaded object carries the
@@ -727,12 +862,16 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		log.Printf("[netpolicy] %d virtual-patch deny rule(s) configured but loaded BPF object lacks the 'deny_cidr' map (rebuild netpolicy.bpf.o to enable #660)", len(plan.deny))
 	}
 	// Per-veth config + attach. Track which tenants end up in effective-enforce
-	// mode, so OnDenyEvent can label a denied flow as dropped vs observed.
+	// mode. OnDenyEvent labels a denied flow from the verdict the program
+	// reports (#2970); this map is only its fallback for an event from an
+	// object that predates that verdict byte.
 	enforced := make(map[uint32]bool)
 	e.mu.Lock()
 	present := make(map[int]bool, len(plan.vethPolicy))
+	loaded := make(map[int]bool, len(plan.vethPolicy)) // config written AND program attached
 	for ifindex, cfg := range plan.vethPolicy {
-		if cfg.Mode == netbpf.ModeEnforce {
+		validateOnly := cfg.Flags&netbpf.PolicyFlagValidateOnly != 0
+		if cfg.Mode == netbpf.ModeEnforce && !validateOnly {
 			enforced[cfg.TenantID] = true
 		}
 		if err := e.loader.SetVethPolicy(ifindex, cfg); err != nil {
@@ -743,14 +882,18 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 			log.Printf("[netpolicy] attach ifindex %d: %v", ifindex, err)
 			continue
 		}
-		// Reply-direction accounting (#631): attach the egress program too. No-ops
-		// on an object that predates it. Non-fatal — ingress accounting + policy
-		// still work without it.
-		if err := e.loader.AttachVethEgress(ifindex); err != nil {
-			log.Printf("[netpolicy] attach egress ifindex %d: %v", ifindex, err)
+		// Reply-direction accounting (#631) and inbound-flow tracking (#2618):
+		// attach the egress program too. No-ops on an object that predates it.
+		// Non-fatal — ingress accounting + policy still work without it. A
+		// validate-only veth is not policed, so it gets the sender hook alone.
+		if !validateOnly {
+			if err := e.loader.AttachVethEgress(ifindex); err != nil {
+				log.Printf("[netpolicy] attach egress ifindex %d: %v", ifindex, err)
+			}
 		}
 		e.attached[ifindex] = plan.ifName[ifindex]
 		present[ifindex] = true
+		loaded[ifindex] = true
 	}
 	// Detach veths that are gone (container stopped/deleted).
 	for ifindex := range e.attached {
@@ -764,7 +907,60 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	e.idName = idName
 	e.enforced = enforced
 	e.mu.Unlock()
+	// What GetNetworkPolicyStatus reports: built from the plan this pass
+	// actually wrote, never from the stored request.
+	e.recordApplied(appliedFromPass(views, plan, loaded, policies, egressIncomplete, egressNames), time.Now())
 	return nil
+}
+
+// applyEgressPass converges the egress allow-list map with the plan via a. It
+// returns the tenant ids whose allow-list is incomplete after this pass and a
+// name for each of them (#3051).
+func (e *NetworkPolicyEnforcer) applyEgressPass(plan reconcilePlan, idName map[uint32]string, a egressApplier) (map[uint32]bool, map[uint32]string) {
+	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
+	incomplete := applyEgress(e.egressInstalled, toAdd, toDel, a)
+	// idName holds only tenants with a box this pass. A failed removal can belong
+	// to a tenant with no box left, so remember the name of every tenant that
+	// still has entries installed, and forget it once they are all gone.
+	for id, name := range idName {
+		e.egressNames[id] = name
+	}
+	held := make(map[uint32]bool, len(e.egressNames))
+	for ee := range e.egressInstalled {
+		held[ee.TenantID] = true
+	}
+	for id := range e.egressNames {
+		if _, seen := idName[id]; !seen && !held[id] && !incomplete[id] {
+			delete(e.egressNames, id)
+		}
+	}
+	return incomplete, e.egressNames
+}
+
+// recordApplied stores one reconcile pass's per-tenant applied state.
+func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied, at time.Time) {
+	if a == nil {
+		a = map[string]tenantApplied{}
+	}
+	e.mu.Lock()
+	e.applied = a
+	e.appliedAt = at
+	e.mu.Unlock()
+}
+
+// AppliedState implements appliedStateSource: what the last completed
+// reconcile pass loaded for tenant. Before Start (or after Stop) it reports not
+// running; before the first completed pass it reports not reconciled, so the
+// caller says unknown rather than guessing.
+func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval}
+	if !snap.Running {
+		return appliedSnapshot{}
+	}
+	snap.Tenant, snap.Found = e.applied[tenant]
+	return snap
 }
 
 // boolStr renders a bool as a JSON literal for the audit detail.
@@ -775,6 +971,14 @@ func boolStr(b bool) string {
 	return "false"
 }
 
+// reconcileExec converges the exec watcher with the latest gathered
+// container list; a no-op without a watcher.
+func (e *NetworkPolicyEnforcer) reconcileExec() {
+	if e.execWatcher != nil {
+		e.execWatcher.Reconcile(e.lastContainers)
+	}
+}
+
 // gather snapshots the running containers into reconcile views, resolving each
 // one's host veth ifindex (Linux). It also returns the id->name map for the
 // audit sink.
@@ -783,41 +987,50 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	if err != nil {
 		return nil, nil, err
 	}
+	e.lastContainers = containers
 	views := make([]containerView, 0, len(containers))
 	idName := make(map[uint32]string)
 	running := make(map[string]bool, len(containers))
+	leases := newLeaseReader(e.leaseDir, time.Now())
 	for _, c := range containers {
+		v := containerView{Name: c.Name}
 		// The control plane is platform infrastructure, not a tenant (#780).
-		// Excluding it entirely means (1) its IP never enters ip_tenant, so a
-		// tenant reaching its auth-gated API hits the external/egress branch
-		// instead of the cross-tenant drop (reachable under the default egress);
-		// and (2) its own veth is never enforced, so it can actuate every box.
-		// Other core services (postgres, caddy, …) are deliberately NOT excluded
-		// here — they stay tenant-tagged and thus isolated from tenants.
-		if c.Role == incus.RoleControlPlane {
-			continue
-		}
+		// Keeping it out of tenant tagging means (1) its IP never enters
+		// ip_tenant, so a tenant reaching its auth-gated API hits the
+		// external/egress branch instead of the cross-tenant drop (reachable
+		// under the default egress); and (2) its own veth is never policed, so
+		// it can actuate every box. Other core services (postgres, caddy, …) are
+		// deliberately NOT excluded here — they stay tenant-tagged and thus
+		// isolated from tenants. Since #2618 it (and any instance with no
+		// tenant) still gets a VALIDATE-ONLY veth entry: its frames are stamped
+		// with the source-validation mark and nothing else, so that a frame
+		// without the mark can only be the host's own or routed in from outside.
 		tenant := resolveTenant(c.Tenant, c.Labels[cloudOrgIDLabel], c.Name)
-		if tenant == "" {
-			continue
-		}
-		tid, err := e.registry.ID(e.ctx, tenant)
-		if err != nil {
-			log.Printf("[netpolicy] tenant id for %q: %v", tenant, err)
-			continue
-		}
-		idName[tid] = tenant
-		v := containerView{Name: c.Name, Tenant: tenant, TenantID: tid}
-		if ip, err := netip.ParseAddr(c.IPAddress); err == nil && ip.Is4() {
-			v.IP = ip.As4()
-			v.HasIP = true
+		if c.Role == incus.RoleControlPlane || tenant == "" {
+			v.ValidateOnly = true
+		} else {
+			tid, err := e.registry.ID(e.ctx, tenant)
+			if err != nil {
+				log.Printf("[netpolicy] tenant id for %q: %v", tenant, err)
+				continue
+			}
+			idName[tid] = tenant
+			v.Tenant, v.TenantID = tenant, tid
+			if ip, err := netip.ParseAddr(c.IPAddress); err == nil && ip.Is4() {
+				v.IP = ip.As4()
+				v.HasIP = true
+			}
 		}
 		if strings.EqualFold(c.State, "running") {
 			v.Running = true
 			running[c.Name] = true
-			if ifindex, ok := e.resolveVeth(c.Name); ok {
+			if ifindex, nic, ok := e.resolveVeth(c.Name); ok {
 				v.Ifindex = ifindex
 				v.HasVeth = true
+				// The address the program validates the box against comes from
+				// the host (device config or DHCP lease), never from c.IPAddress,
+				// which the guest reports about itself (#2618).
+				v.HostIP, v.HasHostIP = hostIPv4For(nic, leases)
 			}
 		}
 		views = append(views, v)
@@ -839,27 +1052,62 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 // disappeared from the host — which is exactly when a container has just started
 // or restarted (a restart yields a new veth, so the stale lookup fails and we
 // re-inspect, self-healing without depending on perfect bus-event delivery).
-func (e *NetworkPolicyEnforcer) resolveVeth(name string) (int, bool) {
-	if veth := e.vethCache[name]; veth != "" {
-		if ifindex, err := netbpf.VethIndex(veth); err == nil {
-			return ifindex, true
+//
+// The same inspect also reads the primary NIC's host-side facts (#2618): the
+// network it is on, its hardware address and any static ipv4.address, cached
+// alongside the veth name since they change only across a restart too.
+func (e *NetworkPolicyEnforcer) resolveVeth(name string) (int, hostNIC, bool) {
+	if info := e.vethCache[name]; info.veth != "" {
+		if ifindex, err := netbpf.VethIndex(info.veth); err == nil {
+			return ifindex, info.nic, true
 		}
 		delete(e.vethCache, name) // veth gone (restart) — fall through to re-inspect
 	}
 	cfg, _, err := e.insp.GetRawInstance(name)
 	if err != nil {
-		return 0, false
+		return 0, hostNIC{}, false
 	}
 	veth := netbpf.HostVethFromConfig(cfg)
 	if veth == "" {
-		return 0, false
+		return 0, hostNIC{}, false
 	}
 	ifindex, err := netbpf.VethIndex(veth)
 	if err != nil {
-		return 0, false
+		return 0, hostNIC{}, false
 	}
-	e.vethCache[name] = veth
-	return ifindex, true
+	// Device facts are best-effort: without them the box has no host-known
+	// address, which the program treats as "cannot validate" (fail closed).
+	var nic hostNIC
+	if devices, err := e.insp.GetRawInstanceDevices(name); err == nil {
+		nic = hostNICFor(cfg, devices)
+	} else {
+		log.Printf("[netpolicy] devices for %q: %v (box address unknown; it cannot answer inbound under enforce)", name, err)
+	}
+	e.vethCache[name] = vethInfo{veth: veth, nic: nic}
+	return ifindex, nic, true
+}
+
+// vethInfo is one vethCache entry: the host veth name and the primary NIC's
+// host-side facts, both fixed for a container's lifetime until it restarts.
+type vethInfo struct {
+	veth string
+	nic  hostNIC
+}
+
+// planPolicies is the policy set a reconcile pass plans from: every stored
+// policy, plus the default posture (#2577) for each tenant seen in views that
+// has none. A store error fails the pass before any default is applied. A
+// stored policy that no longer compiles is skipped by compiledPolicies, so its
+// tenant runs the default like a tenant with none (both are log-only).
+func (e *NetworkPolicyEnforcer) planPolicies(ctx context.Context, views []containerView) (map[string]netpolicy.CompiledPolicy, error) {
+	policies, err := e.compiledPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if e.defaultOn {
+		policies = withDefaultPolicies(policies, views, e.defaultPolicyFor)
+	}
+	return policies, nil
 }
 
 // compiledPolicies loads + compiles every stored policy, keyed by tenant.
@@ -875,15 +1123,7 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 			log.Printf("[netpolicy] compile policy for %q: %v", p.GetTenant(), err)
 			continue
 		}
-		// Phase C: fold each egress_domain's currently-resolved IPs into the
-		// allow-list as /32 CIDRs. planReconcile/CompileEgress then treat them as
-		// ordinary egress entries; diffEgress prunes IPs a domain stopped
-		// resolving to on the next pass.
-		for _, dom := range c.EgressDomains {
-			for _, ip := range e.resolver.IPs(dom) {
-				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
-			}
-		}
+		c = e.expandPolicy(c, true)
 		// Virtual-patch deny rules (#660): drop any whose expiry has passed so an
 		// expired patch self-removes from the kernel on the next reconcile. Done
 		// here (not in the pure netpolicy/plan layer) so those stay time-free.
@@ -893,21 +1133,89 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 	return out, nil
 }
 
+// expandPolicy folds what only the running daemon knows into a compiled
+// policy: the currently-resolved addresses of its egress_domains and what an
+// egress preset allows implicitly. warn reports a preset the unknown gateway
+// cannot honour; the default posture passes false because that is a
+// host-level condition logged once at startup, not once per tenant per pass.
+func (e *NetworkPolicyEnforcer) expandPolicy(c netpolicy.CompiledPolicy, warn bool) netpolicy.CompiledPolicy {
+	// Phase C: fold each egress_domain's currently-resolved IPs into the
+	// allow-list as /32 CIDRs. planReconcile/CompileEgress then treat them as
+	// ordinary egress entries; diffEgress prunes IPs a domain stopped
+	// resolving to on the next pass.
+	for _, dom := range c.EgressDomains {
+		for _, ip := range e.resolver.IPs(dom) {
+			c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
+		}
+	}
+	// Egress preset (#2440): fold in what the preset allows implicitly (the
+	// box's DNS resolver). Not stored on the policy, so `get` still shows
+	// what the operator wrote.
+	if imp := netpolicy.ImplicitEgress(c, e.gateway); len(imp) > 0 {
+		c.EgressCIDRs = append(c.EgressCIDRs, imp...)
+	} else if warn && c.EgressPreset != pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED {
+		log.Printf("[netpolicy] tenant %q has an egress preset but the bridge gateway is unknown; the resolver is NOT implicitly allowed", c.Tenant)
+	}
+	return c
+}
+
+// domainRefreshLoop (Phase C, #2379) wakes when the earliest cached name is due
+// and re-resolves; it runs until e.ctx is cancelled. The caller does wg.Add(1).
+func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
+	defer e.wg.Done()
+	// Start left the default allow-list's names unresolved (see Start); do it
+	// now, off the startup path, rather than after the first timer wait. The
+	// next reconcile folds the addresses into the egress map.
+	if e.defaultOn {
+		e.refreshDomains(true)
+	}
+	t := time.NewTimer(e.resolver.NextRefreshDelay())
+	defer t.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-t.C:
+			e.refreshDomains(true)
+			t.Reset(e.resolver.NextRefreshDelay())
+		}
+	}
+}
+
+// refreshDomainsForStartup is the synchronous pre-reconcile refresh Start runs:
+// stored policies' domains only, never the default allow-list's names (#2997).
+// It is a named method so a test can pin that contract without a loaded BPF
+// object, which Start itself needs.
+func (e *NetworkPolicyEnforcer) refreshDomainsForStartup() {
+	e.refreshDomains(false)
+}
+
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
-func (e *NetworkPolicyEnforcer) refreshDomains() {
+//
+// includeDefault adds the default allow-list's names (#2577) when that posture
+// is on. refreshDomainsForStartup passes false so they are not resolved on the
+// startup path.
+func (e *NetworkPolicyEnforcer) refreshDomains(includeDefault bool) {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
 		log.Printf("[netpolicy] domain refresh: list policies: %v", err)
+		// Keep the cached addresses and retry on each name's interval, so a
+		// store outage is not polled at the 1s floor.
+		e.resolver.Postpone()
 		return
 	}
 	var domains []string
 	for _, p := range stored {
 		domains = append(domains, p.GetEgressDomains()...)
 	}
-	if len(domains) == 0 {
-		return
+	if includeDefault && e.defaultOn {
+		// The default allow-list's names are resolved too (#2577).
+		domains = append(domains, e.defaultDomains...)
 	}
+	// No early return on an empty list: Refresh with no domains prunes the
+	// cache, so a removed last domain cannot leave a stale past-due entry that
+	// would floor NextRefreshDelay and wake this loop every second.
 	cctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 	e.resolver.Refresh(cctx, domains)
@@ -931,13 +1239,7 @@ const cloudOrgIDLabel = "cloud_org_id"
 // the <tenant>-container naming convention; "" if none yield a tenant (the
 // container is then left unmanaged).
 func resolveTenant(tenantLabel, cloudOrgID, containerName string) string {
-	if t := strings.TrimSpace(tenantLabel); t != "" {
-		return t
-	}
-	if t := strings.TrimSpace(cloudOrgID); t != "" {
-		return t
-	}
-	return tenantOf(containerName)
+	return incus.ResolveTenant(tenantLabel, cloudOrgID, containerName)
 }
 
 // tenantOf extracts the tenant name from a container name, or "" if it doesn't
@@ -947,4 +1249,27 @@ func tenantOf(containerName string) string {
 		return ""
 	}
 	return strings.TrimSuffix(containerName, containerSuffix)
+}
+
+// warnEgressModeIgnored logs, once per tenant, that the loaded BPF object cannot
+// apply the tenant's separate egress mode and enforces `mode` instead (#2987).
+// ignored is this pass's set from foldEgressModeForObject; a tenant that drops
+// out of it is forgotten, so a later split is warned about again. Only called
+// from reconcile, which runs on one goroutine.
+func (e *NetworkPolicyEnforcer) warnEgressModeIgnored(ignored map[uint32]bool, idName map[uint32]string) {
+	for id := range e.egressModeWarned {
+		if !ignored[id] {
+			delete(e.egressModeWarned, id)
+		}
+	}
+	for id := range ignored {
+		if e.egressModeWarned[id] {
+			continue
+		}
+		if e.egressModeWarned == nil {
+			e.egressModeWarned = make(map[uint32]bool)
+		}
+		e.egressModeWarned[id] = true
+		log.Printf("[netpolicy] WARNING: tenant %q sets egress_mode different from mode, but the loaded BPF object predates egress_mode (#2974) and applies mode to the egress allow-list; enforcing and reporting mode. Rebuild netpolicy.bpf.o (or use the embedded object) to apply egress_mode", idName[id])
+	}
 }

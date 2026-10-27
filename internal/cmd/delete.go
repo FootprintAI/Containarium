@@ -37,12 +37,17 @@ func init() {
 }
 
 func runDelete(cmd *cobra.Command, args []string) error {
-	username := args[0]
+	return deleteBox(args[0], forceDelete)
+}
+
+// deleteBox deletes the container for username, remote or local, and (local
+// mode only) the jump-server account. Shared by `delete` and `box delete`.
+func deleteBox(username string, force bool) error {
 	containerName := username + "-container"
 
 	if verbose {
 		fmt.Printf("Deleting container: %s\n", containerName)
-		if forceDelete {
+		if force {
 			fmt.Println("Force delete enabled")
 		}
 	}
@@ -51,13 +56,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	var err error
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		err = deleteRemoteHTTP(username, forceDelete)
+		err = deleteRemoteHTTP(username, force)
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		err = deleteRemote(username, forceDelete)
+		err = deleteRemote(username, force)
 	} else {
 		// Local mode via Incus
-		err = deleteLocal(username, forceDelete)
+		err = deleteLocal(username, force)
 	}
 
 	if err != nil {

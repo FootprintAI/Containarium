@@ -67,4 +67,7 @@ module "containarium" {
   enable_sentinel         = var.enable_sentinel
   sentinel_machine_type   = var.sentinel_machine_type
   sentinel_boot_disk_size = var.sentinel_boot_disk_size
+
+  # SSH session record retention on the sentinel (#2415)
+  ssh_session_log_retention_days = var.ssh_session_log_retention_days
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -18,11 +19,14 @@ import (
 // task for serve mode.
 
 func TestRunModeCommand_ExportsRunAndSkillID(t *testing.T) {
-	gemini := &AgentSkillServer{gateway: &gatewayProvisioning{provider: "gemini"}}
-	direct := &AgentSkillServer{}
+	s := &AgentSkillServer{}
+	// #2222: runModeCommand no longer derives the engine from s.gateway — the
+	// caller (provisionSkillBoxWith) resolves it once via agentengine.Resolve
+	// and passes the result in. This test pins rendering only.
+	geminiResolved := agentengine.Resolved{Engine: pb.AgentEngine_AGENT_ENGINE_GEMINI, Provider: "gemini"}
 	cases := []struct {
 		name      string
-		s         *AgentSkillServer
+		engineRes agentengine.Resolved
 		seedDir   string
 		runID     string
 		skillID   string
@@ -30,7 +34,7 @@ func TestRunModeCommand_ExportsRunAndSkillID(t *testing.T) {
 		wantOrder []string
 	}{
 		{
-			name: "direct mode", s: direct, seedDir: "/seed/run-1", runID: "run-1", skillID: "hello-agent",
+			name: "direct mode", seedDir: "/seed/run-1", runID: "run-1", skillID: "hello-agent",
 			want: []string{
 				"CONTAINARIUM_RUN_ID='run-1' ",
 				"CONTAINARIUM_SKILL_ID='hello-agent' ",
@@ -39,7 +43,7 @@ func TestRunModeCommand_ExportsRunAndSkillID(t *testing.T) {
 			},
 		},
 		{
-			name: "gateway mode keeps the engine pin", s: gemini, seedDir: "/seed/r2", runID: "r2", skillID: "relay-agent",
+			name: "gateway mode keeps the engine pin", engineRes: geminiResolved, seedDir: "/seed/r2", runID: "r2", skillID: "relay-agent",
 			want: []string{
 				"CONTAINARIUM_AGENT_ENGINE=gemini ",
 				"CONTAINARIUM_RUN_ID='r2' ",
@@ -50,13 +54,13 @@ func TestRunModeCommand_ExportsRunAndSkillID(t *testing.T) {
 			wantOrder: []string{"gateway.env", "CONTAINARIUM_RUN_ID=", "agent-runtime"},
 		},
 		{
-			name: "ids are shell-quoted", s: direct, seedDir: "/seed/x", runID: "a.b_c-1", skillID: "it's",
+			name: "ids are shell-quoted", seedDir: "/seed/x", runID: "a.b_c-1", skillID: "it's",
 			want: []string{"CONTAINARIUM_RUN_ID='a.b_c-1' ", `CONTAINARIUM_SKILL_ID='it'\''s' `},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.s.runModeCommand(tc.seedDir, tc.runID, tc.skillID)
+			got := s.runModeCommand(tc.seedDir, tc.runID, tc.skillID, tc.engineRes, "")
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("runModeCommand = %q, want it to contain %q", got, w)
@@ -78,8 +82,9 @@ func TestRunModeCommand_ExportsRunAndSkillID(t *testing.T) {
 }
 
 func TestServeModeCommand_ExportsSkillIDKeepsProcessLog(t *testing.T) {
-	s := &AgentSkillServer{gateway: &gatewayProvisioning{provider: "anthropic"}}
-	got := s.serveModeCommand("/seed/run-9", "hello-agent")
+	s := &AgentSkillServer{}
+	claude := agentengine.Resolved{Engine: pb.AgentEngine_AGENT_ENGINE_CLAUDE, Provider: "anthropic"}
+	got := s.serveModeCommand("/seed/run-9", "hello-agent", claude, "")
 	for _, w := range []string{
 		sourceGatewayEnvPrefix("/seed/run-9"),
 		"CONTAINARIUM_AGENT_ENGINE=claude ",

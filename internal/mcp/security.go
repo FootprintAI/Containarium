@@ -53,6 +53,13 @@ type SecurityRemediateResponse struct {
 }
 
 // InstallZapResponse mirrors the daemon's InstallZapResponse.
+// InstallClamavResponse is the daemon's InstallClamav reply. Outcome is the
+// ClamavInstallOutcome enum name (grpc-gateway's JSON form).
+type InstallClamavResponse struct {
+	Outcome string `json:"outcome"`
+	Message string `json:"message"`
+}
+
 type InstallZapResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
@@ -71,9 +78,12 @@ type SentryRuleStatus struct {
 // DISABLED, UNAVAILABLE, DEGRADED, OK (SentryState enum names, unprefixed)
 // — and every registered rule's health.
 type SentryStatusResponse struct {
-	State  string             `json:"state"`
-	Reason string             `json:"reason,omitempty"`
-	Rules  []SentryRuleStatus `json:"rules,omitempty"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+	// CPUSampler is the mining-behavior rule's CPU source (#2645):
+	// "metrics-collector", "standalone (30s)" or "unavailable (<reason>)".
+	CPUSampler string             `json:"cpuSampler,omitempty"`
+	Rules      []SentryRuleStatus `json:"rules,omitempty"`
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list
@@ -120,11 +130,36 @@ type DenyEvidence struct {
 	Count    string `json:"count"`
 }
 
+// ConfigEvidence mirrors the daemon's ConfigEvidence (#2424): one
+// configuration directive whose effective value violated policy, and
+// whether the platform re-asserted its managed configuration in the same
+// pass.
+type ConfigEvidence struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note,omitempty"`
+}
+
+// ListenerEvidence mirrors the daemon's ListenerEvidence (#2439): one
+// listening socket held by an SSH server that is not the box's distro sshd.
+// Field names are the grpc-gateway (lowerCamelCase) JSON shape.
+type ListenerEvidence struct {
+	Port        uint32 `json:"port"`
+	BindAddress string `json:"bindAddress"`
+	PID         uint32 `json:"pid"`
+	Binary      string `json:"binary"`
+	Note        string `json:"note,omitempty"`
+}
+
 // SentryEvidence mirrors the daemon's Evidence message — the wire shape
 // nested under Finding.evidence, not flattened onto SentryFinding.
 type SentryEvidence struct {
-	Flows  []FlowEvidence `json:"flows,omitempty"`
-	Denies []DenyEvidence `json:"denies,omitempty"`
+	Flows     []FlowEvidence     `json:"flows,omitempty"`
+	Denies    []DenyEvidence     `json:"denies,omitempty"`
+	Configs   []ConfigEvidence   `json:"configs,omitempty"`
+	Listeners []ListenerEvidence `json:"listeners,omitempty"`
 }
 
 // SentryFinding mirrors the daemon's Finding (#1639/#1643): a single
@@ -360,6 +395,22 @@ func handleInstallZap(client API, _ map[string]interface{}) (string, error) {
 	resp, err := client.InstallZap()
 	if err != nil {
 		return "", fmt.Errorf("install zap: %w", err)
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleInstallClamav installs ClamAV and its signatures inside one box so the
+// tenant-run scan can run (#2659). Started by the box's owner; the platform
+// runs the package install in the box and does not read its files.
+func handleInstallClamav(client API, args map[string]interface{}) (string, error) {
+	name := getStringArg(args, "container_name", "")
+	if name == "" {
+		return "", fmt.Errorf("container_name is required")
+	}
+	resp, err := client.InstallClamav(name)
+	if err != nil {
+		return "", fmt.Errorf("install clamav: %w", err)
 	}
 	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out), nil

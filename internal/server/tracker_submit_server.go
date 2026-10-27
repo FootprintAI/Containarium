@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -167,7 +168,7 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 	if req.Issue <= 0 {
@@ -219,20 +220,28 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	}
 	defer func() { _ = os.Remove(bundle.BundlePath) }()
 
+	// #2798: the change carries its sealed Proof Pack, or is not opened.
+	sealed, packFile, err := s.sealSubmitProofPack(ctx, req.Username, runID, info, bundle.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+
 	id := s.identityFromContext(ctx)
 	closingRef := fmt.Sprintf("Closes #%d", req.Issue)
 	description := tracker.Sanitize(req.Description)
-	fullDescription := closingRef + "\n\n" + description + "\n\n" + tracker.Stamp(id, tracker.KindChange)
+	fullDescription := closingRef + "\n\n" + description + "\n\n" + proofPackDescription(sealed) + "\n\n" + tracker.Stamp(id, tracker.KindChange)
 
 	pushResult, err := s.gitPusherForSubmit().PushBundle(ctx, submit.PushSpec{
-		BundlePath:  bundle.BundlePath,
-		BaseSHA:     info.GitCommit,
-		HeadSHA:     bundle.HeadSHA,
-		RemoteURL:   remoteURL,
-		Credential:  conn.Credential,
-		RunID:       runID,
-		IssueNumber: req.Issue,
-		Title:       req.Title,
+		BundlePath:   bundle.BundlePath,
+		BaseSHA:      info.GitCommit,
+		HeadSHA:      bundle.HeadSHA,
+		RemoteURL:    remoteURL,
+		Credential:   conn.Credential,
+		RunID:        runID,
+		IssueNumber:  req.Issue,
+		Title:        req.Title,
+		Files:        []submit.File{packFile},
+		FilesMessage: "Add Containarium Proof Pack sha256:" + sealed.GetSeal().GetPackSha256(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "push bundle: %v", err)
@@ -252,6 +261,16 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	})
 	if err != nil {
 		return nil, mapProviderError(err)
+	}
+
+	// #3001: put the change on the dispatch row that started this run, so
+	// ListTrackerDispatches can link it. Best-effort — the change is open
+	// on the provider whatever happens here, and a run the dispatcher did
+	// not start has no row to annotate.
+	if recorded, err := s.trackerStore.RecordDispatchChange(ctx, runID, change.URL, change.Number); err != nil {
+		log.Printf("[tracker] record change on dispatch for run %s: %v", runID, err)
+	} else if !recorded {
+		log.Printf("[tracker] run %s has no dispatch row to record change %s on", runID, change.URL)
 	}
 
 	s.auditTrackerWrite(ctx, "tracker.submit_change", req.Username, req.Connection, req.Issue, submitChangeAuditDetail{

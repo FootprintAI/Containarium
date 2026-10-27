@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -167,6 +168,56 @@ func TestSetTrackerConnection_RejectsNonBrokerSecret(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument (credential_secret is env-mode, not broker-only)", status.Code(err))
+	}
+}
+
+// TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs pins the
+// outcome of nesting the data-plane REST routes under the connection
+// (/v1/tracker/connections/{username}/{connection}/<verb>, #2035): a verb
+// word never occupies a wildcard position any more, so no connection name or
+// username is reserved. These names were rejected before; they must reach the
+// store now. Reachability over REST is proven against the real grpc-gateway
+// mux in internal/gateway/tracker_route_ambiguity_test.go.
+func TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs(t *testing.T) {
+	cases := []struct{ user, name string }{
+		{"tracker-rpc-verbnames", "issues"},
+		{"tracker-rpc-verbnames", "changes"},
+		{"tracker-rpc-verbnames", "routes"},
+		{"tracker-rpc-verbnames", "dispatch"},
+		{"tracker-rpc-verbnames", "dispatches"},
+		{"tracker-rpc-verbnames", "status"},
+		{"tracker-rpc-verbnames", "connections"},
+		{"tracker-rpc-verbnames", "default"},
+		{"connections", "default"}, // a username equal to the path's literal segment
+	}
+	secretsStore := mustTestSecretsStore(t)
+	trackerStore := mustTestTrackerStore(t)
+	s := &ContainerServer{secretsStore: secretsStore, trackerStore: trackerStore}
+
+	seeded := map[string]bool{}
+	for _, tc := range cases {
+		if !seeded[tc.user] {
+			secretCtx := kmsKeyTestCtx(tc.user, "member", "secrets:write")
+			if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+				Username: tc.user, Name: "GH_TOKEN", Value: "ghp_x",
+				DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+			}); err != nil {
+				t.Fatalf("SetSecret (broker-only) for %q: %v", tc.user, err)
+			}
+			seeded[tc.user] = true
+		}
+		t.Run(tc.user+"/"+tc.name, func(t *testing.T) {
+			ctx := kmsKeyTestCtx(tc.user, "member", "tracker:admin")
+			if _, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
+				Username:         tc.user,
+				Name:             tc.name,
+				Provider:         pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+				Project:          "acme/widgets",
+				CredentialSecret: "GH_TOKEN",
+			}); err != nil {
+				t.Fatalf("SetTrackerConnection(user=%q, name=%q): %v", tc.user, tc.name, err)
+			}
+		})
 	}
 }
 
@@ -513,5 +564,37 @@ func TestGetTrackerStatus_Unreachable(t *testing.T) {
 	}
 	if resp.Detail == "" {
 		t.Error("Detail is empty, want an explanation")
+	}
+}
+
+func TestGetTrackerStatus_CredentialKind(t *testing.T) {
+	tests := []struct {
+		name string
+		kind tracker.CredentialKind
+		want pb.TrackerCredentialKind
+	}{
+		{"project", tracker.KindProject, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PROJECT},
+		{"group", tracker.KindGroup, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP},
+		{"personal", tracker.KindPersonal, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_PERSONAL},
+		{"unspecified", tracker.KindUnspecified, pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_UNSPECIFIED},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			describer := &fakeReaderProvider{credInfo: tracker.CredentialInfo{
+				Scopes: []string{"api"}, Breadth: tracker.BreadthBroad, Kind: tt.kind,
+			}}
+			user := fmt.Sprintf("tracker-rpc-status-kind-%d", i)
+			s, adminCtx := setUpBrokerConnection(t, user, describer)
+			resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+			if err != nil {
+				t.Fatalf("GetTrackerStatus: %v", err)
+			}
+			if resp.CredentialKind != tt.want {
+				t.Errorf("CredentialKind = %v, want %v", resp.CredentialKind, tt.want)
+			}
+			if resp.CredentialBreadth != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
+				t.Errorf("CredentialBreadth = %v, want BROAD (unchanged)", resp.CredentialBreadth)
+			}
+		})
 	}
 }
