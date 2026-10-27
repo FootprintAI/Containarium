@@ -33,7 +33,7 @@ func NewVolumeServer(runtime string) *VolumeServer {
 		}
 		volumeBackend, ok := backend.(volume.Backend)
 		if !ok {
-			err := fmt.Errorf("Kubernetes backend does not implement VolumeService")
+			err := fmt.Errorf("kubernetes backend does not implement VolumeService")
 			log.Printf("[volume] %v", err)
 			return &VolumeServer{backend: unavailableVolumeBackend{err}, runtime: runtime}
 		}
