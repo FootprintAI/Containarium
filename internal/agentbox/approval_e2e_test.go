@@ -4,8 +4,8 @@ package agentbox
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,18 +71,15 @@ func TestApprovalEndToEnd(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			run := fmt.Sprintf("e2e-%s-%d", c.name, os.Getpid())
 			t.Cleanup(func() {
-				for _, p := range []string{coderun.ApprovalJournalPath(run), coderun.ApprovalAnswersDir(run), coderun.ApprovalKeyPath(run)} {
+				for _, p := range []string{coderun.ApprovalJournalPath(run), coderun.ApprovalAnswersDir(run)} {
 					_ = os.RemoveAll(p)
 				}
 			})
 			work := t.TempDir()
 			target := filepath.Join(t.TempDir(), "approved-marker")
 
-			key := make([]byte, coderun.ApprovalKeyBytes)
-			if _, err := rand.Read(key); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(coderun.ApprovalKeyPath(run), []byte(hex.EncodeToString(key)), 0o600); err != nil {
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
 				t.Fatal(err)
 			}
 			if err := os.MkdirAll(coderun.ApprovalAnswersDir(run), 0o700); err != nil {
@@ -91,7 +88,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 
 			prompt := "Run exactly this bash command and nothing else: touch " + target +
 				"  If the command is denied, do not try any other way; reply DENIED. Otherwise reply DONE."
-			command, ok := engine.WithApprovals(eng, eng.RunCommand(prompt, false, false, ""), run, c.timeout)
+			command, ok := engine.WithApprovals(eng, eng.RunCommand(prompt, false, false, ""), run, pub, c.timeout)
 			if !ok {
 				t.Fatal("Claude reported no hook")
 			}
@@ -102,7 +99,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 			defer cancel()
 			if c.answer != "" {
-				go answerEveryRequest(ctx, key, run, c.answer)
+				go answerEveryRequest(ctx, priv, run, c.answer)
 			}
 			cmd := exec.CommandContext(ctx, "sh", "-c", command)
 			cmd.Dir = work
@@ -115,9 +112,6 @@ func TestApprovalEndToEnd(t *testing.T) {
 			s := coderun.SummarizeApprovals(coderun.ParseInputJournal(journal))
 			if s.Requests < 1 {
 				t.Fatalf("no permission request was journaled")
-			}
-			if _, err := os.Stat(coderun.ApprovalKeyPath(run)); !os.IsNotExist(err) {
-				t.Errorf("key file left on disk after the run (stat err %v)", err)
 			}
 			_, statErr := os.Stat(target)
 			switch c.name {
@@ -142,8 +136,8 @@ func TestApprovalEndToEnd(t *testing.T) {
 }
 
 // answerEveryRequest answers each request in run's journal with a, signed
-// with key, until ctx ends.
-func answerEveryRequest(ctx context.Context, key []byte, run string, a coderun.Answer) {
+// with priv, until ctx ends.
+func answerEveryRequest(ctx context.Context, priv ed25519.PrivateKey, run string, a coderun.Answer) {
 	answered := map[string]bool{}
 	for ctx.Err() == nil {
 		b, _ := os.ReadFile(coderun.ApprovalJournalPath(run))
@@ -154,7 +148,7 @@ func answerEveryRequest(ctx context.Context, key []byte, run string, a coderun.A
 			answered[e.RequestID] = true
 			path := filepath.Join(coderun.ApprovalAnswersDir(run), e.RequestID)
 			tmp := path + ".tmp"
-			if os.WriteFile(tmp, []byte(coderun.FormatAnswer(key, run, e.RequestID, a)), 0o600) == nil {
+			if os.WriteFile(tmp, []byte(coderun.FormatAnswer(priv, run, e.RequestID, a)), 0o600) == nil {
 				_ = os.Rename(tmp, path)
 			}
 		}

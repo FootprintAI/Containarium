@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,15 +30,22 @@ type approvalSession interface {
 }
 
 // prepareApprovals rewires command for --approvals ask and leaves the box ready
-// for it: the previous same-name run's request files cleared, and this run's
-// answer key delivered for the approval server to consume. It runs after
+// for it: the previous same-name run's request files cleared. It runs after
 // prepareCodeRun and before process_start.
 //
-// The key is not kept on this machine: who holds it to sign answers (this CLI,
-// the daemon for a phone answer) is decided with the answer command, not here.
-// Until then requests can be seen in `code status` but expire into a deny.
+// Each run gets a fresh Ed25519 key pair. Only the public key goes to the box
+// (on the approval server's command line); the box holds no secret. The private
+// key is not kept: who holds it to sign answers (this CLI, the daemon for a
+// phone answer) is decided with the answer command, not here. Until then
+// requests can be seen in `code status` but expire into a deny.
 func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engine, name, command string,
 	timeout time.Duration, diag io.Writer) (string, error) {
+
+	// Before anything on the box is touched: the approval files are named
+	// after the run.
+	if err := coderun.ValidApprovalRunName(name); err != nil {
+		return "", err
+	}
 
 	// Never clear a live run's journal: process_start would refuse the name
 	// anyway, but only after the files were gone.
@@ -52,8 +59,7 @@ func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engi
 
 	journal := coderun.ShellQuoteSingle(coderun.ApprovalJournalPath(name))
 	answers := coderun.ShellQuoteSingle(coderun.ApprovalAnswersDir(name))
-	key := coderun.ShellQuoteSingle(coderun.ApprovalKeyPath(name))
-	reset := "mkdir -p " + coderun.ShellQuoteSingle(coderun.RunLogDir) + " && rm -rf " + journal + " " + answers + " " + key +
+	reset := "mkdir -p " + coderun.ShellQuoteSingle(coderun.RunLogDir) + " && rm -rf " + journal + " " + answers +
 		" && mkdir -m 700 " + answers + " && echo reset-ok"
 	if out, err := sess.ShellExec(ctx, reset); err != nil || !strings.Contains(out, "reset-ok") {
 		return "", fmt.Errorf("prepare this run's approval files: %v %s", err, strings.TrimSpace(out))
@@ -79,18 +85,12 @@ func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engi
 		return "", errors.New("--approvals ask needs a newer agent-box on the box (it has no approval-mcp mode); update agent-box and retry, or run without --approvals ask")
 	}
 
-	k := make([]byte, coderun.ApprovalKeyBytes)
-	if _, err := rand.Read(k); err != nil {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
 		return "", fmt.Errorf("generate this run's approval key: %w", err)
 	}
-	// write_file creates the file 0600 from the start (temp file + rename), and
-	// the key travels as file content over the MCP channel, never in a command
-	// line where /proc/<pid>/cmdline would show it.
-	if err := sess.WriteFile(ctx, coderun.ApprovalKeyPath(name), hex.EncodeToString(k), coderun.ApprovalKeyFileMode); err != nil {
-		return "", err
-	}
 
-	wired, _ := engine.WithApprovals(eng, command, name, timeout)
+	wired, _ := engine.WithApprovals(eng, command, name, pub, timeout)
 	fmt.Fprintf(diag, "• --approvals ask: a permission prompt pauses the run for up to %s; see it with 'containarium code status %s'. No answer command ships yet, so an unanswered prompt expires into a deny.\n",
 		timeout, codeRunBoxHint(name))
 	return wired, nil

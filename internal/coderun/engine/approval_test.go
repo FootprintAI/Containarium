@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -15,7 +17,8 @@ func TestWithApprovalsWiresClaudePromptTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := eng.RunCommand("do it", false, false, "")
-	got, ok := WithApprovals(eng, base, "my-run", 30*time.Minute)
+	pub := ed25519.PublicKey(bytes.Repeat([]byte{0xab}, ed25519.PublicKeySize))
+	got, ok := WithApprovals(eng, base, "my-run", pub, 30*time.Minute)
 	if !ok {
 		t.Fatal("WithApprovals reported Claude has no hook")
 	}
@@ -25,7 +28,6 @@ func TestWithApprovalsWiresClaudePromptTool(t *testing.T) {
 	for _, want := range []string{
 		"--permission-prompt-tool mcp__containarium-approval__approve",
 		"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=2100000; export CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT; ",
-		`trap 'rm -f '\''/tmp/agent-box/my-run.approval-key'\''' EXIT; `,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("command lacks %q:\n%s", want, got)
@@ -54,7 +56,7 @@ func TestWithApprovalsWiresClaudePromptTool(t *testing.T) {
 	if !ok || srv.Command != "sh" || len(srv.Args) != 2 || srv.Args[0] != "-c" {
 		t.Fatalf("approval server entry = %+v", cfg)
 	}
-	if want := coderun.AgentBoxPathPrefix + " exec agent-box approval-mcp --run 'my-run' --timeout 30m0s"; srv.Args[1] != want {
+	if want := coderun.AgentBoxPathPrefix + " exec agent-box approval-mcp --run 'my-run' --public-key " + strings.Repeat("ab", ed25519.PublicKeySize) + " --timeout 30m0s"; srv.Args[1] != want {
 		t.Errorf("approval server script = %q, want %q", srv.Args[1], want)
 	}
 }
@@ -66,7 +68,7 @@ func TestWithApprovalsLeavesHooklessEnginesUnchanged(t *testing.T) {
 			t.Fatal(err)
 		}
 		base := eng.RunCommand("p", false, false, "")
-		got, ok := WithApprovals(eng, base, "code", time.Minute)
+		got, ok := WithApprovals(eng, base, "code", nil, time.Minute)
 		if ok || got != base {
 			t.Errorf("%s: WithApprovals = (%q, %v), want the command unchanged and false", n, got, ok)
 		}

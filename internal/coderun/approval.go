@@ -3,8 +3,7 @@ package coderun
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,12 +21,14 @@ import (
 // the box side (internal/agentbox) and the client side (`code status`, the MCP
 // code_status tool, and later `code answer`) cannot drift.
 //
-// Files, all next to the run's log under RunLogDir:
+// Files, both next to the run's log under RunLogDir:
 //
 //	<name>.input.jsonl   append-only journal of InputEvent lines
-//	<name>.answers/<id>  one answer per request: "<allow|deny> <hex mac>\n"
-//	<name>.approval-key  the run's answer key; the approval server reads and
-//	                     unlinks it at startup, before the agent's first turn
+//	<name>.answers/<id>  one answer per request: "<allow|deny> <hex signature>\n"
+//
+// An answer counts only with an Ed25519 signature under the run's public key,
+// which `code run` passes to the approval server on its command line. The
+// private key never reaches the box.
 
 // ApprovalMode is `code run --approvals`.
 type ApprovalMode string
@@ -57,21 +58,28 @@ func ParseApprovalMode(s string) (ApprovalMode, error) {
 // deny (PRD open question 5: long enough to answer from a phone in a meeting).
 const DefaultApprovalTimeout = 30 * time.Minute
 
-// ApprovalKeyBytes is the size of a run's answer key.
-const ApprovalKeyBytes = 32
-
-// ApprovalKeyFileMode is the mode the key file is created with.
-const ApprovalKeyFileMode = "0600"
-
 // ApprovalJournalPath is the run's input journal.
 func ApprovalJournalPath(name string) string { return RunLogDir + "/" + name + ".input.jsonl" }
 
 // ApprovalAnswersDir is where answers to the run's requests are dropped.
 func ApprovalAnswersDir(name string) string { return RunLogDir + "/" + name + ".answers" }
 
-// ApprovalKeyPath is where `code run` leaves the run's answer key for the
-// approval server to consume.
-func ApprovalKeyPath(name string) string { return RunLogDir + "/" + name + ".approval-key" }
+// ValidApprovalRunName accepts the run names whose approval files can sit
+// next to the run's log as-is: exactly the names agent-box's process name
+// sanitizer leaves unchanged, minus "." and "..". Anything else is refused
+// before any file on the box is touched.
+func ValidApprovalRunName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("run name %q cannot be used with --approvals ask", name)
+	}
+	for _, r := range name {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
+		if !ok {
+			return fmt.Errorf("run name %q cannot be used with --approvals ask: only letters, digits, '-', '_' and '.' are allowed", name)
+		}
+	}
+	return nil
+}
 
 // Answer is a decision on one permission request.
 type Answer string
@@ -105,8 +113,8 @@ const (
 	ReasonAnswered  ResponseReason = "answered"
 	ReasonExpired   ResponseReason = "expired"
 	ReasonCancelled ResponseReason = "cancelled"
-	// ReasonNoKey closes a request at once when the server has no key, so
-	// nothing could ever answer it.
+	// ReasonNoKey closes a request at once when the server has no usable
+	// public key, so nothing could ever answer it.
 	ReasonNoKey ResponseReason = "no_key"
 )
 
@@ -158,35 +166,51 @@ func ParseInputJournal(data []byte) []InputEvent {
 	return out
 }
 
-// SignAnswer is the MAC an answer to (run, requestID) must carry. Binding the
-// run name and request id means an answer cannot be replayed onto another
-// request, and binding the answer means "allow" cannot be minted from "deny".
-func SignAnswer(key []byte, run, requestID string, a Answer) string {
-	m := hmac.New(sha256.New, key)
-	m.Write([]byte(run + "\n" + requestID + "\n" + string(a)))
-	return hex.EncodeToString(m.Sum(nil))
+// approvalSignContext versions the signed message, so a signature made for
+// anything else never verifies as an answer.
+const approvalSignContext = "containarium-approval-v1"
+
+func answerMessage(run, requestID string, a Answer) []byte {
+	return []byte(approvalSignContext + "\n" + run + "\n" + requestID + "\n" + string(a))
+}
+
+// SignAnswer signs an answer to (run, requestID). Binding the run name and
+// request id means an answer cannot be replayed onto another request, and
+// binding the answer means "allow" cannot be made from a "deny".
+func SignAnswer(priv ed25519.PrivateKey, run, requestID string, a Answer) string {
+	return hex.EncodeToString(ed25519.Sign(priv, answerMessage(run, requestID, a)))
 }
 
 // FormatAnswer renders an answer file's content.
-func FormatAnswer(key []byte, run, requestID string, a Answer) string {
-	return string(a) + " " + SignAnswer(key, run, requestID, a) + "\n"
+func FormatAnswer(priv ed25519.PrivateKey, run, requestID string, a Answer) string {
+	return string(a) + " " + SignAnswer(priv, run, requestID, a) + "\n"
 }
 
-// VerifyAnswer parses an answer file's content and checks its MAC.
-func VerifyAnswer(key []byte, run, requestID, content string) (Answer, error) {
+// VerifyAnswer parses an answer file's content and checks its signature.
+func VerifyAnswer(pub ed25519.PublicKey, run, requestID, content string) (Answer, error) {
 	fields := strings.Fields(content)
 	if len(fields) != 2 {
-		return "", fmt.Errorf("answer is not \"<allow|deny> <mac>\"")
+		return "", fmt.Errorf("answer is not \"<allow|deny> <signature>\"")
 	}
 	a := Answer(fields[0])
 	if a != AnswerAllow && a != AnswerDeny {
 		return "", fmt.Errorf("answer %q is neither %q nor %q", fields[0], AnswerAllow, AnswerDeny)
 	}
-	want := SignAnswer(key, run, requestID, a)
-	if !hmac.Equal([]byte(fields[1]), []byte(want)) {
-		return "", fmt.Errorf("answer signature does not match")
+	sig, err := hex.DecodeString(fields[1])
+	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, answerMessage(run, requestID, a), sig) {
+		return "", fmt.Errorf("answer signature does not verify")
 	}
 	return a, nil
+}
+
+// ParseApprovalPublicKey decodes the hex public key the approval server is
+// started with.
+func ParseApprovalPublicKey(h string) (ed25519.PublicKey, error) {
+	b, err := hex.DecodeString(strings.TrimSpace(h))
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("not a hex Ed25519 public key")
+	}
+	return ed25519.PublicKey(b), nil
 }
 
 // ApprovalSummary is the per-run count of permission requests — the PRD's

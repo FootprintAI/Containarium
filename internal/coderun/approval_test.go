@@ -1,6 +1,9 @@
 package coderun
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -18,34 +21,62 @@ func TestParseApprovalMode(t *testing.T) {
 	}
 }
 
-// An answer verifies only for the key, run, request and answer it was signed
-// for: no replay onto another request or run, no turning a deny into an allow.
+// An answer verifies only under the public key of the private key that signed
+// it, and only for the run, request and answer it was signed for: no replay
+// onto another request or run, no turning a deny into an allow.
 func TestVerifyAnswerBindsKeyRunRequestAndAnswer(t *testing.T) {
-	key := []byte(strings.Repeat("k", ApprovalKeyBytes))
-	other := []byte(strings.Repeat("x", ApprovalKeyBytes))
-	good := FormatAnswer(key, "code", "req-1", AnswerAllow)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	otherPub, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
+	good := FormatAnswer(priv, "code", "req-1", AnswerAllow)
 
-	if a, err := VerifyAnswer(key, "code", "req-1", good); err != nil || a != AnswerAllow {
+	if a, err := VerifyAnswer(pub, "code", "req-1", good); err != nil || a != AnswerAllow {
 		t.Fatalf("VerifyAnswer(good) = %q, %v; want allow", a, err)
 	}
-	denyMAC := SignAnswer(key, "code", "req-1", AnswerDeny)
+	denySig := SignAnswer(priv, "code", "req-1", AnswerDeny)
 	cases := map[string]struct {
-		key     []byte
+		pub     ed25519.PublicKey
 		run, id string
 		content string
 	}{
-		"wrong key":         {other, "code", "req-1", good},
-		"other request":     {key, "code", "req-2", good},
-		"other run":         {key, "other", "req-1", good},
-		"deny mac as allow": {key, "code", "req-1", "allow " + denyMAC},
-		"unsigned":          {key, "code", "req-1", "allow"},
-		"not an answer":     {key, "code", "req-1", "maybe " + SignAnswer(key, "code", "req-1", "maybe")},
-		"extra field":       {key, "code", "req-1", strings.TrimSpace(good) + " extra"},
-		"empty":             {key, "code", "req-1", ""},
+		"other public key":  {otherPub, "code", "req-1", good},
+		"signed by another": {pub, "code", "req-1", FormatAnswer(otherPriv, "code", "req-1", AnswerAllow)},
+		"other request":     {pub, "code", "req-2", good},
+		"other run":         {pub, "other", "req-1", good},
+		"deny sig as allow": {pub, "code", "req-1", "allow " + denySig},
+		"unsigned":          {pub, "code", "req-1", "allow"},
+		"not hex":           {pub, "code", "req-1", "allow zz"},
+		"not an answer":     {pub, "code", "req-1", "maybe " + SignAnswer(priv, "code", "req-1", "maybe")},
+		"extra field":       {pub, "code", "req-1", strings.TrimSpace(good) + " extra"},
+		"empty":             {pub, "code", "req-1", ""},
 	}
 	for name, c := range cases {
-		if a, err := VerifyAnswer(c.key, c.run, c.id, c.content); err == nil {
+		if a, err := VerifyAnswer(c.pub, c.run, c.id, c.content); err == nil {
 			t.Errorf("%s: VerifyAnswer accepted %q as %q", name, c.content, a)
+		}
+	}
+}
+
+func TestParseApprovalPublicKey(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	if got, err := ParseApprovalPublicKey(hex.EncodeToString(pub)); err != nil || !got.Equal(pub) {
+		t.Errorf("round trip = %x, %v", got, err)
+	}
+	for _, bad := range []string{"", "zz", hex.EncodeToString(pub[:16])} {
+		if _, err := ParseApprovalPublicKey(bad); err == nil {
+			t.Errorf("ParseApprovalPublicKey(%q) accepted", bad)
+		}
+	}
+}
+
+func TestValidApprovalRunName(t *testing.T) {
+	for _, ok := range []string{"code", "sess-42", "a_b.c", "..x"} {
+		if err := ValidApprovalRunName(ok); err != nil {
+			t.Errorf("ValidApprovalRunName(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "sub/task", "../victim", "a b", "x\x00"} {
+		if err := ValidApprovalRunName(bad); err == nil {
+			t.Errorf("ValidApprovalRunName(%q) accepted", bad)
 		}
 	}
 }
@@ -70,7 +101,7 @@ func TestSummarizeApprovalsAndStatusLines(t *testing.T) {
 	journal := req("r1", "Bash: touch a") + resp("r1", AnswerAllow, ReasonAnswered) +
 		req("r2", "Bash: rm b") + resp("r2", AnswerDeny, ReasonAnswered) +
 		req("r3", "Bash: curl c") + resp("r3", AnswerDeny, ReasonExpired) +
-		ev(InputEvent{Kind: KindInputStatus, T: t0, Text: "ignored an answer to r4: answer signature does not match"}) +
+		ev(InputEvent{Kind: KindInputStatus, T: t0, Text: "ignored an answer to r4: answer signature does not verify"}) +
 		req("r4", "Bash: git push") +
 		`{"kind":"input_resp` // torn last line while the server writes
 

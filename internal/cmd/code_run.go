@@ -67,11 +67,12 @@ call that needs a permission, instead of the engine refusing it: the request
 is journaled next to the run's log, 'containarium code status' reports
 waiting_input with the request, and the call proceeds on an allow or is
 refused on a deny. A request nobody answers expires into a deny after
---approval-timeout (default 30m), and the expiry is journaled. Answers must be
-signed with a key only the box's approval process holds, so a process the
-agent starts (short of root) cannot approve its own request. No answer command
-ships yet, so for now every request expires into a deny; 'code status' still
-counts them. On an engine without a permission hook (pi, Codex) the run starts
+--approval-timeout (default 30m), and the expiry is journaled. An answer
+counts only with a signature under this run's own key pair; only the public
+key goes to the box, so nothing on the box can forge an answer. (A process an
+agent leaves running on the box can still change the box's own Claude Code
+setup for later runs; that is out of scope.) No answer command ships yet, so
+for now every request expires into a deny; 'code status' still counts them. On an engine without a permission hook (pi, Codex) the run starts
 unchanged, with a warning. The default, --approvals deny, is today's behaviour.
 
 Requires the box to already have a coding agent installed and credentialed —

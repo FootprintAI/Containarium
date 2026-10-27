@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -29,23 +31,20 @@ const approvalIdleMargin = 5 * time.Minute
 func SupportsApprovals(n Name) bool { return n == NameClaude }
 
 // WithApprovals returns cmd — a RunCommand result for eng — rewired so the run
-// pauses on permission prompts for this run name, each expiring after timeout.
+// pauses on permission prompts for this run name, each expiring after timeout,
+// and accepting only answers signed for pub.
 // ok is false when eng has no hook; cmd is then returned unchanged.
 //
 // The env prefix and trailing flags wrap the command rather than editing it, so
 // the --approvals deny command stays byte-identical to the shipped one.
-func WithApprovals(eng Engine, cmd, runName string, timeout time.Duration) (string, bool) {
+func WithApprovals(eng Engine, cmd, runName string, pub ed25519.PublicKey, timeout time.Duration) (string, bool) {
 	if eng == nil || !SupportsApprovals(eng.Name()) {
 		return cmd, false
 	}
 	idle := strconv.FormatInt((timeout + approvalIdleMargin).Milliseconds(), 10)
-	// The trap removes the key file if the approval server never started to
-	// consume it (the engine failed before connecting its MCP servers). It runs
-	// inside agent-box's run subshell, so the recorded exit code is unchanged.
-	prefix := "trap " + shellQuoteSingle("rm -f "+shellQuoteSingle(coderun.ApprovalKeyPath(runName))) + " EXIT; " +
-		"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=" + idle + "; export CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT; "
+	prefix := "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=" + idle + "; export CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT; "
 	return prefix + cmd +
-		" --mcp-config " + shellQuoteSingle(approvalMCPConfig(runName, timeout)) +
+		" --mcp-config " + shellQuoteSingle(approvalMCPConfig(runName, pub, timeout)) +
 		" --permission-prompt-tool " + ApprovalPromptTool, true
 }
 
@@ -54,9 +53,11 @@ const ApprovalPromptTool = "mcp__" + approvalServerName + "__" + approvalToolNam
 
 // approvalMCPConfig is the inline --mcp-config JSON that starts the approval
 // server. agent-box is found on the same PATH `code` sessions use to reach it.
-func approvalMCPConfig(runName string, timeout time.Duration) string {
+// The public key is not a secret; it is on the command line so that nothing on
+// the box can swap it after the run starts.
+func approvalMCPConfig(runName string, pub ed25519.PublicKey, timeout time.Duration) string {
 	script := coderun.AgentBoxPathPrefix + " exec agent-box approval-mcp --run " +
-		shellQuoteSingle(runName) + " --timeout " + timeout.String()
+		shellQuoteSingle(runName) + " --public-key " + hex.EncodeToString(pub) + " --timeout " + timeout.String()
 	type stdioServer struct {
 		Command string   `json:"command"`
 		Args    []string `json:"args"`

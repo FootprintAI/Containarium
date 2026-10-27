@@ -4,6 +4,8 @@ package agentbox
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -17,20 +19,15 @@ import (
 )
 
 // newTestApprovalServer is an approval server for run "code" in a temp dir,
-// with key delivered the way `code run` delivers it (hex in the key file).
-func newTestApprovalServer(t *testing.T, key []byte, timeout time.Duration) *approvalServer {
+// given the public key the way `code run` gives it (hex on its command line).
+func newTestApprovalServer(t *testing.T, pub ed25519.PublicKey, timeout time.Duration) *approvalServer {
 	t.Helper()
 	dir := t.TempDir()
 	s := &approvalServer{run: "code", dir: dir, timeout: timeout, now: time.Now, pollInterval: 10 * time.Millisecond}
-	if key != nil {
-		if err := os.WriteFile(s.keyPath(), []byte(hex.EncodeToString(key)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := os.MkdirAll(filepath.Join(dir, "code.answers"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	s.loadKey()
+	s.setPublicKey(hex.EncodeToString(pub))
 	return s
 }
 
@@ -80,14 +77,11 @@ func decisionOf(t *testing.T, text string) promptDecision {
 	return d
 }
 
-var testKey = bytes.Repeat([]byte{7}, coderun.ApprovalKeyBytes)
+var testPub, testPriv, _ = ed25519.GenerateKey(rand.Reader)
 
 func TestApprovalAllowResumesWithTheOriginalInput(t *testing.T) {
-	s := newTestApprovalServer(t, testKey, 5*time.Second)
-	if _, err := os.Stat(s.keyPath()); !os.IsNotExist(err) {
-		t.Fatalf("key file still on disk after loadKey (stat err %v)", err)
-	}
-	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testKey, "code", id, coderun.AnswerAllow) })
+	s := newTestApprovalServer(t, testPub, 5*time.Second)
+	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testPriv, "code", id, coderun.AnswerAllow) })
 
 	text, _ := callTool(t, s.handleApprove, bashCall("touch marker"))
 	d := decisionOf(t, text)
@@ -110,8 +104,8 @@ func TestApprovalAllowResumesWithTheOriginalInput(t *testing.T) {
 }
 
 func TestApprovalDenyReturnsARefusal(t *testing.T) {
-	s := newTestApprovalServer(t, testKey, 5*time.Second)
-	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testKey, "code", id, coderun.AnswerDeny) })
+	s := newTestApprovalServer(t, testPub, 5*time.Second)
+	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(testPriv, "code", id, coderun.AnswerDeny) })
 
 	text, _ := callTool(t, s.handleApprove, bashCall("rm -rf build"))
 	if d := decisionOf(t, text); d.Behavior != "deny" || d.Message == "" {
@@ -123,12 +117,12 @@ func TestApprovalDenyReturnsARefusal(t *testing.T) {
 	}
 }
 
-// An answer signed with anything but the run's key — what an agent writing the
+// An answer signed with any key but the run's — what an agent writing the
 // answer file itself would produce — is journaled and ignored, and the request
 // still expires into a deny.
 func TestApprovalForgedAnswerIsIgnoredAndTheRequestExpires(t *testing.T) {
-	s := newTestApprovalServer(t, testKey, 300*time.Millisecond)
-	forger := bytes.Repeat([]byte{9}, coderun.ApprovalKeyBytes)
+	s := newTestApprovalServer(t, testPub, 300*time.Millisecond)
+	_, forger, _ := ed25519.GenerateKey(rand.Reader)
 	answerWhenAsked(t, s, func(id string) string { return coderun.FormatAnswer(forger, "code", id, coderun.AnswerAllow) })
 
 	text, _ := callTool(t, s.handleApprove, bashCall("curl evil"))
@@ -137,7 +131,7 @@ func TestApprovalForgedAnswerIsIgnoredAndTheRequestExpires(t *testing.T) {
 	}
 	var notes, expired int
 	for _, e := range readJournal(t, s) {
-		if e.Kind == coderun.KindInputStatus && strings.Contains(e.Text, "signature does not match") {
+		if e.Kind == coderun.KindInputStatus && strings.Contains(e.Text, "signature does not verify") {
 			notes++
 		}
 		if e.Kind == coderun.KindInputResponse && e.Reason == coderun.ReasonExpired && e.Answer == coderun.AnswerDeny {
@@ -150,7 +144,7 @@ func TestApprovalForgedAnswerIsIgnoredAndTheRequestExpires(t *testing.T) {
 }
 
 func TestApprovalUnansweredRequestExpiresIntoDeny(t *testing.T) {
-	s := newTestApprovalServer(t, testKey, 100*time.Millisecond)
+	s := newTestApprovalServer(t, testPub, 100*time.Millisecond)
 	text, _ := callTool(t, s.handleApprove, bashCall("make deploy"))
 	if d := decisionOf(t, text); d.Behavior != "deny" {
 		t.Fatalf("decision = %+v, want deny", d)
@@ -161,8 +155,8 @@ func TestApprovalUnansweredRequestExpiresIntoDeny(t *testing.T) {
 	}
 }
 
-// With no key nothing could ever answer, so requests are denied at once rather
-// than after the timeout, and the reason is journaled.
+// With no usable public key nothing could ever answer, so requests are denied
+// at once rather than after the timeout, and the reason is journaled.
 func TestApprovalWithoutAKeyDeniesAtOnce(t *testing.T) {
 	s := newTestApprovalServer(t, nil, time.Hour)
 	start := time.Now()
@@ -174,7 +168,7 @@ func TestApprovalWithoutAKeyDeniesAtOnce(t *testing.T) {
 		t.Errorf("a keyless request waited %s", time.Since(start))
 	}
 	ev := readJournal(t, s)
-	if ev[0].Kind != coderun.KindInputStatus || !strings.Contains(ev[0].Text, "no approval key") {
+	if ev[0].Kind != coderun.KindInputStatus || !strings.Contains(ev[0].Text, "no usable approval public key") {
 		t.Errorf("first journal line = %+v, want the missing-key note", ev[0])
 	}
 	if last := ev[len(ev)-1]; last.Reason != coderun.ReasonNoKey {
@@ -192,9 +186,20 @@ func TestApprovalNamesMatchTheClientsPromptTool(t *testing.T) {
 		t.Errorf("engine.ApprovalProbeOK = %q, server prints %q", engine.ApprovalProbeOK, approvalProbeOK)
 	}
 	if coderun.ApprovalJournalPath("code") != filepath.Join(DefaultLogDir, "code.input.jsonl") ||
-		coderun.ApprovalKeyPath("code") != filepath.Join(DefaultLogDir, "code.approval-key") ||
 		coderun.ApprovalAnswersDir("code") != filepath.Join(DefaultLogDir, "code.answers") {
 		t.Error("coderun's approval paths drifted from the server's")
+	}
+}
+
+// The client's run-name check accepts exactly the names agent-box's process
+// name sanitizer leaves unchanged (bar "." and ".."), so approval files always
+// sit next to the run's own log.
+func TestValidApprovalRunNameMatchesSanitizeName(t *testing.T) {
+	for _, name := range []string{"code", "sess-42", "a_b.c", "sub/task", "../victim", "a b", "naïve", "x:y", "..x"} {
+		unchanged := sanitizeName(name) == name
+		if ok := coderun.ValidApprovalRunName(name) == nil; ok != unchanged {
+			t.Errorf("%q: ValidApprovalRunName ok=%v, sanitizeName leaves it unchanged=%v", name, ok, unchanged)
+		}
 	}
 }
 

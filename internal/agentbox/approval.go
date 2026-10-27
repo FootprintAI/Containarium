@@ -4,6 +4,7 @@ package agentbox
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,7 +15,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +33,12 @@ import (
 //
 // Why answers are signed: the agent runs as the same Unix user as anyone
 // answering on the box, so any file an answerer can write, the agent can write
-// too. The run's key is held only in this process's memory — read from the
-// key file and unlinked before the MCP handshake completes, which Claude Code
-// waits for before the agent's first turn — and the process is made
-// non-dumpable, so a non-root process the agent starts can neither read the key
-// file nor this process's memory. Root on the box (box users have sudo) is out
-// of reach of any same-box scheme and is not claimed.
+// too. An answer counts only with an Ed25519 signature that verifies under the
+// run's public key, which arrives on this process's command line from `code
+// run`. The private key never reaches the box, so there is no secret on it for
+// any process to read. Out of scope: a process the agent leaves running can
+// change the box's own Claude Code setup (its binaries on PATH, its settings)
+// for later runs; no scheme confined to the box can prevent that.
 
 // ApprovalToolName is the tool Claude Code's --permission-prompt-tool names,
 // as mcp__<server>__<tool>.
@@ -67,7 +67,7 @@ type approvalServer struct {
 	run     string
 	dir     string
 	timeout time.Duration
-	key     []byte // nil: no key was delivered, nothing can answer
+	pub     ed25519.PublicKey // nil: no usable key was given, nothing can answer
 
 	now          func() time.Time
 	pollInterval time.Duration
@@ -75,13 +75,14 @@ type approvalServer struct {
 	mu sync.Mutex // serializes journal appends
 }
 
-// RunApprovalCLI is `agent-box approval-mcp --run <name> [--timeout d] [--dir d]`.
+// RunApprovalCLI is `agent-box approval-mcp --run <name> --public-key <hex> [--timeout d] [--dir d]`.
 func RunApprovalCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("approval-mcp", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	run := fs.String("run", "", "run name whose permission requests this serves (required)")
 	timeout := fs.Duration("timeout", coderun.DefaultApprovalTimeout, "how long a request waits before it expires into a deny")
 	dir := fs.String("dir", DefaultLogDir, "run log directory")
+	publicKey := fs.String("public-key", "", "hex Ed25519 public key answers must be signed for")
 	probe := fs.Bool("probe", false, "print a readiness line and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -90,8 +91,8 @@ func RunApprovalCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		fmt.Fprintln(stdout, approvalProbeOK)
 		return 0
 	}
-	if *run == "" || strings.ContainsAny(*run, "/\x00") {
-		fmt.Fprintln(stderr, "approval-mcp: --run is required and must be a plain run name")
+	if err := coderun.ValidApprovalRunName(*run); err != nil {
+		fmt.Fprintf(stderr, "approval-mcp: --run: %v\n", err)
 		return 2
 	}
 	if *timeout <= 0 {
@@ -99,13 +100,8 @@ func RunApprovalCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		return 2
 	}
 
-	// Before the key is read, so it never sits in a dumpable process.
-	if err := makeNonDumpable(); err != nil {
-		log.Printf("[approval-mcp] could not make the process non-dumpable: %v", err)
-	}
-
 	s := &approvalServer{run: *run, dir: *dir, timeout: *timeout, now: time.Now, pollInterval: approvalPollInterval}
-	s.loadKey()
+	s.setPublicKey(*publicKey)
 
 	mcpServer := server.NewMCPServer(ApprovalServerName, "1", server.WithToolCapabilities(false))
 	mcpServer.AddTool(approvalTool(), s.handleApprove)
@@ -129,31 +125,22 @@ func approvalTool() mcp.Tool {
 	)
 }
 
-func (s *approvalServer) keyPath() string     { return filepath.Join(s.dir, s.run+".approval-key") }
 func (s *approvalServer) journalPath() string { return filepath.Join(s.dir, s.run+".input.jsonl") }
 func (s *approvalServer) answerPath(id string) string {
 	return filepath.Join(s.dir, s.run+".answers", id)
 }
 
-// loadKey reads the run's key and unlinks it. A missing or malformed key is
+// setPublicKey takes the run's public key. A missing or malformed one is
 // journaled, and every request is then denied at once: waiting would only
 // delay a deny nobody can override.
-func (s *approvalServer) loadKey() {
-	path := s.keyPath()
-	raw, err := os.ReadFile(path)
-	_ = os.Remove(path)
+func (s *approvalServer) setPublicKey(h string) {
+	pub, err := coderun.ParseApprovalPublicKey(h)
 	if err != nil {
 		s.journal(coderun.InputEvent{Kind: coderun.KindInputStatus,
-			Text: "no approval key was delivered to this run; every permission request is denied"})
+			Text: "no usable approval public key for this run (" + err.Error() + "); every permission request is denied"})
 		return
 	}
-	key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil || len(key) != coderun.ApprovalKeyBytes {
-		s.journal(coderun.InputEvent{Kind: coderun.KindInputStatus,
-			Text: "the approval key delivered to this run is malformed; every permission request is denied"})
-		return
-	}
-	s.key = key
+	s.pub = pub
 }
 
 // journal appends one line. O_APPEND with one write per line keeps lines whole
@@ -248,7 +235,7 @@ func (s *approvalServer) handleApprove(ctx context.Context, req mcp.CallToolRequ
 // ends. A file with a bad signature is journaled once and ignored: it is either
 // a mistake or an attempt to approve without the key.
 func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time, progress mcp.ProgressToken) (coderun.Answer, coderun.ResponseReason) {
-	if s.key == nil {
+	if s.pub == nil {
 		return coderun.AnswerDeny, coderun.ReasonNoKey
 	}
 	path := s.answerPath(id)
@@ -258,7 +245,7 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 	lastProgress := s.now()
 	for {
 		if content, err := os.ReadFile(path); err == nil && string(content) != rejected {
-			a, verr := coderun.VerifyAnswer(s.key, s.run, id, string(content))
+			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, string(content))
 			if verr == nil {
 				return a, coderun.ReasonAnswered
 			}

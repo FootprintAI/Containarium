@@ -3,7 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +38,7 @@ func (f *fakeApprovalSession) WriteFile(_ context.Context, path, content, mode s
 	return nil
 }
 
-func TestPrepareApprovalsClaudeDeliversKeyAndWiresCommand(t *testing.T) {
+func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
 	sess := &fakeApprovalSession{probe: engine.ApprovalProbeOK + "\n"}
 	eng := mustEngine(t, engine.NameClaude, engine.SecretCredential{})
 	base := eng.RunCommand("p", false, false, "")
@@ -48,31 +48,48 @@ func TestPrepareApprovalsClaudeDeliversKeyAndWiresCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want, _ := engine.WithApprovals(eng, base, "code", 30*time.Minute); got != want {
+	m := regexp.MustCompile(`--public-key ([0-9a-f]+) `).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no --public-key in the command:\n%s", got)
+	}
+	pub, err := coderun.ParseApprovalPublicKey(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := engine.WithApprovals(eng, base, "code", pub, 30*time.Minute); got != want {
 		t.Errorf("command = %q, want engine.WithApprovals' %q", got, want)
 	}
-
-	w, ok := sess.writes[coderun.ApprovalKeyPath("code")]
-	if !ok {
-		t.Fatalf("no key written; writes = %v", sess.writes)
+	// The box holds no secret: nothing is written to it for an ask-mode Claude run.
+	if len(sess.writes) != 0 {
+		t.Errorf("files written to the box: %v", sess.writes)
 	}
-	if w.mode != "0600" {
-		t.Errorf("key written with mode %s, want 0600", w.mode)
+	// A second run gets a different key.
+	again, _ := prepareApprovals(context.Background(), &fakeApprovalSession{probe: engine.ApprovalProbeOK}, eng, "code", base, 30*time.Minute, &bytes.Buffer{})
+	if again == got {
+		t.Error("two runs got the same public key")
 	}
-	if k, err := hex.DecodeString(w.content); err != nil || len(k) != coderun.ApprovalKeyBytes {
-		t.Errorf("key content %q is not %d hex bytes", w.content, coderun.ApprovalKeyBytes)
-	}
-	// The key is file content only: never in a command sent to the box.
-	for _, c := range append(sess.execs, got) {
-		if strings.Contains(c, w.content) {
-			t.Errorf("the key appears in a command: %q", c)
-		}
-	}
-	if len(sess.execs) == 0 || !strings.Contains(sess.execs[0], "rm -rf '/tmp/agent-box/code.input.jsonl' '/tmp/agent-box/code.answers' '/tmp/agent-box/code.approval-key'") {
+	if len(sess.execs) == 0 || !strings.Contains(sess.execs[0], "rm -rf '/tmp/agent-box/code.input.jsonl' '/tmp/agent-box/code.answers'") {
 		t.Errorf("first exec does not clear the previous run's approval files: %v", sess.execs)
 	}
 	if !strings.Contains(diag.String(), "expires into a deny") {
 		t.Errorf("diag does not say unanswered prompts expire into a deny: %q", diag.String())
+	}
+}
+
+// A name whose approval files would not sit plainly next to the run log is
+// refused before anything on the box is touched, for every engine.
+func TestPrepareApprovalsRefusesUnsafeRunNamesFirst(t *testing.T) {
+	for _, n := range []engine.Name{engine.NameClaude, engine.NamePi} {
+		for _, name := range []string{"sub/task", "../victim", ".."} {
+			sess := &fakeApprovalSession{probe: engine.ApprovalProbeOK}
+			_, err := prepareApprovals(context.Background(), sess, mustEngine(t, n, engine.SecretCredential{}), name, "cmd", time.Minute, &bytes.Buffer{})
+			if err == nil {
+				t.Errorf("%s/%q: accepted", n, name)
+			}
+			if len(sess.execs) != 0 || len(sess.writes) != 0 {
+				t.Errorf("%s/%q: touched the box: execs=%v writes=%v", n, name, sess.execs, sess.writes)
+			}
+		}
 	}
 }
 
@@ -82,9 +99,6 @@ func TestPrepareApprovalsRefusesAnAgentBoxWithoutTheMode(t *testing.T) {
 	_, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", time.Minute, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "newer agent-box") {
 		t.Fatalf("err = %v, want the newer-agent-box error", err)
-	}
-	if _, wrote := sess.writes[coderun.ApprovalKeyPath("code")]; wrote {
-		t.Error("a key was delivered to a box that cannot consume it")
 	}
 }
 
@@ -129,9 +143,6 @@ func TestPrepareApprovalsHooklessEngineWarnsAndJournals(t *testing.T) {
 	ev := coderun.ParseInputJournal([]byte(w.content))
 	if len(ev) != 1 || ev[0].Kind != coderun.KindInputStatus || !strings.Contains(ev[0].Text, "engine pi has no permission hook") {
 		t.Errorf("journal = %+v", ev)
-	}
-	if _, wrote := sess.writes[coderun.ApprovalKeyPath("code")]; wrote {
-		t.Error("a key was delivered for a run that cannot use it")
 	}
 }
 
