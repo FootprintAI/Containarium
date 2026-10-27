@@ -345,6 +345,7 @@ func TestBackupScope_FieldNumbersAreAdditive(t *testing.T) {
 			"username": 1, "connection": 2, "destination": 3, "gcs_bucket": 4,
 			"hook": 5, "label": 6, "age_recipient": 7, "key_mode": 8, "hook_format": 9,
 			"scope": 10, // #2800
+			"require_encryption": 11, // #3169
 		}},
 		{&pb.BackupRecord{}, map[string]protoreflect.FieldNumber{
 			"id": 1, "username": 2, "database": 3, "created_at": 4, "size_bytes": 5,
