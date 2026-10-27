@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/footprintai/containarium/pkg/core/taskgraph"
@@ -43,6 +44,29 @@ func withNoServer(t *testing.T) {
 	prev := serverAddr
 	serverAddr = ""
 	t.Cleanup(func() { serverAddr = prev })
+}
+
+// Plans authored in YAML and protobuf JSON must retain the same typed
+// requirements before either validation or transport to the daemon.
+func TestLoadTaskGraph_Resources(t *testing.T) {
+	node := &pb.TaskNode{Id: "inspect", Goal: "inspect repository", Assignee: &pb.TaskNode_SkillId{SkillId: "code-review"},
+		Resources: &pb.TaskNodeResources{MinCpuCores: 4, MinMemoryBytes: 8 << 30, RequiresGpu: true}}
+	want := &pb.TaskGraph{Goal: "inspect", Nodes: []*pb.TaskNode{node}}
+	wire, err := protojson.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"plan.json": string(wire),
+		"plan.yaml": "goal: inspect\nnodes:\n  - id: inspect\n    goal: inspect repository\n    skill_id: code-review\n    resources:\n      min_cpu_cores: 4\n      min_memory_bytes: 8589934592\n      requires_gpu: true\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := loadTaskGraph(writePlan(t, name, body))
+			if err != nil || !proto.Equal(got, want) {
+				t.Fatalf("requirements changed: graph=%v err=%v", got, err)
+			}
+		})
+	}
 }
 
 func TestLoadTaskGraph_YAMLAndJSONAgree(t *testing.T) {

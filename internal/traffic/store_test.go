@@ -478,3 +478,122 @@ func TestTrafficStore_SchemaInitIsRepeatable(t *testing.T) {
 		t.Error("the connection did not survive a schema re-init — a restart would erase history")
 	}
 }
+
+// #2884: a host-wide query (empty ContainerName) finds which box connected to a
+// destination without naming the box.
+func TestTrafficStore_HostWideFindsTheBoxThatConnectedToADestination(t *testing.T) {
+	ctx := context.Background()
+	store, base := trafficTestStore(t)
+	boxes := []string{base + "-a", base + "-b", base + "-c"}
+	t.Cleanup(func() {
+		for _, b := range boxes {
+			_, _ = store.Pool().Exec(context.Background(),
+				"DELETE FROM traffic_connections WHERE container_name = $1", b)
+		}
+	})
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for i, b := range boxes {
+		c := aConnection(b, "find-"+b, now)
+		c.DestIp = "198.51.100.7"
+		c.DestPort = 3333
+		if i == 1 { // only box b talks to the sought destination
+			c.DestIp = "203.0.113.9"
+			c.DestPort = 3333
+		}
+		if err := store.SaveConnection(ctx, c); err != nil {
+			t.Fatalf("SaveConnection(%s): %v", b, err)
+		}
+	}
+
+	got, _, err := store.QueryConnections(ctx, QueryParams{
+		StartTime: now.Add(-time.Minute), EndTime: now.Add(time.Minute),
+		DestIP: "203.0.113.9", DestPort: 3333, Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("QueryConnections: %v", err)
+	}
+	if len(got) != 1 || got[0].GetContainerName() != boxes[1] {
+		t.Fatalf("got %v, want exactly one row naming %s", got, boxes[1])
+	}
+
+	// Without the destination filter all three of this test's boxes appear.
+	all, total, err := store.QueryConnections(ctx, QueryParams{
+		StartTime: now.Add(-time.Minute), EndTime: now.Add(time.Minute), Limit: 1000,
+	})
+	if err != nil {
+		t.Fatalf("QueryConnections: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, c := range all {
+		seen[c.GetContainerName()] = true
+	}
+	for _, b := range boxes {
+		if !seen[b] {
+			t.Errorf("host-wide query missing box %s (total %d)", b, total)
+		}
+	}
+}
+
+// The window is closed on both ends: started_at == start_time and
+// started_at == end_time are both returned; one second outside is not.
+func TestTrafficStore_WindowBoundsAreInclusive(t *testing.T) {
+	ctx := context.Background()
+	store, box := trafficTestStore(t)
+	t0 := time.Now().UTC().Truncate(time.Second)
+	for i, off := range []time.Duration{-10 * time.Second, 0, 10 * time.Second, 20 * time.Second} {
+		if err := store.SaveConnection(ctx, aConnection(box, fmt.Sprintf("w%d", i), t0.Add(off))); err != nil {
+			t.Fatalf("SaveConnection: %v", err)
+		}
+	}
+	got, total, err := store.QueryConnections(ctx, QueryParams{
+		ContainerName: box, StartTime: t0, EndTime: t0.Add(10 * time.Second), Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("QueryConnections: %v", err)
+	}
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("got %d rows (total %d), want the 2 rows at exactly start and end", len(got), total)
+	}
+}
+
+func TestTrafficStore_HostWideResultsAreCappedAtTheLimit(t *testing.T) {
+	ctx := context.Background()
+	store, box := trafficTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		if err := store.SaveConnection(ctx, aConnection(box, fmt.Sprintf("l%d", i), now)); err != nil {
+			t.Fatalf("SaveConnection: %v", err)
+		}
+	}
+	got, total, err := store.QueryConnections(ctx, QueryParams{
+		StartTime: now.Add(-time.Minute), EndTime: now.Add(time.Minute), DestPort: 443, Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("QueryConnections: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want limit 2", len(got))
+	}
+	if total < 5 {
+		t.Fatalf("total = %d, want the full match count (>=5)", total)
+	}
+}
+
+func TestTrafficStore_OldestRecord(t *testing.T) {
+	ctx := context.Background()
+	store, box := trafficTestStore(t)
+	if got, err := store.OldestRecord(ctx, box); err != nil || got != nil {
+		t.Fatalf("empty scope: got %v, %v; want nil, nil", got, err)
+	}
+	t0 := time.Now().UTC().Truncate(time.Second)
+	for i, off := range []time.Duration{-time.Hour, -2 * time.Hour} {
+		if err := store.SaveConnection(ctx, aConnection(box, fmt.Sprintf("o%d", i), t0.Add(off))); err != nil {
+			t.Fatalf("SaveConnection: %v", err)
+		}
+	}
+	got, err := store.OldestRecord(ctx, box)
+	if err != nil || got == nil || !got.Equal(t0.Add(-2*time.Hour)) {
+		t.Fatalf("got %v, %v; want %v", got, err, t0.Add(-2*time.Hour))
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/netbpf"
@@ -105,5 +106,39 @@ func TestDenyAuditEntry_SignatureRecordsVerdict(t *testing.T) {
 	}
 	if detail.Dropped || detail.SigName != "log4shell" {
 		t.Errorf("signature detail = %+v, want dropped=false sig_name=log4shell", detail)
+	}
+}
+
+// #2618: a packet a box sent with a source address that is not its own gets its
+// own audit action, whatever the verdict, so an operator can tell a spoofing box
+// from a routine allow-list miss; the verdict lands in the detail.
+func TestDenyAuditEntry_SpoofedSourceHasOwnAction(t *testing.T) {
+	for _, tt := range []struct {
+		verdict     uint8
+		wantDropped bool
+	}{
+		{netbpf.DenyVerdictDropped, true},
+		{netbpf.DenyVerdictLogged, false},
+	} {
+		ev := netbpf.DenyEvent{TenantID: 1, Saddr: 0x0100000a, Proto: 6, Dport: 8678, Reason: netbpf.DenyReasonSpoofedSource, Verdict: tt.verdict}
+		entry := denyAuditEntry(ev, "tenant-a", "", ev.Dropped(false))
+		if entry.Action != "network_policy.spoofed_source" {
+			t.Errorf("verdict %d: audit action = %q, want network_policy.spoofed_source", tt.verdict, entry.Action)
+		}
+		var detail struct {
+			Dropped       bool `json:"dropped"`
+			SpoofedSource bool `json:"spoofed_source"`
+		}
+		if err := json.Unmarshal([]byte(entry.Detail), &detail); err != nil {
+			t.Fatalf("audit detail is not JSON: %v (%s)", err, entry.Detail)
+		}
+		if detail.Dropped != tt.wantDropped || !detail.SpoofedSource {
+			t.Errorf("verdict %d: detail = %+v, want dropped=%v spoofed_source=true", tt.verdict, detail, tt.wantDropped)
+		}
+	}
+	// A routine deny does not carry the flag as true.
+	plain := denyAuditEntry(netbpf.DenyEvent{TenantID: 1, Proto: 6, Dport: 443}, "tenant-a", "", true)
+	if plain.Action != "network_policy.deny_dropped" || !strings.Contains(plain.Detail, `"spoofed_source":false`) {
+		t.Errorf("plain deny = %q %s, want deny_dropped with spoofed_source=false", plain.Action, plain.Detail)
 	}
 }

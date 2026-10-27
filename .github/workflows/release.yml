@@ -257,9 +257,9 @@ jobs:
         run: (cd bin && shasum -a 256 agent-runtime-bundle.tar.gz >> SHA256SUMS.txt)
 
       - name: Build SDLC skills bundle
-        # The pinned open-sdlc-skills role skills (#2065): fetched at the commit
-        # in pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically, so a
-        # lock whose sha256 does not match a rebuild fails the release here.
+        # The default [sdlc] source (#2065, #3048): fetched at the commit in
+        # pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically.
+        # The builder also checks namespaces across every configured source.
         # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
         # recipe and `containarium code install`).
         run: make bundle-sdlc-skills
