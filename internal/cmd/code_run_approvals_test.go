@@ -12,22 +12,19 @@ import (
 	"github.com/footprintai/containarium/internal/coderun/engine"
 )
 
-// fakeApprovalSession records what prepareApprovals does to the box.
+// fakeApprovalSession records what the approval setup does to the box.
 type fakeApprovalSession struct {
-	listing string
-	probe   string // what the probe prints
-	execs   []string
-	writes  map[string]struct{ content, mode string }
+	probe  string // what the probe prints
+	execs  []string
+	writes map[string]struct{ content, mode string }
 }
-
-func (f *fakeApprovalSession) ProcessList(context.Context) (string, error) { return f.listing, nil }
 
 func (f *fakeApprovalSession) ShellExec(_ context.Context, command string) (string, error) {
 	f.execs = append(f.execs, command)
 	if strings.Contains(command, "approval-mcp --probe") {
 		return f.probe, nil
 	}
-	return "reset-ok\n", nil
+	return "", nil
 }
 
 func (f *fakeApprovalSession) WriteFile(_ context.Context, path, content, mode string) error {
@@ -44,9 +41,12 @@ func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
 	base := eng.RunCommand("p", false, false, "")
 	var diag bytes.Buffer
 
-	got, err := prepareApprovals(context.Background(), sess, eng, "code", base, 30*time.Minute, &diag)
+	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, 30*time.Minute, &diag)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if note != "" {
+		t.Errorf("a Claude run got a hookless note %q", note)
 	}
 	m := regexp.MustCompile(`--public-key ([0-9a-f]+) `).FindStringSubmatch(got)
 	if m == nil {
@@ -59,17 +59,15 @@ func TestPrepareApprovalsClaudeWiresCommandWithAFreshPublicKey(t *testing.T) {
 	if want, _ := engine.WithApprovals(eng, base, "code", pub, 30*time.Minute); got != want {
 		t.Errorf("command = %q, want engine.WithApprovals' %q", got, want)
 	}
-	// The box holds no secret: nothing is written to it for an ask-mode Claude run.
-	if len(sess.writes) != 0 {
-		t.Errorf("files written to the box: %v", sess.writes)
+	// The box holds no secret, and setup changes nothing on it: the only
+	// command sent is the read-only probe.
+	if len(sess.writes) != 0 || len(sess.execs) != 1 || !strings.Contains(sess.execs[0], "--probe") {
+		t.Errorf("setup touched the box: execs=%v writes=%v", sess.execs, sess.writes)
 	}
 	// A second run gets a different key.
-	again, _ := prepareApprovals(context.Background(), &fakeApprovalSession{probe: engine.ApprovalProbeOK}, eng, "code", base, 30*time.Minute, &bytes.Buffer{})
+	again, _, _ := prepareApprovals(context.Background(), &fakeApprovalSession{probe: engine.ApprovalProbeOK}, eng, "code", base, 30*time.Minute, &bytes.Buffer{})
 	if again == got {
 		t.Error("two runs got the same public key")
-	}
-	if len(sess.execs) == 0 || !strings.Contains(sess.execs[0], "rm -rf '/tmp/agent-box/code.input.jsonl' '/tmp/agent-box/code.answers'") {
-		t.Errorf("first exec does not clear the previous run's approval files: %v", sess.execs)
 	}
 	if !strings.Contains(diag.String(), "expires into a deny") {
 		t.Errorf("diag does not say unanswered prompts expire into a deny: %q", diag.String())
@@ -82,7 +80,7 @@ func TestPrepareApprovalsRefusesUnsafeRunNamesFirst(t *testing.T) {
 	for _, n := range []engine.Name{engine.NameClaude, engine.NamePi} {
 		for _, name := range []string{"sub/task", "../victim", ".."} {
 			sess := &fakeApprovalSession{probe: engine.ApprovalProbeOK}
-			_, err := prepareApprovals(context.Background(), sess, mustEngine(t, n, engine.SecretCredential{}), name, "cmd", time.Minute, &bytes.Buffer{})
+			_, _, err := prepareApprovals(context.Background(), sess, mustEngine(t, n, engine.SecretCredential{}), name, "cmd", time.Minute, &bytes.Buffer{})
 			if err == nil {
 				t.Errorf("%s/%q: accepted", n, name)
 			}
@@ -96,37 +94,21 @@ func TestPrepareApprovalsRefusesUnsafeRunNamesFirst(t *testing.T) {
 func TestPrepareApprovalsRefusesAnAgentBoxWithoutTheMode(t *testing.T) {
 	sess := &fakeApprovalSession{probe: ""}
 	eng := mustEngine(t, engine.NameClaude, engine.SecretCredential{})
-	_, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", time.Minute, &bytes.Buffer{})
+	_, _, err := prepareApprovals(context.Background(), sess, eng, "code", "cmd", time.Minute, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "newer agent-box") {
 		t.Fatalf("err = %v, want the newer-agent-box error", err)
 	}
 }
 
-// A same-name run that is still alive keeps its journal: nothing on the box is
-// touched.
-func TestPrepareApprovalsLeavesALiveRunAlone(t *testing.T) {
-	sess := &fakeApprovalSession{
-		listing: "▶ code  (pid 42, running)\n",
-		probe:   engine.ApprovalProbeOK,
-	}
-	_, err := prepareApprovals(context.Background(), sess, mustEngine(t, engine.NameClaude, engine.SecretCredential{}), "code", "cmd", time.Minute, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "already running") {
-		t.Fatalf("err = %v, want already running", err)
-	}
-	if len(sess.execs) != 0 || len(sess.writes) != 0 {
-		t.Errorf("touched the box: execs=%v writes=%v", sess.execs, sess.writes)
-	}
-}
-
 // pi has no permission hook: the run starts unchanged, the CLI warns, and the
-// journal records why nothing will pause.
+// note the caller journals after process_start records why nothing will pause.
 func TestPrepareApprovalsHooklessEngineWarnsAndJournals(t *testing.T) {
 	sess := &fakeApprovalSession{}
 	eng := mustEngine(t, engine.NamePi, engine.SecretCredential{})
 	base := eng.RunCommand("p", false, false, "")
 	var diag bytes.Buffer
 
-	got, err := prepareApprovals(context.Background(), sess, eng, "code", base, time.Minute, &diag)
+	got, note, err := prepareApprovals(context.Background(), sess, eng, "code", base, time.Minute, &diag)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +118,11 @@ func TestPrepareApprovalsHooklessEngineWarnsAndJournals(t *testing.T) {
 	if !strings.HasPrefix(diag.String(), "warning: engine pi has no permission hook") || strings.Count(diag.String(), "\n") != 1 {
 		t.Errorf("diag = %q, want one warning line", diag.String())
 	}
+	if len(sess.execs) != 0 || len(sess.writes) != 0 {
+		t.Errorf("setup touched the box before process_start: execs=%v writes=%v", sess.execs, sess.writes)
+	}
+
+	journalApprovalNote(context.Background(), sess, "code", note, &diag)
 	w, ok := sess.writes[coderun.ApprovalJournalPath("code")]
 	if !ok {
 		t.Fatal("nothing journaled")

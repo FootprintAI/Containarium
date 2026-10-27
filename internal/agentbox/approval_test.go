@@ -4,6 +4,7 @@ package agentbox
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -210,5 +211,54 @@ func TestApprovalCLIProbe(t *testing.T) {
 	}
 	if rc := RunApprovalCLI([]string{"--run", "../x"}, strings.NewReader(""), &out, &errb); rc != 2 {
 		t.Errorf("a run name with a path separator was accepted (rc=%d)", rc)
+	}
+}
+
+// A run's approval journal and answers rotate aside with its record and log
+// when the name is reused, so the next run under that name never reports this
+// run's requests — and nothing is removed until process_start rotates.
+func TestRotateFinishedRunMovesApprovalFilesAside(t *testing.T) {
+	dir := t.TempDir()
+	restore := setProcessLogDirForTest(dir)
+	defer restore()
+
+	record := RunRecord{Version: RunRecordVersion, Name: "code", PID: 42, BootID: "boot-a",
+		StartedAt: time.Unix(1780000000, 0).UTC(), LogPath: logPathForName("code")}
+	if err := writeRunRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(dir, "code.input.jsonl")
+	if err := os.WriteFile(journal, []byte(`{"kind":"input_request","request_id":"r1"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "code.answers"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rotateFinishedRun(record); err != nil {
+		t.Fatalf("rotateFinishedRun: %v", err)
+	}
+	for _, gone := range []string{journal, filepath.Join(dir, "code.answers")} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still in place after rotation (stat err %v)", gone, err)
+		}
+	}
+	for _, kept := range []string{"code.1780000000.input.jsonl", "code.1780000000.answers"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Errorf("rotated %s missing: %v", kept, err)
+		}
+	}
+}
+
+// A valid answer that is already there once the deadline has passed is not
+// accepted: the request has expired.
+func TestApprovalAnswerAfterTheDeadlineIsNotAccepted(t *testing.T) {
+	s := newTestApprovalServer(t, testPub, time.Minute)
+	if err := os.WriteFile(s.answerPath("req-late"), []byte(coderun.FormatAnswer(testPriv, "code", "req-late", coderun.AnswerAllow)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, reason := s.wait(context.Background(), "req-late", time.Now().Add(-time.Millisecond), nil)
+	if a != coderun.AnswerDeny || reason != coderun.ReasonExpired {
+		t.Errorf("wait = %q, %q; want deny, expired", a, reason)
 	}
 }

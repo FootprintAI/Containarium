@@ -150,8 +150,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// #2183: --approvals deny (the default) leaves command untouched.
+	var approvalNote string
 	if approvals == coderun.ApprovalsAsk {
-		if command, err = prepareApprovals(ctx, sess, eng, name, command, codeRunApprovalTimeout, diag); err != nil {
+		if command, approvalNote, err = prepareApprovals(ctx, sess, eng, name, command, codeRunApprovalTimeout, diag); err != nil {
 			return fmt.Errorf("--approvals ask on %q: %w", box, err)
 		}
 	}
@@ -167,6 +168,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
+	if approvalNote != "" {
+		journalApprovalNote(ctx, sess, name, approvalNote, diag)
+	}
 
 	switch {
 	case discover:

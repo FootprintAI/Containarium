@@ -101,6 +101,11 @@ func RunApprovalCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	}
 
 	s := &approvalServer{run: *run, dir: *dir, timeout: *timeout, now: time.Now, pollInterval: approvalPollInterval}
+	// The answers directory is this run's own: a previous same-name run's was
+	// rotated aside by process_start.
+	if err := os.MkdirAll(filepath.Join(s.dir, s.run+".answers"), 0o700); err != nil {
+		log.Printf("[approval-mcp] create answers dir: %v", err)
+	}
 	s.setPublicKey(*publicKey)
 
 	mcpServer := server.NewMCPServer(ApprovalServerName, "1", server.WithToolCapabilities(false))
@@ -244,6 +249,11 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 	defer tick.Stop()
 	lastProgress := s.now()
 	for {
+		// The deadline is checked first, so an answer that lands after expiry
+		// is never accepted.
+		if !s.now().Before(deadline) {
+			return coderun.AnswerDeny, coderun.ReasonExpired
+		}
 		if content, err := os.ReadFile(path); err == nil && string(content) != rejected {
 			a, verr := coderun.VerifyAnswer(s.pub, s.run, id, string(content))
 			if verr == nil {
@@ -252,9 +262,6 @@ func (s *approvalServer) wait(ctx context.Context, id string, deadline time.Time
 			rejected = string(content)
 			s.journal(coderun.InputEvent{Kind: coderun.KindInputStatus, RequestID: id,
 				Text: "ignored an answer to " + id + ": " + verr.Error()})
-		}
-		if !s.now().Before(deadline) {
-			return coderun.AnswerDeny, coderun.ReasonExpired
 		}
 		if progress != nil && s.now().Sub(lastProgress) >= approvalProgressInterval {
 			lastProgress = s.now()

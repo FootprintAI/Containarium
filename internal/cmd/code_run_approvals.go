@@ -24,76 +24,62 @@ var (
 
 // approvalSession is the part of coderun.Session the approval setup uses.
 type approvalSession interface {
-	ProcessList(ctx context.Context) (string, error)
 	ShellExec(ctx context.Context, command string) (string, error)
 	WriteFile(ctx context.Context, absPath, content, mode string) error
 }
 
-// prepareApprovals rewires command for --approvals ask and leaves the box ready
-// for it: the previous same-name run's request files cleared. It runs after
-// prepareCodeRun and before process_start.
+// prepareApprovals rewires command for --approvals ask. It runs after
+// prepareCodeRun and before process_start, and changes nothing on the box: a
+// previous same-name run's approval files are rotated aside by process_start
+// itself, with that run's log, and only once the new run actually starts.
 //
 // Each run gets a fresh Ed25519 key pair. Only the public key goes to the box
 // (on the approval server's command line); the box holds no secret. The private
 // key is not kept: who holds it to sign answers (this CLI, the daemon for a
 // phone answer) is decided with the answer command, not here. Until then
 // requests can be seen in `code status` but expire into a deny.
+//
+// For an engine with no permission hook the command is returned unchanged with
+// a non-empty note, which the caller journals once the run has started.
 func prepareApprovals(ctx context.Context, sess approvalSession, eng engine.Engine, name, command string,
-	timeout time.Duration, diag io.Writer) (string, error) {
+	timeout time.Duration, diag io.Writer) (wired, note string, err error) {
 
-	// Before anything on the box is touched: the approval files are named
-	// after the run.
+	// The approval files are named after the run.
 	if err := coderun.ValidApprovalRunName(name); err != nil {
-		return "", err
-	}
-
-	// Never clear a live run's journal: process_start would refuse the name
-	// anyway, but only after the files were gone.
-	listing, err := sess.ProcessList(ctx)
-	if err != nil {
-		return "", fmt.Errorf("process_list: %w", err)
-	}
-	if _, running := coderun.RunOutcomeLine(listing, name); running {
-		return "", fmt.Errorf("a run named %q is already running; stop it first or pick a different --name", name)
-	}
-
-	journal := coderun.ShellQuoteSingle(coderun.ApprovalJournalPath(name))
-	answers := coderun.ShellQuoteSingle(coderun.ApprovalAnswersDir(name))
-	reset := "mkdir -p " + coderun.ShellQuoteSingle(coderun.RunLogDir) + " && rm -rf " + journal + " " + answers +
-		" && mkdir -m 700 " + answers + " && echo reset-ok"
-	if out, err := sess.ShellExec(ctx, reset); err != nil || !strings.Contains(out, "reset-ok") {
-		return "", fmt.Errorf("prepare this run's approval files: %v %s", err, strings.TrimSpace(out))
+		return "", "", err
 	}
 
 	if !engine.SupportsApprovals(eng.Name()) {
 		fmt.Fprintf(diag, "warning: engine %s has no permission hook; --approvals ask cannot pause this run, gated actions follow the engine's own behaviour\n", eng.Name())
-		line, err := coderun.InputEvent{
-			Kind: coderun.KindInputStatus,
-			T:    time.Now().UTC(),
-			Text: fmt.Sprintf("--approvals ask requested, but engine %s has no permission hook; gated actions follow the engine's own behaviour", eng.Name()),
-		}.MarshalLine()
-		if err == nil {
-			err = sess.WriteFile(ctx, coderun.ApprovalJournalPath(name), string(line), "0600")
-		}
-		if err != nil {
-			fmt.Fprintf(diag, "note: could not journal that (non-fatal): %v\n", err)
-		}
-		return command, nil
+		return command, fmt.Sprintf("--approvals ask requested, but engine %s has no permission hook; gated actions follow the engine's own behaviour", eng.Name()), nil
 	}
 
 	if out, err := sess.ShellExec(ctx, engine.ApprovalProbeCommand()); err != nil || !strings.Contains(out, engine.ApprovalProbeOK) {
-		return "", errors.New("--approvals ask needs a newer agent-box on the box (it has no approval-mcp mode); update agent-box and retry, or run without --approvals ask")
+		return "", "", errors.New("--approvals ask needs a newer agent-box on the box (it has no approval-mcp mode); update agent-box and retry, or run without --approvals ask")
 	}
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return "", fmt.Errorf("generate this run's approval key: %w", err)
+		return "", "", fmt.Errorf("generate this run's approval key: %w", err)
 	}
 
-	wired, _ := engine.WithApprovals(eng, command, name, pub, timeout)
+	wired, _ = engine.WithApprovals(eng, command, name, pub, timeout)
 	fmt.Fprintf(diag, "• --approvals ask: a permission prompt pauses the run for up to %s; see it with 'containarium code status %s'. No answer command ships yet, so an unanswered prompt expires into a deny.\n",
 		timeout, codeRunBoxHint(name))
-	return wired, nil
+	return wired, "", nil
+}
+
+// journalApprovalNote writes note as the run's approval journal. Called right
+// after process_start, so it lands after the previous run's journal was
+// rotated aside. Best-effort: the run is already going.
+func journalApprovalNote(ctx context.Context, sess approvalSession, name, note string, diag io.Writer) {
+	line, err := coderun.InputEvent{Kind: coderun.KindInputStatus, T: time.Now().UTC(), Text: note}.MarshalLine()
+	if err == nil {
+		err = sess.WriteFile(ctx, coderun.ApprovalJournalPath(name), string(line), "0600")
+	}
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not journal that (non-fatal): %v\n", err)
+	}
 }
 
 // codeRunBoxHint is the status hint's argument tail: the box is the user's own
