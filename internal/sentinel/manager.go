@@ -677,6 +677,11 @@ func (m *Manager) SetHTTPSListener(ln *chanListener) {
 //
 // Optional query parameter:
 //
+// Pool data is daemon-only (#3119): a request without a valid daemon signature
+// (same HMAC secret as /sentinel/primaries) gets the peers without `pool`, and
+// ?pool= is ignored, so the route cannot be used to enumerate or probe pool
+// names. The rest of this comment describes the signed caller's view.
+//
 //	?pool=<name>  Return only peers in the named pool. Pass ?pool= (empty value)
 //	              to return only peers without a pool tag. Omit the parameter
 //	              entirely to return all peers (back-compat default).
@@ -689,7 +694,12 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			Pool      Pool   `json:"pool,omitempty"`
 		}
 
+		// Signed daemon callers only; an unconfigured secret trusts nobody.
+		signed := len(m.hmacSecret) >= auth.SentinelMinSecretLen &&
+			auth.VerifySentinelRequest(r, m.hmacSecret, time.Now()) == nil
+
 		poolFilter, hasPoolFilter := r.URL.Query()["pool"]
+		hasPoolFilter = hasPoolFilter && signed
 		var wantPool Pool
 		if hasPoolFilter {
 			wantPool = Pool(poolFilter[0])
@@ -704,12 +714,15 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			if hasPoolFilter && b.Pool != wantPool {
 				continue
 			}
-			peers = append(peers, peerInfo{
+			pi := peerInfo{
 				ID:        b.ID,
 				ProxyPath: "/peer/" + b.ID,
 				Healthy:   b.Healthy,
-				Pool:      b.Pool,
-			})
+			}
+			if signed {
+				pi.Pool = b.Pool
+			}
+			peers = append(peers, pi)
 		}
 
 		// Marshal first so we can sign the exact bytes the daemon will
