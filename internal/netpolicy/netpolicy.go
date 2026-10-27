@@ -25,7 +25,10 @@ import (
 // daemon resolves from EgressDomains; intra-tenant peer traffic is gated by
 // AllowIntraTenant.
 type CompiledPolicy struct {
-	Tenant           string
+	Tenant string
+	// IsHostDefault marks the host's default egress policy (DefaultPolicy), as
+	// opposed to one compiled from a stored policy (#2996).
+	IsHostDefault    bool
 	AllowIntraTenant bool
 	EgressCIDRs      []netip.Prefix // parsed, masked-to-network, deduped, sorted
 	EgressDomains    []string       // lowercased, trimmed, deduped, sorted
