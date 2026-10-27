@@ -178,16 +178,17 @@ var newNotifyClient = func() (client.NotifyAPI, error) {
 }
 
 func writeNotifyChannel(w io.Writer, ch *pb.NotifyChannel) error {
-	token := "none"
+	// What `show` says about the token; never the token itself.
+	stored := "none"
 	if ch.GetHasToken() {
-		token = "stored (broker-only secret)"
+		stored = "stored (broker-only secret)"
 	}
 	cmdLine := "shown (Bash only, ≤ 200 chars)"
 	if ch.GetRedactCommand() {
 		cmdLine = "redacted (tool name only)"
 	}
 	_, err := fmt.Fprintf(w, "user:     %s\nchannel:  ntfy\nserver:   %s\ntopic:    %s\ntoken:    %s\ncommand:  %s\n",
-		ch.GetUsername(), ch.GetServer(), ch.GetTopic(), token, cmdLine)
+		ch.GetUsername(), ch.GetServer(), ch.GetTopic(), stored, cmdLine)
 	return err
 }
 
