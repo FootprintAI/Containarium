@@ -1,7 +1,10 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,8 +44,8 @@ func newUplinkRig() (*uplinkReconciler, *fakeTrusted, map[int]bool, *[]string) {
 	return u, &fakeTrusted{set: map[int]bool{}}, map[int]bool{}, &lines
 }
 
-func mastersOf(m map[string]string) func(string) string {
-	return func(v string) string { return m[v] }
+func mastersOf(m map[string]string) func(string) (string, error) {
+	return func(v string) (string, error) { return m[v], nil }
 }
 
 // #3185 SF1: the common single-NIC host (default route on eth0, instances on a
@@ -88,7 +91,7 @@ func TestUplinks_RefuseBridgeCarryingVeths(t *testing.T) {
 		t.Errorf("want exactly 1 refusal warning, got %d: %v", warns, *lines)
 	}
 	// A managed veth named directly is refused too.
-	_, refused := refuseVethCarriers([]uplinkIface{{"veth1", 9}}, []string{"veth1"}, masters)
+	_, refused, _ := refuseVethCarriers([]uplinkIface{{"veth1", 9}}, []string{"veth1"}, masters)
 	if len(refused) != 1 {
 		t.Errorf("veth itself not refused: %v", refused)
 	}
@@ -115,5 +118,78 @@ func TestUplinks_LogsTrustedSetOnChangeOnly(t *testing.T) {
 	u.converge([]uplinkIface{{"eth0", 2}, {"wg0", 7}}, nil, m, ap, inst)
 	if count() != 2 || !strings.Contains((*lines)[len(*lines)-1], "[eth0,wg0]") {
 		t.Fatalf("change not logged: %v", *lines)
+	}
+}
+
+// fakeSysfs points sysClassNet at a temp dir: ifaces maps veth -> master name
+// ("" = no master link).
+func fakeSysfs(t *testing.T, ifaces map[string]string) {
+	t.Helper()
+	dir := t.TempDir()
+	for v, m := range ifaces {
+		if err := os.MkdirAll(filepath.Join(dir, v), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if m != "" {
+			if err := os.Symlink("../"+m, filepath.Join(dir, v, "master")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	old := sysClassNet
+	sysClassNet = dir
+	t.Cleanup(func() { sysClassNet = old })
+}
+
+// #3185 review: masterOfIface reads the real link layout; ENOENT (no master, or
+// the veth vanished) is not an error, anything else is.
+func TestMasterOfIface(t *testing.T) {
+	fakeSysfs(t, map[string]string{"vethA": "incusbr0", "vethB": ""})
+	if m, err := masterOfIface("vethA"); m != "incusbr0" || err != nil {
+		t.Errorf("vethA = %q, %v", m, err)
+	}
+	if m, err := masterOfIface("vethB"); m != "" || err != nil {
+		t.Errorf("no master = %q, %v", m, err)
+	}
+	if m, err := masterOfIface("gone"); m != "" || err != nil {
+		t.Errorf("vanished veth = %q, %v (must not be an error)", m, err)
+	}
+	// A non-symlink master is unreadable as a link: an error, not "none".
+	if err := os.WriteFile(filepath.Join(sysClassNet, "vethB", "master"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := masterOfIface("vethB"); err == nil {
+		t.Error("unreadable master returned no error")
+	}
+}
+
+// #3185 review: the real vethCache -> master lookup -> converge wiring.
+func TestApplyTrustedUplinks_WiresVethCacheAndSysfs(t *testing.T) {
+	fakeSysfs(t, map[string]string{"vethA": "br0"})
+	cache := map[string]vethInfo{"box": {veth: "vethA"}}
+	u, ap, inst, lines := newUplinkRig()
+	u.converge([]uplinkIface{{"br0", 5}, {"eth0", 2}}, managedVethNames(cache), masterOfIface, ap, inst)
+	if ap.set[5] || !ap.set[2] {
+		t.Fatalf("want br0 refused and eth0 trusted via fake sysfs, got %v (%v)", ap.set, *lines)
+	}
+}
+
+// #3185 review: an unreadable master fails closed for the pass: no new trust, the
+// installed set untouched, one log line.
+func TestUplinks_UnreadableMasterFailsClosed(t *testing.T) {
+	boom := func(string) (string, error) { return "", errors.New("EIO") }
+	u, ap, inst, lines := newUplinkRig()
+	inst[2], ap.set[2] = true, true // legitimate, already installed
+	cands := []uplinkIface{{"eth0", 2}, {"br0", 5}}
+	u.converge(cands, []string{"vethA"}, boom, ap, inst)
+	u.converge(cands, []string{"vethA"}, boom, ap, inst)
+	if ap.set[5] || inst[5] {
+		t.Errorf("new entry trusted despite unreadable master: %v", ap.set)
+	}
+	if !ap.set[2] || !inst[2] {
+		t.Errorf("installed uplink was un-trusted: %v", ap.set)
+	}
+	if len(*lines) != 1 || !strings.Contains((*lines)[0], "EIO") {
+		t.Errorf("want one error log, got %v", *lines)
 	}
 }

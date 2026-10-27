@@ -1358,13 +1358,18 @@ func (e *NetworkPolicyEnforcer) SetIncusDataDir(dir string) {
 // logged and skipped without touching the installed set, so the next pass
 // retries it.
 func (e *NetworkPolicyEnforcer) applyTrustedUplinks() {
-	veths := make([]string, 0, len(e.vethCache))
-	for _, info := range e.vethCache {
+	e.uplinks.converge(uplinkCandidates(e.extraUplinks), managedVethNames(e.vethCache), masterOfIface, e.loader, e.trustedInstalled)
+}
+
+// managedVethNames lists the host veth names of the running managed containers.
+func managedVethNames(cache map[string]vethInfo) []string {
+	out := make([]string, 0, len(cache))
+	for _, info := range cache {
 		if info.veth != "" {
-			veths = append(veths, info.veth)
+			out = append(out, info.veth)
 		}
 	}
-	e.uplinks.converge(uplinkCandidates(e.extraUplinks), veths, masterOfIface, e.loader, e.trustedInstalled)
+	return out
 }
 
 // trustedIfaceApplier is the slice of the BPF loader the uplink reconcile needs.
@@ -1378,6 +1383,7 @@ type trustedIfaceApplier interface {
 type uplinkReconciler struct {
 	warned  map[string]bool
 	lastSet string
+	lastErr string
 	logf    func(format string, args ...any)
 }
 
@@ -1391,8 +1397,19 @@ func (u *uplinkReconciler) printf(format string, args ...any) {
 
 // converge installs the safe candidates into the trusted_iif map and removes
 // installed entries that are no longer wanted (including ones now refused).
-func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, masterOf func(string) string, ap trustedIfaceApplier, installed map[int]bool) {
-	desired, refused := refuseVethCarriers(cands, managedVeths, masterOf)
+func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, masterOf func(string) (string, error), ap trustedIfaceApplier, installed map[int]bool) {
+	desired, refused, err := refuseVethCarriers(cands, managedVeths, masterOf)
+	if err != nil {
+		// Fail closed for this pass: the carrier set is incomplete, so add no new
+		// trusted entry and leave the installed set as it is (do not un-trust
+		// legitimate uplinks either). Logged once per distinct error.
+		if msg := err.Error(); msg != u.lastErr {
+			u.lastErr = msg
+			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; leaving trusted uplinks unchanged this pass: %v", err)
+		}
+		return
+	}
+	u.lastErr = ""
 	nowRefused := make(map[string]bool, len(refused))
 	for _, r := range refused {
 		nowRefused[r.Name] = true

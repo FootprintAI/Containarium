@@ -2,7 +2,10 @@ package server
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -71,17 +74,23 @@ func uplinkCandidates(extra []string) []uplinkIface {
 	return out
 }
 
-// sysClassNet is where the kernel exposes each interface's bridge master.
-const sysClassNet = "/sys/class/net"
+// sysClassNet is where the kernel exposes each interface's bridge master. A
+// variable so tests can point it at a fake sysfs.
+var sysClassNet = "/sys/class/net"
 
-// masterOfIface returns the name of the bridge (or bond) iface is enslaved to,
-// or "" when it has none.
-func masterOfIface(iface string) string {
+// masterOfIface returns the name of the bridge the veth iface is enslaved to, or
+// "" when it has none. A missing link (the veth has no master, or vanished
+// mid-scan) is normal and returns "", nil; any other read error is returned so
+// the caller can fail closed rather than treat an unreadable master as "none".
+func masterOfIface(iface string) (string, error) {
 	target, err := os.Readlink(filepath.Join(sysClassNet, iface, "master"))
 	if err != nil {
-		return ""
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read master of %q: %w", iface, err)
 	}
-	return filepath.Base(target)
+	return filepath.Base(target), nil
 }
 
 // refuseVethCarriers splits candidates into the ones safe to trust and the ones
@@ -91,12 +100,18 @@ func masterOfIface(iface string) string {
 // reopening the unmarked-frame seed path. An interface carries managed veths
 // when it is one of them or is the master a managed veth is enslaved to, whether
 // it came from default-route detection or CONTAINARIUM_NETWORK_POLICY_UPLINKS.
-// masterOf is injected so the decision is testable without sysfs.
-func refuseVethCarriers(cands []uplinkIface, managedVeths []string, masterOf func(string) string) (trusted map[int]bool, refused []uplinkIface) {
+// masterOf is injected so the decision is testable without sysfs. If any managed
+// veth's master cannot be read, err is set and the result must not be used: the
+// carrier set is incomplete, so no candidate can be judged safe.
+func refuseVethCarriers(cands []uplinkIface, managedVeths []string, masterOf func(string) (string, error)) (trusted map[int]bool, refused []uplinkIface, err error) {
 	carriers := make(map[string]bool, len(managedVeths)*2)
 	for _, v := range managedVeths {
 		carriers[v] = true
-		if m := masterOf(v); m != "" {
+		m, merr := masterOf(v)
+		if merr != nil {
+			return nil, nil, merr
+		}
+		if m != "" {
 			carriers[m] = true
 		}
 	}
@@ -108,5 +123,5 @@ func refuseVethCarriers(cands []uplinkIface, managedVeths []string, masterOf fun
 		}
 		trusted[c.Index] = true
 	}
-	return trusted, refused
+	return trusted, refused, nil
 }

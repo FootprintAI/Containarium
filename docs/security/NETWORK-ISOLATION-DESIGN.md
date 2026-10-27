@@ -513,7 +513,10 @@ cannot be poisoned:
     seed a flow without the sender-hook mark. The daemon logs a warning when
     it refuses an interface (once per interface), removes it from
     `trusted_iif` if it was installed, and logs the trusted set whenever it
-    changes. Inbound replies via a refused interface are dropped. A host
+    changes. If the bridge a managed veth is enslaved to cannot be read, the
+    pass fails closed: no new uplink is trusted, the installed set is left
+    unchanged, and the error is logged once. Inbound replies via a refused
+    interface are dropped. A host
     whose uplink is enslaved to the instance bridge therefore gets no
     trusted uplink from that interface.
   - **the top two bits of `skb->mark` (`0x40000000`, `0x80000000`) are
