@@ -45,6 +45,7 @@ type GatewayServer struct {
 	swaggerDir             string
 	certsDir               string                                          // Optional: for mTLS connection to gRPC server
 	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
+	startupListener        *StartupListener                                // HTTP port bound before the startup waits (#3130); nil = bind in Start
 	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
 	alertmanagerBackendURL string                                          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
@@ -197,6 +198,12 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 // JWT-verified identity metadata.
 func (gs *GatewayServer) SetInternalDialer(dial func(context.Context, string) (net.Conn, error)) {
 	gs.internalDialer = dial
+}
+
+// SetStartupListener makes Start serve on sl, the HTTP port the daemon bound
+// before its startup waits (#3130), instead of binding the port itself.
+func (gs *GatewayServer) SetStartupListener(sl *StartupListener) {
+	gs.startupListener = sl
 }
 
 // SetGrafanaBackendURL sets the internal Grafana URL for the reverse proxy
@@ -555,6 +562,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// AuditService (#2415): sentinel SSH session record ingest.
 	if err := pb.RegisterAuditServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register audit service gateway: %w", err)
+	}
+
+	// ProofPackService (#3064): verify a sealed Proof Pack.
+	if err := pb.RegisterProofPackServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register proof pack service gateway: %w", err)
 	}
 
 	// Register NetworkPolicyService gateway handler (#315)
@@ -1037,6 +1049,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	log.Printf("Swagger UI available at http://localhost%s/swagger-ui/", addr)
 	log.Printf("OpenAPI spec available at http://localhost%s/swagger.json", addr)
 
+	if gs.startupListener != nil {
+		// #3130: the port has been bound (answering "degraded") since
+		// before the startup waits; take it over rather than rebinding.
+		return gs.startupListener.Serve(httpMux)
+	}
 	return http.ListenAndServe(addr, httpMux)
 }
 
@@ -1200,7 +1217,12 @@ func getAllowedOrigins() []string {
 // literal so the shape is one reviewable thing — this endpoint is
 // unauthenticated, so what it carries is a deliberate decision.
 type healthResponse struct {
-	Status string `json:"status"`
+	Status healthStatus `json:"status"`
+	// Reason says why Status is degraded (#3130). It is one of a few fixed
+	// phrases set by the daemon's startup sequence, never an error string,
+	// so this unauthenticated endpoint cannot leak a DSN, an address, or a
+	// container name. Empty when healthy.
+	Reason string `json:"reason,omitempty"`
 	// Version answers "what is this box running" without shell access (#1647).
 	// Previously the only way to tell was SSH plus `containarium version`,
 	// which made fleet audits, drift detection, and confirming a fix landed
@@ -1217,7 +1239,7 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(healthResponse{
-		Status:  "healthy",
+		Status:  healthStatusHealthy,
 		Version: version.GetVersion(),
 	})
 }

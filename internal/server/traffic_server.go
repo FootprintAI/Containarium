@@ -4,6 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
@@ -180,43 +185,94 @@ func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream
 	}
 }
 
+// maxHostWideHistoryWindow bounds a host-wide history query so one call cannot
+// scan the whole retention period of every box.
+const maxHostWideHistoryWindow = 7 * 24 * time.Hour
+
+// historyQueryParams validates a history request and builds the store query.
+// Both window ends are inclusive. An unset end_time means now (it used to be
+// read as the Unix epoch, which matched nothing). A host-wide query (no
+// container_name) must carry an explicit start_time and stay within
+// maxHostWideHistoryWindow.
+func historyQueryParams(req *pb.QueryTrafficHistoryRequest, now time.Time) (traffic.QueryParams, error) {
+	end := now
+	if req.EndTime != nil {
+		end = req.EndTime.AsTime()
+	}
+	var start time.Time
+	if req.StartTime != nil {
+		start = req.StartTime.AsTime()
+	}
+	if req.ContainerName == "" {
+		if req.StartTime == nil {
+			return traffic.QueryParams{}, status.Error(codes.InvalidArgument,
+				"start_time is required when container_name is empty (host-wide query)")
+		}
+		if end.Sub(start) > maxHostWideHistoryWindow {
+			return traffic.QueryParams{}, status.Errorf(codes.InvalidArgument,
+				"host-wide window is limited to %s; narrow start_time/end_time", maxHostWideHistoryWindow)
+		}
+	}
+	if end.Before(start) {
+		return traffic.QueryParams{}, status.Error(codes.InvalidArgument, "end_time is before start_time")
+	}
+	return traffic.QueryParams{
+		ContainerName: req.ContainerName,
+		StartTime:     start,
+		EndTime:       end,
+		DestIP:        req.DestIp,
+		DestPort:      int(req.DestPort),
+		Offset:        int(req.Offset),
+		Limit:         int(req.Limit),
+	}, nil
+}
+
 // QueryTrafficHistory queries persisted traffic data.
-// Phase 1.4 — tenant authz via container_name → owner.
+// Phase 1.4 — tenant authz via container_name → owner. With no container_name
+// the query spans every box (#2884), which discloses other tenants' history, so
+// it requires the admin role (the same rule as SubscribeTraffic).
 func (s *TrafficServer) QueryTrafficHistory(ctx context.Context, req *pb.QueryTrafficHistoryRequest) (*pb.QueryTrafficHistoryResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
 		return nil, err
 	}
 	if req.ContainerName == "" {
-		return nil, fmt.Errorf("container_name is required")
-	}
-	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return nil, err
+		}
+	} else if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
 		return nil, err
 	}
 
-	store := s.collector.GetStore()
+	var store *traffic.Store
+	if s.collector != nil {
+		store = s.collector.GetStore()
+	}
 	if store == nil {
-		return nil, fmt.Errorf("traffic persistence not available")
+		return nil, status.Error(codes.FailedPrecondition,
+			"traffic history is not being persisted on this host (collector or database not enabled); an empty result would be misleading")
 	}
 
-	params := traffic.QueryParams{
-		ContainerName: req.ContainerName,
-		StartTime:     req.StartTime.AsTime(),
-		EndTime:       req.EndTime.AsTime(),
-		DestIP:        req.DestIp,
-		DestPort:      int(req.DestPort),
-		Offset:        int(req.Offset),
-		Limit:         int(req.Limit),
+	params, err := historyQueryParams(req, time.Now())
+	if err != nil {
+		return nil, err
 	}
-
 	connections, totalCount, err := store.QueryConnections(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traffic history: %w", err)
 	}
+	oldest, err := store.OldestRecord(ctx, req.ContainerName)
+	if err != nil {
+		return nil, err
+	}
 
-	return &pb.QueryTrafficHistoryResponse{
+	resp := &pb.QueryTrafficHistoryResponse{
 		Connections: connections,
 		TotalCount:  totalCount,
-	}, nil
+	}
+	if oldest != nil {
+		resp.OldestRecordTime = timestamppb.New(*oldest)
+	}
+	return resp, nil
 }
 
 // GetTrafficAggregates returns time-series traffic aggregates.

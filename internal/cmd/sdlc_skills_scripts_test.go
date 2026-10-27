@@ -289,3 +289,359 @@ func TestInstallSDLCSkills_OverlayWins(t *testing.T) {
 		t.Error("public skills not overridden by the overlay were lost")
 	}
 }
+
+// --- skill sets (#3048) -----------------------------------------------------
+
+var setSkills = map[string]string{
+	"architect/design.md": "# design\n",
+	"engineer/build.md":   "# build\n",
+	"qa/unit-test.md":     "# unit\n",
+	"qa/e2e.md":           "# e2e\n",
+	"_shared/tracker.md":  "# shared tracker\n",
+}
+
+const setLines = "set.sdlc=architect,engineer\nset.qa=qa\n"
+
+// publishSets builds a bundle whose lock defines the sets sdlc (architect,
+// engineer) and qa (qa), and returns the asset base and the built lock.
+func publishSets(t *testing.T, files map[string]string, sets string) (base, lock string) {
+	t.Helper()
+	repo, sha := fixtureRepo(t, files)
+	lock = filepath.Join(t.TempDir(), "sdlc-skills.lock")
+	write(t, lock, sets+"[sdlc]\nrepo=example/skills\nref="+sha+"\nsha256=\n")
+	base = t.TempDir()
+	if o, ok := run(t, "", buildEnv(repo, lock), "bash", buildSDLCSkillsScript, "--update-lock", base); !ok {
+		t.Fatalf("build failed: %s", o)
+	}
+	return base, lock
+}
+
+func multiSourceLock(t *testing.T, firstRef, secondRef string) string {
+	t.Helper()
+	lock := filepath.Join(t.TempDir(), "sdlc-skills.lock")
+	write(t, lock, "set.sdlc=architect\nset.qa=qa\n"+
+		"[sdlc]\nrepo=example/sdlc\nref="+firstRef+"\nsha256=\n"+
+		"[domain]\nrepo=example/domain\nref="+secondRef+"\nsha256=\n")
+	return lock
+}
+
+func multiSourceEnv(firstRepo, secondRepo, lock string) []string {
+	return []string{
+		"SDLC_SKILLS_REPO_URL_SDLC=file://" + firstRepo,
+		"SDLC_SKILLS_REPO_URL_DOMAIN=file://" + secondRepo,
+		"SDLC_SKILLS_LOCK=" + lock,
+	}
+}
+
+func TestBuildSDLCSkills_MultipleSourcesAreDeterministic(t *testing.T) {
+	needTools(t)
+	sdlcRepo, sdlcRef := fixtureRepo(t, map[string]string{
+		"architect/design.md": "# design\n",
+		"_shared/common.md":   "# sdlc shared\n",
+	})
+	domainRepo, domainRef := fixtureRepo(t, map[string]string{
+		"qa/check.md":       "# check\n",
+		"_shared/common.md": "# domain shared\n",
+	})
+	lock := multiSourceLock(t, sdlcRef, domainRef)
+	env := multiSourceEnv(sdlcRepo, domainRepo, lock)
+	out1, out2 := t.TempDir(), t.TempDir()
+
+	for _, source := range []string{"sdlc", "domain"} {
+		if o, ok := run(t, "", env, "bash", buildSDLCSkillsScript, "--update-lock", source, out1); !ok {
+			t.Fatalf("build %s: %s", source, o)
+		}
+		if o, ok := run(t, "", env, "bash", buildSDLCSkillsScript, source, out2); !ok {
+			t.Fatalf("rebuild %s: %s", source, o)
+		}
+		asset := source + "-skills.tar.gz"
+		a, _ := os.ReadFile(filepath.Join(out1, asset)) //nolint:gosec // test temp dir
+		b, _ := os.ReadFile(filepath.Join(out2, asset)) //nolint:gosec // test temp dir
+		if !bytes.Equal(a, b) {
+			t.Errorf("two builds of source %s differ", source)
+		}
+		if !exists(filepath.Join(out1, asset+".sha256")) {
+			t.Errorf("%s sidecar missing", asset)
+		}
+	}
+	if got := strings.Join(members(t, filepath.Join(out1, "sdlc-skills.tar.gz")), ","); got != "_shared/common.md,architect-design/SKILL.md" {
+		t.Errorf("sdlc members = %s", got)
+	}
+	if got := strings.Join(members(t, filepath.Join(out1, "domain-skills.tar.gz")), ","); got != "_shared/common.md,qa-check/SKILL.md" {
+		t.Errorf("domain members = %s", got)
+	}
+
+	b, err := os.ReadFile(lock) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(b), "sha256=\n") != 0 || strings.Count(string(b), "sha256=") != 2 {
+		t.Errorf("lock digests were not updated per source:\n%s", b)
+	}
+}
+
+func TestBuildSDLCSkills_MultipleSourcesRejectNamespaceCollisions(t *testing.T) {
+	needTools(t)
+	first, firstRef := fixtureRepo(t, map[string]string{"qa/one.md": "one\n"})
+	second, secondRef := fixtureRepo(t, map[string]string{"qa/two.md": "two\n"})
+	lock := multiSourceLock(t, firstRef, secondRef)
+	out, ok := run(t, "", multiSourceEnv(first, second, lock), "bash", buildSDLCSkillsScript, "--update-lock", "sdlc", t.TempDir())
+	if ok {
+		t.Fatalf("build accepted duplicate namespaces:\n%s", out)
+	}
+	for _, want := range []string{"namespace 'qa'", "sdlc", "domain"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q does not mention %q", out, want)
+		}
+	}
+}
+
+func TestBuildSDLCSkills_RejectsUnknownSource(t *testing.T) {
+	needTools(t)
+	repo, ref := fixtureRepo(t, map[string]string{"architect/one.md": "one\n"})
+	lock := filepath.Join(t.TempDir(), "sdlc-skills.lock")
+	write(t, lock, "set.sdlc=architect\n[sdlc]\nrepo=example/sdlc\nref="+ref+"\nsha256=\n")
+	out, ok := run(t, "", buildEnv(repo, lock), "bash", buildSDLCSkillsScript, "missing", t.TempDir())
+	if ok || !strings.Contains(out, "unknown source 'missing'") || !strings.Contains(out, "sdlc") {
+		t.Errorf("ok=%v output=%q", ok, out)
+	}
+}
+
+func installSets(t *testing.T, base, lock, dir, sets string) (string, bool) {
+	t.Helper()
+	return install(t, base, dir, "SDLC_SKILLS_LOCK_URL=file://"+lock, "SKILL_SETS="+sets)
+}
+
+func installedNames(t *testing.T, dir string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, ".sdlc-skills-manifest")) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	m := strings.Fields(string(b))
+	sort.Strings(m)
+	return strings.Join(m, ",")
+}
+
+// snapshot returns every file under dir (except the timestamped version record)
+// with its content, to assert a re-run is byte-identical.
+func snapshot(t *testing.T, dir string) string {
+	t.Helper()
+	out, ok := run(t, dir, nil, "bash", "-c",
+		"find . -type f ! -name .sdlc-skills-version | LC_ALL=C sort | while read -r f; do echo \"== $f\"; cat \"$f\"; done")
+	if !ok {
+		t.Fatalf("snapshot: %s", out)
+	}
+	return out
+}
+
+func TestInstallSDLCSkills_SetsDefaultInstallsEverything(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	want := "_shared,architect-design,engineer-build,qa-e2e,qa-unit-test"
+	for _, sets := range []string{"", "all"} {
+		dir := filepath.Join(t.TempDir(), "skills")
+		if o, ok := installSets(t, base, lock, dir, sets); !ok {
+			t.Fatalf("SKILL_SETS=%q: %s", sets, o)
+		}
+		if got := installedNames(t, dir); got != want {
+			t.Errorf("SKILL_SETS=%q manifest = %s, want %s", sets, got, want)
+		}
+	}
+}
+
+func TestInstallSDLCSkills_SetSubsetOnlyItsNamespacesPlusShared(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	dir := filepath.Join(t.TempDir(), "skills")
+	if o, ok := installSets(t, base, lock, dir, "qa"); !ok {
+		t.Fatalf("install: %s", o)
+	}
+	if got := installedNames(t, dir); got != "_shared,qa-e2e,qa-unit-test" {
+		t.Errorf("manifest = %s", got)
+	}
+	for _, p := range []string{"architect-design", "engineer-build"} {
+		if exists(filepath.Join(dir, p)) {
+			t.Errorf("%s installed although set qa was selected", p)
+		}
+	}
+	// Two sets resolve to the union.
+	dir2 := filepath.Join(t.TempDir(), "skills")
+	if o, ok := installSets(t, base, lock, dir2, "sdlc,qa"); !ok {
+		t.Fatalf("install: %s", o)
+	}
+	if got := installedNames(t, dir2); got != "_shared,architect-design,engineer-build,qa-e2e,qa-unit-test" {
+		t.Errorf("sdlc,qa manifest = %s", got)
+	}
+}
+
+func TestInstallSDLCSkills_SetNoneInstallsNothingAndPrunesOwned(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	dir := filepath.Join(t.TempDir(), "skills")
+	write(t, filepath.Join(dir, "my-own-skill", "SKILL.md"), "mine\n")
+	if o, ok := installSets(t, base, lock, dir, "all"); !ok {
+		t.Fatalf("install: %s", o)
+	}
+	// "none" needs neither network nor lock.
+	if o, ok := install(t, t.TempDir(), dir, "SKILL_SETS=none"); !ok {
+		t.Fatalf("none: %s", o)
+	}
+	if got := installedNames(t, dir); got != "" {
+		t.Errorf("manifest = %q, want empty", got)
+	}
+	for _, p := range []string{"_shared", "qa-e2e", "architect-design"} {
+		if exists(filepath.Join(dir, p)) {
+			t.Errorf("%s survived SKILL_SETS=none", p)
+		}
+	}
+	if !exists(filepath.Join(dir, "my-own-skill", "SKILL.md")) {
+		t.Error("the user's own skill was removed")
+	}
+}
+
+func TestInstallSDLCSkills_UnknownSetFailsNamingKnownIDs(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	dir := filepath.Join(t.TempDir(), "skills")
+	out, ok := installSets(t, base, lock, dir, "qa,nope")
+	if ok {
+		t.Fatalf("unknown set accepted:\n%s", out)
+	}
+	for _, want := range []string{"nope", "known skill sets", "qa", "sdlc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q does not mention %q", out, want)
+		}
+	}
+	if exists(filepath.Join(dir, "qa-e2e")) || exists(filepath.Join(dir, ".sdlc-skills-manifest")) {
+		t.Error("a failed selection installed something")
+	}
+}
+
+func TestInstallSDLCSkills_SetIDsAreValidatedBeforeUse(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	pwned := filepath.Join(t.TempDir(), "pwned")
+	for _, bad := range []string{"qa;touch " + pwned, "$(touch " + pwned + ")", "QA", "../qa", "qa,none", "all,qa", "qa,,sdlc", "qa,", ",qa"} {
+		dir := filepath.Join(t.TempDir(), "skills")
+		out, ok := installSets(t, base, lock, dir, bad)
+		if ok {
+			t.Errorf("SKILL_SETS=%q accepted:\n%s", bad, out)
+		}
+		if exists(filepath.Join(dir, ".sdlc-skills-manifest")) {
+			t.Errorf("SKILL_SETS=%q installed something", bad)
+		}
+	}
+	if exists(pwned) {
+		t.Error("a set id was executed by the shell")
+	}
+}
+
+func TestInstallSDLCSkills_SetsNarrowWidenAndUnchangedRerun(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	dir := filepath.Join(t.TempDir(), "skills")
+	write(t, filepath.Join(dir, "my-own-skill", "SKILL.md"), "mine\n")
+
+	for _, step := range []struct{ sets, want string }{
+		{"sdlc,qa", "_shared,architect-design,engineer-build,qa-e2e,qa-unit-test"},
+		{"qa", "_shared,qa-e2e,qa-unit-test"}, // narrowing prunes the dropped namespaces
+		{"sdlc", "_shared,architect-design,engineer-build"},
+		{"sdlc,qa", "_shared,architect-design,engineer-build,qa-e2e,qa-unit-test"}, // widening adds
+	} {
+		if o, ok := installSets(t, base, lock, dir, step.sets); !ok {
+			t.Fatalf("SKILL_SETS=%s: %s", step.sets, o)
+		}
+		if got := installedNames(t, dir); got != step.want {
+			t.Errorf("SKILL_SETS=%s manifest = %s, want %s", step.sets, got, step.want)
+		}
+		if !exists(filepath.Join(dir, "my-own-skill", "SKILL.md")) {
+			t.Errorf("SKILL_SETS=%s removed the user's own skill", step.sets)
+		}
+		for _, n := range []string{"architect-design", "engineer-build", "qa-e2e", "qa-unit-test"} {
+			if exists(filepath.Join(dir, n)) != strings.Contains(step.want, n) {
+				t.Errorf("SKILL_SETS=%s: presence of %s disagrees with the manifest", step.sets, n)
+			}
+		}
+	}
+	before := snapshot(t, dir)
+	if o, ok := installSets(t, base, lock, dir, "sdlc,qa"); !ok {
+		t.Fatalf("rerun: %s", o)
+	}
+	if after := snapshot(t, dir); after != before {
+		t.Errorf("an unchanged re-run changed the tree:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestInstallSDLCSkills_SetsNeedALockMatchingTheVerifiedBundle(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+
+	// A lock that pins a different bundle than the one downloaded is refused.
+	other := filepath.Join(t.TempDir(), "other.lock")
+	b, _ := os.ReadFile(lock) //nolint:gosec // test temp dir
+	write(t, other, regexpSHA(string(b)))
+	dir := filepath.Join(t.TempDir(), "skills")
+	if out, ok := installSets(t, base, other, dir, "qa"); ok || !strings.Contains(out, "does not pin") {
+		t.Errorf("mismatched lock: ok=%v output %q", ok, out)
+	}
+	// A release with no reachable lock cannot honour an explicit selection.
+	if out, ok := installSets(t, base, filepath.Join(t.TempDir(), "absent.lock"), dir, "qa"); ok || !strings.Contains(out, "lock") {
+		t.Errorf("missing lock: ok=%v output %q", ok, out)
+	}
+	if exists(filepath.Join(dir, ".sdlc-skills-manifest")) {
+		t.Error("something was installed on a refused selection")
+	}
+}
+
+func regexpSHA(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "sha256=") {
+			lines[i] = "sha256=" + strings.Repeat("0", 64)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func TestBuildSDLCSkills_SetsMustPartitionTheNamespaces(t *testing.T) {
+	needTools(t)
+	cases := []struct{ name, sets, want string }{
+		{"namespace in no set", "set.sdlc=architect,engineer\n", "qa"},
+		{"set names a missing namespace", setLines + "set.extra=ghost\n", "ghost"},
+		{"namespace in two sets", setLines + "set.dup=qa\n", "more than one set"},
+		{"bad set id", "set.Bad_ID=architect,engineer,qa\n", "set id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, sha := fixtureRepo(t, setSkills)
+			lock := filepath.Join(t.TempDir(), "sdlc-skills.lock")
+			write(t, lock, "repo=example/skills\nref="+sha+"\nsha256=\n"+tc.sets)
+			out, ok := run(t, "", buildEnv(repo, lock), "bash", buildSDLCSkillsScript, "--update-lock", t.TempDir())
+			if ok {
+				t.Fatalf("build accepted the lock:\n%s", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output %q does not mention %q", out, tc.want)
+			}
+		})
+	}
+}
+
+// A lock value is untrusted too: a namespace with shell-ish or path-ish
+// characters is refused before it is used in a prefix match.
+func TestInstallSDLCSkills_RefusesABadNamespaceInTheLock(t *testing.T) {
+	needTools(t)
+	base, lock := publishSets(t, setSkills, setLines)
+	b, _ := os.ReadFile(lock) //nolint:gosec // test temp dir
+	bad := filepath.Join(t.TempDir(), "bad.lock")
+	write(t, bad, strings.Replace(string(b), "set.qa=qa", "set.qa=qa,q*", 1))
+	dir := filepath.Join(t.TempDir(), "skills")
+	out, ok := installSets(t, base, bad, dir, "qa")
+	if ok || !strings.Contains(out, "bad namespace") {
+		t.Errorf("ok=%v output %q, want a bad-namespace refusal", ok, out)
+	}
+	if exists(filepath.Join(dir, ".sdlc-skills-manifest")) {
+		t.Error("something was installed from a lock with a bad namespace")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
-	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -161,11 +161,10 @@ type ContainerServer struct {
 	// the log and orphaning a PID with no record naming it). sync.Map's zero
 	// value is ready to use — no constructor needed, so test literals that
 	// build a bare &ContainerServer{} still get correct serialization.
-	boxRunLocks       sync.Map // key: box+":"+name -> *sync.Mutex
-	emitter           *events.Emitter
-	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
-	pendingCreations  map[string]*PendingCreation
-	pendingMu         sync.RWMutex
+	boxRunLocks      sync.Map // key: box+":"+name -> *sync.Mutex
+	emitter          *events.Emitter
+	pendingCreations map[string]*PendingCreation
+	pendingMu        sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string
@@ -292,6 +291,9 @@ type ContainerServer struct {
 	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
 	// nil/empty on an unwired server still yields a (config-empty) measurement.
 	integrityConfigState map[string]string
+	// integrityExecWatch reports, per measurement, whether the exec watcher
+	// actually loaded and attached its object (#3120). Nil means no watcher.
+	integrityExecWatch func() bool
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -419,10 +421,6 @@ type ContainerServer struct {
 	// back to network.ip_address.
 	sshHost string
 
-	// bridgeDNS is the reconciler behind GetBridgeDNSStatus (#2188), set by
-	// DualServer wiring. nil = not managed by this daemon.
-	bridgeDNS *bridgedns.Reconciler
-
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
 	// not persisted). #354.
@@ -453,6 +451,9 @@ type ContainerServer struct {
 	// storagePools returns the pool capacity monitor's last snapshot (#2823).
 	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
 	storagePools func() poolcapacity.Snapshot
+	// headroom refuses creates and snapshots on a pool past its floor
+	// (#3128). Nil admits everything.
+	headroom *poolcapacity.Guard
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -859,6 +860,16 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// the Box-CR/sync paths (the top-level defer), inside the goroutine for
 	// async, matching exactly how asyncHandledInline already splits
 	// platformStats reporting between those two completion shapes.
+	// Pool headroom floor (#3128): refuse before anything is allocated on a
+	// pool past its floor. encPool is the tenant's pool for an encrypted
+	// create and "" (the daemon's default pool) otherwise. An encrypted dry
+	// run has not resolved its tenant pool, so there is no pool to check.
+	if !req.GetEncrypted() || encPool != "" {
+		if err := s.admitPoolHeadroom(encPool, poolcapacity.OperationCreate); err != nil {
+			return nil, err
+		}
+	}
+
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr
@@ -2777,6 +2788,106 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	}, nil
 }
 
+// setSSHKeysRegistryTimeout bounds the registry work SetSSHKeys does while
+// holding the per-user authorized_keys lock. A var so tests can shorten it.
+var setSSHKeysRegistryTimeout = 10 * time.Second
+
+// SetSSHKeys makes the user's host-side authorized_keys hold exactly the
+// requested keys (#2945). Authorization is AddSSHKey's: ssh:write plus
+// tenant access to the box.
+//
+// Every key is validated before any write, so one bad entry fails the call
+// with no change. Platform-managed lines (the sentinel's upstream key) are
+// preserved by the file layer and never revoked, so a caller cannot lock the
+// platform out. Keys dropped by the call are revoked in the ssh_keys
+// registry exactly as RemoveSSHKey does (for every account holding them);
+// kept keys are registered like AddSSHKey does. An empty list is accepted
+// only with allow_empty, so an omitted field cannot wipe a box.
+func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
+		return nil, err
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if len(req.SshPublicKeys) > container.MaxAuthorizedKeys {
+		return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys has %d entries, over the limit of %d", len(req.SshPublicKeys), container.MaxAuthorizedKeys)
+	}
+	switch {
+	case len(req.SshPublicKeys) == 0 && !req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "ssh_public_keys is empty: set allow_empty=true to remove every key")
+	case len(req.SshPublicKeys) > 0 && req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "allow_empty must be false when ssh_public_keys is given")
+	}
+	fingerprints := make(map[string]bool, len(req.SshPublicKeys))
+	for i, k := range req.SshPublicKeys {
+		if err := container.ValidateStrictSSHPublicKey(k); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		rec, err := sshauthz.NewKeyRecord(k, req.Username, sshauthz.SourceAPI, s.sshKeyClock())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		fingerprints[rec.Fingerprint] = true
+	}
+
+	// Same heal as AddSSHKey for a box created without a host account.
+	if s.manager != nil {
+		if _, gerr := s.manager.Get(req.Username); gerr == nil {
+			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+				return nil, fmt.Errorf("ensure host account: %w", err)
+			}
+		}
+	}
+
+	// Both registry steps run inside the file layer's per-user critical
+	// section, so concurrent Sets are ordered end to end (a later Set's
+	// revocation can never be undone by an earlier Set's registration), and
+	// each is bounded so a slow registry cannot hold the lock indefinitely.
+	//
+	// Revoke first: if it fails nothing is written and a retry still sees the
+	// keys. (Revoked but still in the file, if the write then fails, is the
+	// safe direction.) Register after the write; it is idempotent, so a
+	// failure here is retried by repeating the call.
+	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys, container.ReplaceHooks{
+		BeforeWrite: func(drop []string) error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range drop {
+				if err := s.revokeSSHKey(rctx, req.Username, k); err != nil {
+					return registryError("set ssh keys", err)
+				}
+			}
+			return nil
+		},
+		AfterWrite: func() error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range req.SshPublicKeys {
+				if err := s.registerSSHKey(rctx, req.Username, k, sshauthz.SourceAPI); err != nil {
+					return registryError("set ssh keys", err)
+				}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("replace authorized keys: %w", err)
+	}
+
+	// Revoked keys left in sshpiper's table would stay working credentials.
+	s.notifySentinelKeyChange(ctx, "set_ssh_keys "+req.Username)
+
+	return &pb.SetSSHKeysResponse{
+		Message:     fmt.Sprintf("SSH keys set for %s", req.Username),
+		RemovedKeys: safecast.I32(len(removed)),
+		TotalKeys:   safecast.I32(len(fingerprints)),
+	}, nil
+}
+
 // RemoveSSHKey removes a specific SSH public key from the user's
 // host-side authorized_keys file. No-op if the key isn't present.
 func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKeyRequest) (*pb.RemoveSSHKeyResponse, error) {
@@ -4120,12 +4231,26 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
 	// at an object (a path on disk, or the one embedded in the binary); those
-	// loaded bytes are exactly what we attest.
-	progs, err := integrityProgramObjects(os.Getenv(appconfig.EnvNetworkPolicyBPFObject), netbpf.EmbeddedObject())
+	// loaded bytes are exactly what we attest for this object.
+	setting := os.Getenv(appconfig.EnvNetworkPolicyBPFObject)
+	progs, err := integrityProgramObjects(setting, netbpf.EmbeddedObject())
 	if err != nil {
 		return integrity.Measurement{}, err
 	}
 	in.Programs = append(in.Programs, progs...)
+
+	// The exec-watch object (#2637) is loaded from the same setting, but only
+	// when the exec watcher actually loaded it (read live each measurement); an
+	// object that never loaded is not attested (#3120). Running is a snapshot:
+	// a watcher that stops right after the probe can leave one heartbeat's
+	// attestation stale.
+	if s.integrityExecWatch != nil && s.integrityExecWatch() {
+		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
+		if err != nil {
+			return integrity.Measurement{}, err
+		}
+		in.Programs = append(in.Programs, execProgs...)
+	}
 
 	// Node identity signer: the sentinel-issued peer leaf key.
 	if s.peerPool != nil {
@@ -4156,6 +4281,56 @@ func integrityProgramObjects(setting string, embedded []byte) ([]integrity.Progr
 		return []integrity.ProgramObject{{Name: "embedded", Data: embedded}}, nil
 	}
 	return []integrity.ProgramObject{{Name: setting, Path: setting}}, nil
+}
+
+// execWatchEmbeddedName is the stable programDigests name of the embedded
+// exec-watch object, whichever alias selected it (#3120).
+const execWatchEmbeddedName = "execwatch-embedded"
+
+// integrityExecWatchObjects maps the network-policy object setting to the
+// exec-watch object the exec watcher loads from it (netbpf.ExecObjectSource,
+// the same selection netbpf.ResolveExecWatch uses), so the bytes digested are
+// the bytes handed to the loader. The embedded object is digested under
+// "execwatch-embedded"; a sibling file under its own path. An empty setting
+// means no program (the watcher is only started with a non-empty setting). An
+// object the watcher cannot load (none bundled, or the sibling file missing)
+// is skipped, not an error: the watcher reports that itself as
+// `unavailable (...)` and nothing is loaded to attest. Other file errors
+// surface when the measurement digests the path. The stat and the digest are
+// separate reads: the digest is of the file at measurement time, recomputed on
+// every heartbeat.
+func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	isEmbedded, path := netbpf.ExecObjectSource(setting)
+	if isEmbedded {
+		if len(embedded) == 0 {
+			return nil, nil
+		}
+		return []integrity.ProgramObject{{Name: execWatchEmbeddedName, Data: embedded}}, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
+}
+
+// wireExecWatcherIntegrity connects a constructed exec watcher to the
+// self-measurement; a nil watcher (sentry off) leaves it unwired.
+func wireExecWatcherIntegrity(cs *ContainerServer, w *ExecWatcher) {
+	if w == nil {
+		return
+	}
+	cs.SetIntegrityExecWatch(w.Running)
+}
+
+// SetIntegrityExecWatch wires a live probe of whether the exec watcher loaded
+// and attached its object, so the self-measurement attests the exec-watch
+// object only while it is loaded. Pass ExecWatcher.Running.
+func (s *ContainerServer) SetIntegrityExecWatch(loaded func() bool) {
+	s.integrityExecWatch = loaded
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this

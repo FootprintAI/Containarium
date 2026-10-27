@@ -51,6 +51,10 @@ enum CodeModelTrafficScanning {
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY = 2;
   // The tenant's own key: traffic does not cross the gateway.
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY = 3;
+  // Gateway credential and no admin policy was ever set: responses get the
+  // built-in baseline scan (#2736). Whether it only logs or also blocks is
+  // set by the baseline mode (#2738; see `guardrail status`).
+  CODE_MODEL_TRAFFIC_SCANNING_BASELINE = 4;
 }
 
 // GuardrailAction is what the policy does with a finding of a given kind.

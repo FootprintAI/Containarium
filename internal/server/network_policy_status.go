@@ -20,11 +20,12 @@ import (
 // a tenant: the per-veth config written for its running boxes (after the
 // host's enforce guard) and how many of those boxes it reached.
 type tenantApplied struct {
-	Mode           uint8 // netbpf.ModeLogOnly | netbpf.ModeEnforce, as written to veth_policy
-	EgressMode     uint8 // as written to veth_policy
-	BoxesLoaded    int   // running boxes whose config was written and program attached
-	BoxesNotLoaded int   // running boxes with no loaded config (no veth, write or attach failed)
-	HasDomains     bool  // the loaded allow-list includes resolved egress_domains
+	Mode           uint8                  // netbpf.ModeLogOnly | netbpf.ModeEnforce, as written to veth_policy
+	EgressMode     uint8                  // as written to veth_policy
+	BoxesLoaded    int                    // running boxes whose config was written and program attached
+	BoxesNotLoaded int                    // running boxes with no loaded config (no veth, write or attach failed)
+	HasDomains     bool                   // the loaded allow-list includes resolved egress_domains
+	Source         pb.NetworkPolicySource // the host default or a stored policy; UNSPECIFIED when neither is known
 	// EgressIncomplete: an add or removal in the tenant's egress allow-list
 	// failed this pass, so the kernel list differs from the policy (#2983).
 	EgressIncomplete bool
@@ -64,8 +65,8 @@ type appliedStateSource interface {
 func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]bool, policies map[string]netpolicy.CompiledPolicy, egressIncomplete map[uint32]bool, egressNames map[uint32]string) map[string]tenantApplied {
 	out := make(map[string]tenantApplied)
 	for _, v := range views {
-		if !v.Running {
-			continue
+		if !v.Running || v.ValidateOnly {
+			continue // a validate-only instance is not a tenant's box (#2618)
 		}
 		a := out[v.Tenant]
 		cfg, planned := plan.vethPolicy[v.Ifindex]
@@ -73,6 +74,7 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 			a.Mode, a.EgressMode = cfg.Mode, cfg.EgressMode
 			a.BoxesLoaded++
 			a.HasDomains = len(policies[v.Tenant].EgressDomains) > 0
+			a.Source = policySource(policies, v.Tenant)
 		} else {
 			a.BoxesNotLoaded++
 		}
@@ -88,6 +90,20 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 		out[name] = a
 	}
 	return out
+}
+
+// policySource says where a tenant's loaded policy came from. A tenant with no
+// entry (default posture off, nothing stored) is unknown, not "default".
+func policySource(policies map[string]netpolicy.CompiledPolicy, tenant string) pb.NetworkPolicySource {
+	c, ok := policies[tenant]
+	switch {
+	case !ok:
+		return pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_UNSPECIFIED
+	case c.IsHostDefault:
+		return pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_HOST_DEFAULT
+	default:
+		return pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_STORED
+	}
 }
 
 // SetEnforcementArmed records whether this host arms enforcement
@@ -186,6 +202,7 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	if a.BoxesNotLoaded > 0 {
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED
 	}
+	st.PolicySource = a.Source
 	st.EffectiveMode = bpfModeToProto(a.Mode)
 	// A 0 egress byte is "follow mode" in the program (#2970), so the kernel
 	// applies the mode byte to the allow-list too.

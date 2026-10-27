@@ -23,7 +23,8 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// BackupDestination is where a logical dump is stored *off* the database
+// BackupDestination selects archive storage or a Kubernetes PVC snapshot.
+// For LOCAL and GCS, the logical dump is stored *off* the database
 // host. The whole point of the feature is getting the data off-box, so a
 // destination is always required — there is no "stay on the same disk"
 // option (a dump that shares a failure domain with the database it came
@@ -41,6 +42,9 @@ const (
 	// (`gcloud storage cp`). True off-host durability; the recommended
 	// production destination.
 	BackupDestination_BACKUP_DESTINATION_GCS BackupDestination = 2
+	// Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.
+	// Encryption and durability are provided by the CSI storage backend.
+	BackupDestination_BACKUP_DESTINATION_SNAPSHOT BackupDestination = 3
 )
 
 // Enum value maps for BackupDestination.
@@ -49,11 +53,13 @@ var (
 		0: "BACKUP_DESTINATION_UNSPECIFIED",
 		1: "BACKUP_DESTINATION_LOCAL",
 		2: "BACKUP_DESTINATION_GCS",
+		3: "BACKUP_DESTINATION_SNAPSHOT",
 	}
 	BackupDestination_value = map[string]int32{
 		"BACKUP_DESTINATION_UNSPECIFIED": 0,
 		"BACKUP_DESTINATION_LOCAL":       1,
 		"BACKUP_DESTINATION_GCS":         2,
+		"BACKUP_DESTINATION_SNAPSHOT":    3,
 	}
 )
 
@@ -84,7 +90,7 @@ func (BackupDestination) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{0}
 }
 
-// BackupEngine identifies the database engine a backup was taken from.
+// BackupEngine identifies the database or box backup implementation.
 //
 // Postgres is the only engine implemented today; the enum exists so that a
 // second one has somewhere to be named, and so that the engine a record was
@@ -105,9 +111,10 @@ const (
 	// and deleted, but is never restored or restore-tested by the platform —
 	// apply it with the tenant's own tooling.
 	BackupEngine_BACKUP_ENGINE_HOOK BackupEngine = 2
-	// A whole-box backup (scope BACKUP_SCOPE_BOX, #2801): the box exported
-	// as an Incus instance backup tarball, encrypted like any other dump. It
-	// is restored by importing it as a new box, never by a database engine.
+	// A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,
+	// with destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot
+	// encryption and durability are controlled by the CSI storage backend.
+	// Box backups are never restored by a database engine.
 	BackupEngine_BACKUP_ENGINE_BOX BackupEngine = 3
 )
 
@@ -1361,7 +1368,9 @@ func (x *GetBackupResponse) GetRecord() *BackupRecord {
 // recreates objects before loading.
 type RestoreBackupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Backup to restore.
+	// Backup to restore. A SNAPSHOT backup restarts its source box on a new
+	// PVC in the same namespace, retaining the old PVC. connection, clean,
+	// age_identity and target_container must be unset for snapshot restores.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Connection parameters for pg_restore inside the target container.
 	// If connection.database is empty, the backup record's database is
@@ -1996,11 +2005,12 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x1f\n" +
 	"\vdeleted_ids\x18\x02 \x03(\tR\n" +
 	"deletedIds\x12\x1a\n" +
-	"\bfailures\x18\x03 \x03(\tR\bfailures*q\n" +
+	"\bfailures\x18\x03 \x03(\tR\bfailures*\x92\x01\n" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x02*x\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x02\x12\x1f\n" +
+	"\x1bBACKUP_DESTINATION_SNAPSHOT\x10\x03*x\n" +
 	"\fBackupEngine\x12\x1d\n" +
 	"\x19BACKUP_ENGINE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BACKUP_ENGINE_POSTGRES\x10\x01\x12\x16\n" +

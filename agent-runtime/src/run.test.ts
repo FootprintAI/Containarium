@@ -24,6 +24,28 @@ function artifact(seedDir: string): { outputJson: string; error?: string } {
 }
 
 describe("runOnce (run mode)", () => {
+  it("records both turns' summed usage in artifact.json after a re-prompt (#3107)", async () => {
+    const { seedDir, root } = dirs();
+    const engine: Engine = {
+      name: "fake",
+      async run(_t, _c, journal) {
+        journal.append({ kind: "tool_use", tool: "write_file", input: "{}" });
+        return {
+          outputJson: "",
+          usage: { output_tokens: 7 },
+          followUp: async () => ({ outputJson: '{"ok":true}', usage: { output_tokens: 5 } }),
+        };
+      },
+    };
+    const code = await runOnce({
+      env: { CONTAINARIUM_RUN_ID: "run-u", CONTAINARIUM_SKILL_ID: "s" },
+      seedDir, inputJson: "{}", tokenPath: null, engine, cfg, model: "m", journalRoot: root,
+    });
+    expect(code).toBe(0);
+    const a = JSON.parse(readFileSync(join(seedDir, "artifact.json"), "utf8")) as { usage: unknown };
+    expect(a.usage).toEqual({ output_tokens: 12 });
+  });
+
   it("journals the run under <root>/<CONTAINARIUM_RUN_ID>/<CONTAINARIUM_SKILL_ID>.jsonl", async () => {
     const { seedDir, root } = dirs();
     const code = await runOnce({

@@ -44,6 +44,7 @@ const (
 	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
@@ -69,7 +70,6 @@ const (
 	ContainerService_ValidateGPU_FullMethodName               = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName            = "/containarium.v1.ContainerService/TriggerUpgrade"
 	ContainerService_GetUpgradeStatus_FullMethodName          = "/containarium.v1.ContainerService/GetUpgradeStatus"
-	ContainerService_GetBridgeDNSStatus_FullMethodName        = "/containarium.v1.ContainerService/GetBridgeDNSStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName         = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_SetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/SetMetricsExport"
 	ContainerService_GetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/GetMetricsExport"
@@ -259,6 +259,8 @@ type ContainerServiceClient interface {
 	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -365,10 +367,6 @@ type ContainerServiceClient interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
-	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-	// app-hosting base domain to core-caddy matches core-caddy's live address,
-	// and why not when it does not (#2188). Admin-only.
-	GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -694,6 +692,16 @@ func (c *containerServiceClient) AddSSHKey(ctx context.Context, in *AddSSHKeyReq
 	return out, nil
 }
 
+func (c *containerServiceClient) SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetSSHKeysResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetSSHKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RemoveSSHKeyResponse)
@@ -938,16 +946,6 @@ func (c *containerServiceClient) GetUpgradeStatus(ctx context.Context, in *GetUp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetUpgradeStatusResponse)
 	err := c.cc.Invoke(ctx, ContainerService_GetUpgradeStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *containerServiceClient) GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetBridgeDNSStatusResponse)
-	err := c.cc.Invoke(ctx, ContainerService_GetBridgeDNSStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1312,6 +1310,8 @@ type ContainerServiceServer interface {
 	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -1418,10 +1418,6 @@ type ContainerServiceServer interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
-	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-	// app-hosting base domain to core-caddy matches core-caddy's live address,
-	// and why not when it does not (#2188). Admin-only.
-	GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -1572,6 +1568,9 @@ func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Conte
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
 }
+func (UnimplementedContainerServiceServer) SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSSHKeys not implemented")
+}
 func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSSHKey not implemented")
 }
@@ -1646,9 +1645,6 @@ func (UnimplementedContainerServiceServer) TriggerUpgrade(context.Context, *Trig
 }
 func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUpgradeStatus not implemented")
-}
-func (UnimplementedContainerServiceServer) GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetBridgeDNSStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -2178,6 +2174,24 @@ func _ContainerService_AddSSHKey_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetSSHKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSSHKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetSSHKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, req.(*SetSSHKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_RemoveSSHKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveSSHKeyRequest)
 	if err := dec(in); err != nil {
@@ -2624,24 +2638,6 @@ func _ContainerService_GetUpgradeStatus_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).GetUpgradeStatus(ctx, req.(*GetUpgradeStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _ContainerService_GetBridgeDNSStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetBridgeDNSStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ContainerService_GetBridgeDNSStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, req.(*GetBridgeDNSStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3096,6 +3092,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_AddSSHKey_Handler,
 		},
 		{
+			MethodName: "SetSSHKeys",
+			Handler:    _ContainerService_SetSSHKeys_Handler,
+		},
+		{
 			MethodName: "RemoveSSHKey",
 			Handler:    _ContainerService_RemoveSSHKey_Handler,
 		},
@@ -3194,10 +3194,6 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUpgradeStatus",
 			Handler:    _ContainerService_GetUpgradeStatus_Handler,
-		},
-		{
-			MethodName: "GetBridgeDNSStatus",
-			Handler:    _ContainerService_GetBridgeDNSStatus_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",
