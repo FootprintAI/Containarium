@@ -261,6 +261,7 @@ tracker route list
 tracker route set
 tracker status
 traffic connections
+traffic find
 traffic history
 traffic summary
 ttl get

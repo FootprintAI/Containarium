@@ -234,6 +234,10 @@ route:
 | vmalert UI | `https://<cluster>.example.com/vmalert/` |
 | Alertmanager UI | `https://<cluster>.example.com/alertmanager/` |
 
+## Proving the storage-pool capacity alert end to end
+
+`StoragePoolFillWarning` (>= 85% used for 10 m, the same threshold the host reports as WARNING) and `StoragePoolNearlyFull` (>= 95%, 2 m) are in `internal/server/storage_pool_metrics.go`; `go test ./internal/server -run TestStoragePool` evaluates them against a synthetic series. To prove delivery, on a throwaway host with a scratch pool: configure the webhook, fill the pool past 85% (for example `fallocate` a file into a scratch dataset), wait about 12 minutes, and check that the message arrives in the operator channel and that `GET /v1/system/alerting/deliveries` records it. A webhook-less daemon routes to a null receiver and nothing is sent, so confirm the webhook first.
+
 ## Adding Custom Alert Rules
 
 Custom rules can be added via the API:
