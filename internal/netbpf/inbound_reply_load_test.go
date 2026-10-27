@@ -729,6 +729,30 @@ const (
 	routedP2P    = "/30"
 )
 
+// allowForward inserts iptables FORWARD ACCEPT rules for the test's interfaces
+// (both directions) and removes them on cleanup. A runner with Docker installed
+// has `iptables -P FORWARD DROP`, which silently discards the L3-routed traffic
+// this test depends on (bridged frames between ports never reach FORWARD, so the
+// bridged tests do not need this). Without iptables on the host nothing is done.
+func allowForward(t *testing.T, ifaces ...string) {
+	t.Helper()
+	ipt, err := exec.LookPath("iptables")
+	if err != nil {
+		t.Logf("iptables not found; not adding FORWARD rules")
+		return
+	}
+	for _, ifc := range ifaces {
+		for _, dir := range []string{"-i", "-o"} {
+			args := []string{"-w", "-I", "FORWARD", dir, ifc, "-j", "ACCEPT"}
+			if out, err := exec.Command(ipt, args...).CombinedOutput(); err != nil { // #nosec G204 -- fixed argv
+				t.Fatalf("iptables %v: %v\n%s", args, err, out)
+			}
+			del := []string{"-w", "-D", "FORWARD", dir, ifc, "-j", "ACCEPT"}
+			t.Cleanup(func() { _ = exec.Command(ipt, del...).Run() }) // #nosec G204 -- fixed argv
+		}
+	}
+}
+
 // sysctlSaveSet sets a sysctl for the test and restores the previous value.
 func sysctlSaveSet(t *testing.T, key, value string) {
 	t.Helper()
@@ -797,6 +821,9 @@ func TestAttachedProgram_RoutedForgedSeedDoesNotOpenEgress(t *testing.T) {
 		run("ip", "netns", "exec", l.netns, "ip", "link", "set", "lo", "up")
 		run("ip", "netns", "exec", l.netns, "ip", "route", "add", "default", "via", l.hostIP)
 	}
+	// The host must actually forward between the p2p links and the bridge: a
+	// Docker-equipped runner's FORWARD policy is DROP.
+	allowForward(t, routedNHostV, routedPHostV, spoofBridge)
 	// Loose rp_filter for the test only, restored after: strict mode would drop
 	// nbox's forged src=P on input (P's route is via the other link) before the
 	// host could route it to abox.
