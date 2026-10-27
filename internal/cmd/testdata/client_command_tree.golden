@@ -229,6 +229,7 @@ ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync
+ssh-keys set
 sync
 token delegate
 token generate
