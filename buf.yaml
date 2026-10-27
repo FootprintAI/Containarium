@@ -35,17 +35,3 @@ lint:
 breaking:
   use:
     - FILE
-  # #2733 (slice B of #2263) deliberately removes the bridge-DNS status
-  # surface: the GetBridgeDNSStatus RPC, its request/response messages and the
-  # BridgeDNSState enum. Decision recorded on #2733: waive only these three
-  # rules for only these two files, no deprecated stub RPC. The gate compares
-  # against the PR base, so once #2733 is on main nothing here is needed any
-  # more; delete these entries in the next proto change rather than leaving
-  # the two files exempt from delete checks.
-  ignore_only:
-    ENUM_NO_DELETE:
-      - proto/containarium/v1/config.proto
-    MESSAGE_NO_DELETE:
-      - proto/containarium/v1/config.proto
-    RPC_NO_DELETE:
-      - proto/containarium/v1/service.proto
