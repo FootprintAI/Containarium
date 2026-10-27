@@ -107,6 +107,8 @@ var registeredServices = []rpcSurface{
 	{pb.ModelGatewayService_ServiceDesc, "ModelGatewayServer"},
 	// #2378 — Set/Delete RequireRole(admin); Get RequireRoleOrScope + AuthorizeTenant.
 	{pb.CodingToolEgressPolicyService_ServiceDesc, "CodingToolEgressPolicyServer"},
+	// #2185 — Set/Delete RequireScope(secrets:write), Get/Test RequireScope(secrets:read); all AuthorizeTenant via notifyUser.
+	{pb.NotifyService_ServiceDesc, "NotifyServer"},
 	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},

@@ -708,6 +708,28 @@ func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 	return c.client.TailBoxRunLog(ctx, req)
 }
 
+// GetRunApprovalKey returns a box's approval public key via gRPC (#2184).
+func (c *GRPCClient) GetRunApprovalKey(username string) (*pb.GetRunApprovalKeyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.GetRunApprovalKey(ctx, &pb.GetRunApprovalKeyRequest{Username: username})
+}
+
+// ListRunInputs lists a box run's open permission requests via gRPC (#2184).
+func (c *GRPCClient) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.ListRunInputs(ctx, req)
+}
+
+// AnswerRunInput answers one permission request via gRPC (#2184). The
+// deadline covers the server's wait for the box's response.
+func (c *GRPCClient) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.AnswerRunInput(ctx, req)
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *GRPCClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
