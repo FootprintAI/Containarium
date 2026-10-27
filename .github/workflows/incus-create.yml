@@ -23,6 +23,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
@@ -47,6 +50,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
