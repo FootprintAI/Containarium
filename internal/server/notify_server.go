@@ -179,6 +179,11 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	if strings.ContainsAny(req.GetToken(), "\r\n") {
 		return nil, status.Error(codes.InvalidArgument, "token must be a single line")
 	}
+	// The previous channel, the token decision and the writes are one step
+	// under cfgMu: a concurrent Set cannot slip in between and be undone by
+	// this call's rollback.
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
 	prev, err := s.store.Get(ctx, username)
 	if err != nil && !errors.Is(err, notify.ErrNotFound) {
 		return nil, status.Errorf(codes.Internal, "read channel: %v", err)
@@ -203,15 +208,14 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
 }
 
-// setChannel stores ch and, when given, its new token, under cfgMu. A new or
-// cleared token is written while the stored channel says it has none, so the
-// watcher never pairs a token with a server it was not given for. If the
+// setChannel stores ch and, when given, its new token; the caller holds
+// cfgMu. A new or cleared token is written while the stored channel says it
+// has none, so the watcher never pairs a token with a server it was not
+// given for. If the
 // token cannot be written, the previous channel (prev, when found) is put
 // back, leaving the old channel and token in effect; if the last channel
 // write fails, the channel stays without a token.
 func (s *NotifyServer) setChannel(ctx context.Context, ch, prev notify.Channel, prevFound bool, token string, clearToken bool) (notify.Channel, error) {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
 	if token != "" || clearToken {
 		tokenless := ch
 		tokenless.HasToken = false

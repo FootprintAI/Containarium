@@ -571,3 +571,33 @@ func TestSetNotifyChannel_TokenWriteFailurePreservesOldChannel(t *testing.T) {
 		t.Fatalf("after a failed update: channel %+v token %q, want A with tokA", ch, token)
 	}
 }
+
+// TestSetNotifyChannel_ConcurrentSetsKeepTokenWithItsServer: many concurrent
+// updates, some failing their token write, always leave the stored channel
+// paired with the token it was set with.
+func TestSetNotifyChannel_ConcurrentSetsKeepTokenWithItsServer(t *testing.T) {
+	s, sec, _, _, _ := newTestNotifyServer(t)
+	ntfy := pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY
+	ctx := notifyCtx("alice")
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			host := []string{"a", "b", "c"}[i%3]
+			sec.mu.Lock()
+			sec.failSet = i%4 == 0
+			sec.mu.Unlock()
+			_, _ = s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://" + host + ".example.com", Topic: "t", Token: "tok-" + host})
+		}(i)
+	}
+	wg.Wait()
+	sec.failSet = false
+	ch, token, err := s.channelAndToken(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.HasToken && "https://"+strings.TrimPrefix(token, "tok-")+".example.com" != ch.Server {
+		t.Fatalf("channel %s stored with token %q", ch.Server, token)
+	}
+}
