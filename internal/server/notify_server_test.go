@@ -23,9 +23,35 @@ import (
 // fakeNotifySecrets is an in-memory secrets store with the real store's
 // broker-only rules: Get hides a broker value, BrokerCredential reads only one.
 type fakeNotifySecrets struct {
-	mu      sync.Mutex
-	rows    map[string]struct{ value, delivery string }
-	failSet bool
+	mu         sync.Mutex
+	rows       map[string]struct{ value, delivery string }
+	failSet    bool
+	failDelete int // fail this many Delete calls
+}
+
+func (f *fakeNotifySecrets) List(_ context.Context, u string) ([]secrets.SecretMetadata, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []secrets.SecretMetadata
+	for k, r := range f.rows {
+		if owner, name, _ := strings.Cut(k, "/"); owner == u {
+			out = append(out, secrets.SecretMetadata{Username: u, Name: name, Delivery: r.delivery})
+		}
+	}
+	return out, nil
+}
+
+// tokenRows returns u's channel-token secrets, by name.
+func (f *fakeNotifySecrets) tokenRows(u string) map[string]struct{ value, delivery string } {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]struct{ value, delivery string }{}
+	for k, r := range f.rows {
+		if owner, name, _ := strings.Cut(k, "/"); owner == u && strings.HasPrefix(name, notify.TokenSecretPrefix) {
+			out[name] = r
+		}
+	}
+	return out
 }
 
 func newFakeNotifySecrets() *fakeNotifySecrets {
@@ -58,6 +84,10 @@ func (f *fakeNotifySecrets) Set(_ context.Context, u, n, v, d string) (*secrets.
 func (f *fakeNotifySecrets) Delete(_ context.Context, u, n string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failDelete > 0 {
+		f.failDelete--
+		return errors.New("secrets store down")
+	}
 	if _, ok := f.rows[u+"/"+n]; !ok {
 		return secrets.ErrNotFound
 	}
@@ -141,9 +171,14 @@ func TestSetNotifyChannel_TokenStoredBrokerOnlyNeverReturned(t *testing.T) {
 	if strings.Contains(ch.String(), "tk_123") {
 		t.Fatal("response carries the token")
 	}
-	row := sec.rows["alice/"+notify.TokenSecretName]
-	if row.value != "tk_123" || row.delivery != secrets.DeliveryBroker {
-		t.Fatalf("stored secret = %+v, want the token in broker-only delivery", row)
+	rows := sec.tokenRows("alice")
+	if len(rows) != 1 {
+		t.Fatalf("token secrets = %v, want one", rows)
+	}
+	for _, row := range rows {
+		if row.value != "tk_123" || row.delivery != secrets.DeliveryBroker {
+			t.Fatalf("stored secret = %+v, want the token in broker-only delivery", row)
+		}
 	}
 
 	// Updating without a token keeps it; clear_token removes it.
@@ -159,8 +194,8 @@ func TestSetNotifyChannel_TokenStoredBrokerOnlyNeverReturned(t *testing.T) {
 	if err != nil || resp.GetChannel().GetHasToken() {
 		t.Fatalf("clear_token: %v %v", resp, err)
 	}
-	if _, ok := sec.rows["alice/"+notify.TokenSecretName]; ok {
-		t.Fatal("clear_token left the secret")
+	if rows := sec.tokenRows("alice"); len(rows) != 0 {
+		t.Fatalf("clear_token left %v", rows)
 	}
 }
 
@@ -185,11 +220,20 @@ func TestSetNotifyChannel_Refusals(t *testing.T) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.code)
 		}
 	}
-	// A same-named secret the box receives is not overwritten.
-	sec.rows["alice/"+notify.TokenSecretName] = struct{ value, delivery string }{"old", secrets.DeliveryEnv}
-	_, err := s.SetNotifyChannel(notifyCtx("alice"), &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://n.example.com", Topic: "t", Token: "new"})
-	if status.Code(err) != codes.FailedPrecondition || sec.rows["alice/"+notify.TokenSecretName].value != "old" {
-		t.Fatalf("delivering secret overwritten: err=%v row=%+v", err, sec.rows["alice/"+notify.TokenSecretName])
+	// A same-prefixed secret the box receives was not written here: setting
+	// and clearing tokens never touches it.
+	name := notify.TokenSecretPrefix + "MINE"
+	sec.rows["alice/"+name] = struct{ value, delivery string }{"old", secrets.DeliveryEnv}
+	for _, req := range []*pb.SetNotifyChannelRequest{
+		{Kind: ntfy, Server: "https://n.example.com", Topic: "t", Token: "new"},
+		{Kind: ntfy, Server: "https://n.example.com", Topic: "t", ClearToken: true},
+	} {
+		if _, err := s.SetNotifyChannel(notifyCtx("alice"), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := sec.rows["alice/"+name]; r.value != "old" || r.delivery != secrets.DeliveryEnv {
+		t.Fatalf("delivering secret changed: %+v", r)
 	}
 }
 
@@ -202,8 +246,8 @@ func TestDeleteNotifyChannel_RemovesToken(t *testing.T) {
 	if _, err := s.DeleteNotifyChannel(ctx, &pb.DeleteNotifyChannelRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := sec.rows["alice/"+notify.TokenSecretName]; ok {
-		t.Fatal("token secret left behind")
+	if rows := sec.tokenRows("alice"); len(rows) != 0 {
+		t.Fatalf("token secrets left behind: %v", rows)
 	}
 	if _, err := s.GetNotifyChannel(ctx, &pb.GetNotifyChannelRequest{}); status.Code(err) != codes.NotFound {
 		t.Fatalf("get after delete: %v", err)
@@ -567,7 +611,7 @@ func TestSetNotifyChannel_TokenWriteFailurePreservesOldChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ch.Server != "https://a.example.com" || ch.Topic != "t" || !ch.HasToken || token != "tokA" {
+	if ch.Server != "https://a.example.com" || ch.Topic != "t" || !ch.HasToken() || token != "tokA" {
 		t.Fatalf("after a failed update: channel %+v token %q, want A with tokA", ch, token)
 	}
 }
@@ -597,7 +641,100 @@ func TestSetNotifyChannel_ConcurrentSetsKeepTokenWithItsServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ch.HasToken && "https://"+strings.TrimPrefix(token, "tok-")+".example.com" != ch.Server {
+	if ch.HasToken() && "https://"+strings.TrimPrefix(token, "tok-")+".example.com" != ch.Server {
 		t.Fatalf("channel %s stored with token %q", ch.Server, token)
+	}
+}
+
+// TestSetNotifyChannel_ChannelWriteFailurePreservesOldChannel: when the row
+// that would point at the new token cannot be written, the previous channel
+// and token stay in effect and the new token secret is removed.
+func TestSetNotifyChannel_ChannelWriteFailurePreservesOldChannel(t *testing.T) {
+	s, sec, _, _, _ := newTestNotifyServer(t)
+	g := &gatedChannelStore{MemStore: notify.NewMemStore()}
+	s.store = g
+	ctx := notifyCtx("alice")
+	ntfy := pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://a.example.com", Topic: "t", Token: "tokA"}); err != nil {
+		t.Fatal(err)
+	}
+	g.failSet = true
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: ntfy, Server: "https://b.example.com", Topic: "t2", Token: "tokB"}); err == nil {
+		t.Fatal("Set with a failing channel store succeeded")
+	}
+	g.failSet = false
+	ch, token, err := s.channelAndToken(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Server != "https://a.example.com" || token != "tokA" {
+		t.Fatalf("after a failed update: channel %+v token %q, want A with tokA", ch, token)
+	}
+	if rows := sec.tokenRows("alice"); len(rows) != 1 {
+		t.Fatalf("token secrets = %v, want only A's", rows)
+	}
+}
+
+// TestDeleteNotifyChannel_RetryAfterTokenDeleteFailure: a delete whose token
+// removal fails can be retried, and the retry removes channel and token.
+func TestDeleteNotifyChannel_RetryAfterTokenDeleteFailure(t *testing.T) {
+	s, sec, _, _, _ := newTestNotifyServer(t)
+	ctx := notifyCtx("alice")
+	if _, err := s.SetNotifyChannel(ctx, &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://n.example.com", Topic: "t", Token: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	sec.failDelete = 1
+	if _, err := s.DeleteNotifyChannel(ctx, &pb.DeleteNotifyChannelRequest{}); err == nil {
+		t.Fatal("delete with a failing secrets store succeeded")
+	}
+	if _, err := s.DeleteNotifyChannel(ctx, &pb.DeleteNotifyChannelRequest{}); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if rows := sec.tokenRows("alice"); len(rows) != 0 {
+		t.Fatalf("token secrets left after the retry: %v", rows)
+	}
+	if _, err := s.GetNotifyChannel(ctx, &pb.GetNotifyChannelRequest{}); status.Code(err) != codes.NotFound {
+		t.Fatalf("channel left after the retry: %v", err)
+	}
+}
+
+// TestNotifyWatcher_ChannelRemovedBeforeSendIsRetried: a request whose push
+// found the channel gone is pushed once a channel is set again.
+func TestNotifyWatcher_ChannelRemovedBeforeSendIsRetried(t *testing.T) {
+	boot := hostBootID(t)
+	s, _, snd, _, dir := newTestNotifyServer(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	ctx := notifyCtx("alice")
+	set := &pb.SetNotifyChannelRequest{Kind: pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY, Server: "https://n.example.com", Topic: "t"}
+	if _, err := s.SetNotifyChannel(ctx, set); err != nil {
+		t.Fatal(err)
+	}
+	writeRecord(t, dir, recordSpec{name: "live", pid: os.Getpid(), boot: boot, started: now})
+	writeJournal(t, dir, "live", openReq("r1", "Bash: make deploy", now))
+	// The channel disappears between the poll's selection and its send.
+	snd.block = func(notify.Channel) {}
+	exec := s.exec
+	s.exec = func() boxScriptFunc {
+		inner := exec()
+		return func(box, script string) (string, error) {
+			out, err := inner(box, script)
+			_, _ = s.DeleteNotifyChannel(ctx, &pb.DeleteNotifyChannelRequest{})
+			return out, err
+		}
+	}
+	s.pollOnce(context.Background())
+	s.wg.Wait()
+	if n := len(snd.all()); n != 0 {
+		t.Fatalf("pushed %d with no channel", n)
+	}
+	s.exec = exec
+	if _, err := s.SetNotifyChannel(ctx, set); err != nil {
+		t.Fatal(err)
+	}
+	s.pollOnce(context.Background())
+	s.wg.Wait()
+	if got := snd.all(); len(got) != 1 || !strings.Contains(got[0].msg.Body, "make deploy") {
+		t.Fatalf("pushes after the channel came back = %+v", got)
 	}
 }

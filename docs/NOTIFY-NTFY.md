@@ -65,11 +65,18 @@ its input can hold a file's contents, a path, or arbitrary JSON.
 ## How it is sent
 
 The daemon sends the push, not the box: the agent runs as the box's user, so
-a token on the box would be the agent's to read. The token is stored as the
-broker-only tenant secret `CONTAINARIUM_NOTIFY_NTFY_TOKEN`: never delivered
-to a box by any delivery mode, and never returned by `secrets get` or any
-notify RPC. If you already have a secret by that name in a delivered mode,
-`notify set` refuses to overwrite it; delete it first.
+a token on the box would be the agent's to read. The token is stored as a
+broker-only tenant secret named `CONTAINARIUM_NOTIFY_NTFY_TOKEN_<random>`:
+never delivered to a box by any delivery mode, and never returned by
+`secrets get` or any notify RPC.
+
+Each new token gets a new secret. `notify set` writes it, then switches the
+channel to it in one write, then removes the old one. If anything fails
+before that switch, the previous server and token stay in effect; a token is
+never sent to a server it was not set for. `notify delete` removes the token
+first and the channel last, so a failed delete can simply be retried.
+Secrets with that prefix in a delivered mode were not written by this
+service and are left alone.
 
 Every 5 seconds the daemon reads the input journal of every running run on
 the box of each user with a channel, read-only, through the same guarded root

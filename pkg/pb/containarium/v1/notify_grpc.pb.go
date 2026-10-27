@@ -36,8 +36,9 @@ const (
 // One channel per user. The daemon itself sends the push: it reads each live
 // run's input journal on the user's box and publishes to the channel, so the
 // channel's access token never reaches a box. The token is stored with the
-// tenant secrets store as the broker-only secret
-// CONTAINARIUM_NOTIFY_NTFY_TOKEN and is never returned by any RPC.
+// tenant secrets store as a broker-only secret named
+// CONTAINARIUM_NOTIFY_NTFY_TOKEN_<random>, a new one per token (the channel
+// switches to it in one write), and is never returned by any RPC.
 //
 // Which user: the request's username, or the caller's own when empty. Reads
 // need secrets:read and writes secrets:write, as for the tenant's secrets.
@@ -111,8 +112,9 @@ func (c *notifyServiceClient) TestNotifyChannel(ctx context.Context, in *TestNot
 // One channel per user. The daemon itself sends the push: it reads each live
 // run's input journal on the user's box and publishes to the channel, so the
 // channel's access token never reaches a box. The token is stored with the
-// tenant secrets store as the broker-only secret
-// CONTAINARIUM_NOTIFY_NTFY_TOKEN and is never returned by any RPC.
+// tenant secrets store as a broker-only secret named
+// CONTAINARIUM_NOTIFY_NTFY_TOKEN_<random>, a new one per token (the channel
+// switches to it in one write), and is never returned by any RPC.
 //
 // Which user: the request's username, or the caller's own when empty. Reads
 // need secrets:read and writes secrets:write, as for the tenant's secrets.

@@ -3,6 +3,8 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,22 +20,37 @@ import (
 )
 
 // Channel is a user's ntfy destination. The token is never part of it: the
-// daemon keeps it as a broker-only secret (TokenSecretName) and passes it to
-// Send separately.
+// daemon keeps it as a broker-only tenant secret named by TokenSecret and
+// passes it to Send separately.
 type Channel struct {
 	Username string
 	Server   string
 	Topic    string
-	// HasToken says a token is stored for the channel.
-	HasToken bool
+	// TokenSecret names the broker-only secret holding the channel's token;
+	// empty for a channel without one. Each token gets a fresh name
+	// (NewTokenSecretName) that is never rewritten, so a channel row and the
+	// secret it names always belong together: replacing a token is a single
+	// write of the row that points at the new secret.
+	TokenSecret string
 	// RedactCommand sends the tool name only, never its command.
 	RedactCommand bool
 	UpdatedAt     time.Time
 }
 
-// TokenSecretName is the tenant secret that holds a channel's ntfy access
-// token, in broker-only delivery: never stamped into any box.
-const TokenSecretName = "CONTAINARIUM_NOTIFY_NTFY_TOKEN"
+// HasToken says a token is stored for the channel.
+func (c Channel) HasToken() bool { return c.TokenSecret != "" }
+
+// TokenSecretPrefix starts the name of every secret holding a channel token.
+const TokenSecretPrefix = "CONTAINARIUM_NOTIFY_NTFY_TOKEN_"
+
+// NewTokenSecretName returns a fresh secret name for a channel token.
+func NewTokenSecretName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("notify: token secret name: %w", err)
+	}
+	return TokenSecretPrefix + strings.ToUpper(hex.EncodeToString(b[:])), nil
+}
 
 // topicPattern is ntfy's own topic rule.
 var topicPattern = regexp.MustCompile(`^[-_A-Za-z0-9]{1,64}$`)

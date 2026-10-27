@@ -118,7 +118,7 @@
     },
     {
       "name": "NotifyService",
-      "description": "NotifyService — where the daemon pushes a `code run --approvals ask`\npermission request that is waiting on the developer (#2185,\ndocs/product/phone-approval.md Story 3).\n\nOne channel per user. The daemon itself sends the push: it reads each live\nrun's input journal on the user's box and publishes to the channel, so the\nchannel's access token never reaches a box. The token is stored with the\ntenant secrets store as the broker-only secret\nCONTAINARIUM_NOTIFY_NTFY_TOKEN and is never returned by any RPC.\n\nWhich user: the request's username, or the caller's own when empty. Reads\nneed secrets:read and writes secrets:write, as for the tenant's secrets."
+      "description": "NotifyService — where the daemon pushes a `code run --approvals ask`\npermission request that is waiting on the developer (#2185,\ndocs/product/phone-approval.md Story 3).\n\nOne channel per user. The daemon itself sends the push: it reads each live\nrun's input journal on the user's box and publishes to the channel, so the\nchannel's access token never reaches a box. The token is stored with the\ntenant secrets store as a broker-only secret named\nCONTAINARIUM_NOTIFY_NTFY_TOKEN_\u003crandom\u003e, a new one per token (the channel\nswitches to it in one write), and is never returned by any RPC.\n\nWhich user: the request's username, or the caller's own when empty. Reads\nneed secrets:read and writes secrets:write, as for the tenant's secrets."
     },
     {
       "name": "PentestService",

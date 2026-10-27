@@ -30,6 +30,12 @@ import (
 // uses, and publishes what notify.Coalescer says is due. The channel's token
 // is a broker-only tenant secret, read here with BrokerCredential and never
 // delivered to a box.
+//
+// A token change is a pointer swap: the new token goes into a freshly named
+// secret, then one write of the channel row points at it, then the old secret
+// is removed. The row write is the only commit point, so a failure before it
+// leaves the previous channel and token in effect, and a secret name is never
+// rewritten, so a push always reads a row and the token that belongs to it.
 
 // notifySecretStore is the slice of secrets.Store the notify service uses.
 type notifySecretStore interface {
@@ -37,6 +43,7 @@ type notifySecretStore interface {
 	Set(ctx context.Context, username, name, value, delivery string) (*secrets.SecretMetadata, error)
 	Delete(ctx context.Context, username, name string) error
 	BrokerCredential(ctx context.Context, username, name string) (string, error)
+	List(ctx context.Context, username string) ([]secrets.SecretMetadata, error)
 }
 
 // notifySender is notify.Sender, behind an interface for tests.
@@ -59,9 +66,10 @@ type NotifyServer struct {
 	coalescer *notify.Coalescer
 	now       func() time.Time
 
-	// cfgMu makes a channel change and the token it carries one step for the
-	// watcher: a push reads the channel and its token under it, so it never
-	// pairs a new token with the old server.
+	// cfgMu serializes channel writes (Set, Delete), so one call's cleanup of
+	// unused token secrets never removes the secret another call just
+	// committed. Pushes do not take it: a row and the secret it names are
+	// consistent on their own.
 	cfgMu sync.Mutex
 
 	// Each user is polled on its own goroutine, so one slow box or ntfy
@@ -114,7 +122,7 @@ func notifyChannelProto(ch notify.Channel) *pb.NotifyChannel {
 		Kind:          pb.NotifyChannelKind_NOTIFY_CHANNEL_KIND_NTFY,
 		Server:        ch.Server,
 		Topic:         ch.Topic,
-		HasToken:      ch.HasToken,
+		HasToken:      ch.HasToken(),
 		RedactCommand: ch.RedactCommand,
 	}
 	if !ch.UpdatedAt.IsZero() {
@@ -123,42 +131,51 @@ func notifyChannelProto(ch notify.Channel) *pb.NotifyChannel {
 	return out
 }
 
-// storeNotifyToken writes the token as the user's broker-only secret. It
-// refuses to overwrite a same-named secret that a box receives: that value
-// is already the box's to read, and turning it broker-only would not undo it.
-func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token string) error {
+// storeNotifyToken writes token into a new broker-only secret and returns
+// its name. Nothing points at it yet.
+func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token string) (string, error) {
 	if s.secrets == nil {
-		return status.Error(codes.FailedPrecondition, "secrets store not configured on this daemon; a channel cannot hold a token")
+		return "", status.Error(codes.FailedPrecondition, "secrets store not configured on this daemon; a channel cannot hold a token")
 	}
-	_, _, err := s.secrets.Get(ctx, username, notify.TokenSecretName)
-	switch {
-	case err == nil:
-		return status.Errorf(codes.FailedPrecondition,
-			"secret %s exists in a mode delivered to the box; delete it with `containarium secrets delete %s %s` first",
-			notify.TokenSecretName, username, notify.TokenSecretName)
-	case errors.Is(err, secrets.ErrBrokerOnly), errors.Is(err, secrets.ErrNotFound):
-	default:
-		return status.Errorf(codes.Internal, "check %s: %v", notify.TokenSecretName, err)
+	name, err := notify.NewTokenSecretName()
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "%v", err)
 	}
-	if _, err := s.secrets.Set(ctx, username, notify.TokenSecretName, token, secrets.DeliveryBroker); err != nil {
-		return status.Errorf(codes.Internal, "store token: %v", err)
+	// A fresh random name: anything already there is not ours to overwrite.
+	if _, _, err := s.secrets.Get(ctx, username, name); !errors.Is(err, secrets.ErrNotFound) {
+		if err == nil || errors.Is(err, secrets.ErrBrokerOnly) {
+			return "", status.Errorf(codes.Aborted, "token secret name %s is taken; retry", name)
+		}
+		return "", status.Errorf(codes.Internal, "check token secret: %v", err)
 	}
-	return nil
+	if _, err := s.secrets.Set(ctx, username, name, token, secrets.DeliveryBroker); err != nil {
+		return "", status.Errorf(codes.Internal, "store token: %v", err)
+	}
+	return name, nil
 }
 
-func (s *NotifyServer) deleteNotifyToken(ctx context.Context, username string) error {
+// removeTokenSecrets deletes the user's broker-only channel-token secrets
+// except keep. It returns the first failure; the rest are still tried.
+func (s *NotifyServer) removeTokenSecrets(ctx context.Context, username, keep string) error {
 	if s.secrets == nil {
 		return nil
 	}
-	_, _, err := s.secrets.Get(ctx, username, notify.TokenSecretName)
-	if !errors.Is(err, secrets.ErrBrokerOnly) {
-		// Absent, or a delivering secret this service did not write: leave it.
-		return nil
+	metas, err := s.secrets.List(ctx, username)
+	if err != nil {
+		return fmt.Errorf("list secrets: %w", err)
 	}
-	if err := s.secrets.Delete(ctx, username, notify.TokenSecretName); err != nil && !errors.Is(err, secrets.ErrNotFound) {
-		return status.Errorf(codes.Internal, "delete token: %v", err)
+	var first error
+	for _, m := range metas {
+		// Only broker-only secrets with our prefix: one a box receives was
+		// not written here and is left alone.
+		if m.Name == keep || !strings.HasPrefix(m.Name, notify.TokenSecretPrefix) || m.Delivery != secrets.DeliveryBroker {
+			continue
+		}
+		if err := s.secrets.Delete(ctx, username, m.Name); err != nil && !errors.Is(err, secrets.ErrNotFound) && first == nil {
+			first = fmt.Errorf("delete %s: %w", m.Name, err)
+		}
 	}
-	return nil
+	return first
 }
 
 // SetNotifyChannel creates or replaces the user's channel.
@@ -179,80 +196,51 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	if strings.ContainsAny(req.GetToken(), "\r\n") {
 		return nil, status.Error(codes.InvalidArgument, "token must be a single line")
 	}
-	// The previous channel, the token decision and the writes are one step
-	// under cfgMu: a concurrent Set cannot slip in between and be undone by
-	// this call's rollback.
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	prev, err := s.store.Get(ctx, username)
 	if err != nil && !errors.Is(err, notify.ErrNotFound) {
 		return nil, status.Errorf(codes.Internal, "read channel: %v", err)
 	}
-	prevFound := err == nil
-	hasToken := req.GetToken() != "" || (prev.HasToken && !req.GetClearToken())
 	ch := notify.Channel{
 		Username:      username,
 		Server:        strings.TrimSpace(req.GetServer()),
 		Topic:         req.GetTopic(),
-		HasToken:      hasToken,
+		TokenSecret:   prev.TokenSecret,
 		RedactCommand: req.GetRedactCommand(),
 	}
+	if req.GetClearToken() {
+		ch.TokenSecret = ""
+	}
+	hasToken := req.GetToken() != "" || ch.HasToken()
 	if err := notify.ValidateChannel(ch, hasToken); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	stored, err := s.setChannel(ctx, ch, prev, prevFound, req.GetToken(), req.GetClearToken())
-	if err != nil {
-		return nil, err
+	var created string
+	if req.GetToken() != "" {
+		if created, err = s.storeNotifyToken(ctx, username, req.GetToken()); err != nil {
+			return nil, err
+		}
+		ch.TokenSecret = created
 	}
-	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, ch.HasToken, ch.RedactCommand)
-	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
-}
-
-// setChannel stores ch and, when given, its new token; the caller holds
-// cfgMu. A new or cleared token is written while the stored channel says it
-// has none, so the watcher never pairs a token with a server it was not
-// given for. If the
-// token cannot be written, the previous channel (prev, when found) is put
-// back, leaving the old channel and token in effect; if the last channel
-// write fails, the channel stays without a token.
-func (s *NotifyServer) setChannel(ctx context.Context, ch, prev notify.Channel, prevFound bool, token string, clearToken bool) (notify.Channel, error) {
-	if token != "" || clearToken {
-		tokenless := ch
-		tokenless.HasToken = false
-		if _, err := s.store.Set(ctx, tokenless); err != nil {
-			return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
-		}
-		var err error
-		if clearToken {
-			err = s.deleteNotifyToken(ctx, ch.Username)
-		} else {
-			err = s.storeNotifyToken(ctx, ch.Username, token)
-		}
-		if err != nil {
-			s.restoreChannel(ctx, ch.Username, prev, prevFound)
-			return notify.Channel{}, err
-		}
-	}
+	// The commit point: until this write, the previous channel and token are
+	// what pushes use.
 	stored, err := s.store.Set(ctx, ch)
 	if err != nil {
-		return notify.Channel{}, status.Errorf(codes.Internal, "store channel: %v", err)
+		if created != "" {
+			if derr := s.secrets.Delete(ctx, username, created); derr != nil {
+				log.Printf("[notify] remove uncommitted token secret of %s: %v", username, derr)
+			}
+		}
+		return nil, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
-	return stored, nil
-}
-
-// restoreChannel puts back the channel a failed setChannel replaced. The
-// token was not changed (its write failed), so prev and the stored token
-// still belong together. Called with cfgMu held.
-func (s *NotifyServer) restoreChannel(ctx context.Context, username string, prev notify.Channel, prevFound bool) {
-	var err error
-	if prevFound {
-		_, err = s.store.Set(ctx, prev)
-	} else {
-		err = s.store.Delete(ctx, username)
+	// Committed: the old token secret, and any left by an earlier failure, are
+	// no longer pointed at.
+	if err := s.removeTokenSecrets(ctx, username, stored.TokenSecret); err != nil {
+		log.Printf("[notify] remove unused token secrets of %s: %v", username, err)
 	}
-	if err != nil && !errors.Is(err, notify.ErrNotFound) {
-		log.Printf("[notify] restore channel of %s after a failed token write: %v (left without a token)", username, err)
-	}
+	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
+	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
 }
 
 // GetNotifyChannel returns the user's channel, without its token.
@@ -285,14 +273,20 @@ func (s *NotifyServer) DeleteNotifyChannel(ctx context.Context, req *pb.DeleteNo
 	}
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
-	if err := s.store.Delete(ctx, username); err != nil {
+	if _, err := s.store.Get(ctx, username); err != nil {
 		if errors.Is(err, notify.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "no notification channel for %s", username)
 		}
-		return nil, status.Errorf(codes.Internal, "delete channel: %v", err)
+		return nil, status.Errorf(codes.Internal, "read channel: %v", err)
 	}
-	if err := s.deleteNotifyToken(ctx, username); err != nil {
-		return nil, err
+	// Token first, row last: while the row exists a failed delete can be
+	// retried, and a row left pointing at a removed secret only fails its
+	// pushes (they are retried) until the retry removes it.
+	if err := s.removeTokenSecrets(ctx, username, ""); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete token: %v; retry the delete", err)
+	}
+	if err := s.store.Delete(ctx, username); err != nil && !errors.Is(err, notify.ErrNotFound) {
+		return nil, status.Errorf(codes.Internal, "delete channel: %v", err)
 	}
 	return &pb.DeleteNotifyChannelResponse{}, nil
 }
@@ -324,30 +318,25 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 	return &pb.TestNotifyChannelResponse{Message: "test push accepted by " + ch.Server}, nil
 }
 
-// channelAndToken reads a user's channel and its token as one consistent
-// pair (see cfgMu).
+// channelAndToken reads a user's channel and the token its row names. The
+// pair is consistent without a lock: a token secret is never rewritten, only
+// replaced by a new row pointing at a new one.
 func (s *NotifyServer) channelAndToken(ctx context.Context, username string) (notify.Channel, string, error) {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
 	ch, err := s.store.Get(ctx, username)
 	if err != nil {
 		return notify.Channel{}, "", err
 	}
-	token, err := s.channelToken(ctx, ch)
+	if !ch.HasToken() {
+		return ch, "", nil
+	}
+	if s.secrets == nil {
+		return notify.Channel{}, "", errors.New("read token: secrets store not configured on this daemon")
+	}
+	token, err := s.secrets.BrokerCredential(ctx, username, ch.TokenSecret)
 	if err != nil {
 		return notify.Channel{}, "", fmt.Errorf("read token: %w", err)
 	}
 	return ch, token, nil
-}
-
-func (s *NotifyServer) channelToken(ctx context.Context, ch notify.Channel) (string, error) {
-	if !ch.HasToken {
-		return "", nil
-	}
-	if s.secrets == nil {
-		return "", errors.New("secrets store not configured on this daemon")
-	}
-	return s.secrets.BrokerCredential(ctx, ch.Username, notify.TokenSecretName)
 }
 
 // NotifyPollInterval is how often the watcher reads the journals: well under
@@ -547,7 +536,9 @@ func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user st
 func (s *NotifyServer) deliver(ctx context.Context, user string, p notify.Push) error {
 	ch, token, err := s.channelAndToken(ctx, user)
 	if errors.Is(err, notify.ErrNotFound) {
-		return nil // channel removed: nothing to send to
+		// Channel removed since the poll began: nothing was sent, so the
+		// requests go back in the queue for a channel set later.
+		return errors.New("channel removed before the push was sent")
 	}
 	if err != nil {
 		return err

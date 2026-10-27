@@ -100,7 +100,7 @@ func NewPGStore(ctx context.Context, pool *pgxpool.Pool) (*PGStore, error) {
 			kind           TEXT NOT NULL CHECK (kind IN ('ntfy')),
 			server         TEXT NOT NULL,
 			topic          TEXT NOT NULL,
-			has_token      BOOLEAN NOT NULL DEFAULT FALSE,
+			token_secret   TEXT NOT NULL DEFAULT '',
 			redact_command BOOLEAN NOT NULL DEFAULT FALSE,
 			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`); err != nil {
@@ -112,11 +112,11 @@ func NewPGStore(ctx context.Context, pool *pgxpool.Pool) (*PGStore, error) {
 	return &PGStore{pool: pool}, nil
 }
 
-const channelColumns = `username, server, topic, has_token, redact_command, updated_at`
+const channelColumns = `username, server, topic, token_secret, redact_command, updated_at`
 
 func scanChannel(row pgx.Row) (Channel, error) {
 	var ch Channel
-	err := row.Scan(&ch.Username, &ch.Server, &ch.Topic, &ch.HasToken, &ch.RedactCommand, &ch.UpdatedAt)
+	err := row.Scan(&ch.Username, &ch.Server, &ch.Topic, &ch.TokenSecret, &ch.RedactCommand, &ch.UpdatedAt)
 	return ch, err
 }
 
@@ -130,14 +130,14 @@ func (s *PGStore) Get(ctx context.Context, username string) (Channel, error) {
 
 func (s *PGStore) Set(ctx context.Context, ch Channel) (Channel, error) {
 	return scanChannel(s.pool.QueryRow(ctx, `
-		INSERT INTO notify_channels (username, kind, server, topic, has_token, redact_command, updated_at)
+		INSERT INTO notify_channels (username, kind, server, topic, token_secret, redact_command, updated_at)
 		VALUES ($1, 'ntfy', $2, $3, $4, $5, NOW())
 		ON CONFLICT (username) DO UPDATE SET
 			kind = 'ntfy', server = EXCLUDED.server, topic = EXCLUDED.topic,
-			has_token = EXCLUDED.has_token, redact_command = EXCLUDED.redact_command,
+			token_secret = EXCLUDED.token_secret, redact_command = EXCLUDED.redact_command,
 			updated_at = NOW()
 		RETURNING `+channelColumns,
-		ch.Username, ch.Server, ch.Topic, ch.HasToken, ch.RedactCommand))
+		ch.Username, ch.Server, ch.Topic, ch.TokenSecret, ch.RedactCommand))
 }
 
 func (s *PGStore) Delete(ctx context.Context, username string) error {
