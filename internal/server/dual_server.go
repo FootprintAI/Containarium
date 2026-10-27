@@ -107,6 +107,10 @@ type DualServerConfig struct {
 	// HTTP/REST settings
 	HTTPPort   int
 	EnableREST bool
+	// StartupListener is HTTPPort, already bound by the daemon before its
+	// startup waits and answering /health "degraded" (#3130). The gateway
+	// takes it over; nil = the gateway binds HTTPPort itself.
+	StartupListener *gateway.StartupListener
 
 	// Authentication settings
 	JWTSecret string
@@ -2489,6 +2493,10 @@ skipAppHosting:
 	threatDetectServer.SetFindingStore(threatDetectStore)
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
+		// The watcher loads the exec-watch object from the network-policy
+		// setting, so the self-measurement attests it too while it is loaded
+		// (#3120); Running is read live, so a failed load attests nothing.
+		wireExecWatcherIntegrity(containerServer, execWatcher)
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
@@ -2682,6 +2690,9 @@ skipAppHosting:
 		// The gateway forwards JWT-verified claims, so it reaches the gRPC
 		// server over the in-process listener, the only trusted transport.
 		gatewayServer.SetInternalDialer(internalLis.DialContext)
+		if config.StartupListener != nil {
+			gatewayServer.SetStartupListener(config.StartupListener)
+		}
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
 		// provider API key — or an operator registered an OpenAI-compatible
@@ -4178,6 +4189,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				httpErrChan <- fmt.Errorf("HTTP gateway error: %w", err)
 			}
 		}()
+	} else if ds.config.StartupListener != nil {
+		// No gateway to hand the early-bound port to (#3130): release it.
+		_ = ds.config.StartupListener.Close()
 	}
 
 	// Wait for errors or context cancellation
