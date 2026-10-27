@@ -142,4 +142,7 @@ read `code runs` uses. Users without a channel cost nothing.
   a request expires after `--approval-timeout`, 30 minutes by default.
 - If removing a replaced token's secret fails, that secret stays behind
   (broker-only, never delivered to a box); the daemon logs it.
-- Needs Postgres on the daemon; without it `NotifyService` is not registered.
+- Needs a daemon started with `--app-hosting`: the channel store and the
+  token's secret live in its Postgres and tenant secrets store. Without it
+  `NotifyService` is not registered and `notify` commands fail with
+  `Unimplemented`.
