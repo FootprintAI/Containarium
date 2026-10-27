@@ -30,9 +30,11 @@ that matters.
    commit of
    [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills)
    (it has no tags). Ask "bump the skills pin?" at every cut: if the
-   answer is yes, set `ref` to the new full commit SHA and run
-   `scripts/build-sdlc-skills-bundle.sh --update-lock bin/` to refresh the
-   `sha256`. The release build and the `sdlc-skills-lock` check both
+   answer is yes, set the `[sdlc]` section's `ref` to the new full commit SHA
+   and run `scripts/build-sdlc-skills-bundle.sh --update-lock sdlc bin/` to
+   refresh its `sha256`. For another source section, replace `sdlc` with that
+   source id; the output is `<source>-skills.tar.gz`. The release build and the
+   `sdlc-skills-lock` check both
    rebuild the tarball from the pin and fail on a digest mismatch, so
    forgetting the digest cannot ship.
 
@@ -104,13 +106,23 @@ anyway; it's the only thing a non-release build has to go on.
    succeeds, and that the pulled chart is stamped `version: <version>` and
    `appVersion: v<version>`. Check that the `sign-release`,
    `sign-bundle` and `verify-release` jobs ran (the first signs all but
-   the air-gapped bundle and does not wait for it) and that every file on the Release has a `<file>.sigstore.json`
+   the air-gapped bundle and does not wait for it), and that every file on the Release has a `<file>.sigstore.json`
    (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
    documented `cosign verify-blob` command. Check that each image job's
    `Sign and verify the image` step passed and verify one image by digest
    with the documented `cosign verify` command. These signing steps and the SBOM
    attachment run only on a real tag, so the first release after they
    landed is their first run: expect to look.
+   **The release gate is the `verify-release` job, not `sign-release`.**
+   `sign-release` finishes before the air-gapped bundle is signed, so a green
+   `sign-release` does not mean the Release is complete. `verify-release` needs
+   both signing jobs and checks every asset, signature, checksum and the chart
+   metadata (`docs/security/VERIFYING-RELEASES.md`). Treat a release as
+   deployable only when `verify-release` succeeded on the tag; nothing in this
+   repository reads the run's conclusion, so any rollout automation outside it
+   must key on that job by name (a failed `verify-release` does not fail
+   `sign-release`). `scripts/release/test_release_workflow.py` pins the job
+   and its `needs`.
    Also require the `helm-install-upgrade` job to pass: it downloads the
    published OCI chart, installs baseline `0.108.0`, upgrades to this tag,
    then clean-installs this tag in kind (Kubernetes 1.31.0), checking the

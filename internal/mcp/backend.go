@@ -116,9 +116,6 @@ type API interface {
 	AddMinerSignature(req *pb.AddMinerSignatureRequest) (*pb.AddMinerSignatureResponse, error)
 	RemoveMinerSignature(kind pb.MinerSignatureKind, pattern string) (*pb.RemoveMinerSignatureResponse, error)
 
-	// Bridge DNS record status (#2188).
-	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
-
 	// Known-bad destination rule (#1641).
 	ListBadDestinations() (*ListBadDestinationsResponse, error)
 	AddBadDestination(cidr, label string) (*BadDestinationEntry, error)
@@ -227,10 +224,6 @@ func (cloudClient) TriggerUpgrade(TriggerUpgradeRequest) (*TriggerUpgradeRespons
 
 func (cloudClient) GetUpgradeStatus(string) (*UpgradeStatusResponse, error) {
 	return nil, errUnsupportedOnCloud("get_upgrade_status", "")
-}
-
-func (cloudClient) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
-	return nil, errUnsupportedOnCloud("bridge_dns_status", "the platform operator owns the bridge DNS record")
 }
 
 func (cloudClient) InstallZap() (*InstallZapResponse, error) {

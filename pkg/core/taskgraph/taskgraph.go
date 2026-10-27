@@ -150,6 +150,9 @@ func validateNode(n *pb.TaskNode, skills SkillLookup, crews CrewLookup) error {
 	if in := n.GetInputJson(); in != "" && !json.Valid([]byte(in)) {
 		return fmt.Errorf("%w: node %q input_json is not valid JSON", ErrInvalid, n.GetId())
 	}
+	if r := n.GetResources(); r.GetMinCpuCores() < 0 || r.GetMinMemoryBytes() < 0 {
+		return fmt.Errorf("%w: node %q resource minima must be nonnegative", ErrInvalid, n.GetId())
+	}
 	switch a := n.GetAssignee().(type) {
 	case *pb.TaskNode_SkillId:
 		if a.SkillId == "" {

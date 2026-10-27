@@ -12,8 +12,8 @@ package hostcheck
 
 // CheckKind separates the two question types so a functional pass is never
 // mistaken for a security pass. A string rather than an int enum because it
-// crosses to the cloud inside a check name (see WireName) until the proto
-// gains a typed field.
+// crosses to older cloud receivers inside a check name (see WireName). The
+// structured posture field (#2328) is reported alongside this legacy form.
 //
 // Declared here rather than beside the posture checks because this file has
 // no build constraint: the Windows stub build must still see the type.
@@ -45,7 +45,8 @@ type Check struct {
 // format that currently carries only {name, ok, detail} — without it a
 // hardening warning would be indistinguishable from a capability failure in
 // the cloud's stored self-check, which is exactly the conflation #1103 is
-// about. Replace with a typed proto field when the contract gains one.
+// about. Keep these names for compatibility even when the structured posture
+// field is also reported (#2328).
 func (c Check) WireName() string {
 	if c.Kind == KindPosture {
 		return "posture: " + c.Name

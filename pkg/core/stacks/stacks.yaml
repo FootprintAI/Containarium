@@ -12,7 +12,7 @@
 base_scripts:
   - id: ntp
     name: Timezone Setup
-    description: Set timezone to Asia/Taipei (NTP is inherited from host in LXC containers)
+    description: Set the initial timezone to Asia/Taipei during provisioning (NTP is inherited from host in LXC containers)
     packages: []
     pre_install:
       - "timedatectl set-timezone Asia/Taipei"
