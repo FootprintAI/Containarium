@@ -99,9 +99,10 @@ read `code runs` uses. Users without a channel cost nothing.
   server does not delay anyone else's pushes.
 - **Network.** The daemon never follows a redirect from the ntfy server (that
   would hand the token to another host), and refuses loopback, link-local
-  (169.254.169.254 included) and the known cloud-metadata addresses outside
-  it (`fd00:ec2::254`, `fd20:ce::254`, `100.100.100.200`). Private LAN
-  addresses are allowed, for a self-hosted server on the same network.
+  (where most clouds serve instance metadata) and the cloud-metadata
+  addresses outside it (AWS and GCP over IPv6, Alibaba Cloud over IPv4; listed
+  in `internal/notify/ntfy.go`). Private LAN addresses are allowed, for a
+  self-hosted server on the same network.
 
 ## Limits
 

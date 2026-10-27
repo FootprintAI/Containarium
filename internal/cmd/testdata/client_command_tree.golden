@@ -144,6 +144,10 @@ network-policy signature add
 network-policy signature list
 network-policy signature rm
 network-policy status
+notify delete
+notify set ntfy
+notify show
+notify test
 org get-default-region
 org set-default-region
 passthrough-route add
