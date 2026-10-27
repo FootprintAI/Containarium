@@ -329,7 +329,8 @@ func (b *Backend) sharedVolumeFromPVC(ctx context.Context, tenant string, pvc *c
 			}
 		}
 	}
-	size := pvc.Spec.Resources.Requests[corev1.ResourceStorage].Value()
+	requestedSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	size := requestedSize.Value()
 	return &volume.Volume{Name: name, Pool: class, SizeBytes: size, ContentType: volume.ContentTypeFilesystem, Attachments: attachments}, nil
 }
 
@@ -344,7 +345,8 @@ func validateExistingSharedPVC(pvc *corev1.PersistentVolumeClaim, name, pool str
 	if class != pool || !containsAccessMode(pvc.Spec.AccessModes, corev1.ReadWriteMany) {
 		return fmt.Errorf("existing shared volume %q has incompatible StorageClass or access mode", name)
 	}
-	if pvc.Spec.Resources.Requests[corev1.ResourceStorage].Value() != sizeBytes {
+	requestedSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if requestedSize.Value() != sizeBytes {
 		return fmt.Errorf("existing shared volume %q has a different requested size", name)
 	}
 	return nil

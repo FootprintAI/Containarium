@@ -805,7 +805,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	log.Printf("Backup service enabled")
 
 	// Register VolumeService — CephFS on Incus and RWX PVCs on Kubernetes.
-	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer(cfg.Runtime))
+	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer(config.Runtime))
 	log.Printf("Volume service enabled")
 
 	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488). Own
