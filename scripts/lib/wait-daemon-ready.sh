@@ -11,15 +11,15 @@
 #
 # Source this file; it defines functions only.
 
-# daemon_ready_status URL — print the HTTP status curl saw (000 on no answer).
+# daemon_ready_status PORT PATH — probe 127.0.0.1:PORT/PATH and print the HTTP status curl saw (000 on no answer).
 daemon_ready_status() {
-  curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null || true
+  curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$1$2" 2>/dev/null || true
 }
 
-# daemon_is_ready URL — succeed only for a status that is neither 503 nor 000.
+# daemon_is_ready PORT PATH — succeed only for a status that is neither 503 nor 000.
 daemon_is_ready() {
   local code
-  code="$(daemon_ready_status "$1")"
+  code="$(daemon_ready_status "$1" "$2")"
   case "$code" in
     503|000|"") return 1 ;;
     *) return 0 ;;

@@ -47,7 +47,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-# shellcheck source=lib/wait-daemon-ready.sh
+# shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/wait-daemon-ready.sh"
 
 GRPC_PORT="${CONTAINARIUM_E2E_GRPC_PORT:-15051}"
@@ -246,7 +246,7 @@ for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   if ! sudo kill -0 "$DAEMON_PID" 2>/dev/null; then
     fail "daemon exited during startup"
   fi
-  if daemon_is_ready "http://127.0.0.1:$HTTP_PORT/v1/clusters"; then
+  if daemon_is_ready "$HTTP_PORT" /v1/clusters; then
     break
   fi
   [ "$i" = "$DAEMON_WAIT_TRIES" ] && fail "daemon HTTP gateway not answering after $((DAEMON_WAIT_TRIES * 2))s"
