@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/credentials"
 	"github.com/spf13/cobra"
@@ -124,5 +125,94 @@ func TestTrafficConnections_EndToEnd(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// #2884: history exposes the destination filters and an absolute window; find
+// is the host-wide form and names the box on every row.
+func runTrafficStub(t *testing.T, body string, run func(*cobra.Command) error) (path, query, out string) {
+	t.Helper()
+	home := withTempHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, query = r.URL.Path, r.URL.Query().Encode()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	_ = seedCreds(t, home, srv.URL, map[string]credentials.ServerCreds{srv.URL: {Token: "tok"}})
+	trafficServerFlag, trafficFormat = "", "table"
+	trafficDestIP, trafficDestPort, trafficLimit = "", 0, 0
+	trafficSince, trafficFrom, trafficTo = time.Hour, "", ""
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	cmd.SetContext(context.Background())
+	if err := run(cmd); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return path, query, buf.String()
+}
+
+func TestTrafficHistory_DestFilterAndAbsoluteWindow(t *testing.T) {
+	path, query, _ := runTrafficStub(t, `{"connections":[],"totalCount":0}`, func(cmd *cobra.Command) error {
+		trafficDestIP, trafficDestPort = "203.0.113.9", 3333
+		trafficFrom, trafficTo = "2026-10-20T10:00:00Z", "2026-10-20T11:00:00Z"
+		return runTrafficHistory(cmd, []string{"web-container"})
+	})
+	if path != "/v1/containers/web-container/traffic/history" {
+		t.Errorf("path = %q", path)
+	}
+	for _, want := range []string{"destIp=203.0.113.9", "destPort=3333", "startTime=2026-10-20T10%3A00%3A00Z", "endTime=2026-10-20T11%3A00%3A00Z"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("query %q missing %q", query, want)
+		}
+	}
+}
+
+func TestTrafficHistory_BadWindowIsRejected(t *testing.T) {
+	for _, tc := range [][2]string{{"yesterday", ""}, {"2026-10-20T10:00:00Z", "nope"}, {"", "2026-10-20T10:00:00Z"}, {"2026-10-20T11:00:00Z", "2026-10-20T10:00:00Z"}} {
+		trafficFrom, trafficTo, trafficSince = tc[0], tc[1], time.Hour
+		if _, _, err := historyWindow(time.Now()); err == nil {
+			t.Errorf("from=%q to=%q: want an error", tc[0], tc[1])
+		}
+	}
+	trafficFrom, trafficTo = "", ""
+}
+
+func TestTrafficFind_NamesTheBoxOnEveryRow(t *testing.T) {
+	path, query, out := runTrafficStub(t,
+		`{"connections":[{"containerName":"alice-container","protocol":"PROTOCOL_TCP","sourceIp":"10.0.0.2","sourcePort":40000,"destIp":"203.0.113.9","destPort":3333,"bytesSent":"10","bytesReceived":"0","startedAt":"2026-10-20T10:30:00Z"}],"totalCount":1,"oldestRecordTime":"2026-10-19T00:00:00Z"}`,
+		func(cmd *cobra.Command) error {
+			trafficDestIP, trafficDestPort = "203.0.113.9", 3333
+			trafficFrom, trafficTo = "2026-10-20T10:00:00Z", "2026-10-20T11:00:00Z"
+			return runTrafficFind(cmd, nil)
+		})
+	if path != "/v1/traffic/history" {
+		t.Errorf("path = %q, want the host-wide route", path)
+	}
+	if !strings.Contains(query, "destIp=203.0.113.9") || !strings.Contains(query, "startTime=") {
+		t.Errorf("query = %q", query)
+	}
+	for _, want := range []string{"alice-container", "203.0.113.9:3333", "2026-10-20T10:30:00Z"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestTrafficFind_EmptyResultSaysWhatIsHeld(t *testing.T) {
+	_, _, out := runTrafficStub(t, `{"connections":[],"totalCount":0,"oldestRecordTime":"2026-10-19T00:00:00Z"}`, func(cmd *cobra.Command) error {
+		trafficFrom = "2026-10-20T10:00:00Z"
+		return runTrafficFind(cmd, nil)
+	})
+	if !strings.Contains(out, "2026-10-19T00:00:00Z") {
+		t.Errorf("empty result must report the oldest record held:\n%s", out)
+	}
+	_, _, out = runTrafficStub(t, `{"connections":[],"totalCount":0}`, func(cmd *cobra.Command) error {
+		trafficFrom = "2026-10-20T10:00:00Z"
+		return runTrafficFind(cmd, nil)
+	})
+	if !strings.Contains(out, "no history is held") {
+		t.Errorf("empty result with no records must say nothing is held:\n%s", out)
 	}
 }

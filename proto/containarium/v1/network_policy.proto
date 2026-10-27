@@ -268,6 +268,19 @@ enum NetworkPolicyUncoveredPath {
   NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE = 4;
 }
 
+// NetworkPolicySource says which policy a tenant's loaded state came from.
+enum NetworkPolicySource {
+  // Unknown: nothing is loaded for the tenant, the daemon has not completed a
+  // pass, or the host's default egress posture is off and the tenant has no
+  // stored policy.
+  NETWORK_POLICY_SOURCE_UNSPECIFIED = 0;
+  // The tenant has no stored policy and runs the host's default egress
+  // allow-list (log_only).
+  NETWORK_POLICY_SOURCE_HOST_DEFAULT = 1;
+  // The tenant runs a policy stored through SetNetworkPolicy.
+  NETWORK_POLICY_SOURCE_STORED = 2;
+}
+
 // NetworkPolicyStatus is a tenant's applied network policy on this daemon.
 message NetworkPolicyStatus {
   string tenant = 1;
@@ -299,4 +312,7 @@ message NetworkPolicyStatus {
   uint32 boxes_not_loaded = 8;
   // Traffic the loaded policy does not decide.
   repeated NetworkPolicyUncoveredPath uncovered_paths = 9;
+  // Which policy the loaded state comes from: the host default or a stored
+  // policy. Only meaningful when state is LOADED or PARTIALLY_LOADED.
+  NetworkPolicySource policy_source = 10;
 }

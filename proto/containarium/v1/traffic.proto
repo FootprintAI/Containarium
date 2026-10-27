@@ -301,13 +301,18 @@ message SubscribeTrafficRequest {
 
 // QueryTrafficHistoryRequest queries persisted traffic data
 message QueryTrafficHistoryRequest {
-  // Container name (required)
+  // Container name. When empty the query spans every box on this backend
+  // (host-wide): that reveals other tenants' connection history, so it
+  // requires the admin role, an explicit start_time, and a window of at most
+  // 7 days.
   string container_name = 1;
 
-  // Start time for query range
+  // Start of the query range (inclusive: started_at >= start_time).
+  // Required for a host-wide query.
   google.protobuf.Timestamp start_time = 2;
 
-  // End time for query range
+  // End of the query range (inclusive: started_at <= end_time).
+  // Defaults to now when unset.
   google.protobuf.Timestamp end_time = 3;
 
   // Filter by destination IP (optional)
@@ -329,6 +334,12 @@ message QueryTrafficHistoryResponse {
 
   // Total count matching query
   int32 total_count = 2;
+
+  // started_at of the oldest record held in the queried scope (the box, or
+  // every box for a host-wide query), regardless of the filters. Lets a
+  // caller tell "no matching traffic" (set, but older than the window or
+  // simply not matching) from "nothing collected" (unset).
+  google.protobuf.Timestamp oldest_record_time = 3;
 }
 
 // GetTrafficAggregatesRequest retrieves time-series traffic aggregates
@@ -401,10 +412,13 @@ service TrafficService {
   rpc QueryTrafficHistory(QueryTrafficHistoryRequest) returns (QueryTrafficHistoryResponse) {
     option (google.api.http) = {
       get: "/v1/containers/{container_name}/traffic/history"
+      additional_bindings {
+        get: "/v1/traffic/history"
+      }
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Query traffic history";
-      description: "Returns historical connection data from persistent storage.";
+      description: "Returns historical connection data from persistent storage. Without a container_name (GET /v1/traffic/history) the query spans every box on the backend; that form is admin-only, needs start_time, and is limited to a 7-day window. Each row names its box. Returns FAILED_PRECONDITION when traffic persistence is not enabled on the host.";
       tags: "Traffic";
     };
   }

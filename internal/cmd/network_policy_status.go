@@ -20,7 +20,9 @@ var networkPolicyStatusCmd = &cobra.Command{
 	Long: `Reports the tenant's policy as the daemon loaded it into the kernel, not as it
 was requested: the effective mode and egress mode after this host's enforce
 guard (CONTAINARIUM_NETWORK_POLICY_ENFORCE), how many of the tenant's running
-boxes have it loaded, and the traffic the eBPF policy does not decide.
+boxes have it loaded, whether the tenant runs the host's default egress
+allow-list or a stored policy (policy-source), and the traffic the eBPF policy
+does not decide.
 
 "loaded" means every running box of the tenant has the policy; "PARTIALLY
 loaded" means some do not, and their traffic is not policed. last-reconciled is
@@ -109,6 +111,7 @@ func printStatus(w io.Writer, s *pb.NetworkPolicyStatus) {
 	}
 	fmt.Fprintf(w, "  tenant:             %s\n", s.GetTenant())
 	fmt.Fprintf(w, "  state:              %s\n", state)
+	fmt.Fprintf(w, "  policy-source:      %s\n", policySourceText(s.GetPolicySource()))
 	fmt.Fprintf(w, "  effective-mode:     %s\n", mode(s.GetEffectiveMode()))
 	fmt.Fprintf(w, "  egress-mode:        %s\n", mode(s.GetEffectiveEgressMode()))
 	if s.GetLastReconciledAt() != nil {
@@ -138,6 +141,19 @@ func printStatus(w io.Writer, s *pb.NetworkPolicyStatus) {
 			}
 			fmt.Fprintf(w, "    - %s\n", text)
 		}
+	}
+}
+
+// policySourceText names where the loaded policy came from; unknown when the
+// daemon did not say.
+func policySourceText(src pb.NetworkPolicySource) string {
+	switch src {
+	case pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_HOST_DEFAULT:
+		return "host default egress allow-list (no stored policy)"
+	case pb.NetworkPolicySource_NETWORK_POLICY_SOURCE_STORED:
+		return "stored policy"
+	default:
+		return "unknown"
 	}
 }
 

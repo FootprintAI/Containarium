@@ -89,6 +89,10 @@ func SetDefaultStoragePool(name string) {
 	}
 }
 
+// ConfiguredStoragePool reports the process-wide pool: --storage-pool, or
+// DefaultStoragePool when it was not set.
+func ConfiguredStoragePool() string { return defaultPool() }
+
 // defaultPool reports the process-wide pool.
 func defaultPool() string {
 	if v, ok := configuredStoragePool.Load().(string); ok && v != "" {
