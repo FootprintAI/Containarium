@@ -308,12 +308,103 @@ func publishSets(t *testing.T, files map[string]string, sets string) (base, lock
 	t.Helper()
 	repo, sha := fixtureRepo(t, files)
 	lock = filepath.Join(t.TempDir(), "sdlc-skills.lock")
-	write(t, lock, "repo=example/skills\nref="+sha+"\nsha256=\n"+sets)
+	write(t, lock, sets+"[sdlc]\nrepo=example/skills\nref="+sha+"\nsha256=\n")
 	base = t.TempDir()
 	if o, ok := run(t, "", buildEnv(repo, lock), "bash", buildSDLCSkillsScript, "--update-lock", base); !ok {
 		t.Fatalf("build failed: %s", o)
 	}
 	return base, lock
+}
+
+func multiSourceLock(t *testing.T, firstRef, secondRef string) string {
+	t.Helper()
+	lock := filepath.Join(t.TempDir(), "sdlc-skills.lock")
+	write(t, lock, "set.sdlc=architect\nset.qa=qa\n"+
+		"[sdlc]\nrepo=example/sdlc\nref="+firstRef+"\nsha256=\n"+
+		"[domain]\nrepo=example/domain\nref="+secondRef+"\nsha256=\n")
+	return lock
+}
+
+func multiSourceEnv(firstRepo, secondRepo, lock string) []string {
+	return []string{
+		"SDLC_SKILLS_REPO_URL_SDLC=file://" + firstRepo,
+		"SDLC_SKILLS_REPO_URL_DOMAIN=file://" + secondRepo,
+		"SDLC_SKILLS_LOCK=" + lock,
+	}
+}
+
+func TestBuildSDLCSkills_MultipleSourcesAreDeterministic(t *testing.T) {
+	needTools(t)
+	sdlcRepo, sdlcRef := fixtureRepo(t, map[string]string{
+		"architect/design.md": "# design\n",
+		"_shared/common.md":   "# sdlc shared\n",
+	})
+	domainRepo, domainRef := fixtureRepo(t, map[string]string{
+		"qa/check.md":       "# check\n",
+		"_shared/common.md": "# domain shared\n",
+	})
+	lock := multiSourceLock(t, sdlcRef, domainRef)
+	env := multiSourceEnv(sdlcRepo, domainRepo, lock)
+	out1, out2 := t.TempDir(), t.TempDir()
+
+	for _, source := range []string{"sdlc", "domain"} {
+		if o, ok := run(t, "", env, "bash", buildSDLCSkillsScript, "--update-lock", source, out1); !ok {
+			t.Fatalf("build %s: %s", source, o)
+		}
+		if o, ok := run(t, "", env, "bash", buildSDLCSkillsScript, source, out2); !ok {
+			t.Fatalf("rebuild %s: %s", source, o)
+		}
+		asset := source + "-skills.tar.gz"
+		a, _ := os.ReadFile(filepath.Join(out1, asset)) //nolint:gosec // test temp dir
+		b, _ := os.ReadFile(filepath.Join(out2, asset)) //nolint:gosec // test temp dir
+		if !bytes.Equal(a, b) {
+			t.Errorf("two builds of source %s differ", source)
+		}
+		if !exists(filepath.Join(out1, asset+".sha256")) {
+			t.Errorf("%s sidecar missing", asset)
+		}
+	}
+	if got := strings.Join(members(t, filepath.Join(out1, "sdlc-skills.tar.gz")), ","); got != "_shared/common.md,architect-design/SKILL.md" {
+		t.Errorf("sdlc members = %s", got)
+	}
+	if got := strings.Join(members(t, filepath.Join(out1, "domain-skills.tar.gz")), ","); got != "_shared/common.md,qa-check/SKILL.md" {
+		t.Errorf("domain members = %s", got)
+	}
+
+	b, err := os.ReadFile(lock) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(b), "sha256=\n") != 0 || strings.Count(string(b), "sha256=") != 2 {
+		t.Errorf("lock digests were not updated per source:\n%s", b)
+	}
+}
+
+func TestBuildSDLCSkills_MultipleSourcesRejectNamespaceCollisions(t *testing.T) {
+	needTools(t)
+	first, firstRef := fixtureRepo(t, map[string]string{"qa/one.md": "one\n"})
+	second, secondRef := fixtureRepo(t, map[string]string{"qa/two.md": "two\n"})
+	lock := multiSourceLock(t, firstRef, secondRef)
+	out, ok := run(t, "", multiSourceEnv(first, second, lock), "bash", buildSDLCSkillsScript, "--update-lock", "sdlc", t.TempDir())
+	if ok {
+		t.Fatalf("build accepted duplicate namespaces:\n%s", out)
+	}
+	for _, want := range []string{"namespace 'qa'", "sdlc", "domain"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q does not mention %q", out, want)
+		}
+	}
+}
+
+func TestBuildSDLCSkills_RejectsUnknownSource(t *testing.T) {
+	needTools(t)
+	repo, ref := fixtureRepo(t, map[string]string{"architect/one.md": "one\n"})
+	lock := filepath.Join(t.TempDir(), "sdlc-skills.lock")
+	write(t, lock, "set.sdlc=architect\n[sdlc]\nrepo=example/sdlc\nref="+ref+"\nsha256=\n")
+	out, ok := run(t, "", buildEnv(repo, lock), "bash", buildSDLCSkillsScript, "missing", t.TempDir())
+	if ok || !strings.Contains(out, "unknown source 'missing'") || !strings.Contains(out, "sdlc") {
+		t.Errorf("ok=%v output=%q", ok, out)
+	}
 }
 
 func installSets(t *testing.T, base, lock, dir, sets string) (string, bool) {
