@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -106,5 +107,17 @@ func hasScope(scopes []string, want string) bool {
 // is satisfied by the JWT's granted scopes. Wraps
 // auth.HasScope so the policy lives in one place.
 func toolAllowed(grantedScopes []string, tool *Tool) bool {
-	return auth.HasScope(grantedScopes, tool.RequiredScope)
+	if auth.HasScope(grantedScopes, tool.RequiredScope) {
+		return true
+	}
+	return tool.AlternateScope != "" && auth.HasScope(grantedScopes, tool.AlternateScope)
+}
+
+// requiredScopeText renders the scope(s) that satisfy a tool for a denial
+// message: the required scope, plus the alternate when the tool has one.
+func requiredScopeText(tool *Tool) string {
+	if tool.AlternateScope == "" {
+		return fmt.Sprintf("%q", tool.RequiredScope)
+	}
+	return fmt.Sprintf("%q or %q", tool.AlternateScope, tool.RequiredScope)
 }
