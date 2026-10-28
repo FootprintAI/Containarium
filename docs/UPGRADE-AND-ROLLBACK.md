@@ -116,8 +116,8 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
   integers with no sign and no leading zeros: `HEALTH_TRIES` from 1 to 9999,
   `HEALTH_INTERVAL` from 0 to 9999 (a bare `0` is valid; `05` is not). The
   script refuses anything else, including an empty value, before its first
-  `gcloud` call, and quotes the rejected value in the message. A healthy daemon that needs longer than the window is
-  rolled back too: raise `HEALTH_TRIES` (for example `HEALTH_TRIES=60`) before
+  `gcloud` call, and quotes the rejected value in the message. A healthy
+  daemon that needs longer than the window is rolled back too: raise `HEALTH_TRIES` (for example `HEALTH_TRIES=60`) before
   deploying to a slow host.
 - **Kubernetes:** `helm upgrade` with the published chart is what CI tests
   ([helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh)).

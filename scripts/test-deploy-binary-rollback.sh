@@ -3,6 +3,7 @@
 # as <bin>.old, checks health after the restart, and restores it on failure (#3060).
 # Runs the real command from scripts/lib/deploy-install.sh against fake
 # sudo/systemctl/curl, so it needs no host and no network.
+# Uses GNU `timeout` (coreutils): fine on Linux CI; macOS needs coreutils.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/deploy-install.sh
@@ -172,6 +173,23 @@ for kv in HEALTH_TRIES=0 HEALTH_TRIES=abc HEALTH_TRIES=10000 HEALTH_INTERVAL= HE
   if [ $rc != 0 ] && [ ! -s "$work/db/log" ] && ! grep -q '==>' "$work/db/out"; then
     ok "deploy-binary.sh $kv: exits non-zero before any remote call"; else bad "deploy-binary.sh $kv: exits non-zero before any remote call (rc=$rc)"; fi
 done
+
+# Non-ASCII digits must not pass under a UTF-8 locale (bracket ranges in `case`
+# patterns are locale dependent). Needs a UTF-8 locale on the runner.
+utf8=""
+for l in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+  if LC_ALL=$l bash -c 'exit 0' 2>/dev/null && locale -a 2>/dev/null | grep -qix "${l/UTF-8/utf8}"; then utf8=$l; break; fi
+done
+if [ -z "$utf8" ]; then
+  echo "  SKIP  non-ASCII digit knobs: no UTF-8 locale on this runner (locale -a)"
+else
+  for d in $'٣' $'५' $'１'; do
+    for var in HEALTH_TRIES HEALTH_INTERVAL; do
+      if env LC_ALL="$utf8" "$var=$d" bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" >/dev/null 2>&1; then
+        bad "knob $var non-ASCII digit under $utf8: rejected"; else ok "knob $var non-ASCII digit under $utf8: rejected"; fi
+    done
+  done
+fi
 
 run_case first-install - new-good 0
 [ ! -e "$CASE_DIR/bin/containariumd.old" ] && ok "first install: no .old invented" || bad "first install: no .old invented"
