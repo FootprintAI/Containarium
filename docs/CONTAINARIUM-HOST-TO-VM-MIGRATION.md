@@ -226,6 +226,8 @@ incus exec <gpu-container-name> -- nvidia-smi
 
 **Gate:** all containers running in the VM, accessible at their original `incusbr0` addresses (assuming we keep the same Incus subnet inside the VM).
 
+**Gate (#3169):** tenant secrets registered with the daemon — including each tenant's backup recipient, `CONTAINARIUM_BACKUP_AGE_RECIPIENT` — live in the daemon's secrets store, not in the container, so a copied container arrives without them. Unless the destination daemon serves the same secrets store, re-register them there, then run `containarium backup status --server <vm-daemon>` and confirm every tenant in `backup-tenants.conf` shows a recipient before the first nightly backup runs. A tenant without one is stored in plaintext (or, with `CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1`, fails).
+
 ### Phase 5 — Cutover
 
 ```bash

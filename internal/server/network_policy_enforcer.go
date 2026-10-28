@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -154,6 +155,8 @@ type NetworkPolicyEnforcer struct {
 	extraUplinks []string
 	// trustedInstalled is what the kernel trusted_iif map holds (ifindex set).
 	trustedInstalled map[int]bool
+	// uplinks dedupes the refusal warning and the trusted-set log line (#3185).
+	uplinks uplinkReconciler
 	// reseedLast is the inbound_reseed counter at the previous pass.
 	reseedLast uint64
 
@@ -1351,29 +1354,105 @@ func (e *NetworkPolicyEnforcer) SetIncusDataDir(dir string) {
 
 // applyTrustedUplinks converges the kernel trusted_iif map with the host's
 // current uplinks: the default-route interfaces plus any the operator named in
-// CONTAINARIUM_NETWORK_POLICY_UPLINKS. A failed op is logged and skipped without
-// touching the installed set, so the next pass retries it.
+// CONTAINARIUM_NETWORK_POLICY_UPLINKS, minus any interface that carries managed
+// instance veths (#3185 SF1), which is refused with a warning. A failed op is
+// logged and skipped without touching the installed set, so the next pass
+// retries it.
 func (e *NetworkPolicyEnforcer) applyTrustedUplinks() {
-	desired := uplinkIfindexes(e.extraUplinks)
-	for idx := range desired {
-		if e.trustedInstalled[idx] {
-			continue
+	e.uplinks.converge(uplinkCandidates(e.extraUplinks), managedVethNames(e.vethCache), masterOfIface, e.loader, e.trustedInstalled)
+}
+
+// managedVethNames lists the host veth names of the running managed containers,
+// sorted: refuseVethCarriers reports the first unreadable veth, so a stable order
+// keeps its error text (and the log-once dedupe on it) stable across passes.
+func managedVethNames(cache map[string]vethInfo) []string {
+	out := make([]string, 0, len(cache))
+	for _, info := range cache {
+		if info.veth != "" {
+			out = append(out, info.veth)
 		}
-		if err := e.loader.SetTrustedIface(idx); err != nil {
-			log.Printf("[netpolicy] set trusted_iif: %v", err)
-			continue
-		}
-		e.trustedInstalled[idx] = true
 	}
-	for idx := range e.trustedInstalled {
+	sort.Strings(out)
+	return out
+}
+
+// trustedIfaceApplier is the slice of the BPF loader the uplink reconcile needs.
+type trustedIfaceApplier interface {
+	SetTrustedIface(ifindex int) error
+	DeleteTrustedIface(ifindex int) error
+}
+
+// uplinkReconciler remembers what it has already told the operator, so a
+// refusal is warned once and the trusted set is logged only when it changes.
+type uplinkReconciler struct {
+	warned  map[string]bool
+	lastSet string
+	lastErr string
+	logf    func(format string, args ...any)
+}
+
+func (u *uplinkReconciler) printf(format string, args ...any) {
+	if u.logf != nil {
+		u.logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
+}
+
+// converge installs the safe candidates into the trusted_iif map and removes
+// installed entries that are no longer wanted (including ones now refused).
+func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, masterOf func(string) (string, error), ap trustedIfaceApplier, installed map[int]bool) {
+	desired, refused, err := refuseVethCarriers(cands, managedVeths, masterOf)
+	if err != nil {
+		// Fail closed for this pass: the carrier set is incomplete, so add no new
+		// trusted entry and leave the installed set as it is (do not un-trust
+		// legitimate uplinks either). Deliberate: an installed entry that has since
+		// become a carrier stays trusted while the error persists. Logged once per
+		// distinct error.
+		if msg := err.Error(); msg != u.lastErr {
+			u.lastErr = msg
+			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; leaving trusted uplinks unchanged this pass: %v", err)
+		}
+		return
+	}
+	u.lastErr = ""
+	nowRefused := make(map[string]bool, len(refused))
+	for _, r := range refused {
+		nowRefused[r.Name] = true
+		if !u.warned[r.Name] {
+			u.printf("[netpolicy] refusing to trust %q as an uplink: it carries managed instance veths, so trusting it would let frames routed back through the instance bridge seed inbound flows (set via default route or CONTAINARIUM_NETWORK_POLICY_UPLINKS); inbound replies via it will be dropped", r.Name)
+		}
+	}
+	u.warned = nowRefused
+	for idx := range desired {
+		if installed[idx] {
+			continue
+		}
+		if err := ap.SetTrustedIface(idx); err != nil {
+			u.printf("[netpolicy] set trusted_iif: %v", err)
+			continue
+		}
+		installed[idx] = true
+	}
+	for idx := range installed {
 		if desired[idx] {
 			continue
 		}
-		if err := e.loader.DeleteTrustedIface(idx); err != nil {
-			log.Printf("[netpolicy] delete trusted_iif: %v", err)
+		if err := ap.DeleteTrustedIface(idx); err != nil {
+			u.printf("[netpolicy] delete trusted_iif: %v", err)
 			continue
 		}
-		delete(e.trustedInstalled, idx)
+		delete(installed, idx)
+	}
+	var names []string
+	for _, c := range cands {
+		if installed[c.Index] {
+			names = append(names, c.Name)
+		}
+	}
+	if cur := strings.Join(names, ","); cur != u.lastSet {
+		u.printf("[netpolicy] trusted uplinks changed: [%s] (was [%s])", cur, u.lastSet)
+		u.lastSet = cur
 	}
 }
 
