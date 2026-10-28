@@ -11,7 +11,9 @@ package sshauthz
 //     an active row leaves that row unchanged;
 //   - a write for a revoked fingerprint is a fresh registration: the row
 //     takes the new owner, source and created_at, and revoked_at clears;
-//   - a revocation applies to the key for every account (fails closed).
+//   - a revocation applies only to the row the revoking account owns
+//     (#3187, replacing #2517's "for every account"): another account that
+//     holds the same public key cannot revoke the owner's entry.
 //
 // The backfill uses InsertIfAbsent instead, so a key revoked through the
 // API but still present in another account's authorized_keys file is never
@@ -21,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -70,6 +73,7 @@ type KeyLookup interface {
 // KeyRegistry is what the daemon's key write paths need.
 type KeyRegistry interface {
 	Register(ctx context.Context, rec KeyRecord) error
+	// Revoke revokes rec's fingerprint only when rec.Username owns its row.
 	Revoke(ctx context.Context, rec KeyRecord, at time.Time) error
 }
 
@@ -168,18 +172,28 @@ func (s *PGKeyStore) Register(ctx context.Context, rec KeyRecord) error {
 	return nil
 }
 
-// Revoke marks the key revoked for every account. A key with no row gets a
-// revoked row, so a later backfill cannot register it as live. An already
-// revoked row keeps its original revocation time.
+// Revoke marks the key revoked if rec.Username owns its row (#3187). A row
+// registered by another account is left unchanged: holding someone else's
+// public key in your own authorized_keys does not let you revoke their
+// entry. The check is part of the upsert, so it cannot race a concurrent
+// re-registration. A key with no row gets a revoked row owned by
+// rec.Username, so a later backfill cannot register it as live. An already
+// revoked row keeps its original revocation time. A revoke that changes no
+// row (another account owns it) still returns nil and is logged.
 func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO ssh_keys (fingerprint, username, user_id, public_key, key_type, created_at, revoked_at, source)
 		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
 		ON CONFLICT (fingerprint) DO UPDATE SET
-			revoked_at = COALESCE(ssh_keys.revoked_at, EXCLUDED.revoked_at)`,
+			revoked_at = COALESCE(ssh_keys.revoked_at, EXCLUDED.revoked_at)
+		WHERE ssh_keys.username = EXCLUDED.username`,
 		rec.Fingerprint, rec.Username, rec.UserID, rec.PublicKey, rec.KeyType.String(), at.UTC(), string(rec.Source))
 	if err != nil {
 		return fmt.Errorf("revoke ssh key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		log.Printf("[ssh-keys] revoke by %s left %s active: its registry entry is owned by another account (#3187)",
+			rec.Username, rec.Fingerprint)
 	}
 	return nil
 }

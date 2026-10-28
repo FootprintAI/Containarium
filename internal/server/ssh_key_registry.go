@@ -81,7 +81,8 @@ func (s *ContainerServer) registerSSHKey(ctx context.Context, username, pubKey s
 	return s.sshKeys.Register(ctx, rec)
 }
 
-// revokeSSHKey revokes pubKey for every account. Nil registry = no-op.
+// revokeSSHKey revokes pubKey's registry entry if username owns it; an entry
+// another account registered is left active (#3187). Nil registry = no-op.
 func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey string) error {
 	if s.sshKeys == nil {
 		return nil
