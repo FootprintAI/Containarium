@@ -3848,7 +3848,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// former one-shot 30-day token, so metrics fetching doesn't 401 after a
 		// month on a long-lived daemon.
 		if ds.peerPool != nil {
-			ds.metricsCollector.SetPeerMTLSFunc(ds.peerPool.PeerMTLSEnabled)
+			ds.metricsCollector.SetPeerMTLSFunc(ds.peerPool.PeerMTLSState)
 			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
 				Pool:    ds.peerPool,
 				TokenFn: svcTokens.Token,

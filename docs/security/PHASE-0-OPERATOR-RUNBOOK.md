@@ -247,7 +247,7 @@ gcloud compute ssh spot-vm -- 'sudo journalctl -u containarium | grep peer-pki |
 #         [peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP (...)
 # This is a supported setup, not a fault. The state is also visible as the
 # `peer_transport` field of the system-info response (`PEER_TRANSPORT_HTTP` or
-# `PEER_TRANSPORT_MTLS`; unset on a daemon with no peer pool) and as the
+# `PEER_TRANSPORT_MTLS`; unset on a daemon with no sentinel URL and no peers) and as the
 # `containarium.peer.mtls.enabled` gauge (1 = peer mTLS, 0 = plain HTTP).
 # These describe the daemon-to-peer calls only, not any other transport.
 

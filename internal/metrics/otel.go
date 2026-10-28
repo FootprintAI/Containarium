@@ -144,7 +144,7 @@ type Collector struct {
 
 	// peerMTLS reports whether daemon-to-peer calls use peer mTLS (#3079).
 	peerMTLS   otelmetric.Int64Gauge
-	peerMTLSFn func() bool
+	peerMTLSFn func() (enabled, relevant bool)
 
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -371,7 +371,7 @@ func (c *Collector) initInstruments() error {
 	}
 
 	c.peerMTLS, err = meter.Int64Gauge("containarium.peer.mtls.enabled",
-		otelmetric.WithDescription("Daemon-to-peer calls use peer mTLS (1=enabled, 0=plain HTTP). Emitted only on daemons with a peer pool"))
+		otelmetric.WithDescription("Daemon-to-peer calls use peer mTLS (1=enabled, 0=plain HTTP). Emitted only on daemons with a sentinel URL or peers"))
 	if err != nil {
 		return err
 	}
@@ -380,8 +380,8 @@ func (c *Collector) initInstruments() error {
 }
 
 // SetPeerMTLSFunc sets the probe behind containarium.peer.mtls.enabled.
-// Without it the metric is not emitted (no peer pool to describe).
-func (c *Collector) SetPeerMTLSFunc(fn func() bool) {
+// Without it, or when relevant is false (no sentinel, no peers), the metric is not emitted.
+func (c *Collector) SetPeerMTLSFunc(fn func() (enabled, relevant bool)) {
 	c.peerMTLSFn = fn
 }
 
@@ -390,8 +390,12 @@ func (c *Collector) recordPeerMTLS() {
 	if c.peerMTLSFn == nil {
 		return
 	}
+	enabled, relevant := c.peerMTLSFn()
+	if !relevant {
+		return
+	}
 	var v int64
-	if c.peerMTLSFn() {
+	if enabled {
 		v = 1
 	}
 	c.peerMTLS.Record(c.ctx, v, otelmetric.WithAttributes(

@@ -27,7 +27,7 @@ const (
 type PeerTransport int32
 
 const (
-	// No peer pool on this daemon, or the daemon predates the field.
+	// No sentinel and no peers (no peer calls), or the daemon predates the field.
 	PeerTransport_PEER_TRANSPORT_UNSPECIFIED PeerTransport = 0
 	// Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was
 	// obtained from the sentinel).
@@ -1468,8 +1468,8 @@ type SystemInfo struct {
 	// supported setup (peer mTLS off, or no peer CA on the sentinel) but it
 	// means those calls go over plain HTTP, not over the pinned peer-PKI
 	// TLS, so an operator can see the degraded state instead of finding one
-	// startup log line. UNSPECIFIED means this daemon has no peer pool (or
-	// predates the field). Says nothing about any other transport, such as
+	// startup log line. UNSPECIFIED means this daemon has no sentinel URL and no
+	// peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
 	// the sentinel-backend tunnel. See #3079.
 	PeerTransport PeerTransport `protobuf:"varint,32,opt,name=peer_transport,json=peerTransport,proto3,enum=containarium.v1.PeerTransport" json:"peer_transport,omitempty"`
 	unknownFields protoimpl.UnknownFields

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The peer-to-peer plain-HTTP state is now visible** (part of #3079). A daemon whose peer mTLS did not come up (no peer CA on the sentinel, or the bootstrap skipped) logs one notice, `peer mTLS not enabled: peer-to-peer calls use plain HTTP`, instead of a `bootstrap failed` line that read as a fault; this is a supported setup. `GetSystemInfo` gains a typed `peer_transport` field (`PEER_TRANSPORT_HTTP` / `PEER_TRANSPORT_MTLS`, unset without a peer pool) and the daemon exports a `containarium.peer.mtls.enabled` gauge (1 or 0). Both describe the daemon-to-peer calls only. No flag to make a failed bootstrap fatal yet. See the Phase 0 operator runbook.
+- **The peer-to-peer plain-HTTP state is now visible** (part of #3079). A daemon whose peer mTLS did not come up (no peer CA on the sentinel, or the bootstrap skipped) logs one notice, `peer mTLS not enabled: peer-to-peer calls use plain HTTP`, instead of a `bootstrap failed` line that read as a fault; this is a supported setup. `GetSystemInfo` gains a typed `peer_transport` field (`PEER_TRANSPORT_HTTP` / `PEER_TRANSPORT_MTLS`, unset on a daemon with no sentinel URL and no peers) and the daemon exports a `containarium.peer.mtls.enabled` gauge (1 or 0). Both describe the daemon-to-peer calls only. No flag to make a failed bootstrap fatal yet. See the Phase 0 operator runbook.
 
 - Atomic, revision-checked cross-Tenant ingress grants/revokes across CLI, REST, gRPC and Host MCP, preserving all other policy fields and reporting enforcement separately from TCP tests. No network stack or table migration change.
 

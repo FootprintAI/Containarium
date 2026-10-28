@@ -213,10 +213,28 @@ func (p *PeerPool) PeerMTLSEnabled() bool {
 	return p.pki != nil
 }
 
+// PeerTransportRelevant reports whether this daemon has any peer calls to
+// describe: a sentinel URL (discovery can add peers at any time) or at least
+// one peer. Evaluated at read time so peers added later are picked up. A
+// standalone daemon (no sentinel, no peers) makes no peer calls. Nil-safe.
+func (p *PeerPool) PeerTransportRelevant() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sentinelURL != "" || len(p.peers) > 0
+}
+
+// PeerMTLSState returns (enabled, relevant) for the metric probe.
+func (p *PeerPool) PeerMTLSState() (enabled, relevant bool) {
+	return p.PeerMTLSEnabled(), p.PeerTransportRelevant()
+}
+
 // peerTransportOf maps a pool to the PeerTransport reported in
 // SystemInfo. A nil pool is UNSPECIFIED (no peer calls to describe).
 func peerTransportOf(p *PeerPool) pb.PeerTransport {
-	if p == nil {
+	if !p.PeerTransportRelevant() {
 		return pb.PeerTransport_PEER_TRANSPORT_UNSPECIFIED
 	}
 	if p.PeerMTLSEnabled() {
@@ -230,9 +248,9 @@ func peerTransportOf(p *PeerPool) pb.PeerTransport {
 // error, or nil when the bootstrap was skipped. It is a supported
 // configuration, so this is a notice, not an error (#3079). It states only
 // the peer-call transport; it says nothing about other transports such as
-// the sentinel-backend tunnel. No-op when peer mTLS is active.
+// the sentinel-backend tunnel. No-op when peer mTLS is active or the daemon has no sentinel and no peers.
 func (p *PeerPool) LogPlainHTTPOnce(reason error) {
-	if p.PeerMTLSEnabled() {
+	if p.PeerMTLSEnabled() || !p.PeerTransportRelevant() {
 		return
 	}
 	p.plainHTTPLogOnce.Do(func() {

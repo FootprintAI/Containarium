@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func peerMTLSValue(t *testing.T, enabled bool, set bool) (int64, bool) {
+func peerMTLSValue(t *testing.T, enabled, relevant, set bool) (int64, bool) {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	c := &Collector{
@@ -20,7 +20,7 @@ func peerMTLSValue(t *testing.T, enabled bool, set bool) (int64, bool) {
 		t.Fatal(err)
 	}
 	if set {
-		c.SetPeerMTLSFunc(func() bool { return enabled })
+		c.SetPeerMTLSFunc(func() (bool, bool) { return enabled, relevant })
 	}
 	c.recordPeerMTLS()
 	var rm metricdata.ResourceMetrics
@@ -40,13 +40,16 @@ func peerMTLSValue(t *testing.T, enabled bool, set bool) (int64, bool) {
 }
 
 func TestPeerMTLSGauge(t *testing.T) {
-	if v, ok := peerMTLSValue(t, true, true); !ok || v != 1 {
+	if v, ok := peerMTLSValue(t, true, true, true); !ok || v != 1 {
 		t.Fatalf("enabled: got %d,%v want 1", v, ok)
 	}
-	if v, ok := peerMTLSValue(t, false, true); !ok || v != 0 {
+	if v, ok := peerMTLSValue(t, false, true, true); !ok || v != 0 {
 		t.Fatalf("disabled: got %d,%v want 0", v, ok)
 	}
-	if _, ok := peerMTLSValue(t, false, false); ok {
+	if _, ok := peerMTLSValue(t, true, false, true); ok {
+		t.Fatal("not relevant (standalone) must emit nothing")
+	}
+	if _, ok := peerMTLSValue(t, false, true, false); ok {
 		t.Fatal("no hook set must emit nothing")
 	}
 }
