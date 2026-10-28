@@ -37,6 +37,7 @@ on:
       - 'internal/netpolicy/**'
       - 'internal/server/network_policy_plan.go'
       - 'scripts/netpolicy-split-egress-e2e.sh'
+      - 'scripts/netpolicy-inbound-reply-e2e.sh'
       - '.github/workflows/fence-probe-e2e.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215, same
@@ -51,6 +52,7 @@ on:
       - 'internal/netpolicy/**'
       - 'internal/server/network_policy_plan.go'
       - 'scripts/netpolicy-split-egress-e2e.sh'
+      - 'scripts/netpolicy-inbound-reply-e2e.sh'
       - '.github/workflows/fence-probe-e2e.yml'
 
 permissions:
@@ -662,6 +664,14 @@ jobs:
         env:
           CONTAINARIUM_POSTGRES_URL: ${{ env.POSTGRES_DSN }}
         run: scripts/netpolicy-split-egress-e2e.sh alice bob
+
+      # #2618: a box's replies to an INBOUND connection under enforce. A new
+      # step after the split-egress one (its assertions are untouched); the
+      # script sets its own policy for alice and documents each assertion.
+      - name: Inbound connections into an enforced box (scripts/netpolicy-inbound-reply-e2e.sh)
+        env:
+          CONTAINARIUM_POSTGRES_URL: ${{ env.POSTGRES_DSN }}
+        run: scripts/netpolicy-inbound-reply-e2e.sh alice bob
 
       - name: Collect diagnostics on failure
         if: failure()
