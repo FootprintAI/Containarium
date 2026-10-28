@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -177,9 +178,10 @@ func (s *PGKeyStore) Register(ctx context.Context, rec KeyRecord) error {
 // entry. The check is part of the upsert, so it cannot race a concurrent
 // re-registration. A key with no row gets a revoked row owned by
 // rec.Username, so a later backfill cannot register it as live. An already
-// revoked row keeps its original revocation time.
+// revoked row keeps its original revocation time. A revoke that changes no
+// row (another account owns it) still returns nil and is logged.
 func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO ssh_keys (fingerprint, username, user_id, public_key, key_type, created_at, revoked_at, source)
 		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
 		ON CONFLICT (fingerprint) DO UPDATE SET
@@ -188,6 +190,10 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 		rec.Fingerprint, rec.Username, rec.UserID, rec.PublicKey, rec.KeyType.String(), at.UTC(), string(rec.Source))
 	if err != nil {
 		return fmt.Errorf("revoke ssh key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		log.Printf("[ssh-keys] revoke by %s left %s active: its registry entry is owned by another account (#3187)",
+			rec.Username, rec.Fingerprint)
 	}
 	return nil
 }
