@@ -522,7 +522,7 @@ sudo containarium token generate \
   path is deprecated: each call it admits logs a line like
 
   ```
-  [backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user=<tenant> id=<backup-id>; ...
+  [backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user="<tenant>" id="<backup-id>"; ...
   ```
 
   in the daemon log (`journalctl -u containarium | grep 'DEPRECATED: VerifyBackup'`
