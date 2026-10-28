@@ -48,7 +48,13 @@ SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
 # After each restart the new binary must prove healthy or the previous one
 # (kept as /usr/local/bin/containariumd.old) is put back and the deploy stops
 # (#3060). The primary is checked with GET <PRIMARY_HEALTH_URL> on the host;
-# the sentinel has no such endpoint, so its check is the unit being active.
+# the sentinel has no such endpoint, so its check is the unit staying active
+# for the whole window (#3108).
+# The window is HEALTH_TRIES x HEALTH_INTERVAL (defaults 15 x 2s = 30s). A
+# healthy daemon that needs longer than that to start is rolled back like a
+# broken one, so raise HEALTH_TRIES for slow hosts. See scripts/lib/deploy-install.sh.
+# Service names and health URLs end up inside single quotes in the remote
+# command: they come from operator env and must not contain a single quote.
 PRIMARY_HEALTH_URL="${PRIMARY_HEALTH_URL:-http://localhost:8080/health}"
 SENTINEL_HEALTH_URL="${SENTINEL_HEALTH_URL:-}"
 # Space-separated peer hostnames; defaults are placeholders.
