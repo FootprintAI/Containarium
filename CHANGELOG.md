@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`containarium.backup.last_success_age_seconds` no longer exports a series for a tenant with no container on the host** (refs #3234). A tenant that moved to another host or was deleted used to keep a growing-age series on the old host forever, so per-tenant staleness alerts paged for backups that were healthy elsewhere. The series now covers only tenants whose `<username>-container` exists on this host (running or stopped); stored backups and index entries are untouched. **This changes what "absent" means:** a missing point is "no stored backup" or "tenant not expected here", never fresh. A tenant whose container exists but whose backups broke still shows a growing age, and if the container list cannot be read on a tick nothing is dropped. `containarium.backup.health_read_failures` is unchanged. The runbook's "Backup-health alert" now documents the ghost series and scopes the policy by `backend_id` as well as `username`.
+
 - **The `VerifyBackup` deprecation log line quotes the user and the backup id** (#3186 review follow-up). The line (`[backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write ...`) now prints both with `%q`, so a backup id containing a newline can no longer forge a second log line. Anything grepping the 0.120.1 format `user=<tenant> id=<id>` must match `user="<tenant>" id="<id>"` instead. `scripts/backup-scoped-token-e2e.sh` now fails under `CI` when `CONTAINARIUM_BACKUP_E2E_DAEMON_LOG` is unset instead of skipping the deprecation-log check.
 
 ## [0.120.1] - 2026-10-28
