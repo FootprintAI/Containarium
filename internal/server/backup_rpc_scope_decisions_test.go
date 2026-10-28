@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -260,10 +261,10 @@ func TestBackupRPCScopeDecisions_VerifyLegacyScopeLogsDeprecation(t *testing.T) 
 	}
 }
 
-// TestBackupRPCScopeDecisions_VerifyDeprecationLogQuotesRequestFields pins that
-// the caller-supplied backup id cannot forge a second log line: the field is
-// logged quoted, so a newline in it stays on the deprecation line.
-func TestBackupRPCScopeDecisions_VerifyDeprecationLogQuotesRequestFields(t *testing.T) {
+// TestBackupRPCScopeDecisions_VerifyLegacyScopeDeprecationQuotesCallerInput
+// pins that the caller-controlled id is %q-quoted in the deprecation line, so
+// a newline in it cannot forge a second log line (#3186 follow-up).
+func TestBackupRPCScopeDecisions_VerifyLegacyScopeDeprecationQuotesCallerInput(t *testing.T) {
 	_, bs := verifierServer(t)
 	var buf bytes.Buffer
 	prevOut, prevFlags := log.Writer(), log.Flags()
@@ -271,17 +272,20 @@ func TestBackupRPCScopeDecisions_VerifyDeprecationLogQuotesRequestFields(t *test
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
+	const evilID = "x\n[backup] DEPRECATED: forged user=\"root\""
 	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"},
 		[]string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite})
-	// The call itself may fail (no such backup); only the log line matters.
-	_, _ = bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "x\n[backup] forged line", TargetUsername: "alice"})
+	// The request is rejected downstream; only the log line matters here.
+	_, _ = bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: evilID, TargetUsername: "alice"})
 
-	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-		if strings.HasPrefix(l, "[backup] forged") {
-			t.Fatalf("request id forged a log line: %q", l)
-		}
+	out := strings.TrimSuffix(buf.String(), "\n")
+	if n := len(strings.Split(out, "\n")); n != 1 {
+		t.Fatalf("log has %d lines, want exactly 1 (forged line injected):\n%s", n, out)
 	}
-	if !strings.Contains(buf.String(), verifyDeprecationMarker) {
-		t.Fatalf("no deprecation line in log:\n%s", buf.String())
+	if want := "id=" + strconv.Quote(evilID); !strings.Contains(out, want) {
+		t.Errorf("log line %q does not contain quoted id %s", out, want)
+	}
+	if !strings.Contains(out, `user="alice"`) {
+		t.Errorf("log line %q does not contain quoted user", out)
 	}
 }
