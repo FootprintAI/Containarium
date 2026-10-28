@@ -24,6 +24,14 @@ type FileHolders struct{ HomeRoot string }
 
 // OtherAccountHolds implements HolderLookup.
 func (f FileHolders) OtherAccountHolds(ctx context.Context, fingerprint, excludeUsername string) (bool, error) {
-	_ = time.Now
+	recs, err := ScanAuthorizedKeys(f.HomeRoot, time.Time{})
+	if err != nil {
+		return false, err // fail closed: an unreadable home root is not "no holder"
+	}
+	for _, r := range recs {
+		if r.Fingerprint == fingerprint && r.Username != excludeUsername {
+			return true, nil
+		}
+	}
 	return false, nil
 }

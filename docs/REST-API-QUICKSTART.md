@@ -151,13 +151,23 @@ curl -X PUT \
 ```
 
 A dropped key is always removed from the box. The daemon's key registry has
-one entry per key, owned by the first account that registered it, and the
-dropped key's entry is revoked only when this box user owns it. When another
-account owns the entry (an account that registered the same public key first,
-or a collaborator account of the same person), the entry stays active and the
-call still succeeds. Removing a key here (or with `DELETE`) is therefore not a
-guaranteed way to revoke a compromised key everywhere; see
-[#3217](https://github.com/FootprintAI/Containarium/issues/3217).
+one entry per key, owned by the first account that registered it. The entry is
+revoked only when this box user owns it and no other account still holds the
+same public key in its own `authorized_keys`. Collaborator accounts
+(`<owner>-container-<collab>`) are separate accounts, so a revoke by one does
+not revoke another's identical key, and each counts as another holder.
+
+- `PUT` (this call): a key another account still holds is dropped from this
+  box only; its entry stays active and the call succeeds.
+- `DELETE /v1/containers/{username}/ssh-keys/{key}`: if the revoke would take
+  effect while another account holds the key, the call is refused with
+  `FAILED_PRECONDITION` (HTTP 400) and nothing changes; the error does not say
+  who holds it. Example: alice registered bob's public key first, then bob added
+  it to his own box; alice's `DELETE` is refused until bob has removed it.
+- When another account owns the entry, it stays active and the call succeeds.
+
+Removing a key is therefore not a guaranteed way to revoke a compromised key
+everywhere; see [#3217](https://github.com/FootprintAI/Containarium/issues/3217).
 
 #### Get Metrics
 ```bash
