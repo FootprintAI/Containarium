@@ -30,10 +30,13 @@ A correctly brought-up BYOC backend has all of these:
    there: leave `base_domain` empty. The CP's base domain belongs to the CP, and
    the names that reach this host's boxes arrive as per-hostname routes pushed by
    the cloud, which need no base domain on the backend.
-2. **No bridge DNS wildcard for a domain it does not own.** With a base domain
-   set, the daemon makes every box on the bridge resolve `*.<base-domain>` to the
-   local Caddy (`raw.dnsmasq` on the bridge). That silently hides the real
-   public records for that whole domain from every box.
+2. **No bridge DNS wildcard for a domain it does not own.** Daemons before the
+   kernel hairpin rule (#2732) wrote a `raw.dnsmasq` record on the bridge that
+   made every box resolve `*.<base-domain>` to the local Caddy, hiding the real
+   public records for that whole domain from every box. Current daemons write
+   no record, and on start they remove one an older daemon wrote when a base
+   domain is set (#2734). A host with no base domain is not touched, so a record
+   left on it must be removed by hand (step 2 below).
 3. **No management apex route or certificate order for a domain it does not
    own.** The daemon serves its management API on the apex of each base domain
    and asks for a certificate for it. If the name is not served by this host,
@@ -125,7 +128,6 @@ sudo incus exec <box> -- getent ahostsv4 <cp-hostname>
 | A name that should reach the public site or the CP resolves to a private address inside boxes | A bridge wildcard for a domain this host does not own (`raw.dnsmasq`) |
 | Caddy logs `challenge failed` and `will retry` for the base-domain apex | The name is not served by this host (proxied or pointed elsewhere), so HTTP-01 and TLS-ALPN-01 can never succeed |
 | A removed apex route reappears within seconds | The daemon's route sync re-adds it from its own store; delete it with `containarium route delete`, not through Caddy's admin API |
-| A bridge record you deleted returns | `--bridge-dns-reconcile` restores drift on a bridge that has a record; see below |
 
 ## Recovering a host that claimed the wrong domain
 
@@ -148,10 +150,11 @@ Do these in order. Each step is reversible: keep the old values.
    ```bash
    sudo incus network unset incusbr0 raw.dnsmasq
    ```
-   With the reconciler on, a bridge that has *no* record is left alone (it only
-   restores drift on an existing record), so the removal holds. If you need the
-   record to stay exactly as it is, start the daemon with
-   `--bridge-dns-reconcile=false`.
+   This removes every line of the key, including any you added yourself; if
+   the value holds lines of your own, set it to just those with
+   `sudo incus network set incusbr0 raw.dnsmasq "<your lines>"` instead. The
+   daemon no longer writes or restores a bridge record (#2734), so the removal
+   holds.
 3. **Delete the leftover apex route at its source,** then confirm it stays gone
    for a few minutes. This needs an admin token (`containarium token generate`
    with a short `--expiry`, passed via `CONTAINARIUM_TOKEN` so it never lands in
@@ -161,5 +164,5 @@ Do these in order. Each step is reversible: keep the old values.
    ```
 4. **Re-run the checks above,** including the box-side DNS probe.
 
-Never fix the apex route or the bridge record by editing Caddy or the bridge
-by hand while the daemon still holds the old base domain: both are rewritten.
+Never fix the apex route by editing Caddy by hand while the daemon still holds
+the old base domain: the route sync rewrites it.
