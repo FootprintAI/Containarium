@@ -2037,7 +2037,9 @@ func toolScopeAssignments() map[string]string {
 		// A restore test creates and drops a scratch database in an isolated
 		// target container. It accepts the narrow backups:verify scope
 		// (Tool.AlternateScope) as well as backups:write, so verifier tokens
-		// minted before backups:verify existed keep working (#3186).
+		// minted before backups:verify existed keep working for one release
+		// (#3186); the next release drops backups:write here and in
+		// VerifyBackup, leaving backups:verify alone.
 		"verify_backup": auth.ScopeBackupsWrite,
 		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)
