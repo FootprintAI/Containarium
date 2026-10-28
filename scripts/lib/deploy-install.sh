@@ -25,6 +25,28 @@
 # The service name and URL are placed inside single quotes in the generated
 # command. They come from operator env (SENTINEL_SERVICE, PRIMARY_SERVICE,
 # *_HEALTH_URL), never from untrusted input, and must not contain a `'`.
+# deploy_validate_knobs <tries> <interval> prints the problem(s) on one line
+# and returns 1 when a knob is unusable; prints nothing and returns 0 otherwise.
+# HEALTH_TRIES is 1..9999, HEALTH_INTERVAL is 0..9999 seconds: plain decimal
+# integers, no sign, no leading zeros (a bare 0 is valid for the interval only),
+# at most 4 digits. Values are quoted with %q so a control character in the
+# value never reaches the terminal. scripts/deploy-binary.sh calls this before
+# its first remote call; deploy_install_cmd calls it again.
+deploy_validate_knobs() {
+    local tries="$1" interval="$2" err="" q
+    case "$tries" in
+        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+        *) printf -v q '%q' "$tries"
+           err="HEALTH_TRIES must be an integer from 1 to 9999 without leading zeros, got $q";;
+    esac
+    case "$interval" in
+        0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+        *) printf -v q '%q' "$interval"
+           err="${err:+$err; }HEALTH_INTERVAL must be an integer from 0 to 9999 (seconds) without leading zeros, got $q";;
+    esac
+    [ -z "$err" ] || { printf '%s' "$err"; return 1; }
+}
+
 deploy_install_cmd() {
     local svc="$1" url="${2:-}"
     local dir="${BIN_DIR:-/usr/local/bin}" src="${SRC:-/tmp/containariumd}"
@@ -34,10 +56,8 @@ deploy_install_cmd() {
     # change to the host. The emitted command fails too, because callers
     # embed this output in `--command="$(...)"`, where a non-zero return of
     # this function alone would not stop the deploy.
-    local knob_err=""
-    case "$tries" in ''|*[!0-9]*|0|0[0-9]*) knob_err="HEALTH_TRIES must be an integer >= 1, got '$tries'";; esac
-    case "$interval" in ''|*[!0-9]*) knob_err="${knob_err:+$knob_err; }HEALTH_INTERVAL must be an integer >= 0 (seconds), got '$interval'";; esac
-    if [ -n "$knob_err" ]; then
+    local knob_err
+    if ! knob_err="$(deploy_validate_knobs "$tries" "$interval")"; then
         echo "ERROR: $knob_err" >&2
         printf 'echo %q >&2; exit 1\n' "ERROR: $knob_err"
         return 1
