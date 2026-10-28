@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.120.0] - 2026-10-28
+
 ### Upgrading
 
 - Scoped policy writes now require the `network-policy:write` scope (#3165), including the existing full-policy `Set`/`Patch`/`Delete` and signature mutation RPCs that previously needed only the admin role. A token minted with an explicit scope list that omits `network-policy:write` loses those writes on upgrade; mint a new token adding that scope (or keep using legacy unrestricted admin credentials, which are unaffected). `containarium token inspect` output shows a token's scopes; a scopes-restricted token created before this change that lists `network-policy:read` but not `network-policy:write` must be re-minted before it can change policies again.
