@@ -16,7 +16,7 @@ func sshKeysTools() []Tool {
 		{
 			Name: "set_ssh_keys",
 			Description: "Replace a box user's authorized SSH keys with exactly the given list. " +
-				"Keys not in the list are removed, and revoked in the key registry when this account registered them (also for the user's other boxes where the key remains); a key another account registered is left active for that account. Keys the platform manages itself " +
+				"Keys not in the list are removed from the box. A removed key is also revoked in the key registry (and so for the user's other boxes where it remains) only when this box user owns its registry entry, i.e. was the first account to register the key; when another account owns the entry, the entry stays active, so this is not a guaranteed revocation of a compromised key. Keys the platform manages itself " +
 				"are always kept. Idempotent. Every key must be a single-line public key with no " +
 				"options (command=, from=); one invalid key fails the whole call with no change. " +
 				"An empty list removes every caller-managed key and needs allow_empty=true. " +

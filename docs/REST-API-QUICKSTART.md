@@ -150,9 +150,14 @@ curl -X PUT \
   http://localhost:8080/v1/containers/alice/ssh-keys
 ```
 
-A dropped key is revoked in the daemon's key registry only if this user
-registered it. Another account's public key that was copied onto the box is
-removed from the box, and that account's own access is left alone.
+A dropped key is always removed from the box. The daemon's key registry has
+one entry per key, owned by the first account that registered it, and the
+dropped key's entry is revoked only when this box user owns it. When another
+account owns the entry (an account that registered the same public key first,
+or a collaborator account of the same person), the entry stays active and the
+call still succeeds. Removing a key here (or with `DELETE`) is therefore not a
+guaranteed way to revoke a compromised key everywhere; see
+[#3217](https://github.com/FootprintAI/Containarium/issues/3217).
 
 #### Get Metrics
 ```bash

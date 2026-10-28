@@ -37,10 +37,14 @@ itself are always kept. Running the same command twice gives the same result.
 Every key must be a single-line public key with no options (command=, from=):
 one invalid key fails the whole call and changes nothing.
 
-A key dropped here is revoked in the daemon's key registry if you registered
-it, so it is also revoked for your other boxes where it remains in the file.
-A key another account registered (its public key copied onto your box) is
-only removed from your box; that account's registry entry stays active.
+The daemon's key registry has one entry per key, owned by the first account
+(box user) that registered it. A key dropped here is revoked in the registry
+only when this box user owns that entry; it is then also revoked for this
+user's other boxes where it remains in the file. When another account owns
+the entry (including a collaborator account of the same person, or an account
+that registered the same public key first), the key is only removed from this
+box and its registry entry stays active. Dropping a key here is therefore not
+a guaranteed way to revoke a compromised key everywhere (see issue #3217).
 
 An empty list removes every key you manage and must be asked for with --empty.
 
