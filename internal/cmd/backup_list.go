@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"text/tabwriter"
 
@@ -47,14 +48,30 @@ func runBackupList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tUSER\tDATABASE\tCREATED\tSIZE\tDEST\tVERIFIED\tLOCATION")
+	return printBackupList(os.Stdout, records)
+}
+
+// printBackupList renders the list table. The ID stays the first column:
+// scripts/restore-tenant.sh reads it with awk '{print $1}'.
+func printBackupList(out io.Writer, records []*pb.BackupRecord) error {
+	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tUSER\tDATABASE\tCREATED\tSIZE\tDEST\tENCRYPTED\tVERIFIED\tLOCATION")
 	for _, r := range records {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			r.Id, r.Username, r.Database, r.CreatedAt, humanBytes(r.SizeBytes),
-			destLabel(r.Destination), verifiedLabel(r.LastVerification), r.Location)
+			destLabel(r.Destination), encryptedLabel(r), verifiedLabel(r.LastVerification), r.Location)
 	}
 	return w.Flush()
+}
+
+// encryptedLabel renders whether the stored bytes are ciphertext (#3169).
+// Plaintext is upper-case for the same reason "never" is spelled out under
+// VERIFIED: it is the state an operator most needs to notice.
+func encryptedLabel(r *pb.BackupRecord) string {
+	if r.Encrypted {
+		return "yes"
+	}
+	return "NO"
 }
 
 // verifiedLabel renders last-verified state for the list view. An

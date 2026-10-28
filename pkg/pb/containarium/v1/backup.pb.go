@@ -463,7 +463,8 @@ type BackupRecord struct {
 	// user-held key (#1831). size_bytes and sha256 then describe the
 	// ciphertext — what is actually stored — so integrity is verified
 	// before decryption. Restoring requires the matching identity, which
-	// the platform never holds.
+	// the platform never holds. False means the stored bytes are plaintext
+	// (#3169): readable by anyone with read access to the destination.
 	Encrypted bool `protobuf:"varint,12,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
 	// The age X25519 recipient ("age1…") the dump was encrypted to. A
 	// public key: safe to record, and tells the operator which identity
@@ -997,9 +998,16 @@ type CreateBackupRequest struct {
 	// never plaintext, so the mode is named, not defaulted). `destination`,
 	// `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
 	// database backup.
-	Scope         BackupScope `protobuf:"varint,10,opt,name=scope,proto3,enum=containarium.v1.BackupScope" json:"scope,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Scope BackupScope `protobuf:"varint,10,opt,name=scope,proto3,enum=containarium.v1.BackupScope" json:"scope,omitempty"`
+	// Refuse to store plaintext (#3169). When true and the dump would be
+	// stored with no key at all — no age_recipient given, none registered
+	// for the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key
+	// on this daemon — the request fails with FAILED_PRECONDITION before any
+	// container is touched, so no object is written. False keeps today's
+	// behaviour: such a dump is stored unencrypted (and logged as a WARNING).
+	RequireEncryption bool `protobuf:"varint,11,opt,name=require_encryption,json=requireEncryption,proto3" json:"require_encryption,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CreateBackupRequest) Reset() {
@@ -1100,6 +1108,13 @@ func (x *CreateBackupRequest) GetScope() BackupScope {
 		return x.Scope
 	}
 	return BackupScope_BACKUP_SCOPE_UNSPECIFIED
+}
+
+func (x *CreateBackupRequest) GetRequireEncryption() bool {
+	if x != nil {
+		return x.RequireEncryption
+	}
+	return false
 }
 
 type CreateBackupResponse struct {
@@ -1942,7 +1957,7 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x12\n" +
 	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x05 \x01(\x05R\x04port\"\xd1\x03\n" +
+	"\x04port\x18\x05 \x01(\x05R\x04port\"\x80\x04\n" +
 	"\x13CreateBackupRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\n" +
@@ -1958,7 +1973,8 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\vhook_format\x18\t \x01(\x0e2\x1b.containarium.v1.HookFormatR\n" +
 	"hookFormat\x122\n" +
 	"\x05scope\x18\n" +
-	" \x01(\x0e2\x1c.containarium.v1.BackupScopeR\x05scope\"\xbc\x01\n" +
+	" \x01(\x0e2\x1c.containarium.v1.BackupScopeR\x05scope\x12-\n" +
+	"\x12require_encryption\x18\v \x01(\bR\x11requireEncryption\"\xbc\x01\n" +
 	"\x14CreateBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x125\n" +
 	"\x06record\x18\x02 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\x127\n" +
