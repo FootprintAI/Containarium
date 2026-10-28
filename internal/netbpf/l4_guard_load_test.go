@@ -327,6 +327,11 @@ func TestAttachedProgram_ReplyFragmentsAreNotAccounted(t *testing.T) {
 	if !loader.HasFlowAccounting() {
 		t.Fatal("object has no flows map — rebuild netpolicy.bpf.o")
 	}
+	// attachL4GuardBox attaches only the sender (ingress) hook; the reply
+	// accounting under test lives on the TC egress hook.
+	if err := loader.AttachVethEgress(ifindex); err != nil {
+		t.Fatalf("AttachVethEgress: %v", err)
+	}
 	peer := netip.MustParseAddr(ebpfLoadPeerAddr)
 	host := netip.MustParseAddr(ebpfLoadHostAddr)
 	// Reply entries for host -> box UDP are keyed in request orientation:
