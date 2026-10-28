@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `VerifyBackup` deprecation log line quotes the user and the backup id** (#3186 review follow-up). The line (`[backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write ...`) now prints both with `%q`, so a backup id containing a newline can no longer forge a second log line. Anything grepping the 0.120.1 format `user=<tenant> id=<id>` must match `user="<tenant>" id="<id>"` instead. `scripts/backup-scoped-token-e2e.sh` now fails under `CI` when `CONTAINARIUM_BACKUP_E2E_DAEMON_LOG` is unset instead of skipping the deprecation-log check.
+
 ## [0.120.1] - 2026-10-28
 
 ### Added
