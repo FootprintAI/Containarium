@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/sshauthz"
@@ -159,20 +157,23 @@ func TestSSHKeys_AliceFirstDropDoesNotRevokeBobsKey(t *testing.T) {
 		return s, keys, fs, bobKey, aliceKey
 	}
 
-	t.Run("RemoveSSHKey is refused and changes nothing", func(t *testing.T) {
+	t.Run("RemoveSSHKey drops only alice's entry and succeeds", func(t *testing.T) {
 		s, keys, fs, bobKey, _ := setup(t)
-		_, err := s.RemoveSSHKey(aliceCtx, &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: bobKey})
-		if status.Code(err) != codes.FailedPrecondition {
-			t.Fatalf("RemoveSSHKey = %v, want FailedPrecondition", err)
+		resp, err := s.RemoveSSHKey(aliceCtx, &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: bobKey})
+		if err != nil {
+			t.Fatalf("RemoveSSHKey: %v", err)
 		}
-		if strings.Contains(err.Error(), "bob") {
-			t.Fatalf("the error must not name the other holder: %v", err)
+		if strings.Contains(resp.Message, "bob") {
+			t.Fatalf("the response must not name the other holder: %q", resp.Message)
+		}
+		if slices.Contains(fs.files["alice"], bobKey) {
+			t.Fatal("alice's own authorized_keys still holds the dropped key")
+		}
+		if !slices.Contains(fs.files["bob"], bobKey) {
+			t.Fatal("bob's authorized_keys lost his key")
 		}
 		if _, active := keyState(t, keys, bobKey); !active {
 			t.Fatal("alice's RemoveSSHKey revoked a key bob holds")
-		}
-		if !slices.Contains(fs.files["alice"], bobKey) || !slices.Contains(fs.files["bob"], bobKey) {
-			t.Fatal("a refused remove must leave both authorized_keys files alone")
 		}
 	})
 
