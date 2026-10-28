@@ -22,7 +22,10 @@ pass, or an isolated sentinel/backend pair. The runner stops the configured
 GCE VM. Use a disposable backend carrying a synthetic SSH login and an HTTPS
 endpoint with a unique, fixed response body. Keep its internal IP reserved.
 Both application routes must lead through the sentinel to this backend;
-use a direct SSH management alias for the sentinel itself. SSH aliases must
+use direct SSH management aliases for the sentinel and backend itself. The
+backend alias must bypass application forwarding (a management jump host is
+fine) and be able to run `curl` against its local daemon health endpoint.
+SSH aliases must
 already have credentials and pinned host keys; the runner uses batch mode
 and strict host-key checking. It preserves HTTPS certificate verification.
 
@@ -31,6 +34,7 @@ Set these variables in the operator's environment (retain credentials there):
 ```bash
 export GCP_PROJECT='<project>' GCP_ZONE='<zone>' BACKEND_VM='<disposable-vm>'
 export SENTINEL_SSH_TARGET='<sentinel-management-ssh-alias>'
+export BACKEND_SSH_TARGET='<backend-management-ssh-alias>'
 export APP_SSH_TARGET='<synthetic-user-ssh-alias-through-sentinel>'
 export SENTINEL_HTTPS_IP='<sentinel-address>'
 export APP_URL='https://<synthetic-host>/outage-proof'
@@ -41,7 +45,10 @@ OUTAGE_SECONDS=14400 bash scripts/ci/sentinel-outage-smoke.sh > outage-4h.log 2>
 ```
 
 Use the deployed keysync interval and re-registration recovery bound instead
-of the example defaults when configured differently. The default outage is
+of the example defaults when configured differently. The recovery timer
+starts after the backend's local `/health` succeeds; boot has a separate
+`BOOT_TIMEOUT_SECONDS` bound (default 300). Set `BACKEND_HEALTH_PORT` if its
+daemon does not use 8080. The default outage is
 185 seconds and must exceed the keysync interval. Run the long pass beyond
 any additional connection/key lifetime configured by the fixture. For a
 re-key pass, provision the disposable backend to rotate its synthetic login

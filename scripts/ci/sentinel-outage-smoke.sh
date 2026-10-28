@@ -5,17 +5,20 @@
 set -euo pipefail
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-for name in GCP_PROJECT GCP_ZONE BACKEND_VM SENTINEL_SSH_TARGET APP_SSH_TARGET SENTINEL_HTTPS_IP APP_URL EXPECTED_HTTPS_BODY; do
+for name in GCP_PROJECT GCP_ZONE BACKEND_VM SENTINEL_SSH_TARGET BACKEND_SSH_TARGET APP_SSH_TARGET SENTINEL_HTTPS_IP APP_URL EXPECTED_HTTPS_BODY; do
   [[ -n "${!name:-}" ]] || fail "set $name (see docs/testing/sentinel-outage-recovery.md)"
 done
 OUTAGE_SECONDS="${OUTAGE_SECONDS:-185}"
 KEYSYNC_INTERVAL_SECONDS="${KEYSYNC_INTERVAL_SECONDS:-120}"
 RECOVERY_SECONDS="${RECOVERY_SECONDS:-30}"
+BOOT_TIMEOUT_SECONDS="${BOOT_TIMEOUT_SECONDS:-300}"
+BACKEND_HEALTH_PORT="${BACKEND_HEALTH_PORT:-8080}"
 SENTINEL_UNIT="${SENTINEL_UNIT:-containarium-sentinel.service}"
-for duration in "$OUTAGE_SECONDS" "$KEYSYNC_INTERVAL_SECONDS" "$RECOVERY_SECONDS"; do
+for duration in "$OUTAGE_SECONDS" "$KEYSYNC_INTERVAL_SECONDS" "$RECOVERY_SECONDS" "$BOOT_TIMEOUT_SECONDS"; do
   [[ "$duration" =~ ^[1-9][0-9]{0,6}$ ]] || fail "durations must be positive integer seconds"
 done
 (( OUTAGE_SECONDS > KEYSYNC_INTERVAL_SECONDS )) || fail "outage must exceed the configured keysync interval"
+[[ "$BACKEND_HEALTH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( BACKEND_HEALTH_PORT <= 65535 )) || fail "invalid backend health port"
 [[ "$SENTINEL_UNIT" =~ ^[a-zA-Z0-9_@.][a-zA-Z0-9_@.-]*$ ]] || fail "invalid sentinel unit"
 [[ "$APP_URL" == https://* ]] || fail "APP_URL must use HTTPS"
 for tool in gcloud ssh curl timeout; do command -v "$tool" >/dev/null || fail "missing $tool"; done
@@ -42,6 +45,10 @@ probe_https() {
   body="$(curl --silent --show-error --fail --max-time 8 --noproxy '*' \
     --connect-to "::${SENTINEL_HTTPS_IP}:" "$APP_URL" 2>/dev/null)" && [[ "$body" == "$EXPECTED_HTTPS_BODY" ]]
 }
+backend_ready() {
+  timeout 8s ssh "${ssh_options[@]}" "$BACKEND_SSH_TARGET" \
+    "curl -fsS --max-time 5 http://localhost:$BACKEND_HEALTH_PORT/health >/dev/null" 2>/dev/null
+}
 needs_start=false
 cleanup() {
   local rc=$?
@@ -62,6 +69,7 @@ initial_ip="$(backend_ip)"
 [[ -n "$initial_ip" ]] || fail "backend has no internal IP"
 probe_ssh || fail "SSH baseline failed"
 probe_https || fail "HTTPS baseline failed"
+backend_ready || fail "backend health baseline failed"
 assert_sentinel_alive() {
   local current
   current="$(identity)" || fail "sentinel became unreachable"
@@ -83,6 +91,14 @@ assert_sentinel_alive
 start_backend
 needs_start=false
 [[ "$(backend_ip)" == "$initial_ip" ]] || fail "backend IP changed"
+boot_start=$SECONDS
+until backend_ready; do
+  assert_sentinel_alive
+  (( SECONDS - boot_start < BOOT_TIMEOUT_SECONDS )) || fail "backend did not become ready"
+  sleep 1
+done
+# Measure re-registration/forwarding recovery from backend readiness, not from
+# the cloud operation completing while the VM is still booting.
 recovery_start=$SECONDS
 while (( SECONDS - recovery_start < RECOVERY_SECONDS )); do
   assert_sentinel_alive

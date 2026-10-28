@@ -15,6 +15,9 @@ import (
 func TestSentinelOutageHarness(t *testing.T) {
 	for _, tc := range []struct{ mode, want string }{
 		{"recover", "PASS"},
+		{"slow-boot", "PASS"},
+		{"bad-health-baseline", "backend health baseline failed"},
+		{"boot-stuck", "backend did not become ready"},
 		{"restart", "sentinel restarted"},
 		{"restart-count", "sentinel restarted"},
 		{"changed-ip", "backend IP changed"},
@@ -34,9 +37,10 @@ func TestSentinelOutageHarness(t *testing.T) {
 				"FIXTURE_STATE": state, "FIXTURE_MODE": tc.mode,
 				"GCP_PROJECT": "fixture", "GCP_ZONE": "fixture", "BACKEND_VM": "fixture",
 				"SENTINEL_SSH_TARGET": "sentinel", "APP_SSH_TARGET": "app",
+				"BACKEND_SSH_TARGET": "backend", "BOOT_TIMEOUT_SECONDS": "2",
 				"SENTINEL_HTTPS_IP": "192.0.2.1", "APP_URL": "https://app.example/",
 				"EXPECTED_HTTPS_BODY": "fixture-ok", "KEYSYNC_INTERVAL_SECONDS": "1",
-				"OUTAGE_SECONDS": "2", "RECOVERY_SECONDS": "1",
+				"OUTAGE_SECONDS": "2", "RECOVERY_SECONDS": "2",
 			} {
 				t.Setenv(k, v)
 			}
@@ -45,7 +49,7 @@ func TestSentinelOutageHarness(t *testing.T) {
 			}
 			cmd := exec.Command("bash", "../../scripts/ci/sentinel-outage-smoke.sh")
 			out, err := cmd.CombinedOutput()
-			if tc.mode == "recover" {
+			if tc.mode == "recover" || tc.mode == "slow-boot" {
 				require.NoError(t, err, "%s", out)
 			} else {
 				require.Error(t, err, "%s", out)
@@ -54,7 +58,7 @@ func TestSentinelOutageHarness(t *testing.T) {
 			final, err := os.ReadFile(state)
 			require.NoError(t, err)
 			wantState := "recovered"
-			if tc.mode == "short-outage" {
+			if tc.mode == "short-outage" || tc.mode == "bad-health-baseline" {
 				wantState = "initial"
 			}
 			require.Equal(t, wantState, strings.TrimSpace(string(final)), "the VM must be restored after an assertion failure; invalid input must not stop it")
@@ -68,7 +72,7 @@ state="$(cat "$FIXTURE_STATE")"
 case "${0##*/}" in
   gcloud)
     case "$*" in
-      *"instances stop"*) echo down > "$FIXTURE_STATE" ;;
+      *"instances stop"*) echo down > "$FIXTURE_STATE"; rm -f "$FIXTURE_STATE.ready" ;;
       *"instances start"*) echo recovered > "$FIXTURE_STATE" ;;
       *"instances describe"*)
         if [[ "$FIXTURE_MODE" == changed-ip && "$state" == recovered ]]; then echo 192.0.2.3; else echo 192.0.2.2; fi ;;
@@ -78,8 +82,14 @@ case "${0##*/}" in
     if [[ "$*" == *"systemctl show"* ]]; then
       if [[ "$FIXTURE_MODE" == restart && "$state" != initial ]]; then echo MainPID=2; else echo MainPID=1; fi
       if [[ "$FIXTURE_MODE" == restart-count && "$state" != initial ]]; then echo NRestarts=1; else echo NRestarts=0; fi
+    elif [[ "$*" == *"http://localhost:"* ]]; then
+      [[ "$state" != down ]] || exit 1
+      [[ !( "$FIXTURE_MODE" == bad-health-baseline && "$state" == initial ) ]] || exit 1
+      [[ !( "$FIXTURE_MODE" == boot-stuck && "$state" == recovered ) ]] || exit 1
+      touch "$FIXTURE_STATE.ready"
     else
       [[ "$state" != down && !( "$state" == recovered && "$FIXTURE_MODE" == ssh-stuck ) ]] || exit 1
+      [[ "$FIXTURE_MODE" != slow-boot || "$state" == initial || -f "$FIXTURE_STATE.ready" ]] || exit 1
       echo sentinel-outage-ssh-ok
     fi ;;
   curl)
