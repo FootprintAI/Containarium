@@ -105,7 +105,7 @@ api 200 "$scratch_dir/still.json" -H "Authorization: Bearer $token" "$server/v1/
 # run's tenant. Only callable when CONTAINARIUM_BACKUP_E2E_DAEMON_LOG names the
 # daemon's log file.
 deprecation_lines() {
-  grep -c "\[backup\] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user=$tenant " \
+  grep -c "\[backup\] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user=\"$tenant\" " \
     "$CONTAINARIUM_BACKUP_E2E_DAEMON_LOG" || true
 }
 daemon_log=${CONTAINARIUM_BACKUP_E2E_DAEMON_LOG:-}

@@ -531,7 +531,7 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		// One-release deprecation window (#3186): the next release stops
 		// accepting backups:write for VerifyBackup.
 		user, _, _ := auth.SubjectFromGRPCContext(ctx)
-		log.Printf("[backup] DEPRECATED: VerifyBackup authorized by legacy scope %s user=%s id=%s; re-mint the verifier token with --scopes %s,%s, the next release stops accepting %s for VerifyBackup",
+		log.Printf("[backup] DEPRECATED: VerifyBackup authorized by legacy scope %s user=%q id=%q; re-mint the verifier token with --scopes %s,%s, the next release stops accepting %s for VerifyBackup",
 			auth.ScopeBackupsWrite, user, req.Id, auth.ScopeBackupsRead, auth.ScopeBackupsVerify, auth.ScopeBackupsWrite)
 	}
 	if req.Id == "" {
