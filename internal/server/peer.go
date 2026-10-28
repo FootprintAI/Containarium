@@ -92,6 +92,10 @@ type PeerPool struct {
 	// peer.go then falls back to plain HTTP (pre-0.5 behavior).
 	pki *peerPKI
 
+	// plainHTTPLogOnce makes the "peer mTLS not enabled" notice a
+	// one-time line (#3079).
+	plainHTTPLogOnce sync.Once
+
 	// Capacity-aware placement ranking (#1029 direction 2). When
 	// capacityRanking is true and capacityTokenFn is set, the discovery loop
 	// also refreshes each healthy peer's CPU commitment, and
@@ -195,6 +199,49 @@ func (p *PeerPool) BootstrapPKI(ctx context.Context) error {
 
 	log.Printf("[peer-pki] bootstrap complete; %d peer client(s) upgraded to HTTPS", len(p.peers))
 	return nil
+}
+
+// PeerMTLSEnabled reports whether this daemon's peer calls use the
+// sentinel-issued leaf cert and pinned peer CA. False when the bootstrap
+// was skipped, failed, or has not run. Nil-safe.
+func (p *PeerPool) PeerMTLSEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.pki != nil
+}
+
+// peerTransportOf maps a pool to the PeerTransport reported in
+// SystemInfo. A nil pool is UNSPECIFIED (no peer calls to describe).
+func peerTransportOf(p *PeerPool) pb.PeerTransport {
+	if p == nil {
+		return pb.PeerTransport_PEER_TRANSPORT_UNSPECIFIED
+	}
+	if p.PeerMTLSEnabled() {
+		return pb.PeerTransport_PEER_TRANSPORT_MTLS
+	}
+	return pb.PeerTransport_PEER_TRANSPORT_HTTP
+}
+
+// LogPlainHTTPOnce logs, at most once per pool, that peer mTLS is not
+// enabled and daemon-to-peer calls use plain HTTP. reason is the bootstrap
+// error, or nil when the bootstrap was skipped. It is a supported
+// configuration, so this is a notice, not an error (#3079). It states only
+// the peer-call transport; it says nothing about other transports such as
+// the sentinel-backend tunnel. No-op when peer mTLS is active.
+func (p *PeerPool) LogPlainHTTPOnce(reason error) {
+	if p.PeerMTLSEnabled() {
+		return
+	}
+	p.plainHTTPLogOnce.Do(func() {
+		if reason != nil {
+			log.Printf("[peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP (%v). Visible as peer_transport in system info and containarium.peer.mtls.enabled", reason)
+			return
+		}
+		log.Printf("[peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP. Visible as peer_transport in system info and containarium.peer.mtls.enabled")
+	})
 }
 
 // buildPeerHTTPClient returns an http.Client wired to present the
