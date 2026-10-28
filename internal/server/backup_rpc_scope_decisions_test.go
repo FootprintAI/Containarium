@@ -251,11 +251,37 @@ func TestBackupRPCScopeDecisions_VerifyLegacyScopeLogsDeprecation(t *testing.T) 
 			if line == "" {
 				t.Fatalf("no deprecation line containing %q in log:\n%s", verifyDeprecationMarker, out)
 			}
-			for _, want := range []string{"user=alice", auth.ScopeBackupsVerify} {
+			for _, want := range []string{`user="alice"`, auth.ScopeBackupsVerify} {
 				if !strings.Contains(line, want) {
 					t.Errorf("deprecation line %q does not name %q", line, want)
 				}
 			}
 		})
+	}
+}
+
+// TestBackupRPCScopeDecisions_VerifyDeprecationLogQuotesRequestFields pins that
+// the caller-supplied backup id cannot forge a second log line: the field is
+// logged quoted, so a newline in it stays on the deprecation line.
+func TestBackupRPCScopeDecisions_VerifyDeprecationLogQuotesRequestFields(t *testing.T) {
+	_, bs := verifierServer(t)
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"},
+		[]string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite})
+	// The call itself may fail (no such backup); only the log line matters.
+	_, _ = bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "x\n[backup] forged line", TargetUsername: "alice"})
+
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.HasPrefix(l, "[backup] forged") {
+			t.Fatalf("request id forged a log line: %q", l)
+		}
+	}
+	if !strings.Contains(buf.String(), verifyDeprecationMarker) {
+		t.Fatalf("no deprecation line in log:\n%s", buf.String())
 	}
 }
