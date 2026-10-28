@@ -51,6 +51,16 @@ const (
 	// (destructively) over it — both warrant their own grant.
 	ScopeBackupsRead  = "backups:read"
 	ScopeBackupsWrite = "backups:write"
+	// backups:verify (#3186) is the narrow scope for a restore-test
+	// (verifier) token: VerifyBackup accepts it, and it grants none of
+	// create/restore/delete/prune. For ONE release VerifyBackup also still
+	// accepts backups:write, so verifier tokens minted before this scope
+	// existed keep working; such a call logs a "[backup] DEPRECATED:" line
+	// naming the user (Q8 on #3196). The next release drops backups:write
+	// from VerifyBackup (and from the verify_backup MCP tool's
+	// AlternateScope pairing): operators must re-mint verifier tokens with
+	// backups:read,backups:verify before upgrading to it.
+	ScopeBackupsVerify = "backups:verify"
 
 	// shared volumes (VolumeServer). A write can create/attach/delete
 	// CephFS volumes mounted RW across tenants — cross-tenant data
@@ -231,7 +241,7 @@ var AllScopes = []string{
 	ScopeContainersRead, ScopeContainersWrite,
 	ScopeSecretsRead, ScopeSecretsWrite,
 	ScopeKMSAdmin,
-	ScopeBackupsRead, ScopeBackupsWrite,
+	ScopeBackupsRead, ScopeBackupsWrite, ScopeBackupsVerify,
 	ScopeVolumesRead, ScopeVolumesWrite,
 	ScopeRoutesRead, ScopeRoutesWrite,
 	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
