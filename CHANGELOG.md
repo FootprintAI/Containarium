@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unreadable bridge master no longer leaves a managed veth trusted as an uplink** (#3212). When the bridge a managed veth is enslaved to cannot be read (a sysfs error other than "no such file"), the network-policy pass still removes installed `trusted_iif` entries whose interface is itself a managed veth, and still adds no new trust. Other installed entries are kept, so an already-trusted bridge carrying instance veths stays trusted while the error persists; `docs/security/NETWORK-ISOLATION-DESIGN.md` states this.
+
 ## [0.120.1] - 2026-10-28
 
 ### Added
