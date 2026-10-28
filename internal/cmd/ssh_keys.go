@@ -37,10 +37,13 @@ itself are always kept. Running the same command twice gives the same result.
 Every key must be a single-line public key with no options (command=, from=):
 one invalid key fails the whole call and changes nothing.
 
-The daemon's key registry has one entry per key, owned by the first account
-(box user) that registered it. A key dropped here is revoked in the registry
-only when this box user owns that entry; it is then also revoked for this
-user's other boxes where it remains in the file. When another account owns
+The daemon's key registry has one entry per key, owned by the account (box
+user) that registered it; a registration does not replace an active entry but
+does replace a revoked one, so a key that was revoked passes to whoever
+registers it next. A key dropped here is revoked in the registry only when
+this box user owns that entry. SSH login looks a key up by fingerprint alone,
+so an owner's revocation refuses the key for every account and box, not only
+this one. When another account owns
 the entry (including a collaborator account of the same person, or an account
 that registered the same public key first), the key is only removed from this
 box and its registry entry stays active. Dropping a key here is therefore not

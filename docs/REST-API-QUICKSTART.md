@@ -151,8 +151,11 @@ curl -X PUT \
 ```
 
 A dropped key is always removed from the box. The daemon's key registry has
-one entry per key, owned by the first account that registered it, and the
-dropped key's entry is revoked only when this box user owns it. When another
+one entry per key, owned by the account that registered it (a registration
+does not replace an active entry but does replace a revoked one), and the
+dropped key's entry is revoked only when this box user owns it. Login checks
+a key by fingerprint alone, so an owner's revocation refuses the key for every
+account and box, not only this one. When another
 account owns the entry (an account that registered the same public key first,
 or a collaborator account of the same person), the entry stays active and the
 call still succeeds. Removing a key here (or with `DELETE`) is therefore not a

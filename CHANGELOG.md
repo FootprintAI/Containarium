@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A port-scoped virtual-patch deny can no longer be evaded with an IP option or fragmentation** (#3166). The eBPF sender hook read the destination port for a deny rule without regard to IP options or fragments, so a box could slip past a port/proto-scoped deny by adding an IP option (the port was then not read and the rule did not match). The deny now shares the inbound-reply parser's guard: a TCP/UDP packet whose ports cannot be read matches a port-scoped rule on its address and proto alone (fails closed); the allow-list is unchanged. Flow accounting no longer tallies fragments, and an options-bearing non-fragment is tallied under ports 0. Behaviour changes to know about: a fragmented flow to a denied host and proto is denied even if its real port differs, because fragments carry no readable port; and a legitimate packet whose L4 header lies outside the linear skb data (truncated or paged) is now denied when a port-scoped rule exists for that host and proto, where it used to be silently allowed. Rules with no port are unaffected. Needs a rebuilt `netpolicy.bpf.o`.
+
+- **Dropping an SSH key no longer revokes another account's registry entry** (#3187, security; found in review of #3137). `RemoveSSHKey` and `SetSSHKeys` revoked a dropped key in the `ssh_keys` registry by fingerprint, whoever had registered it, so a tenant could add another account's already-registered public key to its own box, drop it, and revoke that account's key. A revocation now applies only when the dropping account owns the registry entry; the check is part of the registry upsert, so it cannot race a re-registration, and a revoke that leaves another account's entry active is logged. Not closed by this change (#3217): the registry has one entry per key, owned by the account that registered it (a registration does not replace an active entry but does replace a revoked one), so an account that registers another person's public key before that person does still owns the entry and can still revoke it, and in that case (or when the person's own collaborator account registered the key first) the person's own drop of the key leaves the entry active. Login checks a key by fingerprint alone, so an owner's revocation refuses the key for every account and box, not only the dropper's. A key with no entry still gets a revoked entry, so a later backfill cannot make it live. `RemoveSSHKey` now also revokes before it edits `authorized_keys`, as `SetSSHKeys` does: a registry failure leaves the key in the file and the caller's retry repeats the revocation. `PUT /v1/containers/{username}/ssh-keys` is now in `docs/REST-API-QUICKSTART.md`.
+
 ## [0.120.0] - 2026-10-28
 
 ### Upgrading
@@ -58,10 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Creates and snapshots are refused on a storage pool past its headroom floor** (part of #3128, from #3043). A pool that fills to 0 B stops Incus, then core Postgres, then the daemon. Once a pool is at or past its floor (default 95% used, as Incus reports it), the daemon refuses container creates and every snapshot it takes on that pool with `ResourceExhausted` and an error naming the pool, its fill, the floor and the headroom left. This covers `CreateContainerSnapshot` (nightly `backup-*` snapshots included, when they go through it) and the sync-point snapshots of `MoveContainer`. Behaviour change: on a pool already at 95% or more, these operations now fail where they used to proceed, and a move off a full pool is refused too. Set a different floor per pool with the repeatable daemon flag `--pool-headroom-floor=<pool>=<percent>` (whole percent 86 to 99, above the 85% nearly-full mark; a bad value stops the daemon at startup). The check reads the capacity monitor's last sample and never calls Incus; if a pool's size has never been read, the request goes through and a `WARN` line is logged. Host status and the built-in alert keep their fixed 85%/95% thresholds. `containarium info` now flags a pool at 85% or more as `WARNING: pool nearly full` (previously `WARNING`).
 ### Fixed
 
-- **A port-scoped virtual-patch deny can no longer be evaded with an IP option or fragmentation** (#3166). The eBPF sender hook read the destination port for a deny rule without regard to IP options or fragments, so a box could slip past a port/proto-scoped deny by adding an IP option (the port was then not read and the rule did not match). The deny now shares the inbound-reply parser's guard: a TCP/UDP packet whose ports cannot be read matches a port-scoped rule on its address and proto alone (fails closed); the allow-list is unchanged. Flow accounting no longer tallies fragments, and an options-bearing non-fragment is tallied under ports 0. Behaviour changes to know about: a fragmented flow to a denied host and proto is denied even if its real port differs, because fragments carry no readable port; and a legitimate packet whose L4 header lies outside the linear skb data (truncated or paged) is now denied when a port-scoped rule exists for that host and proto, where it used to be silently allowed. Rules with no port are unaffected. Needs a rebuilt `netpolicy.bpf.o`.
 - **`golang.org/x/net` v0.62.0** (#3205), clearing GO-2026-6866 and GO-2026-6860, which had turned the `govulncheck` gate red on `main`. GO-2026-5932 (`golang.org/x/crypto/openpgp`, no fix published) is reported at module level only; the code does not call it, and the gate tolerates findings without a fix.
-
-- **Dropping an SSH key no longer revokes another account's registry entry** (#3187, security; found in review of #3137). `RemoveSSHKey` and `SetSSHKeys` revoked a dropped key in the `ssh_keys` registry by fingerprint, whoever had registered it, so a tenant could add another account's already-registered public key to its own box, drop it, and revoke that account's key. A revocation now applies only when the dropping account owns the registry entry; the check is part of the registry upsert, so it cannot race a re-registration, and a revoke that leaves another account's entry active is logged. Not closed by this change (#3217): the registry has one entry per key and the first account to register a key owns it, so an account that registers another person's public key before that person does still owns the entry and can still revoke it, and in that case (or when the person's own collaborator account registered the key first) the person's own drop of the key leaves the entry active. A key with no entry still gets a revoked entry, so a later backfill cannot make it live. `RemoveSSHKey` now also revokes before it edits `authorized_keys`, as `SetSSHKeys` does: a registry failure leaves the key in the file and the caller's retry repeats the revocation. `PUT /v1/containers/{username}/ssh-keys` is now in `docs/REST-API-QUICKSTART.md`.
 
 - **`deploy-binary.sh` validates `HEALTH_TRIES` / `HEALTH_INTERVAL` before its first remote call** (part of #3108, follow-up to the sentinel health check). A bad value now stops the script at the top, before the build, any `gcloud` call or the upload, instead of when the install command is built; the install step still checks again. Both must be plain decimal integers without leading zeros: `HEALTH_TRIES` 1 to 9999, `HEALTH_INTERVAL` 0 to 9999 (a bare `0` is valid; `05` is rejected for both). A set-but-empty `HEALTH_INTERVAL` and values over four digits are rejected with a message instead of failing inside `[ ]` on the host. The rejected value is printed shell-quoted, so a control character cannot reach the terminal. The rollback test covers each case and that no remote command runs on a bad value.
 
@@ -2261,13 +2264,11 @@ Use v0.101.1._
 
 - **`diff-drafter` / `diff-reviewer` prompts hardened against non-compliant output.** A live run showed the model could emit a hallucinated tool-call snippet instead of the `{"files": [...], ...}` JSON artifact the skill's contract requires. Both prompts now explicitly require using real file-editing tools (not narrating the edit), reading each changed file back from disk before reporting it, and — as the final, repeated instruction — that the response must be ONLY the JSON object. Root cause: `agent-card.json`'s `output_schema_json` structured-output contract is parsed by `agent-runtime` but never enforced by any engine — tracked separately (cloud#1752) as a real feature, not fixed here. (#2000, cloud#1752)
 
-
 ## [0.87.0] - 2026-09-23
 
 ### Changed
 
 - **`diff-drafter` / `diff-reviewer` emit whole-file content, not a unified diff.** The platform's only PR-opening mechanism (Containarium-cloud's `internal/githubpr`) applies full file bodies via GitHub's Contents API and has never applied a real diff — matching that shape means the cloud actuator can turn a completed `diff-crew` run into a real PR by composing existing machinery. `diff-reviewer` now also echoes the drafter's summary back (`drafter_summary`) alongside its own `review_notes`, so a PR opened from the artifact can credit both agents. Both skills shipped a day earlier (v0.86.0) and nothing depended on the diff shape yet. (#1997, cloud#1738)
-
 
 ## [0.86.0] - 2026-09-22
 
@@ -2289,7 +2290,6 @@ Use v0.101.1._
 ### Fixed
 
 - **`startServeMode` kills a prior `agent-runtime` before launching a fresh one (cloud#1733).** A crew member box is reused across runs, and `RunCrew` re-mints a fresh gateway token and reseeds it to disk on every call — but nothing stopped an earlier `agent-runtime` instance first. The A2A server binds a fixed port, so every relaunch after a box's first-ever boot crashed on `EADDRINUSE`, silently, into a log file nothing read. The one surviving process kept serving whatever gateway token it read at boot, past its 30-minute TTL, so a crew run against any box more than 30 minutes old failed `invalid gateway token: token is expired` regardless of the request. (#1987)
-
 
 <!--
   #1363: this file has no sections for v0.62.0-v0.65.0 or v0.68.0-v0.70.0 —
@@ -3680,7 +3680,6 @@ shipped work. See the tracking issue for reconstructing those four sections.
   become undrivable. The sentinel logs this loudly at startup when the
   secret is absent (#1105).
 
-
 ## [0.60.0] - 2026-07-23
 
 ### Added
@@ -4372,7 +4371,6 @@ shipped work. See the tracking issue for reconstructing those four sections.
   (first token overrides the container entrypoint), `env_lines` (podman
   `--env-file` literal semantics). Application-agnostic building block; the
   first consumer is the cloud runtime API's agent sandboxes.
-
 
 ## [0.48.3] - 2026-07-08
 
@@ -6201,7 +6199,6 @@ This release lands the **MCP-first agent dev loop**: an agent (Claude Code, Curs
 ### Fixed
 - **Tunnel SSH port conflict** — Tunnel server uses port 20022 for SSH proxy listeners on loopback aliases, preventing conflict with sshpiper's `*:22` binding on the sentinel
 - **NVIDIA GPU model name** — Fixed duplicate brand prefix in model name string from Incus nvidia sub-struct
-
 
 ### Added
 - **OWASP ZAP web application scanning** — New "ZAP Scan" tab under Security for automated web application vulnerability scanning of all exposed Containarium endpoints.
