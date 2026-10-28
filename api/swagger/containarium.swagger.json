@@ -11699,7 +11699,7 @@
         },
         "encrypted": {
           "type": "boolean",
-          "description": "True when the stored bytes are an age ciphertext encrypted to a\nuser-held key (#1831). size_bytes and sha256 then describe the\nciphertext — what is actually stored — so integrity is verified\nbefore decryption. Restoring requires the matching identity, which\nthe platform never holds."
+          "description": "True when the stored bytes are an age ciphertext encrypted to a\nuser-held key (#1831). size_bytes and sha256 then describe the\nciphertext — what is actually stored — so integrity is verified\nbefore decryption. Restoring requires the matching identity, which\nthe platform never holds. False means the stored bytes are plaintext\n(#3169): readable by anyone with read access to the destination."
         },
         "ageRecipient": {
           "type": "string",
@@ -13214,6 +13214,10 @@
         "scope": {
           "$ref": "#/definitions/BackupScope",
           "description": "What to back up (#2800). UNSPECIFIED and DATABASE are today's database\nbackup, unchanged. BOX backs up the whole box named by `username`; it\nis rejected with INVALID_ARGUMENT when `connection`, `hook` or\n`hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is\nnever plaintext, so the mode is named, not defaulted). `destination`,\n`gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a\ndatabase backup."
+        },
+        "requireEncryption": {
+          "type": "boolean",
+          "description": "Refuse to store plaintext (#3169). When true and the dump would be\nstored with no key at all — no age_recipient given, none registered\nfor the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key\non this daemon — the request fails with FAILED_PRECONDITION before any\ncontainer is touched, so no object is written. False keeps today's\nbehaviour: such a dump is stored unencrypted (and logged as a WARNING)."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
