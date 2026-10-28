@@ -101,46 +101,18 @@ api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
 # The backup must still exist after the refused delete/prune.
 api 200 "$scratch_dir/still.json" -H "Authorization: Bearer $token" "$server/v1/backups/$backup_id"
 
-# deprecation_lines counts the daemon's "[backup] DEPRECATED:" lines for this
-# run's tenant. Only callable when CONTAINARIUM_BACKUP_E2E_DAEMON_LOG names the
-# daemon's log file.
-deprecation_lines() {
-  grep -c "\[backup\] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user=\"$tenant\" " \
-    "$CONTAINARIUM_BACKUP_E2E_DAEMON_LOG" || true
-}
-daemon_log=${CONTAINARIUM_BACKUP_E2E_DAEMON_LOG:-}
-if [ -n "$daemon_log" ]; then
-  # The backups:verify token verified above: that must not log a deprecation.
-  test "$(deprecation_lines)" = 0 || {
-    echo "backups:verify verify logged a deprecation line" >&2
-    exit 1
-  }
-fi
-
-# A verifier token minted before backups:verify existed (backups:write) keeps
-# verifying for one release (#3186, Q8 on #3196) and logs a deprecation line;
-# the next release stops accepting backups:write for VerifyBackup.
+# The v0.120.1 compatibility window has ended (#3219). Legacy verifier
+# tokens carrying backups:write must be refused with re-mint instructions.
 legacy=$("$bin" token generate --username "$tenant" --roles user \
   --scopes backups:read,backups:write --expiry 5m \
   --secret-file "$scratch_dir/jwt.secret" --raw)
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
-api 200 "$scratch_dir/legacy-verify.json" --max-time 600 -H "Authorization: Bearer $legacy" \
+api 403 "$scratch_dir/legacy-verify.json" -H "Authorization: Bearer $legacy" \
   -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
-jq -e '.verification.result == "VERIFICATION_RESULT_PASSED"' "$scratch_dir/legacy-verify.json"
-legacy_target=$(jq -er '.verification.targetContainer' "$scratch_dir/legacy-verify.json")
-if incus info "$legacy_target" >/dev/null 2>&1; then
-  echo "Verifier container was not deleted: $legacy_target" >&2
-  exit 1
-fi
-if [ -n "$daemon_log" ]; then
-  test "$(deprecation_lines)" = 1 || {
-    echo "legacy backups:write verify did not log exactly one deprecation line in $daemon_log" >&2
-    exit 1
-  }
-else
-  echo 'SKIP deprecation-log check: set CONTAINARIUM_BACKUP_E2E_DAEMON_LOG to the daemon log file to run it.'
-fi
+jq -e '.code == 7 and (.message | contains("backups:verify") and
+  contains("containarium token generate") and contains("--scopes backups:read,backups:verify"))' \
+  "$scratch_dir/legacy-verify.json"
 
 # Verification must leave the source database intact.
 test "$(incus exec "$source_name" -- runuser -u postgres -- psql -Atc 'SELECT count(*) FROM scope_contract')" = 1
-echo 'PASS: backups:verify token lists and verifies its own backup, is refused create/restore/delete/prune and other APIs, and cleans up its isolated target.'
+echo 'PASS: backups:verify token lists and verifies its own backup, is refused create/restore/delete/prune and other APIs, cleans up its isolated target, and legacy backups:write verifier tokens are refused with re-mint instructions.'

@@ -463,7 +463,7 @@ jobs:
           echo "closed default holds: $(head -3 /tmp/refusal.log)"
           sudo pkill -f "containarium daemon" || true
 
-      - name: Backup verifier scoped token against the real daemon
+      - name: Backup verifier scope allows verify and refuses legacy write against the real daemon
         env:
           JWT_SECRET: backup-verifier-lane-only-secret-not-a-credential
         run: |
@@ -507,7 +507,6 @@ jobs:
           fi
           sudo env "PATH=$PATH" JWT_SECRET="$JWT_SECRET" ADMIN_TOKEN="$ADMIN_TOKEN" \
             CONTAINARIUM_LANE_IMAGE=lane-box \
-            CONTAINARIUM_BACKUP_E2E_DAEMON_LOG=/tmp/backup-scoped-daemon.log \
             bash scripts/backup-scoped-token-e2e.sh || {
               cat /tmp/backup-scoped-daemon.log; exit 1;
             }
