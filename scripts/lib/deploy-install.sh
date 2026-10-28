@@ -15,7 +15,9 @@
 # Knobs, read when the command is built: BIN_DIR (default /usr/local/bin),
 # SRC (default /tmp/containariumd), HEALTH_TRIES (default 15), HEALTH_INTERVAL
 # seconds (default 2). The window is HEALTH_TRIES x HEALTH_INTERVAL, 30s by
-# default. A daemon that is healthy but needs longer than the window to come up
+# default. Both must be integers (HEALTH_TRIES >= 1); anything else is rejected
+# before the host is touched. A successful sentinel deploy always takes the
+# full window. A daemon that is healthy but needs longer than the window to come up
 # (URL path) or to settle is rolled back like a broken one: raise HEALTH_TRIES
 # (or HEALTH_INTERVAL) for a slow-starting daemon, e.g.
 #   HEALTH_TRIES=60 HEALTH_INTERVAL=2 scripts/deploy-binary.sh ...
@@ -26,17 +28,33 @@
 deploy_install_cmd() {
     local svc="$1" url="${2:-}"
     local dir="${BIN_DIR:-/usr/local/bin}" src="${SRC:-/tmp/containariumd}"
-    local tries="${HEALTH_TRIES:-15}" interval="${HEALTH_INTERVAL:-2}"
-    local bin="$dir/containariumd" check poll
+    local tries="${HEALTH_TRIES-15}" interval="${HEALTH_INTERVAL-2}"
+    local bin="$dir/containariumd" check poll final
+    # A rollback gate must not pass vacuously: reject bad knobs before any
+    # change to the host. The emitted command fails too, because callers
+    # embed this output in `--command="$(...)"`, where a non-zero return of
+    # this function alone would not stop the deploy.
+    local knob_err=""
+    case "$tries" in ''|*[!0-9]*|0|0[0-9]*) knob_err="HEALTH_TRIES must be an integer >= 1, got '$tries'";; esac
+    case "$interval" in ''|*[!0-9]*) knob_err="${knob_err:+$knob_err; }HEALTH_INTERVAL must be an integer >= 0 (seconds), got '$interval'";; esac
+    if [ -n "$knob_err" ]; then
+        echo "ERROR: $knob_err" >&2
+        printf 'echo %q >&2; exit 1\n' "ERROR: $knob_err"
+        return 1
+    fi
     if [ -n "$url" ]; then
         check="curl -fsS --max-time 3 '$url' >/dev/null 2>&1"
         # Healthy on the first successful probe.
         poll="if $check; then echo \"  $svc healthy after install\"; exit 0; fi"
+        final="false"
     else
         check="sudo systemctl is-active --quiet '$svc'"
         # Healthy only if still active after the whole window: a failed
         # probe ends the wait at once and falls through to the rollback.
         poll="if ! $check; then break; fi"
+        # The last probe is followed by a sleep; probe once more after it so
+        # the whole window is watched.
+        final="$check"
     fi
     cat <<CMD
 had_old=0
@@ -50,7 +68,7 @@ while [ \$i -lt $tries ]; do
   $poll
   i=\$((i+1)); sleep $interval
 done
-if [ -z '$url' ] && [ \$i -ge $tries ]; then echo "  $svc healthy after install"; exit 0; fi
+if [ -z '$url' ] && [ \$i -ge $tries ] && $final; then echo "  $svc healthy after install"; exit 0; fi
 echo "  ERROR: $svc not healthy after install" >&2
 if [ \$had_old = 1 ]; then
   sudo systemctl stop '$svc' || true

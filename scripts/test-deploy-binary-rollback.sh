@@ -99,6 +99,26 @@ grep -q 'rolled back' "$CASE_DIR/out" && ok "sentinel crash after start: says it
 URL= TRIES=4 FAKE_ACTIVE_POLLS=0 run_case sentinel-dead-on-start old-good new-bad 1
 [ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel never active: previous binary restored" || bad "sentinel never active: previous binary restored"
 
+# The last in-loop probe passes and the unit dies during the final sleep: the
+# window is watched to its end, so this must roll back.
+URL= TRIES=4 FAKE_ACTIVE_POLLS=4 run_case sentinel-dies-after-last-probe old-good new-bad 1
+[ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel dies after the last in-loop probe: previous binary restored" || bad "sentinel dies after the last in-loop probe: previous binary restored"
+
+# Invalid knobs must fail before anything on the host is touched, never pass vacuously.
+check_knob() { # <label> <var> <value> <url|sentinel>
+  local d="$work/knob-$1"; mkdir -p "$d/bin"; : > "$d/log"; printf old-good > "$d/bin/containariumd"
+  local url=http://localhost:8080/health; [ "$4" = sentinel ] && url=
+  local cmd rc crc
+  cmd="$(env "$2=$3" BIN_DIR="$d/bin" SRC=/dev/null bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium $url" 2>"$d/err")"; crc=$?
+  PATH="$work/fakebin:$PATH" FAKE_LOG="$d/log" FAKE_BIN="$d/bin/containariumd" bash -c "$cmd" >"$d/out" 2>&1; rc=$?
+  if [ $crc != 0 ] && [ $rc != 0 ] && [ ! -s "$d/log" ] && [ ! -e "$d/bin/containariumd.old" ] && grep -q "$2" "$d/err" "$d/out"; then
+    ok "knob $2='$3' ($4): rejected before any host change"; else bad "knob $2='$3' ($4): rejected before any host change (build rc=$crc run rc=$rc)"; fi
+}
+for mode in url sentinel; do
+  for v in 0 -1 abc "" 1.5; do check_knob "t-$mode-$v" HEALTH_TRIES "$v" "$mode"; done
+  for v in -1 abc 1.5; do check_knob "i-$mode-$v" HEALTH_INTERVAL "$v" "$mode"; done
+done
+
 run_case first-install - new-good 0
 [ ! -e "$CASE_DIR/bin/containariumd.old" ] && ok "first install: no .old invented" || bad "first install: no .old invented"
 

@@ -111,7 +111,10 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
   seconds (defaults 15 x 2, so 30 seconds). The primary passes on the first
   successful `PRIMARY_HEALTH_URL` check. The sentinel passes only if its unit
   stays active for the whole window, so a binary that crashes a moment after
-  start is rolled back. A healthy daemon that needs longer than the window is
+  start is rolled back. A successful sentinel deploy therefore always takes the
+  full window (about 30 seconds by default). Both knobs must be integers
+  (`HEALTH_TRIES` at least 1); the script refuses anything else before it
+  touches the host. A healthy daemon that needs longer than the window is
   rolled back too: raise `HEALTH_TRIES` (for example `HEALTH_TRIES=60`) before
   deploying to a slow host.
 - **Kubernetes:** `helm upgrade` with the published chart is what CI tests
