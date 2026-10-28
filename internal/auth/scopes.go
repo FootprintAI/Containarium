@@ -97,6 +97,17 @@ const (
 	ScopeCodeWrite = "code:write"
 	ScopeSSHWrite  = "ssh:write"
 
+	// code:answer answers a box code run's permission requests
+	// (AnswerRunInput, #3191). An allow lets the agent run the tool call it
+	// asked for, so the credential that answers must be one the agent on the
+	// box cannot hold: AnswerRunInput needs this scope in addition to the
+	// box-run rule (ssh:write, owner or collaborator). It is matched
+	// literally: neither the wildcard nor an unscoped token carries it,
+	// because a skill run's in-box token can be "*" and a login token can be
+	// unscoped. No in-box mint path grants it (runForbiddenScopes), and
+	// ExchangeDelegatedToken passes it on only from a caller that names it.
+	ScopeCodeAnswer = "code:answer"
+
 	// JWT lifecycle (revoke). Admin role still required on
 	// the server side — this scope just narrows what an
 	// agent token CAN do; admin-on-paper agent tokens
@@ -236,7 +247,7 @@ var AllScopes = []string{
 	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
-	ScopeCodeWrite, ScopeSSHWrite,
+	ScopeCodeWrite, ScopeSSHWrite, ScopeCodeAnswer,
 	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsRunForOrg, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,

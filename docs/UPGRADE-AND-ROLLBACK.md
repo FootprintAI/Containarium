@@ -108,6 +108,18 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
   [deploy-binary.sh](../scripts/deploy-binary.sh), which also does the primary
   and the peers. Set `PRIMARY_SERVICE` and `SENTINEL_SERVICE` to the host's
   real unit names; the script's header explains why.
+  After each restart the script waits up to `HEALTH_TRIES` x `HEALTH_INTERVAL`
+  seconds (defaults 15 x 2, so 30 seconds). The primary passes on the first
+  successful `PRIMARY_HEALTH_URL` check. The sentinel passes only if its unit
+  stays active for the whole window, so a binary that crashes a moment after
+  start is rolled back. A successful sentinel deploy therefore always takes the
+  full window (about 30 seconds by default). Both knobs must be plain decimal
+  integers with no sign and no leading zeros: `HEALTH_TRIES` from 1 to 9999,
+  `HEALTH_INTERVAL` from 0 to 9999 (a bare `0` is valid; `05` is not). The
+  script refuses anything else, including an empty value, before its first
+  `gcloud` call, and quotes the rejected value in the message. A healthy
+  daemon that needs longer than the window is rolled back too: raise `HEALTH_TRIES` (for example `HEALTH_TRIES=60`) before
+  deploying to a slow host.
 - **Kubernetes:** `helm upgrade` with the published chart is what CI tests
   ([helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh)).
 

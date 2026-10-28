@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +27,6 @@ import (
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
-	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/codeegress"
@@ -133,14 +131,6 @@ type DualServerConfig struct {
 	EnableAppHosting   bool
 	PostgresConnString string
 	BaseDomain         string
-	// BridgeDNSReconcileDisabled is the off switch for the bridge raw.dnsmasq
-	// reconciler (#2188) an operator can throw without rolling back (#2232
-	// option 2). Zero value = reconciler on; set by --bridge-dns-reconcile=false.
-	BridgeDNSReconcileDisabled bool
-	// BridgeDNSCreate lets the reconciler write a record onto a bridge that
-	// has none (#2232 option 1). Default false: a host without a record is
-	// left alone unless this run installed core-caddy.
-	BridgeDNSCreate bool
 
 	// AnonClaimURLBase is prefixed to anonymous-box claim tokens as
 	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
@@ -238,12 +228,6 @@ type DualServerConfig struct {
 	// the connect target username@ssh_host without inferring it. Empty =
 	// direct mode: ssh_host is left empty and clients use the container IP.
 	SSHHost string
-
-	// DNSPassthroughHosts are extra hostnames the bridge DNS record carves
-	// out of the base-domain wildcard so they resolve via the upstream
-	// resolvers, from --dns-passthrough-host (#2188). Empty = only the SSH
-	// host (if set) is carved out, as before.
-	DNSPassthroughHosts []string
 
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
@@ -349,7 +333,6 @@ type DualServer struct {
 	sandboxTTLSweeperManager *ttlsweeper.Manager     // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler      // Phase 4.3 Phase B-3
 	networkPolicyEnforcer    *NetworkPolicyEnforcer  // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	bridgeDNS                *bridgedns.Reconciler   // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
 	coreGuard                *coreguard.Reconciler   // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
 	tenantGuard              *tenantguard.Reconciler // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
 
@@ -384,50 +367,6 @@ type DualServer struct {
 	sentryHealthStop  context.CancelFunc // stops the sentry-health loop and the webhook notifier
 }
 
-// bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
-//
-// The base rule `address=/<baseDomain>/<caddyIP>` makes boxes resolve
-// *.baseDomain to the local Caddy edge (hairpin-NAT avoidance for exposed
-// apps). But that wildcard also swallows the SSH apex (sshHost, e.g.
-// region-a.example.com), which must reach the sentinel/sshpiper on :22 —
-// Caddy serves only :80/:443. So when sshHost is set (and is a name the
-// wildcard would capture), we add the more-specific `server=/<sshHost>/#`,
-// which tells dnsmasq to resolve that exact name via the upstream resolvers
-// (→ the sentinel's public IP) instead of the address= override. dnsmasq's
-// longest-match makes the carve-out win. Without it, an in-box `connect`
-// dials the SSH apex and lands on Caddy (no :22) or a stale edge IP (#837.1).
-//
-// passthroughHosts (--dns-passthrough-host, #2188) are further names the
-// operator needs resolved upstream — e.g. an API host that lives under the
-// base domain but is not served by Caddy. Each gets its own
-// `server=/<host>/#` line after the SSH carve-out, in flag order. Entries are
-// normalized, de-duplicated against each other, the SSH host and the base
-// domain (a carve-out equal to the base would cancel the wildcard), and any
-// entry that is not a plain hostname is dropped so a bad value can never inject
-// a directive. With none configured the result is unchanged.
-func bridgeDNSRaw(baseDomain, caddyIP, sshHost string, passthroughHosts ...string) string {
-	raw := fmt.Sprintf("address=/%s/%s", baseDomain, caddyIP)
-	seen := map[string]bool{}
-	if n, ok := normalizeDNSHost(baseDomain); ok {
-		seen[n] = true
-	}
-	if sshHost != "" && sshHost != baseDomain {
-		raw += "\nserver=/" + sshHost + "/#"
-		if n, ok := normalizeDNSHost(sshHost); ok {
-			seen[n] = true
-		}
-	}
-	for _, h := range passthroughHosts {
-		n, ok := normalizeDNSHost(h)
-		if !ok || seen[n] {
-			continue
-		}
-		seen[n] = true
-		raw += "\nserver=/" + n + "/#"
-	}
-	return raw
-}
-
 // containerEventKick returns a channel that receives a coalesced signal after
 // each burst of container topology events (created, deleted, started, stopped,
 // state-changed) until ctx is done, for reconcilers that wake early on
@@ -458,11 +397,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	}
 	if err := validateTrustedProxyCIDRs(config.TrustedProxyCIDRs); err != nil {
 		return nil, fmt.Errorf("trusted-proxy-cidrs misconfigured: %w", err)
-	}
-	// #2188: a bad passthrough host would silently corrupt the bridge DNS
-	// record, so fail visibly at boot.
-	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
-		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
 	}
 	// #2299: an unrecognised privileged-podman policy must not silently
 	// become the permissive default, so refuse to start on one.
@@ -920,11 +854,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var routeSyncJob *app.RouteSyncJob
 	// coreServices is hoisted so alert setup can reference it later
 	var coreServices *CoreServices
-	// bridgeDNS keeps the bridge's raw.dnsmasq record on core-caddy's live
-	// address on every start (#2188). Nil unless app hosting is on, a base
-	// domain is set and a core-caddy container exists on this host.
-	var bridgeDNS *bridgedns.Reconciler
-	caddyInstalledThisRun := false
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
 	if config.EnableAppHosting {
@@ -970,9 +899,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					if err != nil {
 						log.Printf("Warning: Failed to setup Caddy: %v. Proxy features disabled.", err)
 					} else {
-						// This run installed core-caddy: the one case the
-						// bridge DNS reconciler may create the record (#2232).
-						caddyInstalledThisRun = true
 						caddyAdminURL = adminURL
 						caddyIP := coreServices.GetCaddyIP()
 						log.Printf("Caddy ready: %s", caddyIP)
@@ -991,31 +917,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							}
 						}
 
-						// Resolve *.baseDomain to Caddy internally (hairpin NAT
-						// avoidance), carving out the SSH apex so it still reaches
-						// the sentinel (#837.1). Uses the LIVE caddy IP, so each
-						// (re)apply tracks Caddy's current address rather than a
-						// stale one (#837.D).
-						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts...)
-						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is built from trusted BaseDomain/CaddyIP/SSHHost config values
-							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
-						} else {
-							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q and passthrough hosts %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts)
-						}
-
 					}
 				}
 			}
 
-			// Keep the bridge DNS record on core-caddy's live address (#2188).
-			// The start-up write above runs only at first install: on every later
-			// start cmd/daemon.go has already auto-detected the Caddy admin URL,
-			// so the block that writes the record is skipped and a stale address
-			// would stay forever. Built here, outside that block, so it runs on
-			// every start; its first pass repairs a stale record.
-			bridgeDNS = newBridgeDNSReconciler(config, incusClient, caddyInstalledThisRun)
-			if bridgeDNS == nil && config.BridgeDNSReconcileDisabled {
-				log.Printf("[bridgedns] disabled by --bridge-dns-reconcile=false; the bridge record is not managed by this daemon")
+			// Boxes reach this host's apps by public name through the kernel
+			// hairpin rule (#2732), so the bridge DNS record earlier daemons
+			// wrote is removed on upgrade (#2734). No base domain: untouched.
+			if err := cleanupBridgeDNSRecord(incusClient, "incusbr0", config.BaseDomain, config.SSHHost); err != nil {
+				log.Printf("Warning: could not remove the old bridge DNS record: %v", err)
 			}
 
 			// Setup VictoriaMetrics + Grafana if no URL provided
@@ -3190,7 +3100,6 @@ skipAppHosting:
 		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
-		bridgeDNS:              bridgeDNS,
 		coreGuard:              coreGuard,
 		tenantGuard:            tenantGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
@@ -3628,9 +3537,13 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// not fatal — the daemon stays on plain HTTP (pre-0.5
 		// behavior) and logs the reason.
 		if err := ds.peerPool.BootstrapPKI(ctx); err != nil {
-			log.Printf("[peer-pki] bootstrap failed (%v) — staying on HTTP for peer-to-peer (audit C-CRIT-1 still open until configured)", err)
-		} else {
+			ds.peerPool.LogPlainHTTPOnce(err)
+		} else if ds.peerPool.PeerMTLSEnabled() {
 			ds.peerPool.StartCertRenewal(ctx)
+		} else {
+			// Bootstrap skipped (no sentinel URL or HMAC secret): same
+			// plain-HTTP state, made visible instead of silent.
+			ds.peerPool.LogPlainHTTPOnce(nil)
 		}
 		// Capacity-aware placement ranking (#1029 direction 2). Enable BEFORE
 		// discovery starts so the very first poll already caches peer
@@ -3935,6 +3848,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// former one-shot 30-day token, so metrics fetching doesn't 401 after a
 		// month on a long-lived daemon.
 		if ds.peerPool != nil {
+			ds.metricsCollector.SetPeerMTLSFunc(ds.peerPool.PeerMTLSState)
 			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
 				Pool:    ds.peerPool,
 				TokenFn: svcTokens.Token,
@@ -4045,14 +3959,6 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	}
 	if ds.tenantGuard != nil {
 		go ds.tenantGuard.Run(ctx, containerEventKick(ctx))
-	}
-
-	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address
-	// drifts from it, at start, on container events and every minute. A record
-	// that cannot be repaired is logged and shown in status; it must never block
-	// the daemon from serving.
-	if ds.bridgeDNS != nil {
-		go ds.bridgeDNS.Run(ctx, containerEventKick(ctx))
 	}
 
 	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A
