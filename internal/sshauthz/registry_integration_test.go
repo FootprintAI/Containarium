@@ -23,6 +23,12 @@ import (
 
 func pgKeys(t *testing.T) *PGKeyStore {
 	t.Helper()
+	return pgKeysHeld(t, t.TempDir())
+}
+
+// pgKeysHeld is pgKeys with the holder lookup reading homeRoot.
+func pgKeysHeld(t *testing.T, homeRoot string) *PGKeyStore {
+	t.Helper()
 	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
 	if dsn == "" {
 		t.Fatal("CONTAINARIUM_TEST_DSN is unset. Failing rather than skipping — this is access " +
@@ -37,7 +43,7 @@ func pgKeys(t *testing.T) *PGKeyStore {
 	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS ssh_keys`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	s, err := NewPGKeyStore(ctx, pool)
+	s, err := NewPGKeyStore(ctx, pool, FileHolders{HomeRoot: homeRoot})
 	if err != nil {
 		t.Fatalf("NewPGKeyStore: %v", err)
 	}
@@ -281,7 +287,7 @@ func holdKey(t *testing.T, homeRoot, user, pub string) {
 // the row must stay active; it used to revoke bob's access.
 func TestPGKeyStore_RevokeRefusedWhileAnotherAccountHoldsKey(t *testing.T) {
 	home := t.TempDir()
-	s := pgKeys(t).WithHolders(FileHolders{HomeRoot: home})
+	s := pgKeysHeld(t, home)
 	ctx := context.Background()
 	pub := testKey(t)
 
@@ -328,7 +334,7 @@ func TestPGKeyStore_RevokeRefusedWhileAnotherAccountHoldsKey(t *testing.T) {
 // later backfill cannot register the key as live).
 func TestPGKeyStore_RevokeOfKeyWithNoRow(t *testing.T) {
 	home := t.TempDir()
-	s := pgKeys(t).WithHolders(FileHolders{HomeRoot: home})
+	s := pgKeysHeld(t, home)
 	ctx := context.Background()
 	held, free := testKey(t), testKey(t)
 	holdKey(t, home, "bob", held)
@@ -355,7 +361,7 @@ func TestPGKeyStore_RevokeOfKeyWithNoRow(t *testing.T) {
 // key: bob's drop of a copy of alice's key changes nothing in the registry.
 func TestPGKeyStore_NonOwnerRevokeNotRefusedWhenOwnerHoldsKey(t *testing.T) {
 	home := t.TempDir()
-	s := pgKeys(t).WithHolders(FileHolders{HomeRoot: home})
+	s := pgKeysHeld(t, home)
 	ctx := context.Background()
 	pub := testKey(t)
 	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
@@ -369,5 +375,34 @@ func TestPGKeyStore_NonOwnerRevokeNotRefusedWhenOwnerHoldsKey(t *testing.T) {
 	}
 	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() || got.Username != "alice" {
 		t.Fatalf("row changed: %+v", got)
+	}
+}
+
+// An unreadable HomeRoot makes the holder check unanswerable: Revoke must
+// error and leave the row as it was, for an owned row and for a key with no
+// row (#3241).
+func TestPGKeyStore_RevokeFailsClosedOnUnreadableHomeRoot(t *testing.T) {
+	s := pgKeysHeld(t, filepath.Join(t.TempDir(), "does-not-exist"))
+	ctx := context.Background()
+	pub, fresh := testKey(t), testKey(t)
+	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+
+	if err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt); err == nil {
+		t.Fatal("Revoke succeeded with an unreadable HomeRoot")
+	}
+	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() || got.Username != "alice" {
+		t.Fatalf("row changed: %+v", got)
+	}
+
+	freshRec := mustRecord(t, fresh, "alice", SourceAPI, revokeAt)
+	if err := s.Revoke(ctx, freshRec, revokeAt); err == nil {
+		t.Fatal("no-row Revoke succeeded with an unreadable HomeRoot")
+	}
+	if _, err := s.Lookup(ctx, freshRec.Fingerprint); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("failed revoke left a row behind: %v", err)
 	}
 }
