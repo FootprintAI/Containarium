@@ -96,6 +96,9 @@ guardrail keygen
 guardrail policy get
 guardrail policy set
 guardrail scan
+guardrail signer bundle
+guardrail signer revoke
+guardrail signer rotate
 guardrail status
 guardrail verify
 info

@@ -67,7 +67,7 @@ func VerifyClaims(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy
 	if server == nil || server.GetPolicy() == nil {
 		return nil, ErrNoServerPolicy
 	}
-	if err := checkRevoked(att, server.GetRevokedSigners()); err != nil {
+	if err := CheckRevoked(att, server.GetRevokedSigners()); err != nil {
 		return nil, err
 	}
 	if len(server.GetTrustedSigners()) == 0 {
@@ -103,9 +103,9 @@ func VerifyClaims(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy
 	return signer, nil
 }
 
-// checkRevoked refuses an attestation whose key is in revoked, naming the
+// CheckRevoked refuses an attestation whose key is in revoked, naming the
 // key, when it was revoked and why.
-func checkRevoked(att *pb.GuardrailAttestation, revoked []*pb.GuardrailRevokedKey) error {
+func CheckRevoked(att *pb.GuardrailAttestation, revoked []*pb.GuardrailRevokedKey) error {
 	for _, r := range revoked {
 		if r.GetKeyId() == att.GetKeyId() {
 			return fmt.Errorf("%w: key %s was revoked at %s: %s", ErrRevokedSigner, r.GetKeyId(), r.GetRevokedAt().AsTime().UTC().Format(time.RFC3339), r.GetReason())

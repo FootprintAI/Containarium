@@ -567,11 +567,14 @@ message GuardrailTrustBundle {                // the offline verifier's input (p
   compared with the stored revision under the store's lock (the row lock in
   Postgres). A mismatch is `ABORTED` and nothing changes. When the field is
   absent, the Set applies as before.
-- **CLI** (follow-up PR): `containarium guardrail signer rotate` and
-  `signer revoke` do the read-edit-write with `expected_revision`, and
-  `guardrail verify --trust-bundle <file>` checks an attestation offline
-  against a `GuardrailTrustBundle`. No MCP tool writes the policy, so there
-  is nothing to wrap.
+- **CLI**: `containarium guardrail signer rotate --add <pub>` and
+  `signer revoke <key-id> --reason ...` do the read-edit-write with
+  `expected_revision` (admin only); `signer bundle [--out f]` exports the
+  server's `GuardrailTrustBundle` as protojson; `guardrail verify
+  --trust-bundle <file>` checks an attestation offline against it (a revoked
+  key fails naming key, time and reason; mutually exclusive with
+  `--public-key`; ignored when a server policy is in force). No MCP tool
+  writes the policy, so there is nothing to wrap.
 
 What rotation and revocation do **not** protect against:
 
