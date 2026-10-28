@@ -49,9 +49,15 @@ to get wrong, and its policy is explicit per invocation.
 
 - **Containarium:** L3/L4 policy at the veth. CIDR deny lists and tenant
   IP maps are enforced by eBPF, and nftables guards handle tenant and core
-  separation. Domain names are resolved to addresses in userspace. There
-  is no request-level inspection. `[VERIFY: DNS resolution interval and
-  TTL handling; IPv4-only; default-on state]`
+  separation. Domain names are resolved to addresses in userspace and
+  refreshed on the record TTL, capped at 60 seconds with a 1-second floor.
+  Rotated-out addresses are kept for two refresh intervals. Enforcement is
+  IPv4-only: IPv6 CIDRs are rejected at policy compile time, and IPv6
+  packets pass the TC program unfiltered. The eBPF enforcer is off unless
+  both `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` is set and
+  `CONTAINARIUM_NETWORK_POLICY_ENFORCE` is set to `1`, `true`, `yes`, or
+  `on`. The Incus NIC-ACL guards are a separate mechanism and are on by
+  default. There is no request-level inspection.
 - **srt:** all traffic from the sandbox goes through an HTTP and SOCKS5
   proxy running on the host. Policy is domain and port allow and deny
   lists, with a resolved-address guard that blocks loopback, link-local,
