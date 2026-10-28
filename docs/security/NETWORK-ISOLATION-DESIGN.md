@@ -514,7 +514,13 @@ cannot be poisoned:
   both to agree means neither side can move the validated address on its
   own. A box the host knows no address for gets `box_ip` 0: it validates
   nothing, cannot answer inbound under enforce, and never seeds; the
-  daemon logs this once per container. The lease files are read under the
+  daemon logs this once per container. Because the spoofed-source check
+  needs a known `box_ip` to compare against, that box also gets **no**
+  spoofed-source drop (or `network_policy.spoofed_source` event) while
+  `box_ip` is 0. This costs nothing in reach: its frames never carry
+  `VALIDATED`, so they can still never seed another veth's map, and the
+  rest of the policy (allow-list, deny rules) applies to them as usual.
+  The lease files are read under the
   Incus data dir the daemon talks to (`<data dir>/networks/<bridge>/
   dnsmasq.leases`). This is option (a) of the issue's decision; it
   does not depend on the tenant guard. The naive "judge only fresh SYNs"
