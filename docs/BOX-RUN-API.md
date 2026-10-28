@@ -99,12 +99,14 @@ so the token that answers must be one the agent on the box cannot hold.
 
 No credential the platform puts on a box carries `code:answer`: a skill or crew
 run token has it stripped at mint, whatever the dispatching caller or the skill
-manifest grants. Mint the answering token where the agent cannot read it, for
-example on the daemon host:
+manifest grants. The delegation exchange (`ExchangeDelegatedToken`,
+`containarium token delegate`) grants `code:answer` only to a caller that holds
+it literally, so a `*` token cannot be exchanged for one. Mint the answering
+token where the agent cannot read it, for example on the daemon host:
 
 ```bash
-containarium token generate --secret-file <jwt-secret-file> --username <you> \
-  --scopes ssh:write,code:answer --expiry 24h
+TOKEN=$(containarium token generate --secret-file <jwt-secret-file> --username <you> \
+  --scopes ssh:write,code:answer --expiry 24h --raw)
 containarium --token "$TOKEN" --server <daemon> --http code answer <box> <request_id> allow
 ```
 

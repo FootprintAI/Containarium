@@ -147,6 +147,16 @@ func TestAnswerRunInput_RequiresTheAnswerScope(t *testing.T) {
 		if status.Code(err) != codes.PermissionDenied {
 			t.Errorf("%s: err = %v, want PermissionDenied", name, err)
 		}
+		// An upgrading user must be able to fix this from the message alone:
+		// it names the missing scope and how to mint a token that has it.
+		if name != "code:answer without ssh:write" {
+			msg := status.Convert(err).Message()
+			for _, want := range []string{auth.ScopeCodeAnswer, "token generate", "--scopes ssh:write,code:answer"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("%s: message %q does not mention %q", name, msg, want)
+				}
+			}
+		}
 		if _, statErr := os.Stat(r.answerPath(r.req.RequestID)); statErr == nil {
 			t.Fatalf("%s: an answer was written for a refused caller", name)
 		}

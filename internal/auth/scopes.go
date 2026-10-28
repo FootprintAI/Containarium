@@ -94,7 +94,8 @@ const (
 	// box-run rule (ssh:write, owner or collaborator). It is matched
 	// literally: neither the wildcard nor an unscoped token carries it,
 	// because a skill run's in-box token can be "*" and a login token can be
-	// unscoped. No in-box mint path grants it (runForbiddenScopes).
+	// unscoped. No in-box mint path grants it (runForbiddenScopes), and
+	// ExchangeDelegatedToken passes it on only from a caller that names it.
 	ScopeCodeAnswer = "code:answer"
 
 	// JWT lifecycle (revoke). Admin role still required on

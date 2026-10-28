@@ -334,8 +334,9 @@ func requireAnswerScope(ctx context.Context) error {
 		return nil
 	}
 	return status.Errorf(codes.PermissionDenied,
-		"scope required: %s (answering permission requests needs a token that names it; the wildcard and unscoped tokens do not count)",
-		auth.ScopeCodeAnswer)
+		"scope required: %s (answering permission requests needs a token that names it; the wildcard and unscoped tokens do not count). "+
+			"Mint one off the box with 'containarium token generate --secret-file <file> --username <you> --scopes %s,%s'; see 'containarium code answer --help'",
+		auth.ScopeCodeAnswer, auth.ScopeSSHWrite, auth.ScopeCodeAnswer)
 }
 
 // AnswerRunInput answers one permission request of a box run.
