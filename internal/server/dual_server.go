@@ -3537,9 +3537,13 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// not fatal — the daemon stays on plain HTTP (pre-0.5
 		// behavior) and logs the reason.
 		if err := ds.peerPool.BootstrapPKI(ctx); err != nil {
-			log.Printf("[peer-pki] bootstrap failed (%v) — staying on HTTP for peer-to-peer (audit C-CRIT-1 still open until configured)", err)
-		} else {
+			ds.peerPool.LogPlainHTTPOnce(err)
+		} else if ds.peerPool.PeerMTLSEnabled() {
 			ds.peerPool.StartCertRenewal(ctx)
+		} else {
+			// Bootstrap skipped (no sentinel URL or HMAC secret): same
+			// plain-HTTP state, made visible instead of silent.
+			ds.peerPool.LogPlainHTTPOnce(nil)
 		}
 		// Capacity-aware placement ranking (#1029 direction 2). Enable BEFORE
 		// discovery starts so the very first poll already caches peer
@@ -3844,6 +3848,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// former one-shot 30-day token, so metrics fetching doesn't 401 after a
 		// month on a long-lived daemon.
 		if ds.peerPool != nil {
+			ds.metricsCollector.SetPeerMTLSFunc(ds.peerPool.PeerMTLSState)
 			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
 				Pool:    ds.peerPool,
 				TokenFn: svcTokens.Token,

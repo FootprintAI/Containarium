@@ -457,18 +457,38 @@ A job whose purpose is to decrypt and restore backups (a nightly verifier)
 should not hold an admin token: the identity that can read every tenant's
 secrets would also be the one that unwraps backup keys. `ListBackups` and
 `VerifyBackup` need much less. Mint one **non-admin token bound to a single
-tenant**, with exactly the two backup scopes:
+tenant**, with exactly the two backup scopes `backups:read` and
+`backups:verify`:
 
 ```bash
 sudo containarium token generate \
   --username <tenant> --roles user \
-  --scopes backups:read,backups:write \
+  --scopes backups:read,backups:verify \
   --expiry 720h \
   --secret-file /etc/containarium/jwt.secret --raw
 ```
 
-- `backups:write` is required because `VerifyBackup` restores the dump into
-  a scratch database. `backups:read` covers `ListBackups`.
+- `backups:verify` is what `VerifyBackup` needs: it restores the dump into a
+  scratch database in an isolated container. `backups:read` covers
+  `ListBackups`. A token holding only these two is refused `CreateBackup`,
+  `RestoreBackup`, `DeleteBackup` and `PruneBackups`, which still need
+  `backups:write`.
+- **Re-mint existing verifier tokens before the next release.** For this
+  release only, `VerifyBackup` also accepts `backups:write`, so a verifier
+  token minted earlier with `backups:read,backups:write` keeps working. That
+  path is deprecated: each call it admits logs a line like
+
+  ```
+  [backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write user=<tenant> id=<backup-id>; ...
+  ```
+
+  in the daemon log (`journalctl -u containarium | grep 'DEPRECATED: VerifyBackup'`
+  on a systemd host). The next release stops accepting `backups:write` for
+  `VerifyBackup` and the `verify_backup` MCP tool, and a legacy token will
+  then be refused. Re-mint each verifier token with the command above, switch
+  the job to it, then revoke the old one with `containarium token revoke`.
+  The legacy token also still holds create, restore, delete and prune for
+  its tenant, which re-minting drops.
 - The token is bound to the tenant by its username. It can list and verify
   **that tenant's** backups. Set `--target` to that same tenant username:
   the daemon creates a fresh, isolated Postgres 16 container labelled with
@@ -512,11 +532,15 @@ and Incus in the `Incus create path` CI lane.
 `TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains
 an RPC with no recorded scope decision, and
 `TestBackupRPCScopeDecisions_Enforced` checks each recorded decision. Every
-backup RPC, including whole-box `CreateBackup`, requires `backups:read` or
-`backups:write` and refuses another tenant's data. A verifier token
-therefore also holds, for its own tenant only, the ability to create,
-restore, delete and prune backups, because `backups:write` is required to
-verify.
+backup RPC, including whole-box `CreateBackup`, requires `backups:read`,
+`backups:verify` (`VerifyBackup` only, which also accepts the deprecated
+`backups:write` for this release) or `backups:write`, and refuses another
+tenant's data. `TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs`
+pins that a `backups:verify` token is refused create, restore, delete and
+prune, `TestBackupRPCScopeDecisions_VerifyAcceptsLegacyWriteScope` pins that a
+`backups:write` verifier token still verifies during the deprecation window,
+and `TestBackupRPCScopeDecisions_VerifyLegacyScopeLogsDeprecation` pins that
+only that legacy path logs the deprecation line.
 
 ### Watching and alerting
 
@@ -736,7 +760,7 @@ rather than loading corrupt data.
 - **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
 - **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete/prune)
+- **Auth scopes**: `backups:read` (list/get), `backups:verify` (verify only), `backups:write` (create/restore/delete/prune; verify deprecated, removed next release)
 - **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
 - **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify
