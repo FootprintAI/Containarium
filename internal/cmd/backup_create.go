@@ -254,6 +254,10 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 }
 
 // printCreatedBackups renders a CreateBackup response.
+//
+// scripts/backup-all-tenants.sh greps this output for the exact text
+// "Encrypted: no" to flag plaintext tenants (#3169). Do not reword that line
+// without updating the script; TestPrintCreatedBackups_ScriptContract pins it.
 func printCreatedBackups(resp *pb.CreateBackupResponse) {
 	fmt.Printf("\n✓ %s\n", resp.Message)
 	for _, r := range resp.Records {

@@ -50,3 +50,22 @@ func TestPrintCreatedBackups_ManagedKeyIsNotPlaintext(t *testing.T) {
 		t.Errorf("managed-key record must not warn:\n%s", out)
 	}
 }
+
+// scripts/backup-all-tenants.sh greps the human output for this exact text to
+// flag plaintext tenants. Rewording it silently disables the nightly warning.
+func TestPrintCreatedBackups_ScriptContract(t *testing.T) {
+	out := captureStdout(t, func() {
+		printCreatedBackups(&pb.CreateBackupResponse{
+			Records: []*pb.BackupRecord{{Id: "b1", Database: "app"}},
+		})
+	})
+	found := false
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) == "Encrypted: no" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("plaintext output must contain a line exactly %q (scripts/backup-all-tenants.sh greps it):\n%s", "Encrypted: no", out)
+	}
+}

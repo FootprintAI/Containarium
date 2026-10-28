@@ -166,3 +166,19 @@ func TestCheckBackupRecipients_AllRegistered(t *testing.T) {
 		t.Errorf("missing = %d, want 0:\n%s", missing, buf.String())
 	}
 }
+
+// Pins current behaviour (documented in docs/DB-BACKUP-OPERATIONS.md): the
+// client cannot see a daemon's managed backup key, so a tenant with no
+// registered recipient is counted as missing (non-zero exit) even when the
+// daemon would encrypt its dump. Changing this needs a decision; see the
+// follow-up issue for an opt-out.
+func TestCheckBackupRecipients_ManagedKeyDaemonStillFlagsUnregistered(t *testing.T) {
+	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"OTHER"}}}
+	var buf bytes.Buffer
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}); missing != 1 {
+		t.Errorf("missing = %d, want 1 (status cannot detect a managed key)\n%s", missing, buf.String())
+	}
+	if !strings.Contains(buf.String(), "unless this daemon has a managed backup key") {
+		t.Errorf("message must hedge about the managed key:\n%s", buf.String())
+	}
+}
