@@ -3,6 +3,7 @@
 # as <bin>.old, checks health after the restart, and restores it on failure (#3060).
 # Runs the real command from scripts/lib/deploy-install.sh against fake
 # sudo/systemctl/curl, so it needs no host and no network.
+# Uses GNU `timeout` (coreutils): fine on Linux CI; macOS needs coreutils.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/deploy-install.sh
@@ -110,7 +111,7 @@ check_knob() { # <label> <var> <value> <url|sentinel>
   local url=http://localhost:8080/health; [ "$4" = sentinel ] && url=
   local cmd rc crc
   cmd="$(env "$2=$3" BIN_DIR="$d/bin" SRC=/dev/null bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium $url" 2>"$d/err")"; crc=$?
-  PATH="$work/fakebin:$PATH" FAKE_LOG="$d/log" FAKE_BIN="$d/bin/containariumd" bash -c "$cmd" >"$d/out" 2>&1; rc=$?
+  PATH="$work/fakebin:$PATH" FAKE_LOG="$d/log" FAKE_BIN="$d/bin/containariumd" timeout 10 bash -c "$cmd" >"$d/out" 2>&1; rc=$?
   if [ $crc != 0 ] && [ $rc != 0 ] && [ ! -s "$d/log" ] && [ ! -e "$d/bin/containariumd.old" ] && grep -q "$2" "$d/err" "$d/out"; then
     ok "knob $2='$3' ($4): rejected before any host change"; else bad "knob $2='$3' ($4): rejected before any host change (build rc=$crc run rc=$rc)"; fi
 }
@@ -118,6 +119,77 @@ for mode in url sentinel; do
   for v in 0 -1 abc "" 1.5; do check_knob "t-$mode-$v" HEALTH_TRIES "$v" "$mode"; done
   for v in -1 abc 1.5; do check_knob "i-$mode-$v" HEALTH_INTERVAL "$v" "$mode"; done
 done
+
+# Set-but-empty HEALTH_INTERVAL is rejected like any other non-integer (#3108).
+for mode in url sentinel; do check_knob "i-$mode-empty" HEALTH_INTERVAL "" "$mode"; done
+
+# Upper bound: at most 4 digits (1..9999 tries, 0..9999 seconds). The boundary
+# is accepted and one over is rejected with a clear message, in both modes.
+for mode in url sentinel; do
+  check_knob "t-$mode-over" HEALTH_TRIES 10000 "$mode"
+  check_knob "i-$mode-over" HEALTH_INTERVAL 10000 "$mode"
+  check_knob "t-$mode-huge" HEALTH_TRIES 99999999999999999999 "$mode"
+  check_knob "i-$mode-huge" HEALTH_INTERVAL 99999999999999999999 "$mode"
+  # Leading zeros are rejected for both knobs; a bare 0 stays valid for the interval only.
+  check_knob "t-$mode-lz" HEALTH_TRIES 05 "$mode"
+  check_knob "i-$mode-lz" HEALTH_INTERVAL 05 "$mode"
+  check_knob "i-$mode-00" HEALTH_INTERVAL 00 "$mode"
+done
+check_accepts() { # <var> <value>
+  if env "$1=$2" bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" >/dev/null 2>&1; then
+    ok "knob $1='$2': accepted"; else bad "knob $1='$2': accepted"; fi
+}
+check_accepts HEALTH_TRIES 9999
+check_accepts HEALTH_INTERVAL 9999
+check_accepts HEALTH_INTERVAL 0
+check_accepts HEALTH_TRIES 1
+out="$(env HEALTH_TRIES=10000 bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" 2>&1 >/dev/null)"
+if printf '%s' "$out" | grep -q '9999'; then
+  ok "over-limit message states the bound"; else bad "over-limit message states the bound"; fi
+
+# The error text must not carry raw control characters (terminal escapes).
+esc=$'\033[31mX\033[0m'
+for var in HEALTH_TRIES HEALTH_INTERVAL; do
+  out="$(env "$var=$esc" bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" 2>&1)"; rc=$?
+  if [ $rc != 0 ] && ! printf '%s' "$out" | LC_ALL=C grep -q $'\033'; then
+    ok "knob $var with an escape character: rejected, no raw control character echoed"
+  else bad "knob $var with an escape character: rejected, no raw control character echoed (rc=$rc)"; fi
+done
+out="$(env HEALTH_TRIES=$'1\n2' bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" 2>&1 >/dev/null)"
+[ "$(printf '%s\n' "$out" | wc -l)" = 1 ] && ok "newline in a knob value does not split the error line" || bad "newline in a knob value does not split the error line"
+
+# deploy-binary.sh validates the knobs at the top: a bad value exits non-zero
+# before any gcloud/scp/ssh call (and before the binary is even looked for).
+mkdir -p "$work/db/bin" "$work/db/cwd/bin"
+for t in gcloud scp ssh make; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "$FAKE_REMOTE_LOG"\nexit 0\n' "$t" > "$work/db/bin/$t"
+done
+chmod +x "$work/db/bin/"*
+: > "$work/db/cwd/bin/containariumd-linux-amd64"
+for kv in HEALTH_TRIES=0 HEALTH_TRIES=abc HEALTH_TRIES=10000 HEALTH_INTERVAL= HEALTH_INTERVAL=05 HEALTH_INTERVAL=10000; do
+  : > "$work/db/log"
+  (cd "$work/db/cwd" && env "$kv" PATH="$work/db/bin:$PATH" FAKE_REMOTE_LOG="$work/db/log" ALLOW_MISSING_SENTINEL_SECRET=1 \
+    bash "$here/deploy-binary.sh" --build >"$work/db/out" 2>&1); rc=$?
+  if [ $rc != 0 ] && [ ! -s "$work/db/log" ] && ! grep -q '==>' "$work/db/out"; then
+    ok "deploy-binary.sh $kv: exits non-zero before any remote call"; else bad "deploy-binary.sh $kv: exits non-zero before any remote call (rc=$rc)"; fi
+done
+
+# Non-ASCII digits must not pass under a UTF-8 locale (bracket ranges in `case`
+# patterns are locale dependent). Needs a UTF-8 locale on the runner.
+utf8=""
+for l in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+  if LC_ALL=$l bash -c 'exit 0' 2>/dev/null && locale -a 2>/dev/null | grep -qix "${l/UTF-8/utf8}"; then utf8=$l; break; fi
+done
+if [ -z "$utf8" ]; then
+  echo "  SKIP  non-ASCII digit knobs: no UTF-8 locale on this runner (locale -a)"
+else
+  for d in $'٣' $'५' $'１'; do
+    for var in HEALTH_TRIES HEALTH_INTERVAL; do
+      if env LC_ALL="$utf8" "$var=$d" bash -c ". '$here/lib/deploy-install.sh'; deploy_install_cmd containarium http://x" >/dev/null 2>&1; then
+        bad "knob $var non-ASCII digit under $utf8: rejected"; else ok "knob $var non-ASCII digit under $utf8: rejected"; fi
+    done
+  done
+fi
 
 run_case first-install - new-good 0
 [ ! -e "$CASE_DIR/bin/containariumd.old" ] && ok "first install: no .old invented" || bad "first install: no .old invented"
