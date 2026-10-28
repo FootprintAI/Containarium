@@ -109,9 +109,15 @@ legacy=$("$bin" token generate --username "$tenant" --roles user \
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
 api 403 "$scratch_dir/legacy-verify.json" -H "Authorization: Bearer $legacy" \
   -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
-jq -e '.code == 7 and (.message | contains("backups:verify") and
+# The gateway's customErrorHandler uses an HTTP code and an "error" field,
+# rather than grpc-gateway's default gRPC code and "message" field.
+if ! jq -e '.code == 403 and (.error | contains("backups:verify") and
   contains("containarium token generate") and contains("--scopes backups:read,backups:verify"))' \
-  "$scratch_dir/legacy-verify.json"
+  "$scratch_dir/legacy-verify.json"; then
+  echo "Legacy verifier refusal is missing its HTTP error code or re-mint instructions; response body:" >&2
+  cat "$scratch_dir/legacy-verify.json" >&2
+  exit 1
+fi
 
 # Verification must leave the source database intact.
 test "$(incus exec "$source_name" -- runuser -u postgres -- psql -Atc 'SELECT count(*) FROM scope_contract')" = 1
