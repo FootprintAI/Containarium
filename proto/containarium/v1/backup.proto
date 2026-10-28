@@ -192,7 +192,8 @@ message BackupRecord {
   // user-held key (#1831). size_bytes and sha256 then describe the
   // ciphertext — what is actually stored — so integrity is verified
   // before decryption. Restoring requires the matching identity, which
-  // the platform never holds.
+  // the platform never holds. False means the stored bytes are plaintext
+  // (#3169): readable by anyone with read access to the destination.
   bool encrypted = 12;
 
   // The age X25519 recipient ("age1…") the dump was encrypted to. A
@@ -393,6 +394,14 @@ message CreateBackupRequest {
   // `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
   // database backup.
   BackupScope scope = 10;
+
+  // Refuse to store plaintext (#3169). When true and the dump would be
+  // stored with no key at all — no age_recipient given, none registered
+  // for the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key
+  // on this daemon — the request fails with FAILED_PRECONDITION before any
+  // container is touched, so no object is written. False keeps today's
+  // behaviour: such a dump is stored unencrypted (and logged as a WARNING).
+  bool require_encryption = 11;
 }
 
 message CreateBackupResponse {

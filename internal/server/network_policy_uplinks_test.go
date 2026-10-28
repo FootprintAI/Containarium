@@ -1,6 +1,10 @@
 package server
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -26,5 +30,185 @@ func TestParseDefaultRouteIfaces(t *testing.T) {
 	}
 	if got := splitCSV(" eth1, , ens5 "); strings.Join(got, ",") != "eth1,ens5" {
 		t.Errorf("splitCSV = %v", got)
+	}
+}
+
+type fakeTrusted struct{ set map[int]bool }
+
+func (f *fakeTrusted) SetTrustedIface(i int) error    { f.set[i] = true; return nil }
+func (f *fakeTrusted) DeleteTrustedIface(i int) error { delete(f.set, i); return nil }
+
+func newUplinkRig() (*uplinkReconciler, *fakeTrusted, map[int]bool, *[]string) {
+	var lines []string
+	u := &uplinkReconciler{logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+	return u, &fakeTrusted{set: map[int]bool{}}, map[int]bool{}, &lines
+}
+
+func mastersOf(m map[string]string) func(string) (string, error) {
+	return func(v string) (string, error) { return m[v], nil }
+}
+
+// #3185 SF1: the common single-NIC host (default route on eth0, instances on a
+// separate bridge) must keep trusting its uplink.
+func TestUplinks_SingleNICHostStillTrusted(t *testing.T) {
+	u, ap, inst, lines := newUplinkRig()
+	cands := []uplinkIface{{"eth0", 2}}
+	veths := []string{"veth1", "veth2"}
+	u.converge(cands, veths, mastersOf(map[string]string{"veth1": "incusbr0", "veth2": "incusbr0"}), ap, inst)
+	if !ap.set[2] || !inst[2] {
+		t.Fatalf("eth0 not trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+	for _, l := range *lines {
+		if strings.Contains(l, "refusing") {
+			t.Errorf("unexpected refusal: %s", l)
+		}
+	}
+}
+
+// #3185 SF1: a bridged uplink (default route on the bridge the veths are on) and
+// an operator typo naming the instance bridge are both refused, with a warning
+// logged once; an already-installed entry is removed.
+func TestUplinks_RefuseBridgeCarryingVeths(t *testing.T) {
+	masters := mastersOf(map[string]string{"veth1": "br0"})
+	cands := []uplinkIface{{"br0", 5}, {"eth1", 3}}
+	u, ap, inst, lines := newUplinkRig()
+	inst[5], ap.set[5] = true, true // trusted before the veth was seen
+	u.converge(cands, []string{"veth1"}, masters, ap, inst)
+	u.converge(cands, []string{"veth1"}, masters, ap, inst)
+	if ap.set[5] || inst[5] {
+		t.Errorf("br0 still trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+	if !ap.set[3] {
+		t.Errorf("unrelated eth1 not trusted: %v", ap.set)
+	}
+	warns := 0
+	for _, l := range *lines {
+		if strings.Contains(l, "refusing to trust \"br0\"") {
+			warns++
+		}
+	}
+	if warns != 1 {
+		t.Errorf("want exactly 1 refusal warning, got %d: %v", warns, *lines)
+	}
+	// A managed veth named directly is refused too.
+	_, refused, _ := refuseVethCarriers([]uplinkIface{{"veth1", 9}}, []string{"veth1"}, masters)
+	if len(refused) != 1 {
+		t.Errorf("veth itself not refused: %v", refused)
+	}
+}
+
+// #3185 SF1: the trusted set is logged when it changes, not every pass.
+func TestUplinks_LogsTrustedSetOnChangeOnly(t *testing.T) {
+	u, ap, inst, lines := newUplinkRig()
+	m := mastersOf(nil)
+	count := func() int {
+		n := 0
+		for _, l := range *lines {
+			if strings.Contains(l, "trusted uplinks changed") {
+				n++
+			}
+		}
+		return n
+	}
+	u.converge([]uplinkIface{{"eth0", 2}}, nil, m, ap, inst)
+	u.converge([]uplinkIface{{"eth0", 2}}, nil, m, ap, inst)
+	if count() != 1 {
+		t.Fatalf("want 1 log after identical passes, got %d: %v", count(), *lines)
+	}
+	u.converge([]uplinkIface{{"eth0", 2}, {"wg0", 7}}, nil, m, ap, inst)
+	if count() != 2 || !strings.Contains((*lines)[len(*lines)-1], "[eth0,wg0]") {
+		t.Fatalf("change not logged: %v", *lines)
+	}
+}
+
+// fakeSysfs points sysClassNet at a temp dir: ifaces maps veth -> master name
+// ("" = no master link).
+func fakeSysfs(t *testing.T, ifaces map[string]string) {
+	t.Helper()
+	dir := t.TempDir()
+	for v, m := range ifaces {
+		if err := os.MkdirAll(filepath.Join(dir, v), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if m != "" {
+			if err := os.Symlink("../"+m, filepath.Join(dir, v, "master")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	old := sysClassNet
+	sysClassNet = dir
+	t.Cleanup(func() { sysClassNet = old })
+}
+
+// #3185 review: masterOfIface reads the real link layout; ENOENT (no master, or
+// the veth vanished) is not an error, anything else is.
+func TestMasterOfIface(t *testing.T) {
+	fakeSysfs(t, map[string]string{"vethA": "incusbr0", "vethB": ""})
+	if m, err := masterOfIface("vethA"); m != "incusbr0" || err != nil {
+		t.Errorf("vethA = %q, %v", m, err)
+	}
+	if m, err := masterOfIface("vethB"); m != "" || err != nil {
+		t.Errorf("no master = %q, %v", m, err)
+	}
+	if m, err := masterOfIface("gone"); m != "" || err != nil {
+		t.Errorf("vanished veth = %q, %v (must not be an error)", m, err)
+	}
+	// A non-symlink master is unreadable as a link: an error, not "none".
+	if err := os.WriteFile(filepath.Join(sysClassNet, "vethB", "master"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := masterOfIface("vethB"); err == nil {
+		t.Error("unreadable master returned no error")
+	}
+}
+
+// #3185 review: managedVethNames -> masterOfIface -> converge wiring against a
+// fake sysfs. The applyTrustedUplinks line itself is not covered: it reads
+// /proc/net/route and the concrete BPF loader.
+func TestManagedVethNames_MasterLookup_Converge(t *testing.T) {
+	fakeSysfs(t, map[string]string{"vethA": "br0"})
+	cache := map[string]vethInfo{"box": {veth: "vethA"}}
+	u, ap, inst, lines := newUplinkRig()
+	u.converge([]uplinkIface{{"br0", 5}, {"eth0", 2}}, managedVethNames(cache), masterOfIface, ap, inst)
+	if ap.set[5] || !ap.set[2] {
+		t.Fatalf("want br0 refused and eth0 trusted via fake sysfs, got %v (%v)", ap.set, *lines)
+	}
+}
+
+// #3185 review: an unreadable master fails closed for the pass: no new trust, the
+// installed set untouched, one log line.
+func TestUplinks_UnreadableMasterFailsClosed(t *testing.T) {
+	boom := func(string) (string, error) { return "", errors.New("EIO") }
+	u, ap, inst, lines := newUplinkRig()
+	inst[2], ap.set[2] = true, true // legitimate, already installed
+	cands := []uplinkIface{{"eth0", 2}, {"br0", 5}}
+	u.converge(cands, []string{"vethA"}, boom, ap, inst)
+	u.converge(cands, []string{"vethA"}, boom, ap, inst)
+	if ap.set[5] || inst[5] {
+		t.Errorf("new entry trusted despite unreadable master: %v", ap.set)
+	}
+	if !ap.set[2] || !inst[2] {
+		t.Errorf("installed uplink was un-trusted: %v", ap.set)
+	}
+	if len(*lines) != 1 || !strings.Contains((*lines)[0], "EIO") {
+		t.Errorf("want one error log, got %v", *lines)
+	}
+}
+
+// #3185 review: with several unreadable veths the error text must not vary from
+// pass to pass (vethCache is a map), or the log-once dedupe is defeated.
+func TestUplinks_UnreadableMastersLogOnceAcrossPasses(t *testing.T) {
+	cache := map[string]vethInfo{}
+	for _, n := range []string{"b", "c", "a", "e", "d", "h", "g", "f"} {
+		cache["box-"+n] = vethInfo{veth: "veth" + n}
+	}
+	boom := func(v string) (string, error) { return "", fmt.Errorf("EIO on %s", v) }
+	u, ap, inst, lines := newUplinkRig()
+	for i := 0; i < 30; i++ {
+		u.converge([]uplinkIface{{"br0", 5}}, managedVethNames(cache), boom, ap, inst)
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("want exactly 1 log line over 30 passes, got %d: %v", len(*lines), *lines)
 	}
 }
