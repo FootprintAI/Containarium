@@ -212,7 +212,7 @@ type fakeStatusClient struct {
 }
 
 func (f *fakeStatusClient) ManagedBackupKeyConfigured() (bool, error) { return f.managed, f.managedErr }
-func (f *fakeStatusClient) Close() error                               { return nil }
+func (f *fakeStatusClient) Close() error                              { return nil }
 
 func runStatusWith(t *testing.T, c *fakeStatusClient) error {
 	t.Helper()
