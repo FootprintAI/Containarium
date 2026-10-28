@@ -29,7 +29,8 @@ backup-all-tenants.sh config) and check, on this daemon, that each has a
 CONTAINARIUM_BACKUP_AGE_RECIPIENT secret registered (#3169).
 
 A tenant with no recipient gets its nightly dump stored UNENCRYPTED unless
-the daemon has a managed backup key configured. Registered secrets are
+the daemon has a managed backup key configured; the daemon reports that, and
+when it does, tenants with no recipient are listed as OK. Registered secrets are
 stored per daemon and do not travel with a copied container, so run this
 after moving a tenant to another host, before its first backup there.
 Exits non-zero when any tenant has no recipient or could not be checked.
@@ -59,6 +60,9 @@ type backupSecretsLister interface {
 
 type backupSecretsClient interface {
 	backupSecretsLister
+	// ManagedBackupKeyConfigured reports whether the daemon has a managed
+	// backup key (SystemInfo.managed_backup_key_configured, #3213).
+	ManagedBackupKeyConfigured() (bool, error)
 	Close() error
 }
 
@@ -88,8 +92,17 @@ func runBackupStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 
+	// Fail safe: if the daemon cannot say (older daemon, or the caller may
+	// not read system info), assume there is no managed key, so an
+	// unregistered tenant is still flagged rather than silently passed.
+	managedKey, err := c.ManagedBackupKeyConfigured()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not tell whether the daemon has a managed backup key (%v); treating tenants with no recipient as unencrypted\n", err)
+		managedKey = false
+	}
+
 	fmt.Printf("Backup encryption for tenants in %s:\n", backupStatusConf)
-	if missing := checkBackupRecipients(os.Stdout, c, tenants); missing > 0 {
+	if missing := checkBackupRecipients(os.Stdout, c, tenants, managedKey); missing > 0 {
 		return fmt.Errorf("%d of %d configured tenant(s) have no backup recipient on this daemon or could not be checked", missing, len(tenants))
 	}
 	return nil
@@ -128,8 +141,10 @@ func readBackupConfTenants(path string) ([]string, error) {
 // checkBackupRecipients prints one line per tenant and returns how many
 // have no registered recipient or could not be checked. A tenant whose
 // secrets cannot be listed counts as missing: the check must not pass on
-// an answer it never got.
-func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string) int {
+// an answer it never got. managedKey is the daemon's report that it has a
+// managed backup key (#3213): it encrypts every dump, so a tenant with no
+// registered recipient is then fine.
+func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string, managedKey bool) int {
 	missing := 0
 	for _, tenant := range tenants {
 		secrets, err := l.ListSecrets(tenant)
@@ -149,8 +164,12 @@ func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string)
 			_, _ = fmt.Fprintf(w, "  ✓ %s — age recipient registered\n", tenant)
 			continue
 		}
+		if managedKey {
+			_, _ = fmt.Fprintf(w, "  ✓ %s — no age recipient registered; dump encrypted by the daemon's managed backup key\n", tenant)
+			continue
+		}
 		missing++
-		_, _ = fmt.Fprintf(w, "  ✗ %s — no %s registered: its dump will be stored UNENCRYPTED unless this daemon has a managed backup key\n",
+		_, _ = fmt.Fprintf(w, "  ✗ %s — no %s registered: its dump will be stored UNENCRYPTED (this daemon reports no managed backup key)\n",
 			tenant, backupAgeRecipientSecret)
 	}
 	return missing

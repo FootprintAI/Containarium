@@ -147,7 +147,7 @@ func TestCheckBackupRecipients(t *testing.T) {
 		errs: map[string]error{"gamma": errors.New("permission denied")},
 	}
 	var buf bytes.Buffer
-	missing := checkBackupRecipients(&buf, lister, []string{"acme", "beta", "gamma"})
+	missing := checkBackupRecipients(&buf, lister, []string{"acme", "beta", "gamma"}, false)
 	out := buf.String()
 	if missing != 2 {
 		t.Errorf("missing = %d, want 2 (beta has none, gamma could not be checked)\n%s", missing, out)
@@ -162,23 +162,89 @@ func TestCheckBackupRecipients(t *testing.T) {
 func TestCheckBackupRecipients_AllRegistered(t *testing.T) {
 	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"CONTAINARIUM_BACKUP_AGE_RECIPIENT"}}}
 	var buf bytes.Buffer
-	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}); missing != 0 {
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, false); missing != 0 {
 		t.Errorf("missing = %d, want 0:\n%s", missing, buf.String())
 	}
 }
 
-// Pins current behaviour (documented in docs/DB-BACKUP-OPERATIONS.md): the
-// client cannot see a daemon's managed backup key, so a tenant with no
-// registered recipient is counted as missing (non-zero exit) even when the
-// daemon would encrypt its dump. Changing this needs a decision; see the
-// follow-up issue for an opt-out.
-func TestCheckBackupRecipients_ManagedKeyDaemonStillFlagsUnregistered(t *testing.T) {
+// #3213: a daemon WITHOUT a managed backup key still cannot encrypt a tenant
+// that has no registered recipient, so status keeps failing it.
+func TestCheckBackupRecipients_NoManagedKeyStillFlagsUnregistered(t *testing.T) {
 	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"OTHER"}}}
 	var buf bytes.Buffer
-	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}); missing != 1 {
-		t.Errorf("missing = %d, want 1 (status cannot detect a managed key)\n%s", missing, buf.String())
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, false); missing != 1 {
+		t.Errorf("missing = %d, want 1 (no managed key, no recipient)\n%s", missing, buf.String())
 	}
-	if !strings.Contains(buf.String(), "unless this daemon has a managed backup key") {
-		t.Errorf("message must hedge about the managed key:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "UNENCRYPTED") {
+		t.Errorf("message must say the dump is stored UNENCRYPTED:\n%s", buf.String())
+	}
+}
+
+// #3213: when the daemon reports a managed backup key, an unregistered
+// tenant is encrypted by that key, so it is OK; a tenant whose secrets could
+// not be listed is still unknown and still fails.
+func TestCheckBackupRecipients_ManagedKeyDaemonTreatsUnregisteredAsOK(t *testing.T) {
+	lister := &fakeSecretsLister{
+		names: map[string][]string{"acme": {"OTHER"}},
+		errs:  map[string]error{"gamma": errors.New("permission denied")},
+	}
+	var buf bytes.Buffer
+	missing := checkBackupRecipients(&buf, lister, []string{"acme", "gamma"}, true)
+	out := buf.String()
+	if missing != 1 {
+		t.Errorf("missing = %d, want 1 (only the unreadable tenant)\n%s", missing, out)
+	}
+	for _, want := range []string{"✓ acme", "managed backup key", "? gamma"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "✗") || strings.Contains(out, "UNENCRYPTED") {
+		t.Errorf("managed-key daemon must not flag acme as unencrypted:\n%s", out)
+	}
+}
+
+// fakeStatusClient is a full backupSecretsClient for runBackupStatus.
+type fakeStatusClient struct {
+	fakeSecretsLister
+	managed    bool
+	managedErr error
+}
+
+func (f *fakeStatusClient) ManagedBackupKeyConfigured() (bool, error) { return f.managed, f.managedErr }
+func (f *fakeStatusClient) Close() error                               { return nil }
+
+func runStatusWith(t *testing.T, c *fakeStatusClient) error {
+	t.Helper()
+	conf := filepath.Join(t.TempDir(), "backup-tenants.conf")
+	if err := os.WriteFile(conf, []byte("acme appdb\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldFn, oldConf := newBackupSecretsClientFn, backupStatusConf
+	t.Cleanup(func() { newBackupSecretsClientFn, backupStatusConf = oldFn, oldConf })
+	newBackupSecretsClientFn = func() (backupSecretsClient, error) { return c, nil }
+	backupStatusConf = conf
+	return runBackupStatus(nil, nil)
+}
+
+// #3213: end to end through runBackupStatus, the daemon's report decides the
+// exit status; an error asking (older daemon, no admin) fails safe.
+func TestRunBackupStatus_ManagedKeyDetection(t *testing.T) {
+	names := map[string][]string{"acme": {"OTHER"}}
+	cases := []struct {
+		name    string
+		c       *fakeStatusClient
+		wantErr bool
+	}{
+		{"managed key set", &fakeStatusClient{fakeSecretsLister: fakeSecretsLister{names: names}, managed: true}, false},
+		{"no managed key", &fakeStatusClient{fakeSecretsLister: fakeSecretsLister{names: names}}, true},
+		{"detection fails", &fakeStatusClient{fakeSecretsLister: fakeSecretsLister{names: names}, managedErr: errors.New("boom")}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := runStatusWith(t, tc.c); (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }

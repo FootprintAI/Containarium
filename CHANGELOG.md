@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`containarium backup status` no longer exits non-zero for tenants a managed backup key already encrypts** (#3213). `GetSystemInfo` gains a typed `managed_backup_key_configured` field (set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured); when it is true, a tenant with no registered age recipient is reported `✓` and does not fail the exit code. A daemon without a managed key still fails such tenants, and if the daemon cannot answer (older daemon, caller may not read system info) `backup status` warns and fails safe. `docs/DB-BACKUP-OPERATIONS.md` updated.
+
 ## [0.120.1] - 2026-10-28
 
 ### Added

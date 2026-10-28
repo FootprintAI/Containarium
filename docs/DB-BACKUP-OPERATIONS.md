@@ -247,12 +247,15 @@ reads `backup-tenants.conf` (`--conf`, default
 with no recipient registered on that daemon; it exits non-zero if any are
 missing or could not be checked.
 
-**Limit with a managed backup key.** `backup status` cannot see whether the
-daemon has a managed backup key. On such a daemon the dumps of a tenant with
-no registered recipient are still encrypted, yet `backup status` lists that
-tenant and exits non-zero. Treat the exit code as "no per-tenant recipient",
-not "plaintext", on those daemons. This behaviour is pinned by a test and is
-tracked for a proper opt-out.
+**Managed backup key (#3213).** `backup status` asks the daemon whether it
+has a managed backup key (`managed_backup_key_configured` on the system info
+response, set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured). On such a
+daemon every dump is encrypted, so a tenant with no registered recipient is
+listed `✓` ("encrypted by the daemon's managed backup key") and does not fail
+the exit code. On a daemon without a managed key it is still listed `✗` and
+the command exits non-zero. If the daemon cannot answer (an older daemon, or a
+caller that may not read system info) `backup status` warns and assumes no
+managed key, so it fails safe.
 
 **Moving a tenant to another host.** Registered secrets, including the backup
 recipient, are stored per daemon and do **not** travel with a copied
