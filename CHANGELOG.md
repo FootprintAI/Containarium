@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `create_backup` MCP tool takes `require_encryption`** (#3214). A thin wrapper over the same `CreateBackupRequest.require_encryption` field as `backup create --require-encryption` (#3169): when true, a backup that would be stored unencrypted is refused with `FAILED_PRECONDITION` before any container is touched. Default false.
+
 ## [0.120.1] - 2026-10-28
 
 ### Added
