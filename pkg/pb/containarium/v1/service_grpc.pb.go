@@ -294,7 +294,9 @@ type ContainerServiceClient interface {
 	ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
-	// and reports the existing outcome. Same access as StartBoxRun.
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
 	AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
@@ -1386,7 +1388,9 @@ type ContainerServiceServer interface {
 	ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
-	// and reports the existing outcome. Same access as StartBoxRun.
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
 	AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)

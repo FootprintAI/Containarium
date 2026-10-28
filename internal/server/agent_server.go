@@ -1052,7 +1052,10 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 //     it; a custom skill via CONTAINARIUM_SKILLS_DIR could. The handler
 //     also refuses any run-bound caller outright, so a run token minted
 //     before this entry existed is covered too.
-var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate}
+//   - code:answer (#3191) — answers a box run's permission requests. The
+//     run token lives on the box with the agent, so holding it would let
+//     the agent approve its own tool calls.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate, auth.ScopeCodeAnswer}
 
 // mintRunToken mints the run's platform JWT — the one credential every
 // in-box call back to the daemon presents — and returns it with the lease
