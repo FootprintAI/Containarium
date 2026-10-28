@@ -133,6 +133,32 @@ curl -X POST \
   http://localhost:8080/v1/containers/alice/ssh-keys
 ```
 
+#### Set SSH Keys (replace all)
+Makes the box user's `authorized_keys` hold exactly the given keys. Keys not in
+the list are removed; the platform's own key is always kept. Idempotent. An empty
+list needs `"allow_empty": true`, so an omitted field cannot wipe a box.
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ssh_public_keys": [
+      "ssh-ed25519 AAAAC3NzaC1... laptop",
+      "ssh-ed25519 AAAAC3NzaC1... ci"
+    ]
+  }' \
+  http://localhost:8080/v1/containers/alice/ssh-keys
+```
+
+A dropped key is always removed from the box. The daemon's key registry has
+one entry per key, owned by the first account that registered it, and the
+dropped key's entry is revoked only when this box user owns it. When another
+account owns the entry (an account that registered the same public key first,
+or a collaborator account of the same person), the entry stays active and the
+call still succeeds. Removing a key here (or with `DELETE`) is therefore not a
+guaranteed way to revoke a compromised key everywhere; see
+[#3217](https://github.com/FootprintAI/Containarium/issues/3217).
+
 #### Get Metrics
 ```bash
 # All containers
@@ -359,6 +385,7 @@ curl -v http://localhost:8080/v1/containers
 | `POST` | `/v1/containers/{username}/start` | Start container |
 | `POST` | `/v1/containers/{username}/stop` | Stop container |
 | `POST` | `/v1/containers/{username}/ssh-keys` | Add SSH key |
+| `PUT` | `/v1/containers/{username}/ssh-keys` | Set SSH keys (replace all) |
 | `DELETE` | `/v1/containers/{username}/ssh-keys/{key}` | Remove SSH key |
 | `GET` | `/v1/metrics` | Get all metrics |
 | `GET` | `/v1/metrics/{username}` | Get container metrics |

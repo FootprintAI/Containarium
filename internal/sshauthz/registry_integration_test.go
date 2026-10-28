@@ -8,9 +8,12 @@
 package sshauthz
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,11 +100,43 @@ func TestPGKeyStore_FirstRegistrationWins(t *testing.T) {
 	}
 }
 
-// Decision (#2517): RemoveSSHKey revokes the key for every account, and a
-// re-add is a fresh registration (new owner, new created_at, active).
-func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
+// Decision (#3187, replacing #2517's "every account"): a revocation applies
+// only to the row the revoking account owns. Another account holding the
+// same public key cannot revoke the owner's entry.
+func TestPGKeyStore_RevokeByNonOwnerLeavesRowActive(t *testing.T) {
 	s := pgKeys(t)
 	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	for _, other := range []string{"carol", "bob-container-carol"} {
+		if err := s.Revoke(ctx, mustRecord(t, pub, other, SourceAPI, revokeAt), revokeAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := lookup(t, s, rec.Fingerprint)
+	if !got.RevokedAt.IsZero() || got.Username != "bob" || !got.CreatedAt.Equal(caseNow) {
+		t.Fatalf("a non-owner revoked or rewrote bob's row: %+v", got)
+	}
+}
+
+// A non-owner's revoke changes nothing and returns nil, so it is logged once
+// (naming the revoking account and the fingerprint) for an operator to see
+// that the registry entry was left to its owner. The owner's revoke, an
+// owner's repeat revoke and a revoke of an unknown key change a row and log
+// nothing.
+func TestPGKeyStore_RevokeByNonOwnerIsLogged(t *testing.T) {
+	s := pgKeys(t)
+	ctx := context.Background()
+	var buf bytes.Buffer
+	orig, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(orig); log.SetFlags(flags) })
+
 	pub := testKey(t)
 	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
 	if err := s.Register(ctx, rec); err != nil {
@@ -111,9 +146,46 @@ func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
 	if err := s.Revoke(ctx, mustRecord(t, pub, "carol", SourceAPI, revokeAt), revokeAt); err != nil {
 		t.Fatal(err)
 	}
+	out := buf.String()
+	if n := strings.Count(out, "\n"); n != 1 || !strings.Contains(out, "carol") || !strings.Contains(out, rec.Fingerprint) {
+		t.Fatalf("non-owner revoke: want one log line naming carol and %s, got %q", rec.Fingerprint, out)
+	}
+
+	buf.Reset()
+	for i := 0; i < 2; i++ { // owner's revoke, then the owner's repeat revoke
+		if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unknown := testKey(t)
+	if err := s.Revoke(ctx, mustRecord(t, unknown, "dave", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("owner or unknown-key revoke logged: %q", buf.String())
+	}
+	if got := lookup(t, s, rec.Fingerprint); got.RevokedAt.IsZero() {
+		t.Fatalf("owner's revoke did not revoke: %+v", got)
+	}
+}
+
+// The owner's revocation revokes the row, and a re-add is a fresh
+// registration (new owner, new created_at, active).
+func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
+	s := pgKeys(t)
+	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatal(err)
+	}
 	got := lookup(t, s, rec.Fingerprint)
 	if !got.RevokedAt.Equal(revokeAt) || got.Username != "bob" {
-		t.Fatalf("revoke by another account must revoke the shared row and keep its owner: %+v", got)
+		t.Fatalf("the owner's revoke must revoke its row and keep its owner: %+v", got)
 	}
 	// A second revoke keeps the original revocation time.
 	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt.Add(time.Hour)), revokeAt.Add(time.Hour)); err != nil {

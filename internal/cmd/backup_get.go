@@ -19,7 +19,7 @@ func init() {
 }
 
 func runBackupGet(cmd *cobra.Command, args []string) error {
-	c, err := newBackupClient()
+	c, err := newBackupClientFn()
 	if err != nil {
 		return err
 	}
@@ -43,6 +43,9 @@ func runBackupGet(cmd *cobra.Command, args []string) error {
 	}
 	if r.Encrypted {
 		fmt.Printf("Encrypted:   yes (age recipient %s; restore needs --age-identity-file)\n", r.AgeRecipient)
+	} else {
+		// #3169: say so rather than leave the absence of a line to be noticed.
+		fmt.Printf("Encrypted:   NO (stored in plaintext)\n")
 	}
 	if r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED || r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
 		fmt.Printf("Key mode:    %s\n", keyModeLabel(r.KeyMode))

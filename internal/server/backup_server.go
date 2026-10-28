@@ -234,6 +234,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	// #3169: with require_encryption, a dump that would be stored with no
+	// key at all is refused here, before any container is touched, so no
+	// plaintext object is ever written.
+	if err := refusePlaintext(req.RequireEncryption, req.Username, keyMode, ageRecipient, s.mgr.HasWrapper()); err != nil {
+		log.Printf("[backup] REFUSED user=%s: %v", req.Username, err)
+		return nil, err
+	}
+
 	hookFormat, err := hookFormatFromProto(req.HookFormat)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -276,6 +284,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		for _, r := range records {
 			resp.Records = append(resp.Records, recordToProto(r))
 			log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
+			if backupStoredPlaintext(r) {
+				log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", r.Username, r.ID)
+			}
 		}
 		for _, e := range errs {
 			resp.Failures = append(resp.Failures, e.Error())
@@ -293,6 +304,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.Internal, "backup failed: %v", err)
 	}
 	log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	if backupStoredPlaintext(rec) {
+		log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", rec.Username, rec.ID)
+	}
 	return &pb.CreateBackupResponse{
 		Message: "backup created: " + rec.ID,
 		Record:  recordToProto(rec),
@@ -789,6 +803,25 @@ func keyModeFromProto(m pb.BackupKeyMode, hasWrapper, hasRecipient bool) (backup
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "unknown key_mode %d", m)
 	}
+}
+
+// backupStoredPlaintext reports whether a stored record has no key protecting
+// it at all (#3169): not age-encrypted and not managed/both key mode.
+func backupStoredPlaintext(r *backup.Record) bool {
+	return !r.Encrypted && keyModeToProto(r) == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
+}
+
+// refusePlaintext enforces require_encryption (#3169). It refuses exactly
+// the case Manager.resolveKeyMode would store in plaintext: no explicit key
+// mode, no recipient (given or registered), and no managed key wrapper on
+// this daemon. Without require it never refuses, so today's default stands.
+func refusePlaintext(require bool, username string, mode backup.KeyMode, recipient string, hasWrapper bool) error {
+	if !require || mode != "" || strings.TrimSpace(recipient) != "" || hasWrapper {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"refusing to store tenant %s's backup unencrypted (require_encryption): no age recipient was given or registered (%s) and this daemon has no managed backup key; register one with `containarium secrets set %s %s age1...` on this daemon",
+		username, backupAgeRecipientSecretName, username, backupAgeRecipientSecretName)
 }
 
 // keyModeToProto maps a stored record's key mode to the wire enum. The
