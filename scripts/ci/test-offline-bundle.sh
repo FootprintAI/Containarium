@@ -300,6 +300,31 @@ if REQUIRED_DEBS=libx bash "$content" "$tmp/img.tgz" >/dev/null 2>&1; then t "ch
 else pass "check-bundle-content: images/ rejected"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/nobin.tgz" >/dev/null 2>&1; then t "check-bundle-content: missing containariumd accepted"
 else pass "check-bundle-content: missing containariumd rejected"; fi
+# A real bundle lists hundreds of debs. With a listing larger than a pipe
+# buffer, a check that stops reading at its first match (grep -q) must not be
+# read as "missing" or "absent" under pipefail. The entries the checks look
+# for come first, so every match happens long before the listing ends.
+# mkbig NAME [FIRST...]: FIRST entries, then the control set, then 3000 debs.
+mkbig() {
+  local name=$1; shift
+  local r=$tmp/$name.tree/$top f i
+  mkdir -p "$tmp/$name.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/$name.tree/"
+  for i in $(seq 1 3000); do : >"$r/apt/pkg$i-with-a-long-name_1.0.0-0ubuntu0.24.04.1_amd64.deb"; done
+  { for f in "$@"; do echo "$top/$f"; done
+    for f in bin/containariumd bin/mcp-server bin/agent-box VERSION CHECKSUMS.sha256 \
+             offline-install.sh toolchains/go1.0.linux-amd64.tar.gz apt/libx_1.0_all.deb; do echo "$top/$f"; done
+    for i in $(seq 1 3000); do echo "$top/apt/pkg$i-with-a-long-name_1.0.0-0ubuntu0.24.04.1_amd64.deb"; done
+  } >"$tmp/$name.order"
+  tar -C "$tmp/$name.tree" --no-recursion -czf "$tmp/$name.tgz" -T "$tmp/$name.order"
+}
+mkbig big
+if REQUIRED_DEBS=libx bash "$content" "$tmp/big.tgz" >"$tmp/big.out" 2>&1; then pass "check-bundle-content: large bundle accepted"
+else t "check-bundle-content: large bundle rejected"; cat "$tmp/big.out"; fi
+mkdir -p "$tmp/bigimg.tree/$top/images"; mkbig bigimg images
+if REQUIRED_DEBS=libx bash "$content" "$tmp/bigimg.tgz" >"$tmp/bigimg.out" 2>&1; then t "check-bundle-content: large bundle with images/ accepted"
+elif [ "$(grep -c 'check-bundle-content: ' "$tmp/bigimg.out")" = 2 ] && grep -q 'ships images/' "$tmp/bigimg.out"; then
+  pass "check-bundle-content: large bundle with images/ rejected for images/ only"
+else t "check-bundle-content: large bundle with images/ rejected for the wrong reason"; cat "$tmp/bigimg.out"; fi
 
 # -------------------------------------------- offline install.sh tests
 # Source the installer (its main runs only when executed) and call the apt
