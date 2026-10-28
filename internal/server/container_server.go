@@ -2942,12 +2942,13 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 	// the revocation. Only the entry this account owns is revoked (#3187), and
 	// not while another account still holds the key (#3222).
 	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
-		if errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
-			// Names no account: who else holds a key is not this caller's to learn.
-			return nil, status.Error(codes.FailedPrecondition,
-				"another account still holds this key, so it cannot be revoked; nothing was changed")
+		if !errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+			return nil, registryError("remove ssh key", err)
 		}
-		return nil, registryError("remove ssh key", err)
+		// Another account still holds this key: only this account's entry is
+		// removed and the registry row stays active for the other holder
+		// (#3222), as SetSSHKeys does. The response does not name the holder.
+		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
 	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)

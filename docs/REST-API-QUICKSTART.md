@@ -157,14 +157,13 @@ same public key in its own `authorized_keys`. Collaborator accounts
 (`<owner>-container-<collab>`) are separate accounts, so a revoke by one does
 not revoke another's identical key, and each counts as another holder.
 
-- `PUT` (this call): a key another account still holds is dropped from this
-  box only; its entry stays active and the call succeeds.
-- `DELETE /v1/containers/{username}/ssh-keys/{key}`: if the revoke would take
-  effect while another account holds the key, the call is refused with
-  `FAILED_PRECONDITION` (HTTP 400) and nothing changes; the error does not say
-  who holds it. Example: alice registered bob's public key first, then bob added
-  it to his own box; alice's `DELETE` is refused until bob has removed it.
+- `PUT` (this call) and `DELETE /v1/containers/{username}/ssh-keys/{key}`: a
+  key another account still holds is dropped from this box only; its entry
+  stays active and the call succeeds without saying who holds it. Example:
+  alice registered bob's public key first, then bob added it to his own box;
+  alice's removal drops it from alice's box and leaves bob's access working.
 - When another account owns the entry, it stays active and the call succeeds.
+- An unreadable host home directory makes the call fail rather than revoke.
 
 Removing a key is therefore not a guaranteed way to revoke a compromised key
 everywhere; see [#3217](https://github.com/FootprintAI/Containarium/issues/3217).
