@@ -103,6 +103,9 @@ type Tool struct {
 	InputSchema   map[string]interface{}
 	Handler       ToolHandler
 	RequiredScope string
+	// AlternateScope, when set, is a second scope that also satisfies the
+	// tool (#3186: verify_backup takes backups:verify or legacy backups:write).
+	AlternateScope string
 }
 
 // ToolHandler is a function that handles a tool call
@@ -1260,7 +1263,7 @@ func (s *Server) registerTools() {
 				"acts on it only if that is the tool call it asked. If the request has changed " +
 				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
 				"nothing and reports how it was closed, as an error. Same signing as " +
-				"`containarium code answer`.",
+				"`containarium code answer`. Needs a token carrying both the code:answer and ssh:write scopes.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box", "request_id", "tool", "input", "answer"},
@@ -1909,6 +1912,9 @@ func (s *Server) registerTools() {
 	scopeByTool := toolScopeAssignments()
 	for i := range s.tools {
 		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
+		if s.tools[i].Name == "verify_backup" {
+			s.tools[i].AlternateScope = auth.ScopeBackupsVerify
+		}
 	}
 }
 
@@ -1955,7 +1961,7 @@ func toolScopeAssignments() map[string]string {
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
 		"code_pending":         auth.ScopeSSHWrite,
-		"code_answer":          auth.ScopeSSHWrite,
+		"code_answer":          auth.ScopeCodeAnswer, // #3191: the daemon also needs ssh:write
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle
@@ -2028,9 +2034,12 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
-		// A restore test writes (creates and drops a scratch database in
-		// the target container), so it needs the write scope even though
-		// it never mutates the backup itself.
+		// A restore test creates and drops a scratch database in an isolated
+		// target container. It accepts the narrow backups:verify scope
+		// (Tool.AlternateScope) as well as backups:write, so verifier tokens
+		// minted before backups:verify existed keep working for one release
+		// (#3186); the next release drops backups:write here and in
+		// VerifyBackup, leaving backups:verify alone.
 		"verify_backup": auth.ScopeBackupsWrite,
 		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)

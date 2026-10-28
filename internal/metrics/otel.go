@@ -142,6 +142,10 @@ type Collector struct {
 	// Backend health instruments
 	backendHealthy otelmetric.Int64Gauge
 
+	// peerMTLS reports whether daemon-to-peer calls use peer mTLS (#3079).
+	peerMTLS   otelmetric.Int64Gauge
+	peerMTLSFn func() (enabled, relevant bool)
+
 	ctx           context.Context
 	cancel        context.CancelFunc
 	peerFetcher   PeerMetricsFetcher
@@ -366,7 +370,37 @@ func (c *Collector) initInstruments() error {
 		return err
 	}
 
+	c.peerMTLS, err = meter.Int64Gauge("containarium.peer.mtls.enabled",
+		otelmetric.WithDescription("Daemon-to-peer calls use peer mTLS (1=enabled, 0=plain HTTP). Emitted only on daemons with a sentinel URL or peers"))
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// SetPeerMTLSFunc sets the probe behind containarium.peer.mtls.enabled.
+// Without it, or when relevant is false (no sentinel, no peers), the metric is not emitted.
+func (c *Collector) SetPeerMTLSFunc(fn func() (enabled, relevant bool)) {
+	c.peerMTLSFn = fn
+}
+
+// recordPeerMTLS records containarium.peer.mtls.enabled for this tick.
+func (c *Collector) recordPeerMTLS() {
+	if c.peerMTLSFn == nil {
+		return
+	}
+	enabled, relevant := c.peerMTLSFn()
+	if !relevant {
+		return
+	}
+	var v int64
+	if enabled {
+		v = 1
+	}
+	c.peerMTLS.Record(c.ctx, v, otelmetric.WithAttributes(
+		attribute.String("backend.id", c.config.LocalBackendID),
+	))
 }
 
 // Start begins the metrics collection loop
@@ -417,6 +451,7 @@ func (c *Collector) collect() {
 
 	// Record local backend health (always healthy if collecting)
 	c.backendHealthy.Record(ctx, 1, localAttrs)
+	c.recordPeerMTLS()
 
 	// Record peer backend health
 	if c.peerFetcher != nil {

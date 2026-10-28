@@ -87,3 +87,31 @@ not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these
 fields (see the changelog entry).
+
+## Answering permission requests: the `code:answer` scope
+
+`AnswerRunInput` (`containarium code answer`, `code attach`'s inline answers,
+the MCP `code_answer` tool) needs the box-run access rule (`ssh:write`, box owner
+or collaborator) **and** the `code:answer` scope. `code:answer` is matched
+literally: the wildcard scope `*` does not carry it, and neither does a token
+with no scopes claim. An allow lets the agent run the tool call it asked for,
+so the token that answers must be one the agent on the box cannot hold.
+
+No credential the platform puts on a box carries `code:answer`: a skill or crew
+run token has it stripped at mint, whatever the dispatching caller or the skill
+manifest grants. The delegation exchange (`ExchangeDelegatedToken`,
+`containarium token delegate`) grants `code:answer` only to a caller that holds
+it literally, so a `*` token cannot be exchanged for one. Mint the answering
+token where the agent cannot read it, for example on the daemon host:
+
+```bash
+TOKEN=$(containarium token generate --secret-file <jwt-secret-file> --username <you> \
+  --scopes ssh:write,code:answer --expiry 24h --raw)
+containarium --token "$TOKEN" --server <daemon> --http code answer <box> <request_id> allow
+```
+
+**Do not run `containarium login` inside a box an agent runs in.** It writes your
+token to `~/.containarium/credentials.json` in the box, where the agent can read
+it and call the API as you. A login token does not carry `code:answer`, so it
+cannot answer permission requests, but it can still do everything else your
+account can.

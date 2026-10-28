@@ -3439,6 +3439,8 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// direct/in-network mode — so an agent can tell from get_system_info
 		// whether an external SSH/deploy entrypoint exists. See #1011.
 		SshIngressHost: s.sshHost,
+		// How this daemon's peer calls are secured (#3079).
+		PeerTransport: peerTransportOf(s.peerPool),
 		// Tenant-committed CPU cores on this host — pairs with TotalCpus to
 		// answer "is this host over its CPU overcommit ceiling right now"
 		// (#1580). Reuses the same containers list already fetched above,

@@ -514,7 +514,15 @@ cannot be poisoned:
   both to agree means neither side can move the validated address on its
   own. A box the host knows no address for gets `box_ip` 0: it validates
   nothing, cannot answer inbound under enforce, and never seeds; the
-  daemon logs this once per container. The lease files are read under the
+  daemon logs this once per container. Because the spoofed-source check
+  needs a known `box_ip` to compare against, that box also gets **no**
+  spoofed-source drop (or `network_policy.spoofed_source` event) while
+  `box_ip` is 0. This costs nothing in reach: its frames never carry
+  `VALIDATED`, so they can still never seed another veth's map, and for a
+  policed box the rest of the policy (allow-list, deny rules) applies to
+  its traffic as usual. (A validate-only veth, such as a control-plane or
+  untenanted instance, is only marked and never judged, whatever its
+  `box_ip`.) The lease files are read under the
   Incus data dir the daemon talks to (`<data dir>/networks/<bridge>/
   dnsmasq.leases`). This is option (a) of the issue's decision; it
   does not depend on the tenant guard. The naive "judge only fresh SYNs"
@@ -537,9 +545,16 @@ cannot be poisoned:
   possible follow-up; the shared map with re-seeding is what ships.
 - **IP options and fragments** fail closed: a packet with `ihl != 5` or any
   fragmentation is parsed as neither a seed nor a reply, so a box cannot
-  match a seeded tuple while really addressing other ports. The older
-  virtual-patch and accounting paths still assume `ihl == 5` (a pre-existing
-  gap, tracked separately).
+  match a seeded tuple while really addressing other ports. The
+  virtual-patch deny and the flow accounting share the same guard (#3166):
+  a TCP/UDP packet whose ports cannot be read matches a port-scoped deny rule
+  on its address and proto alone (fails closed, so an IP option or
+  fragmentation cannot evade the rule), and the accounting skips fragments
+  and tallies an options-bearing non-fragment under ports 0.
+  Consequences: a fragmented flow to a denied host and proto is denied even
+  if its real port differs, and a legitimate packet whose L4 header is outside
+  the linear skb data (truncated or paged) is denied when a port-scoped rule
+  exists for that host and proto. Rules without a port are unaffected.
 - **Not IPv6.** The sender hook manages IPv4 only; IPv6 (and ARP) pass
   untouched, so source validation and egress enforcement do not apply to
   IPv6 — pre-existing, and the egress allow-list is IPv4-only too.
