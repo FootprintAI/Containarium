@@ -62,6 +62,8 @@ scripts/bundle/download-deps.sh	wget	6780eacc506b	wget gnupg ca-certificates sof
 scripts/ci/check-licenses.sh	go install	6d695ea3e06f	go install github.com/google/go-licenses@v1.6.0" >&2; exit 2; }
 scripts/ci/npm-licenses.sh	npm ci	e195c096bf6a	npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&
 scripts/ci/npm-licenses.sh	npx	5dc65733e2ac	npx --yes "$CHECKER" --production --excludePrivatePackages --json) > "
+scripts/ci/sentinel-outage-smoke.sh	curl	0ad152fd00fb	curl timeout; do command -v "$tool" >/dev/null || fail "missing $tool"
+scripts/ci/sentinel-outage-smoke.sh	curl	00716ae76a42	curl --silent --show-error --fail --max-time 8 --noproxy '*' --connect
 scripts/ci/tunnel-smoke.sh	curl	173ca4275450	curl -fsS --max-time 3 "http://$ADDR:$BACKEND_PORT/" 2>/dev/null || tr
 scripts/download-swagger-ui.sh	curl	9221e5efaae7	curl -LO "https://github.com/swagger-api/swagger-ui/archive/refs/tags/
 scripts/engineer-crew-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
