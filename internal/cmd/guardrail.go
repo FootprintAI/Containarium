@@ -167,6 +167,7 @@ func init() {
 
 	guardrailVerifyCmd.Flags().StringVar(&guardrailAttestFile, "attestation", "", "Attestation JSON written by 'guardrail apply' (required)")
 	guardrailVerifyCmd.Flags().StringVar(&guardrailPublicKey, "public-key", "", "Signer's .pub file (required offline; ignored when a server policy is in force)")
+	guardrailVerifyCmd.Flags().StringVar(&guardrailTrustBundle, "trust-bundle", "", "GuardrailTrustBundle protojson from 'guardrail signer bundle': trusted signers plus revoked keys (offline alternative to --public-key)")
 	guardrailVerifyCmd.Flags().StringSliceVar(&guardrailRequireKinds, "require-kind", nil, "Kinds the attestation must have scanned for (pii, secret); a PASS that never looked for one is refused")
 	_ = guardrailVerifyCmd.MarkFlagRequired("attestation")
 
@@ -424,6 +425,9 @@ func runGuardrailVerify(cmd *cobra.Command, args []string) error {
 	// With a server policy, the server decides: its policy hash and its
 	// trusted signers, never a key the caller hands in.
 	if server.policy != nil {
+		if guardrailTrustBundle != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "guardrail: --trust-bundle ignored; the server's trusted and revoked signers decide who may sign")
+		}
 		if guardrailPublicKey != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), "guardrail: --public-key ignored; the server's trusted signers decide who may sign")
 		}
@@ -435,8 +439,20 @@ func runGuardrailVerify(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if guardrailTrustBundle != "" {
+		if guardrailPublicKey != "" {
+			return errors.New("--trust-bundle and --public-key are mutually exclusive")
+		}
+		signer, err := verifyWithTrustBundle(guardrailTrustBundle, att, args[0], required)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s; NOT server-trusted (%s; checked against the trust bundle %q, signer %q, no revocation matched)\n", verified, server.localReason, guardrailTrustBundle, signer.GetLabel())
+		return nil
+	}
+
 	if guardrailPublicKey == "" {
-		return fmt.Errorf("%s: offline verify needs --public-key", server.localReason)
+		return fmt.Errorf("%s: offline verify needs --public-key or --trust-bundle", server.localReason)
 	}
 	pub, err := guardrail.LoadPublicKey(guardrailPublicKey)
 	if err != nil {
