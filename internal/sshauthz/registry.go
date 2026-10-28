@@ -115,7 +115,15 @@ func NewKeyRecord(publicKey, username string, source KeySource, at time.Time) (K
 // PGKeyStore is the Postgres-backed registry. It shares the daemon's pool
 // with the collaborator store.
 type PGKeyStore struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	holders HolderLookup
+}
+
+// WithHolders sets the lookup Revoke uses to refuse a revocation while
+// another account still holds the key (#3222).
+func (s *PGKeyStore) WithHolders(h HolderLookup) *PGKeyStore {
+	s.holders = h
+	return s
 }
 
 // NewPGKeyStore creates the ssh_keys table if needed and returns the store.

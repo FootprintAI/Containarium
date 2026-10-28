@@ -12,10 +12,14 @@ package server
 import (
 	"context"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/sshauthz"
@@ -43,6 +47,7 @@ func crossTenantServer(t *testing.T) (*ContainerServer, *sshauthz.PGKeyStore, *f
 		t.Fatalf("NewPGKeyStore: %v", err)
 	}
 	fs := newFakeAuthorizedKeys()
+	keys.WithHolders(fs)
 	fs.platform = "# platform"
 	s := &ContainerServer{authorizedKeys: fs.ops(), sshKeyNow: func() time.Time { return caseClock }}
 	s.SetSSHKeyRegistry(keys)
@@ -128,4 +133,76 @@ func TestSSHKeys_CrossTenantDropKeepsOtherOwnersEntry(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #3222, Alice-first order: alice adds bob's public key to her own box before
+// bob registers it, so the registry row is hers; bob then adds it to his box.
+// Alice dropping it must not revoke the access bob holds in his own box.
+func TestSSHKeys_AliceFirstDropDoesNotRevokeBobsKey(t *testing.T) {
+	bobCtx := tenantWithScopes("bob", auth.ScopeSSHWrite)
+	aliceCtx := tenantWithScopes("alice", auth.ScopeSSHWrite)
+
+	setup := func(t *testing.T) (*ContainerServer, *sshauthz.PGKeyStore, *fakeAuthorizedKeys, string, string) {
+		s, keys, fs := crossTenantServer(t)
+		bobKey, aliceKey := newTestPubKey(t), newTestPubKey(t)
+		for _, k := range []string{aliceKey, bobKey} {
+			if _, err := s.AddSSHKey(aliceCtx, &pb.AddSSHKeyRequest{Username: "alice", SshPublicKey: k}); err != nil {
+				t.Fatalf("alice AddSSHKey: %v", err)
+			}
+		}
+		if _, err := s.AddSSHKey(bobCtx, &pb.AddSSHKeyRequest{Username: "bob", SshPublicKey: bobKey}); err != nil {
+			t.Fatalf("bob AddSSHKey: %v", err)
+		}
+		if owner, active := keyState(t, keys, bobKey); owner != "alice" || !active {
+			t.Fatalf("precondition: row = owner %q active %v, want alice, active", owner, active)
+		}
+		return s, keys, fs, bobKey, aliceKey
+	}
+
+	t.Run("RemoveSSHKey is refused and changes nothing", func(t *testing.T) {
+		s, keys, fs, bobKey, _ := setup(t)
+		_, err := s.RemoveSSHKey(aliceCtx, &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: bobKey})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("RemoveSSHKey = %v, want FailedPrecondition", err)
+		}
+		if strings.Contains(err.Error(), "bob") {
+			t.Fatalf("the error must not name the other holder: %v", err)
+		}
+		if _, active := keyState(t, keys, bobKey); !active {
+			t.Fatal("alice's RemoveSSHKey revoked a key bob holds")
+		}
+		if !slices.Contains(fs.files["alice"], bobKey) || !slices.Contains(fs.files["bob"], bobKey) {
+			t.Fatal("a refused remove must leave both authorized_keys files alone")
+		}
+	})
+
+	t.Run("SetSSHKeys drops only alice's entry", func(t *testing.T) {
+		s, keys, fs, bobKey, aliceKey := setup(t)
+		if _, err := s.SetSSHKeys(aliceCtx, &pb.SetSSHKeysRequest{Username: "alice", SshPublicKeys: []string{aliceKey}}); err != nil {
+			t.Fatalf("SetSSHKeys: %v", err)
+		}
+		if slices.Contains(fs.files["alice"], bobKey) {
+			t.Fatal("alice's own authorized_keys still holds the dropped key")
+		}
+		if !slices.Contains(fs.files["bob"], bobKey) {
+			t.Fatal("bob's authorized_keys lost his key")
+		}
+		if _, active := keyState(t, keys, bobKey); !active {
+			t.Fatal("alice's SetSSHKeys revoked a key bob holds")
+		}
+	})
+
+	t.Run("sole holder still revokes", func(t *testing.T) {
+		s, keys, fs, bobKey, _ := setup(t)
+		if _, err := s.RemoveSSHKey(bobCtx, &pb.RemoveSSHKeyRequest{Username: "bob", SshPublicKey: bobKey}); err != nil {
+			t.Fatalf("bob RemoveSSHKey (non-owner, never refused): %v", err)
+		}
+		if _, err := s.RemoveSSHKey(aliceCtx, &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: bobKey}); err != nil {
+			t.Fatalf("alice RemoveSSHKey as sole holder: %v", err)
+		}
+		if _, active := keyState(t, keys, bobKey); active {
+			t.Fatal("the sole holder's RemoveSSHKey did not revoke the key")
+		}
+		_ = fs
+	})
 }
