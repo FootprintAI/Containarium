@@ -78,6 +78,22 @@ func newFakeAuthorizedKeys() *fakeAuthorizedKeys {
 	return &fakeAuthorizedKeys{files: map[string][]string{}, addErr: map[string]error{}}
 }
 
+// OtherAccountHolds is the fake's sshauthz.HolderLookup: any account other
+// than excludeUsername whose fake file holds the fingerprint.
+func (f *fakeAuthorizedKeys) OtherAccountHolds(_ context.Context, fingerprint, excludeUsername string) (bool, error) {
+	for user, lines := range f.files {
+		if user == excludeUsername {
+			continue
+		}
+		for _, l := range lines {
+			if rec, err := sshauthz.NewKeyRecord(l, user, sshauthz.SourceAPI, caseClock); err == nil && rec.Fingerprint == fingerprint {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 	return authorizedKeysOps{
 		add: func(u, k string) error {
