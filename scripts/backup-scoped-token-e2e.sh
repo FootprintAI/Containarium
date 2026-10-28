@@ -8,6 +8,12 @@ server=${CONTAINARIUM_BACKUP_E2E_SERVER:-http://localhost:8080}
 image=${CONTAINARIUM_LANE_IMAGE:-images:ubuntu/24.04}
 : "${JWT_SECRET:?required}"
 : "${ADMIN_TOKEN:?required}"
+# A CI lane must not pass by silently skipping the deprecation-log check
+# (#3186). sudo drops CI unless the caller passes it through.
+if [ -n "${CI:-}" ] && [ -z "${CONTAINARIUM_BACKUP_E2E_DAEMON_LOG:-}" ]; then
+  echo 'CONTAINARIUM_BACKUP_E2E_DAEMON_LOG must name the daemon log file when CI is set' >&2
+  exit 1
+fi
 tenant="verifylane$$"
 source_name="$tenant-container"
 scratch_dir=$(mktemp -d)
@@ -137,10 +143,6 @@ if [ -n "$daemon_log" ]; then
     echo "legacy backups:write verify did not log exactly one deprecation line in $daemon_log" >&2
     exit 1
   }
-elif [ -n "${CI:-}" ]; then
-  # A CI lane must not pass by silently skipping the deprecation check (#3186).
-  echo 'CONTAINARIUM_BACKUP_E2E_DAEMON_LOG must name the daemon log file when CI is set' >&2
-  exit 1
 else
   echo 'SKIP deprecation-log check: set CONTAINARIUM_BACKUP_E2E_DAEMON_LOG to the daemon log file to run it.'
 fi
