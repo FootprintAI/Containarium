@@ -61,10 +61,13 @@ to get wrong, and its policy is explicit per invocation.
 - **srt:** all traffic from the sandbox goes through an HTTP and SOCKS5
   proxy running on the host. Policy is domain and port allow and deny
   lists, with a resolved-address guard that blocks loopback, link-local,
-  and cloud metadata addresses. Optional TLS termination allows
-  request-level filtering and credential substitution. `[VERIFY: TLS
-  termination and credential masking behavior against the current srt
-  release]`
+  and cloud metadata addresses. Optional TLS termination (`tlsTerminate`,
+  marked experimental upstream) lets the proxy see and filter decrypted
+  requests. Credential masking requires TLS termination: the sandbox sees a
+  sentinel, and the proxy substitutes the real value on egress only to the
+  configured hosts. Masked files are supported on Linux only; macOS denies
+  them instead. These points come from the upstream README and have not
+  been run against a live install.
 
 **Practical read:** srt's egress policy is richer and more readable, and
 its denials can be returned to the model as a reason. Containarium's
