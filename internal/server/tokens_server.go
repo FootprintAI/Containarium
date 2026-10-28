@@ -408,6 +408,17 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		granted = callerScopes
 	}
 
+	// code:answer is matched literally (#3191): "*" does not carry it, so an
+	// exchange must not turn "*" into it either. IntersectScopes passes any
+	// request through for a "*" caller, so without this a human's "*" token
+	// left on a box could be exchanged for one AnswerRunInput accepts, and the
+	// agent could approve its own tool calls. Only a caller that names
+	// code:answer may pass it on. If nothing else was requested, the empty
+	// grant is refused below.
+	if !auth.HasLiteralScope(ctx, auth.ScopeCodeAnswer) {
+		granted = auth.ExcludeScopes(granted, auth.ScopeCodeAnswer)
+	}
+
 	// An empty intersection must NOT mint. This is the trap in the claim
 	// shape: HasScope treats an ABSENT scopes claim as unrestricted, and
 	// generate() omits the claim when it is handed zero scopes. So a token
