@@ -30,6 +30,13 @@ if [ "$1" = is-active ]; then
   n=$(grep -c '^systemctl is-active' "$FAKE_LOG")
   [ "$n" -le "${FAKE_ACTIVE_POLLS:-1}" ]; exit $?
 fi
+# show -p InvocationID --value: a stable id, or a new one after the
+# FAKE_RESTART_AFTER-th `show` call (the unit restarted between two probes).
+if [ "$1" = show ]; then
+  n=$(grep -c '^systemctl show' "$FAKE_LOG")
+  if [ -n "${FAKE_RESTART_AFTER:-}" ] && [ "$n" -gt "$FAKE_RESTART_AFTER" ]; then echo inv-2; else echo inv-1; fi
+  exit 0
+fi
 exit 0
 F
 # curl succeeds only while the installed binary's content says "good".
@@ -104,6 +111,12 @@ URL= TRIES=4 FAKE_ACTIVE_POLLS=0 run_case sentinel-dead-on-start old-good new-ba
 # window is watched to its end, so this must roll back.
 URL= TRIES=4 FAKE_ACTIVE_POLLS=4 run_case sentinel-dies-after-last-probe old-good new-bad 1
 [ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel dies after the last in-loop probe: previous binary restored" || bad "sentinel dies after the last in-loop probe: previous binary restored"
+
+# A unit that crashed and was restarted by systemd between two probes looks
+# active on every probe; a changed InvocationID is what gives it away.
+URL= TRIES=4 FAKE_RESTART_AFTER=2 run_case sentinel-restarted-between-probes old-good new-good 1
+[ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel restarted between probes: previous binary restored" || bad "sentinel restarted between probes: previous binary restored"
+grep -q 'rolled back' "$CASE_DIR/out" && ok "sentinel restarted between probes: says it rolled back" || bad "sentinel restarted between probes: says it rolled back"
 
 # Invalid knobs must fail before anything on the host is touched, never pass vacuously.
 check_knob() { # <label> <var> <value> <url|sentinel>
