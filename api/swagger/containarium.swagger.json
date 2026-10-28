@@ -3632,7 +3632,7 @@
     "/v1/containers/{username}/code-runs/{runName}/inputs/{requestId}:answer": {
       "post": {
         "summary": "Answer a box code run's permission request",
-        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write scope.",
+        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write and code:answer scopes; the wildcard scope and an unscoped token do not carry code:answer.",
         "operationId": "ContainerService_AnswerRunInput",
         "responses": {
           "200": {
