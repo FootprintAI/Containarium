@@ -159,3 +159,74 @@ func TestRequireScope_RecordsUnscopedCallRegardlessOfMode(t *testing.T) {
 		t.Fatalf("UnscopedTokenCalls().Count = %d after a scoped call, want unchanged 1", got)
 	}
 }
+
+func TestRequireAnyScope(t *testing.T) {
+	verifyOrWrite := []string{ScopeBackupsVerify, ScopeBackupsWrite}
+	for _, tc := range []struct {
+		name     string
+		scopes   []string // nil = a token with no scopes claim
+		strict   bool
+		accepted []string
+		want     codes.Code
+	}{
+		{"narrow scope", []string{ScopeBackupsVerify}, false, verifyOrWrite, codes.OK},
+		{"legacy scope", []string{ScopeBackupsWrite}, false, verifyOrWrite, codes.OK},
+		{"wildcard", []string{ScopeWildcard}, false, verifyOrWrite, codes.OK},
+		{"neither", []string{ScopeBackupsRead}, false, verifyOrWrite, codes.PermissionDenied},
+		{"empty", []string{}, false, verifyOrWrite, codes.PermissionDenied},
+		// No scopes claim: allowed for backwards compat, refused under
+		// strict scopes, the same as RequireScope.
+		{"no scopes claim", nil, false, verifyOrWrite, codes.OK},
+		{"no scopes claim, strict", nil, true, verifyOrWrite, codes.PermissionDenied},
+		// A misconfigured call site fails closed. HasScope(_, "") is true,
+		// so an empty accepted entry would otherwise admit every caller.
+		{"no accepted scopes", []string{ScopeBackupsWrite}, false, nil, codes.Internal},
+		{"empty accepted scope", []string{ScopeBackupsRead}, false, []string{ScopeBackupsVerify, ""}, codes.Internal},
+		{"empty accepted scope only", []string{ScopeBackupsRead}, false, []string{""}, codes.Internal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetStrictScopes(tc.strict)
+			defer SetStrictScopes(false)
+			ctx := ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, tc.scopes)
+			_, err := RequireAnyScope(ctx, tc.accepted...)
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("code = %v (%v), want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// RequireAnyScope reports which accepted scope admitted the caller: the first
+// entry, in the caller's order, that the token satisfies. A wildcard or
+// unscoped token satisfies the first entry, so a caller that lists the
+// preferred scope first sees the legacy one only for a token that holds it
+// and not the preferred one (#3186).
+func TestRequireAnyScope_ReportsMatchedScope(t *testing.T) {
+	SetStrictScopes(false)
+	for _, tc := range []struct {
+		name   string
+		scopes []string // nil = a token with no scopes claim
+		want   string
+	}{
+		{"narrow scope", []string{ScopeBackupsRead, ScopeBackupsVerify}, ScopeBackupsVerify},
+		{"legacy scope only", []string{ScopeBackupsRead, ScopeBackupsWrite}, ScopeBackupsWrite},
+		{"both scopes", []string{ScopeBackupsWrite, ScopeBackupsVerify}, ScopeBackupsVerify},
+		{"wildcard", []string{ScopeWildcard}, ScopeBackupsVerify},
+		{"no scopes claim", nil, ScopeBackupsVerify},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, tc.scopes)
+			got, err := RequireAnyScope(ctx, ScopeBackupsVerify, ScopeBackupsWrite)
+			if err != nil {
+				t.Fatalf("unexpected denial: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("matched scope = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	denied := ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, []string{ScopeBackupsRead})
+	if got, err := RequireAnyScope(denied, ScopeBackupsVerify, ScopeBackupsWrite); err == nil || got != "" {
+		t.Fatalf("denied call: matched = %q, err = %v; want \"\" and an error", got, err)
+	}
+}

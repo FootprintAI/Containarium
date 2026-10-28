@@ -15,13 +15,40 @@
 # Knobs, read when the command is built: BIN_DIR (default /usr/local/bin),
 # SRC (default /tmp/containariumd), HEALTH_TRIES (default 15), HEALTH_INTERVAL
 # seconds (default 2). The window is HEALTH_TRIES x HEALTH_INTERVAL, 30s by
-# default. Both must be integers (HEALTH_TRIES >= 1); anything else is rejected
-# before the host is touched. A successful sentinel deploy always takes the
-# full window. A daemon that is healthy but needs longer than the window to come up
-# (URL path) or to settle is rolled back like a broken one: raise HEALTH_TRIES
+# default. Both must be plain decimal integers, no sign and no leading zeros
+# (a bare 0 is valid for HEALTH_INTERVAL): HEALTH_TRIES 1 to 9999,
+# HEALTH_INTERVAL 0 to 9999. Anything else, including an empty value, is
+# rejected; scripts/deploy-binary.sh checks this before its first remote call,
+# and deploy_install_cmd checks again before it builds the command.
+# A successful sentinel deploy always takes the full window. A daemon that is
+# healthy but needs longer than the window to come up (URL path) or to settle
+# is rolled back like a broken one: raise HEALTH_TRIES
 # (or HEALTH_INTERVAL) for a slow-starting daemon, e.g.
 #   HEALTH_TRIES=60 HEALTH_INTERVAL=2 scripts/deploy-binary.sh ...
 #
+# deploy_validate_knobs <tries> <interval> prints the problem(s) on one line
+# and returns 1 when a knob is unusable; prints nothing and returns 0 otherwise.
+# HEALTH_TRIES is 1..9999, HEALTH_INTERVAL is 0..9999 seconds: plain decimal
+# integers, no sign, no leading zeros (a bare 0 is valid for the interval only),
+# at most 4 digits. Values are quoted with %q so a control character in the
+# value never reaches the terminal. The check runs under LC_ALL=C, so digits of
+# other scripts never match. scripts/deploy-binary.sh calls this before
+# its first remote call; deploy_install_cmd calls it again.
+deploy_validate_knobs() {
+    local LC_ALL=C tries="$1" interval="$2" err="" q
+    case "$tries" in
+        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+        *) printf -v q '%q' "$tries"
+           err="HEALTH_TRIES must be an integer from 1 to 9999 without leading zeros, got $q";;
+    esac
+    case "$interval" in
+        0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+        *) printf -v q '%q' "$interval"
+           err="${err:+$err; }HEALTH_INTERVAL must be an integer from 0 to 9999 (seconds) without leading zeros, got $q";;
+    esac
+    [ -z "$err" ] || { printf '%s' "$err"; return 1; }
+}
+
 # The service name and URL are placed inside single quotes in the generated
 # command. They come from operator env (SENTINEL_SERVICE, PRIMARY_SERVICE,
 # *_HEALTH_URL), never from untrusted input, and must not contain a `'`.
@@ -34,10 +61,8 @@ deploy_install_cmd() {
     # change to the host. The emitted command fails too, because callers
     # embed this output in `--command="$(...)"`, where a non-zero return of
     # this function alone would not stop the deploy.
-    local knob_err=""
-    case "$tries" in ''|*[!0-9]*|0|0[0-9]*) knob_err="HEALTH_TRIES must be an integer >= 1, got '$tries'";; esac
-    case "$interval" in ''|*[!0-9]*) knob_err="${knob_err:+$knob_err; }HEALTH_INTERVAL must be an integer >= 0 (seconds), got '$interval'";; esac
-    if [ -n "$knob_err" ]; then
+    local knob_err
+    if ! knob_err="$(deploy_validate_knobs "$tries" "$interval")"; then
         echo "ERROR: $knob_err" >&2
         printf 'echo %q >&2; exit 1\n' "ERROR: $knob_err"
         return 1

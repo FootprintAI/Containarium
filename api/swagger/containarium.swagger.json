@@ -3632,7 +3632,7 @@
     "/v1/containers/{username}/code-runs/{runName}/inputs/{requestId}:answer": {
       "post": {
         "summary": "Answer a box code run's permission request",
-        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write scope.",
+        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write and code:answer scopes; the wildcard scope and an unscoped token do not carry code:answer.",
         "operationId": "ContainerService_AnswerRunInput",
         "responses": {
           "200": {
@@ -18333,6 +18333,16 @@
         }
       }
     },
+    "PeerTransport": {
+      "type": "string",
+      "enum": [
+        "PEER_TRANSPORT_UNSPECIFIED",
+        "PEER_TRANSPORT_HTTP",
+        "PEER_TRANSPORT_MTLS"
+      ],
+      "default": "PEER_TRANSPORT_UNSPECIFIED",
+      "description": "PeerTransport is the transport this daemon uses for its calls to peer\nbackends.\n\n - PEER_TRANSPORT_UNSPECIFIED: No sentinel and no peers (no peer calls), or the daemon predates the field.\n - PEER_TRANSPORT_HTTP: Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was\nobtained from the sentinel).\n - PEER_TRANSPORT_MTLS: Peer calls use HTTPS with the sentinel-issued leaf cert and the pinned\npeer CA."
+    },
     "PentestConfig": {
       "type": "object",
       "properties": {
@@ -22334,6 +22344,10 @@
             "$ref": "#/definitions/StoragePoolCapacity"
           },
           "description": "storage_pools is every Incus storage pool's fill as the daemon's pool\ncapacity monitor last read it (#2823), so a nearly full pool is visible\nper pool rather than hidden in the summed disk fields above. Served from\nthe monitor's snapshot (no extra Incus call); empty when the monitor has\nnot read yet or the daemon predates the field."
+        },
+        "peerTransport": {
+          "$ref": "#/definitions/PeerTransport",
+          "description": "peer_transport is how this daemon's own calls to peer backends are\nsecured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a\nsupported setup (peer mTLS off, or no peer CA on the sentinel) but it\nmeans those calls go over plain HTTP, not over the pinned peer-PKI\nTLS, so an operator can see the degraded state instead of finding one\nstartup log line. UNSPECIFIED means this daemon has no sentinel URL and no\npeers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as\nthe sentinel-backend tunnel. See #3079."
         }
       },
       "title": "SystemInfo contains information about the host system"

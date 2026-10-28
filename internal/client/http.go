@@ -1531,7 +1531,7 @@ func (c *HTTPClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list box runs")
 	}
 	out := &pb.ListBoxRunsResponse{}
-	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.GetRuns(), nil
@@ -1551,7 +1551,7 @@ func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail box run log")
 	}
 	out := &pb.TailBoxRunLogResponse{}
-	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out, nil
@@ -1592,7 +1592,7 @@ func (c *HTTPClient) doProto(method, path string, body []byte, out proto.Message
 	if resp.StatusCode >= 400 {
 		return httpError(bodyBytes, resp.StatusCode, what)
 	}
-	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil

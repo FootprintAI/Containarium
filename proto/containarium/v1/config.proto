@@ -297,6 +297,29 @@ message SystemInfo {
   // the monitor's snapshot (no extra Incus call); empty when the monitor has
   // not read yet or the daemon predates the field.
   repeated StoragePoolCapacity storage_pools = 31;
+
+  // peer_transport is how this daemon's own calls to peer backends are
+  // secured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a
+  // supported setup (peer mTLS off, or no peer CA on the sentinel) but it
+  // means those calls go over plain HTTP, not over the pinned peer-PKI
+  // TLS, so an operator can see the degraded state instead of finding one
+  // startup log line. UNSPECIFIED means this daemon has no sentinel URL and no
+  // peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
+  // the sentinel-backend tunnel. See #3079.
+  PeerTransport peer_transport = 32;
+}
+
+// PeerTransport is the transport this daemon uses for its calls to peer
+// backends.
+enum PeerTransport {
+  // No sentinel and no peers (no peer calls), or the daemon predates the field.
+  PEER_TRANSPORT_UNSPECIFIED = 0;
+  // Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was
+  // obtained from the sentinel).
+  PEER_TRANSPORT_HTTP = 1;
+  // Peer calls use HTTPS with the sentinel-issued leaf cert and the pinned
+  // peer CA.
+  PEER_TRANSPORT_MTLS = 2;
 }
 
 // StoragePoolCapacity is one storage pool's fill (#2823).

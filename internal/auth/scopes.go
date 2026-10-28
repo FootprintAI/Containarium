@@ -51,6 +51,16 @@ const (
 	// (destructively) over it — both warrant their own grant.
 	ScopeBackupsRead  = "backups:read"
 	ScopeBackupsWrite = "backups:write"
+	// backups:verify (#3186) is the narrow scope for a restore-test
+	// (verifier) token: VerifyBackup accepts it, and it grants none of
+	// create/restore/delete/prune. For ONE release VerifyBackup also still
+	// accepts backups:write, so verifier tokens minted before this scope
+	// existed keep working; such a call logs a "[backup] DEPRECATED:" line
+	// naming the user (Q8 on #3196). The next release drops backups:write
+	// from VerifyBackup (and from the verify_backup MCP tool's
+	// AlternateScope pairing): operators must re-mint verifier tokens with
+	// backups:read,backups:verify before upgrading to it.
+	ScopeBackupsVerify = "backups:verify"
 
 	// shared volumes (VolumeServer). A write can create/attach/delete
 	// CephFS volumes mounted RW across tenants — cross-tenant data
@@ -86,6 +96,17 @@ const (
 	// developer-loop tools (push, sync, sync_ssh_config)
 	ScopeCodeWrite = "code:write"
 	ScopeSSHWrite  = "ssh:write"
+
+	// code:answer answers a box code run's permission requests
+	// (AnswerRunInput, #3191). An allow lets the agent run the tool call it
+	// asked for, so the credential that answers must be one the agent on the
+	// box cannot hold: AnswerRunInput needs this scope in addition to the
+	// box-run rule (ssh:write, owner or collaborator). It is matched
+	// literally: neither the wildcard nor an unscoped token carries it,
+	// because a skill run's in-box token can be "*" and a login token can be
+	// unscoped. No in-box mint path grants it (runForbiddenScopes), and
+	// ExchangeDelegatedToken passes it on only from a caller that names it.
+	ScopeCodeAnswer = "code:answer"
 
 	// JWT lifecycle (revoke). Admin role still required on
 	// the server side — this scope just narrows what an
@@ -220,13 +241,13 @@ var AllScopes = []string{
 	ScopeContainersRead, ScopeContainersWrite,
 	ScopeSecretsRead, ScopeSecretsWrite,
 	ScopeKMSAdmin,
-	ScopeBackupsRead, ScopeBackupsWrite,
+	ScopeBackupsRead, ScopeBackupsWrite, ScopeBackupsVerify,
 	ScopeVolumesRead, ScopeVolumesWrite,
 	ScopeRoutesRead, ScopeRoutesWrite,
 	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
-	ScopeCodeWrite, ScopeSSHWrite,
+	ScopeCodeWrite, ScopeSSHWrite, ScopeCodeAnswer,
 	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsRunForOrg, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
