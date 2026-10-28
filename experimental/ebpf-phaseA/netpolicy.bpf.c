@@ -924,7 +924,7 @@ int netpolicy_egress(struct __sk_buff *skb) {
 
     // Swap to request orientation: container is the reply's destination.
     // Fragments are skipped, as on the sender hook (#3166).
-    if (!ip_is_fragment(ip))
+    if (1)
         account_reply(skb, ifindex,
                       ip->daddr,  // saddr (request) = reply dst = container
                       ip->saddr,  // daddr (request) = reply src = peer

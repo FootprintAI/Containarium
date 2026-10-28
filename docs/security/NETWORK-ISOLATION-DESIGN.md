@@ -543,6 +543,10 @@ cannot be poisoned:
   on its address and proto alone (fails closed, so an IP option or
   fragmentation cannot evade the rule), and the accounting skips fragments
   and tallies an options-bearing non-fragment under ports 0.
+  Consequences: a fragmented flow to a denied host and proto is denied even
+  if its real port differs, and a legitimate packet whose L4 header is outside
+  the linear skb data (truncated or paged) is denied when a port-scoped rule
+  exists for that host and proto. Rules without a port are unaffected.
 - **Not IPv6.** The sender hook manages IPv4 only; IPv6 (and ARP) pass
   untouched, so source validation and egress enforcement do not apply to
   IPv6 — pre-existing, and the egress allow-list is IPv4-only too.

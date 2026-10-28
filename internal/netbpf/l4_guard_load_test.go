@@ -38,7 +38,8 @@ const (
 // sport dport options(0|1) frag(none|mf|offset) payload. options=1 adds one
 // 32-bit word of NOP/EOL options (ihl=6); frag=mf sets More-Fragments at offset
 // 0 (a first fragment, L4 header present); frag=offset sets a non-zero fragment
-// offset (a later fragment).
+// offset (a later fragment); frag=trunc sends an unfragmented packet whose L4
+// header is cut after 4 bytes (a truncated header).
 const sendCraftedScript = `
 import socket, struct, sys
 src, dst, proto, sport, dport, opt, frag, payload = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), sys.argv[6] == "1", sys.argv[7], sys.argv[8].encode()
@@ -59,6 +60,12 @@ else:
     l4 = struct.pack("!HHHH", sport, dport, 8 + len(payload), 0)
 opts = b"\x01\x01\x01\x00" if opt else b""
 ihl = 5 + len(opts) // 4
+if frag == "trunc":
+    # An unfragmented packet cut inside its L4 header: the ports are not in the
+    # linear data, so parse_l4 reports them unknown.
+    l4 = l4[:4]
+    payload = b""
+    frag = "none"
 frag_off = {"none": 0, "mf": 0x2000, "offset": 1}[frag]
 ip = struct.pack("!BBHHHBBH4s4s", (4 << 4) | ihl, 0, 20 + len(opts) + len(l4) + len(payload), 0x3166, frag_off, 64, pnum, 0,
                  socket.inet_aton(src), socket.inet_aton(dst)) + opts
@@ -75,20 +82,32 @@ type craftedPacket struct {
 	sport   int
 	dport   int
 	options bool
-	frag    string // "none" | "mf" | "offset"
+	frag    string // "none" | "mf" | "offset" | "trunc"
 }
 
 func sendCrafted(t *testing.T, p craftedPacket) {
+	t.Helper()
+	runCrafted(t, p, ebpfLoadPeerAddr, ebpfLoadHostAddr, "ip", "netns", "exec", ebpfLoadNetns)
+}
+
+// sendCraftedToBox sends p from the host namespace to the box, so it crosses the
+// host veth's TC egress hook (the reply direction).
+func sendCraftedToBox(t *testing.T, p craftedPacket) {
+	t.Helper()
+	runCrafted(t, p, ebpfLoadHostAddr, ebpfLoadPeerAddr)
+}
+
+func runCrafted(t *testing.T, p craftedPacket, src, dst string, prefix ...string) {
 	t.Helper()
 	opt := "0"
 	if p.options {
 		opt = "1"
 	}
-	out, err := exec.Command("ip", "netns", "exec", ebpfLoadNetns, // #nosec G204 -- fixed argv, constant script
-		"python3", "-c", sendCraftedScript,
-		ebpfLoadPeerAddr, ebpfLoadHostAddr, p.proto, fmt.Sprint(p.sport), fmt.Sprint(p.dport), opt, p.frag, "l4-guard-3166").CombinedOutput()
+	argv := append(append([]string{}, prefix...), "python3", "-c", sendCraftedScript,
+		src, dst, p.proto, fmt.Sprint(p.sport), fmt.Sprint(p.dport), opt, p.frag, "l4-guard-3166")
+	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput() // #nosec G204 -- fixed argv, constant script
 	if err != nil {
-		t.Fatalf("send crafted %+v from the box netns: %v\n%s", p, err, out)
+		t.Fatalf("send crafted %+v %s -> %s: %v\n%s", p, src, dst, err, out)
 	}
 }
 
@@ -176,11 +195,7 @@ func TestAttachedProgram_PortScopedDenyNotEvadedByIPOptions(t *testing.T) {
 		t.Fatal("object has no deny_cidr map — rebuild netpolicy.bpf.o")
 	}
 
-	cases := []struct {
-		name     string
-		pkt      craftedPacket
-		wantDeny bool
-	}{
+	runDenyCases(t, loader, []denyCase{
 		// Controls: the rule is port-scoped and the address is allowed, so only
 		// the denied port moves the counter.
 		{"plain SYN to the denied port", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, false, "none"}, true},
@@ -189,9 +204,46 @@ func TestAttachedProgram_PortScopedDenyNotEvadedByIPOptions(t *testing.T) {
 		{"IP-options SYN to the denied port", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, true, "none"}, true},
 		{"first fragment to the denied port", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, false, "mf"}, true},
 		{"later fragment (no L4 header)", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, false, "offset"}, true},
+		// Truncated L4 header: the ports are not in the linear data, so the
+		// port is unknown even for a packet to another port. Deliberate
+		// fail-closed behaviour change (#3166).
+		{"truncated TCP header to the denied port", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, false, "trunc"}, true},
+		{"truncated TCP header to another port", craftedPacket{"tcp", l4GuardSport, l4GuardOtherPort, false, "trunc"}, true},
+		// Over-blocking by design: a fragment whose real port differs is denied.
+		{"first fragment to another port", craftedPacket{"tcp", l4GuardSport, l4GuardOtherPort, false, "mf"}, true},
 		// The proto scope still decides: the IP header's protocol is always read.
 		{"IP-options UDP to the denied port", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, true, "none"}, false},
+		{"UDP fragment under a tcp rule", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, false, "mf"}, false},
+	})
+}
+
+// A UDP port-scoped rule is evaded the same way and closed the same way.
+func TestAttachedProgram_PortScopedUDPDenyNotEvadedByIPOptions(t *testing.T) {
+	loader, _ := attachL4GuardBox(t, []*pb.NetworkPolicyDenyRule{
+		{Cidr: ebpfLoadHostAddr + "/32", Port: l4GuardDenyPort, Proto: "udp"},
+	})
+	if !loader.HasDenyRules() {
+		t.Fatal("object has no deny_cidr map — rebuild netpolicy.bpf.o")
 	}
+	runDenyCases(t, loader, []denyCase{
+		{"plain UDP to the denied port", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, false, "none"}, true},
+		{"plain UDP to another port", craftedPacket{"udp", l4GuardSport, l4GuardOtherPort, false, "none"}, false},
+		{"IP-options UDP to the denied port", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, true, "none"}, true},
+		{"UDP first fragment", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, false, "mf"}, true},
+		{"UDP later fragment", craftedPacket{"udp", l4GuardSport, l4GuardDenyPort, false, "offset"}, true},
+		{"truncated UDP header to another port", craftedPacket{"udp", l4GuardSport, l4GuardOtherPort, false, "trunc"}, true},
+		{"TCP fragment under a udp rule", craftedPacket{"tcp", l4GuardSport, l4GuardDenyPort, false, "mf"}, false},
+	})
+}
+
+type denyCase struct {
+	name     string
+	pkt      craftedPacket
+	wantDeny bool
+}
+
+func runDenyCases(t *testing.T, loader *Loader, cases []denyCase) {
+	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			seen, denied := seenAfterSend(t, loader, tc.pkt)
@@ -263,5 +315,50 @@ func TestAttachedProgram_FragmentsAreNotAccounted(t *testing.T) {
 	}
 	if zero == nil || zero.Packets != 3 {
 		t.Fatalf("IP-options datagrams: got %+v, want one ports-0 entry with 3 packets", zero)
+	}
+}
+
+// The egress hook's account_reply is gated on !ip_is_fragment too (#3166): a
+// reply-direction fragment (host -> box) has no readable ports and must not
+// create a ports-0 flow entry. Without the gate, account_reply tallies it under
+// the swapped key (box, host, 0, 0).
+func TestAttachedProgram_ReplyFragmentsAreNotAccounted(t *testing.T) {
+	loader, ifindex := attachL4GuardBox(t, nil)
+	if !loader.HasFlowAccounting() {
+		t.Fatal("object has no flows map — rebuild netpolicy.bpf.o")
+	}
+	peer := netip.MustParseAddr(ebpfLoadPeerAddr)
+	host := netip.MustParseAddr(ebpfLoadHostAddr)
+	// Reply entries for host -> box UDP are keyed in request orientation:
+	// src = box (peer), dst = host.
+	replyFlows := func() []FlowRecord {
+		t.Helper()
+		recs, err := loader.Flows()
+		if err != nil {
+			t.Fatalf("Flows: %v", err)
+		}
+		var out []FlowRecord
+		for _, r := range recs {
+			if int(r.Ifindex) == ifindex && r.Src() == peer && r.Dst() == host && r.Proto == 17 {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	// TC egress runs synchronously in the sender's transmit path, so no wait is
+	// needed once the send returns.
+	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "mf"})
+	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "offset"})
+	if got := replyFlows(); len(got) != 0 {
+		t.Fatalf("reply fragments were accounted: %+v — want no flow entry (#3166: account_reply skips fragments)", got)
+	}
+
+	// Control: a plain reply datagram is accounted under its real ports, proving
+	// the egress hook ran and the fragments above were skipped, not unseen.
+	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "none"})
+	got := replyFlows()
+	if len(got) != 1 || got[0].Sport != l4GuardUDPSport || got[0].Dport != l4GuardUDPDport || got[0].RxPackets != 3 {
+		t.Fatalf("plain reply datagrams: got %+v, want one entry %d->%d with 3 rx packets", got, l4GuardUDPSport, l4GuardUDPDport)
 	}
 }
