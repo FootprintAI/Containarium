@@ -39,7 +39,8 @@ const (
 // 32-bit word of NOP/EOL options (ihl=6); frag=mf sets More-Fragments at offset
 // 0 (a first fragment, L4 header present); frag=offset sets a non-zero fragment
 // offset (a later fragment); frag=trunc sends an unfragmented packet whose L4
-// header is cut after 4 bytes (a truncated header).
+// header is cut after 4 bytes (a truncated header). An optional 9th argument
+// names an interface to inject the frame onto directly (AF_PACKET).
 const sendCraftedScript = `
 import socket, struct, sys
 src, dst, proto, sport, dport, opt, frag, payload = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), sys.argv[6] == "1", sys.argv[7], sys.argv[8].encode()
@@ -69,10 +70,21 @@ if frag == "trunc":
 frag_off = {"none": 0, "mf": 0x2000, "offset": 1}[frag]
 ip = struct.pack("!BBHHHBBH4s4s", (4 << 4) | ihl, 0, 20 + len(opts) + len(l4) + len(payload), 0x3166, frag_off, 64, pnum, 0,
                  socket.inet_aton(src), socket.inet_aton(dst)) + opts
-s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
-s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-for _ in range(3):
-    s.sendto(ip + l4 + payload, (dst, 0))
+iface = sys.argv[9] if len(sys.argv) > 9 else ""
+if iface:
+    # Inject the frame straight onto the veth with an AF_PACKET socket, below
+    # netfilter: a locally-sent fragment would otherwise be swallowed by
+    # conntrack's defragmentation before it reaches the TC egress hook.
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    s.bind((iface, 0))
+    eth = b"\x02\x00\x00\x00\x31\x66" + b"\x02\x00\x00\x00\x31\x67" + b"\x08\x00"
+    for _ in range(3):
+        s.send(eth + ip + l4 + payload)
+else:
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+    for _ in range(3):
+        s.sendto(ip + l4 + payload, (dst, 0))
 `
 
 // craftedPacket describes one sendCraftedScript invocation from the box netns
@@ -87,24 +99,24 @@ type craftedPacket struct {
 
 func sendCrafted(t *testing.T, p craftedPacket) {
 	t.Helper()
-	runCrafted(t, p, ebpfLoadPeerAddr, ebpfLoadHostAddr, "ip", "netns", "exec", ebpfLoadNetns)
+	runCrafted(t, p, ebpfLoadPeerAddr, ebpfLoadHostAddr, "", "ip", "netns", "exec", ebpfLoadNetns)
 }
 
 // sendCraftedToBox sends p from the host namespace to the box, so it crosses the
 // host veth's TC egress hook (the reply direction).
 func sendCraftedToBox(t *testing.T, p craftedPacket) {
 	t.Helper()
-	runCrafted(t, p, ebpfLoadHostAddr, ebpfLoadPeerAddr)
+	runCrafted(t, p, ebpfLoadHostAddr, ebpfLoadPeerAddr, ebpfLoadHostVeth)
 }
 
-func runCrafted(t *testing.T, p craftedPacket, src, dst string, prefix ...string) {
+func runCrafted(t *testing.T, p craftedPacket, src, dst, iface string, prefix ...string) {
 	t.Helper()
 	opt := "0"
 	if p.options {
 		opt = "1"
 	}
 	argv := append(append([]string{}, prefix...), "python3", "-c", sendCraftedScript,
-		src, dst, p.proto, fmt.Sprint(p.sport), fmt.Sprint(p.dport), opt, p.frag, "l4-guard-3166")
+		src, dst, p.proto, fmt.Sprint(p.sport), fmt.Sprint(p.dport), opt, p.frag, "l4-guard-3166", iface)
 	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput() // #nosec G204 -- fixed argv, constant script
 	if err != nil {
 		t.Fatalf("send crafted %+v %s -> %s: %v\n%s", p, src, dst, err, out)
