@@ -9,45 +9,39 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// #2188: --dns-passthrough-host is validated at boot so a typo fails visibly.
-// That only works if every argument the operator typed reaches the validator —
-// including an explicit blank — and if a comma is not silently treated as a
-// separator. pflag's StringSlice drops a blank value and splits on commas;
-// StringArray keeps each occurrence exactly as given.
-func TestDNSPassthroughHostFlag_KeepsEveryArgumentAsTyped(t *testing.T) {
-	f := daemonCmd.Flags().Lookup("dns-passthrough-host")
-	if f == nil {
-		t.Fatal("flag --dns-passthrough-host is not registered")
+// #2734 (slice C of #2263): deployed systemd units still pass the bridge DNS
+// flags, so the daemon must keep accepting them after the reconciler is gone.
+// They are hidden, deprecated and do nothing; slice D (#2735) deletes them.
+func TestBridgeDNSFlags_DeprecatedNoOps(t *testing.T) {
+	names := []string{"bridge-dns-reconcile", "bridge-dns-create", "dns-passthrough-host"}
+	for _, name := range names {
+		f := daemonCmd.Flags().Lookup(name)
+		if f == nil {
+			t.Fatalf("--%s is no longer registered: units that pass it would stop the daemon from starting", name)
+		}
+		if !f.Hidden {
+			t.Errorf("--%s is not hidden", name)
+		}
+		if f.Deprecated == "" {
+			t.Errorf("--%s is not marked deprecated", name)
+		}
 	}
-	sv, ok := f.Value.(pflag.SliceValue)
-	if !ok {
-		t.Fatalf("flag value %T is not a slice value", f.Value)
-	}
-	reset := func() { _ = sv.Replace(nil); f.Changed = false; dnsPassthroughHosts = nil }
-	t.Cleanup(reset)
 
-	cases := []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{"unset", nil, nil},
-		{"one host", []string{"--dns-passthrough-host=api.example.com"}, []string{"api.example.com"}},
-		{"repeated", []string{"--dns-passthrough-host=a.example.com", "--dns-passthrough-host=b.example.com"}, []string{"a.example.com", "b.example.com"}},
-		{"an explicit blank reaches validation", []string{"--dns-passthrough-host="}, []string{""}},
-		{"a blank among others reaches validation", []string{"--dns-passthrough-host=a.example.com", "--dns-passthrough-host="}, []string{"a.example.com", ""}},
-		{"a comma is not a separator", []string{"--dns-passthrough-host=a.example.com,b.example.com"}, []string{"a.example.com,b.example.com"}},
+	// The full set an old unit passes parses without error, including a blank
+	// passthrough host that used to fail validation at boot.
+	args := []string{
+		"--bridge-dns-reconcile=false",
+		"--bridge-dns-create",
+		"--dns-passthrough-host=api.example.com",
+		"--dns-passthrough-host=",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			reset()
-			if err := daemonCmd.Flags().Parse(tc.args); err != nil {
-				t.Fatalf("parse %q: %v", tc.args, err)
-			}
-			if !reflect.DeepEqual(dnsPassthroughHosts, tc.want) {
-				t.Fatalf("hosts = %q; want %q", dnsPassthroughHosts, tc.want)
-			}
-		})
+	t.Cleanup(func() {
+		for _, name := range names {
+			daemonCmd.Flags().Lookup(name).Changed = false
+		}
+	})
+	if err := daemonCmd.Flags().Parse(args); err != nil {
+		t.Fatalf("parse %q: %v", args, err)
 	}
 }
 
