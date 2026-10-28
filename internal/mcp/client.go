@@ -544,7 +544,7 @@ func (c *Client) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, err
 	}
 	out := &pb.ListBoxRunsResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out.GetRuns(), nil
@@ -557,7 +557,7 @@ func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogR
 		return nil, err
 	}
 	out := &pb.TailBoxRunLogResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -570,7 +570,7 @@ func (c *Client) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsR
 		return nil, err
 	}
 	out := &pb.ListRunInputsResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -587,7 +587,7 @@ func (c *Client) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInp
 		return nil, err
 	}
 	out := &pb.AnswerRunInputResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
