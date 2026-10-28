@@ -36,6 +36,13 @@ set -euo pipefail
 # shellcheck source=lib/deploy-install.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/deploy-install.sh"
 
+# Reject bad HEALTH_TRIES / HEALTH_INTERVAL before any build, scp or ssh
+# (deploy_install_cmd validates again when it builds the install command).
+if ! knob_err="$(deploy_validate_knobs "${HEALTH_TRIES-15}" "${HEALTH_INTERVAL-2}")"; then
+    echo "ERROR: $knob_err" >&2
+    exit 1
+fi
+
 BINARY="bin/containariumd-linux-amd64"
 PROJECT="${PROJECT:-<your-gcp-project>}"
 ZONE="${ZONE:-<your-zone>}"
@@ -52,7 +59,10 @@ SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
 # for the whole window (#3108).
 # The window is HEALTH_TRIES x HEALTH_INTERVAL (defaults 15 x 2s = 30s). A
 # healthy daemon that needs longer than that to start is rolled back like a
-# broken one, so raise HEALTH_TRIES for slow hosts. See scripts/lib/deploy-install.sh.
+# broken one, so raise HEALTH_TRIES for slow hosts. Both are plain integers
+# without leading zeros: HEALTH_TRIES 1-9999, HEALTH_INTERVAL 0-9999 (a bare 0
+# is valid); anything else is rejected before the first remote call.
+# See scripts/lib/deploy-install.sh.
 # Service names and health URLs end up inside single quotes in the remote
 # command: they come from operator env and must not contain a single quote.
 PRIMARY_HEALTH_URL="${PRIMARY_HEALTH_URL:-http://localhost:8080/health}"
