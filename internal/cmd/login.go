@@ -103,7 +103,13 @@ The login flow is the standard OAuth-style device flow:
 
 Multi-server: you can be logged into the hosted cloud AND a
 self-hosted instance simultaneously. The first server you log into
-becomes the default; --server picks a non-default one.`,
+becomes the default; --server picks a non-default one.
+
+Logging in from inside a box hands your token to every process in that box,
+including a coding agent running there: it can read credentials.json and call
+the API as you. Log in from your own machine instead. Answering a run's
+permission requests ('code answer') needs the code:answer scope, which no
+login token carries, so an agent cannot approve its own requests with it.`,
 	Example: `  # Log in to the hosted cloud
   containarium login
 

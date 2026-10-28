@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.120.0] - 2026-10-28
+
 ### Upgrading
 
 - Scoped policy writes now require the `network-policy:write` scope (#3165), including the existing full-policy `Set`/`Patch`/`Delete` and signature mutation RPCs that previously needed only the admin role. A token minted with an explicit scope list that omits `network-policy:write` loses those writes on upgrade; mint a new token adding that scope (or keep using legacy unrestricted admin credentials, which are unaffected). `containarium token inspect` output shows a token's scopes; a scopes-restricted token created before this change that lists `network-policy:read` but not `network-policy:write` must be re-minted before it can change policies again.
+- Answering a box run's permission requests now requires a token carrying both `ssh:write` and `code:answer` (#3191). This covers `containarium code answer`, the inline answers in `code attach`, the MCP `code_answer` tool and `AnswerRunInput` itself. `code:answer` is matched literally: a login token, a token with no scopes claim and a `*` token are all refused with `PermissionDenied` ("scope required: code:answer"), even for the box owner, so anyone who answers with such a token today must switch. Mint an answering token where the agent on the box cannot read it, for example on the daemon host: `containarium token generate --secret-file <jwt-secret-file> --username <you> --scopes ssh:write,code:answer --expiry 24h --raw`, then pass it with `--token` or `CONTAINARIUM_TOKEN`. Skill and crew run tokens never carry `code:answer`, whatever the caller or the skill manifest grants, and `ExchangeDelegatedToken` (`containarium token delegate`) grants it only to a caller that holds it literally, so a `*` token cannot be exchanged for one.
 
 ### Added
 
