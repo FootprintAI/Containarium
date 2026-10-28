@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dropping an SSH key no longer revokes it while another account still holds it** (#3222, security; the registered-first order of #3187). The registry's first-registration-wins ownership let an account register another person's public key before that person did, own the entry, and revoke it with `RemoveSSHKey` while the key was still in the other person's own `authorized_keys`. A revoke that would take effect (the caller owns an active entry, or the key has no entry) is now skipped while any other account holds the same public key in its `authorized_keys`: `RemoveSSHKey` and `SetSSHKeys` remove the key from the caller's own file only, leave the entry active, succeed, and do not say which account holds it. The holder lookup reads the `authorized_keys` files, not the registry. The sole holder's revoke and a non-owner's drop (which never changed the entry) behave as before. Collaborator accounts (`<owner>-container-<collab>`) are separate accounts: a revoke by one does not revoke another's identical key, and each counts as another holder. Not closed (#3217): when another account owns the entry, a drop still leaves it active, and a dropper who owns an entry another account holds stays its owner after dropping it, so the entry remains active once the last holder removes the key. A revoke of a key with no entry still inserts a revoked entry (when no one else holds it), so a later backfill cannot make it live.
 
+### Changed
+
+- **The `VerifyBackup` deprecation log line quotes the user and the backup id** (#3186 review follow-up). The line (`[backup] DEPRECATED: VerifyBackup authorized by legacy scope backups:write ...`) now prints both with `%q`, so a backup id containing a newline can no longer forge a second log line. Anything grepping the 0.120.1 format `user=<tenant> id=<id>` must match `user="<tenant>" id="<id>"` instead. `scripts/backup-scoped-token-e2e.sh` now fails under `CI` when `CONTAINARIUM_BACKUP_E2E_DAEMON_LOG` is unset instead of skipping the deprecation-log check.
+
 ## [0.120.1] - 2026-10-28
 
 ### Added
