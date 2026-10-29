@@ -2,6 +2,7 @@ name: Offline install on a disconnected Ubuntu VM
 
 on:
   push:
+    branches: [main]
     paths:
       - 'scripts/ci/*offline-install*.sh'
       - '.github/workflows/offline-install-vm.yml'
