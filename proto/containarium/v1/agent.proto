@@ -947,6 +947,11 @@ message CrewRun {
   // pull request; an agent's own `tests_run` claim should not. A failed or
   // missing pack does not fail the run: whoever acts on the run reads this.
   CrewProofPack proof_pack = 15;
+  // The model id each member was driven with (#3259), keyed by skill_id: the
+  // run's model_overrides entry, else the skill's own pinned `model`. A member
+  // that exports no model (none requested or pinned, or no named engine) is
+  // absent: its engine's default ran, and the daemon does not claim to know which.
+  map<string, string> member_models = 16;
 }
 
 // CrewProofPack summarizes the Proof Pack a crew's PACK_PRODUCER produced
@@ -1038,6 +1043,19 @@ message RunCrewRequest {
   TaskGraph graph = 11;
   // Zero defaults to 5; must not exceed the platform node cap.
   uint32 concurrency = 12;
+  // Per-member model override (#3259), keyed by skill_id: when a member's id has
+  // an entry here, THAT model id is the one its run is driven with, ahead of the
+  // skill's own `model`. Precedence: this override, then the skill's `model`,
+  // then CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no
+  // tiers are enumerated; ids change with every release) but must be a plain
+  // id, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the
+  // box only with a named engine (the skill's, or engine_overrides'), so an
+  // entry for a member with none is FAILED_PRECONDITION rather than ignored. A
+  // key that is not a member of the crew is INVALID_ARGUMENT. An id the engine's
+  // provider does not list is refused before the run starts, when the daemon can
+  // list that provider's models. Not supported with `graph` (INVALID_ARGUMENT).
+  // CrewRun.member_models reports what each member ran with.
+  map<string, string> model_overrides = 13;
 }
 message RunCrewResponse {
   CrewRun run = 1;
