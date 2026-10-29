@@ -732,6 +732,16 @@ func (c *GRPCClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 	return resp.GetRuns(), nil
 }
 
+// GetBoxRunUserStatus reports, read-only, whether the unprivileged run user on a
+// box has a usable agent sign-in: the probe StartBoxRun refuses on, without
+// queueing a run (#3274). The error is returned UNWRAPPED so a daemon too old to
+// implement the RPC surfaces as gRPC codes.Unimplemented.
+func (c *GRPCClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.GetBoxRunUserStatus(ctx, &pb.GetBoxRunUserStatusRequest{Username: username})
+}
+
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {

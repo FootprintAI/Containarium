@@ -4141,6 +4141,39 @@
         ]
       }
     },
+    "/v1/containers/{username}/run-user/status": {
+      "get": {
+        "summary": "Report whether a box's run user is signed in",
+        "description": "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_GetBoxRunUserStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBoxRunUserStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/snapshots": {
       "get": {
         "summary": "List a container's snapshots",
@@ -15226,6 +15259,28 @@
           "$ref": "#/definitions/BackupRecord"
         }
       }
+    },
+    "GetBoxRunUserStatusResponse": {
+      "type": "object",
+      "properties": {
+        "runUser": {
+          "type": "string",
+          "description": "The OS user platform runs execute as on a box with a recorded tool-access\nlevel. Reported even when tool_access_recorded is false."
+        },
+        "toolAccessRecorded": {
+          "type": "boolean",
+          "description": "Whether the box has a tool-access level recorded. When false, platform\nruns use the owner's identity and none of the run-user fields below apply."
+        },
+        "runUserExists": {
+          "type": "boolean",
+          "description": "Whether the run user already exists on the box. It is created by the box's\nfirst platform run, so false on a recorded box means no run has happened."
+        },
+        "state": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.\nNONE when the run user does not exist yet or has never signed in (the same\nanswer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,\nINTERACTIVE or API_KEY when a run would proceed."
+        }
+      },
+      "description": "GetBoxRunUserStatusResponse is the read-only answer to \"would StartBoxRun\nrefuse a platform run on this box for want of a run-user sign-in?\" (#3274).\nIt is the same probe StartBoxRun applies, run without queueing anything and\nwithout provisioning the run user. It names the credential's SOURCE only:\nnothing here reads, copies, prints or refreshes a credential value."
     },
     "GetCapabilityProfileResponse": {
       "type": "object",

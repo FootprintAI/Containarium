@@ -253,6 +253,7 @@ token revoke
 token unscoped-report
 tool-access clear
 tool-access get
+tool-access run-user
 tool-access set
 tracker change submit
 tracker change submit-files
