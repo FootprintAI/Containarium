@@ -14,7 +14,7 @@ on:
     inputs:
       release_tag:
         description: Published release to verify
-        default: v0.120.2
+        default: v0.121.0
         required: true
         type: string
 
@@ -45,7 +45,7 @@ jobs:
           if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
       - name: Verify the published bundle on a VM without a network adapter
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || 'v0.120.2' }}
+          RELEASE_TAG: ${{ inputs.release_tag || 'v0.121.0' }}
           OUTPUT_DIR: ${{ runner.temp }}/offline-install-evidence
         run: bash scripts/ci/offline-install-vm.sh
       - name: Retain version identity and raw guest output

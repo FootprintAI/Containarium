@@ -5,7 +5,7 @@
 # Evidence is retained in OUTPUT_DIR; only its scratch disks are ephemeral.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-tag=${RELEASE_TAG:-v0.120.2}
+tag=${RELEASE_TAG:-v0.121.0}
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid RELEASE_TAG' >&2; exit 1; }
 out=${OUTPUT_DIR:?Set OUTPUT_DIR to an empty evidence directory}
 mkdir -p "$out"
