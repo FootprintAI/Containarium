@@ -1,0 +1,57 @@
+name: Offline install on a disconnected Ubuntu VM
+
+on:
+  push:
+    paths:
+      - 'scripts/ci/*offline-install*.sh'
+      - '.github/workflows/offline-install-vm.yml'
+  pull_request:
+    paths:
+      - 'scripts/ci/*offline-install*.sh'
+      - '.github/workflows/offline-install-vm.yml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release to verify
+        default: v0.120.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-install-vm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check harness syntax, lint and failure detection
+        run: |
+          bash -n scripts/ci/offline-install-vm.sh scripts/ci/offline-install-guest.sh scripts/ci/test-offline-install-vm.sh
+          shellcheck scripts/ci/offline-install-vm.sh scripts/ci/offline-install-guest.sh scripts/ci/test-offline-install-vm.sh
+          bash scripts/ci/test-offline-install-vm.sh
+      - name: Install host VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+          if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
+      - name: Verify the published bundle on a VM without a network adapter
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || 'v0.120.2' }}
+          OUTPUT_DIR: ${{ runner.temp }}/offline-install-evidence
+        run: bash scripts/ci/offline-install-vm.sh
+      - name: Retain version identity and raw guest output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: offline-install-evidence
+          path: ${{ runner.temp }}/offline-install-evidence/
+          if-no-files-found: warn
+          retention-days: 30
