@@ -11845,6 +11845,10 @@
             "$ref": "#/definitions/BoxRunTool"
           },
           "description": "The tools available to this run, measured on the box by the run's own wrapper\n(a probe before the engine starts and one after it ends, written to a sidecar\nwhatever the engine's exit status), never reported by the agent. Empty for a\nrun with no readable sidecar (an older run, or a box without the probe)."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id the run was started with (StartBoxRunRequest.model, #3259).\nEmpty when none was requested: the engine's own default ran, and the\ndaemon does not claim to know which. Empty for a run from before the field."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -13680,6 +13684,13 @@
         "proofPack": {
           "$ref": "#/definitions/CrewProofPack",
           "description": "The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).\nUnset when the crew has no producer, or the run failed before its last\nA2A member returned the final files. The pack's status is the platform's\nrecord of the tests run on those files, and is what should gate opening a\npull request; an agent's own `tests_run` claim should not. A failed or\nmissing pack does not fail the run: whoever acts on the run reads this."
+        },
+        "memberModels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The model id each member was driven with (#3259), keyed by skill_id: the\nrun's model_overrides entry, else the skill's own pinned `model`. A member\nthat exports no model (none requested or pinned, or no named engine) is\nabsent: its engine's default ran, and the daemon does not claim to know which."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -20343,6 +20354,13 @@
           "type": "integer",
           "format": "int64",
           "description": "Zero defaults to 5; must not exceed the platform node cap."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-member model override (#3259), keyed by skill_id: when a member's id has\nan entry here, THAT model id is the one its run is driven with, ahead of the\nskill's own `model`. Precedence: this override, then the skill's `model`,\nthen CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no\ntiers are enumerated; ids change with every release) but must be a plain\nid, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the\nbox only with a named engine (the skill's, or engine_overrides'), so an\nentry for a member with none is FAILED_PRECONDITION rather than ignored. A\nkey that is not a member of the crew is INVALID_ARGUMENT. An id the engine's\nprovider does not list is refused before the run starts, when the daemon can\nlist that provider's models. Not supported with `graph` (INVALID_ARGUMENT).\nCrewRun.member_models reports what each member ran with."
         }
       }
     },
@@ -21841,6 +21859,10 @@
         "structuredOutput": {
           "type": "boolean",
           "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in /tmp/agent-box/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id to run the engine with (Claude Code's --model), for example\none a caller chose from a policy or a label (#3259). Empty keeps the\nengine's own default, exactly as before. Claude Code only: any other\nengine is FAILED_PRECONDITION, before anything on the box is touched. The\nid is opaque to the API (no tier names are enumerated here, ids change\nwith every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]{0,127};\nanything else is INVALID_ARGUMENT. Whether the engine accepts the id is\nthe engine's to say: an id it rejects ends the run non-zero and the\nreason is in the run's log. BoxRun.model reports the id the run was\nstarted with. Capability \"box_run_model\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -22335,7 +22357,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output) and\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
