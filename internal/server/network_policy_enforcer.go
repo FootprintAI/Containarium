@@ -1406,16 +1406,22 @@ func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, 
 	if err != nil {
 		// The carrier set is incomplete, so add no new trusted entry. An installed
 		// entry whose interface is itself a managed veth needs no sysfs read to
-		// know it must not be trusted, so it is still removed (#3212). Every other
-		// installed entry is left as it is (do not un-trust legitimate uplinks), so
-		// an installed bridge that has since become a carrier stays trusted while
-		// the error persists. Logged once per distinct error.
-		isVeth := make(map[string]bool, len(managedVeths))
+		// know it must not be trusted, so it is still removed (#3212), as is an
+		// installed bridge already known to be a carrier from the masters read
+		// before the unreadable one (#3251, in refused). Every other installed
+		// entry is left as it is (do not un-trust legitimate uplinks), so an
+		// installed bridge that has become a carrier only through a veth not yet
+		// read stays trusted while the error persists. Logged once per distinct
+		// error.
+		drop := make(map[string]bool, len(managedVeths)+len(refused))
 		for _, v := range managedVeths {
-			isVeth[v] = true
+			drop[v] = true
+		}
+		for _, r := range refused {
+			drop[r.Name] = true
 		}
 		for _, c := range cands {
-			if !isVeth[c.Name] || !installed[c.Index] {
+			if !drop[c.Name] || !installed[c.Index] {
 				continue
 			}
 			if derr := ap.DeleteTrustedIface(c.Index); derr != nil {
@@ -1426,7 +1432,7 @@ func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, 
 		}
 		if msg := err.Error(); msg != u.lastErr {
 			u.lastErr = msg
-			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; trusting no new uplink and keeping installed non-veth uplinks this pass: %v", err)
+			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; trusting no new uplink and keeping installed uplinks not known to carry managed veths this pass: %v", err)
 		}
 		return
 	}
