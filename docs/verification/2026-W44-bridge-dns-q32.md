@@ -67,6 +67,11 @@ The service was not modified to manufacture the older header. No amendment
 to the published acceptance text is recorded here, so this report does not
 mark that Q32 header step passed.
 
+This matches [Caddy v2.11.4's reverse-proxy implementation](https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/reverseproxy.go#L1139-L1145),
+which explicitly deletes its Server header and adds Via when forwarding a
+response. The missing Server header is expected proxy behavior; the Q32
+acceptance wording still needs maintainer reconciliation.
+
 ## Restart and legacy-rule cleanup
 
 At 12:03:52–12:04:07 UTC, two old-style `! -s <bridge-subnet>` DNAT rules
