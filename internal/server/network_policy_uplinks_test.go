@@ -237,3 +237,50 @@ func TestUplinks_UnreadableMasterDropsInstalledManagedVeth(t *testing.T) {
 		t.Errorf("want one error log, got %v", *lines)
 	}
 }
+
+// #3251: masters read before the unreadable veth still identify carriers. With
+// vethA -> br0 readable and vethB unreadable, an installed br0 is un-trusted
+// (known carrier), while an unrelated installed uplink is kept and nothing new
+// is trusted.
+func TestUplinks_UnreadableMasterDropsInstalledKnownCarrierBridge(t *testing.T) {
+	masterOf := func(v string) (string, error) {
+		if v == "vethA" {
+			return "br0", nil
+		}
+		return "", errors.New("EIO")
+	}
+	u, ap, inst, lines := newUplinkRig()
+	for _, i := range []int{2, 5} { // eth0 (unrelated), br0 (known carrier)
+		inst[i], ap.set[i] = true, true
+	}
+	cands := []uplinkIface{{"eth0", 2}, {"br0", 5}, {"br1", 6}}
+	u.converge(cands, []string{"vethA", "vethB"}, masterOf, ap, inst)
+	if ap.set[5] || inst[5] {
+		t.Errorf("installed known-carrier bridge stayed trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+	if !ap.set[2] || !inst[2] {
+		t.Errorf("unrelated installed uplink must be kept: kernel=%v installed=%v", ap.set, inst)
+	}
+	if ap.set[6] || inst[6] {
+		t.Errorf("new trust added on error: %v", ap.set)
+	}
+	if len(*lines) != 1 || !strings.Contains((*lines)[0], "EIO") {
+		t.Errorf("want one error log, got %v", *lines)
+	}
+}
+
+// #3251: same through the sysClassNet seam: vethB has no readable master (a
+// regular file where the link should be), vethA's master br0 is still dropped.
+func TestUplinks_UnreadableMasterKnownCarrierViaSysfs(t *testing.T) {
+	fakeSysfs(t, map[string]string{"vethA": "br0", "vethB": ""})
+	if err := os.WriteFile(filepath.Join(sysClassNet, "vethB", "master"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cache := map[string]vethInfo{"a": {veth: "vethA"}, "b": {veth: "vethB"}}
+	u, ap, inst, _ := newUplinkRig()
+	inst[5], ap.set[5] = true, true
+	u.converge([]uplinkIface{{"br0", 5}}, managedVethNames(cache), masterOfIface, ap, inst)
+	if ap.set[5] || inst[5] {
+		t.Errorf("installed known-carrier bridge stayed trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+}
