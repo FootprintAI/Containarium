@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A revoke that fails closed on an unreadable home root no longer returns the path and os error to the caller** (follow-up to #3270, refs #3241, closes #3276). The error said `read <home root>: <os error>`, telling any caller the daemon's home root was unreadable. It now returns a fixed message (`ErrHomeRootUnreadable`) and logs the path and error in the daemon log. The revoke still fails closed and `errors.Is` still matches.
+
 - **A revoke that fails closed on an unreadable account no longer names that account to the caller** (follow-up to #3268, refs #3241). The error returned to an `RemoveSSHKey` or `SetSSHKeys` caller said which account's `authorized_keys` could not be read and why, disclosing another tenant's account name and filesystem state. It now says only that an account's `authorized_keys` could not be read and to check the daemon log, which carries the account and the underlying error. The revoke still fails closed.
 
 ## [0.121.0] - 2026-10-29
