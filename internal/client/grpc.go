@@ -826,6 +826,19 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	return info, nil
 }
 
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *GRPCClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	return resp.GetInfo().GetManagedBackupKeyConfigured(), nil
+}
+
 // ============================================
 // App Service Methods
 // ============================================
