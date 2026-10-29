@@ -406,3 +406,28 @@ func TestPGKeyStore_RevokeFailsClosedOnUnreadableHomeRoot(t *testing.T) {
 		t.Fatalf("failed revoke left a row behind: %v", err)
 	}
 }
+
+// A home the scan cannot read might hold the key: Revoke must error and leave
+// the row as it was, rather than read the unreadable account as "no holder"
+// (#3241). The sole readable holder's key is held by nobody else we can see.
+func TestPGKeyStore_RevokeFailsClosedOnUnreadableAccount(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+	pub := testKey(t)
+	holdKey(t, home, "alice", pub)
+	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, "mallory")); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	if err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt); err == nil {
+		t.Fatal("Revoke succeeded while an account's authorized_keys could not be read")
+	}
+	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() {
+		t.Fatalf("row revoked: %+v", got)
+	}
+}
