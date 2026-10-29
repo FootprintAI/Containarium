@@ -53,6 +53,7 @@ type MockBackend struct {
 	UnfreezeContainerFunc     func(name string) error
 	UnsetConfigFunc           func(containerName, key string) error
 	SetDeviceSizeFunc         func(containerName, deviceName, size string) error
+	EnsureToolchainVolumeFunc func(containerName, root string) error
 	ResolveGPUInputToPCIFunc  func(input string) (string, error)
 	CleanupDiskFunc           func(containerName string) (string, int64, error)
 	UpdateContainerConfigFunc func(name, key, value string) error
@@ -87,6 +88,13 @@ type MockBackend struct {
 	Archives           map[string][]byte
 	ExportInstanceFunc func(name string) (io.ReadCloser, error)
 	ImportInstanceFunc func(name, pool string, r io.Reader, opts incus.ImportOptions) error
+}
+
+func (m *MockBackend) EnsureToolchainVolume(name, root string) error {
+	if m.EnsureToolchainVolumeFunc != nil {
+		return m.EnsureToolchainVolumeFunc(name, root)
+	}
+	return nil
 }
 
 // ExportInstance returns the instance's Archives entry; a name not in

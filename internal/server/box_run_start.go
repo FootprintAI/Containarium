@@ -17,6 +17,7 @@ import (
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -391,7 +392,25 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	// Every precondition has now passed — safe to mutate.
+	// Lazily attach the release to old boxes before rotating any previous run.
+	// Only BUILD_TOOLS requires it; the other levels keep working on hosts
+	// that have not installed a managed toolchain release.
+	ensureTools := s.boxRunEnsureToolchain
+	if ensureTools == nil && s.manager != nil {
+		ensureTools = s.manager.EnsureManagedToolchains
+	}
+	if level == "build_tools" {
+		if ensureTools == nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
+		}
+		if err := ensureTools(req.GetUsername()); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "managed toolchain mount %s: %v", toolchain.HostRoot, err)
+		}
+	} else if ensureTools != nil {
+		_ = ensureTools(req.GetUsername())
+	}
+
+	// The level and required mount are ready; now provision the run user.
 	if level != "" {
 		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
 		if err != nil {
