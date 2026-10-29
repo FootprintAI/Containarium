@@ -259,6 +259,8 @@ type systemInfo struct {
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
 	// Storage pools (#2823), decoded per entry with protojson.
 	StoragePools []json.RawMessage `json:"storagePools"`
+	// Managed backup key (#3213); absent on an older daemon → false.
+	ManagedBackupKeyConfigured bool `json:"managedBackupKeyConfigured"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
@@ -1684,6 +1686,26 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	return info, nil
 }
 
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *HTTPClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/system/info", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	result, err := parseResponse[getSystemInfoResponse](resp)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	if result.Info == nil {
+		return false, fmt.Errorf("no system info returned in response")
+	}
+	return result.Info.ManagedBackupKeyConfigured, nil
+}
+
 // InstallStack installs a stack or base script on a running container via HTTP
 func (c *HTTPClient) InstallStack(username, stackID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -2130,7 +2152,7 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 // (#2228), keyed by skill_id, wins over that member's own manifest engine; a
 // member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own
 // choice, unchanged pre-#2228 behavior.
-func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
@@ -2143,6 +2165,7 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverridesJSON(engineOverrides),
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

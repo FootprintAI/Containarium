@@ -434,6 +434,11 @@ type ContainerServer struct {
 	// back to network.ip_address.
 	sshHost string
 
+	// managedBackupKey is true when the backup service built a managed-key
+	// wrapper (CONTAINARIUM_BACKUP_KMS_KEY_NAME); GetSystemInfo reports it so
+	// `backup status` knows unregistered tenants are still encrypted (#3213).
+	managedBackupKey bool
+
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
 	// not persisted). #354.
@@ -1844,6 +1849,16 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	}
 }
 
+// lifecycleError wraps a start/stop failure with a gRPC code so the gateway
+// stops reporting every failure as Unknown (#3242): a missing instance is
+// NotFound, anything else gets fallback. The message keeps the original text.
+func lifecycleError(fallback codes.Code, msg string, cause error) error {
+	if incus.IsNotFound(cause) {
+		return status.Error(codes.NotFound, msg)
+	}
+	return status.Error(fallback, msg)
+}
+
 // StartContainer starts a stopped container
 func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartContainerRequest) (*pb.StartContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -1856,6 +1871,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
+	alreadyRunning := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: resume the Sandbox (operatingMode=Running); the
 		// agent-sandbox controller recreates the pod with the retained PVC.
@@ -1869,7 +1885,9 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		if err := s.encryption.PreStart(ctx, req.Username+"-container"); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
-		if err := s.manager.Start(req.Username); err != nil {
+		if c, err := s.manager.StartIfStopped(req.Username); err == nil {
+			alreadyRunning = !c
+		} else {
 			// Try peer
 			if s.peerPool != nil {
 				authToken := extractAuthToken(ctx)
@@ -1878,7 +1896,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					// #1905: don't report "failed to start" (which reads as
 					// "no such container") when the container may actually
 					// be sitting on a backend we just couldn't reach.
-					return nil, fmt.Errorf("cannot start %s: %d backend(s) unreachable (%s)",
+					return nil, status.Errorf(codes.Unavailable, "cannot start %s: %d backend(s) unreachable (%s)",
 						req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 				}
 				if peer != nil {
@@ -1906,7 +1924,23 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					}
 				}
 			}
-			return nil, fmt.Errorf("failed to start container: %w", err)
+			return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to start container: %v", err), err)
+		}
+
+		// #3242: the end state already held; nothing changed, so skip the
+		// start-time stamps, secret re-delivery and the started event.
+		if alreadyRunning {
+			info, gerr := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+			if gerr != nil {
+				return nil, fmt.Errorf("container already running but failed to get info: %w", gerr)
+			}
+			resp := &pb.StartContainerResponse{
+				Message: fmt.Sprintf("Container for user %s was already running", req.Username),
+			}
+			if info != nil {
+				resp.Container = toProtoContainer(info)
+			}
+			return resp, nil
 		}
 
 		// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
@@ -2037,13 +2071,14 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		return nil, err
 	}
 
+	alreadyStopped := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: suspend the Sandbox (operatingMode=Suspended); the
 		// controller deletes only the pod — PVC + Service + identity persist.
 		if err := bb.Stop(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
 			return nil, fmt.Errorf("failed to stop container: %w", err)
 		}
-	} else if err := s.manager.Stop(req.Username, req.Force); err != nil {
+	} else if c, err := s.manager.StopIfRunning(req.Username, req.Force); err != nil {
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -2051,7 +2086,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 			if peer == nil && len(unreachablePeers) > 0 {
 				// #1905: don't report "failed to stop" as if the container
 				// didn't exist when its backend was merely unreachable.
-				return nil, fmt.Errorf("cannot stop %s: %d backend(s) unreachable (%s)",
+				return nil, status.Errorf(codes.Unavailable, "cannot stop %s: %d backend(s) unreachable (%s)",
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
@@ -2064,7 +2099,26 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 				}
 			}
 		}
-		return nil, fmt.Errorf("failed to stop container: %w", err)
+		return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to stop container: %v", err), err)
+	} else if !c {
+		// #3242: the end state already held. Nothing changed, so none of the
+		// post-stop work runs: re-stamping stopped_at would keep postponing the
+		// stopped->delete timer (#525) on every redundant stop.
+		alreadyStopped = true
+	}
+
+	if alreadyStopped {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return nil, fmt.Errorf("container already stopped but failed to get info: %w", err)
+		}
+		resp := &pb.StopContainerResponse{
+			Message: fmt.Sprintf("Container for user %s was already stopped", req.Username),
+		}
+		if info != nil {
+			resp.Container = toProtoContainer(info)
+		}
+		return resp, nil
 	}
 
 	// Post-stop hook (#1201): drop the encryption key so the stopped
@@ -2948,7 +3002,9 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		}
 		// Another account still holds this key: only this account's entry is
 		// removed and the registry row stays active for the other holder
-		// (#3222), as SetSSHKeys does. The response does not name the holder.
+		// (#3222), as SetSSHKeys does. The response does not name the holder; an
+		// unreadable account fails the call with ErrHolderUnknown, which names
+		// no account either (the daemon log does).
 		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
 	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
@@ -3476,6 +3532,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	info.CoreCommittedCpuCores = budget.CoreCommittedCores
 	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
 	info.CpuOvercommitFactor = budget.OvercommitFactor
+	s.withBackupKeyInfo(info)
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -4713,6 +4770,17 @@ func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
 func (s *ContainerServer) SetCPUOvercommitPolicy(factor float64, enforce bool) {
 	s.cpuOvercommitFactor = factor
 	s.cpuOvercommitEnforce = enforce
+}
+
+// SetManagedBackupKeyConfigured records whether this daemon has a managed
+// backup key, for SystemInfo.managed_backup_key_configured (#3213).
+func (s *ContainerServer) SetManagedBackupKeyConfigured(configured bool) {
+	s.managedBackupKey = configured
+}
+
+// withBackupKeyInfo stamps the managed-backup-key report onto info.
+func (s *ContainerServer) withBackupKeyInfo(info *pb.SystemInfo) {
+	info.ManagedBackupKeyConfigured = s.managedBackupKey
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's
