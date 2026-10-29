@@ -34,7 +34,8 @@ func backupTools() []Tool {
 				"age public key before storage, so the platform only holds " +
 				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
 				"with a backup KMS key configured ('managed': a per-backup key " +
-				"wrapped by the KMS; 'both': managed plus the age recipient). " +
+				"wrapped by the KMS; 'both': managed plus the age recipient). 'require_encryption' refuses " +
+				"a backup that would be stored unencrypted. " +
 				"Mirrors `containarium backup create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -85,6 +86,10 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Who holds the key (#2402). 'managed': encrypt to a fresh per-backup identity whose secret the daemon wraps with its KMS key and stores on the record; 'both': managed plus the age recipient, so either opens the file; 'age_recipient': the recipient only, no wrapping. Omit for the daemon default (managed/both when a backup KMS key is configured, otherwise the recipient/plaintext behaviour). A mode the daemon cannot provide is refused, not downgraded. The daemon never unwraps: restore/verify still take the identity, unwrapped under your own KMS credentials.",
 						"enum":        []string{"age_recipient", "managed", "both"},
+					},
+					"require_encryption": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Refuse the backup (FAILED_PRECONDITION, before any container is touched, so nothing is stored) if it would be stored unencrypted: no age_recipient given or registered for the tenant and no managed backup key on the daemon. Default false. Mirrors `containarium backup create --require-encryption`.",
 					},
 				},
 				"required": []string{"username"},
@@ -224,6 +229,8 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		HookFormat:   hookFormat,
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
 		KeyMode:      keyMode,
+
+		RequireEncryption: getBoolArg(args, "require_encryption", false),
 		Connection: &PgConnectionBody{
 			Database: database,
 			User:     getStringArg(args, "db_user", ""),
