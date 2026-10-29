@@ -13,8 +13,9 @@ cat >"$tmp/bin/dpkg" <<'EOF'
 printf '%s' "${AUDIT:-}"
 EOF
 chmod +x "$tmp/bin/"*
+for cmd in bash grep; do ln -s "$(command -v "$cmd")" "$tmp/bin/$cmd"; done
 check() {
-  PATH="$tmp/bin:$PATH" bash "$here/offline-install-guest.sh" --check-install "$tmp/install.log"
+  PATH="$tmp/bin" bash "$here/offline-install-guest.sh" --check-install "$tmp/install.log"
 }
 echo 'Containarium Air-Gapped Installation Complete' >"$tmp/install.log"
 check

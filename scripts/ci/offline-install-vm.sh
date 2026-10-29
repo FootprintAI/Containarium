@@ -14,11 +14,12 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 fetch() { curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2"; }
 
-git -C "$here" fetch --no-tags https://github.com/FootprintAI/Containarium "refs/tags/$tag"
+git -C "$here" fetch --depth=1 --no-tags https://github.com/FootprintAI/Containarium "refs/tags/$tag"
 commit=$(git -C "$here" rev-parse 'FETCH_HEAD^{commit}')
 file="containarium-bundle-${tag}-linux-amd64.tar.gz"
 release="https://github.com/FootprintAI/Containarium/releases/download/$tag"
 mkdir "$work/payload" "$work/seed"
+echo "Downloading published bundle: $release/$file"
 fetch "$release/$file" "$work/payload/$file"
 fetch "$release/$file.sha256" "$out/bundle.sha256"
 (cd "$work/payload" && sha256sum -c "$out/bundle.sha256")
@@ -27,6 +28,7 @@ bundle_sha=$(sha256sum "$work/payload/$file" | cut -d ' ' -f1)
 # Dated official image; checksum and URL are saved alongside the VM log.
 image=ubuntu-24.04-minimal-cloudimg-amd64.img
 image_url=https://cloud-images.ubuntu.com/minimal/releases/noble/release-20261027
+echo "Downloading official Ubuntu image: $image_url/$image"
 fetch "$image_url/$image" "$work/$image"
 fetch "$image_url/SHA256SUMS" "$work/SHA256SUMS"
 awk -v file="$image" '$2 == "*" file || $2 == file {print}' "$work/SHA256SUMS" >"$out/ubuntu.sha256"
