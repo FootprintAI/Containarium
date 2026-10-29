@@ -151,22 +151,27 @@ curl -X PUT \
 ```
 
 A dropped key is always removed from the box. The daemon's key registry has
-one entry per key, owned by the first account that registered it. The entry is
-revoked only when this box user owns it and no other account still holds the
-same public key in its own `authorized_keys`. Collaborator accounts
-(`<owner>-container-<collab>`) are separate accounts, so a revoke by one does
-not revoke another's identical key, and each counts as another holder.
+one entry per key, owned by the first account that registered it. Ownership
+compares the user id, so a box user also owns an entry that their own
+collaborator account (`<owner>-container-<user>`, on someone else's box)
+registered. The entry is revoked when this box user owns it, or it has no
+owner, and no other account still holds the same public key in its own
+`authorized_keys`. For that holder check, collaborator accounts are separate
+accounts: each counts as another holder.
 
 - `PUT` (this call) and `DELETE /v1/containers/{username}/ssh-keys/{key}`: a
   key another account still holds is dropped from this box only; its entry
-  stays active and the call succeeds without saying who holds it. Example:
-  alice registered bob's public key first, then bob added it to his own box;
-  alice's removal drops it from alice's box and leaves bob's access working.
+  stays active and the call succeeds without saying who holds it. If this box
+  user owned the entry, it loses its owner: the next account to add the key
+  takes it over, and the last holder's own removal revokes it. Example: alice
+  registered bob's public key first, then bob added it to his own box; alice's
+  removal drops it from alice's box and leaves bob's access working, and bob's
+  later removal revokes the entry.
 - When another account owns the entry, it stays active and the call succeeds.
 - An unreadable host home directory makes the call fail rather than revoke.
 
 Removing a key is therefore not a guaranteed way to revoke a compromised key
-everywhere; see [#3217](https://github.com/FootprintAI/Containarium/issues/3217).
+everywhere.
 
 #### Get Metrics
 ```bash
