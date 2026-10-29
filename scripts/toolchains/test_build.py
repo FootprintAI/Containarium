@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import subprocess
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -23,8 +24,9 @@ class ToolchainBuildTest(unittest.TestCase):
         self.lock = {"tools": []}
         layouts = {"go": ["go/bin/go", "go/bin/gofmt"],
                    "node": ["node-v1/bin/node", "node-v1/bin/npm", "node-v1/bin/npx"],
+                   "npm": ["package/bin/npm-cli.js", "package/bin/npx-cli.js"],
                    "pnpm": ["pnpm"], "staticcheck": ["staticcheck/staticcheck"]}
-        for name in ("go", "node", "pnpm", "buf", "protoc", "staticcheck"):
+        for name in ("go", "node", "npm", "pnpm", "buf", "protoc", "staticcheck"):
             artifact = self.root / (name + ".download")
             if name == "buf":
                 artifact.write_bytes(b"#!/bin/sh\necho fixture\n")
@@ -58,6 +60,37 @@ class ToolchainBuildTest(unittest.TestCase):
         self.assertIn("GOTOOLCHAIN=local", (destination / "bin/go").read_text())
         self.assertTrue((destination / "protoc/include/google/protobuf/any.proto").is_file())
         self.assertTrue((destination / "install.sh").is_file())
+        self.assertEqual((destination / "bin/npm").readlink(), Path("../npm/bin/npm-cli.js"))
+        self.assertFalse((destination / "node/bin/npm").exists())
+
+    def test_staticcheck_rebuild_uses_verified_source_and_pinned_go(self):
+        tool = next(t for t in self.lock["tools"] if t["name"] == "staticcheck")
+        tool.update(module="honnef.co/go/tools", module_version="v0.8.2", module_sum="h1:fixture")
+        invoked = []
+
+        def compile_tool(args, **kwargs):
+            invoked.append((args, kwargs))
+            Path(args[args.index("-o") + 1]).write_bytes(b"#!/bin/sh\necho rebuilt\n")
+
+        info = {"Sum": "h1:fixture", "Dir": str(self.root)}
+        with mock.patch.object(self.builder.subprocess, "check_output", return_value=json.dumps(info).encode()), \
+             mock.patch.object(self.builder.subprocess, "run", side_effect=compile_tool):
+            self.builder.build(self.lock, "amd64", "v0.1.0", self.root / "rebuilt", self.root / "cache")
+        args, kwargs = invoked[0]
+        self.assertIn("go/bin/go", args[0])
+        self.assertEqual(kwargs["env"]["GOTOOLCHAIN"], "local")
+        self.assertEqual(kwargs["env"]["GOSUMDB"], "sum.golang.org")
+        self.assertEqual(kwargs["env"]["GOARCH"], "amd64")
+
+    def test_staticcheck_source_checksum_mismatch_stops_build(self):
+        tool = next(t for t in self.lock["tools"] if t["name"] == "staticcheck")
+        tool.update(module="honnef.co/go/tools", module_version="v0.8.2", module_sum="h1:expected")
+        info = {"Sum": "h1:wrong", "Dir": str(self.root)}
+        with mock.patch.object(self.builder.subprocess, "check_output", return_value=json.dumps(info).encode()), \
+             mock.patch.object(self.builder.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "source checksum"):
+                self.builder.build(self.lock, "amd64", "v0.1.0", self.root / "rebuilt", self.root / "cache")
+        compiler.assert_not_called()
 
     def test_checksum_mismatch_cannot_produce_a_release(self):
         self.lock["tools"][0]["artifacts"]["amd64"]["sha256"] = "0" * 64

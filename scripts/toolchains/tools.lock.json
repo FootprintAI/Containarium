@@ -19,7 +19,6 @@
     {
       "name": "node",
       "version": "26.13.0",
-      "npm_version": "11.20.0",
       "artifacts": {
         "amd64": {
           "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz",
@@ -29,6 +28,23 @@
         "arm64": {
           "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz",
           "sha256": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92",
+          "format": "tar"
+        }
+      }
+    },
+    {
+      "name": "npm",
+      "version": "12.2.1",
+      "integrity": "sha512-bKCmFRVT/BB+YPEYbZwQ1XUI3N5t4xKSpU1MxOjo7z3iWzKBJ0ZXRC1xFdEN+TC7N5TdywaBzf2dMXGJq/e2PQ==",
+      "artifacts": {
+        "amd64": {
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+          "sha256": "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67",
+          "format": "tar"
+        },
+        "arm64": {
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+          "sha256": "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67",
           "format": "tar"
         }
       }
@@ -84,18 +100,10 @@
     {
       "name": "staticcheck",
       "version": "2026.2.2",
-      "artifacts": {
-        "amd64": {
-          "url": "https://github.com/dominikh/go-tools/releases/download/2026.2.2/staticcheck_linux_amd64.tar.gz",
-          "sha256": "14c081e0f0d05b5a4d4c53fd3d357d4a5af9d20501465fefc9024ee828d3aa5c",
-          "format": "tar"
-        },
-        "arm64": {
-          "url": "https://github.com/dominikh/go-tools/releases/download/2026.2.2/staticcheck_linux_arm64.tar.gz",
-          "sha256": "ccbdaaf81c37eb246a6063f811ee3b89e02ff042cb068cd1ca73a7377e2f7045",
-          "format": "tar"
-        }
-      }
+      "module": "honnef.co/go/tools",
+      "module_version": "v0.8.2",
+      "module_sum": "h1:+jPbCzuYxYrcoOvCecYUFDj+XJQRmzIhJmlbpps21Zk=",
+      "built_with": "go1.27.3"
     }
   ],
   "system_tools": [

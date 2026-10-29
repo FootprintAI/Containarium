@@ -3,9 +3,12 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import platform
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from urllib.request import urlopen
@@ -47,14 +50,43 @@ def unpack(source, kind, destination):
         raise ValueError(f"unsupported archive format: {kind}")
 
 
+def build_staticcheck(tool, lock, arch, destination, cache):
+    # Rebuild the same stable source with the pinned Go security release;
+    # upstream's prebuilt staticcheck may still embed an older Go stdlib.
+    native = {"x86_64": "amd64", "aarch64": "arm64"}[platform.machine()]
+    go = next(t for t in lock["tools"] if t["name"] == "go")
+    asset = go["artifacts"][native]
+    with tempfile.TemporaryDirectory() as temp:
+        sdk = Path(temp)
+        unpack(download(asset, cache), "tar", sdk)
+        command = str(sdk / "go/bin/go")
+        env = dict(os.environ, GOENV="off", GOTOOLCHAIN="local", GOSUMDB="sum.golang.org",
+                   GOPROXY="https://proxy.golang.org", GOPRIVATE="", GONOSUMDB="", GONOPROXY="",
+                   GOMODCACHE=str(cache / "modules"), GOCACHE=str(cache / "go-build"),
+                   GOOS="linux", GOARCH=arch, CGO_ENABLED="0", GOFLAGS="-mod=readonly")
+        info = json.loads(subprocess.check_output(
+            [command, "mod", "download", "-json", tool["module"] + "@" + tool["module_version"]],
+            env=env, timeout=180))
+        if info.get("Sum") != tool["module_sum"]:
+            raise ValueError("staticcheck source checksum mismatch")
+        output = destination / "staticcheck/staticcheck"
+        output.parent.mkdir()
+        subprocess.run([command, "build", "-mod=readonly", "-trimpath", "-o", str(output), "./cmd/staticcheck"],
+                       cwd=info["Dir"], env=env, check=True, timeout=600)
+
+
 def build(lock, arch, release, destination, cache):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,100}", release):
         raise ValueError("invalid release id")
+    destination, cache = destination.resolve(), cache.resolve()
     destination.mkdir(parents=True)
     bin_dir = destination / "bin"
     bin_dir.mkdir()
     for tool in lock["tools"]:
         name = tool["name"]
+        if name == "staticcheck" and "module" in tool:
+            build_staticcheck(tool, lock, arch, destination, cache)
+            continue
         asset = tool["artifacts"][arch]
         source = download(asset, cache)
         if name == "buf":
@@ -63,7 +95,7 @@ def build(lock, arch, release, destination, cache):
             with tempfile.TemporaryDirectory() as temp:
                 extracted = Path(temp)
                 unpack(source, asset["format"], extracted)
-                if name in ("go", "node", "staticcheck"):
+                if name in ("go", "node", "npm", "staticcheck"):
                     roots = list(extracted.iterdir())
                     if len(roots) != 1 or not roots[0].is_dir():
                         raise ValueError(f"unexpected {name} archive layout")
@@ -77,8 +109,12 @@ def build(lock, arch, release, destination, cache):
                     shutil.copyfile(candidates[0], bin_dir / "pnpm")
                 else:
                     raise ValueError(f"unknown managed tool: {name}")
+    # Replace, rather than retain, Node's bundled npm and its stale dependencies.
+    shutil.rmtree(destination / "node/lib/node_modules/npm", ignore_errors=True)
+    for name in ("npm", "npx"):
+        (destination / "node/bin" / name).unlink(missing_ok=True)
     for name, relative in {"gofmt": "../go/bin/gofmt", "node": "../node/bin/node",
-                           "npm": "../node/bin/npm", "npx": "../node/bin/npx",
+                           "npm": "../npm/bin/npm-cli.js", "npx": "../npm/bin/npx-cli.js",
                            "protoc": "../protoc/bin/protoc", "staticcheck": "../staticcheck/staticcheck"}.items():
         (bin_dir / name).symlink_to(relative)
     (bin_dir / "go").write_text(f'#!/bin/sh\nGOTOOLCHAIN=local exec {MOUNT}/current/go/bin/go "$@"\n')

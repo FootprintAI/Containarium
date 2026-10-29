@@ -6,18 +6,23 @@ read-only at the same path. `/usr/local/bin` links resolve through
 `current/bin`; changing the host's `current` link updates existing boxes.
 Toolchains consume host storage once, rather than each box's root filesystem.
 
-The release includes Go (with gofmt), Node (with npm and npx), pnpm, buf,
+The release includes Go (with gofmt), Node, npm (with npx), pnpm, buf,
 protoc (with its standard includes), and staticcheck. Exact versions, source
-URLs, and SHA-256 digests for Linux amd64/arm64 live in
+URLs, archive SHA-256 digests and Go module checksums for Linux amd64/arm64 live in
 [`tools.lock.json`](../scripts/toolchains/tools.lock.json). Bump that lock
 deliberately from the vendors' stable releases; builds never resolve
 `latest`. The managed `go` launcher sets `GOTOOLCHAIN=local`, including when
-called from a bare non-interactive shell.
+called from a bare non-interactive shell. npm is pinned independently and
+replaces Node's bundled copy so its dependencies can be patched promptly.
+staticcheck is rebuilt from its checksum-verified stable source using the
+pinned Go security release, rather than retaining an older embedded stdlib
+from an upstream prebuilt binary. Module downloads use the Go checksum
+database and an explicit module checksum; no tool is built from `latest`.
 
 `manifest.json` inventories the managed versions and lists python3, make,
 git and gcc as **system tools supplied by the box image**. Their measured
 versions come from the run wrapper's tool report. The release does not copy
-those OS tools into the shared volume. npm is inventoried as part of Node.
+those OS tools into the shared volume. npm has its own inventory entry.
 Each architecture's tree is catalogued into an SPDX SBOM and scanned by
 Trivy during both PR checks and the host release build. The scan uses
 `rootfs`, which checks deployed binaries and installed npm packages. Trivy's
