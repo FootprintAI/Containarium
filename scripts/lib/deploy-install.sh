@@ -76,7 +76,12 @@ deploy_install_cmd() {
     else
         # A restart always gets a new InvocationID. Comparing it with the one
         # recorded after start catches a crash and systemd restart that fell
-        # between two probes, which is-active alone cannot see.
+        # between two probes, which is-active alone cannot see. It cannot
+        # catch a restart that lands between `systemctl start` returning and
+        # the id being recorded: the recorded id is then already the new one.
+        # If the id is unreadable at record time the check degrades to
+        # is-active alone; one lost later, after it was recorded, fails the
+        # check.
         inv_get="sudo systemctl show -p InvocationID --value '$svc' 2>/dev/null"
         inv_init="inv=\$($inv_get)"
         inv_same="[ \"\$($inv_get)\" = \"\$inv\" ]"
