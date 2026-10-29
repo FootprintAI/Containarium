@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +15,8 @@ import (
 
 // queueFor queues a miner-signature finding from box, with no worker
 // running. Every box uses the same subject, so all of one tenant's boxes
-// share one finding, as miner-signature findings do in production.
+// share one pre-#2778 finding. This fixture exercises persisted legacy rows;
+// new production subjects are tested through the real miner rule separately.
 func queueFor(t *testing.T, fx *responderFixture, sink *ActingSink, box string) responseJob {
 	t.Helper()
 	if _, err := sink.Upsert(context.Background(), &threatdetect.Finding{Rule: ruleMinerSignature,
@@ -39,168 +39,10 @@ func openAction(fx *responderFixture, box string) (*threatdetect.SecurityAction,
 	return fx.actions.Open(context.Background(), box)
 }
 
-// TestQueuedResponse_SharedFindingReleaseIsPerContainer (#2766): two boxes of
-// one tenant match the same signature and share one finding. A release is
-// judged against the job's own container: releasing (or expiring) box A
-// leaves box B's queued response to run, releasing box B skips it, and a
-// resolve of the finding itself skips every box's job.
-func TestQueuedResponse_SharedFindingReleaseIsPerContainer(t *testing.T) {
-	cases := []struct {
-		name string
-		// run sets the scene and returns the jobs the worker then runs, in
-		// order.
-		run func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob
-		// applied: the boxes that must end with an open THROTTLE.
-		applied []string
-		// skipped: the substring each expected response-skipped audit row
-		// carries, one entry per row.
-		skipped []string
-		// findingOpen: the shared finding's state after the jobs ran.
-		findingOpen bool
-		// responseApplied: the finding's response ends APPLIED (the queued
-		// response ran and recorded itself).
-		responseApplied bool
-	}{
-		{
-			name: "operator release of A leaves B's queued response applied",
-			run: func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob {
-				fx.r.runJob(context.Background(), queueFor(t, fx, sink, "box-a"))
-				jobB := queueFor(t, fx, sink, "box-b")
-				if _, _, err := fx.r.Release(context.Background(), "box-a"); err != nil {
-					t.Fatal(err)
-				}
-				return []responseJob{jobB}
-			},
-			applied:         []string{"box-b"},
-			findingOpen:     true,
-			responseApplied: true,
-		},
-		{
-			name: "TTL release of A leaves B's queued response applied",
-			run: func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob {
-				fx.r.runJob(context.Background(), queueFor(t, fx, sink, "box-a"))
-				jobB := queueFor(t, fx, sink, "box-b")
-				if n := fx.r.SweepExpired(context.Background(), fx.clock.Add(2*time.Hour)); n != 1 {
-					t.Fatalf("SweepExpired released %d, want 1", n)
-				}
-				return []responseJob{jobB}
-			},
-			applied:         []string{"box-b"},
-			findingOpen:     true,
-			responseApplied: true,
-		},
-		{
-			name: "operator release of B skips B's queued response",
-			run: func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob {
-				ctx := context.Background()
-				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
-				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-b"))
-				jobB := queueFor(t, fx, sink, "box-b") // B's rule re-fires while throttled
-				jobA := queueFor(t, fx, sink, "box-a") // and A's, so the finding stays open
-				if _, _, err := fx.r.Release(ctx, "box-b"); err != nil {
-					t.Fatal(err)
-				}
-				return []responseJob{jobB, jobA}
-			},
-			applied:     []string{"box-a"},
-			skipped:     []string{"action on box-b released by operator"},
-			findingOpen: true,
-		},
-		{
-			name: "resolving the finding skips both boxes' queued responses",
-			run: func(t *testing.T, fx *responderFixture, sink *ActingSink) []responseJob {
-				jobA := queueFor(t, fx, sink, "box-a")
-				jobB := queueFor(t, fx, sink, "box-b")
-				if jobA.f.ID != jobB.f.ID {
-					t.Fatalf("finding ids %d and %d: the boxes must share one finding", jobA.f.ID, jobB.f.ID)
-				}
-				if _, err := fx.findings.Resolve(context.Background(), jobA.f.ID); err != nil {
-					t.Fatal(err)
-				}
-				return []responseJob{jobA, jobB}
-			},
-			skipped: []string{"no longer open", "no longer open"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			fx, sink := queuedThrottle(t)
-			jobs := tc.run(t, fx, sink)
-			for _, job := range jobs {
-				fx.r.runJob(ctx, job)
-			}
-
-			for _, box := range []string{"box-a", "box-b"} {
-				row, err := openAction(fx, box)
-				want := false
-				for _, b := range tc.applied {
-					want = want || b == box
-				}
-				switch {
-				case want && (err != nil || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE):
-					t.Errorf("%s: open action = %+v, %v; want THROTTLE", box, row, err)
-				case !want && !errors.Is(err, threatdetect.ErrNoOpenAction):
-					t.Errorf("%s: open action = %+v, %v; want none", box, row, err)
-				}
-			}
-			d := auditDetails(fx.audit, "response-skipped")
-			if len(d) != len(tc.skipped) {
-				t.Fatalf("response-skipped audit = %v, want %d row(s)", d, len(tc.skipped))
-			}
-			for i, want := range tc.skipped {
-				if !strings.Contains(d[i], want) {
-					t.Errorf("response-skipped[%d] = %q, want it to contain %q", i, d[i], want)
-				}
-			}
-			f, err := fx.findings.Get(ctx, jobs[0].f.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := f.State == threatdetect.FindingStateOpen; got != tc.findingOpen {
-				t.Fatalf("finding state = %s, want open=%t", f.State, tc.findingOpen)
-			}
-			if tc.responseApplied &&
-				(f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_APPLIED) {
-				t.Fatalf("response = %+v, want APPLIED for the box still acted on", f.Response)
-			}
-		})
-	}
-}
-
-// TestRelease_SharedFindingResolvedWithLastBox: releasing box A while box B
-// has a response queued keeps the shared finding open (audited as
-// finding_kept_open=true); once B's response ran, releasing B resolves it.
-func TestRelease_SharedFindingResolvedWithLastBox(t *testing.T) {
-	ctx := context.Background()
-	fx, sink := queuedThrottle(t)
-	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
-	jobB := queueFor(t, fx, sink, "box-b")
-	if _, _, err := fx.r.Release(ctx, "box-a"); err != nil {
-		t.Fatal(err)
-	}
-	if d := auditDetails(fx.audit, "release"); len(d) != 1 || !strings.Contains(d[0], "finding_kept_open=true") {
-		t.Fatalf("release audit = %v, want finding_kept_open=true", d)
-	}
-	fx.r.runJob(ctx, jobB)
-	f, _, err := fx.r.Release(ctx, "box-b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if f == nil || f.State != threatdetect.FindingStateResolved {
-		t.Fatalf("finding after the last box's release = %+v, want resolved", f)
-	}
-	if d := auditDetails(fx.audit, "release"); len(d) != 2 || !strings.Contains(d[1], "finding_kept_open=false") {
-		t.Fatalf("release audit = %v, want the second with finding_kept_open=false", d)
-	}
-}
-
-// TestQueuedResponse_ReleaseBetweenReadAndLockSkipsKill pins the re-check
-// under r.mu before the kill: a release or resolve that lands after the
-// worker's unlocked read, but before it takes the lock, must still stop the
-// kill. The afterQueuedRead seam lands it in exactly that window; without the
-// locked re-check the process would be killed.
-func TestQueuedResponse_ReleaseBetweenReadAndLockSkipsKill(t *testing.T) {
+// A store-side state change immediately before the worker's locked read
+// must prevent both a kill and a policy action. The hook belongs to the fake
+// store; production no longer needs a test-only pre-lock callback (#2778).
+func TestQueuedResponse_StateChangeAtReadSkipsKill(t *testing.T) {
 	cases := []struct {
 		name   string
 		setup  func(t *testing.T, fx *responderFixture, sink *ActingSink)
@@ -222,8 +64,12 @@ func TestQueuedResponse_ReleaseBetweenReadAndLockSkipsKill(t *testing.T) {
 				fx.r.runJob(context.Background(), queueFor(t, fx, sink, "box-a"))
 			},
 			land: func(t *testing.T, fx *responderFixture, _ responseJob) {
-				if n := fx.r.SweepExpired(context.Background(), fx.clock.Add(2*time.Hour)); n != 1 {
-					t.Fatalf("SweepExpired released %d, want 1", n)
+				row, err := fx.actions.Open(context.Background(), "box-a")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := fx.actions.Release(context.Background(), row.ID, threatdetect.ReleasedByTTL, fx.clock.Add(2*time.Hour)); err != nil {
+					t.Fatal(err)
 				}
 			},
 			reason: "action on box-a released by ttl",
@@ -241,7 +87,8 @@ func TestQueuedResponse_ReleaseBetweenReadAndLockSkipsKill(t *testing.T) {
 			fx.r.SetProcessKiller(killer)
 			job := queueSignature(t, fx, sink, 4242)
 			landed := 0
-			fx.r.afterQueuedRead = func() {
+			fx.findings.beforeGet = func() {
+				fx.findings.beforeGet = nil
 				landed++
 				tc.land(t, fx, job)
 			}
@@ -249,7 +96,7 @@ func TestQueuedResponse_ReleaseBetweenReadAndLockSkipsKill(t *testing.T) {
 			fx.r.runJob(ctx, job)
 
 			if landed != 1 {
-				t.Fatalf("seam ran %d time(s), want 1 (the unlocked read must pass first)", landed)
+				t.Fatalf("seam ran %d time(s), want 1", landed)
 			}
 			if len(killer.calls) != 0 || len(auditDetails(fx.audit, "kill")) != 0 {
 				t.Fatalf("killed %v after a %s landed before the locked re-check", killer.calls, tc.name)
@@ -360,9 +207,6 @@ func TestRelease_SharedFindingHeldByAppliedAction(t *testing.T) {
 	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
 	jobB := queueFor(t, fx, sink, "box-b")
 	fx.r.runJob(ctx, jobB)
-	if fx.r.pendingElsewhere(jobB.f.ID, "") {
-		t.Fatal("a job is still pending: this test must rely on the store, not the queue")
-	}
 
 	f, kept, err := fx.r.Release(ctx, "box-a")
 	if err != nil {
@@ -433,139 +277,8 @@ func TestQueuedResponse_ReleaseOfAnotherFindingDoesNotSkip(t *testing.T) {
 	}
 }
 
-// releasedWhileQueued throttles box-a, queues box-b's response for the
-// shared finding and releases box-a: the finding is kept open for box-b's
-// job, which is returned.
-func releasedWhileQueued(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-	t.Helper()
-	ctx := context.Background()
-	fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
-	jobB := queueFor(t, fx, sink, "box-b")
-	_, kept, err := fx.r.Release(ctx, "box-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !kept {
-		t.Fatal("Release(box-a) resolved the finding although box-b's response is queued")
-	}
-	return jobB
-}
-
-// TestQueuedResponse_LastJobWithoutActionResolvesReleasedFinding (#2772
-// review 3): Release(box-a) kept the shared finding open for box-b's queued
-// job; that job then ends without an action on box-b. Nothing is left to
-// release, so the worker must resolve the finding itself, whichever way the
-// job ended, rather than leave it open with no response to release.
-func TestQueuedResponse_LastJobWithoutActionResolvesReleasedFinding(t *testing.T) {
-	cases := []struct {
-		name string
-		// arrange sets the scene and returns box-b's job, with whatever makes
-		// it end without an action in place.
-		arrange func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob
-		// skipped: box-b's job is itself skipped (the response-skipped audit
-		// row contains this) rather than run.
-		skipped string
-	}{
-		{
-			name: "ALERT override on box-b",
-			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-				job := releasedWhileQueued(t, fx, sink)
-				if err := fx.policies.SetOverride(context.Background(), "box-b", &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_ALERT}); err != nil {
-					t.Fatal(err)
-				}
-				return job
-			},
-		},
-		{
-			name: "policy read error",
-			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-				kv := &flakyPolicyKV{m: map[string]string{}}
-				fx.policies = threatdetect.NewProcessPolicyStore(kv)
-				fx.r.policies = fx.policies
-				fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", time.Hour)
-				job := releasedWhileQueued(t, fx, sink)
-				kv.mu.Lock()
-				kv.fail = true
-				kv.mu.Unlock()
-				return job
-			},
-		},
-		{
-			name: "degraded backend",
-			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-				job := releasedWhileQueued(t, fx, sink)
-				fx.r.degraded = true
-				return job
-			},
-		},
-		{
-			name: "failed apply on box-b",
-			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-				job := releasedWhileQueued(t, fx, sink)
-				fx.act.fail = errors.New("incus: boom")
-				return job
-			},
-		},
-		{
-			name:    "box-b's job skipped: box-b released after it was queued",
-			skipped: "released by operator",
-			arrange: func(t *testing.T, fx *responderFixture, sink *ActingSink) responseJob {
-				ctx := context.Background()
-				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
-				fx.r.runJob(ctx, queueFor(t, fx, sink, "box-b"))
-				jobB := queueFor(t, fx, sink, "box-b") // re-fires while throttled
-				fx.clock = fx.clock.Add(time.Minute)
-				if _, kept, err := fx.r.Release(ctx, "box-b"); err != nil || !kept {
-					t.Fatalf("Release(box-b) = kept_open=%t, %v; want kept open: box-a's throttle stands", kept, err)
-				}
-				if _, kept, err := fx.r.Release(ctx, "box-a"); err != nil || !kept {
-					t.Fatalf("Release(box-a) = kept_open=%t, %v; want kept open: box-b's response is queued", kept, err)
-				}
-				return jobB
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			fx, sink := queuedThrottle(t)
-			job := tc.arrange(t, fx, sink)
-
-			fx.r.runJob(ctx, job)
-
-			for _, box := range []string{"box-a", "box-b"} {
-				if row, err := openAction(fx, box); !errors.Is(err, threatdetect.ErrNoOpenAction) {
-					t.Errorf("%s: open action = %+v, %v; want none", box, row, err)
-				}
-			}
-			f, err := fx.findings.Get(ctx, job.f.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if f.State != threatdetect.FindingStateResolved {
-				t.Fatalf("finding = state %s response %+v; want resolved: nothing is left to release", f.State, f.Response)
-			}
-			if d := auditDetails(fx.audit, "resolve"); len(d) != 1 || !strings.Contains(d[0], fmt.Sprintf("finding=%d", job.f.ID)) {
-				t.Fatalf("resolve audit = %v, want one for finding %d", d, job.f.ID)
-			}
-			d := auditDetails(fx.audit, "response-skipped")
-			switch {
-			case tc.skipped == "" && len(d) != 0:
-				t.Fatalf("response-skipped audit = %v, want none", d)
-			case tc.skipped != "" && (len(d) != 1 || !strings.Contains(d[0], tc.skipped)):
-				t.Fatalf("response-skipped audit = %v, want one containing %q", d, tc.skipped)
-			}
-			if fx.r.pendingElsewhere(job.f.ID, "") {
-				t.Fatal("a job is still counted as pending after it ran")
-			}
-		})
-	}
-}
-
-// TestQueuedResponse_AlertOnlyFindingStaysOpen is the control for the test
-// above: a finding no operator released is not resolved when its job ends
-// without an action. An alert-only finding stays open for the operator, as
-// it always has.
+// TestQueuedResponse_AlertOnlyFindingStaysOpen preserves the single-box
+// policy: without an operator decision, an alert-only finding stays open.
 func TestQueuedResponse_AlertOnlyFindingStaysOpen(t *testing.T) {
 	ctx := context.Background()
 	fx, sink := queuedThrottle(t)
