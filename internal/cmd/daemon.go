@@ -213,17 +213,6 @@ func init() {
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
-	// #2734 (slice C of #2263): the bridge DNS reconciler and record writer are
-	// gone; boxes reach this host's apps through the kernel hairpin rule. These
-	// three flags stay registered, hidden and ignored, because deployed systemd
-	// units still pass them and an unknown flag would stop the daemon from
-	// starting. Slice D (#2735) deletes them one release later.
-	daemonCmd.Flags().StringArray("dns-passthrough-host", nil, "Deprecated, ignored (#2734).")
-	daemonCmd.Flags().Bool("bridge-dns-reconcile", true, "Deprecated, ignored (#2734).")
-	daemonCmd.Flags().Bool("bridge-dns-create", false, "Deprecated, ignored (#2734).")
-	for _, name := range []string{"dns-passthrough-host", "bridge-dns-reconcile", "bridge-dns-create"} {
-		_ = daemonCmd.Flags().MarkDeprecated(name, "it does nothing since the bridge DNS record was replaced by the kernel hairpin rule (#2734); remove it from the unit")
-	}
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")

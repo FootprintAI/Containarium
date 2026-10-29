@@ -3,45 +3,39 @@
 package cmd
 
 import (
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
 )
 
-// #2734 (slice C of #2263): deployed systemd units still pass the bridge DNS
-// flags, so the daemon must keep accepting them after the reconciler is gone.
-// They are hidden, deprecated and do nothing; slice D (#2735) deletes them.
-func TestBridgeDNSFlags_DeprecatedNoOps(t *testing.T) {
-	names := []string{"bridge-dns-reconcile", "bridge-dns-create", "dns-passthrough-host"}
-	for _, name := range names {
-		f := daemonCmd.Flags().Lookup(name)
-		if f == nil {
-			t.Fatalf("--%s is no longer registered: units that pass it would stop the daemon from starting", name)
-		}
-		if !f.Hidden {
-			t.Errorf("--%s is not hidden", name)
-		}
-		if f.Deprecated == "" {
-			t.Errorf("--%s is not marked deprecated", name)
-		}
-	}
+// #2735 (slice D of #2263): the compatibility release has shipped. The
+// removed bridge DNS flags must now fail parsing rather than remain no-ops.
+func TestBridgeDNSFlagsRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		arg  string
+	}{
+		{"bridge-dns-reconcile", "--bridge-dns-reconcile=false"},
+		{"bridge-dns-create", "--bridge-dns-create"},
+		{"dns-passthrough-host", "--dns-passthrough-host=api.example.com"},
+		{"dns-passthrough-host", "--dns-passthrough-host="},
+	} {
+		t.Run(tc.arg, func(t *testing.T) {
+			if daemonCmd.Flags().Lookup(tc.name) != nil {
+				t.Errorf("removed flag --%s is still registered", tc.name)
+			}
 
-	// The full set an old unit passes parses without error, including a blank
-	// passthrough host that used to fail validation at boot.
-	args := []string{
-		"--bridge-dns-reconcile=false",
-		"--bridge-dns-create",
-		"--dns-passthrough-host=api.example.com",
-		"--dns-passthrough-host=",
-	}
-	t.Cleanup(func() {
-		for _, name := range names {
-			daemonCmd.Flags().Lookup(name).Changed = false
-		}
-	})
-	if err := daemonCmd.Flags().Parse(args); err != nil {
-		t.Fatalf("parse %q: %v", args, err)
+			fs := pflag.NewFlagSet("daemon", pflag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			fs.AddFlagSet(daemonCmd.Flags())
+			err := fs.Parse([]string{tc.arg})
+			if err == nil || !strings.Contains(err.Error(), "unknown flag: --"+tc.name) {
+				t.Errorf("parse %q: got %v, want unknown flag: --%s", tc.arg, err, tc.name)
+			}
+		})
 	}
 }
 
