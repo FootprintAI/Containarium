@@ -247,7 +247,9 @@ mkcache "$tmp/cache-sentinel"; touch "$tmp/cache-sentinel/apt/.MANUAL_APT_DOWNLO
 mkcache "$tmp/cache-good" alpha libx
 
 if bundle empty "$tmp/cache-empty"; then t "build-bundle: apt/ with no .deb exited 0"
-else pass "build-bundle: apt/ with no .deb exits non-zero"; fi
+elif grep -qF "no .deb files in $tmp/cache-empty/apt" "$tmp/empty.out"; then
+  pass "build-bundle: apt/ with no .deb exits non-zero, names the empty directory"
+else t "build-bundle: apt/ with no .deb failed without naming the directory"; cat "$tmp/empty.out"; fi
 if bundle sentinel "$tmp/cache-sentinel"; then t "build-bundle: sentinel-only apt/ exited 0"
 else pass "build-bundle: sentinel-only apt/ exits non-zero"; fi
 if bundle optout "$tmp/cache-empty" BUNDLE_ALLOW_EMPTY_APT=1; then pass "build-bundle: BUNDLE_ALLOW_EMPTY_APT=1 opts out"
@@ -296,6 +298,13 @@ mkdir -p "$tmp/two.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/two.tree/"; cp -r "$
 tar -C "$tmp/two.tree" -czf "$tmp/two.tgz" "$top" other
 if REQUIRED_DEBS=libx bash "$content" "$tmp/two.tgz" >/dev/null 2>&1; then t "check-bundle-content: two top-level directories accepted"
 else pass "check-bundle-content: two top-level directories rejected"; fi
+# A tarball whose apt/ exists but holds no .deb: rejected for that problem only.
+mkdir -p "$tmp/noapt.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/noapt.tree/"
+rm "$tmp/noapt.tree/$top/apt/"*.deb; mkt noapt
+if REQUIRED_DEBS= bash "$content" "$tmp/noapt.tgz" >"$tmp/noapt.out" 2>&1; then t "check-bundle-content: apt/ without a .deb accepted"
+elif grep -q 'apt/ holds no .deb' "$tmp/noapt.out" && grep -q '(1 problem(s))' "$tmp/noapt.out"; then
+  pass "check-bundle-content: apt/ without a .deb rejected, that problem only"
+else t "check-bundle-content: apt/ without a .deb rejected for the wrong reason"; cat "$tmp/noapt.out"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/img.tgz" >/dev/null 2>&1; then t "check-bundle-content: images/ accepted"
 else pass "check-bundle-content: images/ rejected"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/nobin.tgz" >/dev/null 2>&1; then t "check-bundle-content: missing containariumd accepted"
