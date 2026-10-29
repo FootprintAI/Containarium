@@ -81,6 +81,8 @@ check with a checksum for each download.
 | --- | --- | --- | --- |
 | `scripts/install-xcaddy.sh` | curl | xcaddy release tarball for `make build-caddy`, `scripts/setup-caddy.sh`, `proxyproto-e2e.yml` | version + sha256 per platform in `scripts/xcaddy-version.env` (replaces `go install ...@latest`) |
 | `scripts/install-buf.sh` | curl | buf release binary | version + sha256 per platform in `scripts/buf-version.env` |
+| `scripts/ci/offline-install-vm.sh` | curl | Published offline bundle and official Ubuntu 24.04 Minimal VM image | Explicit release tag (default v0.121.0) and dated Ubuntu image (release-20261027); SHA256 verified against each publisher's checksum file and retained with the release commit in the evidence artifact. These same-origin checks establish integrity, not independent authenticity |
+| `scripts/ci/offline-install-guest.sh` | curl | The word `curl` in the required-command check | No fetch; the guest has no network adapter |
 | `.github/workflows/ebpf-load.yml` | curl | bpftool release tarball | version + sha256 (`BPFTOOL_VERSION`, `BPFTOOL_SHA256`) |
 | `.github/workflows/fence-probe-e2e.yml` | curl | bpftool release tarball (twice: the observation-only job and the split-egress job each fetch it) | version + sha256 |
 | `.github/workflows/release.yml` | curl | bpftool release tarball | version + sha256. The `curl` commands inside the release-notes heredoc are text shown to users, not fetches the build runs |

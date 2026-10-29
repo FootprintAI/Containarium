@@ -201,6 +201,28 @@ func TestFileHolders_UnreadableErrorIsSentinel(t *testing.T) {
 	}
 }
 
+// An unreadable home root reaches the same API caller, so its error must not
+// carry the path or the os error text either, and must stay a sentinel. A
+// missing root fails the read the same way a permission error does, and does
+// not depend on the test running as non-root.
+func TestFileHolders_UnreadableHomeRootErrorIsSentinelAndDoesNotLeak(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-such-home-root")
+	fp := mustRecordT(t, testKey(t)).Fingerprint
+
+	held, err := (FileHolders{HomeRoot: root}).OtherAccountHolds(t.Context(), fp, "alice")
+	if err == nil || held {
+		t.Fatalf("an unreadable home root must fail closed (held=%v, err=%v)", held, err)
+	}
+	if !errors.Is(err, ErrHomeRootUnreadable) {
+		t.Errorf("want ErrHomeRootUnreadable, got %v", err)
+	}
+	for _, leak := range []string{root, "no-such-home-root", "no such file", "permission denied", "read "} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("caller-facing error leaks %q: %v", leak, err)
+		}
+	}
+}
+
 // copyAccount recreates the named bad account from src under dst. A symlink is
 // recreated as a symlink; any other account is copied.
 func copyAccount(t *testing.T, src, dst, name string) {

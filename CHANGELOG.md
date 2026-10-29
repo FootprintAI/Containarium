@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A revoke that fails closed on an unreadable home root no longer returns the path and os error to the caller** (follow-up to #3270, refs #3241, closes #3276). The error said `read <home root>: <os error>`, telling any caller the daemon's home root was unreadable. It now returns a fixed message (`ErrHomeRootUnreadable`) and logs the path and error in the daemon log. The revoke still fails closed and `errors.Is` still matches.
+
 - **A revoke that fails closed on an unreadable account no longer names that account to the caller** (follow-up to #3268, refs #3241). The error returned to an `RemoveSSHKey` or `SetSSHKeys` caller said which account's `authorized_keys` could not be read and why, disclosing another tenant's account name and filesystem state. It now says only that an account's `authorized_keys` could not be read and to check the daemon log, which carries the account and the underlying error. The revoke still fails closed.
 
 ## [0.121.0] - 2026-10-29
 
 ### Added
 
+- **The `create_backup` MCP tool takes `require_encryption`** (#3214). A thin wrapper over the same `CreateBackupRequest.require_encryption` field as `backup create --require-encryption` (#3169): when true, a backup that would be stored unencrypted is refused with `FAILED_PRECONDITION` before any container is touched. Default false.
 - **`RunCrewRequest.model_overrides` and `crew run --model <skill-id>=<model-id>`: a per-run model per crew member, reported in `CrewRun.member_models`** (part of #3259). Precedence: the override, then the skill's own `model`, then `CONTAINARIUM_AGENT_MODEL`, then the engine default. A plain id is required (`INVALID_ARGUMENT`), a member with no named engine is `FAILED_PRECONDITION` (a model only reaches the box with a named engine), a key outside the crew is `INVALID_ARGUMENT`, and `graph` runs refuse it for now. All refused before any member is provisioned. No tier names or ids are enumerated.
 - **`StartBoxRun` takes a per-run `model`, and `BoxRun` reports it** (part of #3259). `StartBoxRunRequest.model` runs the Claude Code engine with `--model <id>`; empty keeps the engine's default exactly as before. The id is opaque (no tiers are enumerated), must be a plain id (`[A-Za-z0-9][A-Za-z0-9._:/[]-]{0,127}`, else `INVALID_ARGUMENT`), and any other engine is `FAILED_PRECONDITION`. `BoxRun.model` (from the run record) names the id the run was started with. Advertised as capability `box_run_model`; check it before sending the field to an older daemon.
 
