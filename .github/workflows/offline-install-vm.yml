@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: offline-install-vm-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify:

@@ -50,11 +50,12 @@ printf 'version: 2\nethernets: {}\n' >"$work/seed/network-config"
 cat >"$work/seed/user-data" <<EOF
 #!/bin/bash
 set -euo pipefail
+systemctl mask --now serial-getty@ttyS0.service
 exec > /dev/ttyS0 2>&1
-trap 'rc=\$?; echo "GUEST_EXIT=\$rc"; sync; poweroff -f' EXIT
+trap 'rc=\$?; set +e; echo "GUEST_EXIT=\$rc"; sync; poweroff -f' EXIT
 mkdir -p /payload
 mount -L OFFLINE /payload
-bash /payload/guest.sh '$tag' '$commit' '$bundle_sha'
+bash -x /payload/guest.sh '$tag' '$commit' '$bundle_sha'
 EOF
 genisoimage -quiet -output "$work/seed.iso" -volid cidata -joliet -rock "$work/seed"
 genisoimage -quiet -output "$work/payload.iso" -volid OFFLINE -joliet -rock "$work/payload"
