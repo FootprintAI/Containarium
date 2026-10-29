@@ -2,8 +2,9 @@
 
 The operator ran #2732's Verify-on-dev steps for #2727 Q32 on a real,
 single-host GCP primary on 2026-10-29. The container-to-public-IP HTTP and
-HTTPS paths passed. This is the prerequisite evidence for #2735, rather
-than a deployment of that PR. Deployment identifiers are omitted.
+HTTPS paths passed. This records HTTP hairpin behavior, rather than marking
+every Q32 acceptance step verified or deploying #2735. Deployment
+identifiers are omitted.
 
 ## Version and environment
 
@@ -25,7 +26,8 @@ than a deployment of that PR. Deployment identifiers are omitted.
 
 Slice C, #3162 (`ba16e5e2ba336164c8eb13777e7db50b211ae6f0`), shipped in
 v0.120.0. v0.121.0 is already published, so the compatibility release
-required by #2735 has elapsed.
+required by #2735 has elapsed. That issue's tagged-release dependency and
+CI gate are separate from the Q32 header check recorded below.
 
 ## Results
 
@@ -61,7 +63,9 @@ The TLS peer certificate matched the app hostname, with issuer
 `Via: 1.0 Caddy`, rather than `Server: Caddy`. The literal Server-header
 expectation was not met. The successful path is evidenced by Caddy's Via
 header, valid TLS, the origin fixture's content and the NAT rules/counters.
-The service was not modified to manufacture the older header.
+The service was not modified to manufacture the older header. No amendment
+to the published acceptance text is recorded here, so this report does not
+mark that Q32 header step passed.
 
 ## Restart and legacy-rule cleanup
 
@@ -90,8 +94,11 @@ sudo incus exec "$BOX" -- curl -4 -sv --noproxy '*' \
   --resolve "${APP_DOMAIN}:80:${HOST_PUBLIC_IP}" "http://${APP_DOMAIN}/"
 ```
 
-Check the fixture content and Caddy Via header, and successful certificate
-verification for HTTPS. Also inspect `ip -4 -br addr`,
+Check the fixture content, successful certificate verification for HTTPS,
+and the `Server: Caddy` header required by #2732. Record the Server check as
+unmet when it is absent, as in this pass; the observed `Via: 1.0 Caddy` is
+additional path evidence, not an amendment of that acceptance check.
+Also inspect `ip -4 -br addr`,
 `iptables -t nat -S PREROUTING`, `iptables -t nat -S POSTROUTING` and
 `incus network get incusbr0 raw.dnsmasq` for the conditions above.
 
@@ -103,8 +110,8 @@ Initial test assertions expected the older Server header and an HTTP
 redirect; those assertion failures and the corrected results are both
 retained. No secrets or live deployment addresses are included here.
 
-This pass establishes behavior on the named v0.121.0 commit on one GCP NAT
-primary. The private-IP checks are controls on that same host, not a
+This pass establishes HTTP hairpin behavior on the named v0.121.0 commit on
+one GCP NAT primary. The private-IP checks are controls on that same host, not a
 separate physical-host deployment. It does not retroactively certify the
 original v0.116.0 binary. The #2735 flag-removal change is covered by its
 CLI parsing tests and CI, without deploying its branch to this environment.
