@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`StartBoxRun` takes a per-run `model`, and `BoxRun` reports it** (part of #3259). `StartBoxRunRequest.model` runs the Claude Code engine with `--model <id>`; empty keeps the engine's default exactly as before. The id is opaque (no tiers are enumerated), must be a plain id (`[A-Za-z0-9][A-Za-z0-9._:/[]-]{0,127}`, else `INVALID_ARGUMENT`), and any other engine is `FAILED_PRECONDITION`. `BoxRun.model` (from the run record) names the id the run was started with. Advertised as capability `box_run_model`; check it before sending the field to an older daemon.
+
 ### Fixed
 
 - **`containarium backup status` no longer exits non-zero for tenants a managed backup key already encrypts** (#3213). `GetSystemInfo` gains a typed `managed_backup_key_configured` field (set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured); when it is true, a tenant with no registered age recipient is reported `✓` and does not fail the exit code. A daemon without a managed key still fails such tenants, if the lookup fails (transport error, caller may not read system info) `backup status` warns and reports those tenants as "encryption not confirmed", still exiting non-zero; an older daemon answers without the field, which reads as no managed key (no warning, `✗` UNENCRYPTED). `docs/DB-BACKUP-OPERATIONS.md` updated.

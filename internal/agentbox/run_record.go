@@ -110,6 +110,9 @@ type RunRecord struct {
 	CaptureMode CaptureMode `json:"capture_mode"`
 	LogPath     string      `json:"log_path"`
 	StartedAt   time.Time   `json:"started_at"`
+	// Model is the model id the run was started with (StartBoxRunRequest.model,
+	// #3259); empty when none was requested. Additive: older readers ignore it.
+	Model string `json:"model,omitempty"`
 
 	// Actor is the principal the caller says authorized this run, and
 	// DelegationChain the JSON-serialized auth.Actor chain behind it

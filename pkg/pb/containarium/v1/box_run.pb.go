@@ -498,7 +498,11 @@ type BoxRun struct {
 	// (a probe before the engine starts and one after it ends, written to a sidecar
 	// whatever the engine's exit status), never reported by the agent. Empty for a
 	// run with no readable sidecar (an older run, or a box without the probe).
-	Tools         []*BoxRunTool `protobuf:"bytes,9,rep,name=tools,proto3" json:"tools,omitempty"`
+	Tools []*BoxRunTool `protobuf:"bytes,9,rep,name=tools,proto3" json:"tools,omitempty"`
+	// The model id the run was started with (StartBoxRunRequest.model, #3259).
+	// Empty when none was requested: the engine's own default ran, and the
+	// daemon does not claim to know which. Empty for a run from before the field.
+	Model         string `protobuf:"bytes,10,opt,name=model,proto3" json:"model,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -594,6 +598,13 @@ func (x *BoxRun) GetTools() []*BoxRunTool {
 		return x.Tools
 	}
 	return nil
+}
+
+func (x *BoxRun) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -731,8 +742,19 @@ type StartBoxRunRequest struct {
 	// continue_session run gets no discovered id at all. Capability
 	// "box_run_structured_output" in SystemInfo.capabilities.
 	StructuredOutput bool `protobuf:"varint,6,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The model id to run the engine with (Claude Code's --model), for example
+	// one a caller chose from a policy or a label (#3259). Empty keeps the
+	// engine's own default, exactly as before. Claude Code only: any other
+	// engine is FAILED_PRECONDITION, before anything on the box is touched. The
+	// id is opaque to the API (no tier names are enumerated here, ids change
+	// with every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127};
+	// anything else is INVALID_ARGUMENT. Whether the engine accepts the id is
+	// the engine's to say: an id it rejects ends the run non-zero and the
+	// reason is in the run's log. BoxRun.model reports the id the run was
+	// started with. Capability "box_run_model" in SystemInfo.capabilities.
+	Model         string `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartBoxRunRequest) Reset() {
@@ -805,6 +827,13 @@ func (x *StartBoxRunRequest) GetStructuredOutput() bool {
 		return x.StructuredOutput
 	}
 	return false
+}
+
+func (x *StartBoxRunRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
 }
 
 type StartBoxRunResponse struct {
@@ -1752,7 +1781,7 @@ var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\"\xad\x03\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\"\xc3\x03\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -1764,7 +1793,9 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\fcapture_mode\x18\a \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureMode\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\b \x01(\tR\tsessionId\x121\n" +
-	"\x05tools\x18\t \x03(\v2\x1b.containarium.v1.BoxRunToolR\x05toolsB\f\n" +
+	"\x05tools\x18\t \x03(\v2\x1b.containarium.v1.BoxRunToolR\x05tools\x12\x14\n" +
+	"\x05model\x18\n" +
+	" \x01(\tR\x05modelB\f\n" +
 	"\n" +
 	"_exit_code\"\xc2\x01\n" +
 	"\n" +
@@ -1774,7 +1805,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xda\x01\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xf0\x01\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -1782,7 +1813,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"session_id\x18\x03 \x01(\tR\tsessionId\x12)\n" +
 	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\x12\x19\n" +
 	"\brun_name\x18\x05 \x01(\tR\arunName\x12+\n" +
-	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\"@\n" +
+	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\x12\x14\n" +
+	"\x05model\x18\a \x01(\tR\x05model\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"0\n" +
 	"\x12ListBoxRunsRequest\x12\x1a\n" +
