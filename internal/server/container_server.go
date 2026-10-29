@@ -2832,8 +2832,9 @@ var setSSHKeysRegistryTimeout = 10 * time.Second
 // platform out. Keys dropped by the call are revoked in the ssh_keys
 // registry exactly as RemoveSSHKey does (only the entries this account owns,
 // #3187), except that a key another account still holds is dropped from this
-// account's file without being revoked (#3222); kept keys are registered like AddSSHKey does. An empty list is accepted
-// only with allow_empty, so an omitted field cannot wipe a box.
+// account's file without being revoked (#3222). Kept keys are registered like
+// AddSSHKey does. An empty list is accepted only with allow_empty, so an
+// omitted field cannot wipe a box.
 func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
 		return nil, err
