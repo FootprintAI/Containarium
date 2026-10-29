@@ -24,6 +24,18 @@ def run_text(job):
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
+
+    def test_managed_toolchain_release_contains_inventory_and_scans(self):
+        job = self.jobs["build-and-release"]
+        text = run_text(job)
+        self.assertIn("scripts/toolchains/package.sh", text)
+        self.assertIn("amd64 arm64", text)
+        scans = [s for s in job["steps"] if s.get("uses", "").startswith("aquasecurity/trivy-action")]
+        self.assertEqual({s["with"]["scan-ref"] for s in scans}, {"dist/toolchains-amd64", "dist/toolchains-arm64"})
+        uploads = "\n".join(str(s.get("with", {}).get("files", "")) for s in job["steps"])
+        for arch in ("amd64", "arm64"):
+            for suffix in ("tar.gz", "manifest.json", "spdx.json"):
+                self.assertIn(f"bin/toolchains-linux-{arch}.{suffix}", uploads)
     @classmethod
     def setUpClass(cls):
         cls.jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]

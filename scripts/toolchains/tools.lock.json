@@ -1,0 +1,107 @@
+{
+  "tools": [
+    {
+      "name": "go",
+      "version": "1.27.3",
+      "artifacts": {
+        "amd64": {
+          "url": "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz",
+          "sha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40",
+          "format": "tar"
+        },
+        "arm64": {
+          "url": "https://go.dev/dl/go1.27.3.linux-arm64.tar.gz",
+          "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
+          "format": "tar"
+        }
+      }
+    },
+    {
+      "name": "node",
+      "version": "26.13.0",
+      "npm_version": "11.20.0",
+      "artifacts": {
+        "amd64": {
+          "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz",
+          "sha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
+          "format": "tar"
+        },
+        "arm64": {
+          "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz",
+          "sha256": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92",
+          "format": "tar"
+        }
+      }
+    },
+    {
+      "name": "pnpm",
+      "version": "12.16.1",
+      "artifacts": {
+        "amd64": {
+          "url": "https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-x64.tar.gz",
+          "sha256": "565ff81174a14f6f7bd5d84c1b17e51031a80230d370a1fe24be5d16bd02a825",
+          "format": "tar"
+        },
+        "arm64": {
+          "url": "https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-arm64.tar.gz",
+          "sha256": "f5847699e5d528f8f8e9bcfb385e58cb9fba7482af1b1aa7b70737be42277f81",
+          "format": "tar"
+        }
+      }
+    },
+    {
+      "name": "buf",
+      "version": "1.75.0",
+      "artifacts": {
+        "amd64": {
+          "url": "https://github.com/bufbuild/buf/releases/download/v1.75.0/buf-Linux-x86_64",
+          "sha256": "fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b",
+          "format": "binary"
+        },
+        "arm64": {
+          "url": "https://github.com/bufbuild/buf/releases/download/v1.75.0/buf-Linux-aarch64",
+          "sha256": "00eb190aa82df17f393e05b04889cc60a0b13b3259d336e21a87d5f23ab4fd26",
+          "format": "binary"
+        }
+      }
+    },
+    {
+      "name": "protoc",
+      "version": "36.2",
+      "artifacts": {
+        "amd64": {
+          "url": "https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-linux-x86_64.zip",
+          "sha256": "121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278",
+          "format": "zip"
+        },
+        "arm64": {
+          "url": "https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-linux-aarch_64.zip",
+          "sha256": "8b8f18bd2b30346efbc698dd5a73dd7c805f3ef8380f6dfc95c768f3f1852f6a",
+          "format": "zip"
+        }
+      }
+    },
+    {
+      "name": "staticcheck",
+      "version": "2026.2.2",
+      "artifacts": {
+        "amd64": {
+          "url": "https://github.com/dominikh/go-tools/releases/download/2026.2.2/staticcheck_linux_amd64.tar.gz",
+          "sha256": "14c081e0f0d05b5a4d4c53fd3d357d4a5af9d20501465fefc9024ee828d3aa5c",
+          "format": "tar"
+        },
+        "arm64": {
+          "url": "https://github.com/dominikh/go-tools/releases/download/2026.2.2/staticcheck_linux_arm64.tar.gz",
+          "sha256": "ccbdaaf81c37eb246a6063f811ee3b89e02ff042cb068cd1ca73a7377e2f7045",
+          "format": "tar"
+        }
+      }
+    }
+  ],
+  "system_tools": [
+    "python3",
+    "make",
+    "git",
+    "gcc"
+  ]
+}

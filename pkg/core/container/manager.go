@@ -16,13 +16,15 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
 )
 
 // Manager handles container lifecycle operations
 type Manager struct {
-	incus incus.Backend
+	incus         incus.Backend
+	toolchainRoot string // test override; production uses toolchain.HostRoot
 	// mirrors are the operator-configured registry pull-through mirrors (#908)
 	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
 	// pull from upstream registries as before. See registry_mirror.go.
@@ -370,6 +372,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		config.GPUs = gpus
 	}
 
+	if !isWindows && config.InstanceType != incusapi.InstanceTypeVM && toolchain.Available(m.managedToolchainRoot()) {
+		config.ManagedToolchainRoot = m.managedToolchainRoot()
+	}
 	if err := m.timed(StageCreateInstance, func() error {
 		return m.incus.CreateContainer(config)
 	}); err != nil {
@@ -529,6 +534,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}); err != nil {
 		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
 			fmt.Errorf("failed to install packages: %w", err))
+	}
+
+	if config.ManagedToolchainRoot != "" {
+		if err := m.incus.Exec(containerName, []string{"sh", "-c", toolchain.SetupScript()}); err != nil {
+			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+				fmt.Errorf("prepare managed toolchains: %w", err))
+		}
 	}
 
 	// Bring the box under the sshd policy at birth (#2424), on the baked
