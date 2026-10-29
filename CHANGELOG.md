@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`RunCrewRequest.model_overrides` and `crew run --model <skill-id>=<model-id>`: a per-run model per crew member, reported in `CrewRun.member_models`** (part of #3259). Precedence: the override, then the skill's own `model`, then `CONTAINARIUM_AGENT_MODEL`, then the engine default. A plain id is required (`INVALID_ARGUMENT`), a member with no named engine is `FAILED_PRECONDITION` (a model only reaches the box with a named engine), a key outside the crew is `INVALID_ARGUMENT`, and `graph` runs refuse it for now. All refused before any member is provisioned. No tier names or ids are enumerated.
 - **`StartBoxRun` takes a per-run `model`, and `BoxRun` reports it** (part of #3259). `StartBoxRunRequest.model` runs the Claude Code engine with `--model <id>`; empty keeps the engine's default exactly as before. The id is opaque (no tiers are enumerated), must be a plain id (`[A-Za-z0-9][A-Za-z0-9._:/[]-]{0,127}`, else `INVALID_ARGUMENT`), and any other engine is `FAILED_PRECONDITION`. `BoxRun.model` (from the run record) names the id the run was started with. Advertised as capability `box_run_model`; check it before sending the field to an older daemon.
 
 ### Fixed

@@ -349,6 +349,8 @@ type runCrewRequest struct {
 	// (e.g. "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum
 	// map value. Omitted when the caller named no override for any member.
 	EngineOverrides map[string]string `json:"engine_overrides,omitempty"`
+	// ModelOverrides (#3259) maps skill_id -> model id, passed through as is.
+	ModelOverrides map[string]string `json:"model_overrides,omitempty"`
 }
 
 // addRouteRequest is POST /v1/network/routes.
