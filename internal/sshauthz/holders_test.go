@@ -1,8 +1,10 @@
 package sshauthz
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -134,15 +136,68 @@ func TestFileHolders_UnreadableAccountDoesNotBlockDecidedCases(t *testing.T) {
 	if err != nil || !held {
 		t.Fatalf("a readable holder must answer true despite unreadable accounts: %v, %v", held, err)
 	}
+}
 
-	only := t.TempDir()
-	writeHome(t, only, "alice", shared+"\n")
-	if err := os.Symlink(t.TempDir(), filepath.Join(only, "mallory")); err != nil {
+// The caller's own unreadable home must not block its own revoke: no readable
+// account holds the key, and the only unreadable account is the caller's, so
+// the answer is "no other holder" with no error. A different unreadable
+// account in the same position must still fail closed.
+func TestFileHolders_CallersOwnUnreadableHomeDoesNotBlockItsRevoke(t *testing.T) {
+	lonely := testKey(t) // held by no readable account
+	fp := mustRecordT(t, lonely).Fingerprint
+
+	own := t.TempDir()
+	writeHome(t, own, "alice", "# nothing\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(own, "mallory")); err != nil {
 		t.Fatal(err)
 	}
-	held, err = (FileHolders{HomeRoot: only}).OtherAccountHolds(t.Context(), fp, "mallory")
-	if err != nil || !held {
-		t.Fatalf("the excluded account's own unreadable home must not fail the check: %v, %v", held, err)
+	held, err := (FileHolders{HomeRoot: own}).OtherAccountHolds(t.Context(), fp, "mallory")
+	if err != nil || held {
+		t.Fatalf("the caller's own unreadable home must not block its revoke: held=%v err=%v", held, err)
+	}
+
+	other := t.TempDir()
+	writeHome(t, other, "alice", "# nothing\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(other, "mallory")); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := (FileHolders{HomeRoot: other}).OtherAccountHolds(t.Context(), fp, "alice"); err == nil {
+		t.Fatalf("another account's unreadable home must fail closed (held=%v)", held)
+	}
+}
+
+// The error reaches an API caller who may belong to a different tenant, so it
+// must name neither the unreadable account nor the filesystem state behind it.
+func TestFileHolders_UnreadableErrorDoesNotLeakAccountOrPath(t *testing.T) {
+	home := t.TempDir()
+	key := testKey(t)
+	writeHome(t, home, "alice", "# nothing\n")
+	secretTarget := t.TempDir()
+	if err := os.Symlink(secretTarget, filepath.Join(home, "victimtenant")); err != nil {
+		t.Fatal(err)
+	}
+	fp := mustRecordT(t, key).Fingerprint
+
+	_, err := (FileHolders{HomeRoot: home}).OtherAccountHolds(t.Context(), fp, "alice")
+	if err == nil {
+		t.Fatal("an unreadable account must fail closed")
+	}
+	for _, leak := range []string{"victimtenant", home, secretTarget, "symlink"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("caller-facing error leaks %q: %v", leak, err)
+		}
+	}
+}
+
+func TestFileHolders_UnreadableErrorIsSentinel(t *testing.T) {
+	home := t.TempDir()
+	writeHome(t, home, "alice", "# nothing\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, "victimtenant")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (FileHolders{HomeRoot: home}).OtherAccountHolds(t.Context(), mustRecordT(t, testKey(t)).Fingerprint, "alice")
+	if !errors.Is(err, ErrHolderUnknown) {
+		t.Fatalf("want ErrHolderUnknown, got %v", err)
 	}
 }
 

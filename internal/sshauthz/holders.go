@@ -3,7 +3,7 @@ package sshauthz
 import (
 	"context"
 	"errors"
-	"fmt"
+	"log"
 	"time"
 )
 
@@ -11,6 +11,13 @@ import (
 // take effect but another account still holds the same public key in its own
 // authorized_keys (#3222). It deliberately carries no account name.
 var ErrKeyHeldByOtherAccount = errors.New("ssh key is still held by another account")
+
+// ErrHolderUnknown is returned when an account's authorized_keys could not be
+// read, so it cannot be ruled out as a holder and the revoke fails closed
+// (#3241). It reaches API callers, possibly of a different tenant, so it
+// names neither the account nor the filesystem state; both are in the
+// daemon log.
+var ErrHolderUnknown = errors.New("cannot rule out another account as a holder: an account's authorized_keys could not be read; check the daemon log")
 
 // HolderLookup reports whether any account other than excludeUsername holds
 // the key with the given fingerprint.
@@ -41,7 +48,8 @@ func (f FileHolders) OtherAccountHolds(ctx context.Context, fingerprint, exclude
 	// account's own state does not matter to whether another account holds it.
 	for _, u := range res.Unreadable {
 		if u.Username != excludeUsername {
-			return false, fmt.Errorf("cannot rule out account %s as a holder: %w", u.Username, u.Err)
+			log.Printf("[ssh-keys] cannot rule out account %s as a key holder, failing the revoke closed: %v (#3241)", u.Username, u.Err)
+			return false, ErrHolderUnknown
 		}
 	}
 	return false, nil
