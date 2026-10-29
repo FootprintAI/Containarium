@@ -26,6 +26,13 @@ import (
 
 func crossTenantServer(t *testing.T) (*ContainerServer, *sshauthz.PGKeyStore, *fakeAuthorizedKeys) {
 	t.Helper()
+	return crossTenantServerWith(t, nil)
+}
+
+// crossTenantServerWith builds the server over the real registry. holders is
+// the registry's HolderLookup; nil means the fake authorized_keys files.
+func crossTenantServerWith(t *testing.T, holders sshauthz.HolderLookup) (*ContainerServer, *sshauthz.PGKeyStore, *fakeAuthorizedKeys) {
+	t.Helper()
 	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
 	if dsn == "" {
 		t.Fatal("CONTAINARIUM_TEST_DSN is unset. Failing rather than skipping — this is a tenant " +
@@ -40,12 +47,14 @@ func crossTenantServer(t *testing.T) (*ContainerServer, *sshauthz.PGKeyStore, *f
 	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS ssh_keys`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	keys, err := sshauthz.NewPGKeyStore(ctx, pool)
+	fs := newFakeAuthorizedKeys()
+	if holders == nil {
+		holders = fs
+	}
+	keys, err := sshauthz.NewPGKeyStore(ctx, pool, holders)
 	if err != nil {
 		t.Fatalf("NewPGKeyStore: %v", err)
 	}
-	fs := newFakeAuthorizedKeys()
-	keys.WithHolders(fs)
 	fs.platform = "# platform"
 	s := &ContainerServer{authorizedKeys: fs.ops(), sshKeyNow: func() time.Time { return caseClock }}
 	s.SetSSHKeyRegistry(keys)
@@ -206,4 +215,59 @@ func TestSSHKeys_AliceFirstDropDoesNotRevokeBobsKey(t *testing.T) {
 		}
 		_ = fs
 	})
+}
+
+// An unreadable HomeRoot means the holder check cannot be answered, so every
+// revoking path must fail closed: error out, and leave both the registry row
+// and the authorized_keys files exactly as they were (#3241). FileHolders is
+// pinned alone in the sshauthz package; this runs the real RPCs over the real
+// registry.
+func TestSSHKeys_UnreadableHomeRootFailsClosed(t *testing.T) {
+	aliceCtx := tenantWithScopes("alice", auth.ScopeSSHWrite)
+	unreadable := sshauthz.FileHolders{HomeRoot: t.TempDir() + "/does-not-exist"}
+
+	for _, tc := range []struct {
+		name string
+		call func(s *ContainerServer, keep, drop string) error
+	}{
+		{"RemoveSSHKey", func(s *ContainerServer, _, drop string) error {
+			_, err := s.RemoveSSHKey(aliceCtx, &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: drop})
+			return err
+		}},
+		{"SetSSHKeys", func(s *ContainerServer, keep, _ string) error {
+			_, err := s.SetSSHKeys(aliceCtx, &pb.SetSSHKeysRequest{Username: "alice", SshPublicKeys: []string{keep}})
+			return err
+		}},
+		{"SetSSHKeys allow_empty", func(s *ContainerServer, _, _ string) error {
+			_, err := s.SetSSHKeys(aliceCtx, &pb.SetSSHKeysRequest{Username: "alice", AllowEmpty: true})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, keys, fs := crossTenantServerWith(t, unreadable)
+			keep, drop := newTestPubKey(t), newTestPubKey(t)
+			for _, k := range []string{keep, drop} {
+				if _, err := s.AddSSHKey(aliceCtx, &pb.AddSSHKeyRequest{Username: "alice", SshPublicKey: k}); err != nil {
+					t.Fatalf("alice AddSSHKey: %v", err)
+				}
+			}
+			before := slices.Clone(fs.files["alice"])
+			if owner, active := keyState(t, keys, drop); owner != "alice" || !active {
+				t.Fatalf("precondition: row = owner %q active %v, want alice, active", owner, active)
+			}
+
+			if err := tc.call(s, keep, drop); err == nil {
+				t.Fatal("the call succeeded although the holder check could not be answered")
+			}
+
+			if !slices.Equal(fs.files["alice"], before) {
+				t.Fatalf("authorized_keys changed on a failed call: %v, want %v", fs.files["alice"], before)
+			}
+			for _, k := range []string{keep, drop} {
+				if owner, active := keyState(t, keys, k); owner != "alice" || !active {
+					t.Fatalf("registry row changed on a failed call: owner %q active %v", owner, active)
+				}
+			}
+		})
+	}
 }

@@ -20,7 +20,7 @@ import (
 // heldKeys is the store with the holder lookup reading homeRoot.
 func heldKeys(t *testing.T, homeRoot string) *PGKeyStore {
 	t.Helper()
-	return pgKeys(t).WithHolders(FileHolders{HomeRoot: homeRoot})
+	return pgKeysHeld(t, homeRoot)
 }
 
 func dropHeld(t *testing.T, homeRoot, user string) {
@@ -228,7 +228,7 @@ func TestPGKeyStoreOwnership_MigratesExistingTable(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `ALTER TABLE ssh_keys DROP COLUMN IF EXISTS released_at`); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := NewPGKeyStore(ctx, s.pool)
+	s2, err := NewPGKeyStore(ctx, s.pool, s.holders)
 	if err != nil {
 		t.Fatalf("NewPGKeyStore over the earlier schema: %v", err)
 	}

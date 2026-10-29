@@ -132,17 +132,21 @@ type PGKeyStore struct {
 	holders HolderLookup
 }
 
-// WithHolders sets the lookup Revoke uses to refuse a revocation while
-// another account still holds the key (#3222).
-func (s *PGKeyStore) WithHolders(h HolderLookup) *PGKeyStore {
-	s.holders = h
-	return s
-}
+// ErrNoHolderLookup is returned when a PGKeyStore has no HolderLookup. The
+// lookup is what stops Revoke from revoking a key another account still
+// holds (#3222), so a store without one is refused rather than run unguarded.
+var ErrNoHolderLookup = errors.New("ssh key registry has no holder lookup")
 
 // NewPGKeyStore creates the ssh_keys table if needed and returns the store.
-func NewPGKeyStore(ctx context.Context, pool *pgxpool.Pool) (*PGKeyStore, error) {
+// holders is required: Revoke uses it to refuse a revocation while another
+// account still holds the key (#3222), and a nil lookup is an error here so
+// no construction site can leave the guard off.
+func NewPGKeyStore(ctx context.Context, pool *pgxpool.Pool, holders HolderLookup) (*PGKeyStore, error) {
 	if pool == nil {
 		return nil, errors.New("nil pool")
+	}
+	if holders == nil {
+		return nil, ErrNoHolderLookup
 	}
 	const schema = `
 		CREATE TABLE IF NOT EXISTS ssh_keys (
@@ -164,7 +168,7 @@ func NewPGKeyStore(ctx context.Context, pool *pgxpool.Pool) (*PGKeyStore, error)
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		return nil, fmt.Errorf("create ssh_keys: %w", err)
 	}
-	return &PGKeyStore{pool: pool}, nil
+	return &PGKeyStore{pool: pool, holders: holders}, nil
 }
 
 func nullTime(t time.Time) *time.Time {
@@ -235,10 +239,12 @@ func ownsRow(cur, rec KeyRecord) bool {
 // row is released (#3217): it stays active for the other holder but no
 // longer has an owner, so the dropper keeps no say over a key it no longer
 // holds, the next registration takes the row over, and the sole remaining
-// holder's own drop revokes it. Without a HolderLookup (WithHolders) no
-// holder check is made, nothing is released, and a released row is not
-// revoked.
+// holder's own drop revokes it. A store without a HolderLookup fails Revoke
+// with ErrNoHolderLookup, so nothing is released or revoked unguarded.
 func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) error {
+	if s.holders == nil {
+		return ErrNoHolderLookup
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("revoke ssh key: %w", err)
@@ -266,10 +272,6 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 		return nil // already revoked: keep the original revocation time
 	case cur.ReleasedAt.IsZero() && !ownsRow(cur, rec):
 		log.Printf("[ssh-keys] revoke by %s left %s active: its registry entry is owned by another account (#3187)",
-			rec.Username, rec.Fingerprint)
-		return nil
-	case !cur.ReleasedAt.IsZero() && s.holders == nil:
-		log.Printf("[ssh-keys] revoke by %s left released %s active: no holder lookup to confirm no other account holds it (#3217)",
 			rec.Username, rec.Fingerprint)
 		return nil
 	default: // the caller owns an active row, or the row is released
@@ -305,7 +307,7 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 // id: a person's other account still holding the key is a holder too.
 func (s *PGKeyStore) refuseIfHeldElsewhere(ctx context.Context, rec KeyRecord) error {
 	if s.holders == nil {
-		return nil
+		return ErrNoHolderLookup
 	}
 	held, err := s.holders.OtherAccountHolds(ctx, rec.Fingerprint, rec.Username)
 	if err != nil {

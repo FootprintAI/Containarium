@@ -149,13 +149,12 @@ func (c collaboratorRows) CollaboratorExists(ctx context.Context, containerName,
 // keys would be refused as UNKNOWN_KEY, so the decider stays off until a
 // restart backfills successfully.
 func setupSSHKeyRegistry(ctx context.Context, collabStore *collaborator.Store, cs *ContainerServer, maxKeyAge time.Duration) *sshauthz.SelfHostDecider {
-	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool())
+	const homeRoot = "/home"
+	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool(), sshauthz.FileHolders{HomeRoot: homeRoot})
 	if err != nil {
 		log.Printf("Warning: ssh key registry unavailable: %v (SSH authorization decider disabled)", err)
 		return nil
 	}
-	const homeRoot = "/home"
-	keys.WithHolders(sshauthz.FileHolders{HomeRoot: homeRoot})
 	cs.SetSSHKeyRegistry(keys)
 
 	added, err := sshauthz.Backfill(ctx, keys, homeRoot, time.Now())
