@@ -138,10 +138,11 @@ func scanAccount(home, username string, now time.Time) ([]KeyRecord, error) {
 	return out, nil
 }
 
-// Backfill registers every key found under homeRoot that the registry has
-// no row for (accounts it cannot read are logged and skipped), with created_at = now and source = backfill. It is idempotent:
-// a second run inserts nothing, and it never touches an existing row, so it
-// cannot re-activate a revoked key. It returns the number of rows added.
+// Backfill registers every key found under homeRoot that the registry has no
+// row for (accounts it cannot read are logged and skipped), with created_at =
+// now and source = backfill. It is idempotent: a second run inserts nothing,
+// and it never touches an existing row, so it cannot re-activate a revoked
+// key. It returns the number of rows added.
 func Backfill(ctx context.Context, store BackfillStore, homeRoot string, now time.Time) (int, error) {
 	res, err := ScanAuthorizedKeys(homeRoot, now)
 	if err != nil {
