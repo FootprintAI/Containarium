@@ -92,9 +92,12 @@ func runBackupStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	// Fail safe: if the daemon cannot say (older daemon, or the caller may
-	// not read system info), assume there is no managed key, so an
-	// unregistered tenant is still flagged rather than silently passed.
+	// Fail safe: if the lookup itself fails (transport error, or the caller
+	// may not read system info), the state is Unknown: warn, and an
+	// unregistered tenant is reported "encryption not confirmed" and fails.
+	// An older daemon does not fail the lookup. It answers successfully
+	// with the field absent (proto3 default false), which reads as Absent:
+	// no warning, and an unregistered tenant is flagged UNENCRYPTED.
 	managedKey := managedKeyAbsent
 	switch configured, err := c.ManagedBackupKeyConfigured(); {
 	case err != nil:

@@ -246,7 +246,9 @@ func runStatusWith(t *testing.T, c *fakeStatusClient) error {
 }
 
 // #3213: end to end through runBackupStatus, the daemon's report decides the
-// exit status; an error asking (older daemon, no admin) fails safe.
+// exit status; an error asking (transport failure, caller may not read system
+// info) fails safe. An older daemon is not this case: it answers with the
+// field absent, which reads as no managed key (the "no managed key" case).
 func TestRunBackupStatus_ManagedKeyDetection(t *testing.T) {
 	names := map[string][]string{"acme": {"OTHER"}}
 	cases := []struct {

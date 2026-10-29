@@ -253,9 +253,13 @@ response, set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured). On such a
 daemon every dump is encrypted, so a tenant with no registered recipient is
 listed `✓` ("encrypted by the daemon's managed backup key") and does not fail
 the exit code. On a daemon without a managed key it is still listed `✗` and
-the command exits non-zero. If the daemon cannot answer (an older daemon, or a
-caller that may not read system info) `backup status` warns and assumes no
-managed key, so it fails safe.
+the command exits non-zero. If the system-info lookup fails (a transport error,
+or a caller that may not read system info) `backup status` prints a warning and
+reports such tenants `✗` as "encryption not confirmed", and still exits
+non-zero. An older daemon does not fail the lookup: it answers successfully
+without the field, which reads as "no managed key", so `backup status` prints
+no warning and lists such tenants `✗` UNENCRYPTED, even if that daemon has a
+managed key it cannot report.
 
 **Moving a tenant to another host.** Registered secrets, including the backup
 recipient, are stored per daemon and do **not** travel with a copied
