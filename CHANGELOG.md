@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RunCrewRequest.model_overrides` and `crew run --model <skill-id>=<model-id>`: a per-run model per crew member, reported in `CrewRun.member_models`** (part of #3259). Precedence: the override, then the skill's own `model`, then `CONTAINARIUM_AGENT_MODEL`, then the engine default. A plain id is required (`INVALID_ARGUMENT`), a member with no named engine is `FAILED_PRECONDITION` (a model only reaches the box with a named engine), a key outside the crew is `INVALID_ARGUMENT`, and `graph` runs refuse it for now. All refused before any member is provisioned. No tier names or ids are enumerated.
+- **`StartBoxRun` takes a per-run `model`, and `BoxRun` reports it** (part of #3259). `StartBoxRunRequest.model` runs the Claude Code engine with `--model <id>`; empty keeps the engine's default exactly as before. The id is opaque (no tiers are enumerated), must be a plain id (`[A-Za-z0-9][A-Za-z0-9._:/[]-]{0,127}`, else `INVALID_ARGUMENT`), and any other engine is `FAILED_PRECONDITION`. `BoxRun.model` (from the run record) names the id the run was started with. Advertised as capability `box_run_model`; check it before sending the field to an older daemon.
+
 ### Fixed
 
 - **`StopContainer` / `StartContainer` are idempotent and return typed errors** (#3242). Stopping an already-stopped instance (or starting an already-running one) is now a no-op success with a message naming the case (`... was already stopped` / `... was already running`) instead of `500` / gRPC `Unknown` ("The instance is already stopped"). The state is read first, and re-read when the backend's stop or start fails, so two racing callers both succeed; any other failure is still an error. A no-op sends nothing to the backend and skips the post-change work: `stopped_at` is not re-stamped (so a redundant stop no longer postpones the stopped-to-delete timer), the encryption key is not dropped again, and no event is emitted; a no-op start skips the last-started stamp and secret re-delivery. Remaining failures carry a gRPC code: a missing instance is `NotFound`, an unreachable backend `Unavailable`, any other backend failure `Internal`. No proto change. The Kubernetes runtime path is unchanged.
