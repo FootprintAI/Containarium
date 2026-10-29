@@ -239,7 +239,7 @@ fails a backup that would be stored with no key, names the tenant, and writes
 no object. For the nightly run, set `CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1`
 in `/etc/containarium/backup.env`: such a tenant then counts as a failed
 tenant (exit 1) while the others still run. The default is off, so existing
-setups are unchanged.
+setups are unchanged. The `create_backup` MCP tool takes the same option as `require_encryption: true`.
 
 **Check before the first bad run.** `containarium backup status --server <host>`
 reads `backup-tenants.conf` (`--conf`, default
@@ -247,12 +247,19 @@ reads `backup-tenants.conf` (`--conf`, default
 with no recipient registered on that daemon; it exits non-zero if any are
 missing or could not be checked.
 
-**Limit with a managed backup key.** `backup status` cannot see whether the
-daemon has a managed backup key. On such a daemon the dumps of a tenant with
-no registered recipient are still encrypted, yet `backup status` lists that
-tenant and exits non-zero. Treat the exit code as "no per-tenant recipient",
-not "plaintext", on those daemons. This behaviour is pinned by a test and is
-tracked for a proper opt-out.
+**Managed backup key (#3213).** `backup status` asks the daemon whether it
+has a managed backup key (`managed_backup_key_configured` on the system info
+response, set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured). On such a
+daemon every dump is encrypted, so a tenant with no registered recipient is
+listed `✓` ("encrypted by the daemon's managed backup key") and does not fail
+the exit code. On a daemon without a managed key it is still listed `✗` and
+the command exits non-zero. If the system-info lookup fails (a transport error,
+or a caller that may not read system info) `backup status` prints a warning and
+reports such tenants `✗` as "encryption not confirmed", and still exits
+non-zero. An older daemon does not fail the lookup: it answers successfully
+without the field, which reads as "no managed key", so `backup status` prints
+no warning and lists such tenants `✗` UNENCRYPTED, even if that daemon has a
+managed key it cannot report.
 
 **Moving a tenant to another host.** Registered secrets, including the backup
 recipient, are stored per daemon and do **not** travel with a copied

@@ -110,6 +110,7 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 	}
 	if wrapper != nil {
 		opts = append(opts, backup.WithWrapper(wrapper))
+		containers.SetManagedBackupKeyConfigured(true)
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
 	}
 

@@ -109,8 +109,8 @@ legacy=$("$bin" token generate --username "$tenant" --roles user \
 request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
 api 403 "$scratch_dir/legacy-verify.json" -H "Authorization: Bearer $legacy" \
   -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
-# The gateway's customErrorHandler uses an HTTP code and an "error" field,
-# rather than grpc-gateway's default gRPC code and "message" field.
+# The gateway's ErrorHandler keeps the HTTP status in "code" and the full
+# RPC error in "error", alongside the optional "message" and "details" fields.
 if ! jq -e '.code == 403 and (.error | contains("backups:verify") and
   contains("containarium token generate") and contains("--scopes backups:read,backups:verify"))' \
   "$scratch_dir/legacy-verify.json"; then

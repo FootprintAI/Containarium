@@ -52,16 +52,21 @@ if [ -z "$top" ]; then
   exit 1
 fi
 # Paths relative to the top-level directory, without a trailing slash.
-mapfile -t paths < <(sed -e 's|^\./||' -e 's|/$||' "$listing" | awk -v t="$top/" 'index($0, t) == 1 { print substr($0, length(t) + 1) }')
+# Kept in a file and grepped directly: piping a large listing into `grep -q`
+# under pipefail fails the writer with SIGPIPE once grep stops at its first
+# match, which read a present entry as missing (and an images/ as absent).
+paths="$(mktemp)"
+trap 'rm -f "$listing" "$paths"' EXIT
+sed -e 's|^\./||' -e 's|/$||' "$listing" | awk -v t="$top/" 'index($0, t) == 1 { print substr($0, length(t) + 1) }' >"$paths"
 
-has() { printf '%s\n' "${paths[@]}" | grep -qE "$1"; }
+has() { grep -qE "$1" "$paths"; }
 
 for f in bin/containariumd bin/mcp-server bin/agent-box offline-install.sh VERSION CHECKSUMS.sha256; do
   has "^${f//./\\.}\$" || err "missing $f"
 done
 has '^toolchains/go[^/]*\.tar\.gz$' || err "missing toolchains/go*.tar.gz"
 
-ndebs="$(printf '%s\n' "${paths[@]}" | grep -cE '^apt/[^/]+\.deb$' || true)"
+ndebs="$(grep -cE '^apt/[^/]+\.deb$' "$paths" || true)"
 if [ "$ndebs" -eq 0 ]; then
   err "apt/ holds no .deb"
 fi

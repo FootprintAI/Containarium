@@ -47,6 +47,7 @@ const (
 	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
+	ContainerService_GetBoxRunUserStatus_FullMethodName       = "/containarium.v1.ContainerService/GetBoxRunUserStatus"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
@@ -272,6 +273,12 @@ type ContainerServiceClient interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(ctx context.Context, in *StartBoxRunRequest, opts ...grpc.CallOption) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -732,6 +739,16 @@ func (c *containerServiceClient) StartBoxRun(ctx context.Context, in *StartBoxRu
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StartBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBoxRunUserStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetBoxRunUserStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1366,6 +1383,12 @@ type ContainerServiceServer interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -1635,6 +1658,9 @@ func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *Remove
 }
 func (UnimplementedContainerServiceServer) StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBoxRunUserStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListBoxRuns not implemented")
@@ -2292,6 +2318,24 @@ func _ContainerService_StartBoxRun_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StartBoxRun(ctx, req.(*StartBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetBoxRunUserStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBoxRunUserStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetBoxRunUserStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, req.(*GetBoxRunUserStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3224,6 +3268,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartBoxRun",
 			Handler:    _ContainerService_StartBoxRun_Handler,
+		},
+		{
+			MethodName: "GetBoxRunUserStatus",
+			Handler:    _ContainerService_GetBoxRunUserStatus_Handler,
 		},
 		{
 			MethodName: "ListBoxRuns",

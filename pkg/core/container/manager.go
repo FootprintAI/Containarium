@@ -1292,6 +1292,43 @@ func (m *Manager) Start(username string) error {
 	return m.incus.StartContainer(containerName)
 }
 
+// StopIfRunning stops the container unless it is already stopped (#3242). A
+// stop request asks for an end state; when that state already holds the call
+// succeeds with changed=false and sends no action to the backend, so callers can
+// skip post-stop work (stamping stopped_at, dropping the key, emitting an
+// event). The state is re-read when the backend's stop fails: a concurrent stop
+// that won the race leaves the instance Stopped, which is success for this
+// caller too (changed=false). Any other failure, including a lookup that
+// reports the instance missing, is returned unchanged for the caller to
+// classify.
+func (m *Manager) StopIfRunning(username string, force bool) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Stopped", func(n string) error { return m.incus.StopContainer(n, force) })
+}
+
+// StartIfStopped is the start counterpart of StopIfRunning: an instance that is
+// already Running is success with changed=false (#3242).
+func (m *Manager) StartIfStopped(username string) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Running", m.incus.StartContainer)
+}
+
+func (m *Manager) ensureState(containerName, want string, act func(string) error) (bool, error) {
+	info, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return false, err
+	}
+	if info != nil && info.State == want {
+		return false, nil
+	}
+	if err := act(containerName); err != nil {
+		// Close the read-then-act race: someone else reached the end state.
+		if cur, gerr := m.incus.GetContainer(containerName); gerr == nil && cur != nil && cur.State == want {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete deletes a container
 func (m *Manager) Delete(username string, force bool) error {
 	containerName := username + "-container"

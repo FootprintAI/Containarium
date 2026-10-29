@@ -506,6 +506,7 @@ jobs:
             exit 1
           fi
           sudo env "PATH=$PATH" JWT_SECRET="$JWT_SECRET" ADMIN_TOKEN="$ADMIN_TOKEN" \
+            CI="${CI:-}" \
             CONTAINARIUM_LANE_IMAGE=lane-box \
             bash scripts/backup-scoped-token-e2e.sh || {
               cat /tmp/backup-scoped-daemon.log; exit 1;

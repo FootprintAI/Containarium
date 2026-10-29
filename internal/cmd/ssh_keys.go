@@ -38,13 +38,18 @@ Every key must be a single-line public key with no options (command=, from=):
 one invalid key fails the whole call and changes nothing.
 
 The daemon's key registry has one entry per key, owned by the first account
-(box user) that registered it. A key dropped here is revoked in the registry
-only when this box user owns that entry; it is then also revoked for this
-user's other boxes where it remains in the file. When another account owns
-the entry (including a collaborator account of the same person, or an account
-that registered the same public key first), the key is only removed from this
-box and its registry entry stays active. Dropping a key here is therefore not
-a guaranteed way to revoke a compromised key everywhere (see issue #3217).
+(box user) that registered it (a revoked entry is replaced by the next
+registration); a box user also owns an entry its own
+collaborator account (<owner>-container-<user>) registered on another box.
+A dropped key is always removed from this box. It is revoked in the registry
+when this box user owns that entry, or the entry has no owner, and no other
+account still holds the same public key in its own authorized_keys (a
+collaborator account is a separate account here). A key another account holds
+is only removed from this box and its entry stays active; if this box user
+owned the entry, it loses its owner, so the next account to add the key takes
+it over and the last holder's own removal revokes it. When another account
+owns the entry it stays active. Dropping a key here is therefore not a
+guaranteed way to revoke a compromised key everywhere.
 
 An empty list removes every key you manage and must be asked for with --empty.
 
