@@ -212,3 +212,28 @@ func TestUplinks_UnreadableMastersLogOnceAcrossPasses(t *testing.T) {
 		t.Fatalf("want exactly 1 log line over 30 passes, got %d: %v", len(*lines), *lines)
 	}
 }
+
+// #3212: on an unreadable master, an installed entry whose interface is itself a
+// directly-named managed veth is still un-trusted (known without a sysfs read);
+// every other installed entry is kept, and nothing new is trusted.
+func TestUplinks_UnreadableMasterDropsInstalledManagedVeth(t *testing.T) {
+	boom := func(string) (string, error) { return "", errors.New("EIO") }
+	u, ap, inst, lines := newUplinkRig()
+	for _, i := range []int{2, 7, 9} { // eth0, vethA (managed), stale index with no candidate
+		inst[i], ap.set[i] = true, true
+	}
+	cands := []uplinkIface{{"eth0", 2}, {"vethA", 7}, {"br0", 5}}
+	u.converge(cands, []string{"vethA"}, boom, ap, inst)
+	if ap.set[7] || inst[7] {
+		t.Errorf("installed managed veth stayed trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+	if !ap.set[2] || !inst[2] || !ap.set[9] || !inst[9] {
+		t.Errorf("unrelated installed entries must be kept: kernel=%v installed=%v", ap.set, inst)
+	}
+	if ap.set[5] || inst[5] {
+		t.Errorf("new trust added on error: %v", ap.set)
+	}
+	if len(*lines) != 1 {
+		t.Errorf("want one error log, got %v", *lines)
+	}
+}
