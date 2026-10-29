@@ -239,7 +239,7 @@ fails a backup that would be stored with no key, names the tenant, and writes
 no object. For the nightly run, set `CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1`
 in `/etc/containarium/backup.env`: such a tenant then counts as a failed
 tenant (exit 1) while the others still run. The default is off, so existing
-setups are unchanged.
+setups are unchanged. The `create_backup` MCP tool takes the same option as `require_encryption: true`.
 
 **Check before the first bad run.** `containarium backup status --server <host>`
 reads `backup-tenants.conf` (`--conf`, default

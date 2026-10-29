@@ -172,7 +172,7 @@ Additions and removals take effect immediately, persist in the daemon
 config store, and need `security:write` and admin. Baseline entries cannot
 be removed.
 
-The finding's subject is `<kind>:<pattern>` of the entry that hit; the
+The finding's subject is `container:<container>:<kind>:<pattern>` (#2778); the
 evidence is the exec (pid, ppid, uid, comm, path, argv, and the hash when
 computed). The finding is subject to the same process policy as
 `mining-behavior`. A literal argv marker matches any command line that
@@ -273,6 +273,25 @@ Every apply, release, expiry and failure is an audit entry with resource
 type `security.action`, and the finding's `response` field shows the
 action and its state (`NONE`, `APPLIED`, `FAILED`, `RELEASED`, `EXPIRED`).
 
+**Per-container signature findings (#2778).** New `MINER_SIGNATURE`
+subjects are `container:<container>:<kind>:<pattern>`. Two boxes matching the same
+signature have different finding IDs, independent responses and independent
+new-finding/apply/release notifications. Repeats within one box still dedupe;
+`ExecEvidence.matched` remains the signature alone. The `container:`
+namespace avoids collisions with old signature patterns containing `@`
+or other delimiters; it is not parsed to choose which box to act on.
+Releasing or resolving A does not decide B's finding. A TTL expiry on B
+still leaves B's finding open for an operator, as with any single-box expiry.
+
+No database migration rewrites existing shared findings or active actions.
+They remain attached to their original IDs and keep the stored-action holder
+checks below until drained; their history is not split retroactively. On
+upgrade a new scoped finding can coexist with the old row. The one-open-action
+per-container guard still prevents duplicate restrictions; release undoes the
+actual stored action, and an independent new finding may require separate
+review/resolve. Queued jobs are in-memory and do not survive the upgrade, so
+cross-box pending tracking and queue-drain resolution are no longer needed.
+
 **TTL backstop.** Every action carries a TTL (default 24 h, minimum 1 min).
 A sweep every 60 s undoes any action whose TTL has passed with no
 operator decision, marks the finding's response `EXPIRED`, and raises a
@@ -280,7 +299,7 @@ MEDIUM `PROCESS_ACTION_EXPIRED` finding on the box saying so, so an
 unattended throttle never silently becomes permanent. The original
 mining finding stays open. If the box keeps mining, the rule fires again
 once its window re-fills and the policy applies again. One exception, on a
-finding shared by several boxes (#2835): when an operator released another
+legacy finding shared by several boxes (#2835): when an operator released another
 box (and that release is still the latest action on that box) and the
 finding stayed open only because this box still held it, the expiry
 resolves the finding in the same write. The orphan sweep and
@@ -291,7 +310,7 @@ action and confirming it, the row stays pending. The same 60 s sweep
 undoes pending rows older than 5 minutes (writing back the recorded
 limits, which is harmless if the box was never touched) and records them
 released by the orphan sweep. While it waits, a pending row on one box of
-a shared finding holds the finding open, because the throttle may have
+a legacy shared finding holds the finding open, because the throttle may have
 taken effect, but it is never shown as `APPLIED`: nothing confirmed it.
 So a pending row holds a finding open for at most about 6 minutes (5
 minutes plus one sweep).
@@ -323,9 +342,9 @@ the rule is the retry.
 
 **Release.** `containarium security process-policy release <box>`
 undoes the open action (restores the recorded limits, or unfreezes),
-marks it released by the operator and resolves the finding. When several
-boxes of one tenant share the finding (same rule and subject), release is
-per box: while another box still has a response the finding stays open
+marks it released by the operator and resolves the finding. For legacy
+findings shared by several boxes of one tenant, release is per box: while
+another stored action still stands the finding stays open
 (**next release**, #2766), and while another box still holds an applied
 action the finding's response stays that box's `APPLIED` record, never
 `RELEASED` (**next release**, #2820). If the Incus
@@ -487,8 +506,8 @@ Released FREEZE on box-1: container unfrozen. Finding #43 resolved.
 Released THROTTLE on box-2: CPU limit restored. Finding #44 kept open: another box still has a response.
 ```
 
-The last form is for a finding shared by several boxes of one tenant
-(**next release**, #2766). It resolves when the last box is released. In
+The last form is only for a legacy finding shared by several boxes of one
+tenant before #2778 (#2766). It resolves when the last box is released. In
 the audit log the release carries `finding_kept_open=true` or `false`.
 The line describes the released box's own action, from the release
 response's `released` record (**next release**, #2820), not the finding's
@@ -542,7 +561,7 @@ whatever the running engine registers.
 Flags: `--state open|resolved`, `--severity low|medium|high|critical`,
 `--tenant`, `--since <RFC3339>`, `--limit`, `--json`. There is no rule
 filter. Mining findings show as rule `MINING_BEHAVIOR` (subject: the pool's
-`ip:port`) or `MINER_SIGNATURE` (subject: `<kind>:<pattern>`). Under each
+`ip:port`) or `MINER_SIGNATURE` (subject: `container:<container>:<kind>:<pattern>`). Under each
 finding the table prints its evidence and, once the responder has acted,
 the `response` line shown above. `--json` has the full CPU summary, flow and
 response. `findings resolve <id>` resolves a finding by hand; it does not
@@ -589,7 +608,7 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
   `response.state: 4`; before it, it had `state: 1` and the resolve was
   dropped. A TTL expiry or orphan-sweep release leaves the finding open, so
   its later resolve is posted, unless it ends the last box holding a
-  shared finding an operator released elsewhere: then it is one
+  legacy shared finding an operator released elsewhere: then it is one
   post with `state: 2` carrying that box's record (#2835).
 - **Shared findings** (next release, #2820): `response.container` and the
   post's `container` name the box, except on a post caused by a re-fire
@@ -610,7 +629,7 @@ Enums are numbers in the payload. `rule`: `mining-behavior`=6,
 Abridged kill post:
 
 ```json
-{"id": 3, "rule": 7, "severity": 3, "container": "box-a", "subject": "name:xmrig", "state": 1, "count": 1, "response": {"action": 1, "state": 1, "process_killed": true, "killed_pid": 210932, "kills": 1}}
+{"id": 3, "rule": 7, "severity": 3, "container": "box-a", "subject": "container:box-a:name:xmrig", "state": 1, "count": 1, "response": {"action": 1, "state": 1, "process_killed": true, "killed_pid": 210932, "kills": 1}}
 ```
 
 The gate is in memory, so a restart re-posts an open finding once.

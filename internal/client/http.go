@@ -1539,6 +1539,32 @@ func (c *HTTPClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 	return out.GetRuns(), nil
 }
 
+// GetBoxRunUserStatus is the REST form of GRPCClient.GetBoxRunUserStatus (#3274).
+// A 404 (a daemon too old to expose the route) maps to codes.Unimplemented so
+// callers see the same soft path across both transports.
+func (c *HTTPClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/containers/%s/run-user/status", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get box run user status: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose GetBoxRunUserStatus (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get box run user status")
+	}
+	out := &pb.GetBoxRunUserStatusResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // TailBoxRunLog reads one window of a box run's log via HTTP (#2123).
 func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2152,7 +2178,7 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 // (#2228), keyed by skill_id, wins over that member's own manifest engine; a
 // member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own
 // choice, unchanged pre-#2228 behavior.
-func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
@@ -2165,6 +2191,7 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverridesJSON(engineOverrides),
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

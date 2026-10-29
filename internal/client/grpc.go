@@ -732,6 +732,16 @@ func (c *GRPCClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 	return resp.GetRuns(), nil
 }
 
+// GetBoxRunUserStatus reports, read-only, whether the unprivileged run user on a
+// box has a usable agent sign-in: the probe StartBoxRun refuses on, without
+// queueing a run (#3274). The error is returned UNWRAPPED so a daemon too old to
+// implement the RPC surfaces as gRPC codes.Unimplemented.
+func (c *GRPCClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.GetBoxRunUserStatus(ctx, &pb.GetBoxRunUserStatusRequest{Username: username})
+}
+
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
@@ -1101,7 +1111,7 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 // engineOverrides (#2228), keyed by skill_id, wins over that member's own
 // manifest engine; a member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps
 // its manifest's own choice, unchanged pre-#2228 behavior.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
@@ -1113,6 +1123,7 @@ func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverrides,
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)
