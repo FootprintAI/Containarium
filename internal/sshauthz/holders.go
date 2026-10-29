@@ -19,6 +19,12 @@ var ErrKeyHeldByOtherAccount = errors.New("ssh key is still held by another acco
 // daemon log.
 var ErrHolderUnknown = errors.New("cannot rule out another account as a holder: an account's authorized_keys could not be read; check the daemon log")
 
+// ErrHomeRootUnreadable is returned when the home root itself could not be
+// scanned, so no account can be ruled out as a holder and the revoke fails
+// closed (#3276). Like ErrHolderUnknown it reaches API callers, so it carries
+// neither the path nor the os error; both are in the daemon log.
+var ErrHomeRootUnreadable = errors.New("cannot rule out another account as a holder: the account home directory could not be read; check the daemon log")
+
 // HolderLookup reports whether any account other than excludeUsername holds
 // the key with the given fingerprint.
 type HolderLookup interface {
@@ -34,7 +40,10 @@ type FileHolders struct{ HomeRoot string }
 func (f FileHolders) OtherAccountHolds(ctx context.Context, fingerprint, excludeUsername string) (bool, error) {
 	res, err := ScanAuthorizedKeys(f.HomeRoot, time.Time{})
 	if err != nil {
-		return false, err // fail closed: an unreadable home root is not "no holder"
+		// Fail closed: an unreadable home root is not "no holder". The path and
+		// os error stay in the daemon log, not in the caller's error.
+		log.Printf("[ssh-keys] cannot read the home root, failing the revoke closed: %v (#3276)", err)
+		return false, ErrHomeRootUnreadable
 	}
 	// A holder among the readable accounts answers the question whatever else
 	// is unreadable, so only the revoke whose answer depends on an account we
