@@ -4,6 +4,7 @@ package containarium.v1;
 
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
+import "containarium/v1/agent.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -167,6 +168,34 @@ message StartBoxRunRequest {
 
 message StartBoxRunResponse {
   BoxRun run = 1;
+}
+
+// GetBoxRunUserStatusRequest names the box whose run-user sign-in to report.
+message GetBoxRunUserStatusRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+// GetBoxRunUserStatusResponse is the read-only answer to "would StartBoxRun
+// refuse a platform run on this box for want of a run-user sign-in?" (#3274).
+// It is the same probe StartBoxRun applies, run without queueing anything and
+// without provisioning the run user. It names the credential's SOURCE only:
+// nothing here reads, copies, prints or refreshes a credential value.
+message GetBoxRunUserStatusResponse {
+  // The OS user platform runs execute as on a box with a recorded tool-access
+  // level. Reported even when tool_access_recorded is false.
+  string run_user = 1;
+  // Whether the box has a tool-access level recorded. When false, platform
+  // runs use the owner's identity and none of the run-user fields below apply.
+  bool tool_access_recorded = 2;
+  // Whether the run user already exists on the box. It is created by the box's
+  // first platform run, so false on a recorded box means no run has happened.
+  bool run_user_exists = 3;
+  // The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.
+  // NONE when the run user does not exist yet or has never signed in (the same
+  // answer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,
+  // INTERACTIVE or API_KEY when a run would proceed.
+  CodeCredentialSource state = 4;
 }
 
 message ListBoxRunsRequest {

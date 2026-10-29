@@ -522,6 +522,22 @@ service ContainerService {
     };
   }
 
+  // GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+  // usable agent sign-in: the same probe StartBoxRun applies before refusing a
+  // platform run, without queueing one (#3274). Names the credential source
+  // only; never reads, copies or prints a credential value. Same access as
+  // StartBoxRun.
+  rpc GetBoxRunUserStatus(GetBoxRunUserStatusRequest) returns (GetBoxRunUserStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/run-user/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Report whether a box's run user is signed in";
+      description: "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // ListBoxRuns lists the `code run` records on a box (#2123). Same access
   // as connecting to the box: ssh:write, and the box owner or one of its
   // collaborators.
