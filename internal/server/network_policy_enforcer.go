@@ -1404,14 +1404,29 @@ func (u *uplinkReconciler) printf(format string, args ...any) {
 func (u *uplinkReconciler) converge(cands []uplinkIface, managedVeths []string, masterOf func(string) (string, error), ap trustedIfaceApplier, installed map[int]bool) {
 	desired, refused, err := refuseVethCarriers(cands, managedVeths, masterOf)
 	if err != nil {
-		// Fail closed for this pass: the carrier set is incomplete, so add no new
-		// trusted entry and leave the installed set as it is (do not un-trust
-		// legitimate uplinks either). Deliberate: an installed entry that has since
-		// become a carrier stays trusted while the error persists. Logged once per
-		// distinct error.
+		// The carrier set is incomplete, so add no new trusted entry. An installed
+		// entry whose interface is itself a managed veth needs no sysfs read to
+		// know it must not be trusted, so it is still removed (#3212). Every other
+		// installed entry is left as it is (do not un-trust legitimate uplinks), so
+		// an installed bridge that has since become a carrier stays trusted while
+		// the error persists. Logged once per distinct error.
+		isVeth := make(map[string]bool, len(managedVeths))
+		for _, v := range managedVeths {
+			isVeth[v] = true
+		}
+		for _, c := range cands {
+			if !isVeth[c.Name] || !installed[c.Index] {
+				continue
+			}
+			if derr := ap.DeleteTrustedIface(c.Index); derr != nil {
+				u.printf("[netpolicy] delete trusted_iif: %v", derr)
+				continue
+			}
+			delete(installed, c.Index)
+		}
 		if msg := err.Error(); msg != u.lastErr {
 			u.lastErr = msg
-			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; leaving trusted uplinks unchanged this pass: %v", err)
+			u.printf("[netpolicy] cannot determine which interface the managed veths are enslaved to; trusting no new uplink and keeping installed non-veth uplinks this pass: %v", err)
 		}
 		return
 	}
