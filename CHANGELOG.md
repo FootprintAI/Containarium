@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`GetBoxRunUserStatus` and `containarium tool-access run-user <username>`: read-only pre-check of the run user's sign-in** (#3274). `GET /v1/containers/{username}/run-user/status` reports the same probe `StartBoxRun` refuses on (`RUN_USER_NOT_SIGNED_IN` / `RUN_USER_SIGN_IN_EXPIRED`), without queueing a run or creating the run user, so a caller can show a box's readiness before a run is refused. The response carries `run_user`, `tool_access_recorded`, `run_user_exists` and `state` (the existing `CodeCredentialSource`: interactive, api-key, none, expired). A box with no recorded level reports `tool_access_recorded: false` and no state; a recorded box whose run user is not created yet reports `none`, which is what its first run would refuse on. The credential's source is named, never a value. Same access as `StartBoxRun` (`ssh:write`, owner or collaborator). A box whose recorded level the daemon cannot enforce gets the same `FAILED_PRECONDITION` as a run, and an unreadable level or failed probe is `UNAVAILABLE`, never reported as "not signed in".
+
 ### Fixed
 
 - **A revoke that fails closed on an unreadable account no longer names that account to the caller** (follow-up to #3268, refs #3241). The error returned to an `RemoveSSHKey` or `SetSSHKeys` caller said which account's `authorized_keys` could not be read and why, disclosing another tenant's account name and filesystem state. It now says only that an account's `authorized_keys` could not be read and to check the daemon log, which carries the account and the underlying error. The revoke still fails closed.
