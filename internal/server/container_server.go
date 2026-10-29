@@ -434,6 +434,11 @@ type ContainerServer struct {
 	// back to network.ip_address.
 	sshHost string
 
+	// managedBackupKey is true when the backup service built a managed-key
+	// wrapper (CONTAINARIUM_BACKUP_KMS_KEY_NAME); GetSystemInfo reports it so
+	// `backup status` knows unregistered tenants are still encrypted (#3213).
+	managedBackupKey bool
+
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
 	// not persisted). #354.
@@ -3476,6 +3481,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	info.CoreCommittedCpuCores = budget.CoreCommittedCores
 	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
 	info.CpuOvercommitFactor = budget.OvercommitFactor
+	s.withBackupKeyInfo(info)
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -4713,6 +4719,17 @@ func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
 func (s *ContainerServer) SetCPUOvercommitPolicy(factor float64, enforce bool) {
 	s.cpuOvercommitFactor = factor
 	s.cpuOvercommitEnforce = enforce
+}
+
+// SetManagedBackupKeyConfigured records whether this daemon has a managed
+// backup key, for SystemInfo.managed_backup_key_configured (#3213).
+func (s *ContainerServer) SetManagedBackupKeyConfigured(configured bool) {
+	s.managedBackupKey = configured
+}
+
+// withBackupKeyInfo stamps the managed-backup-key report onto info.
+func (s *ContainerServer) withBackupKeyInfo(info *pb.SystemInfo) {
+	info.ManagedBackupKeyConfigured = s.managedBackupKey
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's
