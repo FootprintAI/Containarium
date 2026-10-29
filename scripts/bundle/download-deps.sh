@@ -305,7 +305,7 @@ download_apt_packages() {
 # resolved from one archive snapshot, and dpkg checks them at install time.
 check_apt_closure() {
   local dir="$1"; shift
-  local -A have=() pkgname=()
+  local -A have=() pkgname=() downloaded=()
   local debs=() deb p field value group alt ok n
   local groups=() alts=() unmet=() absent=()
   shopt -s nullglob
@@ -319,6 +319,7 @@ check_apt_closure() {
   for deb in "${debs[@]}"; do
     p="$(dpkg-deb -f "$deb" Package)"
     pkgname[$deb]="$p"
+    downloaded[$p]=1
     have[$p]=1
     value="$(dpkg-deb -f "$deb" Provides | tr '\n' ' ')"
     IFS=',' read -r -a groups <<<"$value"
@@ -329,7 +330,9 @@ check_apt_closure() {
   done
 
   for n in "$@"; do
-    if ! printf '%s\n' "${pkgname[@]}" | grep -qxF -- "$n"; then
+    # Require the package's own .deb, not just a Provides entry. A set lookup
+    # also avoids printf | grep -q failing with SIGPIPE under pipefail.
+    if [ -z "${downloaded[$n]:-}" ]; then
       absent+=("$n")
     fi
   done
