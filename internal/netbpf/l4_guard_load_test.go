@@ -20,10 +20,14 @@ import (
 //   - TestAttachedProgram_PortScopedDenyNotEvadedByIPOptions: a port-scoped deny
 //     cannot be evaded with IP options or fragmentation — an unknown port on a
 //     port-carrying protocol fails closed (the rule's address and proto decide).
+//   - TestAttachedProgram_PortScopedUDPDenyNotEvadedByIPOptions: the same for
+//     a UDP rule.
 //   - TestAttachedProgram_FragmentsAreNotAccounted: fragments are skipped by the
-//     flow accounting (not tallied under port 0); an options-bearing
-//     non-fragment is tallied under ports 0, like any packet whose ports are
-//     unknown.
+//     flow accounting on the sender hook (not tallied under port 0); an
+//     options-bearing non-fragment is tallied under ports 0, like any packet
+//     whose ports are unknown.
+//   - TestAttachedProgram_ReplyFragmentsAreNotAccounted: the same for reply
+//     accounting on the veth egress hook.
 
 const (
 	l4GuardDenyPort  = 8690 // the deny rule's port
@@ -363,19 +367,23 @@ func TestAttachedProgram_ReplyFragmentsAreNotAccounted(t *testing.T) {
 		return out
 	}
 
-	// TC egress runs synchronously in the sender's transmit path, so no wait is
-	// needed once the send returns.
+	// Control first: a plain reply datagram is accounted under its real ports,
+	// proving the egress hook is attached and running before any fragment is
+	// sent, so the fragment check below cannot pass because the hook was dead.
+	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "none"})
+	checkPlain := func(when string) {
+		t.Helper()
+		got := replyFlows()
+		if len(got) != 1 || got[0].Sport != l4GuardUDPSport || got[0].Dport != l4GuardUDPDport || got[0].RxPackets != 3 {
+			t.Fatalf("%s: got %+v, want one entry %d->%d with 3 rx packets (#3166: account_reply skips fragments)", when, got, l4GuardUDPSport, l4GuardUDPDport)
+		}
+	}
+	checkPlain("plain reply datagrams")
+
+	// Then the fragments: the entry must be unchanged — no second entry and no
+	// extra rx packets. The send returns once the frame has been through the
+	// egress hook (an AF_PACKET send), so there is nothing to wait for.
 	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "mf"})
 	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "offset"})
-	if got := replyFlows(); len(got) != 0 {
-		t.Fatalf("reply fragments were accounted: %+v — want no flow entry (#3166: account_reply skips fragments)", got)
-	}
-
-	// Control: a plain reply datagram is accounted under its real ports, proving
-	// the egress hook ran and the fragments above were skipped, not unseen.
-	sendCraftedToBox(t, craftedPacket{"udp", l4GuardUDPDport, l4GuardUDPSport, false, "none"})
-	got := replyFlows()
-	if len(got) != 1 || got[0].Sport != l4GuardUDPSport || got[0].Dport != l4GuardUDPDport || got[0].RxPackets != 3 {
-		t.Fatalf("plain reply datagrams: got %+v, want one entry %d->%d with 3 rx packets", got, l4GuardUDPSport, l4GuardUDPDport)
-	}
+	checkPlain("after reply fragments")
 }
