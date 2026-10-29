@@ -9,7 +9,8 @@
 #
 # Health is `curl -f <health-url>` when a URL is given: the first success
 # within the window passes. Without a URL (the sentinel) health is the unit
-# staying active for the whole window, so a binary that is active right after
+# staying active, in the same systemd invocation (InvocationID unchanged), for
+# the whole window, so a binary that is active right after
 # `systemctl start` and crashes a moment later still rolls back (#3108).
 #
 # Knobs, read when the command is built: BIN_DIR (default /usr/local/bin),
@@ -56,7 +57,7 @@ deploy_install_cmd() {
     local svc="$1" url="${2:-}"
     local dir="${BIN_DIR:-/usr/local/bin}" src="${SRC:-/tmp/containariumd}"
     local tries="${HEALTH_TRIES-15}" interval="${HEALTH_INTERVAL-2}"
-    local bin="$dir/containariumd" check poll final
+    local bin="$dir/containariumd" check poll final inv_get inv_same inv_init=":"
     # A rollback gate must not pass vacuously: reject bad knobs before any
     # change to the host. The emitted command fails too, because callers
     # embed this output in `--command="$(...)"`, where a non-zero return of
@@ -73,13 +74,20 @@ deploy_install_cmd() {
         poll="if $check; then echo \"  $svc healthy after install\"; exit 0; fi"
         final="false"
     else
-        check="sudo systemctl is-active --quiet '$svc'"
-        # Healthy only if still active after the whole window: a failed
-        # probe ends the wait at once and falls through to the rollback.
-        poll="if ! $check; then break; fi"
+        # A restart always gets a new InvocationID. Comparing it with the one
+        # recorded after start catches a crash and systemd restart that fell
+        # between two probes, which is-active alone cannot see.
+        inv_get="sudo systemctl show -p InvocationID --value '$svc' 2>/dev/null"
+        inv_init="inv=\$($inv_get)"
+        inv_same="[ \"\$($inv_get)\" = \"\$inv\" ]"
+        check="sudo systemctl is-active --quiet '$svc' && $inv_same"
+        # Healthy only if still active, and the same invocation, after the
+        # whole window: a failed probe ends the wait at once and falls
+        # through to the rollback.
+        poll="if ! { $check; }; then break; fi"
         # The last probe is followed by a sleep; probe once more after it so
         # the whole window is watched.
-        final="$check"
+        final="{ $check; }"
     fi
     cat <<CMD
 had_old=0
@@ -88,6 +96,7 @@ if [ -f '$bin' ]; then sudo cp -p '$bin' '$bin.old' && had_old=1 || exit 1; fi
 sudo cp '$src' '$bin' && sudo chmod +x '$bin' || exit 1
 if [ '$dir' = /usr/local/bin ]; then sudo ln -sf '$bin' '$dir/containarium'; fi
 sudo systemctl start '$svc'
+$inv_init
 i=0
 while [ \$i -lt $tries ]; do
   $poll
