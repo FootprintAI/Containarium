@@ -1005,7 +1005,8 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 // UnscopedTokenReport is the CLI-facing shape of
 // GetUnscopedTokenReport's response (#1679).
 type UnscopedTokenReport struct {
-	UnscopedCallCount int64  `json:"unscopedCallCount"`
+	// grpc-gateway renders proto int64 as a quoted decimal string (#3250).
+	UnscopedCallCount int64  `json:"unscopedCallCount,string"`
 	Since             string `json:"since"`
 	StrictModeEnabled bool   `json:"strictModeEnabled"`
 }
