@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Miner-signature findings now belong to one container** (#2778). The dedupe subject includes the container (`container:<container>:<kind>:<pattern>`), so two boxes of one tenant matching the same signature have separate findings and response records. Releasing one cannot overwrite or resolve the other's `APPLIED` response; re-fires on the same box still dedupe, and evidence retains the signature-only `matched` value. The responder no longer tracks other boxes' queued jobs or settles a shared finding when those jobs drain. Existing shared findings and their persisted actions remain releasable through the legacy holder checks; active restrictions are not migrated or discarded. No schema or protobuf change.
+
 ## [0.121.0] - 2026-10-29
 
 ### Added

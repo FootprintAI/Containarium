@@ -97,9 +97,11 @@ func (a *fakeActuator) Unfreeze(name string) error {
 // for the responder (Get/Resolve/SetResponse/Upsert) without Postgres or
 // the audit chain that MemFindingStore needs.
 type fakeFindings struct {
-	mu     sync.Mutex
-	nextID int64
-	rows   map[int64]*threatdetect.Finding
+	// beforeGet is a test-only state-change hook; set before starting a job.
+	beforeGet func()
+	mu        sync.Mutex
+	nextID    int64
+	rows      map[int64]*threatdetect.Finding
 	// writes is every response handed to SetResponse, as written (before
 	// the sticky process_killed merge), so a test can tell what a path
 	// recorded from what the store kept.
@@ -151,6 +153,9 @@ func (s *fakeFindings) Upsert(_ context.Context, f *threatdetect.Finding) (*thre
 }
 
 func (s *fakeFindings) Get(_ context.Context, id int64) (*threatdetect.Finding, error) {
+	if s.beforeGet != nil {
+		s.beforeGet()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f, ok := s.rows[id]; ok {
