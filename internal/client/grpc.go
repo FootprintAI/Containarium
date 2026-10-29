@@ -826,6 +826,19 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	return info, nil
 }
 
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *GRPCClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	return resp.GetInfo().GetManagedBackupKeyConfigured(), nil
+}
+
 // ============================================
 // App Service Methods
 // ============================================
@@ -1088,7 +1101,7 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 // engineOverrides (#2228), keyed by skill_id, wins over that member's own
 // manifest engine; a member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps
 // its manifest's own choice, unchanged pre-#2228 behavior.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
@@ -1100,6 +1113,7 @@ func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverrides,
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)

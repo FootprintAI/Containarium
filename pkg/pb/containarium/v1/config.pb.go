@@ -1453,7 +1453,8 @@ type SystemInfo struct {
 	// daemon: an empty list means "none of the optional features", so a
 	// client must treat a missing name as unsupported. Names are only ever
 	// added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
-	// "box_run_structured_output" (StartBoxRunRequest.structured_output).
+	// "box_run_structured_output" (StartBoxRunRequest.structured_output) and
+	// "box_run_model" (StartBoxRunRequest.model, BoxRun.model).
 	// An open string set rather than an enum so a newer daemon's extra names
 	// never fail to decode in an older client.
 	Capabilities []string `protobuf:"bytes,30,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
@@ -1472,8 +1473,16 @@ type SystemInfo struct {
 	// peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
 	// the sentinel-backend tunnel. See #3079.
 	PeerTransport PeerTransport `protobuf:"varint,32,opt,name=peer_transport,json=peerTransport,proto3,enum=containarium.v1.PeerTransport" json:"peer_transport,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// managed_backup_key_configured is true when this daemon has a managed
+	// backup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup
+	// it takes is encrypted even for a tenant with no registered age
+	// recipient. `containarium backup status` reads it to avoid flagging such
+	// tenants as unencrypted. False covers both "no managed key" and a daemon
+	// that predates the field, so a client must treat false as "not known to
+	// be encrypted". See #3213.
+	ManagedBackupKeyConfigured bool `protobuf:"varint,33,opt,name=managed_backup_key_configured,json=managedBackupKeyConfigured,proto3" json:"managed_backup_key_configured,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1728,6 +1737,13 @@ func (x *SystemInfo) GetPeerTransport() PeerTransport {
 		return x.PeerTransport
 	}
 	return PeerTransport_PEER_TRANSPORT_UNSPECIFIED
+}
+
+func (x *SystemInfo) GetManagedBackupKeyConfigured() bool {
+	if x != nil {
+		return x.ManagedBackupKeyConfigured
+	}
+	return false
 }
 
 // StoragePoolCapacity is one storage pool's fill (#2823).
@@ -5499,7 +5515,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xeb\v\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xae\f\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -5536,7 +5552,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x12capability_profile\x18\x1d \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\x12\"\n" +
 	"\fcapabilities\x18\x1e \x03(\tR\fcapabilities\x12I\n" +
 	"\rstorage_pools\x18\x1f \x03(\v2$.containarium.v1.StoragePoolCapacityR\fstoragePools\x12E\n" +
-	"\x0epeer_transport\x18  \x01(\x0e2\x1e.containarium.v1.PeerTransportR\rpeerTransport\"\x9f\x02\n" +
+	"\x0epeer_transport\x18  \x01(\x0e2\x1e.containarium.v1.PeerTransportR\rpeerTransport\x12A\n" +
+	"\x1dmanaged_backup_key_configured\x18! \x01(\bR\x1amanagedBackupKeyConfigured\"\x9f\x02\n" +
 	"\x13StoragePoolCapacity\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x126\n" +
 	"\x06driver\x18\x02 \x01(\x0e2\x1e.containarium.v1.StorageDriverR\x06driver\x12\x1d\n" +
