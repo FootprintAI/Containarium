@@ -3002,7 +3002,9 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		}
 		// Another account still holds this key: only this account's entry is
 		// removed and the registry row stays active for the other holder
-		// (#3222), as SetSSHKeys does. The response does not name the holder.
+		// (#3222), as SetSSHKeys does. The response does not name the holder; an
+		// unreadable account fails the call with ErrHolderUnknown, which names
+		// no account either (the daemon log does).
 		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
 	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
