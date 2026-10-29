@@ -2831,7 +2831,8 @@ var setSSHKeysRegistryTimeout = 10 * time.Second
 // preserved by the file layer and never revoked, so a caller cannot lock the
 // platform out. Keys dropped by the call are revoked in the ssh_keys
 // registry exactly as RemoveSSHKey does (only the entries this account owns,
-// #3187); kept keys are registered like AddSSHKey does. An empty list is accepted
+// #3187), except that a key another account still holds is dropped from this
+// account's file without being revoked (#3222); kept keys are registered like AddSSHKey does. An empty list is accepted
 // only with allow_empty, so an omitted field cannot wipe a box.
 func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
@@ -2887,7 +2888,14 @@ func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequ
 			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
 			defer cancel()
 			for _, k := range drop {
-				if err := s.revokeSSHKey(rctx, req.Username, k); err != nil {
+				err := s.revokeSSHKey(rctx, req.Username, k)
+				if errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+					// Another account still holds this key: this call only
+					// removes this account's entry (#3222). The registry row
+					// stays active for the other holder.
+					continue
+				}
+				if err != nil {
 					return registryError("set ssh keys", err)
 				}
 			}
@@ -2936,9 +2944,16 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 
 	// Revoke before the file changes, as SetSSHKeys does: a registry failure
 	// leaves the key in place and is reported, so the caller's retry repeats
-	// the revocation. Only the entry this account owns is revoked (#3187).
+	// the revocation. Only the entry this account owns is revoked (#3187), and
+	// not while another account still holds the key (#3222).
 	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
-		return nil, registryError("remove ssh key", err)
+		if !errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+			return nil, registryError("remove ssh key", err)
+		}
+		// Another account still holds this key: only this account's entry is
+		// removed and the registry row stays active for the other holder
+		// (#3222), as SetSSHKeys does. The response does not name the holder.
+		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
 	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
