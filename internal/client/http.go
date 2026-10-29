@@ -259,6 +259,8 @@ type systemInfo struct {
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
 	// Storage pools (#2823), decoded per entry with protojson.
 	StoragePools []json.RawMessage `json:"storagePools"`
+	// Managed backup key (#3213); absent on an older daemon → false.
+	ManagedBackupKeyConfigured bool `json:"managedBackupKeyConfigured"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
@@ -1682,6 +1684,26 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	}
 
 	return info, nil
+}
+
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *HTTPClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/system/info", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	result, err := parseResponse[getSystemInfoResponse](resp)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	if result.Info == nil {
+		return false, fmt.Errorf("no system info returned in response")
+	}
+	return result.Info.ManagedBackupKeyConfigured, nil
 }
 
 // InstallStack installs a stack or base script on a running container via HTTP
