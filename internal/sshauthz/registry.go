@@ -13,7 +13,10 @@ package sshauthz
 //     takes the new owner, source and created_at, and revoked_at clears;
 //   - a revocation applies only to the row the revoking account owns
 //     (#3187, replacing #2517's "for every account"): another account that
-//     holds the same public key cannot revoke the owner's entry.
+//     holds the same public key cannot revoke the owner's entry;
+//   - a revocation that would take effect is refused while another account
+//     still holds the key in its own authorized_keys (#3222), so registering
+//     someone else's key first does not let you revoke their access.
 //
 // The backfill uses InsertIfAbsent instead, so a key revoked through the
 // API but still present in another account's authorized_keys file is never
@@ -115,7 +118,15 @@ func NewKeyRecord(publicKey, username string, source KeySource, at time.Time) (K
 // PGKeyStore is the Postgres-backed registry. It shares the daemon's pool
 // with the collaborator store.
 type PGKeyStore struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	holders HolderLookup
+}
+
+// WithHolders sets the lookup Revoke uses to refuse a revocation while
+// another account still holds the key (#3222).
+func (s *PGKeyStore) WithHolders(h HolderLookup) *PGKeyStore {
+	s.holders = h
+	return s
 }
 
 // NewPGKeyStore creates the ssh_keys table if needed and returns the store.
@@ -180,7 +191,19 @@ func (s *PGKeyStore) Register(ctx context.Context, rec KeyRecord) error {
 // rec.Username, so a later backfill cannot register it as live. An already
 // revoked row keeps its original revocation time. A revoke that changes no
 // row (another account owns it) still returns nil and is logged.
+//
+// A revoke that would take effect (the caller owns an active row, or there is
+// no row) is refused with ErrKeyHeldByOtherAccount while any other account
+// still holds the key in its own authorized_keys (#3222). Ownership is first
+// registration, and public keys are public, so the owner of a row can be the
+// account that registered someone else's key first. The holder lookup reads
+// the authorized_keys files, not the registry, because Register leaves the
+// row alone for a later account and so records no second holder. Without a
+// HolderLookup (WithHolders) no holder check is made.
 func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) error {
+	if err := s.refuseIfHeldElsewhere(ctx, rec); err != nil {
+		return err
+	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO ssh_keys (fingerprint, username, user_id, public_key, key_type, created_at, revoked_at, source)
 		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
@@ -194,6 +217,32 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 	if tag.RowsAffected() == 0 {
 		log.Printf("[ssh-keys] revoke by %s left %s active: its registry entry is owned by another account (#3187)",
 			rec.Username, rec.Fingerprint)
+	}
+	return nil
+}
+
+// refuseIfHeldElsewhere returns ErrKeyHeldByOtherAccount when revoking rec
+// would change the registry (rec.Username owns an active row, or there is no
+// row) and another account holds the key.
+func (s *PGKeyStore) refuseIfHeldElsewhere(ctx context.Context, rec KeyRecord) error {
+	if s.holders == nil {
+		return nil
+	}
+	cur, err := s.Lookup(ctx, rec.Fingerprint)
+	switch {
+	case errors.Is(err, ErrKeyNotFound):
+		// No row: the revoke inserts one, so it takes effect.
+	case err != nil:
+		return fmt.Errorf("revoke ssh key: %w", err)
+	case cur.Username != rec.Username || !cur.RevokedAt.IsZero():
+		return nil // not the owner, or already revoked: nothing would change
+	}
+	held, err := s.holders.OtherAccountHolds(ctx, rec.Fingerprint, rec.Username)
+	if err != nil {
+		return fmt.Errorf("revoke ssh key: holder lookup: %w", err)
+	}
+	if held {
+		return ErrKeyHeldByOtherAccount
 	}
 	return nil
 }
