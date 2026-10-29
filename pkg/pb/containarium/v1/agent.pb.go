@@ -3196,7 +3196,12 @@ type CrewRun struct {
 	// record of the tests run on those files, and is what should gate opening a
 	// pull request; an agent's own `tests_run` claim should not. A failed or
 	// missing pack does not fail the run: whoever acts on the run reads this.
-	ProofPack     *CrewProofPack `protobuf:"bytes,15,opt,name=proof_pack,json=proofPack,proto3" json:"proof_pack,omitempty"`
+	ProofPack *CrewProofPack `protobuf:"bytes,15,opt,name=proof_pack,json=proofPack,proto3" json:"proof_pack,omitempty"`
+	// The model id each member was driven with (#3259), keyed by skill_id: the
+	// run's model_overrides entry, else the skill's own pinned `model`. A member
+	// that exports no model (none requested or pinned, or no named engine) is
+	// absent: its engine's default ran, and the daemon does not claim to know which.
+	MemberModels  map[string]string `protobuf:"bytes,16,rep,name=member_models,json=memberModels,proto3" json:"member_models,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3332,6 +3337,13 @@ func (x *CrewRun) GetNodeResults() []*TaskNodeResult {
 func (x *CrewRun) GetProofPack() *CrewProofPack {
 	if x != nil {
 		return x.ProofPack
+	}
+	return nil
+}
+
+func (x *CrewRun) GetMemberModels() map[string]string {
+	if x != nil {
+		return x.MemberModels
 	}
 	return nil
 }
@@ -3663,9 +3675,22 @@ type RunCrewRequest struct {
 	// Only ORCHESTRATOR/FREEFORM support graph execution.
 	Graph *TaskGraph `protobuf:"bytes,11,opt,name=graph,proto3" json:"graph,omitempty"`
 	// Zero defaults to 5; must not exceed the platform node cap.
-	Concurrency   uint32 `protobuf:"varint,12,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Concurrency uint32 `protobuf:"varint,12,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
+	// Per-member model override (#3259), keyed by skill_id: when a member's id has
+	// an entry here, THAT model id is the one its run is driven with, ahead of the
+	// skill's own `model`. Precedence: this override, then the skill's `model`,
+	// then CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no
+	// tiers are enumerated; ids change with every release) but must be a plain
+	// id, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the
+	// box only with a named engine (the skill's, or engine_overrides'), so an
+	// entry for a member with none is FAILED_PRECONDITION rather than ignored. A
+	// key that is not a member of the crew is INVALID_ARGUMENT. An id the engine's
+	// provider does not list is refused before the run starts, when the daemon can
+	// list that provider's models. Not supported with `graph` (INVALID_ARGUMENT).
+	// CrewRun.member_models reports what each member ran with.
+	ModelOverrides map[string]string `protobuf:"bytes,13,rep,name=model_overrides,json=modelOverrides,proto3" json:"model_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RunCrewRequest) Reset() {
@@ -3780,6 +3805,13 @@ func (x *RunCrewRequest) GetConcurrency() uint32 {
 		return x.Concurrency
 	}
 	return 0
+}
+
+func (x *RunCrewRequest) GetModelOverrides() map[string]string {
+	if x != nil {
+		return x.ModelOverrides
+	}
+	return nil
 }
 
 type RunCrewResponse struct {
@@ -4812,7 +4844,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x129\n" +
 	"\btopology\x18\x04 \x01(\x0e2\x1d.containarium.v1.CrewTopologyR\btopology\x12\x1b\n" +
 	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\x12/\n" +
-	"\x05roles\x18\x06 \x03(\x0e2\x19.containarium.v1.CrewRoleR\x05roles\"\x99\x04\n" +
+	"\x05roles\x18\x06 \x03(\x0e2\x19.containarium.v1.CrewRoleR\x05roles\"\xab\x05\n" +
 	"\aCrewRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\acrew_id\x18\x02 \x01(\tR\x06crewId\x12\x19\n" +
@@ -4833,7 +4865,11 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x05graph\x18\r \x01(\v2\x1a.containarium.v1.TaskGraphR\x05graph\x12B\n" +
 	"\fnode_results\x18\x0e \x03(\v2\x1f.containarium.v1.TaskNodeResultR\vnodeResults\x12=\n" +
 	"\n" +
-	"proof_pack\x18\x0f \x01(\v2\x1e.containarium.v1.CrewProofPackR\tproofPack\"\x84\x02\n" +
+	"proof_pack\x18\x0f \x01(\v2\x1e.containarium.v1.CrewProofPackR\tproofPack\x12O\n" +
+	"\rmember_models\x18\x10 \x03(\v2*.containarium.v1.CrewRun.MemberModelsEntryR\fmemberModels\x1a?\n" +
+	"\x11MemberModelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x84\x02\n" +
 	"\rCrewProofPack\x128\n" +
 	"\x06status\x18\x01 \x01(\x0e2 .containarium.v1.ProofPackStatusR\x06status\x12!\n" +
 	"\fproducer_box\x18\x02 \x01(\tR\vproducerBox\x12\x1b\n" +
@@ -4850,7 +4886,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x0eGetCrewRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"<\n" +
 	"\x0fGetCrewResponse\x12)\n" +
-	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xb6\x04\n" +
+	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xd7\x05\n" +
 	"\x0eRunCrewRequest\x12\x17\n" +
 	"\acrew_id\x18\x01 \x01(\tR\x06crewId\x12\x1d\n" +
 	"\n" +
@@ -4867,10 +4903,14 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x13on_behalf_of_org_id\x18\n" +
 	" \x01(\tR\x0fonBehalfOfOrgId\x120\n" +
 	"\x05graph\x18\v \x01(\v2\x1a.containarium.v1.TaskGraphR\x05graph\x12 \n" +
-	"\vconcurrency\x18\f \x01(\rR\vconcurrency\x1a`\n" +
+	"\vconcurrency\x18\f \x01(\rR\vconcurrency\x12\\\n" +
+	"\x0fmodel_overrides\x18\r \x03(\v23.containarium.v1.RunCrewRequest.ModelOverridesEntryR\x0emodelOverrides\x1a`\n" +
 	"\x14EngineOverridesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
-	"\x05value\x18\x02 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x05value:\x028\x01\"=\n" +
+	"\x05value\x18\x02 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x05value:\x028\x01\x1aA\n" +
+	"\x13ModelOverridesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"=\n" +
 	"\x0fRunCrewResponse\x12*\n" +
 	"\x03run\x18\x01 \x01(\v2\x18.containarium.v1.CrewRunR\x03run\"#\n" +
 	"\x11GetCrewRunRequest\x12\x0e\n" +
@@ -5057,7 +5097,7 @@ func file_containarium_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
+var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_containarium_v1_agent_proto_goTypes = []any{
 	(PromptSource)(0),                           // 0: containarium.v1.PromptSource
 	(AgentEngine)(0),                            // 1: containarium.v1.AgentEngine
@@ -5122,102 +5162,106 @@ var file_containarium_v1_agent_proto_goTypes = []any{
 	(*TaskNodeResult)(nil),                      // 60: containarium.v1.TaskNodeResult
 	(*PlanTaskGraphRequest)(nil),                // 61: containarium.v1.PlanTaskGraphRequest
 	(*PlanTaskGraphResponse)(nil),               // 62: containarium.v1.PlanTaskGraphResponse
-	nil,                                         // 63: containarium.v1.RunCrewRequest.EngineOverridesEntry
-	(*Recipe)(nil),                              // 64: containarium.v1.Recipe
-	(GatewayProvider)(0),                        // 65: containarium.v1.GatewayProvider
-	(*Container)(nil),                           // 66: containarium.v1.Container
-	(*timestamppb.Timestamp)(nil),               // 67: google.protobuf.Timestamp
-	(ProofPackStatus)(0),                        // 68: containarium.v1.ProofPackStatus
+	nil,                                         // 63: containarium.v1.CrewRun.MemberModelsEntry
+	nil,                                         // 64: containarium.v1.RunCrewRequest.EngineOverridesEntry
+	nil,                                         // 65: containarium.v1.RunCrewRequest.ModelOverridesEntry
+	(*Recipe)(nil),                              // 66: containarium.v1.Recipe
+	(GatewayProvider)(0),                        // 67: containarium.v1.GatewayProvider
+	(*Container)(nil),                           // 68: containarium.v1.Container
+	(*timestamppb.Timestamp)(nil),               // 69: google.protobuf.Timestamp
+	(ProofPackStatus)(0),                        // 70: containarium.v1.ProofPackStatus
 }
 var file_containarium_v1_agent_proto_depIdxs = []int32{
-	64, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
+	66, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
 	12, // 1: containarium.v1.AgentSkill.agent_card:type_name -> containarium.v1.AgentCard
 	1,  // 2: containarium.v1.AgentSkill.engine:type_name -> containarium.v1.AgentEngine
 	0,  // 3: containarium.v1.AgentSkill.prompt_source:type_name -> containarium.v1.PromptSource
 	1,  // 4: containarium.v1.AgentEngineStatus.engine:type_name -> containarium.v1.AgentEngine
-	65, // 5: containarium.v1.AgentEngineStatus.provider:type_name -> containarium.v1.GatewayProvider
+	67, // 5: containarium.v1.AgentEngineStatus.provider:type_name -> containarium.v1.GatewayProvider
 	2,  // 6: containarium.v1.AgentEngineStatus.readiness:type_name -> containarium.v1.AgentEngineReadiness
 	3,  // 7: containarium.v1.AgentEngineStatus.source:type_name -> containarium.v1.AgentCredentialSource
 	14, // 8: containarium.v1.ListAgentEnginesResponse.engines:type_name -> containarium.v1.AgentEngineStatus
 	13, // 9: containarium.v1.ListAgentSkillsResponse.skills:type_name -> containarium.v1.AgentSkill
 	13, // 10: containarium.v1.GetAgentSkillResponse.skill:type_name -> containarium.v1.AgentSkill
-	66, // 11: containarium.v1.ProvisionSkillBoxResponse.container:type_name -> containarium.v1.Container
+	68, // 11: containarium.v1.ProvisionSkillBoxResponse.container:type_name -> containarium.v1.Container
 	1,  // 12: containarium.v1.GetSkillBoxCredentialStatusResponse.engine:type_name -> containarium.v1.AgentEngine
 	4,  // 13: containarium.v1.GetSkillBoxCredentialStatusResponse.credential_source:type_name -> containarium.v1.CodeCredentialSource
-	67, // 14: containarium.v1.GetSkillBoxCredentialStatusResponse.checked_at:type_name -> google.protobuf.Timestamp
+	69, // 14: containarium.v1.GetSkillBoxCredentialStatusResponse.checked_at:type_name -> google.protobuf.Timestamp
 	1,  // 15: containarium.v1.RunAgentSkillRequest.engine:type_name -> containarium.v1.AgentEngine
-	66, // 16: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
+	68, // 16: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
 	5,  // 17: containarium.v1.AgentArtifact.state:type_name -> containarium.v1.AgentTaskState
 	28, // 18: containarium.v1.SendAgentTaskResponse.artifact:type_name -> containarium.v1.AgentArtifact
 	33, // 19: containarium.v1.TailRunLogResponse.gateway_calls:type_name -> containarium.v1.GatewayCall
-	67, // 20: containarium.v1.GatewayCall.time:type_name -> google.protobuf.Timestamp
+	69, // 20: containarium.v1.GatewayCall.time:type_name -> google.protobuf.Timestamp
 	6,  // 21: containarium.v1.GatewayCall.key_owner:type_name -> containarium.v1.GatewayKeyOwner
 	7,  // 22: containarium.v1.GatewayCall.transport_error:type_name -> containarium.v1.GatewayTransportError
-	66, // 23: containarium.v1.StartAgentWorkerResponse.container:type_name -> containarium.v1.Container
+	68, // 23: containarium.v1.StartAgentWorkerResponse.container:type_name -> containarium.v1.Container
 	8,  // 24: containarium.v1.Crew.topology:type_name -> containarium.v1.CrewTopology
 	9,  // 25: containarium.v1.Crew.roles:type_name -> containarium.v1.CrewRole
 	10, // 26: containarium.v1.CrewRun.state:type_name -> containarium.v1.CrewRunState
 	57, // 27: containarium.v1.CrewRun.graph:type_name -> containarium.v1.TaskGraph
 	60, // 28: containarium.v1.CrewRun.node_results:type_name -> containarium.v1.TaskNodeResult
 	44, // 29: containarium.v1.CrewRun.proof_pack:type_name -> containarium.v1.CrewProofPack
-	68, // 30: containarium.v1.CrewProofPack.status:type_name -> containarium.v1.ProofPackStatus
-	42, // 31: containarium.v1.ListCrewsResponse.crews:type_name -> containarium.v1.Crew
-	42, // 32: containarium.v1.GetCrewResponse.crew:type_name -> containarium.v1.Crew
-	63, // 33: containarium.v1.RunCrewRequest.engine_overrides:type_name -> containarium.v1.RunCrewRequest.EngineOverridesEntry
-	57, // 34: containarium.v1.RunCrewRequest.graph:type_name -> containarium.v1.TaskGraph
-	43, // 35: containarium.v1.RunCrewResponse.run:type_name -> containarium.v1.CrewRun
-	43, // 36: containarium.v1.GetCrewRunResponse.run:type_name -> containarium.v1.CrewRun
-	54, // 37: containarium.v1.TaskNode.resources:type_name -> containarium.v1.TaskNodeResources
-	53, // 38: containarium.v1.TaskGraph.nodes:type_name -> containarium.v1.TaskNode
-	55, // 39: containarium.v1.TaskGraph.edges:type_name -> containarium.v1.TaskEdge
-	56, // 40: containarium.v1.TaskGraph.limits:type_name -> containarium.v1.TaskGraphLimits
-	57, // 41: containarium.v1.ValidateTaskGraphRequest.graph:type_name -> containarium.v1.TaskGraph
-	11, // 42: containarium.v1.TaskNodeResult.state:type_name -> containarium.v1.TaskNodeState
-	67, // 43: containarium.v1.TaskNodeResult.started_at:type_name -> google.protobuf.Timestamp
-	67, // 44: containarium.v1.TaskNodeResult.finished_at:type_name -> google.protobuf.Timestamp
-	57, // 45: containarium.v1.PlanTaskGraphResponse.graph:type_name -> containarium.v1.TaskGraph
-	1,  // 46: containarium.v1.RunCrewRequest.EngineOverridesEntry.value:type_name -> containarium.v1.AgentEngine
-	17, // 47: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
-	15, // 48: containarium.v1.AgentSkillService.ListAgentEngines:input_type -> containarium.v1.ListAgentEnginesRequest
-	19, // 49: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
-	21, // 50: containarium.v1.AgentSkillService.ProvisionSkillBox:input_type -> containarium.v1.ProvisionSkillBoxRequest
-	23, // 51: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:input_type -> containarium.v1.GetSkillBoxCredentialStatusRequest
-	25, // 52: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
-	29, // 53: containarium.v1.AgentSkillService.SendAgentTask:input_type -> containarium.v1.SendAgentTaskRequest
-	31, // 54: containarium.v1.AgentSkillService.TailRunLog:input_type -> containarium.v1.TailRunLogRequest
-	34, // 55: containarium.v1.AgentSkillService.EnqueueAgentTask:input_type -> containarium.v1.EnqueueAgentTaskRequest
-	36, // 56: containarium.v1.AgentSkillService.LeaseAgentTask:input_type -> containarium.v1.LeaseAgentTaskRequest
-	38, // 57: containarium.v1.AgentSkillService.CompleteAgentTask:input_type -> containarium.v1.CompleteAgentTaskRequest
-	40, // 58: containarium.v1.AgentSkillService.StartAgentWorker:input_type -> containarium.v1.StartAgentWorkerRequest
-	61, // 59: containarium.v1.CrewService.PlanTaskGraph:input_type -> containarium.v1.PlanTaskGraphRequest
-	45, // 60: containarium.v1.CrewService.ListCrews:input_type -> containarium.v1.ListCrewsRequest
-	47, // 61: containarium.v1.CrewService.GetCrew:input_type -> containarium.v1.GetCrewRequest
-	49, // 62: containarium.v1.CrewService.RunCrew:input_type -> containarium.v1.RunCrewRequest
-	51, // 63: containarium.v1.CrewService.GetCrewRun:input_type -> containarium.v1.GetCrewRunRequest
-	58, // 64: containarium.v1.CrewService.ValidateTaskGraph:input_type -> containarium.v1.ValidateTaskGraphRequest
-	18, // 65: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
-	16, // 66: containarium.v1.AgentSkillService.ListAgentEngines:output_type -> containarium.v1.ListAgentEnginesResponse
-	20, // 67: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
-	22, // 68: containarium.v1.AgentSkillService.ProvisionSkillBox:output_type -> containarium.v1.ProvisionSkillBoxResponse
-	24, // 69: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:output_type -> containarium.v1.GetSkillBoxCredentialStatusResponse
-	26, // 70: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
-	30, // 71: containarium.v1.AgentSkillService.SendAgentTask:output_type -> containarium.v1.SendAgentTaskResponse
-	32, // 72: containarium.v1.AgentSkillService.TailRunLog:output_type -> containarium.v1.TailRunLogResponse
-	35, // 73: containarium.v1.AgentSkillService.EnqueueAgentTask:output_type -> containarium.v1.EnqueueAgentTaskResponse
-	37, // 74: containarium.v1.AgentSkillService.LeaseAgentTask:output_type -> containarium.v1.LeaseAgentTaskResponse
-	39, // 75: containarium.v1.AgentSkillService.CompleteAgentTask:output_type -> containarium.v1.CompleteAgentTaskResponse
-	41, // 76: containarium.v1.AgentSkillService.StartAgentWorker:output_type -> containarium.v1.StartAgentWorkerResponse
-	62, // 77: containarium.v1.CrewService.PlanTaskGraph:output_type -> containarium.v1.PlanTaskGraphResponse
-	46, // 78: containarium.v1.CrewService.ListCrews:output_type -> containarium.v1.ListCrewsResponse
-	48, // 79: containarium.v1.CrewService.GetCrew:output_type -> containarium.v1.GetCrewResponse
-	50, // 80: containarium.v1.CrewService.RunCrew:output_type -> containarium.v1.RunCrewResponse
-	52, // 81: containarium.v1.CrewService.GetCrewRun:output_type -> containarium.v1.GetCrewRunResponse
-	59, // 82: containarium.v1.CrewService.ValidateTaskGraph:output_type -> containarium.v1.ValidateTaskGraphResponse
-	65, // [65:83] is the sub-list for method output_type
-	47, // [47:65] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	63, // 30: containarium.v1.CrewRun.member_models:type_name -> containarium.v1.CrewRun.MemberModelsEntry
+	70, // 31: containarium.v1.CrewProofPack.status:type_name -> containarium.v1.ProofPackStatus
+	42, // 32: containarium.v1.ListCrewsResponse.crews:type_name -> containarium.v1.Crew
+	42, // 33: containarium.v1.GetCrewResponse.crew:type_name -> containarium.v1.Crew
+	64, // 34: containarium.v1.RunCrewRequest.engine_overrides:type_name -> containarium.v1.RunCrewRequest.EngineOverridesEntry
+	57, // 35: containarium.v1.RunCrewRequest.graph:type_name -> containarium.v1.TaskGraph
+	65, // 36: containarium.v1.RunCrewRequest.model_overrides:type_name -> containarium.v1.RunCrewRequest.ModelOverridesEntry
+	43, // 37: containarium.v1.RunCrewResponse.run:type_name -> containarium.v1.CrewRun
+	43, // 38: containarium.v1.GetCrewRunResponse.run:type_name -> containarium.v1.CrewRun
+	54, // 39: containarium.v1.TaskNode.resources:type_name -> containarium.v1.TaskNodeResources
+	53, // 40: containarium.v1.TaskGraph.nodes:type_name -> containarium.v1.TaskNode
+	55, // 41: containarium.v1.TaskGraph.edges:type_name -> containarium.v1.TaskEdge
+	56, // 42: containarium.v1.TaskGraph.limits:type_name -> containarium.v1.TaskGraphLimits
+	57, // 43: containarium.v1.ValidateTaskGraphRequest.graph:type_name -> containarium.v1.TaskGraph
+	11, // 44: containarium.v1.TaskNodeResult.state:type_name -> containarium.v1.TaskNodeState
+	69, // 45: containarium.v1.TaskNodeResult.started_at:type_name -> google.protobuf.Timestamp
+	69, // 46: containarium.v1.TaskNodeResult.finished_at:type_name -> google.protobuf.Timestamp
+	57, // 47: containarium.v1.PlanTaskGraphResponse.graph:type_name -> containarium.v1.TaskGraph
+	1,  // 48: containarium.v1.RunCrewRequest.EngineOverridesEntry.value:type_name -> containarium.v1.AgentEngine
+	17, // 49: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
+	15, // 50: containarium.v1.AgentSkillService.ListAgentEngines:input_type -> containarium.v1.ListAgentEnginesRequest
+	19, // 51: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
+	21, // 52: containarium.v1.AgentSkillService.ProvisionSkillBox:input_type -> containarium.v1.ProvisionSkillBoxRequest
+	23, // 53: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:input_type -> containarium.v1.GetSkillBoxCredentialStatusRequest
+	25, // 54: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
+	29, // 55: containarium.v1.AgentSkillService.SendAgentTask:input_type -> containarium.v1.SendAgentTaskRequest
+	31, // 56: containarium.v1.AgentSkillService.TailRunLog:input_type -> containarium.v1.TailRunLogRequest
+	34, // 57: containarium.v1.AgentSkillService.EnqueueAgentTask:input_type -> containarium.v1.EnqueueAgentTaskRequest
+	36, // 58: containarium.v1.AgentSkillService.LeaseAgentTask:input_type -> containarium.v1.LeaseAgentTaskRequest
+	38, // 59: containarium.v1.AgentSkillService.CompleteAgentTask:input_type -> containarium.v1.CompleteAgentTaskRequest
+	40, // 60: containarium.v1.AgentSkillService.StartAgentWorker:input_type -> containarium.v1.StartAgentWorkerRequest
+	61, // 61: containarium.v1.CrewService.PlanTaskGraph:input_type -> containarium.v1.PlanTaskGraphRequest
+	45, // 62: containarium.v1.CrewService.ListCrews:input_type -> containarium.v1.ListCrewsRequest
+	47, // 63: containarium.v1.CrewService.GetCrew:input_type -> containarium.v1.GetCrewRequest
+	49, // 64: containarium.v1.CrewService.RunCrew:input_type -> containarium.v1.RunCrewRequest
+	51, // 65: containarium.v1.CrewService.GetCrewRun:input_type -> containarium.v1.GetCrewRunRequest
+	58, // 66: containarium.v1.CrewService.ValidateTaskGraph:input_type -> containarium.v1.ValidateTaskGraphRequest
+	18, // 67: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
+	16, // 68: containarium.v1.AgentSkillService.ListAgentEngines:output_type -> containarium.v1.ListAgentEnginesResponse
+	20, // 69: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
+	22, // 70: containarium.v1.AgentSkillService.ProvisionSkillBox:output_type -> containarium.v1.ProvisionSkillBoxResponse
+	24, // 71: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:output_type -> containarium.v1.GetSkillBoxCredentialStatusResponse
+	26, // 72: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
+	30, // 73: containarium.v1.AgentSkillService.SendAgentTask:output_type -> containarium.v1.SendAgentTaskResponse
+	32, // 74: containarium.v1.AgentSkillService.TailRunLog:output_type -> containarium.v1.TailRunLogResponse
+	35, // 75: containarium.v1.AgentSkillService.EnqueueAgentTask:output_type -> containarium.v1.EnqueueAgentTaskResponse
+	37, // 76: containarium.v1.AgentSkillService.LeaseAgentTask:output_type -> containarium.v1.LeaseAgentTaskResponse
+	39, // 77: containarium.v1.AgentSkillService.CompleteAgentTask:output_type -> containarium.v1.CompleteAgentTaskResponse
+	41, // 78: containarium.v1.AgentSkillService.StartAgentWorker:output_type -> containarium.v1.StartAgentWorkerResponse
+	62, // 79: containarium.v1.CrewService.PlanTaskGraph:output_type -> containarium.v1.PlanTaskGraphResponse
+	46, // 80: containarium.v1.CrewService.ListCrews:output_type -> containarium.v1.ListCrewsResponse
+	48, // 81: containarium.v1.CrewService.GetCrew:output_type -> containarium.v1.GetCrewResponse
+	50, // 82: containarium.v1.CrewService.RunCrew:output_type -> containarium.v1.RunCrewResponse
+	52, // 83: containarium.v1.CrewService.GetCrewRun:output_type -> containarium.v1.GetCrewRunResponse
+	59, // 84: containarium.v1.CrewService.ValidateTaskGraph:output_type -> containarium.v1.ValidateTaskGraphResponse
+	67, // [67:85] is the sub-list for method output_type
+	49, // [49:67] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_agent_proto_init() }
@@ -5243,7 +5287,7 @@ func file_containarium_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_agent_proto_rawDesc), len(file_containarium_v1_agent_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   52,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

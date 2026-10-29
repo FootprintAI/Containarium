@@ -13684,6 +13684,13 @@
         "proofPack": {
           "$ref": "#/definitions/CrewProofPack",
           "description": "The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).\nUnset when the crew has no producer, or the run failed before its last\nA2A member returned the final files. The pack's status is the platform's\nrecord of the tests run on those files, and is what should gate opening a\npull request; an agent's own `tests_run` claim should not. A failed or\nmissing pack does not fail the run: whoever acts on the run reads this."
+        },
+        "memberModels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The model id each member was driven with (#3259), keyed by skill_id: the\nrun's model_overrides entry, else the skill's own pinned `model`. A member\nthat exports no model (none requested or pinned, or no named engine) is\nabsent: its engine's default ran, and the daemon does not claim to know which."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -20347,6 +20354,13 @@
           "type": "integer",
           "format": "int64",
           "description": "Zero defaults to 5; must not exceed the platform node cap."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-member model override (#3259), keyed by skill_id: when a member's id has\nan entry here, THAT model id is the one its run is driven with, ahead of the\nskill's own `model`. Precedence: this override, then the skill's `model`,\nthen CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no\ntiers are enumerated; ids change with every release) but must be a plain\nid, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the\nbox only with a named engine (the skill's, or engine_overrides'), so an\nentry for a member with none is FAILED_PRECONDITION rather than ignored. A\nkey that is not a member of the crew is INVALID_ARGUMENT. An id the engine's\nprovider does not list is refused before the run starts, when the daemon can\nlist that provider's models. Not supported with `graph` (INVALID_ARGUMENT).\nCrewRun.member_models reports what each member ran with."
         }
       }
     },
