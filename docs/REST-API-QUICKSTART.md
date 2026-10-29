@@ -151,7 +151,7 @@ curl -X PUT \
 ```
 
 A dropped key is always removed from the box. The daemon's key registry has
-one entry per key, owned by the first account that registered it. Ownership
+one entry per key, owned by the first account that registered it (a revoked entry is replaced by the next registration). Ownership
 compares the user id, so a box user also owns an entry that their own
 collaborator account (`<owner>-container-<user>`, on someone else's box)
 registered. The entry is revoked when this box user owns it, or it has no
