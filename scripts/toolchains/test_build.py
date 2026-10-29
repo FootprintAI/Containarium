@@ -92,6 +92,24 @@ class ToolchainBuildTest(unittest.TestCase):
                 self.builder.build(self.lock, "amd64", "v0.1.0", self.root / "rebuilt", self.root / "cache")
         compiler.assert_not_called()
 
+    def test_npm_security_dependency_is_replaced_and_inventoried(self):
+        patch = self.root / "undici.tgz"
+        with tarfile.open(patch, "w:gz") as archive:
+            content = b'{"name":"undici","version":"6.29.1"}'
+            entry = tarfile.TarInfo("package/package.json")
+            entry.size, entry.mode = len(content), 0o644
+            archive.addfile(entry, io.BytesIO(content))
+        npm = next(t for t in self.lock["tools"] if t["name"] == "npm")
+        npm["security_dependencies"] = [{"name": "undici", "version": "6.29.1", "artifact": {
+            "url": patch.as_uri(), "sha256": hashlib.sha256(patch.read_bytes()).hexdigest(), "format": "tar"}}]
+        destination = self.root / "patched"
+        self.builder.build(self.lock, "amd64", "v0.1.0", destination, self.root / "cache")
+        package = json.loads((destination / "npm/node_modules/undici/package.json").read_text())
+        self.assertEqual(package["version"], "6.29.1")
+        manifest = json.loads((destination / "manifest.json").read_text())
+        npm = next(t for t in manifest["tools"] if t["name"] == "npm")
+        self.assertEqual(npm["security_dependencies"][0]["version"], "6.29.1")
+
     def test_checksum_mismatch_cannot_produce_a_release(self):
         self.lock["tools"][0]["artifacts"]["amd64"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "checksum"):

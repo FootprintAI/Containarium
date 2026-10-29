@@ -109,6 +109,22 @@ def build(lock, arch, release, destination, cache):
                     shutil.copyfile(candidates[0], bin_dir / "pnpm")
                 else:
                     raise ValueError(f"unknown managed tool: {name}")
+    npm = next(t for t in lock["tools"] if t["name"] == "npm")
+    for dependency in npm.get("security_dependencies", []):
+        name = dependency["name"]
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+            raise ValueError("invalid npm security dependency name")
+        with tempfile.TemporaryDirectory() as temp:
+            extracted = Path(temp)
+            artifact = dependency["artifact"]
+            unpack(download(artifact, cache), artifact["format"], extracted)
+            package = extracted / "package"
+            metadata = json.loads((package / "package.json").read_text())
+            if (metadata["name"], metadata["version"]) != (name, dependency["version"]):
+                raise ValueError("npm security dependency identity mismatch")
+            target = destination / "npm/node_modules" / name
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(package, target, symlinks=True)
     # Replace, rather than retain, Node's bundled npm and its stale dependencies.
     shutil.rmtree(destination / "node/lib/node_modules/npm", ignore_errors=True)
     for name in ("npm", "npx"):
@@ -121,7 +137,8 @@ def build(lock, arch, release, destination, cache):
     for path in bin_dir.iterdir():
         path.chmod(path.stat().st_mode | 0o555)
     manifest = {"schema_version": 1, "release": release, "arch": arch,
-                "tools": lock["tools"], "system_tools": lock["system_tools"]}
+                "tools": lock["tools"], "system_tools": lock["system_tools"],
+                "system_libraries": lock.get("system_libraries", [])}
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.copyfile(Path(__file__).with_name("install.sh"), destination / "install.sh")
     checksums = []

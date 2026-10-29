@@ -14,6 +14,9 @@ deliberately from the vendors' stable releases; builds never resolve
 `latest`. The managed `go` launcher sets `GOTOOLCHAIN=local`, including when
 called from a bare non-interactive shell. npm is pinned independently and
 replaces Node's bundled copy so its dependencies can be patched promptly.
+The lock also inventories security updates to npm's bundled dependencies
+(currently undici 6.29.1). These use verified registry archives and preserve
+the dependency's compatible major version; the final installed tree is scanned.
 staticcheck is rebuilt from its checksum-verified stable source using the
 pinned Go security release, rather than retaining an older embedded stdlib
 from an upstream prebuilt binary. Module downloads use the Go checksum
@@ -76,6 +79,13 @@ A `BUILD_TOOLS` run without a working mount is refused with
 project outputs belong in the run user's writable home/workspace, outside
 the shared volume. Registries remain reachable; this is not an install or
 network restriction.
+
+Node also needs the OS runtime libraries `libatomic.so.1` and
+`libstdc++.so.6`, listed in the manifest. At create/lazy setup, the platform
+probes Node and installs the small distro library packages only if Node
+cannot start (`libatomic1`/`libstdc++6` on Debian, `libatomic`/`libstdc++` on
+RHEL). Provisioned boxes skip this step. The agent remains unprivileged;
+the toolchains themselves remain exclusively on the shared read-only mount.
 
 ## Update and rollback
 

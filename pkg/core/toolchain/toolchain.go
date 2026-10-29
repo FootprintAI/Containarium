@@ -27,7 +27,28 @@ func Available(root string) bool {
 func SetupScript() string {
 	return `set -eu
 awk '$2 == "` + HostRoot + `" && $4 ~ /(^|,)ro(,|$)/ { found=1 } END { exit !found }' /proc/mounts || { echo 'missing read-only mount: ` + HostRoot + `' >&2; exit 1; }
-` + LinkScript(HostRoot, "/usr/local/bin")
+` + RuntimeScript(HostRoot) + LinkScript(HostRoot, "/usr/local/bin")
+}
+
+// RuntimeScript supplies Node's small OS runtime dependencies on minimal or
+// older images. Already-provisioned boxes never call a package manager here.
+// This is platform provisioning, before the unprivileged agent is started.
+func RuntimeScript(root string) string {
+	node := "'" + strings.ReplaceAll(filepath.Join(root, "current/bin/node"), "'", "'\\''") + "'"
+	return `set -eu
+if ! ` + node + ` --version >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libatomic1 libstdc++6 >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y libatomic libstdc++ >/dev/null
+  else
+    echo 'managed Node requires the OS runtime libraries libatomic.so.1 and libstdc++.so.6' >&2
+    exit 1
+  fi
+  ` + node + ` --version >/dev/null
+fi
+`
 }
 
 // LinkScript creates only platform-owned links and refuses to replace an

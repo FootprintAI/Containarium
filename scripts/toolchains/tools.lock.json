@@ -47,7 +47,19 @@
           "sha256": "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67",
           "format": "tar"
         }
-      }
+      },
+      "security_dependencies": [
+        {
+          "name": "undici",
+          "version": "6.29.1",
+          "integrity": "sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==",
+          "artifact": {
+            "url": "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
+            "sha256": "29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f",
+            "format": "tar"
+          }
+        }
+      ]
     },
     {
       "name": "pnpm",
@@ -111,5 +123,9 @@
     "make",
     "git",
     "gcc"
+  ],
+  "system_libraries": [
+    "libatomic.so.1",
+    "libstdc++.so.6"
   ]
 }
