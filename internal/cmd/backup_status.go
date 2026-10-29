@@ -95,10 +95,13 @@ func runBackupStatus(cmd *cobra.Command, args []string) error {
 	// Fail safe: if the daemon cannot say (older daemon, or the caller may
 	// not read system info), assume there is no managed key, so an
 	// unregistered tenant is still flagged rather than silently passed.
-	managedKey, err := c.ManagedBackupKeyConfigured()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not tell whether the daemon has a managed backup key (%v); treating tenants with no recipient as unencrypted\n", err)
-		managedKey = false
+	managedKey := managedKeyAbsent
+	switch configured, err := c.ManagedBackupKeyConfigured(); {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "warning: could not tell whether the daemon has a managed backup key (%v); tenants with no recipient will be reported as encryption not confirmed\n", err)
+		managedKey = managedKeyUnknown
+	case configured:
+		managedKey = managedKeyPresent
 	}
 
 	fmt.Printf("Backup encryption for tenants in %s:\n", backupStatusConf)
@@ -138,13 +141,24 @@ func readBackupConfTenants(path string) ([]string, error) {
 	return tenants, nil
 }
 
+// managedKeyState is what status knows about the daemon's managed backup
+// key. Unknown (the lookup failed) is distinct from Absent (the daemon said
+// it has none) so the output never asserts more than was learned.
+type managedKeyState int
+
+const (
+	managedKeyUnknown managedKeyState = iota
+	managedKeyAbsent
+	managedKeyPresent
+)
+
 // checkBackupRecipients prints one line per tenant and returns how many
 // have no registered recipient or could not be checked. A tenant whose
 // secrets cannot be listed counts as missing: the check must not pass on
 // an answer it never got. managedKey is the daemon's report that it has a
 // managed backup key (#3213): it encrypts every dump, so a tenant with no
 // registered recipient is then fine.
-func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string, managedKey bool) int {
+func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string, managedKey managedKeyState) int {
 	missing := 0
 	for _, tenant := range tenants {
 		secrets, err := l.ListSecrets(tenant)
@@ -164,11 +178,16 @@ func checkBackupRecipients(w io.Writer, l backupSecretsLister, tenants []string,
 			_, _ = fmt.Fprintf(w, "  ✓ %s — age recipient registered\n", tenant)
 			continue
 		}
-		if managedKey {
+		if managedKey == managedKeyPresent {
 			_, _ = fmt.Fprintf(w, "  ✓ %s — no age recipient registered; dump encrypted by the daemon's managed backup key\n", tenant)
 			continue
 		}
 		missing++
+		if managedKey == managedKeyUnknown {
+			_, _ = fmt.Fprintf(w, "  ✗ %s — no %s registered and the daemon's managed backup key could not be checked: encryption not confirmed\n",
+				tenant, backupAgeRecipientSecret)
+			continue
+		}
 		_, _ = fmt.Fprintf(w, "  ✗ %s — no %s registered: its dump will be stored UNENCRYPTED (this daemon reports no managed backup key)\n",
 			tenant, backupAgeRecipientSecret)
 	}

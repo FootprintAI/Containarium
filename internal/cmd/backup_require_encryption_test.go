@@ -147,7 +147,7 @@ func TestCheckBackupRecipients(t *testing.T) {
 		errs: map[string]error{"gamma": errors.New("permission denied")},
 	}
 	var buf bytes.Buffer
-	missing := checkBackupRecipients(&buf, lister, []string{"acme", "beta", "gamma"}, false)
+	missing := checkBackupRecipients(&buf, lister, []string{"acme", "beta", "gamma"}, managedKeyAbsent)
 	out := buf.String()
 	if missing != 2 {
 		t.Errorf("missing = %d, want 2 (beta has none, gamma could not be checked)\n%s", missing, out)
@@ -162,7 +162,7 @@ func TestCheckBackupRecipients(t *testing.T) {
 func TestCheckBackupRecipients_AllRegistered(t *testing.T) {
 	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"CONTAINARIUM_BACKUP_AGE_RECIPIENT"}}}
 	var buf bytes.Buffer
-	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, false); missing != 0 {
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, managedKeyAbsent); missing != 0 {
 		t.Errorf("missing = %d, want 0:\n%s", missing, buf.String())
 	}
 }
@@ -172,7 +172,7 @@ func TestCheckBackupRecipients_AllRegistered(t *testing.T) {
 func TestCheckBackupRecipients_NoManagedKeyStillFlagsUnregistered(t *testing.T) {
 	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"OTHER"}}}
 	var buf bytes.Buffer
-	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, false); missing != 1 {
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, managedKeyAbsent); missing != 1 {
 		t.Errorf("missing = %d, want 1 (no managed key, no recipient)\n%s", missing, buf.String())
 	}
 	if !strings.Contains(buf.String(), "UNENCRYPTED") {
@@ -189,7 +189,7 @@ func TestCheckBackupRecipients_ManagedKeyDaemonTreatsUnregisteredAsOK(t *testing
 		errs:  map[string]error{"gamma": errors.New("permission denied")},
 	}
 	var buf bytes.Buffer
-	missing := checkBackupRecipients(&buf, lister, []string{"acme", "gamma"}, true)
+	missing := checkBackupRecipients(&buf, lister, []string{"acme", "gamma"}, managedKeyPresent)
 	out := buf.String()
 	if missing != 1 {
 		t.Errorf("missing = %d, want 1 (only the unreadable tenant)\n%s", missing, out)
@@ -201,6 +201,24 @@ func TestCheckBackupRecipients_ManagedKeyDaemonTreatsUnregisteredAsOK(t *testing
 	}
 	if strings.Contains(out, "✗") || strings.Contains(out, "UNENCRYPTED") {
 		t.Errorf("managed-key daemon must not flag acme as unencrypted:\n%s", out)
+	}
+}
+
+// #3213 review: when the managed-key lookup itself failed, status does not
+// know the dump is plaintext, so it must say encryption is not confirmed
+// rather than assert UNENCRYPTED. It still counts the tenant as missing.
+func TestCheckBackupRecipients_UnknownManagedKeySaysNotConfirmed(t *testing.T) {
+	lister := &fakeSecretsLister{names: map[string][]string{"acme": {"OTHER"}}}
+	var buf bytes.Buffer
+	if missing := checkBackupRecipients(&buf, lister, []string{"acme"}, managedKeyUnknown); missing != 1 {
+		t.Errorf("missing = %d, want 1 (fail safe)\n%s", missing, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "encryption not confirmed") {
+		t.Errorf("message must say encryption not confirmed:\n%s", out)
+	}
+	if strings.Contains(out, "UNENCRYPTED") {
+		t.Errorf("must not assert the dump is UNENCRYPTED when the lookup failed:\n%s", out)
 	}
 }
 
