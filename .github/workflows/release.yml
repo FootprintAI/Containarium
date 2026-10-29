@@ -299,9 +299,11 @@ jobs:
       - name: Scan managed tools (amd64)
         uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
-          scan-type: fs
+          scan-type: rootfs
           scan-ref: dist/toolchains-amd64
           scanners: vuln
+          format: json
+          output: bin/toolchains-linux-amd64.vulnerabilities.json
           severity: HIGH,CRITICAL
           ignore-unfixed: 'true'
           exit-code: '1'
@@ -309,12 +311,21 @@ jobs:
       - name: Scan managed tools (arm64)
         uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
-          scan-type: fs
+          scan-type: rootfs
           scan-ref: dist/toolchains-arm64
           scanners: vuln
+          format: json
+          output: bin/toolchains-linux-arm64.vulnerabilities.json
           severity: HIGH,CRITICAL
           ignore-unfixed: 'true'
           exit-code: '1'
+
+      - name: Require executable scan coverage and checksum the reports
+        run: |
+          for arch in amd64 arm64; do
+            python3 scripts/toolchains/validate_scan.py "bin/toolchains-linux-$arch.vulnerabilities.json"
+          done
+          (cd bin && sha256sum toolchains-linux-*.vulnerabilities.json >> SHA256SUMS.txt)
 
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
@@ -568,9 +579,11 @@ jobs:
             bin/toolchains-linux-amd64.tar.gz
             bin/toolchains-linux-amd64.manifest.json
             bin/toolchains-linux-amd64.spdx.json
+            bin/toolchains-linux-amd64.vulnerabilities.json
             bin/toolchains-linux-arm64.tar.gz
             bin/toolchains-linux-arm64.manifest.json
             bin/toolchains-linux-arm64.spdx.json
+            bin/toolchains-linux-arm64.vulnerabilities.json
             bin/SHA256SUMS.txt
             LICENSE
             NOTICE

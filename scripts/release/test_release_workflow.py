@@ -32,6 +32,10 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("amd64 arm64", text)
         scans = [s for s in job["steps"] if s.get("uses", "").startswith("aquasecurity/trivy-action")]
         self.assertEqual({s["with"]["scan-ref"] for s in scans}, {"dist/toolchains-amd64", "dist/toolchains-arm64"})
+        for scan in scans:
+            self.assertEqual(scan["with"]["scan-type"], "rootfs")
+            self.assertEqual(scan["with"]["exit-code"], "1")
+        self.assertIn("scripts/toolchains/validate_scan.py", text)
         uploads = "\n".join(str(s.get("with", {}).get("files", "")) for s in job["steps"])
         for arch in ("amd64", "arm64"):
             for suffix in ("tar.gz", "manifest.json", "spdx.json"):

@@ -19,7 +19,13 @@ git and gcc as **system tools supplied by the box image**. Their measured
 versions come from the run wrapper's tool report. The release does not copy
 those OS tools into the shared volume. npm is inventoried as part of Node.
 Each architecture's tree is catalogued into an SPDX SBOM and scanned by
-Trivy during both PR checks and the host release build.
+Trivy during both PR checks and the host release build. The scan uses
+`rootfs`, which checks deployed binaries and installed npm packages. Trivy's
+`fs` mode scans SDK source manifests instead of Go binaries; those
+manifests also describe code generators and do not reflect security fixes
+backported into a released Go toolchain. A coverage check requires the
+actual Go, buf and staticcheck binaries in every report. High/Critical
+findings with fixes block publication; scan reports are signed release assets.
 
 ## Install on each host
 
@@ -55,7 +61,9 @@ New Linux containers receive the mount at creation. Old boxes receive it
 lazily when an unattended run starts. The daemon checks the kernel's mount
 table for a read-only mount and checks every tool before exposing the links.
 An existing executable in `/usr/local/bin` that conflicts with a managed
-link is refused; the operator must reconcile that executable first.
+link is preserved; creation logs the conflict and keeps the box usable at
+NONE/FULL_SUDO. A BUILD_TOOLS run refuses the conflict until the operator
+reconciles it. This includes pnpm installed by the nodejs stack.
 
 A `BUILD_TOOLS` run without a working mount is refused with
 `FailedPrecondition` naming `/opt/containarium/toolchains`. `NONE` and

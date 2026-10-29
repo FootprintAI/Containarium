@@ -63,3 +63,32 @@ func TestManagedToolchainsAttachedAtCreate(t *testing.T) {
 		t.Fatalf("created without managed volume: %+v", b.createdConfig)
 	}
 }
+
+type conflictingToolchainBackend struct{ *stagesBackend }
+
+func (b *conflictingToolchainBackend) Exec(_ string, args []string) error {
+	if len(args) == 3 && strings.Contains(args[2], "/proc/mounts") {
+		return errors.New("managed tool conflicts with pnpm")
+	}
+	return nil
+}
+
+// The nodejs stack installs its own pnpm. Mounting a host release must not
+// make that box impossible to create at NONE/FULL_SUDO; BUILD_TOOLS validates
+// the links again and refuses the run until the operator resolves the conflict.
+func TestManagedToolchainConflictDoesNotFailCreate(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "current"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "current/manifest.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	b := &conflictingToolchainBackend{stagesBackend: &stagesBackend{}}
+	m := NewWithBackend(b)
+	m.toolchainRoot = root
+	t.Setenv("HOME", t.TempDir())
+	if _, err := m.Create(stagesOpts()); err != nil {
+		t.Fatalf("optional tools must not break box creation: %v", err)
+	}
+}

@@ -538,8 +538,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	if config.ManagedToolchainRoot != "" {
 		if err := m.incus.Exec(containerName, []string{"sh", "-c", toolchain.SetupScript()}); err != nil {
-			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
-				fmt.Errorf("prepare managed toolchains: %w", err))
+			// Optional for box creation (NONE/FULL_SUDO must remain usable).
+			// BUILD_TOOLS repeats this check and refuses a broken/conflicting
+			// tool setup before starting any run.
+			log.Printf("[toolchains] %s: tools unavailable: %v", containerName, err)
 		}
 	}
 
