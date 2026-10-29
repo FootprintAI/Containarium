@@ -626,6 +626,10 @@ type CreateBackupRequest struct {
 	// (what protojson decodes). Empty is omitted, which the daemon reads
 	// as opaque.
 	HookFormat string `json:"hook_format,omitempty"`
+
+	// #3214: refuse (FAILED_PRECONDITION) a backup that would be stored
+	// unencrypted; mirrors `backup create --require-encryption` (#3169).
+	RequireEncryption bool `json:"require_encryption,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
