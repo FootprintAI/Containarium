@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The terminal route takes `as_run_user=true`, opening the sign-in terminal as the unprivileged run user** (part of #3275). `GET /v1/containers/{username}/terminal?as_run_user=true` logs in as the run user (`ctn-run`) instead of the box's login user, so the person completes Anthropic's own `claude auth login` as the user platform runs execute as, without `ssh` and `sudo -iu`. Honoured only when the box has a tool-access level recorded and the run user already exists (created by the box's first platform run); otherwise the request is refused before the upgrade with `409`, and an unreadable level or failed check is `503`, never a silent fallback to the login user. The same bearer, tenant check and origin rule apply, the flag is forwarded to a peer backend, and the daemon still never reads, copies or refreshes a login. Omitted or `false` keeps today's behaviour. Reporting the result afterwards is the read-only run-user status ask (#3274).
+
 ### Fixed
 
 - **A revoke that fails closed on an unreadable account no longer names that account to the caller** (follow-up to #3268, refs #3241). The error returned to an `RemoveSSHKey` or `SetSSHKeys` caller said which account's `authorized_keys` could not be read and why, disclosing another tenant's account name and filesystem state. It now says only that an account's `authorized_keys` could not be read and to check the daemon log, which carries the account and the underlying error. The revoke still fails closed.
