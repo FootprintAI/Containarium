@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The terminal route takes `as_run_user=true`, opening the sign-in terminal as the unprivileged run user** (part of #3275). `GET /v1/containers/{username}/terminal?as_run_user=true` logs in as the run user (`ctn-run`) instead of the box's login user, so the person completes Anthropic's own `claude auth login` as the user platform runs execute as, without `ssh` and `sudo -iu`. Honoured only when the box has a tool-access level recorded and the run user already exists (created by the box's first platform run); otherwise the request is refused before the upgrade with `409`, and an unreadable level or failed check is `503`, never a silent fallback to the login user. The same bearer, tenant check and origin rule apply, the flag is forwarded to a peer backend, and the daemon still never reads, copies or refreshes a login. Omitted or `false` keeps today's behaviour. Reporting the result afterwards is the read-only run-user status ask (#3274).
+
 ### Fixed
 
 - **REST errors carry the gRPC status details again** (#3277). The error handler the gateway serves every `/v1` route with wrote only `error` and `code`, dropping the typed details a handler attaches, so a REST caller could not see the `RUN_USER_NOT_SIGNED_IN` / `RUN_USER_SIGN_IN_EXPIRED` reason on a refused box run and had to match message text. The body now also has `message` and `details` in grpc-gateway's default shape (`@type` plus the detail's fields); `error` and `code` (the HTTP status) are unchanged, and an error with no details has no `details` key. The sign-in refusal test now goes through the handler the daemon serves instead of the default one.
