@@ -38,7 +38,8 @@ Every key must be a single-line public key with no options (command=, from=):
 one invalid key fails the whole call and changes nothing.
 
 The daemon's key registry has one entry per key, owned by the first account
-(box user) that registered it; a box user also owns an entry its own
+(box user) that registered it (a revoked entry is replaced by the next
+registration); a box user also owns an entry its own
 collaborator account (<owner>-container-<user>) registered on another box.
 A dropped key is always removed from this box. It is revoked in the registry
 when this box user owns that entry, or the entry has no owner, and no other

@@ -250,6 +250,7 @@ func boxRunProto(name, dir string, r agentbox.RunRecord, outcome agentbox.RunOut
 	default:
 		run.Outcome = pb.BoxRunOutcome_BOX_RUN_OUTCOME_UNKNOWN
 	}
+	run.Model = r.Model
 	if r.ExitCode != nil {
 		code := int32(*r.ExitCode) // #nosec G115 -- a process exit status fits in int32
 		run.ExitCode = &code

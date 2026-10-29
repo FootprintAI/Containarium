@@ -3,6 +3,7 @@ package sshauthz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -24,13 +25,23 @@ type FileHolders struct{ HomeRoot string }
 
 // OtherAccountHolds implements HolderLookup.
 func (f FileHolders) OtherAccountHolds(ctx context.Context, fingerprint, excludeUsername string) (bool, error) {
-	recs, err := ScanAuthorizedKeys(f.HomeRoot, time.Time{})
+	res, err := ScanAuthorizedKeys(f.HomeRoot, time.Time{})
 	if err != nil {
 		return false, err // fail closed: an unreadable home root is not "no holder"
 	}
-	for _, r := range recs {
+	// A holder among the readable accounts answers the question whatever else
+	// is unreadable, so only the revoke whose answer depends on an account we
+	// cannot read fails.
+	for _, r := range res.Records {
 		if r.Fingerprint == fingerprint && r.Username != excludeUsername {
 			return true, nil
+		}
+	}
+	// Fail closed: an account we cannot read might hold the key. The excluded
+	// account's own state does not matter to whether another account holds it.
+	for _, u := range res.Unreadable {
+		if u.Username != excludeUsername {
+			return false, fmt.Errorf("cannot rule out account %s as a holder: %w", u.Username, u.Err)
 		}
 	}
 	return false, nil

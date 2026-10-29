@@ -53,6 +53,10 @@ message BoxRun {
   // whatever the engine's exit status), never reported by the agent. Empty for a
   // run with no readable sidecar (an older run, or a box without the probe).
   repeated BoxRunTool tools = 9;
+  // The model id the run was started with (StartBoxRunRequest.model, #3259).
+  // Empty when none was requested: the engine's own default ran, and the
+  // daemon does not claim to know which. Empty for a run from before the field.
+  string model = 10;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -148,6 +152,17 @@ message StartBoxRunRequest {
   // continue_session run gets no discovered id at all. Capability
   // "box_run_structured_output" in SystemInfo.capabilities.
   bool structured_output = 6;
+  // The model id to run the engine with (Claude Code's --model), for example
+  // one a caller chose from a policy or a label (#3259). Empty keeps the
+  // engine's own default, exactly as before. Claude Code only: any other
+  // engine is FAILED_PRECONDITION, before anything on the box is touched. The
+  // id is opaque to the API (no tier names are enumerated here, ids change
+  // with every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127};
+  // anything else is INVALID_ARGUMENT. Whether the engine accepts the id is
+  // the engine's to say: an id it rejects ends the run non-zero and the
+  // reason is in the run's log. BoxRun.model reports the id the run was
+  // started with. Capability "box_run_model" in SystemInfo.capabilities.
+  string model = 7;
 }
 
 message StartBoxRunResponse {
