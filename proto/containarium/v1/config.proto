@@ -307,6 +307,15 @@ message SystemInfo {
   // peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
   // the sentinel-backend tunnel. See #3079.
   PeerTransport peer_transport = 32;
+
+  // managed_backup_key_configured is true when this daemon has a managed
+  // backup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup
+  // it takes is encrypted even for a tenant with no registered age
+  // recipient. `containarium backup status` reads it to avoid flagging such
+  // tenants as unencrypted. False covers both "no managed key" and a daemon
+  // that predates the field, so a client must treat false as "not known to
+  // be encrypted". See #3213.
+  bool managed_backup_key_configured = 33;
 }
 
 // PeerTransport is the transport this daemon uses for its calls to peer
