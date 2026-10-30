@@ -839,8 +839,10 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 
 	// Convert to incus.ServerInfo
 	info := &incus.ServerInfo{
-		Version:       resp.Info.IncusVersion,
-		KernelVersion: resp.Info.KernelVersion,
+		Version:              resp.Info.IncusVersion,
+		KernelVersion:        resp.Info.KernelVersion,
+		TotalMemoryBytes:     resp.Info.TotalMemoryBytes,
+		AvailableMemoryBytes: resp.Info.AvailableMemoryBytes,
 		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
 			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
 		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),

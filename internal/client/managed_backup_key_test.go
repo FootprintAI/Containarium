@@ -23,6 +23,9 @@ func TestHTTPManagedBackupKeyConfigured(t *testing.T) {
 		"no key":      {&pb.SystemInfo{Hostname: "h"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// A real gateway response also carries quoted memory int64s.
+			tc.info.TotalMemoryBytes = 32 << 30
+			tc.info.AvailableMemoryBytes = 16 << 30
 			body, err := protojson.Marshal(&pb.GetSystemInfoResponse{Info: tc.info})
 			if err != nil {
 				t.Fatal(err)
