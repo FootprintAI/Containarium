@@ -13,7 +13,7 @@ go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
   -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher'
 ```
 
-The startup tests hold the core-container wait and use an unreachable
+The startup tests hold the wait for core services and use an unreachable
 Postgres connection; `/health` must answer degraded within three seconds.
 The gateway tests exercise the early listener's handover to the real mux
 and verify that a failed core Postgres readiness entry still reports
