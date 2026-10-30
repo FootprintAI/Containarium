@@ -1,0 +1,113 @@
+name: Managed backup key detection (published release)
+
+# Verification harness for #3213 (Part of #3233). It runs the PUBLISHED
+# containariumd and containarium release binaries, checksum- and
+# signature-verified, never a CI build. It is not a required check and runs
+# on a pull request only when the harness itself changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ci/*managed-key-verify*.sh'
+      - '.github/workflows/managed-key-verify.yml'
+  pull_request:
+    paths:
+      - 'scripts/ci/*managed-key-verify*.sh'
+      - '.github/workflows/managed-key-verify.yml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release under test (has the managed-key detection)
+        default: v0.122.0
+        required: true
+        type: string
+      older_tag:
+        description: Older published release whose daemon predates #3231
+        default: v0.120.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-key-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: backup status against published ${{ inputs.release_tag || 'v0.122.0' }} and ${{ inputs.older_tag || 'v0.120.2' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check harness syntax, lint and failure detection
+        run: |
+          bash -n scripts/ci/managed-key-verify.sh scripts/ci/managed-key-verify-lib.sh scripts/ci/test-managed-key-verify.sh
+          shellcheck scripts/ci/managed-key-verify.sh scripts/ci/managed-key-verify-lib.sh scripts/ci/test-managed-key-verify.sh
+          bash scripts/ci/test-managed-key-verify.sh
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      # Same runner preparation as incus-create.yml: the daemon detects its
+      # storage by the ZFS pool name and needs dnsmasq for incusbr0.
+      - name: Install ZFS, Incus and PostgreSQL
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          if ! sudo modprobe zfs 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+          test -e /dev/zfs
+          sudo truncate -s 20G /mnt/incus-zfs.img
+          sudo zpool create -f -m /mnt/incus-local incus-local /mnt/incus-zfs.img
+          sudo zfs create incus-local/containers
+          sudo apt-get install -y --no-install-recommends incus dnsmasq-base postgresql
+          sudo incus version
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo iptables -P FORWARD ACCEPT
+          grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
+          grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      - name: Pre-pull the box image
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if sudo incus image copy images:ubuntu/24.04 local: --alias lane-box >/dev/null 2>&1; then exit 0; fi
+            echo "image pull attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::could not pull images:ubuntu/24.04 from images.linuxcontainers.org"
+          exit 1
+
+      - name: Create the platform database for the daemon
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE containarium LOGIN PASSWORD 'lane-only-not-a-credential'"
+          sudo -u postgres createdb -O containarium containarium
+
+      - name: Verify backup status against the published binaries
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || 'v0.122.0' }}
+          OLDER_TAG: ${{ inputs.older_tag || 'v0.120.2' }}
+          OUTPUT_DIR: ${{ runner.temp }}/managed-key-evidence
+          PG_URL: postgres://containarium:lane-only-not-a-credential@127.0.0.1:5432/containarium?sslmode=disable
+        run: bash scripts/ci/managed-key-verify.sh
+
+      - name: Retain versions, commits, asset SHA256s, OS image and raw outputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: managed-key-evidence
+          path: ${{ runner.temp }}/managed-key-evidence/
+          if-no-files-found: warn
+          retention-days: 30
