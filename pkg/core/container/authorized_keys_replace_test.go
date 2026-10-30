@@ -3,6 +3,7 @@ package container
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,19 +145,79 @@ func TestValidateStrictSSHPublicKey(t *testing.T) {
 
 func genKey(t *testing.T, comment string) string {
 	t.Helper()
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	return genKeyFrom(t, comment, func() ed25519.PublicKey {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pub
+	})
+}
+
+// genKeyFrom draws public keys from next until one passes the production
+// validator. A random base64 body can contain a placeholder marker (e.g.
+// "todo") and be rejected, so such draws are discarded, not returned. It
+// asks the validator rather than keeping its own marker list.
+func genKeyFrom(t *testing.T, comment string, next func() ed25519.PublicKey) string {
+	t.Helper()
+	for i := 0; i < 1000; i++ {
+		pk, err := ssh.NewPublicKey(next())
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))
+		if comment != "" {
+			line += " " + comment
+		}
+		if ValidateSSHPublicKey(line) == nil {
+			return line
+		}
+	}
+	t.Fatal("genKeyFrom: no validator-clean key after 1000 draws")
+	return ""
+}
+
+// A draw whose encoding contains a placeholder marker must be regenerated.
+func TestGenKey_RegeneratesPlaceholderMarkerDraw(t *testing.T) {
+	// The wire blob has a 19-byte header (len+"ssh-ed25519"+len), so key
+	// byte 2 starts a base64 group (offset 21 = 7*3). Put the 3 bytes that
+	// encode "todo" there.
+	marker, err := base64.StdEncoding.DecodeString("todo")
 	if err != nil {
 		t.Fatal(err)
 	}
+	bad := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(bad[2:], marker)
+	if ValidateSSHPublicKey(genKeyLineFor(t, bad)) == nil {
+		t.Fatal("precondition: forced key should be rejected by the validator")
+	}
+	good, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draws := 0
+	got := genKeyFrom(t, "", func() ed25519.PublicKey {
+		draws++
+		if draws == 1 {
+			return bad
+		}
+		return good
+	})
+	if draws < 2 {
+		t.Fatalf("placeholder-marker draw was returned without regeneration (draws=%d)", draws)
+	}
+	if err := ValidateSSHPublicKey(got); err != nil {
+		t.Fatalf("genKeyFrom returned a key the validator rejects: %v", err)
+	}
+}
+
+func genKeyLineFor(t *testing.T, pub ed25519.PublicKey) string {
+	t.Helper()
 	pk, err := ssh.NewPublicKey(pub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))
-	if comment != "" {
-		line += " " + comment
-	}
-	return line
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))
 }
 
 // A failing beforeWrite (registry revoke) leaves the file untouched, and a
