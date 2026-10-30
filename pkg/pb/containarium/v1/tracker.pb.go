@@ -2386,10 +2386,10 @@ type TrackerChange struct {
 	State     TrackerIssueState      `protobuf:"varint,2,opt,name=state,proto3,enum=containarium.v1.TrackerIssueState" json:"state,omitempty"`
 	CiVerdict TrackerCiVerdict       `protobuf:"varint,3,opt,name=ci_verdict,json=ciVerdict,proto3,enum=containarium.v1.TrackerCiVerdict" json:"ci_verdict,omitempty"`
 	Url       string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`
-	// branch is the daemon-chosen branch the change request's head points
-	// at (#1923). Populated by SubmitTrackerChange's response; empty on
-	// GetTrackerChange, which has no reason to resolve it for an
-	// already-open change.
+	// branch is the branch the change request's head points at: the
+	// daemon-chosen or requested branch in a SubmitTrackerChange /
+	// SubmitTrackerChangeFiles response (#1923), and the provider's head /
+	// source branch on GetTrackerChange (#3288).
 	Branch        string `protobuf:"bytes,5,opt,name=branch,proto3" json:"branch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3620,6 +3620,10 @@ func (x *TrackerChangeFile) GetContent() string {
 // set instead of a run's box (#3005): the daemon fetches base_ref from
 // the connection's remote on the host with the broker credential,
 // commits files on top of it, pushes head_branch, and opens the change.
+// When head_branch already exists on the remote, the commit is built on
+// its tip instead and pushed as a fast-forward; when head_branch already
+// has an open change request, that change is returned rather than a
+// second one opened (#3288).
 // No run-scoped token is needed — the caller's tenant authority on the
 // connection is the authorisation, as for CommentOnTrackerIssue.
 type SubmitTrackerChangeFilesRequest struct {
@@ -3639,7 +3643,13 @@ type SubmitTrackerChangeFilesRequest struct {
 	// head_branch is the branch the commit is pushed to. Empty lets the
 	// daemon choose one that is stable for (username, connection, issue,
 	// title), so a retry of the same request lands on the same branch and
-	// the same commit. Never force-pushed; must differ from base_ref.
+	// the same commit. Must differ from base_ref. If it already exists on
+	// the remote, the commit is added on top of its tip (files identical
+	// to the tip's add nothing). Never force-pushed: if the tip moves
+	// between fetch and push, the call fails with ABORTED and the remote
+	// is left as is. If it has an open change request, that change is
+	// returned and its title, description and draft state are left alone;
+	// if its earlier change was merged or closed, a new one is opened.
 	HeadBranch string `protobuf:"bytes,8,opt,name=head_branch,json=headBranch,proto3" json:"head_branch,omitempty"`
 	// files is the change: at least one, each path distinct.
 	Files         []*TrackerChangeFile `protobuf:"bytes,9,rep,name=files,proto3" json:"files,omitempty"`
@@ -4096,7 +4106,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"$TRACKER_DISPATCH_FAILURE_START_ERROR\x10\x01\x12&\n" +
 	"\"TRACKER_DISPATCH_FAILURE_RUN_ERROR\x10\x02\x12$\n" +
 	" TRACKER_DISPATCH_FAILURE_TIMEOUT\x10\x03\x12'\n" +
-	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\xeeI\n" +
+	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\xe8K\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -4133,9 +4143,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x12CreateTrackerIssue\x12*.containarium.v1.CreateTrackerIssueRequest\x1a+.containarium.v1.CreateTrackerIssueResponse\"\xe0\a\x92A\x9b\a\n" +
 	"\aTracker\x12\x16Create a tracker issue\x1a\xf7\x06Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. If the tracker does not answer the create in time, the outcome is unknown (the issue may already exist upstream): the call fails with code UNKNOWN and a message starting UPSTREAM_CREATE_OUTCOME_UNKNOWN, the attempt is audited, and for a run it keeps counting against max_children_per_run — do not retry blindly; check the tracker for the issue first. Requires tracker:write.\x82\xd3\xe4\x93\x02;:\x01*\"6/v1/tracker/connections/{username}/{connection}/issues\x12\xb3\x04\n" +
 	"\x13SubmitTrackerChange\x12+.containarium.v1.SubmitTrackerChangeRequest\x1a,.containarium.v1.SubmitTrackerChangeResponse\"\xc0\x03\x92A\xfa\x02\n" +
-	"\aTracker\x12\x1fSubmit a tracker change request\x1a\xcd\x02Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x02<:\x01*\"7/v1/tracker/connections/{username}/{connection}/changes\x12\xc2\x06\n" +
-	"\x18SubmitTrackerChangeFiles\x120.containarium.v1.SubmitTrackerChangeFilesRequest\x1a1.containarium.v1.SubmitTrackerChangeFilesResponse\"\xc0\x05\x92A\xf4\x04\n" +
-	"\aTracker\x12*Submit a tracker change request from files\x1a\xbc\x04Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x02B:\x01*\"=/v1/tracker/connections/{username}/{connection}/changes:filesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aTracker\x12\x1fSubmit a tracker change request\x1a\xcd\x02Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x02<:\x01*\"7/v1/tracker/connections/{username}/{connection}/changes\x12\xbc\b\n" +
+	"\x18SubmitTrackerChangeFiles\x120.containarium.v1.SubmitTrackerChangeFilesRequest\x1a1.containarium.v1.SubmitTrackerChangeFilesResponse\"\xba\a\x92A\xee\x06\n" +
+	"\aTracker\x12*Submit a tracker change request from files\x1a\xb6\x06Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. When head_branch already exists, the commit is built on its tip and pushed as a fast-forward (ABORTED if the tip moved meanwhile; never forced); when head_branch already has an open change request, that change is returned instead of opening another. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x02B:\x01*\"=/v1/tracker/connections/{username}/{connection}/changes:filesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tracker_proto_rawDescOnce sync.Once

@@ -76,6 +76,20 @@ type fakeWriterProvider struct {
 
 	defaultBranchOut string
 	defaultBranchErr error
+
+	// #3288: FindOpenChange's canned answer; the zero value is "no open
+	// change", so existing callers still reach OpenChange.
+	findOpenBranch string
+	findOpenOut    tracker.Change
+	findOpenFound  bool
+	findOpenErr    error
+}
+
+// FindOpenChange records the branch asked about and returns the canned
+// answer.
+func (f *fakeWriterProvider) FindOpenChange(_ context.Context, _ tracker.Conn, headBranch string) (tracker.Change, bool, error) {
+	f.findOpenBranch = headBranch
+	return f.findOpenOut, f.findOpenFound, f.findOpenErr
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, number int64, body string) (tracker.Comment, error) {

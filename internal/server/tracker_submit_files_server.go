@@ -24,9 +24,11 @@ func (s *ContainerServer) filePusherForSubmit() submit.FilePusher {
 
 // SubmitTrackerChangeFiles opens a change request from a file set over
 // the connection's broker credential, with no run box (#3005): the
-// files are committed on top of the base branch in a fresh temporary
-// repository on the host and pushed there, then the change is opened
-// exactly as SubmitTrackerChange opens one. Authorised like
+// files are committed in a fresh temporary repository on the host — on
+// the head branch's tip when it already exists on the remote, otherwise
+// on the base branch — and pushed without force, then the change is
+// opened exactly as SubmitTrackerChange opens one, unless the head
+// branch already has an open change, which is reused (#3288). Authorised like
 // CommentOnTrackerIssue — tracker:write plus tenant authority on the
 // connection — since there is no box for a run-scoped token to name.
 func (s *ContainerServer) SubmitTrackerChangeFiles(ctx context.Context, req *pb.SubmitTrackerChangeFilesRequest) (*pb.SubmitTrackerChangeFilesResponse, error) {
@@ -101,32 +103,47 @@ func (s *ContainerServer) SubmitTrackerChangeFiles(ctx context.Context, req *pb.
 		if errors.Is(err, submit.ErrInvalidBranch) || errors.Is(err, submit.ErrInvalidChangeFile) || errors.Is(err, submit.ErrChangeFilesTooLarge) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
+		if errors.Is(err, submit.ErrHeadBranchMoved) {
+			return nil, status.Error(codes.Aborted, err.Error())
+		}
 		return nil, status.Errorf(codes.Internal, "push files: %v", err)
 	}
 
-	fullDescription := fmt.Sprintf("Closes #%d", req.Issue) + "\n\n" + tracker.Sanitize(req.Description) + "\n\n" + stamp
-	change, err := provider.OpenChange(ctx, conn, tracker.OpenChangeRequest{
-		HeadBranch:  pushResult.Branch,
-		BaseBranch:  baseBranch,
-		Title:       req.Title,
-		Description: fullDescription,
-		Draft:       req.Draft,
-	})
+	// #3288: a head branch that already has an open change request gets
+	// the new commit on that change rather than a second one (GitLab
+	// refuses a second open MR for a source branch). A branch whose
+	// earlier change was merged or closed has none open, so a new one is
+	// opened.
+	change, reused, err := provider.FindOpenChange(ctx, conn, pushResult.Branch)
 	if err != nil {
 		return nil, mapProviderError(err)
+	}
+	if !reused {
+		fullDescription := fmt.Sprintf("Closes #%d", req.Issue) + "\n\n" + tracker.Sanitize(req.Description) + "\n\n" + stamp
+		change, err = provider.OpenChange(ctx, conn, tracker.OpenChangeRequest{
+			HeadBranch:  pushResult.Branch,
+			BaseBranch:  baseBranch,
+			Title:       req.Title,
+			Description: fullDescription,
+			Draft:       req.Draft,
+		})
+		if err != nil {
+			return nil, mapProviderError(err)
+		}
 	}
 
 	runID, _ := auth.RunIDFromGRPCContext(ctx)
 	s.auditTrackerWrite(ctx, "tracker.submit_change_files", req.Username, req.Connection, req.Issue, submitChangeAuditDetail{
-		Connection:  req.Connection,
-		Issue:       req.Issue,
-		RunID:       runID,
-		SkillID:     id.SkillID,
-		BaseSHA:     pushResult.BaseSHA,
-		HeadSHA:     pushResult.SHA,
-		Branch:      pushResult.Branch,
-		ChangeURL:   change.URL,
-		ChangeState: change.State.String(),
+		Connection:   req.Connection,
+		Issue:        req.Issue,
+		RunID:        runID,
+		SkillID:      id.SkillID,
+		BaseSHA:      pushResult.BaseSHA,
+		HeadSHA:      pushResult.SHA,
+		Branch:       pushResult.Branch,
+		ChangeURL:    change.URL,
+		ChangeState:  change.State.String(),
+		ReusedChange: reused,
 	})
 
 	return &pb.SubmitTrackerChangeFilesResponse{Change: toProtoChange(change)}, nil

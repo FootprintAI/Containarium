@@ -59,7 +59,11 @@ type ghPull struct {
 	Merged  bool   `json:"merged"`
 	HTMLURL string `json:"html_url"`
 	Head    struct {
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 }
 
@@ -184,6 +188,7 @@ func (a *Adapter) GetChange(ctx context.Context, conn tracker.Conn, number int64
 		State:     pullStateToTracker(pr),
 		CIVerdict: verdict,
 		URL:       pr.HTMLURL,
+		Branch:    pr.Head.Ref,
 	}, nil
 }
 
