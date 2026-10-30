@@ -749,6 +749,69 @@ volume unless `force` is requested. An empty setting leaves the K8s shared
 volume capability disabled; `CONTAINARIUM_K8S_STORAGE_CLASS` continues to
 control each box's private data PVC independently.
 
+#### Recovering a failed shared-volume change (#3297)
+
+Changing a running Sandbox's mounts requires recreating its Pod. Attach and
+detach, including detaches during force-delete, first write the new pod
+template, request `Suspended`, and wait for the controller to confirm
+`Suspended=True` for the current Sandbox generation before requesting
+`Running` again. The wait retries failed reads for up to two minutes, bounded
+by the caller's context; a deleted Sandbox, replacement UID, or conflicting
+operating mode ends the wait.
+
+If that wait fails or the caller cancels, the Sandbox can remain suspended
+with the requested mounts already in its template. Repeating attach or
+detach can then return success because the template already matches, while
+the box remains stopped. Automatic recovery is still awaiting a decision in
+[#3297](https://github.com/FootprintAI/Containarium/issues/3297). An operator
+with access to the cluster can recover a box that was running before the
+failed change as follows:
+
+1. Inspect the affected Sandbox and its requested mounts:
+
+   ```sh
+   kubectl -n <tenant-namespace> get sandbox <sandbox-name> -o yaml
+   ```
+
+   Confirm this is the original Sandbox and `spec.operatingMode` is still
+   `Suspended`. If the Sandbox was deleted, replaced, or intentionally stopped
+   by another operator, resolve that lifecycle change before continuing.
+   A Sandbox that was stopped before the volume operation should stay stopped.
+
+2. Wait for the controller to finish terminating its Pod:
+
+   ```sh
+   kubectl -n <tenant-namespace> wait --for=condition=Suspended=True sandbox/<sandbox-name> --timeout=2m
+   kubectl -n <tenant-namespace> get sandbox <sandbox-name> -o yaml
+   ```
+
+   Check that the `Suspended` condition is `True` and its
+   `observedGeneration` matches `metadata.generation`. `kubectl wait` alone
+   can accept an old condition from a previous suspension. Alternatively,
+   confirm the affected Pod has actually been deleted; its name normally
+   matches the Sandbox name, with an override in the Sandbox annotation
+   `agents.x-k8s.io/pod-name` for an adopted Pod. If suspension cannot be
+   confirmed, investigate the controller or Pod termination before resuming.
+   Immediately switching back to `Running` can preserve the old mounts.
+
+3. Explicitly resume the recovered Sandbox:
+
+   ```sh
+   kubectl -n <tenant-namespace> patch sandbox <sandbox-name> --type=merge -p '{"spec":{"operatingMode":"Running"}}'
+   ```
+
+4. Wait for the new Pod to be ready and inspect its actual mounts:
+
+   ```sh
+   kubectl -n <tenant-namespace> wait --for=condition=Ready=True sandbox/<sandbox-name> --timeout=3m
+   kubectl -n <tenant-namespace> get pod <pod-name> -o yaml
+   ```
+
+   Verify the new Pod's `spec.volumes` and container `volumeMounts` reflect
+   the requested attach or detach. A force-delete that failed during detach
+   may have left the PVC and other attachments in place; inspect them and
+   retry deletion after recovering the affected boxes.
+
 ### GPU resource requests (#845)
 
 `BoxSpec.GPUs []string` maps to a `nvidia.com/gpu` extended-resource limit on
