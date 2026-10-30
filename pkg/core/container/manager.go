@@ -16,13 +16,15 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
 )
 
 // Manager handles container lifecycle operations
 type Manager struct {
-	incus incus.Backend
+	incus         incus.Backend
+	toolchainRoot string // test override; production uses toolchain.HostRoot
 	// mirrors are the operator-configured registry pull-through mirrors (#908)
 	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
 	// pull from upstream registries as before. See registry_mirror.go.
@@ -370,6 +372,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		config.GPUs = gpus
 	}
 
+	if !isWindows && config.InstanceType != incusapi.InstanceTypeVM && toolchain.Available(m.managedToolchainRoot()) {
+		config.ManagedToolchainRoot = m.managedToolchainRoot()
+	}
 	if err := m.timed(StageCreateInstance, func() error {
 		return m.incus.CreateContainer(config)
 	}); err != nil {
@@ -529,6 +534,15 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}); err != nil {
 		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
 			fmt.Errorf("failed to install packages: %w", err))
+	}
+
+	if config.ManagedToolchainRoot != "" {
+		if err := m.incus.Exec(containerName, []string{"sh", "-c", toolchain.SetupScript()}); err != nil {
+			// Optional for box creation (NONE/FULL_SUDO must remain usable).
+			// BUILD_TOOLS repeats this check and refuses a broken/conflicting
+			// tool setup before starting any run.
+			log.Printf("[toolchains] %s: tools unavailable: %v", containerName, err)
+		}
 	}
 
 	// Bring the box under the sshd policy at birth (#2424), on the baked
@@ -1290,6 +1304,43 @@ func (m *Manager) Stop(username string, force bool) error {
 func (m *Manager) Start(username string) error {
 	containerName := username + "-container"
 	return m.incus.StartContainer(containerName)
+}
+
+// StopIfRunning stops the container unless it is already stopped (#3242). A
+// stop request asks for an end state; when that state already holds the call
+// succeeds with changed=false and sends no action to the backend, so callers can
+// skip post-stop work (stamping stopped_at, dropping the key, emitting an
+// event). The state is re-read when the backend's stop fails: a concurrent stop
+// that won the race leaves the instance Stopped, which is success for this
+// caller too (changed=false). Any other failure, including a lookup that
+// reports the instance missing, is returned unchanged for the caller to
+// classify.
+func (m *Manager) StopIfRunning(username string, force bool) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Stopped", func(n string) error { return m.incus.StopContainer(n, force) })
+}
+
+// StartIfStopped is the start counterpart of StopIfRunning: an instance that is
+// already Running is success with changed=false (#3242).
+func (m *Manager) StartIfStopped(username string) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Running", m.incus.StartContainer)
+}
+
+func (m *Manager) ensureState(containerName, want string, act func(string) error) (bool, error) {
+	info, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return false, err
+	}
+	if info != nil && info.State == want {
+		return false, nil
+	}
+	if err := act(containerName); err != nil {
+		// Close the read-then-act race: someone else reached the end state.
+		if cur, gerr := m.incus.GetContainer(containerName); gerr == nil && cur != nil && cur.State == want {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // Delete deletes a container

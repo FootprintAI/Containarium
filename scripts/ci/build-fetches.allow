@@ -95,3 +95,5 @@ sidecars/otel-sidecar/Dockerfile	go install	95563208eaad	go install go.opentelem
 sidecars/otel-sidecar/Dockerfile	wget	1f00a81cebd4	wget && rm -rf /var/lib/apt/lists/*
 web-ui/Dockerfile	npm ci	9db3f780def6	npm ci
 scripts/lib/deploy-install.sh	curl	6da37ede2a0e	curl -fsS --max-time 3 '$url' >/dev/null 2>&1"
+scripts/ci/offline-install-guest.sh	curl	427e4b79b1f0	curl
+scripts/ci/offline-install-vm.sh	curl	944df6386d5c	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2";

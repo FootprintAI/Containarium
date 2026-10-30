@@ -154,6 +154,56 @@ else
   grep -q libmissing "$tmp/closure.out" && pass "download-deps: unsatisfied dependency fails, named" \
     || t "download-deps: unsatisfied dependency not named"; fi
 
+# #3236: exercise the real closure checker without downloading or building
+# thousands of archives. Only dpkg-deb's metadata reads are stubbed here.
+apt_closure() (
+  source <(sed -n '/^check_apt_closure() {/,/^}/p; /^dep_name() {/,/^}/p' "$deps")
+  log_error() { printf '%s\n' "$*" >&2; }
+  log_success() { printf '%s\n' "$*"; }
+  dpkg-deb() {
+    case "$3" in
+      Package) local n=${2##*/}; printf '%s\n' "${n%.deb}" ;;
+      Provides) printf '%s\n' virtual-only ;;
+      Pre-Depends|Depends) ;;
+      *) return 2 ;;
+    esac
+  }
+  check_apt_closure "$@"
+)
+
+large_closure=$tmp/large-closure
+mkdir -p "$large_closure"
+padding=$(printf '%0180d' 0)
+for ((i=0; i<1024; i++)); do
+  printf -v n 'pkg%04d-%s' "$i" "$padding"
+  : >"$large_closure/$n.deb"
+done
+# Bash associative arrays do not iterate in filename order. Reproduce the
+# checker's insertion order, then request its first name, so grep -q exits
+# near the start of a name list well beyond a 64 KiB pipe buffer.
+declare -A closure_names=()
+for deb in "$large_closure/"*.deb; do
+  n=${deb##*/}; closure_names[$deb]=${n%.deb}
+done
+closure_order=("${closure_names[@]}")
+[ "$(printf '%s\n' "${closure_order[@]}" | wc -c)" -gt 131072 ] \
+  || { t "download-deps: large closure fixture is too small"; exit 1; }
+if apt_closure "$large_closure" "${closure_order[0]}" "${closure_order[1023]}" >"$tmp/large-closure.out" 2>&1; then
+  pass "download-deps: large closure accepts requested packages at the start and end"
+else t "download-deps: large closure rejected present requested packages"; cat "$tmp/large-closure.out"; fi
+
+mkdir -p "$tmp/small-closure"; : >"$tmp/small-closure/alpha.deb"
+if apt_closure "$tmp/small-closure" missing >"$tmp/absent-closure.out" 2>&1; then
+  t "download-deps: closure accepted an absent requested package"
+elif grep -qx 'No .deb downloaded for requested package(s): missing' "$tmp/absent-closure.out"; then
+  pass "download-deps: closure rejects an absent requested package, named"
+else t "download-deps: absent requested package rejected for the wrong reason"; cat "$tmp/absent-closure.out"; fi
+if apt_closure "$tmp/small-closure" virtual-only >"$tmp/virtual-closure.out" 2>&1; then
+  t "download-deps: closure accepted Provides without the requested package's own .deb"
+elif grep -qx 'No .deb downloaded for requested package(s): virtual-only' "$tmp/virtual-closure.out"; then
+  pass "download-deps: Provides cannot replace a requested package's own .deb"
+else t "download-deps: Provides-only request rejected for the wrong reason"; cat "$tmp/virtual-closure.out"; fi
+
 # #3118: a stalled mirror must fail fast, and the log must show progress.
 for mode in install download; do
   for o in Acquire::http::Timeout=30 Acquire::https::Timeout=30 Acquire::Retries=3; do
@@ -247,7 +297,9 @@ mkcache "$tmp/cache-sentinel"; touch "$tmp/cache-sentinel/apt/.MANUAL_APT_DOWNLO
 mkcache "$tmp/cache-good" alpha libx
 
 if bundle empty "$tmp/cache-empty"; then t "build-bundle: apt/ with no .deb exited 0"
-else pass "build-bundle: apt/ with no .deb exits non-zero"; fi
+elif grep -qF "no .deb files in $tmp/cache-empty/apt" "$tmp/empty.out"; then
+  pass "build-bundle: apt/ with no .deb exits non-zero, names the empty directory"
+else t "build-bundle: apt/ with no .deb failed without naming the directory"; cat "$tmp/empty.out"; fi
 if bundle sentinel "$tmp/cache-sentinel"; then t "build-bundle: sentinel-only apt/ exited 0"
 else pass "build-bundle: sentinel-only apt/ exits non-zero"; fi
 if bundle optout "$tmp/cache-empty" BUNDLE_ALLOW_EMPTY_APT=1; then pass "build-bundle: BUNDLE_ALLOW_EMPTY_APT=1 opts out"
@@ -296,10 +348,42 @@ mkdir -p "$tmp/two.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/two.tree/"; cp -r "$
 tar -C "$tmp/two.tree" -czf "$tmp/two.tgz" "$top" other
 if REQUIRED_DEBS=libx bash "$content" "$tmp/two.tgz" >/dev/null 2>&1; then t "check-bundle-content: two top-level directories accepted"
 else pass "check-bundle-content: two top-level directories rejected"; fi
+# A tarball whose apt/ exists but holds no .deb: rejected for that problem only.
+mkdir -p "$tmp/noapt.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/noapt.tree/"
+rm "$tmp/noapt.tree/$top/apt/"*.deb; mkt noapt
+if REQUIRED_DEBS= bash "$content" "$tmp/noapt.tgz" >"$tmp/noapt.out" 2>&1; then t "check-bundle-content: apt/ without a .deb accepted"
+elif grep -q 'apt/ holds no .deb' "$tmp/noapt.out" && grep -q '(1 problem(s))' "$tmp/noapt.out"; then
+  pass "check-bundle-content: apt/ without a .deb rejected, that problem only"
+else t "check-bundle-content: apt/ without a .deb rejected for the wrong reason"; cat "$tmp/noapt.out"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/img.tgz" >/dev/null 2>&1; then t "check-bundle-content: images/ accepted"
 else pass "check-bundle-content: images/ rejected"; fi
 if REQUIRED_DEBS=libx bash "$content" "$tmp/nobin.tgz" >/dev/null 2>&1; then t "check-bundle-content: missing containariumd accepted"
 else pass "check-bundle-content: missing containariumd rejected"; fi
+# A real bundle lists hundreds of debs. With a listing larger than a pipe
+# buffer, a check that stops reading at its first match (grep -q) must not be
+# read as "missing" or "absent" under pipefail. The entries the checks look
+# for come first, so every match happens long before the listing ends.
+# mkbig NAME [FIRST...]: FIRST entries, then the control set, then 3000 debs.
+mkbig() {
+  local name=$1; shift
+  local r=$tmp/$name.tree/$top f i
+  mkdir -p "$tmp/$name.tree"; cp -r "$tmp/fine.tree/$top" "$tmp/$name.tree/"
+  for i in $(seq 1 3000); do : >"$r/apt/pkg$i-with-a-long-name_1.0.0-0ubuntu0.24.04.1_amd64.deb"; done
+  { for f in "$@"; do echo "$top/$f"; done
+    for f in bin/containariumd bin/mcp-server bin/agent-box VERSION CHECKSUMS.sha256 \
+             offline-install.sh toolchains/go1.0.linux-amd64.tar.gz apt/libx_1.0_all.deb; do echo "$top/$f"; done
+    for i in $(seq 1 3000); do echo "$top/apt/pkg$i-with-a-long-name_1.0.0-0ubuntu0.24.04.1_amd64.deb"; done
+  } >"$tmp/$name.order"
+  tar -C "$tmp/$name.tree" --no-recursion -czf "$tmp/$name.tgz" -T "$tmp/$name.order"
+}
+mkbig big
+if REQUIRED_DEBS=libx bash "$content" "$tmp/big.tgz" >"$tmp/big.out" 2>&1; then pass "check-bundle-content: large bundle accepted"
+else t "check-bundle-content: large bundle rejected"; cat "$tmp/big.out"; fi
+mkdir -p "$tmp/bigimg.tree/$top/images"; mkbig bigimg images
+if REQUIRED_DEBS=libx bash "$content" "$tmp/bigimg.tgz" >"$tmp/bigimg.out" 2>&1; then t "check-bundle-content: large bundle with images/ accepted"
+elif [ "$(grep -c 'check-bundle-content: ' "$tmp/bigimg.out")" = 2 ] && grep -q 'ships images/' "$tmp/bigimg.out"; then
+  pass "check-bundle-content: large bundle with images/ rejected for images/ only"
+else t "check-bundle-content: large bundle with images/ rejected for the wrong reason"; cat "$tmp/bigimg.out"; fi
 
 # -------------------------------------------- offline install.sh tests
 # Source the installer (its main runs only when executed) and call the apt

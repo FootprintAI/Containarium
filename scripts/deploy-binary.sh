@@ -57,9 +57,11 @@ SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
 # (#3060). The primary is checked with GET <PRIMARY_HEALTH_URL> on the host;
 # the sentinel has no such endpoint, so its check is the unit staying active
 # for the whole window (#3108).
-# The window is HEALTH_TRIES x HEALTH_INTERVAL (defaults 15 x 2s = 30s). A
-# healthy daemon that needs longer than that to start is rolled back like a
-# broken one, so raise HEALTH_TRIES for slow hosts. Both are plain integers
+# The window is HEALTH_TRIES x HEALTH_INTERVAL (defaults 15 x 2s = 30s). For
+# the primary URL check, a healthy daemon that needs longer than that to start
+# is rolled back like a broken one, so raise HEALTH_TRIES for slow hosts. The
+# sentinel must be active on its first probe; HEALTH_TRIES only sets how long
+# an active sentinel is watched. Both are plain integers
 # without leading zeros: HEALTH_TRIES 1-9999, HEALTH_INTERVAL 0-9999 (a bare 0
 # is valid); anything else is rejected before the first remote call.
 # See scripts/lib/deploy-install.sh.

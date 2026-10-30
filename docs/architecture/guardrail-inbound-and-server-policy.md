@@ -599,6 +599,9 @@ containarium guardrail policy get [--json]
 containarium guardrail policy set --file policy.json
 containarium guardrail status [--json]     # effective response policy (#2737)
 containarium guardrail baseline set --mode log|block   # admin, audited (#2738)
+containarium guardrail signer rotate --add new.pub [--label l]  # admin; keeps old keys (#2729)
+containarium guardrail signer revoke <key-id> --reason r     # admin; permanent (#2729)
+containarium guardrail signer bundle [--out bundle.json]     # trusted + revoked keys (#2729)
 ```
 
 The CLI is the canonical interface and the MCP tools are thin wrappers over

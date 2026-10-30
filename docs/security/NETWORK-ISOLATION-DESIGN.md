@@ -517,10 +517,16 @@ cannot be poisoned:
     containers: until the first managed veth exists, a typo'd bridge is
     trusted, and it is removed on the pass after the first container starts.
     If the bridge a managed veth is enslaved to cannot be read (a sysfs error
-    other than "no such file"), the pass makes no change: no new uplink is
-    trusted and the installed set is left as it is, so a bridge that was
-    already trusted **stays trusted for as long as the error persists**
-    (fail-open for already-installed entries; the error is logged once).
+    other than "no such file"), no new uplink is trusted and an installed
+    entry is still removed when its interface is itself a managed veth (known
+    without a sysfs read) or is a bridge that a managed veth read before the
+    unreadable one is enslaved to (a known carrier). Every other installed
+    entry is left as it is, so a bridge that was already trusted and is a
+    carrier only through a veth not yet read **stays trusted for as long as the
+    error persists** (fail-open for those installed bridge entries, a
+    deliberate choice so a transient sysfs error does not drop inbound replies
+    on legitimate uplinks; the error is logged once). Veths are read in sorted
+    name order and reading stops at the first unreadable one.
     Inbound replies via a refused interface are dropped. A host
     whose uplink is enslaved to the instance bridge therefore gets no
     trusted uplink from that interface.

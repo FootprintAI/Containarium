@@ -3,6 +3,8 @@
 # as <bin>.old, checks health after the restart, and restores it on failure (#3060).
 # Runs the real command from scripts/lib/deploy-install.sh against fake
 # sudo/systemctl/curl, so it needs no host and no network.
+# Only this fake systemctl exercises InvocationID; a real systemd is checked in
+# the real-host verification pass (#3233, #3239), not in CI.
 # Uses GNU `timeout` (coreutils): fine on Linux CI; macOS needs coreutils.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +31,17 @@ if [ "$1" = is-active ]; then
   grep -q good "$FAKE_BIN" && exit 0
   n=$(grep -c '^systemctl is-active' "$FAKE_LOG")
   [ "$n" -le "${FAKE_ACTIVE_POLLS:-1}" ]; exit $?
+fi
+# show -p InvocationID --value: a stable id, or a new one after the
+# FAKE_RESTART_AFTER-th `show` call (the unit restarted between two probes).
+if [ "$1" = show ]; then
+  n=$(grep -c '^systemctl show' "$FAKE_LOG")
+  # FAKE_SHOW_EMPTY=1: id unreadable on every call (empty output, exit 0).
+  # FAKE_SHOW_FAIL_AFTER=n: from the (n+1)-th call on, show fails (exit 1, no output).
+  [ -n "${FAKE_SHOW_EMPTY:-}" ] && exit 0
+  if [ -n "${FAKE_SHOW_FAIL_AFTER:-}" ] && [ "$n" -gt "$FAKE_SHOW_FAIL_AFTER" ]; then exit 1; fi
+  if [ -n "${FAKE_RESTART_AFTER:-}" ] && [ "$n" -gt "$FAKE_RESTART_AFTER" ]; then echo inv-2; else echo inv-1; fi
+  exit 0
 fi
 exit 0
 F
@@ -104,6 +117,26 @@ URL= TRIES=4 FAKE_ACTIVE_POLLS=0 run_case sentinel-dead-on-start old-good new-ba
 # window is watched to its end, so this must roll back.
 URL= TRIES=4 FAKE_ACTIVE_POLLS=4 run_case sentinel-dies-after-last-probe old-good new-bad 1
 [ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel dies after the last in-loop probe: previous binary restored" || bad "sentinel dies after the last in-loop probe: previous binary restored"
+
+# A unit that crashed and was restarted by systemd between two probes looks
+# active on every probe; a changed InvocationID is what gives it away.
+URL= TRIES=4 FAKE_RESTART_AFTER=2 run_case sentinel-restarted-between-probes old-good new-good 1
+[ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel restarted between probes: previous binary restored" || bad "sentinel restarted between probes: previous binary restored"
+grep -q 'rolled back' "$CASE_DIR/out" && ok "sentinel restarted between probes: says it rolled back" || bad "sentinel restarted between probes: says it rolled back"
+
+# An unreadable InvocationID must not fail a healthy unit: when the id is empty
+# at record time the check degrades to is-active alone (empty == empty). It must
+# still catch a crash through is-active (#3239).
+URL= TRIES=4 FAKE_SHOW_EMPTY=1 run_case sentinel-id-unreadable-healthy old-good new-good 0
+[ "$(cat "$CASE_DIR/bin/containariumd")" = new-good ] && ok "sentinel id unreadable at record time: healthy unit keeps the new binary" || bad "sentinel id unreadable at record time: healthy unit keeps the new binary"
+URL= TRIES=4 FAKE_SHOW_EMPTY=1 run_case sentinel-id-unreadable-crash old-good new-bad 1
+[ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel id unreadable at record time: crash still rolls back via is-active" || bad "sentinel id unreadable at record time: crash still rolls back via is-active"
+
+# An id that was recorded and then cannot be read mid-window is an unverifiable
+# unit, not a healthy one: roll back rather than pass on is-active alone (#3239).
+URL= TRIES=4 FAKE_SHOW_FAIL_AFTER=2 run_case sentinel-id-unreadable-later old-good new-good 1
+[ "$(cat "$CASE_DIR/bin/containariumd")" = old-good ] && ok "sentinel id unreadable later in the poll: previous binary restored" || bad "sentinel id unreadable later in the poll: previous binary restored"
+grep -q 'rolled back' "$CASE_DIR/out" && ok "sentinel id unreadable later in the poll: says it rolled back" || bad "sentinel id unreadable later in the poll: says it rolled back"
 
 # Invalid knobs must fail before anything on the host is touched, never pass vacuously.
 check_knob() { # <label> <var> <value> <url|sentinel>
