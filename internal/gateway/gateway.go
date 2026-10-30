@@ -29,6 +29,7 @@ import (
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
+	_ "google.golang.org/genproto/googleapis/rpc/errdetails" // registers the detail types ErrorHandler renders
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -46,6 +47,7 @@ type GatewayServer struct {
 	certsDir               string                                          // Optional: for mTLS connection to gRPC server
 	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
 	startupListener        *StartupListener                                // HTTP port bound before the startup waits (#3130); nil = bind in Start
+	readinessCheck         policyreadiness.CheckFunc                       // in-process core Postgres startup readiness (#3044)
 	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
 	alertmanagerBackendURL string                                          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
@@ -453,7 +455,7 @@ func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, web
 // it so they pin the same wire format the daemon serves.
 func NewRESTMux() *runtime.ServeMux {
 	return runtime.NewServeMux(
-		runtime.WithErrorHandler(customErrorHandler),
+		runtime.WithErrorHandler(ErrorHandler),
 		runtime.WithMetadata(annotateContext),
 		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
 		// Marshal options for better JSON formatting
@@ -937,7 +939,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/internal/alert-relay", gs.handleAlertRelay)
 
 	// Health check endpoint (no auth required)
-	httpMux.HandleFunc("/health", healthHandler)
+	httpMux.HandleFunc("/health", healthHandlerWithReadiness(gs.readinessCheck))
 
 	// Policy-store readiness (#2483): grpc.health.v1 through the gateway.
 	healthConn, err := grpc.NewClient(grpcTarget, opts...)
@@ -1061,21 +1063,41 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	return http.ListenAndServe(addr, httpMux)
 }
 
-// customErrorHandler provides better error messages
-func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
+// errorBody is the JSON every /v1 REST error is served as. error and code are
+// the long-standing fields (code is the HTTP status). message and details follow
+// grpc-gateway's default error body, so a client that reads typed details
+// (google.rpc.PreconditionFailure and the like) from it works unchanged (#3277).
+type errorBody struct {
+	Error   string            `json:"error"`
+	Code    int               `json:"code"`
+	Message string            `json:"message,omitempty"`
+	Details []json.RawMessage `json:"details,omitempty"`
+}
+
+// ErrorHandler is the grpc-gateway error handler every /v1 REST route is served
+// with. Besides the message and HTTP status it carries the gRPC status details,
+// which a handler attaches so a caller can act on a typed reason without
+// matching message text (e.g. RUN_USER_NOT_SIGNED_IN).
+func ErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Map gRPC codes to HTTP status codes
 	httpStatus := runtime.HTTPStatusFromCode(status.Code(err))
 	w.WriteHeader(httpStatus)
 
-	// Format error response
-	errorResp := map[string]interface{}{
-		"error": err.Error(),
-		"code":  httpStatus,
+	body := errorBody{Error: err.Error(), Code: httpStatus}
+	if st, ok := status.FromError(err); ok {
+		body.Message = st.Message()
+		for _, d := range st.Proto().GetDetails() {
+			// A detail whose type this binary does not know cannot be rendered;
+			// skip it rather than fail the whole error response.
+			if raw, mErr := protojson.Marshal(d); mErr == nil {
+				body.Details = append(body.Details, raw)
+			}
+		}
 	}
 
-	_ = json.NewEncoder(w).Encode(errorResp)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // annotateContext adds metadata that grpc-gateway forwards into the

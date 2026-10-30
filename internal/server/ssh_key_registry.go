@@ -81,10 +81,12 @@ func (s *ContainerServer) registerSSHKey(ctx context.Context, username, pubKey s
 	return s.sshKeys.Register(ctx, rec)
 }
 
-// revokeSSHKey revokes pubKey's registry entry if username owns it; an entry
-// another account registered is left active (#3187). It returns
-// sshauthz.ErrKeyHeldByOtherAccount, changing nothing, while another account
-// still holds the key (#3222). Nil registry = no-op.
+// revokeSSHKey revokes pubKey's registry entry if username owns it (by user
+// id for an owner account) or the entry has no owner; an entry another
+// account owns is left active (#3187, #3217). It returns
+// sshauthz.ErrKeyHeldByOtherAccount while another account still holds the
+// key (#3222), leaving the entry active and, if username owned it, releasing
+// it (#3217). Nil registry = no-op.
 func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey string) error {
 	if s.sshKeys == nil {
 		return nil
@@ -147,13 +149,12 @@ func (c collaboratorRows) CollaboratorExists(ctx context.Context, containerName,
 // keys would be refused as UNKNOWN_KEY, so the decider stays off until a
 // restart backfills successfully.
 func setupSSHKeyRegistry(ctx context.Context, collabStore *collaborator.Store, cs *ContainerServer, maxKeyAge time.Duration) *sshauthz.SelfHostDecider {
-	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool())
+	const homeRoot = "/home"
+	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool(), sshauthz.FileHolders{HomeRoot: homeRoot})
 	if err != nil {
 		log.Printf("Warning: ssh key registry unavailable: %v (SSH authorization decider disabled)", err)
 		return nil
 	}
-	const homeRoot = "/home"
-	keys.WithHolders(sshauthz.FileHolders{HomeRoot: homeRoot})
 	cs.SetSSHKeyRegistry(keys)
 
 	added, err := sshauthz.Backfill(ctx, keys, homeRoot, time.Now())

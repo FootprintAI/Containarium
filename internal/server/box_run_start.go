@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -280,6 +282,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, status.Error(codes.InvalidArgument,
 			"run_name must not end in \".stderr\" or in \".<digits>\" (those collide with a run's derived files and rotated-aside runs)")
 	}
+	if req.GetModel() != "" && !validBoxRunModel(req.GetModel()) {
+		return nil, status.Errorf(codes.InvalidArgument, "model must match %s", boxRunModelPattern.String())
+	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -357,6 +362,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
 	}
 
+	if req.GetModel() != "" && eng.Name() != engine.NameClaude {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"model is only supported for the %s engine; %s on %q selects %s",
+			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
+	}
+
 	// A box with a recorded tool-access level runs platform-started work as a
 	// dedicated unprivileged user (#2944, slice 1b); a box with none keeps the
 	// owner's identity exactly as before. The level is read before anything is
@@ -381,7 +392,25 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	// Every precondition has now passed — safe to mutate.
+	// Lazily attach the release to old boxes before rotating any previous run.
+	// Only BUILD_TOOLS requires it; the other levels keep working on hosts
+	// that have not installed a managed toolchain release.
+	ensureTools := s.boxRunEnsureToolchain
+	if ensureTools == nil && s.manager != nil {
+		ensureTools = s.manager.EnsureManagedToolchains
+	}
+	if level == "build_tools" {
+		if ensureTools == nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
+		}
+		if err := ensureTools(req.GetUsername()); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "managed toolchain mount %s: %v", toolchain.HostRoot, err)
+		}
+	} else if ensureTools != nil {
+		_ = ensureTools(req.GetUsername())
+	}
+
+	// The level and required mount are ready; now provision the run user.
 	if level != "" {
 		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
 		if err != nil {
@@ -421,6 +450,11 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	command := eng.RunCommand(req.GetPrompt(), false, req.GetContinueSession(), req.GetSessionId())
 	if req.GetStructuredOutput() {
 		command += engine.ClaudeStructuredOutputFlag
+	}
+
+	if req.GetModel() != "" {
+		// Validated above to a plain id; quoted anyway, as the prompt is.
+		command += " --model " + coderun.ShellQuoteSingle(req.GetModel())
 	}
 
 	if level != "" {
@@ -473,6 +507,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		CaptureMode: agentbox.CaptureCombined,
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   startedAt,
+		Model:       req.GetModel(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -498,11 +533,13 @@ const (
 	DaemonCapBoxRunName = "box_run_name"
 	// DaemonCapBoxRunStructuredOutput: StartBoxRunRequest.structured_output.
 	DaemonCapBoxRunStructuredOutput = "box_run_structured_output"
+	// DaemonCapBoxRunModel: StartBoxRunRequest.model and BoxRun.model (#3259).
+	DaemonCapBoxRunModel = "box_run_model"
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
@@ -554,3 +591,10 @@ func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), b
 	}
 	return runHome, nil
 }
+
+// boxRunModelPattern bounds a model id. The id is opaque to the API, but it ends
+// up in a shell command, so only the characters real ids use are allowed, and it
+// cannot start with "-" (it would read as another flag).
+var boxRunModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$`)
+
+func validBoxRunModel(id string) bool { return boxRunModelPattern.MatchString(id) }

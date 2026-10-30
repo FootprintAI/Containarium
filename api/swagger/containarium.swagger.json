@@ -4141,6 +4141,39 @@
         ]
       }
     },
+    "/v1/containers/{username}/run-user/status": {
+      "get": {
+        "summary": "Report whether a box's run user is signed in",
+        "description": "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_GetBoxRunUserStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBoxRunUserStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/snapshots": {
       "get": {
         "summary": "List a container's snapshots",
@@ -4339,7 +4372,7 @@
       },
       "put": {
         "summary": "Set SSH keys (replace all)",
-        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. A dropped key is always removed from this container user's file. Its ssh_keys registry entry (one per key, owned by the first account to register it) is revoked only when this container user owns the entry and no other account (a collaborator account is a separate account) still holds the same public key in its own authorized_keys; a key another account holds is dropped from this file but its entry stays active, and the call still succeeds (as RemoveSSHKey does). When another account owns the entry it also stays active (tracked in issue #3217), so dropping a key is not a guaranteed revocation of a compromised key. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
+        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. A dropped key is always removed from this container user's file. Its ssh_keys registry entry is handled as RemoveSSHKey does: one entry per key, owned by the first account to register it, until that entry is revoked, after which the next registration replaces it (an owner account also owns an entry its own collaborator account \u003cowner\u003e-container-\u003cuser\u003e registered, since ownership compares user id); it is revoked when this container user owns it or it has no owner, and no other account (a collaborator account is a separate account) still holds the same public key in its own authorized_keys. A key another account holds is dropped from this file but its entry stays active, and the call still succeeds; if this container user owned the entry, the entry loses its owner, so the next account to register the key takes it over and the last holder's own drop revokes it. When another account owns the entry it stays active, so dropping a key is not a guaranteed revocation of a compromised key. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
         "operationId": "ContainerService_SetSSHKeys",
         "responses": {
           "200": {
@@ -4380,7 +4413,7 @@
     "/v1/containers/{username}/ssh-keys/{sshPublicKey}": {
       "delete": {
         "summary": "Remove SSH key",
-        "description": "Removes an SSH public key from a container's authorized_keys file, revoking that key's SSH access to this container. The key's ssh_keys registry entry (one per key, owned by the first account to register it) is revoked only when this container user owns it. If this call would revoke the entry but any other account (a collaborator account \u003cowner\u003e-container-\u003ccollab\u003e is a separate account) still holds the same public key in its own authorized_keys, the key is removed from this container user's file only and the entry stays active; the call still succeeds and does not say which account holds the key. A key this container user does not own the entry for is likewise removed from the file with the entry left active, so removing a key is not a guaranteed revocation of a compromised key (tracked in issue #3217). The revocation happens before the file changes, so a registry failure leaves the key in place and a retry repeats it. The ssh_public_key should be URL-encoded.",
+        "description": "Removes an SSH public key from a container's authorized_keys file, revoking that key's SSH access to this container. The key's ssh_keys registry entry (one per key, owned by the first account to register it; a revoked entry is replaced by the next registration) is revoked when this container user owns it or it has no owner. Ownership compares user id, so an owner account also owns an entry its own collaborator account \u003cowner\u003e-container-\u003cuser\u003e registered on another box. If this call would revoke the entry but any other account (a collaborator account \u003cowner\u003e-container-\u003ccollab\u003e is a separate account here) still holds the same public key in its own authorized_keys, the key is removed from this container user's file only and the entry stays active; the call still succeeds and does not say which account holds the key. If this container user owned that entry, the entry loses its owner: the next account to register the key takes it over, and the last holder's own removal revokes it. A key whose entry another account owns is likewise removed from the file with the entry left active, so removing a key is not a guaranteed revocation of a compromised key. The revocation happens before the file changes, so a registry failure leaves the key in place and a retry repeats it. The ssh_public_key should be URL-encoded.",
         "operationId": "ContainerService_RemoveSSHKey",
         "responses": {
           "200": {
@@ -9027,7 +9060,7 @@
     "/v1/tracker/connections/{username}/{connection}/changes:files": {
       "post": {
         "summary": "Submit a tracker change request from files",
-        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
+        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. When head_branch already exists, the commit is built on its tip and pushed as a fast-forward (ABORTED if the tip moved meanwhile; never forced); when head_branch already has an open change request, that change is returned instead of opening another. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
         "operationId": "TrackerService_SubmitTrackerChangeFiles",
         "responses": {
           "200": {
@@ -11845,6 +11878,10 @@
             "$ref": "#/definitions/BoxRunTool"
           },
           "description": "The tools available to this run, measured on the box by the run's own wrapper\n(a probe before the engine starts and one after it ends, written to a sidecar\nwhatever the engine's exit status), never reported by the agent. Empty for a\nrun with no readable sidecar (an older run, or a box without the probe)."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id the run was started with (StartBoxRunRequest.model, #3259).\nEmpty when none was requested: the engine's own default ran, and the\ndaemon does not claim to know which. Empty for a run from before the field."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -13680,6 +13717,13 @@
         "proofPack": {
           "$ref": "#/definitions/CrewProofPack",
           "description": "The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).\nUnset when the crew has no producer, or the run failed before its last\nA2A member returned the final files. The pack's status is the platform's\nrecord of the tests run on those files, and is what should gate opening a\npull request; an agent's own `tests_run` claim should not. A failed or\nmissing pack does not fail the run: whoever acts on the run reads this."
+        },
+        "memberModels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The model id each member was driven with (#3259), keyed by skill_id: the\nrun's model_overrides entry, else the skill's own pinned `model`. A member\nthat exports no model (none requested or pinned, or no named engine) is\nabsent: its engine's default ran, and the daemon does not claim to know which."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -15215,6 +15259,28 @@
           "$ref": "#/definitions/BackupRecord"
         }
       }
+    },
+    "GetBoxRunUserStatusResponse": {
+      "type": "object",
+      "properties": {
+        "runUser": {
+          "type": "string",
+          "description": "The OS user platform runs execute as on a box with a recorded tool-access\nlevel. Reported even when tool_access_recorded is false."
+        },
+        "toolAccessRecorded": {
+          "type": "boolean",
+          "description": "Whether the box has a tool-access level recorded. When false, platform\nruns use the owner's identity and none of the run-user fields below apply."
+        },
+        "runUserExists": {
+          "type": "boolean",
+          "description": "Whether the run user already exists on the box. It is created by the box's\nfirst platform run, so false on a recorded box means no run has happened."
+        },
+        "state": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.\nNONE when the run user does not exist yet or has never signed in (the same\nanswer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,\nINTERACTIVE or API_KEY when a run would proceed."
+        }
+      },
+      "description": "GetBoxRunUserStatusResponse is the read-only answer to \"would StartBoxRun\nrefuse a platform run on this box for want of a run-user sign-in?\" (#3274).\nIt is the same probe StartBoxRun applies, run without queueing anything and\nwithout provisioning the run user. It names the credential's SOURCE only:\nnothing here reads, copies, prints or refreshes a credential value."
     },
     "GetCapabilityProfileResponse": {
       "type": "object",
@@ -20343,6 +20409,13 @@
           "type": "integer",
           "format": "int64",
           "description": "Zero defaults to 5; must not exceed the platform node cap."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-member model override (#3259), keyed by skill_id: when a member's id has\nan entry here, THAT model id is the one its run is driven with, ahead of the\nskill's own `model`. Precedence: this override, then the skill's `model`,\nthen CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no\ntiers are enumerated; ids change with every release) but must be a plain\nid, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the\nbox only with a named engine (the skill's, or engine_overrides'), so an\nentry for a member with none is FAILED_PRECONDITION rather than ignored. A\nkey that is not a member of the crew is INVALID_ARGUMENT. An id the engine's\nprovider does not list is refused before the run starts, when the daemon can\nlist that provider's models. Not supported with `graph` (INVALID_ARGUMENT).\nCrewRun.member_models reports what each member ran with."
         }
       }
     },
@@ -21841,6 +21914,10 @@
         "structuredOutput": {
           "type": "boolean",
           "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in /tmp/agent-box/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id to run the engine with (Claude Code's --model), for example\none a caller chose from a policy or a label (#3259). Empty keeps the\nengine's own default, exactly as before. Claude Code only: any other\nengine is FAILED_PRECONDITION, before anything on the box is touched. The\nid is opaque to the API (no tier names are enumerated here, ids change\nwith every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]{0,127};\nanything else is INVALID_ARGUMENT. Whether the engine accepts the id is\nthe engine's to say: an id it rejects ends the run non-zero and the\nreason is in the run's log. BoxRun.model reports the id the run was\nstarted with. Capability \"box_run_model\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -22129,7 +22206,7 @@
         },
         "headBranch": {
           "type": "string",
-          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Never force-pushed; must differ from base_ref."
+          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Must differ from base_ref. If it already exists on\nthe remote, the commit is added on top of its tip (files identical\nto the tip's add nothing). Never force-pushed: if the tip moves\nbetween fetch and push, the call fails with ABORTED and the remote\nis left as is. If it has an open change request, that change is\nreturned and its title, description and draft state are left alone;\nif its earlier change was merged or closed, a new one is opened."
         },
         "files": {
           "type": "array",
@@ -22140,7 +22217,7 @@
           "description": "files is the change: at least one, each path distinct."
         }
       },
-      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
+      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nWhen head_branch already exists on the remote, the commit is built on\nits tip instead and pushed as a fast-forward; when head_branch already\nhas an open change request, that change is returned rather than a\nsecond one opened (#3288).\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
     },
     "SubmitTrackerChangeFilesResponse": {
       "type": "object",
@@ -22335,7 +22412,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output) and\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
@@ -22348,6 +22425,10 @@
         "peerTransport": {
           "$ref": "#/definitions/PeerTransport",
           "description": "peer_transport is how this daemon's own calls to peer backends are\nsecured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a\nsupported setup (peer mTLS off, or no peer CA on the sentinel) but it\nmeans those calls go over plain HTTP, not over the pinned peer-PKI\nTLS, so an operator can see the degraded state instead of finding one\nstartup log line. UNSPECIFIED means this daemon has no sentinel URL and no\npeers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as\nthe sentinel-backend tunnel. See #3079."
+        },
+        "managedBackupKeyConfigured": {
+          "type": "boolean",
+          "description": "managed_backup_key_configured is true when this daemon has a managed\nbackup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup\nit takes is encrypted even for a tenant with no registered age\nrecipient. `containarium backup status` reads it to avoid flagging such\ntenants as unencrypted. False covers both \"no managed key\" and a daemon\nthat predates the field, so a client must treat false as \"not known to\nbe encrypted\". See #3213."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -22783,7 +22864,7 @@
         },
         "branch": {
           "type": "string",
-          "description": "branch is the daemon-chosen branch the change request's head points\nat (#1923). Populated by SubmitTrackerChange's response; empty on\nGetTrackerChange, which has no reason to resolve it for an\nalready-open change."
+          "description": "branch is the branch the change request's head points at: the\ndaemon-chosen or requested branch in a SubmitTrackerChange /\nSubmitTrackerChangeFiles response (#1923), and the provider's head /\nsource branch on GetTrackerChange (#3288)."
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."

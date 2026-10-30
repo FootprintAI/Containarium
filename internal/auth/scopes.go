@@ -53,13 +53,10 @@ const (
 	ScopeBackupsWrite = "backups:write"
 	// backups:verify (#3186) is the narrow scope for a restore-test
 	// (verifier) token: VerifyBackup accepts it, and it grants none of
-	// create/restore/delete/prune. For ONE release VerifyBackup also still
-	// accepts backups:write, so verifier tokens minted before this scope
-	// existed keep working; such a call logs a "[backup] DEPRECATED:" line
-	// naming the user (Q8 on #3196). The next release drops backups:write
-	// from VerifyBackup (and from the verify_backup MCP tool's
-	// AlternateScope pairing): operators must re-mint verifier tokens with
-	// backups:read,backups:verify before upgrading to it.
+	// create/restore/delete/prune. The v0.120.1 migration window has ended
+	// (#3219): backups:write does not authorize VerifyBackup or the
+	// verify_backup MCP tool. Re-mint verifier tokens with
+	// backups:read,backups:verify.
 	ScopeBackupsVerify = "backups:verify"
 
 	// shared volumes (VolumeServer). A write can create/attach/delete

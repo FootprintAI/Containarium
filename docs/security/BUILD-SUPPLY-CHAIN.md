@@ -81,6 +81,8 @@ check with a checksum for each download.
 | --- | --- | --- | --- |
 | `scripts/install-xcaddy.sh` | curl | xcaddy release tarball for `make build-caddy`, `scripts/setup-caddy.sh`, `proxyproto-e2e.yml` | version + sha256 per platform in `scripts/xcaddy-version.env` (replaces `go install ...@latest`) |
 | `scripts/install-buf.sh` | curl | buf release binary | version + sha256 per platform in `scripts/buf-version.env` |
+| `scripts/ci/offline-install-vm.sh` | curl | Published offline bundle and official Ubuntu 24.04 Minimal VM image | Explicit release tag (default v0.121.0) and dated Ubuntu image (release-20261027); SHA256 verified against each publisher's checksum file and retained with the release commit in the evidence artifact. These same-origin checks establish integrity, not independent authenticity |
+| `scripts/ci/offline-install-guest.sh` | curl | The word `curl` in the required-command check | No fetch; the guest has no network adapter |
 | `.github/workflows/ebpf-load.yml` | curl | bpftool release tarball | version + sha256 (`BPFTOOL_VERSION`, `BPFTOOL_SHA256`) |
 | `.github/workflows/fence-probe-e2e.yml` | curl | bpftool release tarball (twice: the observation-only job and the split-egress job each fetch it) | version + sha256 |
 | `.github/workflows/release.yml` | curl | bpftool release tarball | version + sha256. The `curl` commands inside the release-notes heredoc are text shown to users, not fetches the build runs |
@@ -149,6 +151,7 @@ check with a checksum for each download.
 | `scripts/engineer-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/two-engine-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/ci/tunnel-smoke.sh` | curl | probe of a loopback test backend |
+| `scripts/ci/sentinel-outage-smoke.sh` | curl | HTTPS probe of the operator-provisioned outage fixture through the sentinel, checked against a fixed expected body with TLS verification; also a tool-availability check. No dependency is downloaded or executed |
 | `scripts/backup-scoped-token-e2e.sh` | curl | calls to the daemon under test through `$server`. It defaults to `http://localhost:8080` but can be overridden by `CONTAINARIUM_BACKUP_E2E_SERVER`, so the checker cannot prove it is loopback and the one `api` helper call that makes every request is listed rather than exempted |
 
 ## Adding a fetch

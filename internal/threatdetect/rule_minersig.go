@@ -73,7 +73,8 @@ func (e MinerSignatureEntry) ToProto() *pb.MinerSignature {
 	return &pb.MinerSignature{Kind: e.Kind, Pattern: e.Pattern, Label: e.Label, Builtin: e.Builtin}
 }
 
-// Subject is the finding subject of a hit on this entry: "<kind>:<pattern>".
+// Subject identifies the signature in evidence: "<kind>:<pattern>". Findings
+// use a container-scoped namespace so their response belongs to one box.
 func (e MinerSignatureEntry) Subject() string {
 	return MinerSignatureKindName(e.Kind) + ":" + e.Pattern
 }
@@ -553,7 +554,9 @@ func (r *MinerSignatureRule) OnExec(ctx RuleContext, ev ExecEvent) []RawFinding 
 		Severity:  pb.ThreatSeverity_THREAT_SEVERITY_HIGH,
 		TenantID:  ev.TenantID,
 		Container: ev.Container,
-		Subject:   hit.Subject(),
+		// Prefix the scope so this cannot alias an old unscoped signature
+		// containing a delimiter, e.g. the old name pattern xmrig@box-a.
+		Subject: "container:" + ev.Container + ":" + hit.Subject(),
 		Evidence: Evidence{Execs: []ExecEvidence{{
 			PID:           ev.PID,
 			StartTime:     ev.StartTime,

@@ -1569,6 +1569,15 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 		sni, peekedConn, peekErr := peekSNI(conn)
 		_ = conn.SetReadDeadline(time.Time{})
 
+		// The watchdog measures our mux/dispatch/router, independently of
+		// backend health (#1139). An unmatched SNI normally uses the fallback,
+		// so .invalid alone did not keep this probe local: a blackholed backend
+		// made a healthy sentinel exit. Closing here proves the entire local
+		// path serviced the ClientHello, before any tenant route or dial.
+		if peekErr == nil && sni == selfCheckSNI {
+			return
+		}
+
 		var (
 			dst net.Conn
 			err error

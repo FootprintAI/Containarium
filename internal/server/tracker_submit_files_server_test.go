@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -219,5 +220,93 @@ func TestSubmitTrackerChangeFiles_ExplicitRefs(t *testing.T) {
 	}
 	if provider.openChangeReq.BaseBranch != "release/1.2" {
 		t.Errorf("OpenChange base = %q, want release/1.2", provider.openChangeReq.BaseBranch)
+	}
+}
+
+// #3288: a head branch that already has an open change request reuses it
+// — no second OpenChange — and the response is that change, so a second
+// call for the same head_branch returns the same change.
+func TestSubmitTrackerChangeFiles_ReusesOpenChange(t *testing.T) {
+	user := "tracker-rpc-files-reuse-" + uuid.NewString()
+	existing := tracker.Change{Number: 5, URL: "https://gitlab.example/acme/widgets/-/merge_requests/5",
+		State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Branch: "containarium/issue-7"}
+	provider := &fakeWriterProvider{findOpenOut: existing, findOpenFound: true, openChangeErr: errors.New("must not open a second change")}
+	pusher := &fakeFilePusher{result: submit.PushResult{Branch: "containarium/issue-7", SHA: "cccccccccccccccccccccccccccccccccccccccc"}}
+	s, ctx := setUpFilesConnection(t, user, provider, pusher)
+	s.auditStore = mustTestAuditStore(t)
+	req := validFilesReq(user)
+	req.HeadBranch = "containarium/issue-7"
+
+	resp, err := s.SubmitTrackerChangeFiles(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitTrackerChangeFiles: %v", err)
+	}
+	if provider.findOpenBranch != "containarium/issue-7" {
+		t.Errorf("FindOpenChange asked about %q, want the pushed head branch", provider.findOpenBranch)
+	}
+	if provider.openChangeReq.HeadBranch != "" {
+		t.Errorf("OpenChange called (%+v) although an open change exists for the branch", provider.openChangeReq)
+	}
+	if got := resp.GetChange(); got.GetNumber() != 5 || got.GetUrl() != existing.URL || got.GetBranch() != "containarium/issue-7" {
+		t.Errorf("response change = %v, want the existing !5", got)
+	}
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.submit_change_files", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0].Detail, existing.URL) || !strings.Contains(rows[0].Detail, `"reused_change":true`) {
+		t.Errorf("audit rows = %+v, want one row naming the reused change", rows)
+	}
+}
+
+// #3288: an existing branch whose earlier change was merged or closed has
+// no open change, so a new one is opened (documented behaviour).
+func TestSubmitTrackerChangeFiles_NoOpenChangeOpensNew(t *testing.T) {
+	const user = "tracker-rpc-files-no-open-change"
+	provider := &fakeWriterProvider{openChangeOut: tracker.Change{Number: 6}}
+	pusher := &fakeFilePusher{result: submit.PushResult{Branch: "containarium/issue-7", SHA: "abc"}}
+	s, ctx := setUpFilesConnection(t, user, provider, pusher)
+	req := validFilesReq(user)
+	req.HeadBranch = "containarium/issue-7"
+	resp, err := s.SubmitTrackerChangeFiles(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitTrackerChangeFiles: %v", err)
+	}
+	if provider.findOpenBranch != "containarium/issue-7" {
+		t.Errorf("FindOpenChange asked about %q", provider.findOpenBranch)
+	}
+	if provider.openChangeReq.HeadBranch != "containarium/issue-7" || resp.GetChange().GetNumber() != 6 {
+		t.Errorf("OpenChange req %+v / response %v, want a new change opened", provider.openChangeReq, resp.GetChange())
+	}
+}
+
+// #3288: a failed lookup fails the call rather than risking a duplicate.
+func TestSubmitTrackerChangeFiles_FindOpenChangeFails(t *testing.T) {
+	const user = "tracker-rpc-files-find-open-fails"
+	provider := &fakeWriterProvider{findOpenErr: tracker.ErrUnreachable}
+	pusher := &fakeFilePusher{result: submit.PushResult{Branch: "containarium/issue-7", SHA: "abc"}}
+	s, ctx := setUpFilesConnection(t, user, provider, pusher)
+	_, err := s.SubmitTrackerChangeFiles(ctx, validFilesReq(user))
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v (%v), want Unavailable", status.Code(err), err)
+	}
+	if provider.openChangeReq.HeadBranch != "" {
+		t.Error("OpenChange called after the open-change lookup failed")
+	}
+}
+
+// #3288: a head branch that moved under the push is Aborted with the
+// pusher's explanation, and no change is opened or looked up.
+func TestSubmitTrackerChangeFiles_HeadMovedIsAborted(t *testing.T) {
+	const user = "tracker-rpc-files-head-moved"
+	provider := &fakeWriterProvider{}
+	pusher := &fakeFilePusher{err: fmt.Errorf("%w: \"containarium/issue-7\" is now at abc", submit.ErrHeadBranchMoved)}
+	s, ctx := setUpFilesConnection(t, user, provider, pusher)
+	_, err := s.SubmitTrackerChangeFiles(ctx, validFilesReq(user))
+	if status.Code(err) != codes.Aborted || !strings.Contains(err.Error(), "moved") {
+		t.Fatalf("err = %v, want Aborted naming the moved branch", err)
+	}
+	if provider.openChangeReq.HeadBranch != "" || provider.findOpenBranch != "" {
+		t.Error("change opened or looked up after a refused push")
 	}
 }

@@ -110,6 +110,7 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 	}
 	if wrapper != nil {
 		opts = append(opts, backup.WithWrapper(wrapper))
+		containers.SetManagedBackupKeyConfigured(true)
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
 	}
 
@@ -520,19 +521,13 @@ func (s *BackupServer) resolveRestoreTarget(ctx context.Context, name string) (s
 // that could not be run at all (unknown backup, missing target
 // container) returns a gRPC error.
 func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
-	// backups:verify first: RequireAnyScope then reports backups:write only
-	// for a token that holds it and not backups:verify (wildcard and unscoped
-	// tokens report backups:verify).
-	matched, err := auth.RequireAnyScope(ctx, auth.ScopeBackupsVerify, auth.ScopeBackupsWrite)
-	if err != nil {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsVerify); err != nil {
+		if status.Code(err) == codes.PermissionDenied {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"%s; re-mint the verifier token with containarium token generate --username <tenant> --roles user --scopes %s,%s --expiry 720h --secret-file <jwt-secret-file> --raw",
+				status.Convert(err).Message(), auth.ScopeBackupsRead, auth.ScopeBackupsVerify)
+		}
 		return nil, err
-	}
-	if matched == auth.ScopeBackupsWrite {
-		// One-release deprecation window (#3186): the next release stops
-		// accepting backups:write for VerifyBackup.
-		user, _, _ := auth.SubjectFromGRPCContext(ctx)
-		log.Printf("[backup] DEPRECATED: VerifyBackup authorized by legacy scope %s user=%q id=%q; re-mint the verifier token with --scopes %s,%s, the next release stops accepting %s for VerifyBackup",
-			auth.ScopeBackupsWrite, user, req.Id, auth.ScopeBackupsRead, auth.ScopeBackupsVerify, auth.ScopeBackupsWrite)
 	}
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")

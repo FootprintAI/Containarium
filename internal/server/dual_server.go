@@ -2645,6 +2645,7 @@ skipAppHosting:
 		// The gateway forwards JWT-verified claims, so it reaches the gRPC
 		// server over the in-process listener, the only trusted transport.
 		gatewayServer.SetInternalDialer(internalLis.DialContext)
+		gatewayServer.SetReadinessCheck(policyreadiness.ServerCheck(policyStoreHealth))
 		if config.StartupListener != nil {
 			gatewayServer.SetStartupListener(config.StartupListener)
 		}

@@ -286,7 +286,8 @@ message SystemInfo {
   // daemon: an empty list means "none of the optional features", so a
   // client must treat a missing name as unsupported. Names are only ever
   // added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
-  // "box_run_structured_output" (StartBoxRunRequest.structured_output).
+  // "box_run_structured_output" (StartBoxRunRequest.structured_output) and
+  // "box_run_model" (StartBoxRunRequest.model, BoxRun.model).
   // An open string set rather than an enum so a newer daemon's extra names
   // never fail to decode in an older client.
   repeated string capabilities = 30;
@@ -307,6 +308,15 @@ message SystemInfo {
   // peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
   // the sentinel-backend tunnel. See #3079.
   PeerTransport peer_transport = 32;
+
+  // managed_backup_key_configured is true when this daemon has a managed
+  // backup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup
+  // it takes is encrypted even for a tenant with no registered age
+  // recipient. `containarium backup status` reads it to avoid flagging such
+  // tenants as unencrypted. False covers both "no managed key" and a daemon
+  // that predates the field, so a client must treat false as "not known to
+  // be encrypted". See #3213.
+  bool managed_backup_key_configured = 33;
 }
 
 // PeerTransport is the transport this daemon uses for its calls to peer
