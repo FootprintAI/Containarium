@@ -523,8 +523,9 @@ sudo containarium token generate \
   `ListBackups`. A token holding only these two is refused `CreateBackup`,
   `RestoreBackup`, `DeleteBackup` and `PruneBackups`, which still need
   `backups:write`.
-- **Re-mint legacy verifier tokens before upgrading from v0.120.1.** The
-  one-release migration window has ended (#3219). `VerifyBackup` and the
+- **Re-mint legacy verifier tokens before upgrading from any of v0.120.1
+  through v0.122.0.** The migration window, during which those releases
+  accepted them, has ended (#3219). `VerifyBackup` and the
   `verify_backup` MCP tool require `backups:verify`; a token carrying only
   `backups:read,backups:write` is refused with `PermissionDenied` (HTTP 403).
   The RPC error names `backups:verify` and includes the token-generation
