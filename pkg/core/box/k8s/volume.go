@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/wait"
 	sandboxv1beta1 "sigs.k8s.io/agent-sandbox/api/v1beta1"
 
 	"github.com/footprintai/containarium/pkg/core/volume"
@@ -284,6 +287,24 @@ func (b *Backend) restartSandboxForVolumeChange(ctx context.Context, tenant stri
 	}
 	if err := b.setSandboxOperatingMode(ctx, tenant, sb.Name, sandboxv1beta1.SandboxOperatingModeSuspended); err != nil {
 		return fmt.Errorf("k8s: suspend sandbox %q to apply shared-volume change: %w", sb.Name, err)
+	}
+	// Mode patches are asynchronous. Resuming before the controller observes
+	// suspension can preserve the old Pod and its old mounts. Require an
+	// observation of the current generation so a previous suspension cannot
+	// satisfy this wait. A timeout leaves the Sandbox suspended for recovery.
+	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		current, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(tenant)).Get(ctx, sb.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if current.UID != sb.UID || current.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
+			return false, fmt.Errorf("sandbox changed while waiting for suspension")
+		}
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
+		return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration >= current.Generation, nil
+	})
+	if err != nil {
+		return fmt.Errorf("k8s: wait for sandbox %q suspension before applying shared-volume change: %w", sb.Name, err)
 	}
 	if err := b.setSandboxOperatingMode(ctx, tenant, sb.Name, sandboxv1beta1.SandboxOperatingModeRunning); err != nil {
 		return fmt.Errorf("k8s: resume sandbox %q to apply shared-volume change: %w", sb.Name, err)
