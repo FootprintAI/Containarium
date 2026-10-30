@@ -242,14 +242,15 @@ type getSystemInfoResponse struct {
 }
 
 type systemInfo struct {
-	IncusVersion         string `json:"incusVersion"`
-	KernelVersion        string `json:"kernelVersion"`
-	OperatingSystem      string `json:"operatingSystem"`
-	TotalContainers      int32  `json:"totalContainers"`
-	RunningContainers    int32  `json:"runningContainers"`
-	TotalCPUCores        int32  `json:"totalCpuCores"`
-	TotalMemoryBytes     int64  `json:"totalMemoryBytes"`
-	AvailableMemoryBytes int64  `json:"availableMemoryBytes"`
+	IncusVersion      string `json:"incusVersion"`
+	KernelVersion     string `json:"kernelVersion"`
+	OperatingSystem   string `json:"operatingSystem"`
+	TotalContainers   int32  `json:"totalContainers"`
+	RunningContainers int32  `json:"runningContainers"`
+	TotalCPUCores     int32  `json:"totalCpuCores"`
+	// grpc-gateway renders proto int64 as a quoted decimal string (#3250).
+	TotalMemoryBytes     int64 `json:"totalMemoryBytes,string"`
+	AvailableMemoryBytes int64 `json:"availableMemoryBytes,string"`
 	// CPU budget (#2284), as grpc-gateway emits SystemInfo: camelCase keys,
 	// the enum by name. Absent on an older daemon → zero values → no budget.
 	TotalCpus             int32   `json:"totalCpus"`
@@ -1006,7 +1007,8 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 // UnscopedTokenReport is the CLI-facing shape of
 // GetUnscopedTokenReport's response (#1679).
 type UnscopedTokenReport struct {
-	UnscopedCallCount int64  `json:"unscopedCallCount"`
+	// grpc-gateway renders proto int64 as a quoted decimal string (#3250).
+	UnscopedCallCount int64  `json:"unscopedCallCount,string"`
 	Since             string `json:"since"`
 	StrictModeEnabled bool   `json:"strictModeEnabled"`
 }
