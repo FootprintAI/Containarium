@@ -47,6 +47,7 @@ type GatewayServer struct {
 	certsDir               string                                          // Optional: for mTLS connection to gRPC server
 	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
 	startupListener        *StartupListener                                // HTTP port bound before the startup waits (#3130); nil = bind in Start
+	readinessCheck         policyreadiness.CheckFunc                       // in-process core Postgres startup readiness (#3044)
 	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
 	alertmanagerBackendURL string                                          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
@@ -938,7 +939,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/internal/alert-relay", gs.handleAlertRelay)
 
 	// Health check endpoint (no auth required)
-	httpMux.HandleFunc("/health", healthHandler)
+	httpMux.HandleFunc("/health", healthHandlerWithReadiness(gs.readinessCheck))
 
 	// Policy-store readiness (#2483): grpc.health.v1 through the gateway.
 	healthConn, err := grpc.NewClient(grpcTarget, opts...)
