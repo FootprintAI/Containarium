@@ -115,7 +115,7 @@ start_daemon() { # <daemon binary> <log>
   # The log is written by this (unprivileged) shell on purpose.
   # shellcheck disable=SC2024
   sudo env CONTAINARIUM_BACKUP_DIR="$backup_dir" CONTAINARIUM_BACKUP_VERIFY_IMAGE="$lane_image" \
-    "$1" daemon --standalone --rest --jwt-secret "$jwt_secret" --postgres "$pg_url" >"$2" 2>&1 &
+    "$1" daemon --standalone --rest --app-hosting --jwt-secret "$jwt_secret" --postgres "$pg_url" >"$2" 2>&1 &
   daemon_pid=$!
   local ready=""
   for _ in $(seq 1 60); do
@@ -123,9 +123,10 @@ start_daemon() { # <daemon binary> <log>
     sleep 5
   done
   [ -n "$ready" ] || { echo "daemon never became ready; log:" >&2; tail -60 "$2" >&2; exit 1; }
-  # The secrets store connects asynchronously after the API is up.
+  # The secrets store is wired by --app-hosting, after the API is up.
   for _ in $(seq 1 30); do
-    if curl -sS -H "Authorization: Bearer $tenant_admin_token" "http://localhost:8080/v1/secrets/$tenant" 2>/dev/null | jq -e 'has("secrets")' >/dev/null 2>&1; then return 0; fi
+    # 200 once the store is wired; 503 (Unavailable) until then or when it never is.
+    if curl --fail -sS -o /dev/null -H "Authorization: Bearer $tenant_admin_token" "http://localhost:8080/v1/secrets/$tenant" 2>/dev/null; then return 0; fi
     sleep 2
   done
   echo "secrets store never became available; log:" >&2; tail -60 "$2" >&2; exit 1
