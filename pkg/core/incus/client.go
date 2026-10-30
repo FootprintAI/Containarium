@@ -187,6 +187,7 @@ type Backend interface {
 	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
+	EnsureToolchainVolume(containerName, root string) error
 	UpdateContainerConfig(name, key, value string) error
 	GetRawInstance(name string) (map[string]string, string, error)
 	ResolveGPUInputToPCI(input string) (string, error)
@@ -433,6 +434,9 @@ func resolveGPUByIndex(input string, idx int, gpus []GPUInfo) (string, error) {
 
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
+	// ManagedToolchainRoot is the installed host toolchain directory, if any.
+	ManagedToolchainRoot string
+
 	Name                   string
 	Image                  string
 	CPU                    string
@@ -1067,6 +1071,9 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	}
 
 	// Create the container
+	if config.ManagedToolchainRoot != "" {
+		req.Devices["toolchains"] = toolchainDevice(config.ManagedToolchainRoot)
+	}
 	op, err := c.server.CreateInstance(req)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)

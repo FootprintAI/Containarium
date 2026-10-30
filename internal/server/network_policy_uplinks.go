@@ -101,15 +101,22 @@ func masterOfIface(iface string) (string, error) {
 // when it is one of them or is the master a managed veth is enslaved to, whether
 // it came from default-route detection or CONTAINARIUM_NETWORK_POLICY_UPLINKS.
 // masterOf is injected so the decision is testable without sysfs. If any managed
-// veth's master cannot be read, err is set and the result must not be used: the
-// carrier set is incomplete, so no candidate can be judged safe.
+// veth's master cannot be read, err is set and trusted is nil: the carrier set
+// is incomplete, so no candidate can be judged safe. refused then lists only the
+// candidates already known to be carriers from the veths examined before the
+// unreadable one (#3251); it is a lower bound, not the full set.
 func refuseVethCarriers(cands []uplinkIface, managedVeths []string, masterOf func(string) (string, error)) (trusted map[int]bool, refused []uplinkIface, err error) {
 	carriers := make(map[string]bool, len(managedVeths)*2)
 	for _, v := range managedVeths {
 		carriers[v] = true
 		m, merr := masterOf(v)
 		if merr != nil {
-			return nil, nil, merr
+			for _, c := range cands {
+				if carriers[c.Name] {
+					refused = append(refused, c)
+				}
+			}
+			return nil, refused, merr
 		}
 		if m != "" {
 			carriers[m] = true

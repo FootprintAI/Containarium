@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.122.0] - 2026-10-29
+
 ### Added
 
 - **`GetBoxRunUserStatus` and `containarium tool-access run-user <username>`: read-only pre-check of the run user's sign-in** (#3274). `GET /v1/containers/{username}/run-user/status` reports the same probe `StartBoxRun` refuses on (`RUN_USER_NOT_SIGNED_IN` / `RUN_USER_SIGN_IN_EXPIRED`), without queueing a run or creating the run user, so a caller can show a box's readiness before a run is refused. The response carries `run_user`, `tool_access_recorded`, `run_user_exists` and `state` (the existing `CodeCredentialSource`: interactive, api-key, none, expired). A box with no recorded level reports `tool_access_recorded: false` and no state; a recorded box whose run user is not created yet reports `none`, which is what its first run would refuse on. The credential's source is named, never a value. Same access as `StartBoxRun` (`ssh:write`, owner or collaborator). A box whose recorded level the daemon cannot enforce gets the same `FAILED_PRECONDITION` as a run, and an unreadable level or failed probe is `UNAVAILABLE`, never reported as "not signed in".
 - **The terminal route takes `as_run_user=true`, opening the sign-in terminal as the unprivileged run user** (part of #3275). `GET /v1/containers/{username}/terminal?as_run_user=true` logs in as the run user (`ctn-run`) instead of the box's login user, so the person completes Anthropic's own `claude auth login` as the user platform runs execute as, without `ssh` and `sudo -iu`. Honoured only when the box has a tool-access level recorded and the run user already exists (created by the box's first platform run); otherwise the request is refused before the upgrade with `409`, and an unreadable level or failed check is `503`, never a silent fallback to the login user. The same bearer, tenant check and origin rule apply, the flag is forwarded to a peer backend, and the daemon still never reads, copies or refreshes a login. Omitted or `false` keeps today's behaviour. Reporting the result afterwards is the read-only run-user status ask (#3274).
+
+- **The `create_backup` MCP tool takes `require_encryption`** (#3214). A thin wrapper over the same `CreateBackupRequest.require_encryption` field as `backup create --require-encryption` (#3169): when true, a backup that would be stored unencrypted is refused with `FAILED_PRECONDITION` before any container is touched. Default false.
 
 ### Fixed
 
@@ -20,11 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A revoke that fails closed on an unreadable account no longer names that account to the caller** (follow-up to #3268, refs #3241). The error returned to an `RemoveSSHKey` or `SetSSHKeys` caller said which account's `authorized_keys` could not be read and why, disclosing another tenant's account name and filesystem state. It now says only that an account's `authorized_keys` could not be read and to check the daemon log, which carries the account and the underlying error. The revoke still fails closed.
 
+- **An unreadable bridge master no longer keeps an already-known carrier bridge trusted** (#3251, security; follow-up to #3212). When a managed veth's bridge master cannot be read, the network-policy pass now also removes an installed `trusted_iif` entry for a bridge that a managed veth read before the unreadable one is enslaved to. Other installed entries are still kept, and nothing new is trusted. `docs/security/NETWORK-ISOLATION-DESIGN.md` states the narrowed fail-open.
+
 ## [0.121.0] - 2026-10-29
 
 ### Added
 
-- **The `create_backup` MCP tool takes `require_encryption`** (#3214). A thin wrapper over the same `CreateBackupRequest.require_encryption` field as `backup create --require-encryption` (#3169): when true, a backup that would be stored unencrypted is refused with `FAILED_PRECONDITION` before any container is touched. Default false.
 - **`RunCrewRequest.model_overrides` and `crew run --model <skill-id>=<model-id>`: a per-run model per crew member, reported in `CrewRun.member_models`** (part of #3259). Precedence: the override, then the skill's own `model`, then `CONTAINARIUM_AGENT_MODEL`, then the engine default. A plain id is required (`INVALID_ARGUMENT`), a member with no named engine is `FAILED_PRECONDITION` (a model only reaches the box with a named engine), a key outside the crew is `INVALID_ARGUMENT`, and `graph` runs refuse it for now. All refused before any member is provisioned. No tier names or ids are enumerated.
 - **`StartBoxRun` takes a per-run `model`, and `BoxRun` reports it** (part of #3259). `StartBoxRunRequest.model` runs the Claude Code engine with `--model <id>`; empty keeps the engine's default exactly as before. The id is opaque (no tiers are enumerated), must be a plain id (`[A-Za-z0-9][A-Za-z0-9._:/[]-]{0,127}`, else `INVALID_ARGUMENT`), and any other engine is `FAILED_PRECONDITION`. `BoxRun.model` (from the run record) names the id the run was started with. Advertised as capability `box_run_model`; check it before sending the field to an older daemon.
 
