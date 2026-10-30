@@ -94,6 +94,8 @@ jobs:
           sudo systemctl start postgresql
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE containarium LOGIN PASSWORD 'lane-only-not-a-credential'"
           sudo -u postgres createdb -O containarium containarium
+          # The daemon writes its secrets master key here and does not create the directory.
+          sudo install -d -m 0700 /etc/containarium
 
       - name: Verify backup status against the published binaries
         env:
