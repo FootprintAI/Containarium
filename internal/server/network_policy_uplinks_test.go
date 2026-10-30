@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -282,5 +283,89 @@ func TestUplinks_UnreadableMasterKnownCarrierViaSysfs(t *testing.T) {
 	u.converge([]uplinkIface{{"br0", 5}}, managedVethNames(cache), masterOfIface, ap, inst)
 	if ap.set[5] || inst[5] {
 		t.Errorf("installed known-carrier bridge stayed trusted: kernel=%v installed=%v", ap.set, inst)
+	}
+}
+
+// #3283: when the unreadable veth sorts first, a later veth's bridge is
+// never identified as a carrier. Its installed trust remains (documented
+// fail-open residue), but the error must not introduce any new trust.
+func TestUplinks_UnreadableMasterKeepsInstalledLaterCarrierBridge(t *testing.T) {
+	var read []string
+	masterOf := func(v string) (string, error) {
+		read = append(read, v)
+		if v == "vethA" {
+			return "", errors.New("EIO")
+		}
+		return "br0", nil
+	}
+	cache := map[string]vethInfo{"later": {veth: "vethB"}, "first": {veth: "vethA"}}
+	u, ap, inst, _ := newUplinkRig()
+	for _, i := range []int{2, 5} { // eth0 (unrelated), br0 (carrier via vethB)
+		inst[i], ap.set[i] = true, true
+	}
+	cands := []uplinkIface{{"eth0", 2}, {"br0", 5}, {"br1", 6}}
+	u.converge(cands, managedVethNames(cache), masterOf, ap, inst)
+	if !ap.set[5] || !inst[5] {
+		t.Errorf("installed later-carrier bridge must be kept: kernel=%v installed=%v", ap.set, inst)
+	}
+	if !ap.set[2] || !inst[2] {
+		t.Errorf("unrelated installed uplink must be kept: kernel=%v installed=%v", ap.set, inst)
+	}
+	if ap.set[6] || inst[6] {
+		t.Errorf("new trust added on error: kernel=%v installed=%v", ap.set, inst)
+	}
+	if !slices.Equal(read, []string{"vethA"}) {
+		t.Errorf("master lookups = %v, want only the first unreadable vethA", read)
+	}
+}
+
+// #3283: on error, refused contains only carriers identified before scanning
+// stopped; it must not be discarded or include bridges from later veths.
+func TestRefuseVethCarriers_UnreadableMasterReturnsPartialRefused(t *testing.T) {
+	tests := []struct {
+		name        string
+		unreadable  string
+		wantRefused []uplinkIface
+		wantRead    []string
+	}{
+		{
+			name:       "first master unreadable",
+			unreadable: "vethA",
+			wantRead:   []string{"vethA"},
+		},
+		{
+			name:        "known carrier before unreadable master",
+			unreadable:  "vethB",
+			wantRefused: []uplinkIface{{"br0", 5}},
+			wantRead:    []string{"vethA", "vethB"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			readErr := errors.New("EIO")
+			var read []string
+			masters := map[string]string{"vethA": "br0", "vethB": "br1", "vethC": "br2"}
+			masterOf := func(v string) (string, error) {
+				read = append(read, v)
+				if v == tt.unreadable {
+					return "", readErr
+				}
+				return masters[v], nil
+			}
+			cands := []uplinkIface{{"eth0", 2}, {"br0", 5}, {"br1", 6}, {"br2", 7}}
+			trusted, refused, err := refuseVethCarriers(cands, []string{"vethA", "vethB", "vethC"}, masterOf)
+			if !errors.Is(err, readErr) {
+				t.Errorf("err = %v, want the master lookup error", err)
+			}
+			if trusted != nil {
+				t.Errorf("trusted = %v, want nil for an incomplete carrier set", trusted)
+			}
+			if !slices.Equal(refused, tt.wantRefused) {
+				t.Errorf("refused = %v, want %v", refused, tt.wantRefused)
+			}
+			if !slices.Equal(read, tt.wantRead) {
+				t.Errorf("master lookups = %v, want %v", read, tt.wantRead)
+			}
+		})
 	}
 }

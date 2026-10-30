@@ -639,7 +639,7 @@ func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSo
 	}
 
 	backupAge, err := meter.Float64ObservableGauge(MetricBackupLastSuccessAgeSeconds,
-		metric.WithUnit("s"), metric.WithDescription("Seconds since each tenant's most recent successful backup. Absence from the series means no stored backup exists for that tenant at all, not freshness."))
+		metric.WithUnit("s"), metric.WithDescription("Seconds since each tenant's most recent successful backup. Absence from the series means no stored backup exists for that tenant at all, or the tenant has no container on this host (moved or deleted); it never means fresh."))
 	if err != nil {
 		return err
 	}
