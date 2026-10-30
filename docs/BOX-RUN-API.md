@@ -115,3 +115,46 @@ token to `~/.containarium/credentials.json` in the box, where the agent can read
 it and call the API as you. A login token does not carry `code:answer`, so it
 cannot answer permission requests, but it can still do everything else your
 account can.
+
+## Per-run checkouts: the sweep and `--run-checkout-max-age`
+
+A platform-started run clones into a directory of its own directly under a box
+user's `~/work`, named `<repo>-run-<8 hex>`. The run cannot remove it (`rm` is not
+among the commands an unattended run may use), so the daemon removes stale ones
+(#3296). It sweeps every running box that has had a platform-started run (a
+recorded tool-access level or a run record) every hour, sweeps a box after
+`StopBoxRun` ends a run on it, and skips stopped boxes.
+
+In the box owner's and the run user's `~/work`, it removes an entry only when all
+of these hold:
+
+- its name matches `^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$`. Nothing else is touched or
+  listed. Your own checkout, `~/work/<repo>`, is never considered;
+- it is a real directory. A symlink is never followed or removed, and neither is
+  a `~/work` that is a symlink or lies under one;
+- its newest modification (the directory or anything in it) is older than the
+  daemon's `--run-checkout-max-age`;
+- no process on the box has its working directory in it;
+- it is not a live run's: not named by a running run's record as its working
+  directory, and not modified at or after the start of a run that is still going.
+
+Every one of these is checked again in the box right before the directory is
+removed, and the removal (`rm -rf --one-file-system`) never follows a symlink or
+crosses into another filesystem. Each removal is logged at info level with the
+directory's name and size.
+
+| Daemon flag | Default | Meaning |
+|---|---|---|
+| `--run-checkout-max-age` | `168h` (7 days) | How old a per-run checkout's newest modification must be before it is removed. `0` turns the sweep off, including `SweepBoxRunCheckouts`. |
+
+Run the sweep once on one box, or see what it would remove:
+
+```bash
+containarium code sweep-checkouts <box> --dry-run --server <daemon>   # list exactly what would be removed
+containarium code sweep-checkouts <box> --server <daemon>             # remove it
+containarium code sweep-checkouts <box> --dry-run --all --server <daemon>  # also list what is kept, and why
+```
+
+The API is `SweepBoxRunCheckouts` (`POST /v1/containers/{username}/code-run-checkouts:sweep`,
+body `{"dry_run": true}`), with the same access as `StopBoxRun` (`ssh:write`, box
+owner or collaborator).
