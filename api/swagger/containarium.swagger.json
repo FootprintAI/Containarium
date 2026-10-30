@@ -3517,6 +3517,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-run-checkouts:sweep": {
+      "post": {
+        "summary": "Sweep a box's stale per-run checkouts",
+        "description": "Removes stale per-run checkout directories of platform-started runs: entries directly under the box owner's and the run user's ~/work whose name matches ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$, that are directories (symlinks are never followed or removed), whose newest modification is older than the daemon's --run-checkout-max-age, that no process has as its working directory, and that are not a live run's. Nothing else is touched. dry_run=true lists exactly the set a real sweep would remove and removes nothing. Only a box that has had a platform-started run (a recorded tool-access level or a run record) is swept. A stopped box is FAILED_PRECONDITION, as is a daemon with the sweep turned off (max age 0). Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_SweepBoxRunCheckouts",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SweepBoxRunCheckoutsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SweepBoxRunCheckoutsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/code-runs": {
       "get": {
         "summary": "List a box's code runs",
@@ -11885,6 +11926,50 @@
         }
       },
       "description": "BoxRun is one current run record on a box."
+    },
+    "BoxRunCheckout": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "The box OS user whose ~/work holds it: the box's owner, or the\nunprivileged run user platform runs execute as."
+        },
+        "name": {
+          "type": "string",
+          "description": "The entry's name directly under that user's ~/work."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Disk usage in bytes (du, one filesystem). 0 for a symlink or non-directory."
+        },
+        "newestModification": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The newest modification time of the directory or anything in it. Unset\nwhen it could not be read, or for a symlink or non-directory."
+        },
+        "disposition": {
+          "$ref": "#/definitions/BoxRunCheckoutDisposition"
+        }
+      },
+      "description": "BoxRunCheckout is one matching entry directly under a box user's ~/work."
+    },
+    "BoxRunCheckoutDisposition": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_REMOVED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED"
+      ],
+      "default": "BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED",
+      "description": "BoxRunCheckoutDisposition is what a sweep did, or would do, with one\nmatching entry.\n\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVED: Removed by this sweep.\n - BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE: A dry run: a real sweep at this moment would remove it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT: Its newest modification is within the daemon's maximum age (or could not\nbe read).\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN: It may be a live run's working directory: modified at or after the start\nof a run on the box that is still going, or named as a live run's cwd.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE: A process on the box has its working directory in it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK: A symbolic link; links are never followed or removed.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY: Not a directory.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED: Chosen for removal, but at removal time it no longer qualified (it was\nreplaced, modified, or a process entered it); left alone.\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED: Chosen for removal, but removing it failed (for example a mount inside\nit); whatever is left stays."
     },
     "BoxRunOutcome": {
       "type": "string",
@@ -22266,6 +22351,37 @@
       "properties": {
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "SweepBoxRunCheckoutsBody": {
+      "type": "object",
+      "properties": {
+        "dryRun": {
+          "type": "boolean",
+          "description": "List what a real sweep would remove (WOULD_REMOVE) and remove nothing."
+        }
+      },
+      "description": "SweepBoxRunCheckoutsRequest runs the per-run checkout sweep once on one box."
+    },
+    "SweepBoxRunCheckoutsResponse": {
+      "type": "object",
+      "properties": {
+        "platformRuns": {
+          "type": "boolean",
+          "description": "Whether the box has had a platform-started run (a recorded tool-access\nlevel or a run record). A box without one is never swept, so checkouts\nis empty."
+        },
+        "maxAge": {
+          "type": "string",
+          "title": "The daemon's maximum age"
+        },
+        "checkouts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxRunCheckout"
+          },
+          "description": "Every matching entry, with what the sweep did or would do with it. The\nREMOVED (or, on a dry run, WOULD_REMOVE) entries are exactly the removal\nset."
         }
       }
     },

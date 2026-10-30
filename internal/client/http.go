@@ -1565,6 +1565,36 @@ func (c *HTTPClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStat
 	return out, nil
 }
 
+// SweepBoxRunCheckouts is the REST form of GRPCClient.SweepBoxRunCheckouts
+// (#3296). A 404 (a daemon too old to expose the route) maps to
+// codes.Unimplemented, as on the gRPC transport.
+func (c *HTTPClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (*pb.SweepBoxRunCheckoutsResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sweepBoxRunCheckoutsTimeout)
+	defer cancel()
+	path := fmt.Sprintf("/v1/containers/%s/code-run-checkouts:sweep", url.PathEscape(req.GetUsername()))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("sweep box run checkouts: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound && !bytes.Contains(bodyBytes, []byte(`"code"`)) {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SweepBoxRunCheckouts (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "sweep box run checkouts")
+	}
+	out := &pb.SweepBoxRunCheckoutsResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // TailBoxRunLog reads one window of a box run's log via HTTP (#2123).
 func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

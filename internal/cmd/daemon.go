@@ -46,6 +46,7 @@ var (
 	daemonPort             int
 	daemonHTTPPort         int
 	runJournalRetention    time.Duration
+	runCheckoutMaxAge      time.Duration
 	sshAuthzMaxKeyAge      time.Duration
 	sshAuthzKeysCommand    bool
 	enableMTLS             bool
@@ -161,6 +162,8 @@ func init() {
 	daemonCmd.Flags().IntVar(&daemonHTTPPort, "http-port", 8080, "HTTP/REST port to listen on")
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
+	daemonCmd.Flags().DurationVar(&runCheckoutMaxAge, "run-checkout-max-age", server.DefaultRunCheckoutMaxAge,
+		"How old a platform run's per-run checkout (~/work/<repo>-run-<8 hex> of a box user) must be, by its newest modification, before the daemon's hourly sweep removes it. 0 turns the sweep off (#3296)")
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
 	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
 		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
@@ -705,6 +708,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ZFSTenantRoot:          zfsTenantRoot,
 		ZFSKeysDir:             zfsKeysDir,
 		RunJournalRetention:    runJournalRetention,
+		RunCheckoutMaxAge:      runCheckoutMaxAge,
 		SSHAuthzMaxKeyAge:      sshAuthzMaxKeyAge,
 		SSHAuthzKeysCommand:    sshAuthzKeysCommand,
 	}

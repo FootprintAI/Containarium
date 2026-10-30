@@ -149,6 +149,11 @@ type DualServerConfig struct {
 	// RunJournalRetention is how long a run's journal stays on a member box
 	// before the reaper removes it (#2096). Zero = DefaultRunJournalRetention.
 	RunJournalRetention time.Duration
+	// RunCheckoutMaxAge is how old a platform run's per-run checkout under a
+	// box user's ~/work must be before the daemon's sweep removes it (#3296).
+	// Zero turns the sweep off (the daemon flag defaults to
+	// DefaultRunCheckoutMaxAge).
+	RunCheckoutMaxAge time.Duration
 	// SSHAuthzMaxKeyAge is the self-host SSH authorization decider's maximum
 	// key age (#2517): a key registered at least this long ago is refused
 	// with KEY_EXPIRED. Zero = no limit.
@@ -674,6 +679,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	agentSkillServer.SetPlatformMCPPort(config.HTTPPort)
 	agentSkillServer.SetRunJournalRetention(config.RunJournalRetention)
 	containerServer.SetRunRegistry(runRegistry)
+	containerServer.SetRunCheckoutMaxAge(config.RunCheckoutMaxAge)
 
 	// #1922 — one shared ClaimLocks so concurrent ClaimTrackerIssue calls
 	// for the same (username, connection, issue) serialize within this
@@ -3439,6 +3445,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
+	if ds.containerServer != nil {
+		ds.containerServer.StartRunCheckoutSweeper(ctx)
 	}
 	if ds.retentionReporter != nil {
 		go ds.retentionReporter.Run(ctx, retentionSweepInterval)

@@ -582,6 +582,23 @@ service ContainerService {
     };
   }
 
+  // SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+  // (#3296): removes directories directly under the owner's and the run
+  // user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+  // maximum age, not in use and not a live run's. dry_run lists the same set
+  // and removes nothing. Same access as StopBoxRun.
+  rpc SweepBoxRunCheckouts(SweepBoxRunCheckoutsRequest) returns (SweepBoxRunCheckoutsResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-run-checkouts:sweep"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Sweep a box's stale per-run checkouts";
+      description: "Removes stale per-run checkout directories of platform-started runs: entries directly under the box owner's and the run user's ~/work whose name matches ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$, that are directories (symlinks are never followed or removed), whose newest modification is older than the daemon's --run-checkout-max-age, that no process has as its working directory, and that are not a live run's. Nothing else is touched. dry_run=true lists exactly the set a real sweep would remove and removes nothing. Only a box that has had a platform-started run (a recorded tool-access level or a run record) is swept. A stopped box is FAILED_PRECONDITION, as is a daemon with the sweep turned off (max age 0). Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // GetRunApprovalKey returns the public key a box's permission-request
   // answers are signed with (#2184). `code run --approvals ask` hands it to
   // the box. Same access as StartBoxRun.
