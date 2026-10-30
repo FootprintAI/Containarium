@@ -7,8 +7,8 @@ import (
 
 // grpc-gateway renders proto int64 fields as quoted decimal strings, so a
 // plain int64 field fails the whole response decode and `containarium info`
-// prints an error instead of the host's data (#3250). The recorded wire body
-// below is what the gateway emits for SystemInfo.
+// prints an error instead of the host's data (#3250). The body below uses the
+// wire struct's key names and the gateway's quoted-int64 encoding.
 func TestGetSystemInfoDecodesQuotedInt64(t *testing.T) {
 	body := `{"info":{
 		"incusVersion":"6.0.2","kernelVersion":"6.8.0","operatingSystem":"Ubuntu 24.04",
