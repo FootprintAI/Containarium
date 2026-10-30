@@ -831,8 +831,11 @@ See [`terraform/gce/README.md`](terraform/gce/README.md) for variables.
 
 ### System requirements
 
-- **Host OS**: Ubuntu 24.04 LTS or later (containers can be any
-  supported OS).
+- **Host OS**: Ubuntu 24.04 LTS or later, or Debian 13 (trixie)
+  (containers can be any supported OS). Debian 13 has been verified
+  with the installer; Debian 12 is accepted but untested. The ZFS
+  kernel module is optional on Debian, where the cloud kernel does not
+  ship it; disk quotas then need another storage backend.
 - **Incus 6.19+** required for Docker-in-LXC support. Ubuntu 24.04's
   default repos ship 6.0.0 which has an AppArmor bug
   ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881));
