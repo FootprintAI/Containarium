@@ -107,17 +107,10 @@ func hasScope(scopes []string, want string) bool {
 // is satisfied by the JWT's granted scopes. Wraps
 // auth.HasScope so the policy lives in one place.
 func toolAllowed(grantedScopes []string, tool *Tool) bool {
-	if auth.HasScope(grantedScopes, tool.RequiredScope) {
-		return true
-	}
-	return tool.AlternateScope != "" && auth.HasScope(grantedScopes, tool.AlternateScope)
+	return auth.HasScope(grantedScopes, tool.RequiredScope)
 }
 
-// requiredScopeText renders the scope(s) that satisfy a tool for a denial
-// message: the required scope, plus the alternate when the tool has one.
+// requiredScopeText renders the scope that satisfies a tool for a denial message.
 func requiredScopeText(tool *Tool) string {
-	if tool.AlternateScope == "" {
-		return fmt.Sprintf("%q", tool.RequiredScope)
-	}
-	return fmt.Sprintf("%q or %q", tool.AlternateScope, tool.RequiredScope)
+	return fmt.Sprintf("%q", tool.RequiredScope)
 }
