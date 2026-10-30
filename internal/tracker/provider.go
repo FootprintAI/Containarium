@@ -45,11 +45,9 @@ type Change struct {
 	State     pb.TrackerIssueState
 	CIVerdict pb.TrackerCiVerdict
 	URL       string
-	// Branch is the daemon-chosen branch the change's head points at
-	// (#1923). Populated by OpenChange (echoing the HeadBranch the
-	// caller told it to use — the provider's response never needs to
-	// be consulted for this); empty from GetChange, which has no
-	// reason to resolve it for an already-open change.
+	// Branch is the branch the change's head points at (#1923). OpenChange
+	// echoes the HeadBranch the caller told it to use; GetChange and
+	// FindOpenChange report the provider's head/source branch (#3288).
 	Branch string
 }
 
@@ -148,4 +146,11 @@ type Provider interface {
 	// change must target whatever branch the project actually treats as
 	// default, not a hardcoded assumption.
 	DefaultBranch(ctx context.Context, c Conn) (string, error)
+	// FindOpenChange returns the open change request whose head is
+	// headBranch in the connection's own project (never a fork's
+	// same-named branch), and whether one exists (#3288).
+	// SubmitTrackerChangeFiles reuses it instead of opening a second
+	// change for a branch that already has one. Its CIVerdict is NONE,
+	// as from OpenChange: the caller has just pushed a new head commit.
+	FindOpenChange(ctx context.Context, c Conn, headBranch string) (Change, bool, error)
 }

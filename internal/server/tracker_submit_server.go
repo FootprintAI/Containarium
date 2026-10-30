@@ -150,6 +150,9 @@ type submitChangeAuditDetail struct {
 	Branch      string `json:"branch"`
 	ChangeURL   string `json:"change_url,omitempty"`
 	ChangeState string `json:"change_state,omitempty"`
+	// ReusedChange: SubmitTrackerChangeFiles pushed onto a head branch
+	// that already had an open change and returned it (#3288).
+	ReusedChange bool `json:"reused_change,omitempty"`
 }
 
 // SubmitTrackerChange bundles the calling run's committed workspace out

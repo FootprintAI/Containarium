@@ -9060,7 +9060,7 @@
     "/v1/tracker/connections/{username}/{connection}/changes:files": {
       "post": {
         "summary": "Submit a tracker change request from files",
-        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
+        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. When head_branch already exists, the commit is built on its tip and pushed as a fast-forward (ABORTED if the tip moved meanwhile; never forced); when head_branch already has an open change request, that change is returned instead of opening another. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
         "operationId": "TrackerService_SubmitTrackerChangeFiles",
         "responses": {
           "200": {
@@ -22206,7 +22206,7 @@
         },
         "headBranch": {
           "type": "string",
-          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Never force-pushed; must differ from base_ref."
+          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Must differ from base_ref. If it already exists on\nthe remote, the commit is added on top of its tip (files identical\nto the tip's add nothing). Never force-pushed: if the tip moves\nbetween fetch and push, the call fails with ABORTED and the remote\nis left as is. If it has an open change request, that change is\nreturned and its title, description and draft state are left alone;\nif its earlier change was merged or closed, a new one is opened."
         },
         "files": {
           "type": "array",
@@ -22217,7 +22217,7 @@
           "description": "files is the change: at least one, each path distinct."
         }
       },
-      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
+      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nWhen head_branch already exists on the remote, the commit is built on\nits tip instead and pushed as a fast-forward; when head_branch already\nhas an open change request, that change is returned rather than a\nsecond one opened (#3288).\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
     },
     "SubmitTrackerChangeFilesResponse": {
       "type": "object",
@@ -22864,7 +22864,7 @@
         },
         "branch": {
           "type": "string",
-          "description": "branch is the daemon-chosen branch the change request's head points\nat (#1923). Populated by SubmitTrackerChange's response; empty on\nGetTrackerChange, which has no reason to resolve it for an\nalready-open change."
+          "description": "branch is the branch the change request's head points at: the\ndaemon-chosen or requested branch in a SubmitTrackerChange /\nSubmitTrackerChangeFiles response (#1923), and the provider's head /\nsource branch on GetTrackerChange (#3288)."
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
