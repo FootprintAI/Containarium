@@ -380,11 +380,38 @@ backups for that tenant in the first place); `conditionAbsent` below
 cannot distinguish the two, which is exactly why it is scoped to tenants
 you already expect a schedule for, not "alert if any tenant is missing."
 
+### A tenant that moved or was deleted (#3234)
+
+The daemon exports one point per tenant in its on-disk backup index, but
+only for a tenant that still has a container on this host. When a tenant
+is moved to another host or deleted, its container leaves, and that
+host stops exporting the tenant's series on the next export interval.
+The stored backup files and their index entries are not touched.
+
+This changes what **absent** means: a missing tenant point is either "no
+stored backup exists" or "this tenant is not expected on this host". It
+never means fresh. If the container list cannot be read on a tick, no
+tenant is dropped that tick. A tenant whose container exists but whose
+backups silently broke keeps a growing age, which is what the alert is
+for.
+
+A daemon older than this change keeps exporting a growing "ghost" series
+for a moved or deleted tenant, so a policy filtered only on `username`
+pages for a tenant whose backups are healthy on its new host, and the
+incident stays open while the ghost series matches. Until every host runs
+this change, and after any move:
+
+- scope each tenant's policy by `backend_id` as well as `username`, and
+  name the **new** backend after a move; or
+- keep the policy fleet-wide and exclude the old host with
+  `AND metric.label.backend_id != "<old-backend-id>"`, the same shape as
+  the decommissioned-backend scoping above.
+
 ### Create the alert policy
 
 One policy per tenant you want paged on (the filter below adds
 `metric.label.username`). Replace `${PROJECT_ID}`, `${CHANNEL_ID}`, and
-`${USERNAME}` — and `${THRESHOLD_SECONDS}`, sized to your schedule's
+`${USERNAME}`, `${BACKEND_ID}` (the backend that serves the tenant now) — and `${THRESHOLD_SECONDS}`, sized to your schedule's
 interval plus slack (e.g. a nightly 02:30 timer with 15-minute jitter:
 `90000` ≈ 25h, generous enough that one slow run never pages, tight
 enough that a truly skipped night does by the next morning):
@@ -401,7 +428,7 @@ enough that a truly skipped night does by the next morning):
     {
       "displayName": "Backup age over threshold for ${USERNAME}",
       "conditionThreshold": {
-        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge\" AND metric.label.username = \"${USERNAME}\"",
+        "filter": "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/containarium.backup.last_success_age_seconds/gauge\" AND metric.label.username = \"${USERNAME}\" AND metric.label.backend_id = \"${BACKEND_ID}\"",
         "comparison": "COMPARISON_GT",
         "thresholdValue": ${THRESHOLD_SECONDS},
         "duration": "0s",

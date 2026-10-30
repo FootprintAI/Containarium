@@ -166,7 +166,8 @@ type ContainerServer struct {
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
 	// owner's identity. Tests set it; production reads the Incus config.
-	boxRunToolAccess func(ctx context.Context, username string) (string, error)
+	boxRunToolAccess      func(ctx context.Context, username string) (string, error)
+	boxRunEnsureToolchain func(username string) error // test seam; production uses manager
 	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
 	// check through record write) per (box, name) (#2260 review: concurrent
 	// calls for the same not-yet-existing name could both pass the collision

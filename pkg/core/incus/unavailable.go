@@ -43,7 +43,8 @@ func (*UnavailableBackend) ListContainers() ([]ContainerInfo, error)    { return
 func (*UnavailableBackend) WaitForNetwork(string, time.Duration) (string, error) {
 	return "", ErrUnavailable
 }
-func (*UnavailableBackend) Exec(string, []string) error { return ErrUnavailable }
+func (*UnavailableBackend) Exec(string, []string) error                { return ErrUnavailable }
+func (*UnavailableBackend) EnsureToolchainVolume(string, string) error { return ErrUnavailable }
 func (*UnavailableBackend) ExecWithOutput(string, []string) (string, string, error) {
 	return "", "", ErrUnavailable
 }
