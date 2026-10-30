@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -53,15 +54,72 @@ func (r *recordingRegistry) Revoke(_ context.Context, rec sshauthz.KeyRecord, at
 
 func newTestPubKey(t *testing.T) string {
 	t.Helper()
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+	return newTestPubKeyFrom(t, func() ed25519.PublicKey {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pub
+	})
+}
+
+// newTestPubKeyFrom draws public keys from next until one passes the
+// production validator. A random base64 body can contain a placeholder marker
+// (e.g. "todo") and be rejected by SetSSHKeys, so such draws are discarded.
+// It asks the validator rather than keeping its own marker list.
+func newTestPubKeyFrom(t *testing.T, next func() ed25519.PublicKey) string {
+	t.Helper()
+	for i := 0; i < 1000; i++ {
+		line := testPubKeyLine(t, next())
+		if container.ValidateSSHPublicKey(line) == nil {
+			return line
+		}
 	}
+	t.Fatal("newTestPubKeyFrom: no validator-clean key after 1000 draws")
+	return ""
+}
+
+func testPubKeyLine(t *testing.T, pub ed25519.PublicKey) string {
+	t.Helper()
 	pk, err := ssh.NewPublicKey(pub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))
+}
+
+// A draw whose encoding contains a placeholder marker must be regenerated.
+func TestNewTestPubKey_RegeneratesPlaceholderMarkerDraw(t *testing.T) {
+	// The wire blob has a 19-byte header (len+"ssh-ed25519"+len), so key
+	// byte 2 starts a base64 group (offset 21 = 7*3). Put the 3 bytes that
+	// encode "todo" there.
+	marker, err := base64.StdEncoding.DecodeString("todo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(bad[2:], marker)
+	if container.ValidateSSHPublicKey(testPubKeyLine(t, bad)) == nil {
+		t.Fatal("precondition: forced key should be rejected by the validator")
+	}
+	good, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draws := 0
+	got := newTestPubKeyFrom(t, func() ed25519.PublicKey {
+		draws++
+		if draws == 1 {
+			return bad
+		}
+		return good
+	})
+	if draws < 2 {
+		t.Fatalf("placeholder-marker draw was returned without regeneration (draws=%d)", draws)
+	}
+	if err := container.ValidateSSHPublicKey(got); err != nil {
+		t.Fatalf("newTestPubKeyFrom returned a key the validator rejects: %v", err)
+	}
 }
 
 // fakeAuthorizedKeys replaces the host-side authorized_keys file operations.
