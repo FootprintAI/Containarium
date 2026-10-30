@@ -51,6 +51,10 @@ enum CodeModelTrafficScanning {
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY = 2;
   // The tenant's own key: traffic does not cross the gateway.
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY = 3;
+  // Gateway credential and no admin policy was ever set: responses get the
+  // built-in baseline scan (#2736). Whether it only logs or also blocks is
+  // set by the baseline mode (#2738; see `guardrail status`).
+  CODE_MODEL_TRAFFIC_SCANNING_BASELINE = 4;
 }
 
 // GuardrailAction is what the policy does with a finding of a given kind.
@@ -218,6 +222,31 @@ message GuardrailTrustedSigner {
   string label = 3;
 }
 
+// GuardrailRevokedKey is a signing key an admin revoked (#2729;
+// docs/architecture/guardrail-inbound-and-server-policy.md, "Signer rotation
+// and revocation"). Every attestation the key signed fails verification,
+// whatever its attested_at: the signer sets that timestamp, so whoever stole
+// the key could backdate it. Revocation is permanent: a Set that drops or
+// changes a stored entry is refused.
+message GuardrailRevokedKey {
+  // SHA-256 of the revoked Ed25519 public key, hex (as GuardrailTrustedSigner.key_id).
+  string key_id = 1;
+  // Server-assigned by the Set that adds the entry; a value in the request is
+  // ignored.
+  google.protobuf.Timestamp revoked_at = 2;
+  // Required. Reviewer-readable, no personal data. Named by every refused verify.
+  string reason = 3;
+}
+
+// GuardrailTrustBundle is the trust a verifier needs without a server: the
+// trusted signers and the revoked keys. `guardrail verify --trust-bundle`
+// reads it as protojson. A key in `revoked` is refused even if it is also
+// listed in `signers`.
+message GuardrailTrustBundle {
+  repeated GuardrailTrustedSigner signers = 1;
+  repeated GuardrailRevokedKey revoked = 2;
+}
+
 // ServerGuardrailPolicy is the stored policy plus the server's bookkeeping.
 message ServerGuardrailPolicy {
   // The rules. GuardrailAttestation.policy_hash covers THIS message only, so
@@ -229,6 +258,9 @@ message ServerGuardrailPolicy {
   google.protobuf.Timestamp updated_at = 4;
   // Authenticated subject that made the last Set.
   string updated_by = 5;
+  // Revoked signing keys (#2729). Outside `policy`, so revoking a key leaves
+  // policy_hash unchanged. Never shrinks.
+  repeated GuardrailRevokedKey revoked_signers = 6;
 }
 
 message GetGuardrailPolicyRequest {}
@@ -248,6 +280,13 @@ message SetGuardrailPolicyRequest {
   // Required. An empty rule list is a valid policy (it clears every rule).
   GuardrailPolicy policy = 1;
   repeated GuardrailTrustedSigner trusted_signers = 2;
+  // Must keep every stored revoked key (same key_id and reason), or the Set
+  // is FAILED_PRECONDITION. No trusted signer may be revoked.
+  repeated GuardrailRevokedKey revoked_signers = 3;
+  // When set, the Set applies only if the stored revision equals it (0 = not
+  // configured); otherwise ABORTED and nothing changes. A read-edit-write
+  // sets it so a concurrent Set cannot be overwritten silently.
+  optional int64 expected_revision = 4;
 }
 
 message SetGuardrailPolicyResponse {
@@ -256,10 +295,87 @@ message SetGuardrailPolicyResponse {
   string policy_hash = 2;
 }
 
+// GuardrailEffectivePolicy is what actually scans model responses on this
+// daemon, derived from the stored server policy (#2737, slice B of #2575).
+enum GuardrailEffectivePolicy {
+  GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED = 0;
+  // A policy is configured but has no inbound BLOCK rule (it is empty or
+  // has outbound rules only): model responses are not scanned.
+  GUARDRAIL_EFFECTIVE_POLICY_NONE = 1;
+  // No policy was ever set: responses are scanned against the built-in
+  // baseline rules (private keys, cloud keys), log-only (#2736).
+  GUARDRAIL_EFFECTIVE_POLICY_BASELINE = 2;
+  // The admin policy has at least one inbound BLOCK rule: it decides what
+  // is scanned and blocked, and the baseline is off.
+  GUARDRAIL_EFFECTIVE_POLICY_ADMIN = 3;
+}
+
+message GetGuardrailStatusRequest {}
+
+message GetGuardrailStatusResponse {
+  GuardrailEffectivePolicy response_policy = 1;
+  // Revision of the stored policy; 0 when none is configured.
+  int64 policy_revision = 2;
+  // The inbound kinds the admin policy blocks, in rule order. Set only
+  // when response_policy is ADMIN.
+  repeated GuardrailKind inbound_block_kinds = 3;
+  // Stable ids of the baseline rules in force, e.g.
+  // "baseline.pem_private_key". Set only when response_policy is BASELINE.
+  repeated string baseline_rule_ids = 4;
+  // The stored baseline mode (#2738), always reported. It applies only while
+  // response_policy is BASELINE; under NONE or ADMIN it is kept but unused.
+  GuardrailBaselineSetting baseline = 5;
+}
+
+// GuardrailBaselineMode is what the baseline does with a detection (#2738,
+// slice C of #2575). A per-daemon setting, separate from the server policy:
+// storing it never marks a policy as configured.
+enum GuardrailBaselineMode {
+  GUARDRAIL_BASELINE_MODE_UNSPECIFIED = 0;
+  // Default. The response streams to the client unchanged and is scanned at
+  // its end; a detection is logged and audited, never blocked.
+  GUARDRAIL_BASELINE_MODE_LOG = 1;
+  // The response is held, scanned with the baseline rules and blocked on a
+  // match, with the admin policy's hold-and-block semantics (a stream is held
+  // to its end; over the hold limit, or a compressed body, is blocked).
+  GUARDRAIL_BASELINE_MODE_BLOCK = 2;
+}
+
+// GuardrailBaselineSetting is the stored baseline mode plus its bookkeeping.
+message GuardrailBaselineSetting {
+  GuardrailBaselineMode mode = 1;
+  // Server-assigned: every successful set increments it by one. 0 means the
+  // mode was never set and is the default, LOG.
+  int64 revision = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  // Authenticated subject that made the last set.
+  string updated_by = 4;
+}
+
+message SetGuardrailBaselineModeRequest {
+  // Required: LOG or BLOCK.
+  GuardrailBaselineMode mode = 1;
+}
+
+message SetGuardrailBaselineModeResponse {
+  // The stored setting, with its new revision.
+  GuardrailBaselineSetting baseline = 1;
+}
+
 // GuardrailPolicyService is the daemon's store for the server-side policy.
-// Get: any authenticated caller (a data owner needs the policy to run
-// `guardrail apply` against it). Set: admin role only, audited.
+// Get and GetStatus: any authenticated caller (a data owner needs the policy
+// to run `guardrail apply` against it). Set: admin role only, audited.
 service GuardrailPolicyService {
+  rpc GetGuardrailStatus(GetGuardrailStatusRequest) returns (GetGuardrailStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/guardrail/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the effective response guardrail policy";
+      description: "Report what scans model responses: NONE (a policy is configured with no inbound BLOCK rule), BASELINE (no policy was ever set; built-in rules, log-only) or ADMIN (the policy has an inbound BLOCK rule). A store read error is an error, never NONE or BASELINE. Any authenticated caller.";
+      tags: "Guardrail";
+    };
+  }
   rpc GetGuardrailPolicy(GetGuardrailPolicyRequest) returns (GetGuardrailPolicyResponse) {
     option (google.api.http) = {
       get: "/v1/guardrail/policy"
@@ -277,7 +393,18 @@ service GuardrailPolicyService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set the server guardrail policy";
-      description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.";
+      description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.";
+      tags: "Guardrail";
+    };
+  }
+  rpc SetGuardrailBaselineMode(SetGuardrailBaselineModeRequest) returns (SetGuardrailBaselineModeResponse) {
+    option (google.api.http) = {
+      put: "/v1/guardrail/baseline"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the baseline response scan mode";
+      description: "Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.";
       tags: "Guardrail";
     };
   }

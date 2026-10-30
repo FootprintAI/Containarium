@@ -30,9 +30,11 @@ that matters.
    commit of
    [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills)
    (it has no tags). Ask "bump the skills pin?" at every cut: if the
-   answer is yes, set `ref` to the new full commit SHA and run
-   `scripts/build-sdlc-skills-bundle.sh --update-lock bin/` to refresh the
-   `sha256`. The release build and the `sdlc-skills-lock` check both
+   answer is yes, set the `[sdlc]` section's `ref` to the new full commit SHA
+   and run `scripts/build-sdlc-skills-bundle.sh --update-lock sdlc bin/` to
+   refresh its `sha256`. For another source section, replace `sdlc` with that
+   source id; the output is `<source>-skills.tar.gz`. The release build and the
+   `sdlc-skills-lock` check both
    rebuild the tarball from the pin and fail on a digest mismatch, so
    forgetting the digest cannot ship.
 
@@ -40,6 +42,18 @@ That's it — two files (three when the skills pin moves), one commit, conventio
 `chore(release): cut vX.Y.Z — <one-line summary>` (see recent history on
 `main` for the pattern). PR it, get CI green, merge like any other
 change.
+
+**The release PR's CI takes about two minutes, not the full suite.** When a
+PR into `main` changes only `CHANGELOG.md` and the `Version` constant, and
+the `main` commit it sits on already passed each workflow on its own push,
+the heavy jobs (unit + e2e, the CLI build/test gates, golangci-lint) skip.
+gosec uploads the base commit's stored analysis instead of rescanning. A
+skipped job reports as passing, so the PR stays mergeable. The detector is
+`.github/actions/release-only-diff` and `scripts/ci/release-only-diff.sh`.
+Anything else in the diff, including a skills-pin bump, means a full run. So
+does a base whose `main` run is still in progress or failed. If you see the
+full suite on a release PR, that's why: wait for `main` to go green, or let
+it run.
 
 **Not required:** `web-ui/package.json`'s `version` field is versioned
 independently of the daemon and does not need to track the release tag.
@@ -77,9 +91,45 @@ anyway; it's the only thing a non-release build has to go on.
    Pushing the tag is the point of no return for all of them.
 5. **Verify every one of them actually built and published** — don't
    treat a pushed tag as done. Check the Release page has all expected
-   artifacts and `SHA256SUMS.txt`, that `containarium version` on a
+   artifacts and `SHA256SUMS.txt`, that `SHA256SUMS.txt` lists every
+   asset except the `.sha256` sidecars, itself, the `.sigstore.json`
+   signatures and the air-gapped `containarium-bundle-*` tarball (that
+   one is covered by its sidecar only), that `containarium version` on a
    freshly downloaded binary reports the new tag, and that the image
-   and PyPI publishes succeeded.
+   and PyPI publishes succeeded. For the Helm chart, check that
+   `containarium-k8s-<version>.tgz` and its `.sha256` are on the Release
+   page (`sha256sum -c` passes), that the sums verify the downloads:
+   `gh release download <tag> --pattern SHA256SUMS.txt --pattern
+   'containarium-k8s-*.tgz' --pattern agent-runtime-bundle.tar.gz &&
+   sha256sum -c --ignore-missing SHA256SUMS.txt`, that
+   `helm pull oci://ghcr.io/<org>/charts/containarium-k8s --version <version>`
+   succeeds, and that the pulled chart is stamped `version: <version>` and
+   `appVersion: v<version>`. Check that the `sign-release`,
+   `sign-bundle` and `verify-release` jobs ran (the first signs all but
+   the air-gapped bundle and does not wait for it), and that every file on the Release has a `<file>.sigstore.json`
+   (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
+   documented `cosign verify-blob` command. Check that each image job's
+   `Sign and verify the image` step passed and verify one image by digest
+   with the documented `cosign verify` command. These signing steps and the SBOM
+   attachment run only on a real tag, so the first release after they
+   landed is their first run: expect to look.
+   **The release gate is the `verify-release` job, not `sign-release`.**
+   `sign-release` finishes before the air-gapped bundle is signed, so a green
+   `sign-release` does not mean the Release is complete. `verify-release` needs
+   both signing jobs and checks every asset, signature, checksum and the chart
+   metadata (`docs/security/VERIFYING-RELEASES.md`). Treat a release as
+   deployable only when `verify-release` succeeded on the tag; nothing in this
+   repository reads the run's conclusion, so any rollout automation outside it
+   must key on that job by name (a failed `verify-release` does not fail
+   `sign-release`). `scripts/release/test_release_workflow.py` pins the job
+   and its `needs`.
+   Also require the `helm-install-upgrade` job to pass: it downloads the
+   published OCI chart, installs baseline `0.108.0`, upgrades to this tag,
+   then clean-installs this tag in kind (Kubernetes 1.31.0), checking the
+   running daemon's exact image and readiness. The chart is already published
+   when this check runs; a failed job means the release needs attention,
+   even if its files are downloadable. See `docs/EKS-GKE-DEPLOY.md` for the
+   compatibility baseline and local command.
 6. **Wait for the managed-clusters KVM e2e lane to go green on the
    tag** (`.github/workflows/cluster-e2e.yml`, also runs nightly). It
    is release-blocking (#1418): a red or missing run means the release
@@ -97,6 +147,35 @@ anyway; it's the only thing a non-release build has to go on.
    `agent-runtime-bundle.tar.gz` before it can run — so if that publish fails,
    expect this job to go red for that reason and fix the publish, not the lane.
 
+### Release checks that run for you
+
+`release.yml` runs these in the build job, before the GitHub Release is created,
+so a failure stops the publish:
+
+- **Tunnel interop smoke test** (`scripts/ci/tunnel-smoke.sh`, #2469). The built
+  `containariumd` runs as the sentinel and as the tunnel client: the pin is read
+  with `sentinel tunnel-identity`, the client must register over TLS, and a
+  request must round-trip through the tunnel. A second step repeats it with the
+  *previous release's* `containariumd` as the client, the combination a staged
+  rollout actually runs. You can run it by hand against any build:
+  `scripts/ci/tunnel-smoke.sh ./containariumd [./older-containariumd]` (needs
+  passwordless sudo; the sentinel adds a loopback alias).
+
+### Release PR checklist
+
+Before merging the release PR, check each:
+
+- **Upgrade notes.** Any change in this release that makes a client flag or
+  environment variable mandatory, or removes a fallback, has an explicit
+  "Upgrading" heading in the changelog that names the flag and what an operator
+  must do first. v0.101.0 and v0.101.1 made `--sentinel-pin` mandatory on tunnel
+  clients without saying so, and a tunnel host upgraded on release day could not
+  reconnect.
+- **Paired changes.** If a change to a client needs a counterpart on the server
+  (or the reverse), both halves are in this release. If the second half is not
+  merged yet, the first half does not ship: revert it from the release branch or
+  hold the release.
+
 ## What a tag push actually publishes
 
 A `v*` tag fires **four** workflows in parallel. Three of them publish
@@ -105,9 +184,9 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 18 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
-| `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
-| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
+| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle (listed in `SHA256SUMS.txt`), the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256`, four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries, the SBOMs, the agent-runtime bundle, the SDLC skills bundle and (appended by the `helm-chart` job, which downloads, appends and re-uploads the file before signing; #2702) the chart `.tgz`, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`), and the `model-gateway-image` job pushes `ghcr.io/<org>/containarium-model-gateway` with its keyless cosign signature (by digest) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
+| `containarium-daemon.yml` | Daemon container image, plus its keyless cosign signature (by digest) | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
+| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images, each with its keyless cosign signature (by digest) | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
 
 The PyPI one deserves particular care: per `TELEMETRY-DISTRO-DESIGN.md`
@@ -145,12 +224,28 @@ the hostcheck, agentbox, and sandbox/dialer tests on Linux and rejects
 agent-box source files enabled for Windows. Cross-compilation checks
 build compatibility; it does not run the binaries on Windows or macOS.
 
+Two whole-tree invocations are also supported and kept green by
+`scripts/test-build-constraint-sets.sh` (run in the same workflow):
+
+- `go vet -tags containarium_client ./...` passes for every package,
+  tests included. A server-side file that uses a `!containarium_client`
+  symbol (for example the Postgres-backed stores in `internal/auth` and
+  `internal/cluster`) carries the same constraint.
+- `GOOS=windows go build ./...` is **not** supported as written: the
+  daemon side imports `internal/agentbox` (Unix-only) or `internal/netbpf`
+  (Linux eBPF). The script builds every other package for Windows and
+  keeps the excluded set as an explicit, reviewed list
+  (`WINDOWS_EXCLUDED`). Run the script rather than `go build ./...` to
+  check Windows locally.
+
 ### Rehearsing a release build without publishing
 
 `release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept
 a `workflow_dispatch` trigger that runs the **identical** build against
 any ref and publishes nothing: no Release, no artifact upload, no image
-push. Use it before tagging, especially when the diff touches the build
+push, no chart push. For `release.yml` this includes the Helm chart: the
+rehearsal packages it and renders it to check the pinned daemon image, and
+skips the GHCR login, OCI push and Release upload. Use it before tagging, especially when the diff touches the build
 itself (new `cmd/` files, web-ui changes, Dockerfiles, `Makefile`).
 
 ```bash
@@ -206,6 +301,8 @@ published:
   and the script's inline comments for current flags and known gotchas
   (host daemon service unit naming has drifted between hosts before;
   verify the live unit before scripting a restart).
+- For the step-by-step upgrade, the post-upgrade checks and rollback, see
+  [UPGRADE-AND-ROLLBACK.md](UPGRADE-AND-ROLLBACK.md).
 - Never scp an ad hoc binary built from an untagged commit onto a host
   that serves real traffic. If a fix needs to reach production, cut a
   release for it first — that's the whole point of this document.

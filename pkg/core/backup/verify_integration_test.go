@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -83,6 +84,54 @@ func (p *podmanOps) WriteFile(container, path string, content []byte, _ string) 
 		p.t.Logf("WriteFile stderr: %s", stderr)
 	}
 	return err
+}
+
+// commandDump waits for cat at EOF so a failed container read cannot be
+// mistaken for a successfully completed stream.
+type commandDump struct {
+	io.ReadCloser
+	cmd    *exec.Cmd
+	waited bool
+}
+
+func (r *commandDump) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if err == io.EOF && !r.waited {
+		r.waited = true
+		if waitErr := r.cmd.Wait(); waitErr != nil {
+			return n, waitErr
+		}
+	}
+	return n, err
+}
+
+func (r *commandDump) Close() error {
+	err := r.ReadCloser.Close()
+	if !r.waited {
+		_ = r.cmd.Process.Kill()
+		r.waited = true
+		_ = r.cmd.Wait()
+	}
+	return err
+}
+
+func (p *podmanOps) ReadFileStream(container, path string) (io.ReadCloser, error) {
+	cmd := exec.Command(p.runtime, "exec", container, "cat", path)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = out.Close()
+		return nil, err
+	}
+	return &commandDump{ReadCloser: out, cmd: cmd}, nil
+}
+
+func (p *podmanOps) WriteFileStream(container, path string, content io.Reader, _ string) error {
+	cmd := exec.Command(p.runtime, "exec", "-i", container, "sh", "-c", "umask 077; cat > "+shellQuote(path))
+	cmd.Stdin = content
+	return cmd.Run()
 }
 
 func runtimeBin(t *testing.T) string {

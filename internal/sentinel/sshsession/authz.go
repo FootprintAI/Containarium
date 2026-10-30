@@ -11,6 +11,16 @@ const (
 	MetaUserID        = "containarium.ssh_authz.user_id"
 	MetaAuthzDecision = "containarium.ssh_authz.decision"
 	MetaDenyReason    = "containarium.ssh_authz.deny_reason"
+	// MetaEnforced is "true" for every session ssh-authz-plugin admitted in
+	// enforce mode, including one it routed without a daemon decision (a
+	// certificate); empty in audit-only mode.
+	MetaEnforced = "containarium.ssh_authz.enforced"
+	// MetaTarget is the upstream host:port the enforcing ssh-authz-plugin
+	// routed the connection to. Both the open and the close record carry it,
+	// so a config.yaml re-rendered mid-session cannot split a session across
+	// two targets. Empty when yaml routed: the record builder then resolves
+	// the login from config.yaml.
+	MetaTarget = "containarium.ssh_session.target"
 )
 
 type AuthzDecision string

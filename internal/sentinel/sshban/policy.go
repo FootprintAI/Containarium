@@ -57,6 +57,10 @@ type entry struct {
 type Guard struct {
 	pb.UnimplementedSentinelSSHBanServiceServer
 	mu                     sync.Mutex
+	callbackMu             sync.Mutex
+	callbacksClosed        bool
+	callbacksActive        int
+	callbacksDone          chan struct{}
 	cfg                    Config
 	policy                 *pb.SSHBanPolicy
 	prefixes               []netip.Prefix
@@ -134,8 +138,46 @@ func (g *Guard) emit(kind string, ip netip.Addr, e entry) {
 	}
 }
 
+// EventWindowFailures summarizes failures below the ban budget when a window
+// ends, or its partial count on shutdown (#2419). A ban has its own "ban"
+// event when reached, so a banned window does not also emit this.
+const EventWindowFailures = "window_failures"
+
+// Sweep runs the expiry pass on a timer. Windows otherwise only end when the
+// next connection arrives, so on a quiet sentinel the last window's failures
+// would sit unreported indefinitely.
+func (g *Guard) Sweep() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+}
+
+// TrySweep skips a busy guard rather than holding up the audit recorder's
+// periodic loop. The next tick or the final shutdown flush will prune it.
+func (g *Guard) TrySweep() {
+	if !g.mu.TryLock() {
+		return
+	}
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+}
+
+// FlushFailureWindows reports partial failure counts when the plugin exits.
+// Bans were already reported when their threshold was reached.
+func (g *Guard) FlushFailureWindows() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.prune(g.cfg.Now())
+	for ip, e := range g.entries {
+		if e.failures > 0 && e.failures < uint64(g.cfg.MaxFailures) {
+			g.emit(EventWindowFailures, ip, e)
+		}
+	}
+}
+
 // prune amortizes expiry sweeps by waiting for the earliest remaining deadline.
-// Only actual ban expiries generate an operational transition.
+// Ban expiries and windows that ended with unbanned failures generate an
+// operational transition.
 func (g *Guard) prune(now time.Time) {
 	if !g.nextExpiry.IsZero() && now.Before(g.nextExpiry) {
 		return
@@ -143,8 +185,11 @@ func (g *Guard) prune(now time.Time) {
 	g.nextExpiry = time.Time{}
 	for ip, e := range g.entries {
 		if !now.Before(e.expires) {
-			if e.failures >= uint64(g.cfg.MaxFailures) {
+			switch {
+			case e.failures >= uint64(g.cfg.MaxFailures):
 				g.emit("expire", ip, e)
+			case e.failures > 0:
+				g.emit(EventWindowFailures, ip, e)
 			}
 			delete(g.entries, ip)
 			continue

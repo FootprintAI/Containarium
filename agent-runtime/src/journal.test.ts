@@ -264,6 +264,28 @@ describe("runJournaled", () => {
       { seq: 3, kind: "status", text: "run ended exit=1" },
     ]);
   });
+
+  // #2513 item 2: the re-prompt sits inside the bracket, so a run that only
+  // answers on the re-prompt still ends exit=0 with that answer.
+  it("re-prompts once, inside the bracket, a run that changed files but returned nothing", async () => {
+    const root = tmpRoot();
+    const j = FileJournal.open({ root, runId: "r", skillId: "s", secrets: [] });
+    const engine: Engine = {
+      name: "fake",
+      async run(_task, _cfg, journal) {
+        journal.append({ kind: "tool_use", tool: "write_file", input: "{}" });
+        return { outputJson: "", followUp: async () => ({ outputJson: '{"files":[]}' }) };
+      },
+    };
+    const res = await runJournaled(engine, "{}", cfg, j);
+    expect(res.outputJson).toBe('{"files":[]}');
+    expect(readLines(j.path).map((l) => (l as { text?: string }).text ?? (l as { kind: string }).kind)).toEqual([
+      "run started",
+      "tool_use",
+      "run changed files but returned no final message: re-prompting once for the final JSON",
+      "run ended exit=0",
+    ]);
+  });
 });
 
 describe("serveJournals", () => {

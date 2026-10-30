@@ -29,6 +29,7 @@ import (
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
+	_ "google.golang.org/genproto/googleapis/rpc/errdetails" // registers the detail types ErrorHandler renders
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -45,6 +46,7 @@ type GatewayServer struct {
 	swaggerDir             string
 	certsDir               string                                          // Optional: for mTLS connection to gRPC server
 	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
+	startupListener        *StartupListener                                // HTTP port bound before the startup waits (#3130); nil = bind in Start
 	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
 	alertmanagerBackendURL string                                          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
@@ -197,6 +199,12 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 // JWT-verified identity metadata.
 func (gs *GatewayServer) SetInternalDialer(dial func(context.Context, string) (net.Conn, error)) {
 	gs.internalDialer = dial
+}
+
+// SetStartupListener makes Start serve on sl, the HTTP port the daemon bound
+// before its startup waits (#3130), instead of binding the port itself.
+func (gs *GatewayServer) SetStartupListener(sl *StartupListener) {
+	gs.startupListener = sl
 }
 
 // SetGrafanaBackendURL sets the internal Grafana URL for the reverse proxy
@@ -446,7 +454,7 @@ func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, web
 // it so they pin the same wire format the daemon serves.
 func NewRESTMux() *runtime.ServeMux {
 	return runtime.NewServeMux(
-		runtime.WithErrorHandler(customErrorHandler),
+		runtime.WithErrorHandler(ErrorHandler),
 		runtime.WithMetadata(annotateContext),
 		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
 		// Marshal options for better JSON formatting
@@ -557,6 +565,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register audit service gateway: %w", err)
 	}
 
+	// ProofPackService (#3064): verify a sealed Proof Pack.
+	if err := pb.RegisterProofPackServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register proof pack service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
@@ -565,9 +578,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterCodingToolEgressPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register coding-tool egress policy service gateway: %w", err)
 	}
+	// NotifyService (#2185): push channel for waiting permission requests.
+	if err := pb.RegisterNotifyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register notify service gateway: %w", err)
+	}
 	// GuardrailPolicyService (#2368): the server-side guardrail policy.
 	if err := pb.RegisterGuardrailPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register guardrail policy service gateway: %w", err)
+	}
+	// RetentionService (#2875): retention windows and legal holds.
+	if err := pb.RegisterRetentionServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register retention service gateway: %w", err)
 	}
 	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
@@ -623,30 +644,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register model-gateway service gateway: %w", err)
 	}
 
-	// Create HTTP handler with authentication middleware, then audit middleware.
-	// Audit wraps the inner handler so auth runs first (sets username in context),
-	// then audit captures the response on the way out.
-	//
-	// rest is the REST mux every chain below serves; GuardSSHAuthzPath keeps
-	// the sentinel-only authorize route (#2516) out of the JWT chain however
-	// its path is spelled.
-	rest := GuardSSHAuthzPath(mux)
-	handler := rest
+	// The production REST chain (cors → auth → audit → GuardSSHAuthzPath →
+	// mux) is built by wrapHTTPHandler so the #2773 streaming test exercises
+	// exactly this chain. rest is the bare guarded mux the sentinel-signed
+	// routes below wrap with their own identity check.
+	var store auditLogger
 	if gs.auditStore != nil {
-		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
+		// Assign only when non-nil: a nil *audit.Store stored in the
+		// interface would read as non-nil inside wrapHTTPHandler.
+		store = gs.auditStore
 	}
-	handler = gs.authMiddleware.HTTPMiddleware(handler)
-
-	// Add CORS support with configurable origins (secure by default)
-	// Set CONTAINARIUM_ALLOWED_ORIGINS env var to configure allowed origins
-	corsHandler := cors.New(cors.Options{
-		AllowedOrigins:   getAllowedOrigins(),
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
-		ExposedHeaders:   []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}).Handler(handler)
+	corsHandler, rest := wrapHTTPHandler(mux, gs.authMiddleware.HTTPMiddleware, store)
 
 	// Create HTTP mux for routing
 	httpMux := http.NewServeMux()
@@ -725,7 +733,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				}
 			}
 
-			gs.terminalHandler.HandleTerminal(w, r)
+			// #2696: record that this bearer passed ValidateToken; the
+			// upgrader's no-Origin exemption reads this, not the raw
+			// headers. See checkTerminalOrigin.
+			gs.terminalHandler.HandleTerminal(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 		}))
 
 		// Console-attach WebSocket route (live VM serial console, #1751).
@@ -779,7 +790,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 					}
 				}
 
-				gs.consoleHandler.HandleConsole(w, r)
+				// #2721: same contract as the terminal route above — record that
+				// this bearer passed ValidateToken so the shared upgrader's
+				// no-Origin exemption (checkTerminalOrigin) can honour it.
+				// Without this record the console upgrader refuses every
+				// Origin-less request, including the CLI's.
+				gs.consoleHandler.HandleConsole(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 			}))
 		}
 
@@ -1038,24 +1054,49 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	log.Printf("Swagger UI available at http://localhost%s/swagger-ui/", addr)
 	log.Printf("OpenAPI spec available at http://localhost%s/swagger.json", addr)
 
+	if gs.startupListener != nil {
+		// #3130: the port has been bound (answering "degraded") since
+		// before the startup waits; take it over rather than rebinding.
+		return gs.startupListener.Serve(httpMux)
+	}
 	return http.ListenAndServe(addr, httpMux)
 }
 
-// customErrorHandler provides better error messages
-func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
+// errorBody is the JSON every /v1 REST error is served as. error and code are
+// the long-standing fields (code is the HTTP status). message and details follow
+// grpc-gateway's default error body, so a client that reads typed details
+// (google.rpc.PreconditionFailure and the like) from it works unchanged (#3277).
+type errorBody struct {
+	Error   string            `json:"error"`
+	Code    int               `json:"code"`
+	Message string            `json:"message,omitempty"`
+	Details []json.RawMessage `json:"details,omitempty"`
+}
+
+// ErrorHandler is the grpc-gateway error handler every /v1 REST route is served
+// with. Besides the message and HTTP status it carries the gRPC status details,
+// which a handler attaches so a caller can act on a typed reason without
+// matching message text (e.g. RUN_USER_NOT_SIGNED_IN).
+func ErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Map gRPC codes to HTTP status codes
 	httpStatus := runtime.HTTPStatusFromCode(status.Code(err))
 	w.WriteHeader(httpStatus)
 
-	// Format error response
-	errorResp := map[string]interface{}{
-		"error": err.Error(),
-		"code":  httpStatus,
+	body := errorBody{Error: err.Error(), Code: httpStatus}
+	if st, ok := status.FromError(err); ok {
+		body.Message = st.Message()
+		for _, d := range st.Proto().GetDetails() {
+			// A detail whose type this binary does not know cannot be rendered;
+			// skip it rather than fail the whole error response.
+			if raw, mErr := protojson.Marshal(d); mErr == nil {
+				body.Details = append(body.Details, raw)
+			}
+		}
 	}
 
-	_ = json.NewEncoder(w).Encode(errorResp)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // annotateContext adds metadata that grpc-gateway forwards into the
@@ -1138,6 +1179,47 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 // getAllowedOrigins returns the list of allowed CORS origins.
 // Configurable via CONTAINARIUM_ALLOWED_ORIGINS environment variable (comma-separated).
 // Defaults to localhost origins only for security.
+// auditLogger is what the REST chain needs from the audit store —
+// Log(ctx, *AuditEntry) error, the same narrowing audit.HTTPAuditMiddleware
+// accepts — so the chain test can pass a fake where Start passes *audit.Store.
+type auditLogger interface {
+	Log(ctx context.Context, entry *audit.AuditEntry) error
+}
+
+// wrapHTTPHandler builds the production REST chain around the grpc-gateway
+// mux:
+//
+//	cors → auth → audit (when store != nil) → GuardSSHAuthzPath → mux
+//
+// Audit sits inside auth so the username is already on the context when the
+// audit row is written, and captures the response on the way out.
+// GuardSSHAuthzPath keeps the sentinel-only authorize route (#2516) out of
+// the JWT chain however its path is spelled. CORS origins come from
+// CONTAINARIUM_ALLOWED_ORIGINS (localhost only by default).
+//
+// Start and the #2773 streaming test both call this, so a wrapper added to
+// any layer that hides the writer's Flusher fails the test rather than
+// resurfacing as "unexpected type of web server" in production. It returns
+// the full chain and the bare guarded mux (rest), which the sentinel-signed
+// routes wrap with their own identity check instead of JWT auth.
+func wrapHTTPHandler(mux http.Handler, authMW func(http.Handler) http.Handler, store auditLogger) (handler, rest http.Handler) {
+	rest = GuardSSHAuthzPath(mux)
+	handler = rest
+	if store != nil {
+		handler = audit.HTTPAuditMiddleware(handler, store)
+	}
+	handler = authMW(handler)
+	handler = cors.New(cors.Options{
+		AllowedOrigins:   getAllowedOrigins(),
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		ExposedHeaders:   []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}).Handler(handler)
+	return handler, rest
+}
+
 func getAllowedOrigins() []string {
 	envOrigins := os.Getenv("CONTAINARIUM_ALLOWED_ORIGINS")
 	if envOrigins != "" {
@@ -1160,7 +1242,12 @@ func getAllowedOrigins() []string {
 // literal so the shape is one reviewable thing — this endpoint is
 // unauthenticated, so what it carries is a deliberate decision.
 type healthResponse struct {
-	Status string `json:"status"`
+	Status healthStatus `json:"status"`
+	// Reason says why Status is degraded (#3130). It is one of a few fixed
+	// phrases set by the daemon's startup sequence, never an error string,
+	// so this unauthenticated endpoint cannot leak a DSN, an address, or a
+	// container name. Empty when healthy.
+	Reason string `json:"reason,omitempty"`
 	// Version answers "what is this box running" without shell access (#1647).
 	// Previously the only way to tell was SSH plus `containarium version`,
 	// which made fleet audits, drift detection, and confirming a fix landed
@@ -1177,7 +1264,7 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(healthResponse{
-		Status:  "healthy",
+		Status:  healthStatusHealthy,
 		Version: version.GetVersion(),
 	})
 }

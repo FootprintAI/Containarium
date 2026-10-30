@@ -44,6 +44,43 @@ func TestRunBackendsUpgrade_SendsGithubTag(t *testing.T) {
 	}
 }
 
+// TestRunBackendsUpgrade_SendsAllowDowngrade proves --allow-downgrade reaches
+// the daemon as allow_downgrade (#3059) and is omitted when unset.
+func TestRunBackendsUpgrade_SendsAllowDowngrade(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allow   bool
+		present bool
+	}{{"set", true, true}, {"unset", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotRaw map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &gotRaw)
+				_, _ = w.Write([]byte(`{"upgradeId":"upg-4","status":"in_progress"}`))
+			}))
+			defer srv.Close()
+
+			origServer, origToken, origTag, origAllow := serverAddr, authToken, upgradeGithubTag, upgradeAllowDowngrade
+			t.Cleanup(func() {
+				serverAddr, authToken, upgradeGithubTag, upgradeAllowDowngrade = origServer, origToken, origTag, origAllow
+			})
+			serverAddr, authToken, upgradeGithubTag, upgradeAllowDowngrade = srv.URL, "", "v0.1.0", tc.allow
+
+			if err := runBackendsUpgrade(backendsUpgradeCmd, nil); err != nil {
+				t.Fatalf("runBackendsUpgrade: %v", err)
+			}
+			v, present := gotRaw["allow_downgrade"]
+			if present != tc.present || (present && v != true) {
+				t.Errorf("allow_downgrade on the wire = %v (present=%v), want present=%v", v, present, tc.present)
+			}
+		})
+	}
+	if backendsUpgradeCmd.Flags().Lookup("allow-downgrade") == nil {
+		t.Error("--allow-downgrade flag is not registered")
+	}
+}
+
 // TestRunBackendsUpgrade_OmitsGithubTagWhenUnset proves the default (empty)
 // --github-tag doesn't add a stray field, matching backend_id/force's
 // omitempty behavior — the daemon's sentinel path stays the unchanged default.

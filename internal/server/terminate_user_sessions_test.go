@@ -29,7 +29,8 @@ type sessionRecorder struct {
 	mu      sync.Mutex
 	boxes   map[string]string // container name -> state
 	log     []string
-	killed  map[string]bool // account -> pkill matched (box and host)
+	tenants map[string]string // container name -> incus.TenantLabelKey value (optional)
+	killed  map[string]bool   // account -> pkill matched (box and host)
 	collabs []*collaborator.Collaborator
 	listErr error
 }
@@ -39,7 +40,7 @@ func (r *sessionRecorder) GetContainer(name string) (*incus.ContainerInfo, error
 	if !ok {
 		return nil, errors.New("not found")
 	}
-	return &incus.ContainerInfo{Name: name, State: state}, nil
+	return &incus.ContainerInfo{Name: name, State: state, Tenant: r.tenants[name]}, nil
 }
 
 func (r *sessionRecorder) Exec(name string, cmd []string) error {
@@ -161,7 +162,7 @@ func TestEndUserSessions_Walk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := newSessionServer(tc.rec).EndUserSessions(context.Background(), "alice")
+			resp, err := newSessionServer(tc.rec).EndUserSessions(context.Background(), "alice", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -190,7 +191,7 @@ func TestEndUserSessions_CollaboratorLookupErrorStillKillsOwnerBox(t *testing.T)
 		boxes:   map[string]string{"alice-container": "Running"},
 		listErr: errors.New("db down"),
 	}
-	_, err := newSessionServer(rec).EndUserSessions(context.Background(), "alice")
+	_, err := newSessionServer(rec).EndUserSessions(context.Background(), "alice", "")
 	if err == nil {
 		t.Fatal("expected the lookup error")
 	}
@@ -202,7 +203,7 @@ func TestEndUserSessions_CollaboratorLookupErrorStillKillsOwnerBox(t *testing.T)
 func TestEndUserSessions_RejectsInvalidUsername(t *testing.T) {
 	for _, u := range []string{"", "-1", "a b", "../x", "alice-container-bob/../x"} {
 		rec := &sessionRecorder{boxes: map[string]string{}}
-		_, err := newSessionServer(rec).EndUserSessions(context.Background(), u)
+		_, err := newSessionServer(rec).EndUserSessions(context.Background(), u, "")
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("%q: code = %v, want InvalidArgument", u, status.Code(err))
 		}
@@ -282,7 +283,7 @@ func TestTerminateUserSessions_Authorization(t *testing.T) {
 // The cloud assignment handler reaches the same server function.
 func TestCloudSessionTerminator_UsesEndUserSessions(t *testing.T) {
 	rec := &sessionRecorder{boxes: map[string]string{"alice-container": "Running"}}
-	if err := (cloudSessionTerminator{s: newSessionServer(rec)}).TerminateUserSessions(context.Background(), "alice"); err != nil {
+	if err := (cloudSessionTerminator{s: newSessionServer(rec)}).TerminateUserSessions(context.Background(), "alice", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.log) != 3 {
@@ -323,7 +324,7 @@ func TestCloudSessionTerminator_ManagedUserID(t *testing.T) {
 		}
 		allowAs("alice")
 		allowAs("bob-container-alice") // same user also logs in as a collaborator
-		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), cpUser); err != nil {
+		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), cpUser, ""); err != nil {
 			t.Fatal(err)
 		}
 		want := []string{
@@ -341,7 +342,7 @@ func TestCloudSessionTerminator_ManagedUserID(t *testing.T) {
 
 	t.Run("id never seen is not mapped", func(t *testing.T) {
 		rec := &sessionRecorder{boxes: map[string]string{"alice-container": "Running"}}
-		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "5f1e2d3c-0000-4000-8000-000000000000")
+		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "5f1e2d3c-0000-4000-8000-000000000000", "")
 		if !errors.Is(err, cloud.ErrUserNotMapped) {
 			t.Fatalf("err = %v, want ErrUserNotMapped", err)
 		}
@@ -352,7 +353,7 @@ func TestCloudSessionTerminator_ManagedUserID(t *testing.T) {
 
 	t.Run("not a local name at all is not mapped", func(t *testing.T) {
 		rec := &sessionRecorder{}
-		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "Not A Login")
+		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "Not A Login", "")
 		if !errors.Is(err, cloud.ErrUserNotMapped) {
 			t.Fatalf("err = %v, want ErrUserNotMapped", err)
 		}
@@ -360,7 +361,7 @@ func TestCloudSessionTerminator_ManagedUserID(t *testing.T) {
 
 	t.Run("known local id falls back to the self-host rule", func(t *testing.T) {
 		rec := &sessionRecorder{boxes: map[string]string{"carol-container": "Running"}}
-		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "carol"); err != nil {
+		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "carol", ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(rec.log) != 3 {
@@ -373,4 +374,72 @@ type fakeSSHCloud struct{ resp *pb.AuthorizeSSHResponse }
 
 func (f fakeSSHCloud) AuthorizeSSH(context.Context, *pb.AuthorizeSSHRequest, ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error) {
 	return f.resp, nil
+}
+
+// #2546: on a host shared by two orgs, an org-scoped order ends only that
+// org's sessions; unscoped ends both (the original behaviour).
+func TestEndUserSessions_OrgScope(t *testing.T) {
+	newRec := func() *sessionRecorder {
+		return &sessionRecorder{
+			boxes:   map[string]string{"alice-container": "Running", "bob-container": "Running"},
+			tenants: map[string]string{"alice-container": "org-a", "bob-container": "org-b"},
+			// alice is a collaborator on bob's box, which belongs to the other org.
+			collabs: []*collaborator.Collaborator{collab("bob", "alice")},
+			killed:  map[string]bool{"alice": true, "bob-container-alice": true},
+		}
+	}
+	for _, tc := range []struct {
+		name, org string
+		wantBoxes int32
+		want      []string
+		notWant   []string
+	}{
+		{"org-a order leaves org-b alone", "org-a", 1,
+			[]string{"box alice-container: pkill -KILL -u alice", "host: pkill -KILL -u alice"},
+			[]string{"bob-container"}},
+		{"org-b order leaves org-a alone", "org-b", 1,
+			[]string{"box bob-container: pkill -KILL -u bob-container-alice", "host: pkill -KILL -u bob-container-alice"},
+			[]string{"alice-container", "u alice\n"}},
+		{"unscoped ends both", "", 2,
+			[]string{"box alice-container: pkill -KILL -u alice", "box bob-container: pkill -KILL -u bob-container-alice"},
+			nil},
+		{"unknown org touches nothing", "org-z", 0, nil, []string{"box", "host"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newRec()
+			resp, err := newSessionServer(rec).EndUserSessions(context.Background(), "alice", tc.org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.GetBoxesTouched() != tc.wantBoxes {
+				t.Errorf("boxes touched = %d, want %d (log: %v)", resp.GetBoxesTouched(), tc.wantBoxes, rec.log)
+			}
+			joined := strings.Join(rec.log, "\n") + "\n"
+			for _, w := range tc.want {
+				if !strings.Contains(joined, w) {
+					t.Errorf("missing %q in:\n%s", w, joined)
+				}
+			}
+			for _, n := range tc.notWant {
+				if strings.Contains(joined, n) {
+					t.Errorf("unexpected %q in:\n%s", n, joined)
+				}
+			}
+		})
+	}
+}
+
+// The cloud terminator forwards the order's org to every walk it makes.
+func TestCloudSessionTerminator_ForwardsOrg(t *testing.T) {
+	rec := &sessionRecorder{
+		boxes:   map[string]string{"alice-container": "Running"},
+		tenants: map[string]string{"alice-container": "org-a"},
+		killed:  map[string]bool{"alice": true},
+	}
+	if err := (cloudSessionTerminator{s: newSessionServer(rec)}).TerminateUserSessions(context.Background(), "alice", "org-other"); !errors.Is(err, cloud.ErrUserNotMapped) {
+		t.Fatalf("err = %v, want ErrUserNotMapped (no box in that org)", err)
+	}
+	if len(rec.log) != 0 {
+		t.Errorf("other org's box was touched: %v", rec.log)
+	}
 }

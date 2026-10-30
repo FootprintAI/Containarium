@@ -14,12 +14,13 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/pkg/core/container"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Done-when 4 of #2517: every key write path records the key in the
 // ssh_keys registry, and RemoveSSHKey revokes it. The registry's own
-// semantics (first registration wins, revoke for every account) are tested
+// semantics (first registration wins, revoke only the owner's row) are tested
 // against Postgres in internal/sshauthz; here a recording fake proves each
 // path hands it the right row.
 
@@ -67,10 +68,30 @@ func newTestPubKey(t *testing.T) string {
 type fakeAuthorizedKeys struct {
 	files  map[string][]string
 	addErr map[string]error // by key
+
+	platform     string // platform-managed line the fake replace preserves
+	inReplace    bool   // true while the fake replace's critical section is open
+	replaceCalls int
 }
 
 func newFakeAuthorizedKeys() *fakeAuthorizedKeys {
 	return &fakeAuthorizedKeys{files: map[string][]string{}, addErr: map[string]error{}}
+}
+
+// OtherAccountHolds is the fake's sshauthz.HolderLookup: any account other
+// than excludeUsername whose fake file holds the fingerprint.
+func (f *fakeAuthorizedKeys) OtherAccountHolds(_ context.Context, fingerprint, excludeUsername string) (bool, error) {
+	for user, lines := range f.files {
+		if user == excludeUsername {
+			continue
+		}
+		for _, l := range lines {
+			if rec, err := sshauthz.NewKeyRecord(l, user, sshauthz.SourceAPI, caseClock); err == nil && rec.Fingerprint == fingerprint {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
@@ -93,6 +114,35 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 			return nil
 		},
 		count: func(u string) (int32, error) { return safecast.I32(len(f.files[u])), nil },
+		replace: func(u string, keys []string, hooks container.ReplaceHooks) ([]string, error) {
+			f.replaceCalls++
+			var removed []string
+			for _, l := range f.files[u] {
+				keep := false
+				for _, k := range keys {
+					if k == l {
+						keep = true
+					}
+				}
+				if !keep && l != f.platform {
+					removed = append(removed, l)
+				}
+			}
+			f.inReplace = true
+			defer func() { f.inReplace = false }()
+			if hooks.BeforeWrite != nil {
+				if err := hooks.BeforeWrite(removed); err != nil {
+					return nil, err
+				}
+			}
+			f.files[u] = append(append([]string{}, keys...), f.platform)
+			if hooks.AfterWrite != nil {
+				if err := hooks.AfterWrite(); err != nil {
+					return nil, err
+				}
+			}
+			return removed, nil
+		},
 	}
 }
 
@@ -168,6 +218,34 @@ func TestRemoveSSHKey_RegistryFailureIsAnError(t *testing.T) {
 	_, err := s.RemoveSSHKey(tenantWithScopes("alice", auth.ScopeSSHWrite), &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: newTestPubKey(t)})
 	if err == nil {
 		t.Fatal("RemoveSSHKey must fail when the revocation cannot be recorded")
+	}
+}
+
+// Revoke before the file changes (#3187, as SetSSHKeys does): a registry
+// failure leaves the key in authorized_keys, so the caller's retry sees it
+// and repeats the revocation. Removing first would drop the key from the file
+// with its registry entry still active.
+func TestRemoveSSHKey_RegistryFailureLeavesFileAndRetryRevokes(t *testing.T) {
+	reg, fs := &recordingRegistry{err: errors.New("db down")}, newFakeAuthorizedKeys()
+	s := testServerWithRegistry(reg, fs)
+	pub := newTestPubKey(t)
+	fs.files["alice"] = []string{pub}
+	ctx := tenantWithScopes("alice", auth.ScopeSSHWrite)
+	req := &pb.RemoveSSHKeyRequest{Username: "alice", SshPublicKey: pub}
+
+	if _, err := s.RemoveSSHKey(ctx, req); err == nil {
+		t.Fatal("RemoveSSHKey must fail when the revocation cannot be recorded")
+	}
+	if len(fs.files["alice"]) != 1 || fs.files["alice"][0] != pub {
+		t.Fatalf("file changed although the revocation failed: %q", fs.files["alice"])
+	}
+
+	reg.err = nil
+	if _, err := s.RemoveSSHKey(ctx, req); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(fs.files["alice"]) != 0 || len(reg.revoked) != 1 || reg.revoked[0].rec.PublicKey != pub {
+		t.Fatalf("retry: file=%q revoked=%+v, want key gone and revoked once", fs.files["alice"], reg.revoked)
 	}
 }
 

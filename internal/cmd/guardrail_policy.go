@@ -38,6 +38,18 @@ var errNoGuardrailServer = errors.New("--server is required for guardrail policy
 // newGuardrailPolicyAPI builds the client from the global --server/--http
 // flags. A variable so tests can substitute a fake.
 var newGuardrailPolicyAPI = func() (guardrailPolicyAPI, func(), error) {
+	return dialGuardrailPolicyService()
+}
+
+// guardrailPolicyServiceClient is every GuardrailPolicyService call the CLI
+// makes; both typed clients satisfy it.
+type guardrailPolicyServiceClient interface {
+	guardrailPolicyAPI
+	guardrailStatusAPI
+	guardrailBaselineAPI
+}
+
+func dialGuardrailPolicyService() (guardrailPolicyServiceClient, func(), error) {
 	if serverAddr == "" {
 		return nil, nil, errNoGuardrailServer
 	}
@@ -129,7 +141,7 @@ func runGuardrailPolicySet(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := guardrailpolicy.Validate(req.GetPolicy(), req.GetTrustedSigners()); err != nil {
+	if err := guardrailpolicy.ValidateSetRequest(req); err != nil {
 		return fmt.Errorf("invalid guardrail policy: %w", err)
 	}
 	api, done, err := newGuardrailPolicyAPI()

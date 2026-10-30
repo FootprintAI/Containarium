@@ -430,6 +430,23 @@ service ContainerService {
     };
   }
 
+  // SetContainerToolAccess records the tool-access level for platform-started
+  // (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+  // FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+  // user.containarium.tool_access, so it survives daemon restart with no
+  // separate store, and is read back on list/get as Container.tool_access.
+  rpc SetContainerToolAccess(SetContainerToolAccessRequest) returns (SetContainerToolAccessResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/tool-access"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Record the tool-access level for platform-started runs";
+      description: "Sets the container's tool-access level (#2944). Only platform-started (headless) agent runs are governed by it; the owner's own login is unaffected. UNSPECIFIED clears it.";
+      tags: "Container Operations";
+    };
+  }
+
   // SetContainerAttribution merges labels onto an EXISTING container's config
   // (cloud #746). The hosted control plane stamps attribution labels
   // (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -463,6 +480,19 @@ service ContainerService {
     };
   }
 
+  // SetSSHKeys replaces the caller-managed SSH public keys of a container
+  rpc SetSSHKeys(SetSSHKeysRequest) returns (SetSSHKeysResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/ssh-keys"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set SSH keys (replace all)";
+      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. A dropped key is always removed from this container user's file. Its ssh_keys registry entry is handled as RemoveSSHKey does: one entry per key, owned by the first account to register it, until that entry is revoked, after which the next registration replaces it (an owner account also owns an entry its own collaborator account <owner>-container-<user> registered, since ownership compares user id); it is revoked when this container user owns it or it has no owner, and no other account (a collaborator account is a separate account) still holds the same public key in its own authorized_keys. A key another account holds is dropped from this file but its entry stays active, and the call still succeeds; if this container user owned the entry, the entry loses its owner, so the next account to register the key takes it over and the last holder's own drop revokes it. When another account owns the entry it stays active, so dropping a key is not a guaranteed revocation of a compromised key. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
+      tags: "SSH Management";
+    };
+  }
+
   // RemoveSSHKey removes an SSH public key from a container
   rpc RemoveSSHKey(RemoveSSHKeyRequest) returns (RemoveSSHKeyResponse) {
     option (google.api.http) = {
@@ -470,7 +500,7 @@ service ContainerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Remove SSH key";
-      description: "Removes an SSH public key from a container's authorized_keys file, revoking SSH access for that key. The ssh_public_key should be URL-encoded.";
+      description: "Removes an SSH public key from a container's authorized_keys file, revoking that key's SSH access to this container. The key's ssh_keys registry entry (one per key, owned by the first account to register it; a revoked entry is replaced by the next registration) is revoked when this container user owns it or it has no owner. Ownership compares user id, so an owner account also owns an entry its own collaborator account <owner>-container-<user> registered on another box. If this call would revoke the entry but any other account (a collaborator account <owner>-container-<collab> is a separate account here) still holds the same public key in its own authorized_keys, the key is removed from this container user's file only and the entry stays active; the call still succeeds and does not say which account holds the key. If this container user owned that entry, the entry loses its owner: the next account to register the key takes it over, and the last holder's own removal revokes it. A key whose entry another account owns is likewise removed from the file with the entry left active, so removing a key is not a guaranteed revocation of a compromised key. The revocation happens before the file changes, so a registry failure leaves the key in place and a retry repeats it. The ssh_public_key should be URL-encoded.";
       tags: "SSH Management";
     };
   }
@@ -488,6 +518,22 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Start a box's code run";
       description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+  // usable agent sign-in: the same probe StartBoxRun applies before refusing a
+  // platform run, without queueing one (#3274). Names the credential source
+  // only; never reads, copies or prints a credential value. Same access as
+  // StartBoxRun.
+  rpc GetBoxRunUserStatus(GetBoxRunUserStatusRequest) returns (GetBoxRunUserStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/run-user/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Report whether a box's run user is signed in";
+      description: "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.";
       tags: "Code Runs";
     };
   }
@@ -532,6 +578,50 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Stop a box's code run";
       description: "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // GetRunApprovalKey returns the public key a box's permission-request
+  // answers are signed with (#2184). `code run --approvals ask` hands it to
+  // the box. Same access as StartBoxRun.
+  rpc GetRunApprovalKey(GetRunApprovalKeyRequest) returns (GetRunApprovalKeyResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs:approval-key"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a box's approval public key";
+      description: "Returns the hex Ed25519 public key the daemon signs this box's permission-request answers with; `code run --approvals ask` passes it to the box. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // ListRunInputs lists the open permission requests of a box run (#2184).
+  // Same access as StartBoxRun.
+  rpc ListRunInputs(ListRunInputsRequest) returns (ListRunInputsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs/{run_name}/inputs"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List a box code run's open permission requests";
+      description: "Returns the run's open permission requests (id, tool, one-line prompt, complete input, created and expiry times) and its per-run request counts, read from the run's journal on the box. The journal is written by the box's own user, so it is advisory: the box acts only on an answer signed for the tool call it asked. A journal over 8 MiB is refused (RESOURCE_EXHAUSTED). Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // AnswerRunInput answers one permission request of a box run (#2184).
+  // Answering a request that is already closed or expired changes nothing
+  // and reports the existing outcome. StartBoxRun's access rule plus the
+  // code:answer scope, matched literally (#3191): no credential on a box
+  // carries it, so the agent cannot answer its own requests.
+  rpc AnswerRunInput(AnswerRunInputRequest) returns (AnswerRunInputResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs/{run_name}/inputs/{request_id}:answer"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Answer a box code run's permission request";
+      description: "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write and code:answer scopes; the wildcard scope and an unscoped token do not carry code:answer.";
       tags: "Code Runs";
     };
   }
@@ -828,20 +918,6 @@ service ContainerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Poll upgrade status";
       description: "Returns the status of an upgrade started by TriggerUpgrade. Note: a local self-upgrade restarts the daemon and drops job state, returning 'unknown' afterward; compare the backend version in ListBackends to confirm.";
-      tags: "System";
-    };
-  }
-
-  // GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-  // app-hosting base domain to core-caddy matches core-caddy's live address,
-  // and why not when it does not (#2188). Admin-only.
-  rpc GetBridgeDNSStatus(GetBridgeDNSStatusRequest) returns (GetBridgeDNSStatusResponse) {
-    option (google.api.http) = {
-      get: "/v1/system/bridge-dns"
-    };
-    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
-      summary: "Get bridge DNS record status";
-      description: "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -> core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.";
       tags: "System";
     };
   }

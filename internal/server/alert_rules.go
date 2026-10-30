@@ -2,7 +2,11 @@ package server
 
 // DefaultAlertRules is the YAML content for vmalert default rules.
 // Written to /etc/vmalert/rules/default.yml inside the VictoriaMetrics container.
-const DefaultAlertRules = `groups:
+// The storage pool group (#2823) is generated from its recorder's series
+// names.
+var DefaultAlertRules = baseAlertRules + storagePoolAlertRules()
+
+const baseAlertRules = `groups:
   - name: system_alerts
     interval: 30s
     rules:

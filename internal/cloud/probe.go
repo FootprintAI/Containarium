@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/policyreadiness"
@@ -41,28 +42,11 @@ func (p DefaultStatusProbe) Probe(ctx context.Context) (HostStatus, error) {
 	totalDisk, availDisk := diskGB()
 	gpuCount, gpuSpec := gpuInfo()
 	raw := hostcheck.Run()
-	// Host security posture (#1103) rides along in the same self-check
-	// list, which is what makes this additive: the cloud already stores
-	// Checks per host, so it records posture with no contract change.
-	//
-	// SelfCheckOK below is deliberately derived from `raw` ONLY. Posture
-	// checks are advisory, and folding them in would flip healthy hosts
-	// to self_check_ok=false — turning a hardening advisory into a
-	// scheduling signal, which is the product decision #1103 leaves open.
+	// Timestamp the start of the actual measurement, so slow probes cannot
+	// make older evidence appear freshly measured at send time (#2328).
+	measuredAt := time.Now()
 	posture := hostcheck.RunPosture()
-	checks := make([]HostCheck, 0, len(raw)+len(posture))
-	for _, c := range raw {
-		checks = append(checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
-	}
-	for _, c := range posture {
-		checks = append(checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
-	}
-	if p.Readiness != nil {
-		for _, r := range policyreadiness.Run(ctx, p.Readiness) {
-			checks = append(checks, HostCheck{Name: "readiness: " + r.Service, OK: r.Ready(), Detail: r.Detail()})
-		}
-	}
-	return HostStatus{
+	st := HostStatus{
 		AgentVersion:  version.GetVersion(),
 		CPUCores:      safecast.I32(runtime.NumCPU()),
 		TotalRAMMB:    totalRAM,
@@ -74,9 +58,34 @@ func (p DefaultStatusProbe) Probe(ctx context.Context) (HostStatus, error) {
 		// assigned GPUs. Report all detected GPUs as available headroom.
 		AvailGPUCount: gpuCount,
 		GPUSpec:       gpuSpec,
-		SelfCheckOK:   hostcheck.AllRequiredPass(raw),
-		Checks:        checks,
-	}, nil
+	}
+	populateHostChecks(&st, raw, posture, measuredAt)
+	if p.Readiness != nil {
+		for _, r := range policyreadiness.Run(ctx, p.Readiness) {
+			st.Checks = append(st.Checks, HostCheck{Name: "readiness: " + r.Service, OK: r.Ready(), Detail: r.Detail()})
+		}
+	}
+	return st, nil
+}
+
+// populateHostChecks retains the legacy check order/names while exposing the
+// same posture measurement separately. Only capability checks drive
+// SelfCheckOK; hardening and readiness remain advisory (#1103).
+func populateHostChecks(st *HostStatus, raw, posture []hostcheck.Check, measuredAt time.Time) {
+	st.SelfCheckOK = hostcheck.AllRequiredPass(raw)
+	st.Checks = make([]HostCheck, 0, len(raw)+len(posture))
+	st.Posture = nil
+	for _, c := range raw {
+		st.Checks = append(st.Checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
+	}
+	if len(posture) == 0 {
+		return // e.g. Windows has no posture probe; do not fabricate a pass.
+	}
+	st.Posture = &HostSecurityPosture{MeasuredAt: measuredAt, Checks: make([]HostCheck, 0, len(posture))}
+	for _, c := range posture {
+		st.Checks = append(st.Checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
+		st.Posture.Checks = append(st.Posture.Checks, HostCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
+	}
 }
 
 // readMemInfoMB reads MemTotal + MemAvailable from /proc/meminfo (Linux) and

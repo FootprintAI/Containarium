@@ -120,6 +120,12 @@ sudo systemctl restart containarium
 sudo systemctl restart containarium-sentinel
 ```
 
+This order is for an ordinary restart. When the secret itself is **changing**,
+restart the sentinel first instead: a daemon that starts with the new secret
+while the sentinel still has the old one gets 401 from its one-shot peer-cert
+request and stays on plain-HTTP peer calls until its next restart. See the
+[rotation runbook](./SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md) (Procedure B).
+
 ## Upgrading from < v0.19.0
 
 1. Generate the cluster secret (above) if you don't already have one.
@@ -155,6 +161,9 @@ authenticating and the sshpiper map is refreshing again.
 ## Rotating the secret
 
 Rotation is the same distribute-then-restart dance with a fresh
-`openssl rand -hex 32`. Push the new value to **every** host before restarting
-anything; during the window where hosts disagree, requests 401. Restart
-daemons first, then the sentinel, to minimize that window.
+`openssl rand -hex 32`, but hosts disagree between the first and last restart
+and the single-secret verifier has no previous-secret fallback, so requests 401
+in that window. For the full procedure (ordering, the ed25519 bridge that avoids
+the sentinel-to-daemon window, the ADMIN secret, converging two secret domains,
+verification and rollback) follow
+[SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md](./SENTINEL-AUTH-SECRET-ROTATION-RUNBOOK.md).

@@ -50,13 +50,14 @@ type containerResources struct {
 // for the other three — and omitted them entirely otherwise. Pointers
 // reproduce that exactly; plain strings with omitempty would not.
 type createContainerRequest struct {
-	Username     string             `json:"username"`
-	Resources    containerResources `json:"resources"`
-	SSHKeys      []string           `json:"sshKeys"`
-	Image        string             `json:"image"`
-	EnablePodman bool               `json:"enablePodman"`
-	Stack        string             `json:"stack"`
-	GPUs         []string           `json:"gpus"`
+	NetworkTenant string             `json:"networkTenant,omitempty"`
+	Username      string             `json:"username"`
+	Resources     containerResources `json:"resources"`
+	SSHKeys       []string           `json:"sshKeys"`
+	Image         string             `json:"image"`
+	EnablePodman  bool               `json:"enablePodman"`
+	Stack         string             `json:"stack"`
+	GPUs          []string           `json:"gpus"`
 	// The generated enum, not a string: json.Marshal emits its numeric
 	// value, which is what the previous map sent and what protojson
 	// accepts on the server side.
@@ -82,6 +83,7 @@ type createContainerRequest struct {
 	// unless enabled, so a plain create's body is unchanged.
 	TTLSeconds                int64 `json:"ttlSeconds,omitempty"`
 	IdleStopMinutes           int32 `json:"idleStopMinutes,omitempty"`
+	DisableAutoSleep          bool  `json:"disableAutoSleep,omitempty"`
 	DeleteAfterStoppedSeconds int64 `json:"deleteAfterStoppedSeconds,omitempty"`
 
 	// Region places the container on a multi-region hosted control plane
@@ -108,6 +110,11 @@ type setContainerTTLRequest struct {
 // setContainerDeletePolicyRequest is POST /v1/containers/{name}/delete-policy.
 type setContainerDeletePolicyRequest struct {
 	DeletePolicy string `json:"delete_policy"`
+}
+
+// setContainerToolAccessRequest is POST /v1/containers/{name}/tool-access.
+type setContainerToolAccessRequest struct {
+	ToolAccess string `json:"tool_access"`
 }
 
 // setContainerAttributionRequest is POST /v1/containers/{name}/attribution.
@@ -342,6 +349,8 @@ type runCrewRequest struct {
 	// (e.g. "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum
 	// map value. Omitted when the caller named no override for any member.
 	EngineOverrides map[string]string `json:"engine_overrides,omitempty"`
+	// ModelOverrides (#3259) maps skill_id -> model id, passed through as is.
+	ModelOverrides map[string]string `json:"model_overrides,omitempty"`
 }
 
 // addRouteRequest is POST /v1/network/routes.

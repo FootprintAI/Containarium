@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
@@ -184,6 +185,11 @@ func (s *Server) registerTools() {
 					"enable_podman": map[string]interface{}{
 						"type":        "boolean",
 						"description": "Enable Podman support (default: true)",
+					},
+					"network_tenant": map[string]interface{}{"type": "string", "description": "Administrator-authorized native network Tenant; local Linux LXC only. Independent of encryption tenant_id; enforced NIC ACL before first Start."},
+					"disable_auto_sleep": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Create the box with NO auto-sleep timer (default: false). Only matters on a hosted platform that defaults some orgs (for example seat-billed ones) to a 30-minute idle-stop; a self-hosted daemon never auto-sleeps a new box and ignores it.",
 					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
@@ -614,6 +620,14 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Upgrade even if the sentinel-served binary already matches the running one. Default false.",
 					},
+					"github_tag": map[string]interface{}{
+						"type":        "string",
+						"description": "Install this release (e.g. v0.82.0) directly from GitHub Releases instead of the sentinel-served binary. Empty = sentinel path.",
+					},
+					"allow_downgrade": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Permit github_tag to be older than the running version (a deliberate rollback). Default false: an older tag is refused.",
+					},
 				},
 			},
 			Handler: handleUpgradeBackend,
@@ -830,7 +844,7 @@ func (s *Server) registerTools() {
 				"on the daemon; this tool returns once the trigger is accepted. After waiting " +
 				"(see `pollHint` in the response), call `security_findings` to read results.\n\n" +
 				"Typical durations:\n" +
-				"  - clamav: seconds (file walk + signature match)\n" +
+				"  - clamav: minutes; runs inside the box (needs 4 GB RAM and ClamAV installed there), started by the box owner\n" +
 				"  - pentest: tens of seconds (per-target probe)\n" +
 				"  - zap: minutes (active spider + attack passes)\n\n" +
 				"For continuous/scheduled scanning, the cloud product offers a hosted " +
@@ -918,7 +932,8 @@ func (s *Server) registerTools() {
 			Name: "security_sentry_status",
 			Description: "Report the background threat-detection engine's on/off state (#1640): " +
 				"'OK' (running, findings persisted), 'DEGRADED' (running, but no Postgres — " +
-				"findings don't survive a daemon restart), 'UNAVAILABLE' (no eBPF object loaded, " +
+				"findings don't survive a daemon restart; or the process responder cannot apply " +
+				"THROTTLE/FREEZE (responses disabled); see `reason`), 'UNAVAILABLE' (no eBPF object loaded, " +
 				"or no audit store — nothing is being detected; check `reason`), or 'DISABLED' " +
 				"(CONTAINARIUM_THREAT_SENTRY unset). Also lists every registered detection rule's " +
 				"health — a rule that panicked shows healthy=false with lastError set, but the " +
@@ -930,22 +945,6 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{},
 			},
 			Handler: handleSecuritySentryStatus,
-		},
-		{
-			Name: "bridge_dns_status",
-			Description: "Report whether the bridge DNS record that resolves the app-hosting base domain " +
-				"to core-caddy matches core-caddy's live address (#2188): 'IN_SYNC', 'PENDING' (no " +
-				"reconcile pass has finished yet), 'DEGRADED' (the last pass could not converge — check " +
-				"`reason`/`lastError`; boxes may resolve the base domain to an address nothing answers " +
-				"on), or 'NOT_MANAGED' (this daemon does not run the reconciler). Includes core-caddy's " +
-				"address, the desired and current record, the drift count and pass timestamps.\n\n" +
-				"Call this when boxes cannot reach the base domain or a hostname under it. Read-only, " +
-				"admin-only. Takes no arguments.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-			Handler: handleBridgeDNSStatus,
 		},
 		{
 			Name: "list_bad_destinations",
@@ -1063,6 +1062,27 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{},
 			},
 			Handler: handleInstallZap,
+		},
+		{
+			Name: "install_clamav",
+			Description: "Install ClamAV and its signatures inside ONE box so the tenant-run malware scan " +
+				"(`security_scan` with kind=clamav) can run. Started by the box owner; the platform " +
+				"runs the package install in the box and does not read the box's files.\n\n" +
+				"Requires a running Debian/Ubuntu box with at least 4 GB RAM and outbound access to the " +
+				"package mirror and the ClamAV signature servers. Idempotent: an already-installed box " +
+				"runs nothing and reports ALREADY_PRESENT. Other OS families report UNSUPPORTED_FAMILY. " +
+				"Can take several minutes.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"container_name": map[string]interface{}{
+						"type":        "string",
+						"description": "The box to install into, e.g. alice-container.",
+					},
+				},
+				"required": []string{"container_name"},
+			},
+			Handler: handleInstallClamav,
 		},
 		{
 			Name: "sync_ssh_config",
@@ -1213,6 +1233,47 @@ func (s *Server) registerTools() {
 				},
 			},
 			Handler: handleCodeLogs,
+		},
+		{
+			Name: "code_pending",
+			Description: "List the open permission requests of a code run started with " +
+				"--approvals ask: request id, age, time left before it expires into a deny, " +
+				"and the prompt (tool and command or path), plus the run's request counts. " +
+				"Same table as `containarium code pending`, then `---` and the same data as " +
+				"JSON, whose `tool` and `input` fields (each request's tool and complete input) are what code_answer takes. The list is read from " +
+				"a journal the agent on the box can write, so it is advisory.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":  map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
+					"name": map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
+				},
+			},
+			Handler: handleCodePending,
+		},
+		{
+			Name: "code_answer",
+			Description: "Answer one open permission request of a code run: allow or deny. " +
+				"Pass `tool` and `input` exactly as code_pending's JSON returned them for this " +
+				"request: an allow permits exactly that tool call, the answer is signed for it, and the run " +
+				"acts on it only if that is the tool call it asked. If the request has changed " +
+				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
+				"nothing and reports how it was closed, as an error. Same signing as " +
+				"`containarium code answer`. Needs a token carrying both the code:answer and ssh:write scopes.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box", "request_id", "tool", "input", "answer"},
+				"properties": map[string]interface{}{
+					"box":        map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
+					"name":       map[string]interface{}{"type": "string", "description": "Run name (default \"code\")."},
+					"request_id": map[string]interface{}{"type": "string", "description": "Request id, from code_pending."},
+					"tool":       map[string]interface{}{"type": "string", "description": "The request's tool exactly as the JSON part of code_pending returned it."},
+					"input":      map[string]interface{}{"type": "string", "description": "The request's complete tool input exactly as the JSON part of code_pending returned it."},
+					"answer":     map[string]interface{}{"type": "string", "enum": []string{"allow", "deny"}, "description": "allow or deny."},
+				},
+			},
+			Handler: handleCodeAnswer,
 		},
 		{
 			Name: "connect",
@@ -1747,6 +1808,10 @@ func (s *Server) registerTools() {
 						"type":        "number",
 						"description": "Wait up to this many seconds (0-10) for new bytes when none are available.",
 					},
+					"gateway_after_seq": map[string]interface{}{
+						"type":        "number",
+						"description": "Return model-gateway call events after this sequence number (default 0); pass the previous gateway_next_seq to continue.",
+					},
 				},
 				"required": []string{"run_id"},
 			},
@@ -1808,10 +1873,20 @@ func (s *Server) registerTools() {
 	// Guardrail policy read (#2368, guardrail_tools.go); no write tool.
 	s.tools = append(s.tools, guardrailTools()...)
 
+	// Replace-all SSH keys (#2945, ssh_keys_tools.go).
+	s.tools = append(s.tools, sshKeysTools()...)
+
+	// Process policy get/set/release (#2666, process_policy_tools.go) —
+	// thin wrappers over the routes `containarium security process-policy`
+	// also calls.
+	s.tools = append(s.tools, processPolicyTools()...)
+	s.tools = append(s.tools, minerSignatureTools()...)
+
 	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
 	// — thin wrappers over the TrackerService gateway that
 	// `containarium tracker issue/change ...` also calls.
 	s.tools = append(s.tools, trackerTools()...)
+	s.tools = append(s.tools, sprintTools()...)
 
 	// Model-gateway mint (#1726, gateway_tools.go) — one thin wrapper over the
 	// ModelGatewayService gateway that `containarium gateway mint` also calls.
@@ -1829,6 +1904,8 @@ func (s *Server) registerTools() {
 	// entry here or they default to `""` (no-scope, allowed
 	// to any token) — see TestEveryToolHasScope which
 	// enforces this in CI.
+	s.tools = append(s.tools, networkTenantCapabilityTool())
+	s.tools = append(s.tools, tenantNetworkTools()...)
 	scopeByTool := toolScopeAssignments()
 	for i := range s.tools {
 		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
@@ -1856,6 +1933,8 @@ func toolScopeAssignments() map[string]string {
 		"tracker_get_issue":     auth.ScopeTrackerRead,
 		"tracker_list_issues":   auth.ScopeTrackerRead,
 		"tracker_get_change":    auth.ScopeTrackerRead,
+		"sprint_board":          auth.ScopeTrackerRead,
+		"sprint_list":           auth.ScopeTrackerRead,
 		"tracker_comment":       auth.ScopeTrackerWrite,
 		"tracker_claim":         auth.ScopeTrackerWrite,
 		"tracker_set_labels":    auth.ScopeTrackerWrite,
@@ -1875,6 +1954,8 @@ func toolScopeAssignments() map[string]string {
 		"code_status":          auth.ScopeCodeWrite,
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
+		"code_pending":         auth.ScopeSSHWrite,
+		"code_answer":          auth.ScopeCodeAnswer, // #3191: the daemon also needs ssh:write
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle
@@ -1914,9 +1995,13 @@ func toolScopeAssignments() map[string]string {
 		// routes / network exposure
 		"list_routes": auth.ScopeRoutesRead,
 		// network guards (#2353): read-only security posture.
-		"network_guard_status": auth.ScopeSecurityRead,
-		"expose_port":          auth.ScopeRoutesWrite,
-		"delete_route":         auth.ScopeRoutesWrite,
+		"network_guard_status":        auth.ScopeSecurityRead,
+		"network_tenant_capabilities": auth.ScopeContainersRead,
+		"list_network_policies":       auth.ScopeNetworkPolicyRead,
+		"get_network_policy":          auth.ScopeNetworkPolicyRead,
+		"patch_tenant_access":         auth.ScopeNetworkPolicyWrite,
+		"expose_port":                 auth.ScopeRoutesWrite,
+		"delete_route":                auth.ScopeRoutesWrite,
 		// collaborators (#1145) — container access control, scoped like any
 		// other container write/read (the RPCs themselves gate on
 		// AuthorizeTenant, same as create/delete container).
@@ -1943,10 +2028,11 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
-		// A restore test writes (creates and drops a scratch database in
-		// the target container), so it needs the write scope even though
-		// it never mutates the backup itself.
-		"verify_backup": auth.ScopeBackupsWrite,
+		// A restore test creates and drops a scratch database in an isolated
+		// target container. Only backups:verify authorizes it after the
+		// v0.120.1 deprecation window; backups:write grants no verify access
+		// (#3219).
+		"verify_backup": auth.ScopeBackupsVerify,
 		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)
 		"kms_status":              auth.ScopeKMSAdmin,
@@ -1955,6 +2041,16 @@ func toolScopeAssignments() map[string]string {
 		// server-side guardrail policy (#2368): a read of security config,
 		// gated like security_findings. The write has no tool.
 		"guardrail_policy_get": auth.ScopeSecurityRead,
+		// process policy (#2666): get is a read, set/release change what the
+		// responder does to a box — same split as the bad-destination list.
+		"security_process_policy_get":     auth.ScopeSecurityRead,
+		"security_process_policy_set":     auth.ScopeSecurityWrite,
+		"security_process_policy_release": auth.ScopeSecurityWrite,
+		// miner-signature list (#2763): list is a read; add/remove change what
+		// the miner rule matches.
+		"list_miner_signatures":  auth.ScopeSecurityRead,
+		"add_miner_signature":    auth.ScopeSecurityWrite,
+		"remove_miner_signature": auth.ScopeSecurityWrite,
 		// security tools
 		"security_scan":          auth.ScopeSecurityWrite,
 		"security_remediate":     auth.ScopeSecurityWrite,
@@ -1975,11 +2071,15 @@ func toolScopeAssignments() map[string]string {
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.
 		"install_zap": auth.ScopeSecurityWrite,
+		// install_clamav runs a package install inside one box; the daemon
+		// authorizes the box owner.
+		"install_clamav": auth.ScopeSecurityWrite,
 		// developer-loop tools
 		"push":            auth.ScopeCodeWrite,
 		"sync":            auth.ScopeCodeWrite,
 		"sync_ssh_config": auth.ScopeSSHWrite,
 		"connect":         auth.ScopeSSHWrite,
+		"set_ssh_keys":    auth.ScopeSSHWrite,
 		// #2522: ending a user's SSH sessions; the daemon also limits a
 		// non-admin caller to its own sessions.
 		"terminate_user_sessions": auth.ScopeSSHWrite,
@@ -1999,16 +2099,17 @@ func toolScopeAssignments() map[string]string {
 		"compose_status":   auth.ScopeContainersRead,
 		"compose_enable":   auth.ScopeContainersWrite,
 		"compose_disable":  auth.ScopeContainersWrite,
-
-		// bridge DNS record status (#2188): a host-level read like
-		// get_upgrade_status; the RPC itself is admin-role-gated.
-		"bridge_dns_status": auth.ScopeContainersRead,
 	}
 }
 
 // Tool handlers
 
 func handleCreateContainer(client API, args map[string]interface{}) (string, error) {
+	if value, exists := args["network_tenant"]; exists {
+		if _, ok := value.(string); !ok {
+			return "", fmt.Errorf("network_tenant must be a string")
+		}
+	}
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -2034,24 +2135,26 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	}
 
 	req := CreateContainerRequest{
-		Username: username,
+		NetworkTenant: getStringArg(args, "network_tenant", ""),
+		Username:      username,
 		Resources: &ResourceLimits{
 			CPU:    getStringArg(args, "cpu", "4"),
 			Memory: getStringArg(args, "memory", "4GB"),
 			Disk:   getStringArg(args, "disk", "50GB"),
 		},
-		Image:        getStringArg(args, "image", "images:ubuntu/24.04"),
-		EnablePodman: getBoolArg(args, "enable_podman", true),
-		GPU:          getStringArg(args, "gpu", ""),
-		GPUs:         getStringSliceArg(args, "gpus"),
-		Monitoring:   getBoolArg(args, "monitoring", false),
-		Encrypted:    getBoolArg(args, "encrypted", false),
-		TenantID:     getStringArg(args, "tenant_id", ""),
-		Pool:         getStringArg(args, "pool", ""),
-		BackendID:    getStringArg(args, "backend_id", ""),
-		Region:       getStringArg(args, "region", ""),
-		Isolation:    isolationWire,
-		OSType:       osTypeWire,
+		Image:            getStringArg(args, "image", "images:ubuntu/24.04"),
+		EnablePodman:     getBoolArg(args, "enable_podman", true),
+		DisableAutoSleep: getBoolArg(args, "disable_auto_sleep", false),
+		GPU:              getStringArg(args, "gpu", ""),
+		GPUs:             getStringSliceArg(args, "gpus"),
+		Monitoring:       getBoolArg(args, "monitoring", false),
+		Encrypted:        getBoolArg(args, "encrypted", false),
+		TenantID:         getStringArg(args, "tenant_id", ""),
+		Pool:             getStringArg(args, "pool", ""),
+		BackendID:        getStringArg(args, "backend_id", ""),
+		Region:           getStringArg(args, "region", ""),
+		Isolation:        isolationWire,
+		OSType:           osTypeWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
@@ -2218,6 +2321,9 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 	for _, container := range resp.Containers {
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)
+		if container.NetworkTenant != "" {
+			result += fmt.Sprintf("   Network Tenant: %s (%s)\n", container.NetworkTenant, container.NetworkTenantSource)
+		}
 		result += fmt.Sprintf("   State: %s\n", container.State)
 		// Show WHERE the box actually runs. A wrong/typo'd backend_id silently
 		// falls back to the default pool, so surfacing the resolved backend is
@@ -2622,6 +2728,7 @@ func handleGetSystemInfo(client API, args map[string]interface{}) (string, error
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)
 
 	result += "\n" + formatCPUBudget(resp.Info)
+	result += formatStoragePools(resp.Info.StoragePools)
 
 	// OTLP endpoint: where monitoring=true containers ship telemetry.
 	// Point docker-in-LXC apps here when they can't inherit the
@@ -2678,7 +2785,11 @@ func handleCheckForUpdates(client API, args map[string]interface{}) (string, err
 func handleUpgradeBackend(client API, args map[string]interface{}) (string, error) {
 	backendID, _ := args["backend_id"].(string)
 	force, _ := args["force"].(bool)
-	resp, err := client.TriggerUpgrade(backendID, force)
+	githubTag, _ := args["github_tag"].(string)
+	allowDowngrade, _ := args["allow_downgrade"].(bool)
+	resp, err := client.TriggerUpgrade(TriggerUpgradeRequest{
+		BackendID: backendID, Force: force, GithubTag: githubTag, AllowDowngrade: allowDowngrade,
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to trigger upgrade: %w", err)
 	}
@@ -3260,10 +3371,19 @@ func handleRunAgentSkill(client API, args map[string]interface{}) (string, error
 		out += fmt.Sprintf("Git:       %s\n", resp.GitCommit)
 		out += fmt.Sprintf("Workspace: %s\n", resp.WorkspacePath)
 	}
-	if resp.ArtifactJSON != "" {
+	if resp.RunID != "" {
+		out += fmt.Sprintf("Run:       %s\n", resp.RunID)
+	}
+	if resp.Message != "" {
+		out += fmt.Sprintf("Message:   %s\n", resp.Message)
+	}
+	switch {
+	case resp.ArtifactJSON != "":
 		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
-	} else {
-		out += "(no artifact — the in-box agent loop is a Phase 0 seam)\n"
+	case resp.RunID != "":
+		out += fmt.Sprintf("(no artifact yet — follow the run with crew_logs run_id=%s)\n", resp.RunID)
+	default:
+		out += "(no artifact returned)\n"
 	}
 	return out, nil
 }
@@ -3334,6 +3454,9 @@ func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
 	if v, ok := getInt64Arg(args, "start_offset"); ok {
 		req.StartOffset = v
 	}
+	if v, ok := getInt64Arg(args, "gateway_after_seq"); ok {
+		req.GatewayAfterSeq = v
+	}
 	if v, ok := getIntArg(args, "follow_seconds"); ok {
 		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
 	}
@@ -3342,9 +3465,20 @@ func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n---\n",
+	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), strings.Join(resp.GetSkillIds(), ","))
+	if n := resp.GetGatewayNextSeq(); n > 0 { // absent for a run with no recorded calls: the header is as before
+		fmt.Fprintf(&b, "gateway_next_seq: %d\n", n)
+	}
+	b.WriteString("---\n")
 	b.Write(resp.GetChunk())
+	// After the chunk, which may end mid-line; each event carries its own time.
+	if calls := resp.GetGatewayCalls(); len(calls) > 0 {
+		b.WriteString("\n--- gateway calls ---\n")
+		if err := runlog.WriteGatewayCalls(&b, calls); err != nil {
+			return "", err
+		}
+	}
 	return b.String(), nil
 }
 
@@ -3391,6 +3525,78 @@ func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
 	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nstderr_dropped: %v\n---\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), resp.GetStderrDropped())
 	b.Write(resp.GetChunk())
+	return b.String(), nil
+}
+
+// handleCodePending lists a run's open permission requests (#2184) through
+// the formatter `code pending` uses.
+func handleCodePending(client API, args map[string]interface{}) (string, error) {
+	box := strings.TrimSpace(getStringArg(args, "box", ""))
+	if box == "" {
+		return "", fmt.Errorf("`box` is required")
+	}
+	run := codeRunNameArg(args)
+	resp, err := client.ListRunInputs(&pb.ListRunInputsRequest{Username: box, RunName: run})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := runlog.WriteRunInputs(&b, run, resp, time.Now()); err != nil {
+		return "", err
+	}
+	// The table escapes control characters for reading and shows only the
+	// one-line prompt; code_answer needs the raw, complete input, which the
+	// JSON form carries losslessly.
+	raw, err := protojson.Marshal(resp)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString("---\n")
+	b.Write(raw)
+	b.WriteString("\n")
+	return b.String(), nil
+}
+
+// handleCodeAnswer answers one permission request (#2184) through
+// runlog.Answer, the function `code answer` calls, signed for the input the
+// caller got from code_pending.
+func handleCodeAnswer(client API, args map[string]interface{}) (string, error) {
+	box := strings.TrimSpace(getStringArg(args, "box", ""))
+	id := strings.TrimSpace(getStringArg(args, "request_id", ""))
+	if box == "" || id == "" {
+		return "", fmt.Errorf("`box` and `request_id` are required")
+	}
+	a, err := runlog.ParseRunInputAnswer(getStringArg(args, "answer", ""))
+	if err != nil {
+		return "", err
+	}
+	tool, ok := args["tool"].(string)
+	if !ok {
+		return "", fmt.Errorf("`tool` is required: the request's tool as code_pending returned it")
+	}
+	input, ok := args["input"].(string)
+	if !ok {
+		return "", fmt.Errorf("`input` is required: the request's input as code_pending returned it")
+	}
+	run := codeRunNameArg(args)
+	current, err := runlog.OpenRequest(client, box, run, id)
+	if err != nil {
+		return "", err
+	}
+	// The caller saw this request with this tool and input; runlog.Answer
+	// refuses if either is no longer what the request carries.
+	var seen *pb.RunInput
+	if current != nil {
+		seen = &pb.RunInput{RequestId: id, Tool: tool, Prompt: current.GetPrompt(), Input: input}
+	}
+	res, err := runlog.Answer(client, box, run, id, seen, a)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := runlog.WriteAnswerResult(&b, res); err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(b.String()))
+	}
 	return b.String(), nil
 }
 

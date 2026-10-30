@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "containarium/v1/ssh_ban.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// SentinelSSHUpstreamService is private to the local operator's Unix socket.
+// It is never registered on public gRPC or REST listeners.
+service SentinelSSHUpstreamService {
+  // Open a transport-supplied identity before any routing/authentication work.
+  rpc OpenSSHUpstreamConnection(OpenSSHUpstreamConnectionRequest) returns (OpenSSHUpstreamConnectionResponse);
+  // Reset provenance before calling the authoritative routing child.
+  rpc BeginSSHUpstreamRoute(BeginSSHUpstreamRouteRequest) returns (BeginSSHUpstreamRouteResponse);
+  // Reserve one bounded backend SSH setup; rejection never means client denial.
+  rpc AcquireSSHUpstream(AcquireSSHUpstreamRequest) returns (AcquireSSHUpstreamResponse);
+  // Settle exactly the admitted attempt, preserving prior jail-window history.
+  rpc CompleteSSHUpstream(CompleteSSHUpstreamRequest) returns (CompleteSSHUpstreamResponse);
+  // Consume one ordered observer disposition without parsing an error string.
+  rpc ConsumeSSHUpstreamFailure(ConsumeSSHUpstreamFailureRequest) returns (ConsumeSSHUpstreamFailureResponse);
+  // Bind the actual signed Ensure result to an existing anonymous connection.
+  rpc RegisterSSHAnonymousRoute(RegisterSSHAnonymousRouteRequest) returns (RegisterSSHAnonymousRouteResponse);
+  // Advance one probe deadline; never release jail-risk reservations.
+  rpc HintSSHUpstreamRecovery(HintSSHUpstreamRecoveryRequest) returns (HintSSHUpstreamRecoveryResponse);
+}
+
+// SSHUpstreamPolicy is explicit, validated controller configuration.
+message SSHUpstreamPolicy {
+  google.protobuf.Duration initial_delay = 1;
+  google.protobuf.Duration max_delay = 2;
+  google.protobuf.Duration window = 3;
+  google.protobuf.Duration setup_timeout = 4;
+  uint32 failure_budget = 5;
+  uint32 risk_per_attempt = 6;
+  uint32 max_backends = 7;
+  uint32 max_pending = 8;
+  uint32 max_connections = 9;
+  double jitter = 10;
+  string egress_group = 11;
+  // Operator-owned aliases used by the standalone controller and fixtures.
+  repeated SSHUpstreamRoute routes = 12;
+}
+
+// SSHUpstreamRoute is an authoritative backend endpoint, not a client claim.
+message SSHUpstreamRoute {
+  string backend_id = 1;
+  string endpoint = 2;
+}
+
+// SSHUpstreamConnection binds the listener, full remote transport and UUID.
+message SSHUpstreamConnection {
+  SSHBanListener listener = 1;
+  string connection_id = 2;
+  string remote_addr = 3;
+  string controller_generation = 4;
+}
+
+// OpenSSHUpstreamConnectionRequest has no generation on initial registration.
+message OpenSSHUpstreamConnectionRequest {
+  SSHUpstreamConnection connection = 1;
+}
+// OpenSSHUpstreamConnectionResponse returns the process generation and warmup.
+message OpenSSHUpstreamConnectionResponse {
+  string controller_generation = 1;
+  google.protobuf.Timestamp ready_at = 2;
+}
+
+// BeginSSHUpstreamRouteRequest must match the registered transport identity.
+message BeginSSHUpstreamRouteRequest {
+  SSHUpstreamConnection connection = 1;
+}
+// BeginSSHUpstreamRouteResponse is a one-route provenance token.
+message BeginSSHUpstreamRouteResponse {
+  string route_token = 1;
+}
+
+// AcquireSSHUpstreamRequest carries only an endpoint selected by the child.
+message AcquireSSHUpstreamRequest {
+  SSHUpstreamConnection connection = 1;
+  string route_token = 2;
+  string attempt_id = 3;
+  string endpoint = 4;
+  bool proxy_credential = 5;
+}
+// AcquireSSHUpstreamResponse distinguishes actual admission from suppression.
+message AcquireSSHUpstreamResponse {
+  bool admitted = 1;
+  string lease_token = 2;
+  google.protobuf.Timestamp deadline = 3;
+  google.protobuf.Timestamp retry_at = 4;
+  SSHUpstreamAdmissionReason reason = 5;
+}
+
+// SSHUpstreamAdmissionReason is a machine-readable admission decision.
+enum SSHUpstreamAdmissionReason {
+  SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED = 0;
+  SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE = 1;
+  SSH_UPSTREAM_ADMISSION_REASON_WARMUP = 2;
+  SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE = 3;
+  SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT = 4;
+  SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN = 5;
+  SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY = 6;
+  SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED = 7;
+  SSH_UPSTREAM_ADMISSION_REASON_CAPACITY = 8;
+  SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE = 9;
+  SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST = 10;
+}
+
+// SSHUpstreamOutcome classifies a verified stage, never an error message.
+enum SSHUpstreamOutcome {
+  SSH_UPSTREAM_OUTCOME_UNSPECIFIED = 0;
+  SSH_UPSTREAM_OUTCOME_SSH_READY = 1;
+  SSH_UPSTREAM_OUTCOME_TCP_REFUSED = 2;
+  SSH_UPSTREAM_OUTCOME_CONNECT_FAILED = 3;
+  SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED = 4;
+  SSH_UPSTREAM_OUTCOME_CLIENT_AUTH_REJECTED = 5;
+  SSH_UPSTREAM_OUTCOME_HOST_KEY_FAILED = 6;
+  SSH_UPSTREAM_OUTCOME_SETUP_FAILED = 7;
+}
+
+// CompleteSSHUpstreamRequest requires the exact lease and original route token.
+message CompleteSSHUpstreamRequest {
+  SSHUpstreamConnection connection = 1;
+  string route_token = 2;
+  string lease_token = 3;
+  SSHUpstreamOutcome outcome = 4;
+}
+// CompleteSSHUpstreamResponse acknowledges settlement, not just message receipt.
+message CompleteSSHUpstreamResponse {
+  bool accepted = 1;
+}
+
+// SSHUpstreamFailureKind identifies the trailing plugin's actual callback.
+enum SSHUpstreamFailureKind {
+  SSH_UPSTREAM_FAILURE_KIND_UNSPECIFIED = 0;
+  SSH_UPSTREAM_FAILURE_KIND_AUTH = 1;
+  SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE = 2;
+}
+
+// ConsumeSSHUpstreamFailureRequest is bound to a transport, never just a bare IP.
+message ConsumeSSHUpstreamFailureRequest {
+  SSHUpstreamConnection connection = 1;
+  SSHUpstreamFailureKind kind = 2;
+}
+// ConsumeSSHUpstreamFailureResponse retains accounting unless proven otherwise.
+message ConsumeSSHUpstreamFailureResponse {
+  bool count_source_failure = 1;
+}
+
+// RegisterSSHAnonymousRouteRequest comes from the trusted Ensure-response path.
+message RegisterSSHAnonymousRouteRequest {
+  SSHUpstreamConnection connection = 1;
+  string box_name = 2;
+  string endpoint = 3;
+}
+// RegisterSSHAnonymousRouteResponse acknowledges a bounded authoritative route.
+message RegisterSSHAnonymousRouteResponse {}
+
+// HintSSHUpstreamRecoveryRequest requires the same authoritative backend id.
+message HintSSHUpstreamRecoveryRequest {
+  string backend_id = 1;
+}
+// HintSSHUpstreamRecoveryResponse does not promise budget or SSH readiness.
+message HintSSHUpstreamRecoveryResponse {
+  bool advanced = 1;
+}
+
+// SSHUpstreamRisk records a conservative worst-case jail failure timestamp.
+message SSHUpstreamRisk {
+  google.protobuf.Timestamp at = 1;
+  uint32 cost = 2;
+}
+// SSHUpstreamBackendState survives controller replacement without live sockets.
+message SSHUpstreamBackendState {
+  string backend_id = 1;
+  uint64 route_generation = 2;
+  google.protobuf.Timestamp next_probe_at = 3;
+  google.protobuf.Duration delay = 4;
+  bool blocked = 5;
+  repeated SSHUpstreamRisk risks = 6;
+}
+// SSHUpstreamIdentityAlias prevents endpoint/route changes from renewing budget.
+message SSHUpstreamIdentityAlias {
+  string alias = 1;
+  string backend_id = 2;
+}
+// SSHUpstreamCheckpoint is private durable state, not an administrative API.
+message SSHUpstreamCheckpoint {
+  string policy_hash = 1;
+  google.protobuf.Timestamp ready_at = 2;
+  repeated SSHUpstreamBackendState backends = 3;
+  repeated SSHUpstreamIdentityAlias aliases = 4;
+}

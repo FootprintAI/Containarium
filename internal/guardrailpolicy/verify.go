@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/guardrail"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -16,6 +17,7 @@ var (
 	ErrNoServerPolicy  = errors.New("guardrail: no server guardrail policy is configured")
 	ErrNoTrustedSigner = errors.New("guardrail: the server guardrail policy has no trusted signer")
 	ErrUntrustedSigner = errors.New("guardrail: attestation is not signed by a trusted signer")
+	ErrRevokedSigner   = errors.New("guardrail: attestation is signed by a revoked key")
 	ErrPolicyMismatch  = errors.New("guardrail: attestation was made under a different policy than the server's")
 	ErrVerdictNotPass  = errors.New("guardrail: attestation verdict is not PASS")
 	ErrKindNotCovered  = errors.New("guardrail: attestation does not cover a required kind")
@@ -26,7 +28,10 @@ var (
 // docs/architecture/guardrail-inbound-and-server-policy.md): it accepts the
 // bytes under dir only when all of these hold:
 //
-//   - server is a configured policy with at least one trusted signer;
+//   - server is a configured policy;
+//   - the attestation's key_id is not revoked (#2729): whatever its
+//     attested_at says, since the signer sets that time;
+//   - the policy has at least one trusted signer;
 //   - the attestation's key_id names one of server.trusted_signers, and the
 //     signature verifies against THAT signer's key (never a key the caller
 //     supplies: a caller-supplied key would let anyone sign their own input);
@@ -62,6 +67,9 @@ func VerifyClaims(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy
 	if server == nil || server.GetPolicy() == nil {
 		return nil, ErrNoServerPolicy
 	}
+	if err := CheckRevoked(att, server.GetRevokedSigners()); err != nil {
+		return nil, err
+	}
 	if len(server.GetTrustedSigners()) == 0 {
 		return nil, ErrNoTrustedSigner
 	}
@@ -93,6 +101,17 @@ func VerifyClaims(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy
 		return nil, fmt.Errorf("%w: %v", ErrKindNotCovered, err)
 	}
 	return signer, nil
+}
+
+// CheckRevoked refuses an attestation whose key is in revoked, naming the
+// key, when it was revoked and why.
+func CheckRevoked(att *pb.GuardrailAttestation, revoked []*pb.GuardrailRevokedKey) error {
+	for _, r := range revoked {
+		if r.GetKeyId() == att.GetKeyId() {
+			return fmt.Errorf("%w: key %s was revoked at %s: %s", ErrRevokedSigner, r.GetKeyId(), r.GetRevokedAt().AsTime().UTC().Format(time.RFC3339), r.GetReason())
+		}
+	}
+	return nil
 }
 
 func shortHex(s string) string {

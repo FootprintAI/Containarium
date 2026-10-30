@@ -39,6 +39,10 @@ for arg in "$@"; do
   esac
 done
 
+if [ "$INSTALL_AGENT_RUNTIME" -eq 1 ]; then
+    command -v flock >/dev/null || { echo "install-agent-runtime: flock is required" >&2; exit 1; }
+fi
+
 REPO="${REPO:-FootprintAI/Containarium}"
 RELEASE="${RELEASE:-}"
 if [[ -z "${ARTIFACT_BASE_URL:-}" ]]; then
@@ -89,8 +93,14 @@ tar -xzf /tmp/agent-runtime-bundle.tar.gz -C "${APP_DIR}"
 # PATH launcher so the daemon's `agent-runtime` exec resolves (run + serve mode).
 cat > "${PREFIX}/agent-runtime" <<LAUNCH
 #!/usr/bin/env bash
-exec node ${APP_DIR}/dist/index.js "\$@"
+exec node "${APP_DIR}/dist/index.js" "\$@"
 LAUNCH
 chmod +x "${PREFIX}/agent-runtime"
+
+cat > "${PREFIX}/agent-runtime-credential-state" <<LAUNCH
+#!/usr/bin/env bash
+exec node "${APP_DIR}/dist/credential-state-cli.js" "\$@"
+LAUNCH
+chmod +x "${PREFIX}/agent-runtime-credential-state"
 
 echo "==> agent-runtime box assembled: $(command -v agent-box), $(command -v mcp-server || echo 'mcp-server MISSING'), $(command -v agent-runtime)"

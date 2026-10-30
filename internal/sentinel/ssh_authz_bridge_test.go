@@ -49,6 +49,36 @@ func TestSSHAuthzBridgeUsesKeyStoreAndPrivateSocket(t *testing.T) {
 	}
 }
 
+// The bridge reports the shipper's routing readiness, so an enforcing plugin
+// can tell a login no backend lists from a keystore that has not synced every
+// healthy backend yet (after a manager restart, every login is unknown).
+func TestSSHAuthzBridgeReportsRoutingReadiness(t *testing.T) {
+	ks := NewKeyStore()
+	pool := NewBackendPool()
+	pool.Add(&Backend{ID: "a", Healthy: true})
+	manager := &Manager{keyStore: ks, backends: pool}
+	path := filepath.Join(t.TempDir(), "authz.sock")
+	stop, err := manager.startSSHAuthzBridge(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	client := sshauthz.NewBridgeClient(path)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if client.RoutingReady(ctx) {
+		t.Fatal("ready before the healthy backend synced")
+	}
+	ks.backends["a"] = &backendKeys{backendID: "a", lastSync: time.Now()}
+	if !client.RoutingReady(ctx) {
+		t.Fatal("not ready after every healthy backend synced")
+	}
+	stop()
+	if client.RoutingReady(ctx) {
+		t.Fatal("a dead bridge must read as not ready")
+	}
+}
+
 func TestSSHAuthzBridgeRefusesRegularFileAndRecoversStaleSocket(t *testing.T) {
 	manager := &Manager{keyStore: NewKeyStore()}
 	path := filepath.Join(t.TempDir(), "socket")

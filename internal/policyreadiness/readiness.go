@@ -25,12 +25,20 @@ import (
 // the service name in the `service` query parameter.
 const HTTPPath = "/v1/health"
 
+// CorePostgresService is the readiness entry for the daemon's startup
+// Postgres check (#2824). NOT_SERVING means the check failed within its
+// deadline, so the daemon is serving DEGRADED: every database-backed store
+// was skipped at startup and stays off until the daemon restarts. A daemon
+// with no Postgres configured does not report it.
+const CorePostgresService = "containarium.core_postgres"
+
 // Services returns the health service name of each policy store, in report
 // order.
 func Services() []string {
 	return []string{
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
+		CorePostgresService,
 	}
 }
 
@@ -38,6 +46,7 @@ func Services() []string {
 var displayNames = map[string]string{
 	pb.GuardrailPolicyService_ServiceDesc.ServiceName:        "guardrail policy store",
 	pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName: "coding-tool egress policy store",
+	CorePostgresService: "core Postgres (database-backed stores)",
 }
 
 // CheckFunc asks for one service's serving status. An error means the
@@ -72,6 +81,8 @@ func (r Result) Detail() string {
 		return fmt.Sprintf("unknown (daemon not reachable: %v)", r.Err)
 	case r.Status == healthpb.HealthCheckResponse_SERVING:
 		return "ready"
+	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == CorePostgresService:
+		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; they stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers)"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
 		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed until the daemon's retry reaches the database"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:

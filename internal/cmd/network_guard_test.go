@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 // An unguarded tenant is a failed guard even when the pass succeeded.
 func TestGuardHealthy(t *testing.T) {
@@ -34,5 +38,26 @@ func TestGuardHealthy(t *testing.T) {
 	}
 	if guardHealthy(nil) {
 		t.Error("a missing guard must not read as healthy")
+	}
+}
+
+// #2619: each unresolved entry says why, so the operator can act on it; an
+// unmanaged entry is informational and must not be worded as a failure.
+func TestPrintGuard_NamesTheReasonForUnresolved(t *testing.T) {
+	g := &guardStatusJSON{Mode: "GUARD_MODE_ENFORCE", FirewallDriver: "nftables", LastPass: "2026-10-07T00:00:00Z",
+		Unresolved: []string{"mystery"}, Unmanaged: []string{"hand-made"}}
+	var b bytes.Buffer
+	printGuard(&b, "tenant guard", unresolvedTenantReason, g)
+	got := b.String()
+	for _, want := range []string{
+		"unresolved: mystery",
+		"no user.containarium.tenant label",
+		"does not end in -container",
+		"unmanaged:  hand-made",
+		"verdict:   DEGRADED",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
 	}
 }

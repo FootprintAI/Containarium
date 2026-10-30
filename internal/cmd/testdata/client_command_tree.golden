@@ -35,8 +35,9 @@ backup get
 backup list
 backup prune
 backup restore
+backup status
 backup verify
-bridge-dns status
+box delete
 capacity advertise
 capacity get
 capacity withdraw
@@ -50,12 +51,14 @@ cluster kubeconfig
 cluster list
 cluster node-pool
 cluster status
+code answer
 code attach
 code egress-policy delete
 code egress-policy get
 code egress-policy set
 code install
 code logs
+code pending
 code run
 code runs
 code status
@@ -74,6 +77,8 @@ create
 crew get
 crew list
 crew logs
+crew plan
+crew plan validate
 crew run
 crew status
 debug
@@ -87,10 +92,15 @@ gateway mint
 gateway models
 get
 guardrail apply
+guardrail baseline set
 guardrail keygen
 guardrail policy get
 guardrail policy set
 guardrail scan
+guardrail signer bundle
+guardrail signer revoke
+guardrail signer rotate
+guardrail status
 guardrail verify
 info
 install-stack
@@ -128,6 +138,8 @@ moved:sync-accounts
 moved:tunnel
 moved:upgrade-watchdog
 network-guard status
+network-policy access apply
+network-policy access preview
 network-policy delete
 network-policy get
 network-policy list
@@ -139,6 +151,12 @@ network-policy set
 network-policy signature add
 network-policy signature list
 network-policy signature rm
+network-policy status
+network-tenant capabilities
+notify delete
+notify set ntfy
+notify show
+notify test
 org get-default-region
 org set-default-region
 passthrough-route add
@@ -157,6 +175,14 @@ recipe workspace-access
 regions
 remind-me
 resize
+retention hold list
+retention hold release
+retention hold set
+retention mode get
+retention mode set
+retention policy get
+retention policy set
+retention report
 route add
 route delete
 route list
@@ -183,9 +209,17 @@ secrets set-kms-key
 security bad-destinations add
 security bad-destinations list
 security bad-destinations remove
+security clamav install
+security exec-events
 security findings
 security findings list
 security findings resolve
+security miner-signatures add
+security miner-signatures list
+security miner-signatures remove
+security process-policy get
+security process-policy release
+security process-policy set
 security scan-opt-in allow
 security scan-opt-in list
 security scan-opt-in refuse
@@ -199,12 +233,16 @@ snapshot create
 snapshot delete
 snapshot list
 snapshot rollback
+sprint board
+sprint list
 ssh list
 ssh propagate
 ssh remove
+ssh rotate
 ssh setup
 ssh-config show
 ssh-config sync
+ssh-keys set
 sync
 token delegate
 token generate
@@ -213,7 +251,12 @@ token list-revoked
 token refresh
 token revoke
 token unscoped-report
+tool-access clear
+tool-access get
+tool-access run-user
+tool-access set
 tracker change submit
+tracker change submit-files
 tracker change view
 tracker connect
 tracker disconnect
@@ -231,6 +274,7 @@ tracker route list
 tracker route set
 tracker status
 traffic connections
+traffic find
 traffic history
 traffic summary
 ttl get

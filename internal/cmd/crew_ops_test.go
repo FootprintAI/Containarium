@@ -21,6 +21,8 @@ import (
 // pattern for `agent run --engine`.
 
 func resetCrewRunFlags() {
+	crewRunGraphFile = ""
+	crewRunConcurrency = 0
 	crewRunBackendID = ""
 	crewRunPool = ""
 	crewRunInput = ""
@@ -28,6 +30,38 @@ func resetCrewRunFlags() {
 	crewRunGitRef = ""
 	crewRunGitCredentialFile = ""
 	crewRunEngineOverrides = nil
+	crewRunModelOverrides = nil
+}
+
+func TestCrewRun_GraphFlagsReachDaemonRequest(t *testing.T) {
+	for _, transport := range []string{"grpc", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			resetCrewRunFlags()
+			t.Cleanup(resetCrewRunFlags)
+			capture := &crewRunCaptureServer{}
+			startCrewRunDaemon(t, transport, capture)
+			plan := strings.Replace(examplePlanYAML, "    skill_id: issue-implementer", "    skill_id: issue-implementer\n    resources:\n      min_cpu_cores: 4\n      min_memory_bytes: 8589934592\n      requires_gpu: true", 1)
+			crewRunGraphFile = writePlan(t, "plan.yaml", plan)
+			crewRunConcurrency = 2
+			if err := runCrewRun(crewRunCmd, []string{"freeform-crew"}); err != nil {
+				t.Fatal(err)
+			}
+			capture.mu.Lock()
+			got := capture.got
+			capture.mu.Unlock()
+			graph, err := loadTaskGraph(crewRunGraphFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CrewId != "freeform-crew" || got.Concurrency != 2 || !proto.Equal(got.Graph, graph) {
+				t.Fatalf("graph request did not survive %s transport: %v", transport, got)
+			}
+			r := got.Graph.Nodes[0].GetResources()
+			if r.GetMinCpuCores() != 4 || r.GetMinMemoryBytes() != 8<<30 || !r.GetRequiresGpu() {
+				t.Fatalf("resource requirements lost over %s: %v", transport, r)
+			}
+		})
+	}
 }
 
 // crewRunCaptureServer records the RunCrew request the daemon's handler
@@ -46,7 +80,7 @@ func (s *crewRunCaptureServer) RunCrew(_ context.Context, req *pb.RunCrewRequest
 	return &pb.RunCrewResponse{Run: &pb.CrewRun{Id: "run-1", CrewId: req.GetCrewId()}}, nil
 }
 
-func startCrewRunDaemon(t *testing.T, transport string, capture *crewRunCaptureServer) {
+func startCrewRunDaemon(t *testing.T, transport string, capture pb.CrewServiceServer) {
 	t.Helper()
 	prevServer, prevHTTP, prevToken, prevInsecure := serverAddr, httpMode, authToken, insecure
 	t.Cleanup(func() { serverAddr, httpMode, authToken, insecure = prevServer, prevHTTP, prevToken, prevInsecure })
@@ -164,6 +198,76 @@ func TestCrewRun_InvalidEngineFlag(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("error = %q, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// #3259: --model <skill-id>=<model-id> reaches the daemon as model_overrides,
+// byte for byte, over both transports.
+func TestCrewRun_ModelFlagsReachDaemonRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want *pb.RunCrewRequest
+	}{
+		{
+			name: "one override",
+			args: []string{"--model", "hello-agent-claude=claude-test-1"},
+			want: &pb.RunCrewRequest{CrewId: "two-engine-crew", ModelOverrides: map[string]string{"hello-agent-claude": "claude-test-1"}},
+		},
+		{
+			name: "two overrides, alongside an engine override",
+			args: []string{"--model", "hello-agent-claude=model-a", "--model", "hello-agent-codex=model-b", "--engine", "hello-agent-claude=codex"},
+			want: &pb.RunCrewRequest{
+				CrewId:          "two-engine-crew",
+				ModelOverrides:  map[string]string{"hello-agent-claude": "model-a", "hello-agent-codex": "model-b"},
+				EngineOverrides: map[string]pb.AgentEngine{"hello-agent-claude": pb.AgentEngine_AGENT_ENGINE_CODEX},
+			},
+		},
+	}
+	for _, transport := range []string{"grpc", "http"} {
+		for _, tt := range tests {
+			t.Run(transport+"/"+tt.name, func(t *testing.T) {
+				capture := &crewRunCaptureServer{}
+				startCrewRunDaemon(t, transport, capture)
+				resetCrewRunFlags()
+				t.Cleanup(resetCrewRunFlags)
+				if err := crewRunCmd.ParseFlags(tt.args); err != nil {
+					t.Fatalf("parse flags: %v", err)
+				}
+				if err := runCrewRun(crewRunCmd, []string{"two-engine-crew"}); err != nil {
+					t.Fatalf("runCrewRun: %v", err)
+				}
+				capture.mu.Lock()
+				got := capture.got
+				capture.mu.Unlock()
+				if !proto.Equal(got, tt.want) {
+					t.Errorf("daemon received a different request\n got: %v\nwant: %v", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestCrewRun_InvalidModelFlag(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args    []string
+		wantErr string
+	}{
+		"missing equals":     {[]string{"--model", "hello-agent-claude"}, "want <skill-id>=<model-id>"},
+		"empty model":        {[]string{"--model", "hello-agent-claude="}, "want <skill-id>=<model-id>"},
+		"duplicate skill id": {[]string{"--model", "a=m1", "--model", "a=m2"}, "given more than once"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resetCrewRunFlags()
+			t.Cleanup(resetCrewRunFlags)
+			if err := crewRunCmd.ParseFlags(tc.args); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+			_, err := resolveCrewRunModelOverrides()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
 			}
 		})
 	}

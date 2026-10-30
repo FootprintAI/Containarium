@@ -7,7 +7,9 @@
 #
 #   helm install containarium ./charts/containarium-k8s \
 #     -f charts/containarium-k8s/values-gke.yaml \
-#     --set daemon.jwtSecret="$(openssl rand -hex 24)"
+#     --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+#     --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+#     --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 #
 # Prereqs: a GKE cluster (Standard or Autopilot) and the agent-sandbox
 # controller. See docs/EKS-GKE-DEPLOY.md for the full walkthrough.

@@ -139,7 +139,16 @@ route, rows, and minted tokens.
   no in-guest downloads) → CA sees the node join.
 - **Down:** CA decides a node is surplus (its own utilization logic,
   not ours), drains it via the K8s API, then calls `DeleteNodes` →
-  daemon deletes the VM and marks the `k8s_cluster_nodes` row.
+  daemon deletes the VM and marks the `k8s_cluster_nodes` row. CA runs
+  with its stock timers (`--scale-down-delay-after-add` and
+  `--scale-down-unneeded-time`, 10m each), so a surplus node usually
+  lives ~20m. The daemon env vars
+  `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD` and
+  `CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME` (Go durations, e.g.
+  `5m`) override them for clusters deployed after the daemon starts.
+  They exist for test lanes: the release-gating KVM e2e sets them on tag
+  runs, and nightly runs keep the stock timers. Unset means stock, and a
+  malformed value is logged and ignored.
 - **Refusals are loud:** a scale-up beyond `nodes_max` or past the CPU
   admission gate returns a typed gRPC error; the daemon records it in
   `k8s_cluster_events` so `cluster status` shows *why* the cluster

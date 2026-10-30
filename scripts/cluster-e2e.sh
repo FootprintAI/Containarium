@@ -47,6 +47,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/lib/wait-daemon-ready.sh"
 
 GRPC_PORT="${CONTAINARIUM_E2E_GRPC_PORT:-15051}"
 HTTP_PORT="${CONTAINARIUM_E2E_HTTP_PORT:-18080}"
@@ -221,6 +223,8 @@ sudo env \
   CONTAINARIUM_CLUSTER_ADVERTISE_ADDR="$ADVERTISE_HOST" \
   CONTAINARIUM_CLUSTER_CA_ADVERTISE="$ADVERTISE_HOST:36442" \
   CONTAINARIUM_CLUSTER_CA_PKI_DIR="$WORKDIR/cluster-ca" \
+  CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD="${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD:-}" \
+  CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME="${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME:-}" \
   "$BIN" daemon --port "$GRPC_PORT" --http-port "$HTTP_PORT" \
   >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
@@ -242,12 +246,29 @@ for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   if ! sudo kill -0 "$DAEMON_PID" 2>/dev/null; then
     fail "daemon exited during startup"
   fi
-  if curl -s -o /dev/null "http://127.0.0.1:$HTTP_PORT/v1/clusters"; then
+  if daemon_is_ready "$HTTP_PORT" /v1/clusters; then
     break
   fi
   [ "$i" = "$DAEMON_WAIT_TRIES" ] && fail "daemon HTTP gateway not answering after $((DAEMON_WAIT_TRIES * 2))s"
   sleep 2
 done
+
+# When the workflow asked for shortened autoscaler scale-down timers, prove
+# the daemon took them. A green run does not print the daemon log, and a
+# silent fall back to the stock 10m + 10m timers would only show up as the
+# lane quietly getting ~8 minutes slower again. The daemon logs the line when
+# it wires the reconciler; allow a short bound in case the gateway answered
+# first.
+if [ -n "${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD:-}${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME:-}" ]; then
+  override_line=""
+  for _ in $(seq 1 15); do
+    override_line="$(grep -m1 'autoscaler scale-down timers overridden' "$DAEMON_LOG" || true)"
+    [ -n "$override_line" ] && break
+    sleep 2
+  done
+  [ -n "$override_line" ] || fail "scale-down timers were requested (delay-after-add='${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_DELAY_AFTER_ADD:-}', unneeded-time='${CONTAINARIUM_CLUSTER_CA_SCALE_DOWN_UNNEEDED_TIME:-}') but the daemon never logged applying them"
+  log "$override_line"
+fi
 
 # --- run the lane --------------------------------------------------------
 log "running the six-step journey (isolation: $ISOLATION, sabotage: ${CONTAINARIUM_E2E_SABOTAGE:-none})"

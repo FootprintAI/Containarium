@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -34,6 +37,27 @@ type BackupServer struct {
 	pb.UnimplementedBackupServiceServer
 	containers *ContainerServer
 	mgr        *backup.Manager
+	verifierMu sync.Mutex
+	verifiers  map[string]bool
+}
+
+// acquireVerifier reserves one managed verifier per tenant. The release must
+// run after container cleanup, including when provisioning or verification fails.
+func (s *BackupServer) acquireVerifier(tenant string) (release func(), ok bool) {
+	s.verifierMu.Lock()
+	defer s.verifierMu.Unlock()
+	if s.verifiers[tenant] {
+		return nil, false
+	}
+	if s.verifiers == nil {
+		s.verifiers = make(map[string]bool)
+	}
+	s.verifiers[tenant] = true
+	return func() {
+		s.verifierMu.Lock()
+		defer s.verifierMu.Unlock()
+		delete(s.verifiers, tenant)
+	}, true
 }
 
 // Manager exposes the backup core for wiring into other subsystems that
@@ -80,16 +104,65 @@ func NewBackupServer(containers *ContainerServer) (*BackupServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	var opts []backup.Option
+	opts, err := boxBackupOptionsFromEnv(containers.manager)
+	if err != nil {
+		return nil, err
+	}
 	if wrapper != nil {
 		opts = append(opts, backup.WithWrapper(wrapper))
+		containers.SetManagedBackupKeyConfigured(true)
 		log.Printf("[backup] managed key mode enabled (wrapping per-backup identities under %s)", os.Getenv(envBackupKMSKeyName))
 	}
 
+	mgr := backup.NewManager(containers.manager, uploader, dir, opts...)
+	// A daemon killed mid whole-box backup leaves its spill file behind.
+	if n, err := mgr.SweepStaleBoxSpills(); err != nil {
+		log.Printf("[backup] sweeping stale whole-box spill files: %v", err)
+	} else if n > 0 {
+		log.Printf("[backup] removed %d stale whole-box spill file(s) at start", n)
+	}
 	return &BackupServer{
 		containers: containers,
-		mgr:        backup.NewManager(containers.manager, uploader, dir, opts...),
+		mgr:        mgr,
 	}, nil
+}
+
+// Whole-box backup settings (#2801).
+const (
+	// envBackupBoxMaxBytes overrides the 256 GiB cap on a stored BOX
+	// backup, in bytes.
+	envBackupBoxMaxBytes = "CONTAINARIUM_BACKUP_BOX_MAX_BYTES"
+	// envIncusBackupsDir is where Incus stages an export before streaming
+	// it (Incus 6.0 LTS has no direct_backup). The free-space pre-flight
+	// counts a copy of the box there.
+	envIncusBackupsDir = "CONTAINARIUM_INCUS_BACKUPS_DIR"
+	// defaultIncusBackupsDir is that directory on a default Incus install.
+	defaultIncusBackupsDir = "/var/lib/incus/backups"
+)
+
+// boxBackupOptionsFromEnv wires whole-box backup into the backup core: the
+// container manager as the export, the Incus staging dir for the
+// pre-flight, and the cap. A cap that does not parse fails startup, like a
+// bad KMS key name: an operator who set one and silently got the default
+// would find out when a backup is refused, or when the disk fills.
+func boxBackupOptionsFromEnv(box backup.BoxOps) ([]backup.Option, error) {
+	var opts []backup.Option
+	if box != nil {
+		opts = append(opts, backup.WithBoxOps(box))
+	}
+	dir := strings.TrimSpace(os.Getenv(envIncusBackupsDir))
+	if dir == "" {
+		dir = defaultIncusBackupsDir
+	}
+	opts = append(opts, backup.WithBoxStagingDirs(dir))
+	if raw := strings.TrimSpace(os.Getenv(envBackupBoxMaxBytes)); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%s=%q: want a positive number of bytes", envBackupBoxMaxBytes, raw)
+		}
+		opts = append(opts, backup.WithMaxBoxBytes(n))
+	}
+	return opts, nil
 }
 
 // loadBackupWrapper builds the key wrapper from CONTAINARIUM_BACKUP_KMS_
@@ -129,6 +202,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	scope, err := scopeFromProto(req.Scope)
+	if err != nil {
+		return nil, err
+	}
+	if scope == pb.BackupScope_BACKUP_SCOPE_BOX {
+		return s.createBoxBackup(ctx, req)
+	}
+
 	dest, err := destFromProto(req.Destination)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -151,6 +232,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	// re-checks the same rules; this is where they become gRPC codes.
 	keyMode, err := keyModeFromProto(req.KeyMode, s.mgr.HasWrapper(), ageRecipient != "")
 	if err != nil {
+		return nil, err
+	}
+
+	// #3169: with require_encryption, a dump that would be stored with no
+	// key at all is refused here, before any container is touched, so no
+	// plaintext object is ever written.
+	if err := refusePlaintext(req.RequireEncryption, req.Username, keyMode, ageRecipient, s.mgr.HasWrapper()); err != nil {
+		log.Printf("[backup] REFUSED user=%s: %v", req.Username, err)
 		return nil, err
 	}
 
@@ -196,6 +285,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		for _, r := range records {
 			resp.Records = append(resp.Records, recordToProto(r))
 			log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
+			if backupStoredPlaintext(r) {
+				log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", r.Username, r.ID)
+			}
 		}
 		for _, e := range errs {
 			resp.Failures = append(resp.Failures, e.Error())
@@ -213,6 +305,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.Internal, "backup failed: %v", err)
 	}
 	log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	if backupStoredPlaintext(rec) {
+		log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", rec.Username, rec.ID)
+	}
 	return &pb.CreateBackupResponse{
 		Message: "backup created: " + rec.ID,
 		Record:  recordToProto(rec),
@@ -220,15 +315,101 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	}, nil
 }
 
+// createBoxBackup takes a BOX-scope backup (#2800 contract, #2801 data
+// path). The caller has already passed the scope and tenant checks; the box
+// is the tenant's own container, addressed by username as everywhere else.
+//
+// Every refusal precedes the export. No command runs inside the box: the
+// export goes through Incus, which reads a point-in-time snapshot on ZFS.
+func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
+	// A BOX request names a box, not a database. A connection — even an
+	// empty one — or a hook means the caller built a database request and
+	// set the wrong scope; guessing which they meant is not our call.
+	if req.Connection != nil {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup takes no database connection: unset connection, or use scope DATABASE")
+	}
+	if req.Hook != "" || req.HookFormat != pb.HookFormat_HOOK_FORMAT_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup takes no hook or hook_format: unset them, or use scope DATABASE")
+	}
+	if _, err := destFromProto(req.Destination); err != nil {
+		return nil, err
+	}
+
+	// Plaintext is forbidden for BOX (decision of 2026-10-25 on #2800). The
+	// database default can resolve to plaintext, so BOX does not take a
+	// default at all: the caller names MANAGED, AGE_RECIPIENT or BOTH, and
+	// keyModeFromProto then checks this daemon can honour it.
+	if req.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "a BOX backup must be encrypted: set key_mode to MANAGED, AGE_RECIPIENT or BOTH")
+	}
+	ageRecipient, err := resolveAgeRecipient(ctx, backupSecretsReader(s.containers), req.Username, req.AgeRecipient)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	keyMode, err := keyModeFromProto(req.KeyMode, s.mgr.HasWrapper(), ageRecipient != "")
+	if err != nil {
+		return nil, err
+	}
+	dest, err := destFromProto(req.Destination)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := s.containers.manager.Get(req.Username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "box for user %s not found: %v", req.Username, err)
+	}
+	rec, err := s.mgr.CreateBox(backup.BoxCreateOptions{
+		Username:      req.Username,
+		ContainerName: info.Name,
+		Destination:   dest,
+		GCSBucket:     req.GcsBucket,
+		AgeRecipient:  ageRecipient,
+		KeyMode:       keyMode,
+	})
+	if err != nil {
+		return nil, boxCreateStatus(err)
+	}
+	log.Printf("[backup] created id=%s user=%s box=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	return &pb.CreateBackupResponse{
+		Message: "box backup created: " + rec.ID,
+		Record:  recordToProto(rec),
+		Records: []*pb.BackupRecord{recordToProto(rec)},
+	}, nil
+}
+
+// boxCreateStatus maps a whole-box create failure to a gRPC code: no room
+// (the free-space pre-flight, or the cap) is ResourceExhausted, a daemon
+// that cannot export is FailedPrecondition, a second backup of a box that is
+// already being backed up is Aborted (retry when the first finishes, the
+// same code a profile operation already in progress returns), and anything
+// else is Internal.
+func boxCreateStatus(err error) error {
+	switch {
+	case errors.Is(err, backup.ErrInsufficientSpace), errors.Is(err, backup.ErrDumpTooLarge):
+		return status.Errorf(codes.ResourceExhausted, "box backup failed: %v", err)
+	case errors.Is(err, backup.ErrBoxBackupInProgress):
+		return status.Errorf(codes.Aborted, "box backup failed: %v", err)
+	case errors.Is(err, backup.ErrBoxUnavailable):
+		return status.Errorf(codes.FailedPrecondition, "box backup failed: %v", err)
+	default:
+		return status.Errorf(codes.Internal, "box backup failed: %v", err)
+	}
+}
+
 // ListBackups returns stored records. Admins see all tenants; a non-admin
-// is scoped to their own backups regardless of the requested filter.
+// defaults to their own backups and cannot request another tenant's records.
 func (s *BackupServer) ListBackups(ctx context.Context, req *pb.ListBackupsRequest) (*pb.ListBackupsResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsRead); err != nil {
 		return nil, err
 	}
 	username := req.Username
 	if subject, roles, ok := auth.SubjectFromGRPCContext(ctx); ok && !auth.HasRole(roles, auth.RoleAdmin) {
-		// Non-admins only ever see their own backups.
+		if username != "" {
+			if err := auth.AuthorizeTenant(ctx, username); err != nil {
+				return nil, err
+			}
+		}
 		username = subject
 	}
 	if username != "" {
@@ -340,7 +521,12 @@ func (s *BackupServer) resolveRestoreTarget(ctx context.Context, name string) (s
 // that could not be run at all (unknown backup, missing target
 // container) returns a gRPC error.
 func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
-	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsVerify); err != nil {
+		if status.Code(err) == codes.PermissionDenied {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"%s; re-mint the verifier token with containarium token generate --username <tenant> --roles user --scopes %s,%s --expiry 720h --secret-file <jwt-secret-file> --raw",
+				status.Convert(err).Message(), auth.ScopeBackupsRead, auth.ScopeBackupsVerify)
+		}
 		return nil, err
 	}
 	if req.Id == "" {
@@ -363,9 +549,34 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		return nil, err
 	}
 
-	target, err := s.containers.manager.Get(req.TargetUsername)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "target container for user %s not found: %v", req.TargetUsername, err)
+	var targetName string
+	conn := connFromProto(req.Connection)
+	if req.TargetUsername == rec.Username {
+		release, ok := s.acquireVerifier(rec.Username)
+		if !ok {
+			return nil, status.Error(codes.ResourceExhausted, "a managed backup verification is already running for this tenant")
+		}
+		defer release()
+		// A tenant's own username selects a daemon-owned throwaway target,
+		// never its live container. Authorization above still binds BOTH
+		// the backup and target to the caller's tenant.
+		name, password, cleanup, err := s.containers.manager.CreateBackupVerifier(rec.Username)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "create isolated backup verifier: %v", err)
+		}
+		targetName = name
+		conn = backup.PgConn{Host: "127.0.0.1", Port: 5432, User: "postgres", Password: password}
+		defer func() {
+			if err := cleanup(); err != nil {
+				log.Printf("[backup] verifier cleanup failed target=%s: %v", name, err)
+			}
+		}()
+	} else {
+		target, err := s.containers.manager.Get(req.TargetUsername)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "target container for user %s not found: %v", req.TargetUsername, err)
+		}
+		targetName = target.Name
 	}
 
 	// Resolve the source container so the core can refuse to restore
@@ -381,9 +592,9 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	v, err := s.mgr.Verify(backup.VerifyOptions{
 		ID:              req.Id,
-		TargetContainer: target.Name,
+		TargetContainer: targetName,
 		SourceContainer: sourceName,
-		Conn:            connFromProto(req.Connection),
+		Conn:            conn,
 		VerifiedBy:      subject,
 		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored (#1831, #2295)
 	})
@@ -488,6 +699,32 @@ func backupAllRequested(req *pb.CreateBackupRequest) bool {
 
 // --- proto <-> core mapping ---
 
+// scopeFromProto normalises a create request's scope (#2800). UNSPECIFIED
+// is DATABASE, so a client that predates the field behaves exactly as
+// before; a value this daemon does not know is refused, never read as
+// either scope.
+func scopeFromProto(s pb.BackupScope) (pb.BackupScope, error) {
+	switch s {
+	case pb.BackupScope_BACKUP_SCOPE_UNSPECIFIED, pb.BackupScope_BACKUP_SCOPE_DATABASE:
+		return pb.BackupScope_BACKUP_SCOPE_DATABASE, nil
+	case pb.BackupScope_BACKUP_SCOPE_BOX:
+		return pb.BackupScope_BACKUP_SCOPE_BOX, nil
+	default:
+		return pb.BackupScope_BACKUP_SCOPE_UNSPECIFIED, status.Errorf(codes.InvalidArgument, "unknown scope %d", s)
+	}
+}
+
+// scopeToProto reports what a stored record captured. A BOX record is
+// recognised by its engine (#2801); every other record is a database backup
+// (pg_dump or hook), including every record written before the field
+// existed.
+func scopeToProto(r *backup.Record) pb.BackupScope {
+	if r.Engine == backup.EngineBox {
+		return pb.BackupScope_BACKUP_SCOPE_BOX
+	}
+	return pb.BackupScope_BACKUP_SCOPE_DATABASE
+}
+
 func destFromProto(d pb.BackupDestination) (backup.Destination, error) {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:
@@ -523,6 +760,8 @@ func engineToProto(engine string) pb.BackupEngine {
 		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
 	case backup.EngineHook:
 		return pb.BackupEngine_BACKUP_ENGINE_HOOK
+	case backup.EngineBox:
+		return pb.BackupEngine_BACKUP_ENGINE_BOX
 	default:
 		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
 	}
@@ -559,6 +798,25 @@ func keyModeFromProto(m pb.BackupKeyMode, hasWrapper, hasRecipient bool) (backup
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "unknown key_mode %d", m)
 	}
+}
+
+// backupStoredPlaintext reports whether a stored record has no key protecting
+// it at all (#3169): not age-encrypted and not managed/both key mode.
+func backupStoredPlaintext(r *backup.Record) bool {
+	return !r.Encrypted && keyModeToProto(r) == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
+}
+
+// refusePlaintext enforces require_encryption (#3169). It refuses exactly
+// the case Manager.resolveKeyMode would store in plaintext: no explicit key
+// mode, no recipient (given or registered), and no managed key wrapper on
+// this daemon. Without require it never refuses, so today's default stands.
+func refusePlaintext(require bool, username string, mode backup.KeyMode, recipient string, hasWrapper bool) error {
+	if !require || mode != "" || strings.TrimSpace(recipient) != "" || hasWrapper {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"refusing to store tenant %s's backup unencrypted (require_encryption): no age recipient was given or registered (%s) and this daemon has no managed backup key; register one with `containarium secrets set %s %s age1...` on this daemon",
+		username, backupAgeRecipientSecretName, username, backupAgeRecipientSecretName)
 }
 
 // keyModeToProto maps a stored record's key mode to the wire enum. The
@@ -676,5 +934,6 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		KekId:      r.KEKID,
 		KeyMode:    keyModeToProto(r),
 		HookFormat: hookFormatToProto(r.HookFormat),
+		Scope:      scopeToProto(r),
 	}
 }

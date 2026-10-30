@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -48,12 +51,26 @@ type PushSpec struct {
 	RunID       string
 	IssueNumber int64
 	Title       string
+	// Files are committed on top of HeadSHA, as one commit with message
+	// FilesMessage, and that commit is pushed instead (#2798: the sealed
+	// Proof Pack). Empty pushes HeadSHA as it is.
+	Files        []File
+	FilesMessage string
+}
+
+// File is one file PushBundle commits on top of the bundle's head.
+type File struct {
+	Path    string
+	Content []byte
 }
 
 // PushResult is what a successful PushBundle produced.
 type PushResult struct {
 	Branch string
 	SHA    string
+	// BaseSHA is the commit the pushed one was built on; set by
+	// PushFiles, which resolves it from the remote itself.
+	BaseSHA string
 }
 
 // GitPusher pushes a bundle's commits to a daemon-chosen branch on the
@@ -131,6 +148,11 @@ func (p *ExecGitPusher) PushBundle(ctx context.Context, spec PushSpec) (PushResu
 	if spec.BaseSHA == "" || spec.HeadSHA == "" {
 		return PushResult{}, ErrEmptyBundle
 	}
+	for _, f := range spec.Files {
+		if err := checkFilePath(f.Path); err != nil {
+			return PushResult{}, err
+		}
+	}
 
 	tmp, err := os.MkdirTemp("", "containarium-submit-*")
 	if err != nil {
@@ -157,13 +179,96 @@ func (p *ExecGitPusher) PushBundle(ctx context.Context, spec PushSpec) (PushResu
 		return PushResult{}, wrapGitErr("fetch bundle", err, stderr, spec.Credential)
 	}
 
+	pushSHA := spec.HeadSHA
+	if len(spec.Files) > 0 {
+		if pushSHA, err = commitFiles(ctx, run, env, tmp, spec); err != nil {
+			return PushResult{}, err
+		}
+	}
+
 	branch := BranchName(spec.RunID, spec.IssueNumber, spec.Title)
-	refspec := spec.HeadSHA + ":refs/heads/" + branch
+	refspec := pushSHA + ":refs/heads/" + branch
 	if _, stderr, err := run(ctx, env, []string{"-C", tmp, "push", spec.RemoteURL, refspec}); err != nil {
 		return PushResult{}, wrapGitErr("push to remote", err, stderr, spec.Credential)
 	}
 
-	return PushResult{Branch: branch, SHA: spec.HeadSHA}, nil
+	return PushResult{Branch: branch, SHA: pushSHA}, nil
+}
+
+// filesCommitter is the identity of the commit commitFiles makes; the
+// hardened environment has no git config to take one from.
+var filesCommitter = []string{
+	"GIT_AUTHOR_NAME=Containarium", "GIT_AUTHOR_EMAIL=noreply@containarium.invalid",
+	"GIT_COMMITTER_NAME=Containarium", "GIT_COMMITTER_EMAIL=noreply@containarium.invalid",
+}
+
+var commitIDPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// checkFilePath accepts a clean, relative, slash-separated path that stays
+// inside the tree and names nothing under .git.
+func checkFilePath(p string) error {
+	bad := p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, `\`) || path.Clean(p) != p
+	for _, el := range strings.Split(p, "/") {
+		bad = bad || el == ".." || el == "." || strings.EqualFold(el, ".git")
+	}
+	if bad {
+		return fmt.Errorf("submit: refusing to commit file at %q", p)
+	}
+	return nil
+}
+
+// commitFiles writes spec.Files into one commit on top of spec.HeadSHA in
+// the bare repository repo, through a private index file, and returns the
+// commit's id. A file already at one of the paths is replaced.
+func commitFiles(ctx context.Context, run gitRunFunc, env []string, repo string, spec PushSpec) (string, error) {
+	dir, err := os.MkdirTemp("", "containarium-submit-files-*")
+	if err != nil {
+		return "", fmt.Errorf("submit: create files dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	idxEnv := append(append([]string(nil), env...), "GIT_INDEX_FILE="+filepath.Join(dir, "index"))
+	git := func(step string, e []string, args ...string) (string, error) {
+		out, stderr, err := run(ctx, e, append([]string{"-C", repo}, args...))
+		if err != nil {
+			return "", wrapGitErr(step, err, stderr, spec.Credential)
+		}
+		return strings.TrimSpace(out), nil
+	}
+
+	if _, err := git("read head tree", idxEnv, "read-tree", spec.HeadSHA); err != nil {
+		return "", err
+	}
+	for i, f := range spec.Files {
+		src := filepath.Join(dir, fmt.Sprintf("file-%d", i))
+		if err := os.WriteFile(src, f.Content, 0o600); err != nil {
+			return "", fmt.Errorf("submit: stage %s: %w", f.Path, err)
+		}
+		blob, err := git("hash file", env, "hash-object", "-w", "--no-filters", "--", src)
+		if err != nil {
+			return "", err
+		}
+		if !commitIDPattern.MatchString(blob) {
+			return "", fmt.Errorf("submit: hash-object printed %q, not an object id", blob)
+		}
+		if _, err := git("add file to index", idxEnv, "update-index", "--add", "--cacheinfo", "100644,"+blob+","+f.Path); err != nil {
+			return "", err
+		}
+	}
+	tree, err := git("write tree", idxEnv, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	commit, err := git("commit files", append(append([]string(nil), env...), filesCommitter...),
+		"commit-tree", tree, "-p", spec.HeadSHA, "-m", spec.FilesMessage)
+	if err != nil {
+		return "", err
+	}
+	// An empty id would make the push refspec ":refs/heads/<branch>", a
+	// deletion.
+	if !commitIDPattern.MatchString(commit) {
+		return "", fmt.Errorf("submit: commit-tree printed %q, not a commit id", commit)
+	}
+	return commit, nil
 }
 
 // hardenedEnv builds the COMPLETE environment for every git invocation

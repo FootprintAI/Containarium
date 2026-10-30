@@ -1,6 +1,7 @@
 import { Codex, type Thread, type ThreadItem } from "@openai/codex-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
+import { describeRunEnding } from "./ending.js";
 
 // CodexThreadFactory starts the Codex thread a run streams; a seam for tests.
 export type CodexThreadFactory = () => Pick<Thread, "runStreamed">;
@@ -38,14 +39,27 @@ export class CodexEngine implements Engine {
       ? `${cfg.systemPrompt}\n\n---\nTask:\n${task}`
       : task;
 
+    return this.turn(thread, prompt, cfg, journal);
+  }
+
+  // turn streams one turn on the thread. Its result's followUp runs the next
+  // turn on the same thread, so the model has this one in context (#2513).
+  private async turn(
+    thread: Pick<Thread, "runStreamed">,
+    prompt: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult> {
     const { events } = await thread.runStreamed(prompt, cfg.outputSchema ? { outputSchema: cfg.outputSchema } : undefined);
     let finalResponse = "";
     let usage: unknown;
+    let turnCompleted = false;
     for await (const event of events) {
       if (event.type === "item.completed") {
         if (event.item.type === "agent_message") finalResponse = event.item.text;
         journalCodexItem(event.item, journal);
       } else if (event.type === "turn.completed") {
+        turnCompleted = true;
         usage = event.usage;
       } else if (event.type === "turn.failed") {
         throw new Error(event.error.message);
@@ -53,7 +67,20 @@ export class CodexEngine implements Engine {
         journal.append({ kind: "error", text: event.message });
       }
     }
-    return { outputJson: finalResponse.trim(), usage };
+    // #2513: the Codex SDK reports no stop reason; what the stream does say is
+    // whether the turn completed. See ending.ts for the row's shape.
+    const ending = describeRunEnding({
+      finalMessage: finalResponse,
+      hasFinalOutput: finalResponse.trim() !== "",
+      abnormal: !turnCompleted,
+      fields: [{ name: "finish_reason", value: turnCompleted ? "turn_completed" : "no_turn_completed" }],
+    });
+    if (ending) journal.append({ kind: "status", text: ending });
+    return {
+      outputJson: finalResponse.trim(),
+      usage,
+      followUp: (next, nextJournal) => this.turn(thread, next, cfg, nextJournal),
+    };
   }
 }
 

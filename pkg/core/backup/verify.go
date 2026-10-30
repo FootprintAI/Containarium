@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -100,6 +101,9 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 	// verification that reads like a corrupt backup. A hook that declared
 	// a pg_custom archive (#2405) is the same bytes database mode
 	// produces, so it runs every check below unchanged.
+	if r.Engine == EngineBox {
+		return nil, errBoxRecordNotDatabase(r.ID, "restore-tested")
+	}
 	if r.Engine == EngineHook && r.HookFormat != HookFormatPGCustom {
 		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
 	}
@@ -149,24 +153,27 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		fail("integrity", err.Error())
 		return m.commitVerification(r, v, started)
 	}
-	pass("integrity", fmt.Sprintf("sha256 matches recorded checksum (%d bytes)", len(data)))
+	defer func() { _ = data.Close() }()
+	pass("integrity", fmt.Sprintf("sha256 matches recorded checksum (%d bytes)", data.size))
 
-	// 1b. Decrypt — the check that answers "does anyone actually hold a
-	// working key for this backup?" (#2295). A backup can be perfectly
-	// intact (integrity above passes) and still be permanently
-	// unrecoverable if the registered recipient's matching private key
-	// is lost; only an attempted decrypt can tell the two apart. Recorded
-	// as its own named check so "decrypt failed" is distinguishable from
-	// "restore failed" in the evidence.
-	if r.Encrypted {
-		pt, err := decryptWithIdentity(data, opts.AgeIdentity)
-		if err != nil {
+	// Stage the stream in the target before creating any database. Age
+	// authentication must succeed through EOF before pg_restore can run.
+	inContainerPath := "/tmp/containarium-verify-" + r.ID + ".dump"
+	n, err := m.writeDump(opts.TargetContainer, inContainerPath, data, r.Encrypted, opts.AgeIdentity)
+	if err != nil {
+		var decryptErr *decryptionError
+		if errors.As(err, &decryptErr) {
 			fail("decrypt", fmt.Sprintf("could not decrypt with the supplied identity: %v", err))
-			return m.commitVerification(r, v, started)
+		} else {
+			fail("restore", fmt.Sprintf("could not push dump into target container: %v", err))
 		}
-		data = pt
-		pass("decrypt", fmt.Sprintf("decrypted with the supplied identity (%d plaintext bytes)", len(data)))
+		return m.commitVerification(r, v, started)
 	}
+	if r.Encrypted {
+		pass("decrypt", fmt.Sprintf("decrypted with the supplied identity (%d plaintext bytes)", n))
+	}
+
+	defer func() { _ = m.ops.Exec(opts.TargetContainer, []string{"rm", "-f", inContainerPath}) }()
 
 	// 2. Create the throwaway database in the target container.
 	if _, stderr, err := m.ops.ExecWithOutput(opts.TargetContainer,
@@ -183,13 +190,7 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 			wrapPg(conn.Password, psqlCmd(conn, "postgres", fmt.Sprintf("DROP DATABASE IF EXISTS %s", quoteIdent(scratch)))))
 	}()
 
-	// 3. Load the dump into the scratch database.
-	inContainerPath := "/tmp/containarium-verify-" + r.ID + ".dump"
-	if err := m.ops.WriteFile(opts.TargetContainer, inContainerPath, data, "0600"); err != nil {
-		fail("restore", fmt.Sprintf("could not push dump into target container: %v", err))
-		return m.commitVerification(r, v, started)
-	}
-	defer func() { _ = m.ops.Exec(opts.TargetContainer, []string{"rm", "-f", inContainerPath}) }()
+	// 3. Load the completely staged dump into the scratch database.
 
 	restoreScript := fmt.Sprintf(
 		"pg_restore -h %s -p %d -U %s -d %s %s",

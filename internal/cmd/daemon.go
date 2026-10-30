@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -76,9 +78,6 @@ var (
 	alertWebhookSecret     string
 	sentinelURL            string
 	sshHost                string
-	dnsPassthroughHosts    []string
-	bridgeDNSReconcile     bool
-	bridgeDNSCreate        bool
 	peerAddrs              []string
 	localBackendID         string
 	pool                   string
@@ -141,6 +140,10 @@ Examples:
 	RunE: runDaemon,
 }
 
+// poolHeadroomFloors is --pool-headroom-floor, filled and validated by pflag
+// (#3128).
+var poolHeadroomFloors = poolcapacity.Floors{}
+
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 
@@ -176,7 +179,7 @@ func init() {
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
 	daemonCmd.Flags().BoolVar(&requireIsolatedStorage, "require-isolated-storage", false, "Refuse to start on a storage pool that does not give each container its own volume. The dir driver puts every tenant rootfs on one filesystem, so they share one journal and one tenant's writeback can stall another tenant's fsync (see #1206). Off by default: a shared journal is harmless on a dev host or a single-tenant box. Turn it on for backends running mutually untrusting tenants.")
 	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
-	daemonCmd.Flags().BoolVar(&disableSecurityScanner, "disable-security-scanner", false, "Disable the ClamAV malware scanner that otherwise starts automatically whenever Postgres is configured and auto-scans every newly created container. No independent opt-out existed before this flag — it was purely gated on Postgres being present. Off by default (scanner stays on); set true to skip it, e.g. for a throughput-sensitive deployment or a benchmark where its background work would otherwise add real per-create latency.")
+	daemonCmd.Flags().BoolVar(&disableSecurityScanner, "disable-security-scanner", false, "Disable the scan job queue and report store that otherwise start whenever Postgres is configured. The daemon no longer starts any scan on its own (#2631): scans run only when a box owner requests one. Off by default; set true to skip the queue entirely.")
 	daemonCmd.Flags().BoolVar(&disablePentestScanner, "disable-pentest-scanner", false, "Disable the network pentest scanner (headers/TLS/ports/web/DNS) that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner; independent flag since an operator may want one scanner without the other.")
 	daemonCmd.Flags().BoolVar(&disableZapScanner, "disable-zap-scanner", false, "Disable the ZAP web-app scanner that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner.")
 
@@ -210,9 +213,6 @@ func init() {
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
-	daemonCmd.Flags().StringArrayVar(&dnsPassthroughHosts, "dns-passthrough-host", nil, "Hostname under --base-domain that boxes must resolve through the upstream resolvers instead of the local Caddy edge (repeatable: one hostname per flag, not comma-separated; a blank or malformed value fails at boot). With app hosting the bridge DNS resolves *.<base-domain> to Caddy; each host given here is carved out of that wildcard, like --ssh-host already is. Use it for an API host under the base domain that Caddy does not serve. Empty = only --ssh-host is carved out.")
-	daemonCmd.Flags().BoolVar(&bridgeDNSReconcile, "bridge-dns-reconcile", true, "Keep the bridge's raw.dnsmasq record for --base-domain on core-caddy's live address (#2188). Set to false to switch the reconciler off without rolling back; the record is then left exactly as it is (#2232).")
-	daemonCmd.Flags().BoolVar(&bridgeDNSCreate, "bridge-dns-create", false, "Let the bridge DNS reconciler CREATE the --base-domain record on a bridge that has none. Default false: a host without a record is left alone (every box would otherwise start resolving every name under the base domain to core-caddy); the record is only created when this daemon installs core-caddy itself, or with this flag (#2232).")
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
@@ -225,6 +225,7 @@ func init() {
 
 	// Runtime selection
 	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
+	daemonCmd.Flags().Var(poolHeadroomFloors, "pool-headroom-floor", "Refuse container creates and snapshots on an Incus storage pool once it is this percent used, as <pool>=<percent>. Repeatable, one pool each; whole percent 86-99 (above the 85% \"pool nearly full\" mark). Pools not named use 95. Host status and the built-in alert keep 85/95 (#3128).")
 	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
 	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
@@ -358,6 +359,16 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		log.Printf("  Profile: default (configured)")
 	}
 
+	// #3130: bind the HTTP port BEFORE the core-container and Postgres
+	// waits below (up to ~2 min each), so the backend answers /health as
+	// "degraded" with the reason instead of refusing connections and
+	// looking dead. Every other path returns 503 until the gateway takes
+	// the listener over in DualServer.Start. The port can still change
+	// once the persisted daemon config loads; releaseUnlessServing then
+	// closes it and the gateway binds the final port as before.
+	early := bindStartupHealth(enableREST, "", daemonHTTPPort)
+	defer early.Close()
+
 	// Wait for core containers (postgres, caddy) to be ready before proceeding.
 	// This prevents the race condition where the daemon starts before core
 	// containers are fully booted after a spot VM preemption/restart.
@@ -388,16 +399,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			log.Printf("  Falling back to the shared client — a stuck Incus call could block this wait past its own timeout")
 			bootWaitClient = incusClient
 		}
+		early.SetReason(startupReasonCoreContainers)
 		if err := waitForCoreContainers(bootWaitClient, 2*time.Minute); err != nil {
 			log.Printf("Warning: %v", err)
 			log.Printf("  Proceeding anyway — some features may be unavailable")
 		}
 	}
 
-	// Backfill role labels and reconcile base scripts — incus-specific, no-op on k8s.
+	// Backfill role labels — incus-specific, no-op on k8s.
+	// Timezone setup runs during provisioning; replaying it here would
+	// overwrite a tenant-selected timezone on every daemon restart (#3146).
 	if incusClient != nil {
 		backfillCoreContainerLabels(incusClient)
-		go reconcileBaseScripts(incusClient)
 	}
 
 	// Always auto-detect Caddy container IP if no URL specified.
@@ -475,26 +488,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if postgresConnString != "" {
 		log.Printf("Waiting for PostgreSQL to become reachable...")
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		for {
-			pingPool, pingErr := pgxpool.New(waitCtx, postgresConnString)
-			if pingErr == nil {
-				if err := pingPool.Ping(waitCtx); err == nil {
-					pingPool.Close()
-					log.Printf("PostgreSQL is reachable")
-					break
-				}
-				pingPool.Close()
-			}
-			select {
-			case <-waitCtx.Done():
-				log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
-				goto pgWaitDone
-			case <-time.After(5 * time.Second):
-				log.Printf("  still waiting for PostgreSQL...")
-			}
+		if waitForPostgres(waitCtx, postgresConnString, 5*time.Second, early.SetReason) {
+			log.Printf("PostgreSQL is reachable")
+			early.SetReason(startupReasonInitialising)
+		} else {
+			// /health keeps "postgres unavailable" until the gateway
+			// takes over.
+			log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
 		}
-	pgWaitDone:
 		waitCancel()
+	} else {
+		early.SetReason(startupReasonInitialising)
 	}
 
 	// Load persisted daemon config from PostgreSQL (values saved by previous runs).
@@ -652,6 +656,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		CertsDir:            daemonCertsDir,
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
+		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,
@@ -663,47 +668,45 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
 			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
 		},
-		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
-		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
-		GuardrailRateLimits:        daemonGuardrailRateLimits(),
-		CaddyAdminURL:              caddyAdminURL,
-		HostIP:                     hostIPFromCIDR(networkSubnet),
-		DaemonConfigStore:          daemonConfigStore,
-		CaddyCertDir:               caddyCertDir,
-		VictoriaMetricsURL:         victoriaMetricsURL,
-		Standalone:                 standaloneMode,
-		DisableSecurityScanner:     disableSecurityScanner,
-		DisablePentestScanner:      disablePentestScanner,
-		DisableZapScanner:          disableZapScanner,
-		AlertWebhookURL:            alertWebhookURL,
-		AlertWebhookSecret:         alertWebhookSecret,
-		SentinelURL:                sentinelURL,
-		SSHHost:                    sshHost,
-		DNSPassthroughHosts:        dnsPassthroughHosts,
-		BridgeDNSReconcileDisabled: !bridgeDNSReconcile,
-		BridgeDNSCreate:            bridgeDNSCreate,
-		Peers:                      peerAddrs,
-		LocalBackendID:             resolveBackendID(localBackendID),
-		Pool:                       pool,
-		Region:                     region,
-		CPUOvercommitFactor:        cpuOvercommitFactor,
-		CPUOvercommitEnforce:       cpuOvercommitEnforce,
-		PlacementCPUAware:          placementCPUAware,
-		PublicHostname:             publicHostname,
-		PublicAliases:              publicAliases,
-		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain),
-		PublicPort:                 publicPort,
-		ProxyProtocol:              proxyProtocol,
-		ProxyProtocolTrusted:       proxyProtocolTrusted,
-		ClientIPHeaders:            clientIPHeaders,
-		TrustedProxyCIDRs:          trustedProxyCIDRs,
-		OTelDropLabels:             otelDropLabels,
-		Runtime:                    runtime,
-		ZFSTenantRoot:              zfsTenantRoot,
-		ZFSKeysDir:                 zfsKeysDir,
-		RunJournalRetention:        runJournalRetention,
-		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
-		SSHAuthzKeysCommand:        sshAuthzKeysCommand,
+		GuardrailStagingRoot:   daemonGuardrailStagingRoot,
+		GuardrailSnapshotDir:   daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:    daemonGuardrailRateLimits(),
+		CaddyAdminURL:          caddyAdminURL,
+		HostIP:                 hostIPFromCIDR(networkSubnet),
+		DaemonConfigStore:      daemonConfigStore,
+		CaddyCertDir:           caddyCertDir,
+		VictoriaMetricsURL:     victoriaMetricsURL,
+		Standalone:             standaloneMode,
+		DisableSecurityScanner: disableSecurityScanner,
+		DisablePentestScanner:  disablePentestScanner,
+		DisableZapScanner:      disableZapScanner,
+		AlertWebhookURL:        alertWebhookURL,
+		AlertWebhookSecret:     alertWebhookSecret,
+		SentinelURL:            sentinelURL,
+		SSHHost:                sshHost,
+		Peers:                  peerAddrs,
+		LocalBackendID:         resolveBackendID(localBackendID),
+		Pool:                   pool,
+		Region:                 region,
+		PoolHeadroomFloors:     poolHeadroomFloors,
+		CPUOvercommitFactor:    cpuOvercommitFactor,
+		CPUOvercommitEnforce:   cpuOvercommitEnforce,
+		PlacementCPUAware:      placementCPUAware,
+		PublicHostname:         publicHostname,
+		PublicAliases:          publicAliases,
+		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain),
+		PublicPort:             publicPort,
+		ProxyProtocol:          proxyProtocol,
+		ProxyProtocolTrusted:   proxyProtocolTrusted,
+		ClientIPHeaders:        clientIPHeaders,
+		TrustedProxyCIDRs:      trustedProxyCIDRs,
+		OTelDropLabels:         otelDropLabels,
+		Runtime:                runtime,
+		ZFSTenantRoot:          zfsTenantRoot,
+		ZFSKeysDir:             zfsKeysDir,
+		RunJournalRetention:    runJournalRetention,
+		SSHAuthzMaxKeyAge:      sshAuthzMaxKeyAge,
+		SSHAuthzKeysCommand:    sshAuthzKeysCommand,
 	}
 
 	// Create dual server
@@ -775,7 +778,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		go recoverJumpServerAccounts()
 	}
 
-	return dualServer.Start(ctx)
+	err = dualServer.Start(ctx)
+	if errors.Is(err, server.ErrRestartForPostgresRecovery) {
+		// #2824: a distinct non-zero status so a supervisor with
+		// Restart=on-failure (or always) restarts the daemon fully wired.
+		log.Printf("%v (exit %d)", err, server.ExitCodePostgresRecovered)
+		os.Exit(server.ExitCodePostgresRecovered)
+	}
+	return err
 }
 
 // recoverJumpServerAccounts re-provisions any missing host jump-server accounts
@@ -876,45 +886,6 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 			}
 		}
 	}
-}
-
-// reconcileBaseScripts ensures all running containers have base scripts applied.
-// It runs in the background at daemon startup. Containers that already have the
-// scripts are fast (apt-get install is a no-op for already-installed packages).
-func reconcileBaseScripts(incusClient *incus.Client) {
-	log.Printf("Reconciling base scripts on all running containers...")
-
-	mgr, err := container.New()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	containers, err := incusClient.ListContainers()
-	if err != nil {
-		log.Printf("Warning: base script reconciliation failed: %v", err)
-		return
-	}
-
-	for _, c := range containers {
-		if c.State != "Running" {
-			continue
-		}
-
-		// Derive the lookup name for InstallStack:
-		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
-		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
-		lookupName := c.Name
-		if strings.HasSuffix(c.Name, "-container") {
-			lookupName = strings.TrimSuffix(c.Name, "-container")
-		}
-
-		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
-			log.Printf("Warning: failed to apply ntp to %s: %v", c.Name, err)
-		}
-	}
-
-	log.Printf("Base script reconciliation complete")
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for

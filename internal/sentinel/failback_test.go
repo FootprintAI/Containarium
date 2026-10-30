@@ -14,6 +14,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// syncBuffer is a bytes.Buffer safe for concurrent use. The standard logger is
+// process-global, so a goroutine that outlives an earlier test (a tunnel
+// session monitor, say) can still log into a buffer a later test installed with
+// log.SetOutput; the logger serialises its own writes but not the test's reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // failbackRig is a Manager in proxy mode with a preferred primary ("gcp",
 // priority 0) and a lower-priority tunnel peer, whose health the test scripts
 // tick by tick. switchToProxy is stubbed through its seam, but the stub applies
@@ -162,7 +183,7 @@ func TestFailback_AFailedSwitchLeavesThePrimaryAndRetries(t *testing.T) {
 		return inner(b)
 	}
 
-	var logs bytes.Buffer
+	var logs syncBuffer
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 

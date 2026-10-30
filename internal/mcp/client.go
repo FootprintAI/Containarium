@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"io"
 	"log"
 	"net/http"
@@ -179,7 +180,7 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, &client.HTTPStatusError{Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return respBody, nil
@@ -187,6 +188,16 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 
 // CreateContainer creates a new container
 func (c *Client) CreateContainer(req CreateContainerRequest) (*CreateContainerResponse, error) {
+	if req.NetworkTenant != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if caps.Contract != incus.NativeTenantContractID || caps.BackendScope != incus.NativeTenantBackendScope || !caps.NativeMembershipRead || !caps.SharedTenantCreate {
+			return nil, fmt.Errorf("provider does not advertise ready native network Tenant creation")
+		}
+	}
+
 	respBody, err := c.doRequest("POST", "/v1/containers", req)
 	if err != nil {
 		return nil, err
@@ -392,7 +403,12 @@ type RunAgentSkillRequest struct {
 
 // RunAgentSkillResponse is the result of an agent-skill run.
 type RunAgentSkillResponse struct {
-	ArtifactJSON  string `json:"artifactJson"`
+	ArtifactJSON string `json:"artifactJson"`
+	// RunID is the run's handle; follow it with crew_logs.
+	RunID string `json:"runId,omitempty"`
+	// Message is free-form status from the server, e.g. how to follow a run
+	// still in flight on a server that runs skills asynchronously.
+	Message       string `json:"message,omitempty"`
 	GitCommit     string `json:"gitCommit,omitempty"`
 	WorkspacePath string `json:"workspacePath,omitempty"`
 	Container     *struct {
@@ -528,7 +544,7 @@ func (c *Client) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, err
 	}
 	out := &pb.ListBoxRunsResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out.GetRuns(), nil
@@ -541,7 +557,37 @@ func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogR
 		return nil, err
 	}
 	out := &pb.TailBoxRunLogResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
+// ListRunInputs lists a box run's open permission requests (#2184).
+func (c *Client) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
+	respBody, err := c.doRequest("GET", runlog.RunInputsPath(req.GetUsername(), req.GetRunName()), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListRunInputsResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
+// AnswerRunInput answers one permission request of a box run (#2184).
+func (c *Client) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+	respBody, err := c.doRequest("POST", runlog.RunInputAnswerPath(req.GetUsername(), req.GetRunName(), req.GetRequestId()), body)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.AnswerRunInputResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -580,6 +626,10 @@ type CreateBackupRequest struct {
 	// (what protojson decodes). Empty is omitted, which the daemon reads
 	// as opaque.
 	HookFormat string `json:"hook_format,omitempty"`
+
+	// #3214: refuse (FAILED_PRECONDITION) a backup that would be stored
+	// unencrypted; mirrors `backup create --require-encryption` (#3169).
+	RequireEncryption bool `json:"require_encryption,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -781,19 +831,6 @@ func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
 		return nil, err
 	}
 	var resp SentryStatusResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetBridgeDNSStatus reports the bridge DNS reconciler's last pass (#2188).
-func (c *Client) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
-	respBody, err := c.doRequest("GET", "/v1/system/bridge-dns", nil)
-	if err != nil {
-		return nil, err
-	}
-	var resp BridgeDNSStatusResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -1377,6 +1414,10 @@ func (c *Client) ValidateGPU(backendID, pci string) (*ValidateGPUResult, error) 
 type TriggerUpgradeRequest struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Force     bool   `json:"force,omitempty"`
+	// GithubTag installs this release directly from GitHub (#1028).
+	GithubTag string `json:"github_tag,omitempty"`
+	// AllowDowngrade permits a GithubTag older than the running version (#3059).
+	AllowDowngrade bool `json:"allow_downgrade,omitempty"`
 }
 
 // TriggerUpgradeResponse mirrors the TriggerUpgrade response. #354.
@@ -1393,11 +1434,8 @@ type TriggerUpgradeResponse struct {
 // binary now (empty backendID = the local/primary daemon; a peer id forwards to
 // that peer). Admin-only daemon-side. Async — a successful local upgrade
 // restarts the daemon, so confirm via the backend version in list_backends. #354.
-func (c *Client) TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/backends/upgrade", TriggerUpgradeRequest{
-		BackendID: backendID,
-		Force:     force,
-	})
+func (c *Client) TriggerUpgrade(req TriggerUpgradeRequest) (*TriggerUpgradeResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backends/upgrade", req)
 	if err != nil {
 		return nil, err
 	}
@@ -1994,15 +2032,43 @@ func (c *Client) InstallZap() (*InstallZapResponse, error) {
 	return &resp, nil
 }
 
+// InstallClamav asks the daemon to install ClamAV and its signatures inside
+// one box (#2659). It is the single Go call behind both the
+// `containarium security clamav install` CLI command and the
+// `install_clamav` MCP tool. The install can take minutes (package download
+// and the first signature fetch), so this uses a longer timeout than the
+// default 120s client.
+func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, error) {
+	long := *c
+	hc := *c.httpClient
+	hc.Timeout = 20 * time.Minute
+	long.httpClient = &hc
+	body, err := long.doRequest("POST", "/v1/security/clamav-install", map[string]string{"container_name": containerName})
+	if err != nil {
+		return nil, err
+	}
+	var resp InstallClamavResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse install response: %w", err)
+	}
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {
-	Username     string            `json:"username"`
-	Resources    *ResourceLimits   `json:"resources,omitempty"`
-	SSHKeys      []string          `json:"sshKeys,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Image        string            `json:"image,omitempty"`
-	EnablePodman bool              `json:"enablePodman,omitempty"`
+	NetworkTenant string            `json:"networkTenant,omitempty"`
+	Username      string            `json:"username"`
+	Resources     *ResourceLimits   `json:"resources,omitempty"`
+	SSHKeys       []string          `json:"sshKeys,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	EnablePodman  bool              `json:"enablePodman,omitempty"`
+
+	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
+	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
+	// standalone daemon ignores it.
+	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
 
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.
@@ -2328,12 +2394,14 @@ type ListPassthroughRoutesResponse struct {
 }
 
 type Container struct {
-	Name      string          `json:"name"`
-	Username  string          `json:"username"`
-	State     string          `json:"state"`
-	Resources *ResourceLimits `json:"resources,omitempty"`
-	SSHKeys   []string        `json:"sshKeys,omitempty"`
-	Network   *NetworkInfo    `json:"network,omitempty"`
+	NetworkTenant       string          `json:"networkTenant"`
+	NetworkTenantSource string          `json:"networkTenantSource"`
+	Name                string          `json:"name"`
+	Username            string          `json:"username"`
+	State               string          `json:"state"`
+	Resources           *ResourceLimits `json:"resources,omitempty"`
+	SSHKeys             []string        `json:"sshKeys,omitempty"`
+	Network             *NetworkInfo    `json:"network,omitempty"`
 	// CreatedAt / UpdatedAt come back as JSON strings from the platform's
 	// grpc-gateway HTTP layer — int64 protobuf scalars are emitted as
 	// strings to avoid JavaScript number-precision loss. The `,string`
@@ -2411,4 +2479,16 @@ type SystemInfo struct {
 	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
 	CpuAdmissionMode      string  `json:"cpuAdmissionMode,omitempty"`
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// StoragePools is each storage pool's fill (#2823), as the daemon's
+	// SystemInfo carries it (int64 as strings, enums by proto name).
+	StoragePools []StoragePoolCapacity `json:"storagePools,omitempty"`
+}
+
+// StoragePoolCapacity mirrors the proto StoragePoolCapacity (#2823).
+type StoragePoolCapacity struct {
+	Pool       string `json:"pool"`
+	Driver     string `json:"driver,omitempty"`
+	UsedBytes  int64  `json:"usedBytes,string"`
+	TotalBytes int64  `json:"totalBytes,string"`
+	Level      string `json:"level,omitempty"`
 }

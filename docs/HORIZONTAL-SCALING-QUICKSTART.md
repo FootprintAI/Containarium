@@ -11,7 +11,7 @@ This guide shows you how to deploy and use Containarium with **Approach 1: Indep
        ┌───────────────┼───────────────┐
        ▼               ▼               ▼
   Jump-1          Jump-2          Jump-3
-  35.1.1.1        35.2.2.2        35.3.3.3
+  192.0.2.1        192.0.2.2        192.0.2.3
   │               │               │
   ├─ alice        ├─ bob          ├─ charlie
   ├─ dave         ├─ eve          ├─ frank
@@ -95,9 +95,9 @@ horizontal_scaling_enabled = true
 jump_servers_count = 3
 
 jump_servers_ips = {
-  "jump-1" = "35.1.1.1"
-  "jump-2" = "35.2.2.2"
-  "jump-3" = "35.3.3.3"
+  "jump-1" = "192.0.2.1"
+  "jump-2" = "192.0.2.2"
+  "jump-3" = "192.0.2.3"
 }
 
 load_balancer_ip = "35.x.x.x"
@@ -109,9 +109,9 @@ ssh_connection_methods = <<EOT
    ssh admin@35.x.x.x
 
 2. Direct to Specific Server:
-   ssh admin@35.1.1.1  # jump-1
-   ssh admin@35.2.2.2  # jump-2
-   ssh admin@35.3.3.3  # jump-3
+   ssh admin@192.0.2.1  # jump-1
+   ssh admin@192.0.2.2  # jump-2
+   ssh admin@192.0.2.3  # jump-3
 EOT
 
 capacity_info = {
@@ -170,8 +170,8 @@ containariumd version
 
 **Repeat for each jump server** (if not using load balancer):
 ```bash
-scp bin/containariumd-linux-amd64 admin@35.1.1.1:/tmp/
-ssh admin@35.1.1.1 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+scp bin/containariumd-linux-amd64 admin@192.0.2.1:/tmp/
+ssh admin@192.0.2.1 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 
 # Repeat for jump-2, jump-3...
 ```
@@ -214,7 +214,7 @@ Jump-3 → charlie (3), frank (6), iris (9), ...
 
 ```bash
 # SSH to jump-1 directly
-ssh admin@35.1.1.1
+ssh admin@192.0.2.1
 
 # Create containers for Engineering team
 containarium create alice --ssh-key ~/.ssh/alice.pub
@@ -236,19 +236,19 @@ Create a simple tracking file:
 
 ```bash
 # assignment.txt
-Jump-1 (35.1.1.1):
+Jump-1 (192.0.2.1):
   - alice
   - dave
   - greg
   (47 more...)
 
-Jump-2 (35.2.2.2):
+Jump-2 (192.0.2.2):
   - bob
   - eve
   - hannah
   (47 more...)
 
-Jump-3 (35.3.3.3):
+Jump-3 (192.0.2.3):
   - charlie
   - frank
   - iris
@@ -294,7 +294,7 @@ Tell each user their specific jump server.
 **Engineering team (Jump-1) gets**:
 ```ssh-config
 Host containarium-jump
-    HostName 35.1.1.1  # Jump-1 IP
+    HostName 192.0.2.1  # Jump-1 IP
     User admin
 
 Host my-dev
@@ -306,7 +306,7 @@ Host my-dev
 **Product team (Jump-2) gets**:
 ```ssh-config
 Host containarium-jump
-    HostName 35.2.2.2  # Jump-2 IP
+    HostName 192.0.2.2  # Jump-2 IP
     User admin
 ```
 
@@ -326,17 +326,17 @@ USERS_JUMP3=("charlie" "frank" "iris")
 
 # Create on Jump-1
 for user in "${USERS_JUMP1[@]}"; do
-  ssh admin@35.1.1.1 "containarium create $user && incus config set ${user}-container boot.autostart true"
+  ssh admin@192.0.2.1 "containarium create $user && incus config set ${user}-container boot.autostart true"
 done
 
 # Create on Jump-2
 for user in "${USERS_JUMP2[@]}"; do
-  ssh admin@35.2.2.2 "containarium create $user && incus config set ${user}-container boot.autostart true"
+  ssh admin@192.0.2.2 "containarium create $user && incus config set ${user}-container boot.autostart true"
 done
 
 # Create on Jump-3
 for user in "${USERS_JUMP3[@]}"; do
-  ssh admin@35.3.3.3 "containarium create $user && incus config set ${user}-container boot.autostart true"
+  ssh admin@192.0.2.3 "containarium create $user && incus config set ${user}-container boot.autostart true"
 done
 ```
 
@@ -350,7 +350,7 @@ done
 #!/bin/bash
 # check-all-servers.sh
 
-SERVERS=("35.1.1.1" "35.2.2.2" "35.3.3.3")
+SERVERS=("192.0.2.1" "192.0.2.2" "192.0.2.3")
 
 for server in "${SERVERS[@]}"; do
   echo "=== $server ==="
@@ -363,7 +363,7 @@ done
 
 ```bash
 # On each jump server
-ssh admin@35.1.1.1 "free -h && incus list | wc -l"
+ssh admin@192.0.2.1 "free -h && incus list | wc -l"
 ```
 
 ### Health Check
@@ -373,7 +373,7 @@ ssh admin@35.1.1.1 "free -h && incus list | wc -l"
 ssh -o ConnectTimeout=5 admin@35.x.x.x "echo 'OK'"
 
 # Test each server
-for ip in 35.1.1.1 35.2.2.2 35.3.3.3; do
+for ip in 192.0.2.1 192.0.2.2 192.0.2.3; do
   ssh -o ConnectTimeout=5 admin@$ip "echo 'OK'" && echo "$ip: healthy"
 done
 ```
@@ -391,7 +391,7 @@ jump_server_count = 4  # Was 3
 # Apply
 terraform apply
 
-# New server: jump-4 at 35.4.4.4
+# New server: jump-4 at 192.0.2.4
 # Copy containarium CLI and start creating containers
 ```
 
@@ -399,7 +399,7 @@ terraform apply
 
 ```bash
 # 1. Migrate containers off jump-3 first (manual)
-ssh admin@35.3.3.3
+ssh admin@192.0.2.3
 incus export alice-container alice-backup.tar.gz
 # Copy backup and import on jump-1 or jump-2
 
@@ -416,7 +416,7 @@ Containers automatically restart when spot instance recovers:
 
 ```bash
 # Check recovery log
-ssh admin@35.1.1.1
+ssh admin@192.0.2.1
 cat /opt/containarium/logs/spot-recovery.log
 
 # Example output:
@@ -431,14 +431,14 @@ cat /opt/containarium/logs/spot-recovery.log
 
 ```bash
 # 1. Check which jump server has their container
-ssh admin@35.1.1.1 "incus list | grep alice"
-ssh admin@35.2.2.2 "incus list | grep alice"
+ssh admin@192.0.2.1 "incus list | grep alice"
+ssh admin@192.0.2.2 "incus list | grep alice"
 
 # 2. Found on jump-2, verify SSH
-ssh admin@35.2.2.2 "incus exec alice-container -- systemctl status ssh"
+ssh admin@192.0.2.2 "incus exec alice-container -- systemctl status ssh"
 
 # 3. Test ProxyJump
-ssh -J admin@35.2.2.2 alice@10.0.3.100
+ssh -J admin@192.0.2.2 alice@10.0.3.100
 ```
 
 ### Load Balancer Not Working
@@ -455,7 +455,7 @@ gcloud compute backend-services get-health containarium-jump-backend --region=us
 
 ```bash
 # Check if auto-start was enabled
-ssh admin@35.1.1.1
+ssh admin@192.0.2.1
 incus config get alice-container boot.autostart
 
 # If false, enable it

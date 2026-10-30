@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
@@ -61,6 +64,23 @@ so CI and shell scripts can gate on '$?' directly, without separately parsing
 (the box died mid-run) is not treated as a failure here; check 'code status'
 for "unknown" in that case.
 
+--approvals ask (Claude Code only) pauses the run when the agent wants a tool
+call that needs a permission, instead of the engine refusing it: the request
+is journaled next to the run's log, 'containarium code status' reports
+waiting_input with the request, and the call proceeds on an allow or is
+refused on a deny. Answer it inline (a or d + Enter while this command runs at
+a terminal, or in 'code attach'), or with 'containarium code pending' and
+'containarium code answer'. A request nobody answers expires into a deny after
+--approval-timeout (default 30m), and the expiry is journaled. Answers are
+signed by the daemon with a key per box; only the public key goes to the box,
+so nothing on the box can forge an answer. An answer counts only for the
+prompt it was signed for, which is the prompt the answering command printed:
+a prompt the agent rewrites in the journal is never what gets allowed. (A
+process an agent leaves running on the box can still change the box's own
+Claude Code setup for later runs; that is out of scope.) --approvals ask needs
+the daemon (--server). On an engine without a permission hook (pi, Codex) the
+run starts unchanged, with a warning. The default, --approvals deny, is today's behaviour.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -110,12 +130,29 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if codeRunSession != "" && codeRunContinue {
 		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
 	}
+	approvals, err := validateApprovalFlags()
+	if err != nil {
+		return err
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	diag := cmd.ErrOrStderr()
 	name := codeRunName()
+	// #2183: before any setup with side effects (a gateway run mints a token
+	// and writes it to the box in prepareCodeRun).
+	var approvalKey ed25519.PublicKey
+	if approvals == coderun.ApprovalsAsk {
+		if err := coderun.ValidApprovalRunName(name); err != nil {
+			return err
+		}
+		// #2184: answers are signed by the daemon; its public key goes to
+		// the box.
+		if approvalKey, err = fetchApprovalKey(newRunInputsClient, box); err != nil {
+			return fmt.Errorf("--approvals ask on %q: %w", box, err)
+		}
+	}
 
 	sess, err := resolveCodeSession(ctx, box, diag)
 	if err != nil {
@@ -131,16 +168,75 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// #2183: --approvals deny (the default) leaves command untouched.
+	var approvalNote string
+	if approvals == coderun.ApprovalsAsk {
+		if command, approvalNote, err = prepareApprovals(ctx, sess, eng, name, command, approvalKey, codeRunApprovalTimeout, diag); err != nil {
+			return fmt.Errorf("--approvals ask on %q: %w", box, err)
+		}
+	}
+
+	// A fresh run's session id is found by comparing the engine's session
+	// directory against a snapshot taken BEFORE the engine starts (see
+	// engine/session_discovery.go). A resumed run's id is the literal
+	// --session value and needs no discovery.
+	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
 
 	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
+	if approvalNote != "" {
+		journalApprovalNote(ctx, sess, name, approvalNote, diag)
+	}
 
-	startSessionDiscovery(ctx, sess, eng, started.LogPath, diag)
+	switch {
+	case discover:
+		startSessionDiscovery(ctx, sess, eng, name, diag)
+	case codeRunSession != "":
+		// Known from the flag: record it so `code runs` reports it at once.
+		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(name))
+		write := "printf '%s' " + coderun.ShellQuoteSingle(codeRunSession) + " > " + sidecar + ".tmp 2>/dev/null && mv -f " + sidecar + ".tmp " + sidecar
+		if _, err := sess.ShellExec(ctx, write); err != nil {
+			fmt.Fprintf(diag, "note: could not record this run's session id (non-fatal): %v\n", err)
+		}
+	}
 
+	if approvals == coderun.ApprovalsAsk && approvalNote == "" && stdinIsTerminal() {
+		defer startInlineAnswers(ctx, newRunInputsClient, box, started.Name, os.Stdin, diag)()
+	}
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// sessionSidecarFor is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func sessionSidecarFor(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// snapshotSessionDirectory best-effort records the engine's existing session
+// entries before the run starts, so discovery can tell this run's own entry
+// from older conversations. It reports whether a snapshot was taken; without
+// one discovery is skipped (an absent session id, never a wrong one).
+func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) bool {
+	if eng == nil {
+		return false
+	}
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sessionSidecarFor(name))
+	if !ok {
+		return false
+	}
+	if _, err := sess.ShellExec(ctx, cmd); err != nil {
+		fmt.Fprintf(diag, "note: could not prepare looking for this run's session id (non-fatal): %v\n", err)
+		return false
+	}
+	return true
 }
 
 // startSessionDiscovery best-effort backgrounds the lookup of this run's own
@@ -152,7 +248,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 // never fatal to the run: it only means `code runs` won't show a session id
 // for it, which the AC already allows ("absent for engines that don't expose
 // one").
-func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, logPath string, diag io.Writer) {
+func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) {
 	if eng == nil {
 		return
 	}
@@ -167,8 +263,7 @@ func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engin
 	// find a match and session_id stays absent, same as any other engine
 	// that exposes none.
 	cwd := home
-	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sidecarPath)
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sessionSidecarFor(name))
 	if !ok {
 		return
 	}
@@ -206,6 +301,11 @@ func runCodeAttach(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(diag, "✓ attaching to %s\n", line)
 
+	// #2184: a human at a terminal can answer the run's permission requests
+	// inline.
+	if stdinIsTerminal() && runUsesApprovals(ctx, sess, name) {
+		defer startInlineAnswers(ctx, newRunInputsClient, box, name, os.Stdin, diag)()
+	}
 	return streamAndWait(ctx, sess, name, logPath, cmd.OutOrStdout(), diag, codeAttachStreamJSON)
 }
 
@@ -243,6 +343,16 @@ func runCodeStatus(cmd *cobra.Command, args []string) error {
 	// internal/mcp/code_tools.go) so the two surfaces cannot drift.
 	if !running {
 		fmt.Fprintln(out, coderun.ExitCodeLine(listing, name))
+	}
+
+	// #2183: a run started with --approvals ask reports waiting_input and its
+	// permission-request counts. Best-effort: the run's own status above is
+	// already printed.
+	lines, err := sess.ApprovalStatus(ctx, name, running, time.Now())
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not read this run's permission requests: %v\n", err)
+	} else if lines != "" {
+		fmt.Fprintln(out, lines)
 	}
 	return nil
 }

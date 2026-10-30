@@ -10,6 +10,149 @@ the thin layer on top that the cloud doesn't give you — credential-scoped
 SSH/MCP access, the gateway key choreography, per-tenant isolation, and box
 lifecycle (start / stop / suspend / TTL).
 
+## Prerequisites
+
+Common:
+
+- A managed cluster: **EKS** (any supported version) or **GKE** (Standard or
+  Autopilot).
+- [Helm](https://helm.sh/) 3.x and `kubectl` pointed at the cluster.
+- OpenSSH (`ssh-keygen`) and OpenSSL available on your workstation for creating
+  the gateway keys and JWT secret.
+- The [Containarium CLI](https://github.com/FootprintAI/Containarium/releases)
+  installed if you plan to create boxes with `containarium create`; it is not
+  needed when using the operator path in [Declarative boxes](#declarative-boxes-the-box-crd).
+- The **agent-sandbox controller** installed
+  ([install guide](https://agent-sandbox.sigs.k8s.io/docs/getting_started/)).
+- An SSH host key for the gateway (created below).
+
+EKS-only:
+
+- The [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
+  — it turns the Service annotations into a real NLB.
+- The [EBS CSI driver](https://github.com/kubernetes-sigs/aws-ebs-csi-driver)
+  and a `gp3` StorageClass. EKS doesn't ship one by default; apply:
+
+  ```yaml
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: gp3
+  provisioner: ebs.csi.aws.com
+  volumeBindingMode: WaitForFirstConsumer
+  parameters:
+    type: gp3
+  ```
+
+GKE-only:
+
+- Nothing extra — the L4 LoadBalancer and the `standard-rwo` StorageClass are
+  built in.
+
+## Prepare the gateway upstream key
+
+Gateway routing is enabled by default and requires a dedicated upstream key.
+Create the key pair and store its private key in the gateway namespace before
+running any chart install command. The chart renders this namespace by
+default, and Helm will not adopt a hand-made one, so every install command
+below passes `--set gateway.createNamespace=false`. Do not flip an existing
+release from `true` to `false`: Helm would delete the namespace, and its
+Secrets, on upgrade.
+
+```bash
+kubectl create namespace agent-gateway
+ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
+kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
+  --from-file=ssh-privatekey=./sshpiper_upstream
+```
+
+`ssh-keygen` also creates `./sshpiper_upstream.pub`; the install examples use
+that matching public key. Keep the private key file secure.
+
+## Prepare the gateway host-key Secret
+
+The gateway namespace was created in the upstream-key setup above. The gateway
+presents a stable SSH host key so clients can pin it; generate one and store it
+in that namespace before installing the chart:
+
+```bash
+ssh-keygen -t ed25519 -f gateway_host_key -N ""
+kubectl -n agent-gateway create secret generic sshpiper-server-key \
+  --from-file=server_key=gateway_host_key
+```
+
+## Install a released chart
+
+Each release publishes the Helm chart as an OCI artifact next to the binaries.
+The chart version is the release version without its leading `v`; the chart
+pins the daemon image of its own release (`ghcr.io/footprintai/containarium:v<release>`),
+so a given `--version` always installs the same daemon.
+
+> **Standalone example:** If you are following the numbered walkthrough below,
+> skip this install command and use one of the cloud-preset commands in step 1
+> instead. Do not run both installs with the same `containarium` release name.
+
+```bash
+helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
+  --version <release-without-v> \
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
+```
+
+`gateway.upstreamKeySecret` is required because gateway routing is on by
+default and the daemon refuses to start without an upstream credential, so a
+bare `helm template` / `helm install` with no values fails fast by design.
+To disable gateway routing, set both
+`gateway.enabled=false` and `gateway.namespace=""`:
+`--set gateway.enabled=false --set gateway.namespace=""`.
+
+The cloud presets (`values-gke.yaml`, `values-eks.yaml`) live in the repository
+at the release tag; pass the one you need with `-f`. The release notes for each
+tag print the exact chart version. The chart in the repository
+(`charts/containarium-k8s`) carries development placeholders (`0.0.0-dev`,
+image tag `latest`); only the packaged chart attached to a release is stamped,
+so install from a release, not from a checkout, when you need a reproducible
+deployment.
+
+The gateway image (`containarium-sshpiper`) is pinned to the same release tag as
+the daemon. The box image (`containarium-agent-box`) is still referenced by a
+moving tag in `values.yaml`; pin it with `--set agentBox.image=...` if you need
+that pinned as well.
+
+### What is tested
+
+| Target | Status |
+|---|---|
+| Kubernetes 1.31.0, kind v0.24.0 (`kindest/node:v1.31.0`) | published-chart install/upgrade CI on chart/release workflow changes and after each tag's OCI publish |
+| kind (`k8s-e2e`: throwaway kind v0.24.0 cluster, default node image) | backend lifecycle exercised in CI on every change to the reconciler |
+| `helm lint` and template rendering (default, gateway disabled, release-stamped) | exercised in CI on every change under `charts/` |
+| EKS (`values-eks.yaml`) and GKE (`values-gke.yaml`) presets | configuration examples; **not** installed in CI, so no provider/version combination is certified |
+
+Kubernetes 1.31.0 is the chart's CI compatibility baseline. Other Kubernetes
+versions, including provider-specific EKS/GKE versions, need validation in
+your environment; the chart does not enforce a version range (`kubeVersion`
+is unset). The agent-sandbox controller has its own version requirements.
+
+`Helm install and upgrade` installs published chart `0.108.0`, upgrades it
+to the target release, and performs a clean install of that target from
+`oci://ghcr.io/footprintai/charts/containarium-k8s`. It waits for the daemon
+to become ready and checks that its pod actually pulled
+`ghcr.io/footprintai/containarium:v<version>` without an image override.
+On PRs it also upgrades to the current checkout's packaged chart using the
+published `0.109.0` daemon image. The test provisions the gateway's host and
+upstream keys and waits for both Deployments; SSH sessions, tenant isolation
+and box lifecycle belong to the backend e2e lane. The cluster and kubeconfig
+are created per run and always removed.
+
+To repeat the published-chart test locally (Docker, kind v0.24.0, kubectl,
+Helm 3.16.2, Python 3, OpenSSH and OpenSSL required):
+
+```bash
+bash scripts/ci/helm-install-upgrade.sh 0.108.0 <target-release-without-v>
+```
+
 ## Architecture
 
 ```
@@ -49,53 +192,7 @@ The sentinel and yamux tunnel are **not** used here — they're the
 *multi-cluster federation* path (one address across several clusters/clouds),
 covered at the end. A single EKS or GKE cluster needs only its own cloud LB.
 
-## Prerequisites
-
-Common:
-
-- A managed cluster: **EKS** (any supported version) or **GKE** (Standard or
-  Autopilot).
-- [Helm](https://helm.sh/) 3.x and `kubectl` pointed at the cluster.
-- The **agent-sandbox controller** installed
-  ([install guide](https://agent-sandbox.sigs.k8s.io/docs/getting_started/)).
-- An SSH host key for the gateway (created below).
-
-EKS-only:
-
-- The [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
-  — it turns the Service annotations into a real NLB.
-- The [EBS CSI driver](https://github.com/kubernetes-sigs/aws-ebs-csi-driver)
-  and a `gp3` StorageClass. EKS doesn't ship one by default; apply:
-
-  ```yaml
-  apiVersion: storage.k8s.io/v1
-  kind: StorageClass
-  metadata:
-    name: gp3
-  provisioner: ebs.csi.aws.com
-  volumeBindingMode: WaitForFirstConsumer
-  parameters:
-    type: gp3
-  ```
-
-GKE-only:
-
-- Nothing extra — the L4 LoadBalancer and the `standard-rwo` StorageClass are
-  built in.
-
-## 1. Create the gateway host-key Secret
-
-The gateway presents a stable SSH host key so clients can pin it. Generate one
-and store it in the gateway namespace:
-
-```bash
-kubectl create namespace agent-gateway
-ssh-keygen -t ed25519 -f gateway_host_key -N ""
-kubectl -n agent-gateway create secret generic sshpiper-server-key \
-  --from-file=server_key=gateway_host_key
-```
-
-## 2. Install the chart with the cloud preset
+## 1. Install the chart with the cloud preset
 
 Pick the preset for your cloud — it sets the gateway Service to `LoadBalancer`
 with the right annotations and selects a cloud StorageClass for box workspaces.
@@ -104,12 +201,18 @@ with the right annotations and selects a cloud StorageClass for box workspaces.
 # GKE
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 
 # EKS
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-eks.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 This deploys the Containarium daemon (`--runtime=k8s`), the sshpiper gateway,
@@ -120,7 +223,7 @@ see the commented annotations in the preset file.
 > the install to give every box an interactive shell instead of the MCP
 > endpoint — see [Developer-box mode](#developer-box-mode-interactive-shell).
 
-## 3. Get the public endpoint
+## 2. Get the public endpoint
 
 The cloud provisions the LoadBalancer asynchronously; wait for its address:
 
@@ -131,7 +234,7 @@ kubectl -n agent-gateway get svc containarium-containarium-k8s-sshpiper \
 
 Call that `<gateway>` below (an IP on GKE, an NLB hostname on EKS).
 
-## 4. Create a box and connect
+## 3. Create a box and connect
 
 Boxes are created through the daemon (which programs the gateway Pipe and key
 Secrets for you). Reach the daemon API — for admin use, port-forward it:
@@ -163,18 +266,23 @@ By default every box is an MCP endpoint: `ssh <box>@<gateway>` runs the
 forced-command `agent-box` server and nothing else. To make boxes **interactive
 developer machines** instead — where `ssh <box>@<gateway>` lands in a real
 `/bin/bash` — install with the `values-devbox.yaml` preset composed onto the
-cloud preset:
+cloud preset. This is an alternative to the standard GKE/EKS install above;
+choose this command instead of running another `helm install containarium`
+with the same release name:
 
 ```bash
 # developer boxes on GKE (compose with values-eks.yaml on EKS)
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
   -f charts/containarium-k8s/values-devbox.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 The preset sets `agentBox.mode=shell` (the box image's `AGENTBOX_MODE`), so a
-box created exactly as in step 4 gives you a shell instead of the MCP loop:
+box created exactly as in step 3 gives you a shell instead of the MCP loop:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -p 22 <box>@<gateway>
@@ -194,14 +302,20 @@ image-level detail.
 
 Everything above creates boxes imperatively (`containarium create`). With the
 **operator** enabled, a box is also a custom resource — create it with
-`kubectl apply` or GitOps, and a controller reconciles it into the same bundle:
+`kubectl apply` or GitOps, and a controller reconciles it into the same bundle.
+This is another alternative installation; choose it instead of the standard or
+developer-box `helm install containarium` command above. Do not run these
+install examples sequentially with the same release name.
 
 ```bash
 # install with the operator on (composes with any cloud preset)
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
   --set operator.enabled=true \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set gateway.createNamespace=false \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 ```yaml

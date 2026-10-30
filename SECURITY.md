@@ -52,15 +52,25 @@ We follow coordinated disclosure:
 
 ## Supported versions
 
+<!-- The block between the support-policy markers is kept identical to the
+     one in docs/UPGRADE-AND-ROLLBACK.md; internal/cmd/runbook_drift_test.go
+     fails if the two differ. -->
+<!-- support-policy:begin -->
 Containarium is pre-1.0; security fixes land on `main` and are
 included in the next tagged release. There is no LTS branch.
 Operators running prior releases should upgrade to the latest tag.
+
+From Partner Release 1.0 (target 2026-12-31), each Partner Release has
+a 12-month security-fix window. If v1.0 is not cut by then, the Partner
+Release is served from a release maintenance branch.
 
 | Branch / version | Supported     |
 | ---------------- | ------------- |
 | `main`           | ✅ active     |
 | Latest release   | ✅ active     |
+| Partner Release (from 1.0) | ✅ security fixes for 12 months |
 | Older releases   | ❌ upgrade    |
+<!-- support-policy:end -->
 
 ## Out of scope
 
@@ -80,8 +90,8 @@ report them as normal issues if you'd like to discuss them:
 
 ## Automated scanning
 
-The project's CI runs three security scanners on every push to
-`main` and every pull request:
+The project's CI runs these security scanners on every push to `main`,
+every pull request and weekly:
 
 - **gosec** — Go static analysis (SAST). Findings upload to GitHub
   code scanning as SARIF.
@@ -89,10 +99,53 @@ The project's CI runs three security scanners on every push to
   a known-fixed vuln is detected; tolerates upstream-unfixable
   advisories with a documented exception.
 - **Trivy** — dependency vulnerability scan (CRITICAL + HIGH).
-  Findings upload to GitHub code scanning.
+  Findings upload to GitHub code scanning. The container image
+  workflows also scan the images they build with Trivy.
 
 The workflow lives at
 [`.github/workflows/security.yml`](.github/workflows/security.yml).
+
+Two further lanes cover the supply chain:
+
+- **Dependency licences** — the
+  [`licenses`](.github/workflows/licenses.yml) workflow fails when a Go
+  module or npm package we ship carries a licence outside the allow-list,
+  or when `NOTICE` lacks a dependency's notice. Policy:
+  [`docs/security/DEPENDENCY-LICENSES.md`](docs/security/DEPENDENCY-LICENSES.md).
+- **Release signing and SBOMs** — each release's Linux binaries have an
+  SPDX SBOM, and every file on the GitHub Release has a keyless cosign
+  signature (`<file>.sigstore.json`) made by the release workflow. To
+  verify a download, see
+  [`docs/security/VERIFYING-RELEASES.md`](docs/security/VERIFYING-RELEASES.md).
+
+- **Pinned GitHub Actions and workflow lint** — every `uses:` in
+  `.github/workflows` is pinned to a full commit SHA (version kept as a
+  trailing comment), and the
+  [`workflow-lint`](.github/workflows/workflow-lint.yml) workflow runs
+  `actionlint` and fails on any unpinned action. It also runs `zizmor` and
+  fails on `pull_request_target`, template injection from event data in
+  `run:` blocks, and over-broad `permissions:`; a seeded violation of each
+  rule is part of the lane's self-test. Workflows that pin a
+  branch were frozen at the branch head on the day of pinning; Dependabot
+  moves the pin forward.
+
+Dependabot opens weekly update PRs for Go modules and GitHub Actions
+([`.github/dependabot.yml`](.github/dependabot.yml)).
+
+**Planned, not in place yet:** an OpenSSF Scorecard lane
+([#2791](https://github.com/FootprintAI/Containarium/issues/2791)), code
+owners with required review on dependency, build and CI paths
+([#2792](https://github.com/FootprintAI/Containarium/issues/2792)),
+a dependency-change gate
+([#2794](https://github.com/FootprintAI/Containarium/issues/2794)), and
+lockfiles with pinned build-time downloads
+([#2795](https://github.com/FootprintAI/Containarium/issues/2795)). They
+are tracked in
+[#2649](https://github.com/FootprintAI/Containarium/issues/2649). This
+section will describe each one when it ships.
+
+Contributor rules for dependency, build and CI changes are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md#dependencies-build-and-ci-changes).
 
 ## Audit history
 

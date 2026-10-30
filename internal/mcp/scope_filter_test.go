@@ -124,3 +124,66 @@ func TestEveryToolHasScope(t *testing.T) {
 		}
 	}
 }
+
+// verify_backup requires backups:verify after the v0.120.1 migration
+// window (#3219); backups:write remains the grant for the write tools.
+func TestVerifyBackupToolAcceptsVerifyScope(t *testing.T) {
+	srv := &Server{}
+	srv.registerTools()
+	byName := map[string]*Tool{}
+	for i := range srv.tools {
+		byName[srv.tools[i].Name] = &srv.tools[i]
+	}
+	verifyOnly := []string{auth.ScopeBackupsRead, auth.ScopeBackupsVerify}
+	if !toolAllowed(verifyOnly, byName["verify_backup"]) {
+		t.Error("backups:verify must allow verify_backup")
+	}
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   bool
+	}{
+		{"legacy write", []string{auth.ScopeBackupsWrite}, false},
+		{"legacy read and write", []string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite}, false},
+		{"read", []string{auth.ScopeBackupsRead}, false},
+		{"empty", []string{}, false},
+		{"verify", []string{auth.ScopeBackupsVerify}, true},
+		{"both", []string{auth.ScopeBackupsWrite, auth.ScopeBackupsVerify}, true},
+		{"wildcard", []string{auth.ScopeWildcard}, true},
+		{"unscoped", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := toolAllowed(tc.scopes, byName["verify_backup"]); got != tc.want {
+				t.Errorf("verify_backup allowed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	for _, n := range []string{"create_backup", "restore_backup"} {
+		if toolAllowed(verifyOnly, byName[n]) {
+			t.Errorf("backups:verify must not allow %s", n)
+		}
+		if !toolAllowed([]string{auth.ScopeBackupsWrite}, byName[n]) {
+			t.Errorf("backups:write must still allow %s", n)
+		}
+	}
+}
+
+// The denial text names only the accepted scope, so a legacy verifier
+// learns it needs backups:verify (#3219).
+func TestRequiredScopeText(t *testing.T) {
+	if got := requiredScopeText(&Tool{RequiredScope: "a:b"}); got != `"a:b"` {
+		t.Errorf("single scope text = %s", got)
+	}
+	srv := &Server{}
+	srv.registerTools()
+	for i := range srv.tools {
+		if srv.tools[i].Name == "verify_backup" {
+			got := requiredScopeText(&srv.tools[i])
+			if got != `"backups:verify"` {
+				t.Errorf("verify_backup denial text = %s, want only backups:verify", got)
+			}
+			return
+		}
+	}
+	t.Fatal("verify_backup not registered")
+}

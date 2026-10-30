@@ -4,6 +4,7 @@ package containarium.v1;
 
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
+import "containarium/v1/agent.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -48,6 +49,50 @@ message BoxRun {
   // found one yet (a race with a just-started run — poll ListBoxRuns again).
   // Pass it to StartBoxRun's session_id to resume this exact conversation.
   string session_id = 8;
+  // The tools available to this run, measured on the box by the run's own wrapper
+  // (a probe before the engine starts and one after it ends, written to a sidecar
+  // whatever the engine's exit status), never reported by the agent. Empty for a
+  // run with no readable sidecar (an older run, or a box without the probe).
+  repeated BoxRunTool tools = 9;
+  // The model id the run was started with (StartBoxRunRequest.model, #3259).
+  // Empty when none was requested: the engine's own default ran, and the
+  // daemon does not claim to know which. Empty for a run from before the field.
+  string model = 10;
+}
+
+// BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
+// what was AVAILABLE, not what was USED: knowing use would need process tracing.
+message BoxRunTool {
+  // The tool's name from the daemon's fixed allowlist (for example "go", "buf").
+  string name = 1;
+  // The first line of the tool's own version command, reduced to printable ASCII
+  // and length-capped (the value ends up in public pull requests). Empty when the
+  // tool printed nothing usable.
+  string version = 2;
+  // How the tool compares between the probe before the run and the one after it.
+  BoxRunToolProvenance provenance = 3;
+  // Where the resolved binary lives, as a class only (never a filesystem path).
+  BoxRunToolLocation location = 4;
+}
+
+// BoxRunToolProvenance compares a tool across the two probes of one run.
+enum BoxRunToolProvenance {
+  BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED = 0;
+  // Present at the start with the same version at the end.
+  BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START = 1;
+  // Not on the PATH at the start, found at the end: installed during the run.
+  BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN = 2;
+  // On the PATH at both ends, but a different version or a different location.
+  BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN = 3;
+}
+
+// BoxRunToolLocation classifies where a tool's binary resolved.
+enum BoxRunToolLocation {
+  BOX_RUN_TOOL_LOCATION_UNSPECIFIED = 0;
+  // Outside the run user's home: part of the box image or its system packages.
+  BOX_RUN_TOOL_LOCATION_SYSTEM = 1;
+  // Under the run user's home: installed by the owner or by a run.
+  BOX_RUN_TOOL_LOCATION_HOME = 2;
 }
 
 // StartBoxRunRequest starts (or resumes) a coding-agent run on a box through
@@ -68,7 +113,7 @@ message StartBoxRunRequest {
   string prompt = 2;
   // Resume this specific session id instead of starting a fresh one
   // (claude --resume <id>; pi --session <id>). Also becomes this run's
-  // run_name: StartBoxRun on a box whose run under this name is still RUNNING
+  // run_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING
   // or UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually
   // exclusive with continue_session.
   string session_id = 3;
@@ -76,10 +121,81 @@ message StartBoxRunRequest {
   // directory" instead of starting a fresh one (`code run --continue`'s
   // meaning, unchanged). Mutually exclusive with session_id.
   bool continue_session = 4;
+  // Names this run exactly <run_name> instead of the default (the session id
+  // when resuming, else "code"). Must match [A-Za-z0-9._-]{1,128} and not be
+  // "." or ".."; anything else is INVALID_ARGUMENT, as is a name ending in
+  // ".stderr" or in ".<digits>" (those alias a run's stderr log and the
+  // rotation suffix of a finished run). The same collision rules
+  // apply to the name as to any other: a finished run under it is rotated
+  // aside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an
+  // explicit name never collides with the default "code" run, so a caller
+  // that picks a unique name per run keeps every log. ListBoxRuns,
+  // TailBoxRunLog and the CLI address the run by this name. Empty keeps the
+  // previous naming. Capability "box_run_name" in SystemInfo.capabilities.
+  string run_name = 5;
+  // When true the engine runs with `--output-format json` (Claude Code only;
+  // any other engine is FAILED_PRECONDITION, before anything on the box is
+  // touched). The run's log (<run_name>.log) is then exactly the engine's one
+  // JSON result object (type, subtype, is_error, result, session_id, usage,
+  // ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+  // TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
+  // the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+  // (nested keys are ignored; truncated or invalid JSON, or an object over
+  // 1 MiB, yields no id). The object appears when the run ends: the log is
+  // empty while it runs. Default false leaves the plain-text behaviour
+  // unchanged.
+  //
+  // NORMATIVE: a caller that needs the session id reliably MUST set
+  // structured_output. Without it BoxRun.session_id of a fresh run is
+  // best-effort directory discovery (exactly one new transcript must appear
+  // while the run lives; a member's interactive session or another run
+  // starting meanwhile makes it ambiguous) and may be missing. A
+  // continue_session run gets no discovered id at all. Capability
+  // "box_run_structured_output" in SystemInfo.capabilities.
+  bool structured_output = 6;
+  // The model id to run the engine with (Claude Code's --model), for example
+  // one a caller chose from a policy or a label (#3259). Empty keeps the
+  // engine's own default, exactly as before. Claude Code only: any other
+  // engine is FAILED_PRECONDITION, before anything on the box is touched. The
+  // id is opaque to the API (no tier names are enumerated here, ids change
+  // with every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127};
+  // anything else is INVALID_ARGUMENT. Whether the engine accepts the id is
+  // the engine's to say: an id it rejects ends the run non-zero and the
+  // reason is in the run's log. BoxRun.model reports the id the run was
+  // started with. Capability "box_run_model" in SystemInfo.capabilities.
+  string model = 7;
 }
 
 message StartBoxRunResponse {
   BoxRun run = 1;
+}
+
+// GetBoxRunUserStatusRequest names the box whose run-user sign-in to report.
+message GetBoxRunUserStatusRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+// GetBoxRunUserStatusResponse is the read-only answer to "would StartBoxRun
+// refuse a platform run on this box for want of a run-user sign-in?" (#3274).
+// It is the same probe StartBoxRun applies, run without queueing anything and
+// without provisioning the run user. It names the credential's SOURCE only:
+// nothing here reads, copies, prints or refreshes a credential value.
+message GetBoxRunUserStatusResponse {
+  // The OS user platform runs execute as on a box with a recorded tool-access
+  // level. Reported even when tool_access_recorded is false.
+  string run_user = 1;
+  // Whether the box has a tool-access level recorded. When false, platform
+  // runs use the owner's identity and none of the run-user fields below apply.
+  bool tool_access_recorded = 2;
+  // Whether the run user already exists on the box. It is created by the box's
+  // first platform run, so false on a recorded box means no run has happened.
+  bool run_user_exists = 3;
+  // The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.
+  // NONE when the run user does not exist yet or has never signed in (the same
+  // answer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,
+  // INTERACTIVE or API_KEY when a run would proceed.
+  CodeCredentialSource state = 4;
 }
 
 message ListBoxRunsRequest {
@@ -165,4 +281,141 @@ message StopBoxRunResponse {
   // sent but the process had not exited when the call returned (SIGTERM
   // ignored); call again with force.
   bool exited = 3;
+}
+
+// Permission requests of a box run (#2183, #2184). A run started with
+// `code run --approvals ask` journals each tool call that needs a permission
+// to <run_name>.input.jsonl beside its log and waits for a signed answer.
+// The journal is written by the box's own user, which the agent runs as, so
+// what these messages report is advisory: the box only acts on an answer
+// signed for the tool call it actually asked (request_sha256 below).
+
+// RunInputKind is what a request asks for.
+enum RunInputKind {
+  RUN_INPUT_KIND_UNSPECIFIED = 0;
+  // Allow or deny one tool call.
+  RUN_INPUT_KIND_PERMISSION = 1;
+}
+
+// RunInputAnswer is a decision on a permission request.
+enum RunInputAnswer {
+  RUN_INPUT_ANSWER_UNSPECIFIED = 0;
+  RUN_INPUT_ANSWER_ALLOW = 1;
+  RUN_INPUT_ANSWER_DENY = 2;
+}
+
+// RunInputCloseReason says how a request was closed, as journaled by the box.
+enum RunInputCloseReason {
+  RUN_INPUT_CLOSE_REASON_UNSPECIFIED = 0;
+  // Someone answered it.
+  RUN_INPUT_CLOSE_REASON_ANSWERED = 1;
+  // Nobody answered before expires_at; it was denied.
+  RUN_INPUT_CLOSE_REASON_EXPIRED = 2;
+  // The run ended while the request was open.
+  RUN_INPUT_CLOSE_REASON_CANCELLED = 3;
+  // The run had no usable approval key, so it was denied at once.
+  RUN_INPUT_CLOSE_REASON_NO_KEY = 4;
+  // The tool input was too large to be shown for approval, so it was denied
+  // at once.
+  RUN_INPUT_CLOSE_REASON_TOO_LARGE = 5;
+}
+
+// RunInput is one open request.
+message RunInput {
+  // Opaque id, "req-" plus 16 hex digits; pass it to AnswerRunInput.
+  string request_id = 1;
+  RunInputKind kind = 2;
+  // The tool the agent wants to use, e.g. "Bash".
+  string tool = 3;
+  // One-line summary: the tool and its command, path or URL, cut at 500
+  // bytes (raw; a client escapes control characters before printing).
+  string prompt = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // An unanswered request is denied at this time.
+  google.protobuf.Timestamp expires_at = 6;
+  // The tool's complete input as JSON (at most 16 KiB): what an allow
+  // permits, and what a client must show before sending one.
+  string input = 7;
+}
+
+message ListRunInputsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+}
+
+message ListRunInputsResponse {
+  // Open requests, oldest first. Empty once the run has exited: nothing is
+  // waiting on an answer then. A request past expires_at is not listed.
+  repeated RunInput open = 1;
+  // Whether the run is still running.
+  bool running = 2;
+  // Per-run counts of all requests in the journal (the PRD's demand
+  // instrumentation): total, and closed by each outcome.
+  int32 requests = 3;
+  int32 allowed = 4;
+  int32 denied = 5;
+  int32 expired = 6;
+  int32 cancelled = 7;
+}
+
+// AnswerRunInputRequest answers one permission request of a box run. Fields
+// name the run by (username, run_name); crew runs (#2124) will add their own
+// run id.
+message AnswerRunInputRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // A request_id from ListRunInputs.
+  string request_id = 3;
+  RunInputAnswer answer = 4;
+  // SHA-256 (32 bytes) of tool, a NUL byte, and input, exactly as the caller
+  // showed them (from ListRunInputs) to whoever answered. The daemon signs it
+  // as given; the box accepts the answer only if it matches the tool call the
+  // box asked, so an answer to a request the agent rewrote in the journal
+  // never counts, and an allow permits exactly that input.
+  bytes request_sha256 = 5;
+}
+
+// RunInputAnswerOutcome is what AnswerRunInput did.
+enum RunInputAnswerOutcome {
+  RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED = 0;
+  // The answer was written and the run's journal then showed a response to
+  // it. The journal is writable by the agent, so this is the run's report,
+  // not proof that the run took the answer.
+  RUN_INPUT_ANSWER_OUTCOME_ANSWERED = 1;
+  // The request was already closed; nothing was written. closed_answer and
+  // close_reason say how.
+  RUN_INPUT_ANSWER_OUTCOME_ALREADY_CLOSED = 2;
+  // The request is past expires_at; nothing was written.
+  RUN_INPUT_ANSWER_OUTCOME_EXPIRED = 3;
+  // The answer was written but the run's journal showed no response to it in
+  // time.
+  // The box may have refused it (for one, the prompt it was signed for is not
+  // the prompt the box asked); the request stays open until answered or
+  // expired.
+  RUN_INPUT_ANSWER_OUTCOME_NOT_CONFIRMED = 4;
+}
+
+message AnswerRunInputResponse {
+  RunInputAnswerOutcome outcome = 1;
+  // For ANSWERED and ALREADY_CLOSED: the answer the box journaled (DENY for
+  // an expiry).
+  RunInputAnswer closed_answer = 2;
+  RunInputCloseReason close_reason = 3;
+  // When the box journaled the response, for ANSWERED and ALREADY_CLOSED.
+  google.protobuf.Timestamp closed_at = 4;
+}
+
+message GetRunApprovalKeyRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+message GetRunApprovalKeyResponse {
+  // Hex Ed25519 public key that AnswerRunInput signs this box's answers with.
+  // `code run --approvals ask` passes it to the box's approval server.
+  string public_key = 1;
 }

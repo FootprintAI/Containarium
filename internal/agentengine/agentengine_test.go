@@ -346,3 +346,66 @@ func TestStatuses(t *testing.T) {
 		}
 	})
 }
+
+// TestResolve_NoGlobalFallback pins that with the gateway's global-key fallback
+// disabled, a daemon-global key neither makes a provider ready nor picks the
+// default for a run that has a key owner: only the owner's own key does, so a
+// run with none is refused up front. A run with no key owner is unchanged.
+func TestResolve_NoGlobalFallback(t *testing.T) {
+	ctx := context.Background()
+	newGW := func(owned ...string) *Gateway {
+		has := map[string]bool{}
+		for _, k := range owned {
+			has[k] = true
+		}
+		return &Gateway{
+			DefaultProvider:  "gemini",
+			GlobalProviders:  map[string]bool{"gemini": true},
+			Keys:             &fakeKeyResolver{has: has},
+			NoGlobalFallback: true,
+		}
+	}
+	gemini := ForProvider("gemini")
+	claude := ForProvider("anthropic")
+
+	t.Run("named engine on a global key is refused for an owner with no key", func(t *testing.T) {
+		_, err := Resolve(ctx, gemini, "org:acme", newGW())
+		var nr *NotReadyError
+		if !errors.As(err, &nr) {
+			t.Fatalf("err = %v, want *NotReadyError", err)
+		}
+	})
+	t.Run("named engine uses the owner's own key", func(t *testing.T) {
+		res, err := Resolve(ctx, claude, "org:acme", newGW("org:acme/anthropic"))
+		if err != nil || res.Provider != "anthropic" {
+			t.Fatalf("res = %+v, err = %v", res, err)
+		}
+	})
+	t.Run("unspecified engine is refused for an owner with no key, despite a global default", func(t *testing.T) {
+		_, err := Resolve(ctx, pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED, "org:acme", newGW())
+		var nr *NotReadyError
+		if !errors.As(err, &nr) {
+			t.Fatalf("err = %v, want *NotReadyError", err)
+		}
+	})
+	t.Run("unspecified engine picks the owner's provider, not the global default", func(t *testing.T) {
+		res, err := Resolve(ctx, pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED, "org:acme", newGW("org:acme/openai"))
+		if err != nil || res.Provider != "openai" || !res.Default {
+			t.Fatalf("res = %+v, err = %v", res, err)
+		}
+	})
+	t.Run("a run with no key owner still resolves through the global key", func(t *testing.T) {
+		res, err := Resolve(ctx, gemini, "", newGW())
+		if err != nil || res.Provider != "gemini" {
+			t.Fatalf("res = %+v, err = %v", res, err)
+		}
+	})
+	t.Run("ListAgentEngines does not report a global key as the source", func(t *testing.T) {
+		rows := Statuses(ctx, "org:acme", newGW(), nil)
+		for _, r := range rows {
+			if r.Readiness == pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY {
+				t.Fatalf("engine %v ready with no owner key: %+v", r.Engine, r)
+			}
+		}
+	})
+}

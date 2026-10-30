@@ -362,7 +362,7 @@ func TestCloudEnrollAfterPoolJoin_RedeemsSameToken(t *testing.T) {
 		t.Fatalf("cloudEnrollAfterPoolJoin: %v", err)
 	}
 	if got.GetJoinToken() != "host-abc.secret" {
-		t.Errorf("server saw join_token = %q, want the same token pool join used", got.GetJoinToken())
+		t.Errorf("server saw join_token %s, want the same token pool join used (%s)", tokenFingerprint(got.GetJoinToken()), tokenFingerprint("host-abc.secret"))
 	}
 	if got.GetOssBackendId() != "tunnel-lab-node1" {
 		t.Errorf("server saw oss_backend_id = %q, want tunnel-lab-node1", got.GetOssBackendId())

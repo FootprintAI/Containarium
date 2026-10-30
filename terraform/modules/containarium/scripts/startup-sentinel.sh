@@ -167,10 +167,15 @@ done
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
 SSHPIPER_VERSION="v1.6.1"
+# sha256 from the v1.6.1 release checksums.txt; keep in step with
+# .github/workflows/ssh-ban.yml (scripts/ci/check-sentinel-sshpiper-checksum.sh).
+SSHPIPER_SHA256="95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
       -o sshpiper.tar.gz
+    # A mismatch fails the boot step (set -e) before anything is extracted.
+    echo "$${SSHPIPER_SHA256}  sshpiper.tar.gz" | sha256sum -c -
     tar xzf sshpiper.tar.gz
     mv sshpiperd /usr/local/bin/sshpiperd
     chmod +x /usr/local/bin/sshpiperd
@@ -208,6 +213,53 @@ fi
 # values ARE fetchable live at any time via the metadata server, so this
 # function is installed as a periodic systemd timer (below) in addition to
 # running here at boot — the SAME source of truth both times, no drift.
+reconcile_ssh_upstream_control() {
+    policy="$(curl -fsS -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-upstream-policy')" || return 1
+    install -d -m 0700 /etc/containarium/ssh-upstream
+    install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
+    dropin=/etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf
+    active=/etc/containarium/ssh-upstream/policy.json
+    pending=/etc/containarium/ssh-upstream/policy.pending.json
+    changed=false
+    dropin_created=false
+    if [ ! -f "$active" ]; then
+        printf '%s' "$policy" > "$active"
+        chmod 0600 "$active"
+        changed=true
+    elif [ "$(cat "$active")" != "$policy" ]; then
+        # Keep the active policy/checkpoint pair valid even if an unrelated
+        # restart happens before the operator's maintenance window.
+        if [ ! -f "$pending" ] || [ "$(cat "$pending")" != "$policy" ]; then
+            printf '%s' "$policy" > "$pending"
+            chmod 0600 "$pending"
+            changed=true
+        fi
+        logger -t ssh-upstream-reconcile "SSH upstream policy staged in policy.pending.json; apply through the maintenance procedure"
+    elif [ -f "$pending" ]; then
+        rm -f "$pending"
+        changed=true
+    fi
+    desired_dropin="$(printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' 'ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service')"
+    if [ ! -f "$dropin" ]; then
+        dropin_created=true
+    fi
+    if [ ! -f "$dropin" ] || [ "$(cat "$dropin")" != "$desired_dropin" ]; then
+        printf '%s\n' "$desired_dropin" > "$dropin"
+        changed=true
+    fi
+    if [ "$changed" = true ]; then
+        systemctl daemon-reload
+        if [ "$dropin_created" = true ] && systemctl is-active --quiet containarium-sentinel; then
+            systemctl restart containarium-sentinel
+        fi
+    fi
+}
+
+# The periodic reconciler uses this same function before switching either router.
+declare -f reconcile_ssh_upstream_control > /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
+
 reconcile_sshpiper_service() {
     desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
         'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || {
@@ -290,7 +342,8 @@ reconcile_sshpiper_anon_service
 #  - delaycompress keeps the just-rotated file (.1) uncompressed for one more
 #    cycle, which is the file the shipper reads to finish its tail.
 #  - The pkill pattern is ANCHORED: sshpiperd's own command line contains the
-#    plugin's, and it must not receive the signal.
+#    plugin's, and it must not receive the signal. It matches both writers:
+#    ssh-authz-plugin appends enforced denials to the same file (#2520).
 #  - Retention = `rotate N` with `daily`, i.e. N days. Set via the Terraform
 #    variable ssh_session_log_retention_days (default 90).
 cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
@@ -304,6 +357,8 @@ cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
     create 0600 root root
     postrotate
         pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-ban-plugin .*--records-file' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-authz-plugin .*--ssh-authz-enforce' || true
     endscript
 }
 LOGROTATE_EOF
@@ -315,6 +370,8 @@ chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
 cat > /usr/local/bin/reconcile-sshpiper-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || exit 0
 if [ -f /etc/systemd/system/sshpiper.service ] && [ "$(cat /etc/systemd/system/sshpiper.service)" = "$desired" ]; then
@@ -335,6 +392,8 @@ chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
 cat > /usr/local/bin/reconcile-sshpiper-anon-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 unit=/etc/systemd/system/sshpiper-anon.service
 code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || exit 0

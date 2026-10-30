@@ -721,3 +721,37 @@ func TestHandleUpgradeBackend_ShowsTargetVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "to version:   0.91.1")
 }
+
+// #3059: upgrade_backend carries github_tag and allow_downgrade to the daemon.
+func TestHandleUpgradeBackend_SendsGithubTagAndAllowDowngrade(t *testing.T) {
+	var got map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		_, _ = w.Write([]byte(`{"upgradeId":"upg-1","status":"in_progress"}`))
+	}))
+	defer server.Close()
+
+	_, err := handleUpgradeBackend(NewClient(server.URL, "test-token"), map[string]interface{}{
+		"github_tag": "v0.1.0", "allow_downgrade": true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "v0.1.0", got["github_tag"])
+	assert.Equal(t, true, got["allow_downgrade"])
+
+	got = nil
+	_, err = handleUpgradeBackend(NewClient(server.URL, "test-token"), map[string]interface{}{})
+	require.NoError(t, err)
+	assert.NotContains(t, got, "github_tag")
+	assert.NotContains(t, got, "allow_downgrade")
+}
+
+// #2759: the create request carries the auto-sleep opt-out only when set.
+func TestCreateContainerRequest_DisableAutoSleepWire(t *testing.T) {
+	off, err := json.Marshal(CreateContainerRequest{Username: "alice"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(off), "disableAutoSleep")
+	on, err := json.Marshal(CreateContainerRequest{Username: "alice", DisableAutoSleep: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(on), `"disableAutoSleep":true`)
+}

@@ -2,6 +2,7 @@ package incus
 
 import (
 	"errors"
+	"io"
 	"time"
 
 	"github.com/lxc/incus/v7/shared/api"
@@ -42,7 +43,8 @@ func (*UnavailableBackend) ListContainers() ([]ContainerInfo, error)    { return
 func (*UnavailableBackend) WaitForNetwork(string, time.Duration) (string, error) {
 	return "", ErrUnavailable
 }
-func (*UnavailableBackend) Exec(string, []string) error { return ErrUnavailable }
+func (*UnavailableBackend) Exec(string, []string) error                { return ErrUnavailable }
+func (*UnavailableBackend) EnsureToolchainVolume(string, string) error { return ErrUnavailable }
 func (*UnavailableBackend) ExecWithOutput(string, []string) (string, string, error) {
 	return "", "", ErrUnavailable
 }
@@ -54,6 +56,9 @@ func (*UnavailableBackend) ReadFile(string, string) ([]byte, error)        { ret
 func (*UnavailableBackend) ListDir(string, string) ([]string, error)       { return nil, ErrUnavailable }
 func (*UnavailableBackend) SetConfig(string, string, string) error         { return ErrUnavailable }
 func (*UnavailableBackend) SetCPULimit(string, string) error               { return ErrUnavailable }
+func (*UnavailableBackend) SetCPUConfig(string, string, string) error      { return ErrUnavailable }
+func (*UnavailableBackend) FreezeContainer(string) error                   { return ErrUnavailable }
+func (*UnavailableBackend) UnfreezeContainer(string) error                 { return ErrUnavailable }
 func (*UnavailableBackend) UnsetConfig(string, string) error               { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceSize(string, string, string) error     { return ErrUnavailable }
 func (*UnavailableBackend) UpdateContainerConfig(string, string, string) error {
@@ -85,6 +90,10 @@ func (*UnavailableBackend) PublishImage(string, string, map[string]string) (stri
 }
 func (*UnavailableBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
 	return nil, false, ErrUnavailable
+}
+func (*UnavailableBackend) ExportInstance(string) (io.ReadCloser, error) { return nil, ErrUnavailable }
+func (*UnavailableBackend) ImportInstance(string, string, io.Reader, ImportOptions) error {
+	return ErrUnavailable
 }
 
 // Network ACLs + NIC devices (core-infra network guard).

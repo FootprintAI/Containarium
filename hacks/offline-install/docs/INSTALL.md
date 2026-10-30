@@ -5,10 +5,15 @@ deployment. The audience is the ops engineer responsible for the
 air-gapped host; familiarity with Linux package management, systemd,
 and SSH is assumed.
 
+This guide names no release version. Set `VERSION` to the release you are
+installing; `scripts/ci/check-offline-install-version.sh` fails CI if a
+version is written into this file.
+
 ## Prerequisites
 
 **Sherpa host** (has internet):
-- Any Linux/macOS with `curl`, `sha256sum` (or `shasum -a 256`).
+- Any Linux/macOS with `curl`, `sha256sum` (or `shasum -a 256`), and
+  optionally `cosign` to check signatures.
 - A way to transfer files to the air-gapped network — USB stick,
   file-transfer appliance, write-only diode, your customer's approved
   pipeline.
@@ -17,15 +22,18 @@ and SSH is assumed.
 - Ubuntu 24.04 LTS (22.04 also works; the installer warns on other
   distros but proceeds).
 - Root access (`sudo`).
-- 2+ CPU cores, 4+ GB RAM, 50+ GB free disk.
-- No internet egress required. The installer makes **zero** network
-  calls; everything resolves from the extracted bundle directory.
+- No CPU, RAM or disk minimum is checked by the installer. Sizing is not
+  yet measured; see the sizing section of
+  [`docs/architecture/deployment-modes.md`](../../../docs/architecture/deployment-modes.md),
+  which also lists the host checks `containarium doctor` runs.
+- The installer itself makes no network calls; everything resolves from the
+  extracted bundle directory.
 
 ## Step 1 — Fetch the bundle on the sherpa host
 
 ```bash
-VERSION=v0.19.0
-ARCH=amd64
+VERSION=<release tag>   # e.g. the tag of the latest release, vX.Y.Z
+ARCH=amd64              # the release builds amd64 bundles only
 BUNDLE=containarium-bundle-${VERSION}-linux-${ARCH}.tar.gz
 
 curl -L -o "$BUNDLE" \
@@ -38,8 +46,10 @@ sha256sum -c "${BUNDLE}.sha256"
 # Expected: containarium-bundle-vX.Y.Z-linux-amd64.tar.gz: OK
 ```
 
-(See `VERIFY.md` for the optional cosign-signature verification path,
-shipping in v0.1.)
+Release files are signed with keyless cosign (Sigstore): each bundle and its
+`.sha256` have a `.sigstore.json` beside them. See `VERIFY.md` for the
+`cosign verify-blob` command and `docs/security/VERIFYING-RELEASES.md` for
+verifying with no network on the air-gapped side.
 
 ## Step 2 — Transfer to the air-gapped host
 
@@ -49,8 +59,8 @@ Customer's preferred secure-transfer path. The bundle is one opaque
 ## Step 3 — Extract and install
 
 ```bash
-tar xzf containarium-bundle-vX.Y.Z-linux-amd64.tar.gz
-cd containarium-bundle-vX.Y.Z-linux-amd64/
+tar xzf containarium-bundle-${VERSION}-linux-amd64.tar.gz
+cd containarium-bundle-${VERSION}-linux-amd64/
 
 sudo ./offline-install.sh
 ```
@@ -58,20 +68,36 @@ sudo ./offline-install.sh
 The installer:
 
 1. Re-verifies the inner `CHECKSUMS.sha256` (catches in-transit
-   corruption).
+   corruption). A mismatch stops the install; a missing file only warns.
 2. Installs `.deb` packages from `./apt/` (Incus, ZFS, jq, etc.) using
-   `apt-get install --no-download` — fails fast if any transitive dep
-   is missing instead of trying to fetch it.
+   `apt-get install --no-download`, so it never fetches a missing package.
+   A non-zero apt exit only warns; the install stops if `incus`, `zfs`,
+   `jq` or `curl` is still missing. If `./apt/` holds no `.deb` the
+   installer stops with an error. If those packages are already on the
+   host, pass `--skip-apt` to skip this step.
 3. Initializes Incus, loads ZFS + kernel modules.
-4. Copies binaries from `./bin/` into `/usr/local/bin/`.
+4. Installs `containariumd`, `mcp-server` and `agent-box` from `./bin/`
+   into `/usr/local/bin/`, and links `containarium` to `containariumd`.
 5. Generates TLS certificates and a JWT secret (local CSPRNG; no
-   network).
-6. Installs the systemd service via `containarium service install`.
-7. Imports the bundled `containarium-base` Incus image and OTel
-   sidecar image.
-8. Mints an initial admin token at `/etc/containarium/admin.token`.
+   network), unless they already exist.
+6. Installs the systemd service via `containariumd service install`.
+7. Opens TCP 22 and 8080 if `ufw` is installed, and 50051 only when you
+   pass `--mtls`.
+8. Mints an admin token at `/etc/containarium/admin.token`. It expires
+   after 30 days (`--expiry 720h`).
+9. Imports the sidecar images from `./sidecars/`, if present. Sidecars are
+   loaded with `docker load`, so they are skipped on a host without Docker.
 
-Total install time on a typical 4-core Ubuntu VM: **5-10 minutes**.
+The bundle ships no Incus base image (there is no `./images/` directory):
+bring your own image for Step 5. `--skip-base-image` is still accepted and
+does nothing.
+
+Bundles from earlier releases shipped an empty `./apt/`. The release build
+now fails instead of publishing such a bundle; with an older bundle, install
+Incus, ZFS, `jq` and `curl` from your own mirror and run the installer with
+`--skip-apt`.
+
+Install time has not been measured.
 
 ## Step 4 — Start the daemon
 
@@ -85,10 +111,15 @@ sudo journalctl -u containarium -f
 
 ## Step 5 — Smoke test
 
+`containarium create` defaults to a remote image (`images:ubuntu/24.04`),
+which needs the network. On an air-gapped host, use an image already in the
+local Incus image store. The bundle ships none, so import an image you
+transferred yourself with `incus image import <file> --alias <alias>`.
+
 ```bash
-# Use the bundled base image — no network calls
+sudo incus image list            # pick a local alias
 sudo containarium create test-1 \
-  --image containarium-base:v0.19.0 \
+  --image <local-image-alias> \
   --ssh-key ~/.ssh/id_ed25519.pub
 
 # Connect
@@ -99,41 +130,39 @@ ssh test-1
 
 Same as the connected install — see the OSS README. Make sure the
 agent's host can reach the Containarium daemon on the air-gapped
-network (the daemon listens on `:8080` for REST and `:50051` for gRPC).
+network. The installed service serves REST on `:8080`. gRPC on `:50051`
+is served only when the daemon runs with `--mtls`, which the installed
+unit does not pass.
 
 ## Optional — Provision a self-hosted GHA runner
 
-For GitHub.com (the default):
+`hacks/runner/install.sh` is not in the bundle, and it downloads its
+toolchain and the runner from the internet, so it does not work air-gapped
+as written. On a box that has network access and a copy of the script:
 
 ```bash
-ssh test-1 'sudo GH_REPO=org/repo GH_PAT=ghp_xxx ./hacks/runner/install.sh'
+ssh test-1 'sudo GH_REPO=org/repo GH_PAT=ghp_xxx ./install.sh'
 ```
 
-For GitHub Enterprise Server (see `GHES.md` for the full walkthrough):
-
-```bash
-ssh test-1 'sudo \
-  GH_REPO=org/repo \
-  GH_PAT=ghp_xxx \
-  GH_BASE_URL=https://github.your-company.internal \
-  ./hacks/runner/install.sh'
-```
+For GitHub Enterprise Server, add `GH_BASE_URL=https://github.your-company.internal`
+(see `GHES.md` for the full walkthrough).
 
 ## Troubleshooting
 
 ### "Required commands missing after apt step"
 
-The `.deb` set in `./apt/` is incomplete — most often because
-`apt-rdepends` wasn't installed on the host that built the bundle and
-some transitive deps got skipped. Re-build the bundle on a Debian host
-with `apt-rdepends` installed, or manually install the missing packages
-on the air-gapped host.
+The `.deb` set in `./apt/` did not install on this host. The bundle build
+checks that every dependency of every bundled `.deb` is in the bundle, so
+the usual cause is a host that differs from the bundle's target (not
+Ubuntu 24.04, or with conflicting packages already installed). Check
+`/var/log/dpkg.log`, or install the missing packages on the air-gapped
+host from your own mirror and re-run with `--skip-apt`.
 
 ### "Checksum mismatch"
 
 The bundle was corrupted in transit. Re-transfer from the sherpa host.
 
-### "Incus admin init failed"
+### Incus initialization fails
 
 The host kernel lacks ZFS support, or `/var/lib/incus` is on a
 non-default filesystem the auto-init can't handle. Run
@@ -145,8 +174,10 @@ non-default filesystem the auto-init can't handle. Run
 sudo journalctl -u containarium -n 100
 ```
 
-Most-common cause: port conflict on `:8080` or `:50051`. Override via
-`/etc/containarium/config.yaml`.
+Most-common cause: port conflict on `:8080`. The daemon reads no config
+file; change `--http-port` (or `--port`) on the `ExecStart` line of
+`/etc/systemd/system/containarium.service`, then
+`sudo systemctl daemon-reload`.
 
 ## Upgrading
 
@@ -154,11 +185,10 @@ Tier 3 customers do not auto-update. The upgrade flow is:
 
 1. Download the next bundle on the sherpa host.
 2. Transfer to the air-gapped host.
-3. Extract and re-run `sudo ./offline-install.sh` — the installer is
-   idempotent; it'll re-install binaries, leave existing config and
-   tokens intact, and import the new base image.
+3. Extract and re-run `sudo ./offline-install.sh`. It re-installs the
+   binaries and keeps the existing TLS certificates and JWT secret. It
+   writes a new `admin.token`, replacing the old file.
 4. `sudo systemctl restart containarium`.
 
-The installer prints a warning if the bundle being installed is more
-than 6 months old — Tier 3 customers should refresh at least that
-often to stay inside the security-patch backport window.
+The installer does not check the bundle's age. Refresh often enough to
+stay inside the security-patch backport window.

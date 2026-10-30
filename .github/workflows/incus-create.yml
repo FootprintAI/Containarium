@@ -23,6 +23,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
@@ -31,6 +34,14 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      - 'internal/cmd/backup_verify.go'
+      - 'proto/containarium/v1/backup.proto'
+      # Whole-box backup (#2801) streams through the Incus export/import
+      # seam; the backup package is where that stream is staged and sent.
+      - 'pkg/core/backup/**'
+      - 'scripts/backup-scoped-token-e2e.sh'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
@@ -39,6 +50,9 @@ on:
       - 'pkg/core/box/lxc/**'
       - 'pkg/core/container/**'
       - 'pkg/core/incus/**'
+      # #3146: both provisioning defaults and startup can change timezones.
+      - 'pkg/core/stacks/stacks.yaml'
+      - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
@@ -47,6 +61,14 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      - 'internal/cmd/backup_verify.go'
+      - 'proto/containarium/v1/backup.proto'
+      # Whole-box backup (#2801) streams through the Incus export/import
+      # seam; the backup package is where that stream is staged and sent.
+      - 'pkg/core/backup/**'
+      - 'scripts/backup-scoped-token-e2e.sh'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
 
 permissions:
@@ -73,7 +95,7 @@ jobs:
       CONTAINARIUM_LANE_IMAGE: lane-box
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # #1614's actual root cause turned out NOT to be disk pressure — a
       # live run of this exact step showed 86G free before, 102G after,
@@ -91,9 +113,10 @@ jobs:
           echo "--- after ---"; df -h /
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go-cached
         with:
           go-version-file: go.mod
+          cache-name: shared
 
       - name: Install ZFS
         run: |
@@ -233,7 +256,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
-            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ -run 'TestIntegrationIncus' | tee incus-test.log
+            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ ./pkg/core/network/ \
+            -run 'TestIntegrationIncus|TestIntegrationHairpin' | tee incus-test.log
 
       # #1368 — the daemon BINARY, with its flags.
       #
@@ -298,7 +322,7 @@ jobs:
           # turning "the client cannot authenticate" into "the daemon is
           # broken". Those lead to opposite investigations.
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if /tmp/containarium --server "$SERVER" list >/tmp/probe.log 2>&1; then
               ready=yes; break
             fi
@@ -326,6 +350,56 @@ jobs:
             */tenants/"$TENANT") ;;
             *) echo "::error::encryptionroot is $ROOT — the container is not under its tenant's key"; exit 1 ;;
           esac
+
+          # #3146: provisioning sets the default, but restarting the daemon
+          # must preserve a timezone the tenant subsequently selects.
+          INSTANCE="${TENANT}-container"
+          timezone=$(sudo incus exec "$INSTANCE" -- timedatectl show --property=Timezone --value)
+          test "$timezone" = "Asia/Taipei" || {
+            echo "::error::new container timezone is $timezone, expected Asia/Taipei"; exit 1; }
+          sudo incus exec "$INSTANCE" -- timedatectl set-timezone Europe/Paris
+
+          sudo pkill -TERM -f '^/tmp/containarium daemon'
+          for _ in $(seq 1 30); do
+            if ! pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+            echo "::error::daemon did not exit before the timezone restart check"
+            exit 1
+          fi
+          sudo /tmp/containarium daemon --standalone --rest \
+            --jwt-secret "$JWT_SECRET" \
+            --zfs-keys-dir=/etc/containarium/keys \
+            > /tmp/daemon-timezone-restart.log 2>&1 &
+
+          ready=""
+          for _ in $(seq 1 60); do
+            if /tmp/containarium --server "$SERVER" list >/tmp/timezone-probe.log 2>&1; then
+              ready=yes; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::restarted daemon never answered the CLI"
+            cat /tmp/timezone-probe.log
+            tail -40 /tmp/daemon-timezone-restart.log
+            exit 1
+          fi
+          # The old replay runs in a goroutine: watch beyond readiness so
+          # a late overwrite also fails instead of passing a single probe.
+          for _ in $(seq 1 10); do
+            timezone=$(sudo incus exec "$INSTANCE" -- timedatectl show --property=Timezone --value)
+            if [ "$timezone" != "Europe/Paris" ]; then
+              echo "::error::daemon restart changed the tenant timezone to $timezone"
+              tail -40 /tmp/daemon-timezone-restart.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "timezone preserved across daemon restart: $timezone"
 
           # And a stopped container is ciphertext: the key unloads.
           #
@@ -367,7 +441,7 @@ jobs:
           SERVER="http://localhost:8080"
 
           ready=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if /tmp/containarium --server "$SERVER" list >/tmp/probe2.log 2>&1; then
               ready=yes; break
             fi
@@ -388,6 +462,55 @@ jobs:
             echo "::error::refused, but not for the documented reason:"; cat /tmp/refusal.log; exit 1; }
           echo "closed default holds: $(head -3 /tmp/refusal.log)"
           sudo pkill -f "containarium daemon" || true
+
+      - name: Backup verifier scope allows verify and refuses legacy write against the real daemon
+        env:
+          JWT_SECRET: backup-verifier-lane-only-secret-not-a-credential
+        run: |
+          set -euo pipefail
+          ADMIN_TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+            --expiry 24h --secret "$JWT_SECRET" --raw)
+          backup_dir=$(mktemp -d)
+          # pkill in the preceding step sends a signal; wait for shutdown
+          # before another daemon can bind the same ports.
+          for _ in $(seq 1 30); do
+            if ! pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if pgrep -f '^/tmp/containarium daemon' >/dev/null; then
+            echo "::error::previous daemon did not exit within 30 seconds"
+            exit 1
+          fi
+          sudo env CONTAINARIUM_BACKUP_DIR="$backup_dir" \
+            CONTAINARIUM_BACKUP_VERIFY_IMAGE=lane-box \
+            /tmp/containarium daemon --standalone --rest --jwt-secret "$JWT_SECRET" \
+            > /tmp/backup-scoped-daemon.log 2>&1 &
+          daemon_pid=$!
+          cleanup() {
+            sudo kill "$daemon_pid" || true
+            sudo rm -rf "$backup_dir"
+          }
+          trap cleanup EXIT
+          ready=""
+          for _ in $(seq 1 60); do
+            if curl --fail -sS -H "Authorization: Bearer $ADMIN_TOKEN" \
+              http://localhost:8080/v1/backups >/dev/null 2>&1; then
+              ready=yes; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            cat /tmp/backup-scoped-daemon.log
+            exit 1
+          fi
+          sudo env "PATH=$PATH" JWT_SECRET="$JWT_SECRET" ADMIN_TOKEN="$ADMIN_TOKEN" \
+            CI="${CI:-}" \
+            CONTAINARIUM_LANE_IMAGE=lane-box \
+            bash scripts/backup-scoped-token-e2e.sh || {
+              cat /tmp/backup-scoped-daemon.log; exit 1;
+            }
 
       # A skip here means the environment check above passed and the test
       # decided otherwise — a contradiction worth failing on rather than

@@ -1,5 +1,7 @@
 # Sentinel Design
 
+> Status: **Implemented** (`internal/sentinel`, `containarium sentinel`). Kept for the design rationale; where this note and the code differ, the code is authoritative.
+
 The sentinel is a tiny always-on VM (e2-micro, GCP free tier) that sits in front of one or more spot VMs. It owns the static public IP, forwards traffic transparently during normal operation, and provides automatic recovery when spot VMs are preempted.
 
 ## Architecture
@@ -214,9 +216,23 @@ curl http://<sentinel-ip>:8888/status
   "outage_duration": "",
   "last_preemption": "2026-02-27T15:30:00Z",
   "cert_sync_count": 5,
-  "cert_sync_last": "2026-02-27T21:30:00Z"
+  "cert_sync_last": "2026-02-27T21:30:00Z",
+  "primary_auth_counts": {"ok": 1, "failing_401": 0, "unknown": 0},
+  "unattributed_auth_failures": 0
 }
 ```
+
+`primary_auth_counts` (#2892, #3004) counts primaries per state and never names
+a pool, because `/status` is unauthenticated. `failing_401` means a request from
+the primary's address to a daemon-AUTH route (`/sentinel/primaries`, `/ca`,
+`/peer-cert`, `/fetch-release`, `/keys/resync`) got 401 since the primary's own
+last authenticated registration, heartbeat or deregister (`ok`); `unknown` is a
+live registered primary with no auth record yet. A 401 is attributed by source
+address, never by the pool name in the request, so `failing_401` can be a false
+alarm from any bad-signature request from that address: confirm in the logs
+before rotating a secret. Other 401s count in `unattributed_auth_failures`.
+Per-pool detail is `GET /sentinel/primary-auth-health`, which requires a request
+signed with the ADMIN secret (`CONTAINARIUM_SENTINEL_ADMIN_SECRET`; daemons do not hold it). Nothing in either is derived from the secret.
 
 ## Management SSH (Port 2222)
 

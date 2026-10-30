@@ -110,6 +110,9 @@ type RunRecord struct {
 	CaptureMode CaptureMode `json:"capture_mode"`
 	LogPath     string      `json:"log_path"`
 	StartedAt   time.Time   `json:"started_at"`
+	// Model is the model id the run was started with (StartBoxRunRequest.model,
+	// #3259); empty when none was requested. Additive: older readers ignore it.
+	Model string `json:"model,omitempty"`
 
 	// Actor is the principal the caller says authorized this run, and
 	// DelegationChain the JSON-serialized auth.Actor chain behind it
@@ -390,6 +393,17 @@ func rotateFinishedRun(record RunRecord) error {
 	newExitPath := strings.TrimSuffix(oldExitPath, ".exit") + suffix + ".exit"
 	if err := os.Rename(oldExitPath, newExitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("rotate exit sidecar %q: %w", record.Name, err)
+	}
+
+	// The approval journal and answers (#2183) rotate too, for the same reason:
+	// the next run under this name would otherwise report this run's permission
+	// requests as its own. Only names that are valid approval run names have
+	// these files, and for those sanitizeName is the identity.
+	for _, ext := range []string{".input.jsonl", ".answers"} {
+		base := filepath.Join(processLogDir, sanitizeName(record.Name))
+		if err := os.Rename(base+ext, base+suffix+ext); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("rotate approval file %q%s: %w", record.Name, ext, err)
+		}
 	}
 	return nil
 }

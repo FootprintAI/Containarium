@@ -266,3 +266,12 @@ func TestParseScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestBackupsVerifyScopeIsKnownAndDistinct(t *testing.T) {
+	if ScopeBackupsVerify != "backups:verify" || !IsKnownScope(ScopeBackupsVerify) {
+		t.Fatalf("backups:verify must be a known scope, got %q", ScopeBackupsVerify)
+	}
+	if HasExplicitScope([]string{ScopeBackupsVerify}, ScopeBackupsWrite) {
+		t.Fatal("backups:verify must not imply backups:write")
+	}
+}

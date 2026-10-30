@@ -5,10 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // containerView is a reconcile-time snapshot of one managed container: its
@@ -19,11 +17,25 @@ type containerView struct {
 	Name     string
 	Tenant   string
 	TenantID uint32
-	IP       [4]byte
-	HasIP    bool
-	Ifindex  int
-	HasVeth  bool
-	Running  bool
+	// IP is the address the instance state reports — what the GUEST configured
+	// on itself. It feeds ip_tenant (which tenant a destination belongs to) and
+	// nothing the box's own packets are validated against.
+	IP    [4]byte
+	HasIP bool
+	// HostIP is the box's address as the HOST knows it — the NIC device's
+	// static ipv4.address or the bridge's DHCP lease — the only source the
+	// program's source validation and inbound-flow seeding trust (#2618). Root
+	// in the box cannot change it.
+	HostIP    [4]byte
+	HasHostIP bool
+	Ifindex   int
+	HasVeth   bool
+	Running   bool
+	// ValidateOnly marks an instance the daemon does not police (the control
+	// plane, an instance with no tenant): it gets a veth entry that only stamps
+	// its frames with the source-validation mark (#2618), no policy, no
+	// ip_tenant row, no per-tenant status.
+	ValidateOnly bool
 }
 
 // reconcilePlan is the desired BPF map state for one reconcile pass — pure data
@@ -59,6 +71,20 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	egressDone := make(map[uint32]bool)
 
 	for _, v := range views {
+		if v.ValidateOnly {
+			// Not a tenant: no ip_tenant row, no policy. Its veth gets the
+			// marking-only entry so the receiving side can tell its frames
+			// from the host's (#2618); the address is the host-known one or 0.
+			if v.Running && v.HasVeth {
+				var ip [4]byte
+				if v.HasHostIP {
+					ip = v.HostIP
+				}
+				plan.vethPolicy[v.Ifindex] = netbpf.ValidateOnlyConfig(ip)
+				plan.ifName[v.Ifindex] = v.Name
+			}
+			continue
+		}
 		if v.HasIP {
 			plan.ipTenant[v.IP] = v.TenantID
 		}
@@ -69,11 +95,27 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 			if hasPolicy {
 				cfg = netbpf.CompileConfig(v.TenantID, policy)
 			} else {
-				cfg = netbpf.PolicyConfig{TenantID: v.TenantID, Mode: netbpf.ModeLogOnly}
+				cfg = netbpf.PolicyConfig{TenantID: v.TenantID, Mode: netbpf.ModeLogOnly, EgressMode: netbpf.ModeLogOnly}
 			}
-			// Safety guard: enforcement only drops when armed daemon-wide.
-			if cfg.Mode == netbpf.ModeEnforce && !enforceEnabled {
-				cfg.Mode = netbpf.ModeLogOnly
+			// Safety guard: enforcement only drops when armed daemon-wide. It
+			// applies to both modes — the egress allow-list's own mode cannot
+			// arm drops the guard has not armed.
+			if !enforceEnabled {
+				if cfg.Mode == netbpf.ModeEnforce {
+					cfg.Mode = netbpf.ModeLogOnly
+				}
+				if cfg.EgressMode == netbpf.ModeEnforce {
+					cfg.EgressMode = netbpf.ModeLogOnly
+				}
+			}
+			// The box's own address (#2618): the program validates the box's
+			// source against it and seeds inbound flows only from frames whose
+			// source is the sending veth's address. HOST-known only (device
+			// config or DHCP lease) — never v.IP, which the guest reports and
+			// root in the box can change. Unknown stays zero, which the program
+			// reads as "cannot validate this veth".
+			if v.HasHostIP {
+				cfg.BoxIP = v.HostIP
 			}
 			plan.vethPolicy[v.Ifindex] = cfg
 			plan.ifName[v.Ifindex] = v.Name
@@ -95,13 +137,31 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	return plan
 }
 
-// subEvents returns the subscriber's event channel, or a nil channel (which
-// blocks forever in a select) when there is no subscriber.
-func subEvents(sub *events.Subscriber) <-chan *pb.Event {
-	if sub == nil {
-		return nil
+// withDefaultPolicies returns policies plus, for every tenant seen in views
+// that has no stored policy, the default posture from build (#2577 stage 1). A
+// stored policy always wins; a nil build (default posture off) or a tenant the
+// builder declines leaves the tenant on the bare log-only fallback in
+// planReconcile. The input map is not modified.
+func withDefaultPolicies(policies map[string]netpolicy.CompiledPolicy, views []containerView, build func(tenant string) (netpolicy.CompiledPolicy, bool)) map[string]netpolicy.CompiledPolicy {
+	if build == nil {
+		return policies
 	}
-	return sub.Events
+	out := make(map[string]netpolicy.CompiledPolicy, len(policies))
+	for k, v := range policies {
+		out[k] = v
+	}
+	for _, v := range views {
+		if v.Tenant == "" {
+			continue
+		}
+		if _, ok := out[v.Tenant]; ok {
+			continue
+		}
+		if c, ok := build(v.Tenant); ok {
+			out[v.Tenant] = c
+		}
+	}
+	return out
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -176,6 +236,39 @@ func diffDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.De
 type denyApplier interface {
 	AddDeny(netbpf.DenyEntry) error
 	DeleteDeny(netbpf.DenyKey) error
+}
+
+// egressApplier is the slice of the loader applyEgress writes through.
+type egressApplier interface {
+	AddEgress(netbpf.EgressEntry) error
+	DeleteEgress(netbpf.EgressEntry) error
+}
+
+// applyEgress converges the kernel egress allow-list: add the entries in toAdd,
+// delete those in toDel, updating installed in place. A failed op is logged and
+// skipped WITHOUT touching installed, so the next pass retries it. It returns
+// the tenants whose allow-list is not what their policy says after this pass
+// (an add or a removal failed), so the status can say so instead of reporting
+// the tenant as fully loaded (#2983).
+func applyEgress(installed map[netbpf.EgressEntry]bool, toAdd, toDel []netbpf.EgressEntry, a egressApplier) map[uint32]bool {
+	incomplete := make(map[uint32]bool)
+	for _, ee := range toAdd {
+		if err := a.AddEgress(ee); err != nil {
+			log.Printf("[netpolicy] add egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		installed[ee] = true
+	}
+	for _, ee := range toDel {
+		if err := a.DeleteEgress(ee); err != nil {
+			log.Printf("[netpolicy] delete egress: %v", err)
+			incomplete[ee.TenantID] = true
+			continue
+		}
+		delete(installed, ee)
+	}
+	return incomplete
 }
 
 // applyDeny converges the kernel deny_cidr map from installed to desired via the
@@ -255,4 +348,28 @@ func applyIPTenant(installed, desired map[[4]byte]uint32, a ipTenantApplier) {
 		}
 		delete(installed, ip)
 	}
+}
+
+// foldEgressModeForObject fits the plan to what the loaded object can apply
+// (#2987). An object built before #2974 reads the egress_mode byte as padding
+// and applies `mode` to the egress allow-list too, so for such an object every
+// split veth config is rewritten to egress_mode = mode before it is written:
+// the plan then says what the kernel will do, and the applied-state report
+// built from it shows `mode`, never the requested egress mode. Returns the
+// tenant ids whose split was folded, for the warning. A 0 egress byte already
+// means "follow mode" and is left alone.
+func foldEgressModeForObject(plan *reconcilePlan, supportsEgressMode bool) map[uint32]bool {
+	ignored := make(map[uint32]bool)
+	if supportsEgressMode {
+		return ignored
+	}
+	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.EgressMode == 0 || cfg.EgressMode == cfg.Mode {
+			continue
+		}
+		cfg.EgressMode = cfg.Mode
+		plan.vethPolicy[ifindex] = cfg
+		ignored[cfg.TenantID] = true
+	}
+	return ignored
 }

@@ -1,0 +1,65 @@
+# Allow-list for scripts/ci/check-doc-names.sh. One entry per line:
+#   ip   <address>            a public IPv4 address that is documented, not a deployment
+#   name <token>              a generic example identity usable as <token>-container
+#   pending <path> <token>    an ambiguous <token>-container left for a human to
+#                             rename or accept (#2558); a NEW occurrence in any
+#                             other file still fails. Delete the line once resolved.
+# Lines starting with # are comments; text after " # " is the reason.
+
+# Public resolvers and documentation placeholders.
+ip 8.8.8.8        # Google public DNS
+ip 1.1.1.1        # Cloudflare public DNS
+ip 9.9.9.9        # Quad9 public DNS
+ip 1.2.3.4        # obvious placeholder
+# Vendor-published ranges quoted as examples.
+ip 130.211.0.0    # Google Cloud load-balancer health-check range
+ip 35.191.0.0     # Google Cloud load-balancer health-check range
+ip 173.245.48.0   # Cloudflare published range
+ip 103.21.244.0   # Cloudflare published range
+ip 140.82.112.3   # a code-hosting vendor's public address used as an example destination
+
+# Generic example identities.
+name alice
+name bob
+name charlie
+name dave
+name testuser
+name my
+name carol
+name erin
+name gail
+
+# Ordinary English compounds that are not names (X-container).
+name per
+name in
+name sub
+name single
+name same
+name rootless
+name inter
+name create
+name wrong
+name nvidia
+name non
+name mid
+
+# Ambiguous: left for a human decision, see the PR for #2558.
+pending docs/verification/2026-W44-process-guardrail.md vbox
+pending docs/verification/2026-W44-process-guardrail.md pbox
+pending docs/verification/2026-W44-process-guardrail-pass2.md vbox
+pending docs/verification/2026-W44-process-guardrail-pass2.md pbox
+pending docs/verification/2026-W44-process-guardrail-pass2.md vbox2
+pending docs/verification/2026-W44-process-guardrail-pass2.md vbox3
+pending docs/architecture/per-tenant-encrypted-storage-pools.md enc8375
+pending docs/architecture/per-tenant-encrypted-storage-pools.md tnt8194
+pending docs/architecture/core-infra-network-guard.md core
+pending docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md core
+pending docs/CADDY-SETUP.md caddy
+pending docs/OTEL-COLLECTOR-DESIGN.md admin
+pending docs/MULTI-BACKEND-PEERS.md devbox
+pending docs/MULTI-BACKEND-PEERS.md api
+pending docs/MULTI-POOL.md api
+pending docs/AGENT-WORKSPACE-SPIKE.md ws1
+pending docs/integrations/llama-cpp.md lc1
+pending docs/integrations/ollama.md ol1
+pending docs/integrations/risingwave.md rw1

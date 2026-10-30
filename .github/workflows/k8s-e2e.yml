@@ -36,10 +36,11 @@ jobs:
     name: build + unit (-tags k8s)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
       - name: Build k8s variant
         run: go build -tags k8s ./...
       - name: Reconciler unit tests (fake clientset, no cluster)
@@ -49,13 +50,17 @@ jobs:
     name: kind e2e
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
       - name: Install kind
         run: |
+          # kind v0.24.0; sha256 from the published kind-linux-amd64.sha256sum.
+          KIND_SHA256=b89aada5a39d620da3fcd16435b7f28d858927dd53f92cbac77686b0588b600d
           curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
           kind version

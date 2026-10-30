@@ -114,6 +114,7 @@ func TestTriggerUpgrade_LocalNoBinaryPath_GithubTag(t *testing.T) {
 // The github_tag path must work even when autoUpdater is nil (no sentinel
 // configured) — that's the point of #1028: it has no sentinel dependency.
 func TestTriggerUpgrade_GithubTag_DoesNotRequireAutoUpdater(t *testing.T) {
+	stubRunningVersion(t, "0.50.0") // tag v0.99.0 is newer
 	// Point releases at a 404 server so the background goroutine's FetchSHA256
 	// call fails fast instead of reaching real GitHub from a unit test.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -260,5 +261,83 @@ func TestUpgradeTargetVersion_NoSentinel(t *testing.T) {
 	s := &ContainerServer{}
 	if got := s.upgradeTargetVersion(context.Background(), ""); got != "" {
 		t.Fatalf("target with no auto-updater = %q, want empty", got)
+	}
+}
+
+// #3057: the admin role alone must not authorize an upgrade; the token's
+// scopes are enforced server-side too (the MCP map is only one consumer).
+// A server with no autoUpdater makes a missing check surface as Unavailable.
+func adminScopedUpgradeCtx(scopes []string) context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), "tester", []string{auth.RoleAdmin}, scopes)
+}
+
+func TestTriggerUpgrade_ScopeEnforced(t *testing.T) {
+	cases := []struct {
+		name   string
+		scopes []string
+		want   codes.Code
+	}{
+		{"excluded scope denied", []string{"routes:read"}, codes.PermissionDenied},
+		{"read-only scope denied", []string{auth.ScopeContainersRead}, codes.PermissionDenied},
+		{"empty non-nil scopes denied", []string{}, codes.PermissionDenied},
+		{"containers:write passes", []string{auth.ScopeContainersWrite}, codes.Unavailable},
+		{"wildcard passes", []string{auth.ScopeWildcard}, codes.Unavailable},
+		{"nil scope claim passes", nil, codes.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &ContainerServer{}
+			_, err := s.TriggerUpgrade(adminScopedUpgradeCtx(tc.scopes), &pb.TriggerUpgradeRequest{})
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("want %v, got %v (%v)", tc.want, got, err)
+			}
+		})
+	}
+}
+
+// The peer-forward path must keep the scope check: a denied token must be
+// refused before any peer lookup (no peer pool would otherwise be Unavailable).
+func TestTriggerUpgrade_PeerForwardScopeEnforced(t *testing.T) {
+	s := &ContainerServer{}
+	_, err := s.TriggerUpgrade(adminScopedUpgradeCtx([]string{"routes:read"}),
+		&pb.TriggerUpgradeRequest{BackendId: "some-peer"})
+	if got := status.Code(err); got != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied on peer-forward path, got %v (%v)", got, err)
+	}
+}
+
+func TestGetUpgradeStatus_ScopeEnforced(t *testing.T) {
+	cases := []struct {
+		name   string
+		scopes []string
+		want   codes.Code
+	}{
+		{"excluded scope denied", []string{"routes:read"}, codes.PermissionDenied},
+		{"empty non-nil scopes denied", []string{}, codes.PermissionDenied},
+		{"containers:read passes", []string{auth.ScopeContainersRead}, codes.InvalidArgument},
+		{"wildcard passes", []string{auth.ScopeWildcard}, codes.InvalidArgument},
+		{"nil scope claim passes", nil, codes.InvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &ContainerServer{}
+			// Empty upgrade_id: a passing gate surfaces as InvalidArgument.
+			_, err := s.GetUpgradeStatus(adminScopedUpgradeCtx(tc.scopes), &pb.GetUpgradeStatusRequest{})
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("want %v, got %v (%v)", tc.want, got, err)
+			}
+		})
+	}
+}
+
+// Role is still required: a scoped non-admin is denied even with the scope.
+func TestUpgradeRPCs_ScopeDoesNotReplaceAdminRole(t *testing.T) {
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "u", []string{"user"}, []string{auth.ScopeWildcard})
+	s := &ContainerServer{}
+	if _, err := s.TriggerUpgrade(ctx, &pb.TriggerUpgradeRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("TriggerUpgrade non-admin: %v", err)
+	}
+	if _, err := s.GetUpgradeStatus(ctx, &pb.GetUpgradeStatusRequest{UpgradeId: "x"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("GetUpgradeStatus non-admin: %v", err)
 	}
 }

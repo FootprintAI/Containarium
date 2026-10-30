@@ -63,8 +63,12 @@ type Config struct {
 	// interactive login shell (developer-box). Empty leaves the image default.
 	BoxMode string
 
-	// StorageClass is reserved for the box PVC (not wired in this slice).
+	// StorageClass backs the per-box data PVC.
 	StorageClass string
+
+	// SharedVolumeStorageClass is an operator-selected RWX-capable class for
+	// VolumeService PVCs. Empty disables shared volumes on this backend.
+	SharedVolumeStorageClass string
 
 	// RuntimeClass names the Kubernetes RuntimeClass every box pod is scheduled
 	// under. Empty (the default) leaves RuntimeClassName unset, so pods run on
@@ -303,6 +307,9 @@ func (b *Backend) validateTenantName(tenant string) error {
 // Sandbox. Each step is idempotent (AlreadyExists is success) so re-create
 // reuses the box rather than erroring (#669).
 func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
+	if spec.NetworkTenant != "" {
+		return nil, fmt.Errorf("native network Tenant requires local Linux LXC")
+	}
 	// A pod is a container. Refuse a VM request outright rather than hand
 	// back a shared-kernel box the caller believed was VM-isolated (#2196).
 	if spec.Isolation == pb.IsolationType_ISOLATION_TYPE_VM {
@@ -413,6 +420,8 @@ func (b *Backend) statusOf(tenant string, sb *sandboxv1beta1.Sandbox) *box.BoxSt
 		Resources: resourcesOf(sb),
 		Labels:    metaFromAnnotations(sb.Annotations),
 		BackendID: "k8s",
+		// No podman toggle on K8s; keep reporting the long-standing true.
+		PodmanEnabled: true,
 	}
 	// Pod IP, populated by the controller once the pod is scheduled.
 	if len(sb.Status.PodIPs) > 0 {
@@ -500,9 +509,13 @@ func (b *Backend) Stop(ctx context.Context, ref box.BoxRef, force bool) error {
 // strategic) — CRDs don't support strategic merge, and for a scalar field the
 // two are equivalent.
 func (b *Backend) setOperatingMode(ctx context.Context, ref box.BoxRef, mode sandboxv1beta1.SandboxOperatingMode) error {
+	return b.setSandboxOperatingMode(ctx, ref.Tenant, sandboxName, mode)
+}
+
+func (b *Backend) setSandboxOperatingMode(ctx context.Context, tenant, name string, mode sandboxv1beta1.SandboxOperatingMode) error {
 	patch := []byte(fmt.Sprintf(`{"spec":{"operatingMode":%q}}`, mode))
-	_, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(ref.Tenant)).
-		Patch(ctx, sandboxName, types.MergePatchType, patch, metav1.PatchOptions{})
+	_, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(tenant)).
+		Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 

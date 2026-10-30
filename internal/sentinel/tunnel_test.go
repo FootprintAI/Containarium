@@ -66,7 +66,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 		connectCh <- spot
 	}
 
-	go func() { _ = server.Run(ctx) }()
+	runTunnelServer(t, ctx, server, server.Run)
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
 
 	// 3. Start tunnel client, pinning the server's tunnel identity
@@ -122,71 +122,27 @@ func TestTunnelEndToEnd(t *testing.T) {
 	t.Logf("full echo through tunnel verified: %q", string(buf))
 }
 
-// TestConnMuxRouting verifies that the ConnMux correctly routes connections
-// based on the first byte: '{' → tunnel listener, 0x16 → HTTPS listener.
+// TestConnMuxRouting verifies that the ConnMux routes cleartext JSON to the
+// tunnel listener and a truncated, non-tunnel TLS record to the HTTPS listener
+// without losing any bytes.
 func TestConnMuxRouting(t *testing.T) {
-	muxPort := freePort(t)
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort))
-	require.NoError(t, err)
+	mux := startMuxUnderTest(t)
 
-	mux := NewConnMuxFromListener(ln)
-	go mux.Run()
-	defer func() { _ = mux.Close() }()
-	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
+	// Test 1: Send a '{' byte → should appear on TunnelListener.
+	jsonPayload := []byte(`{"token":"x"}`)
+	routedTo, data := mux.send(t, jsonPayload)
+	assert.Equal(t, "tunnel", routedTo)
+	assert.Equal(t, jsonPayload, data, "tunnel listener should receive the full JSON payload")
+	t.Logf("tunnel listener received: %s", data)
 
-	// Test 1: Send a '{' byte → should appear on TunnelListener
-	tunnelDone := make(chan string, 1)
-	go func() {
-		conn, err := mux.TunnelListener().Accept()
-		if err != nil {
-			tunnelDone <- "error: " + err.Error()
-			return
-		}
-		buf := make([]byte, 16)
-		n, _ := conn.Read(buf)
-		_ = conn.Close()
-		tunnelDone <- string(buf[:n])
-	}()
-
-	conn1, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort))
-	require.NoError(t, err)
-	_, _ = conn1.Write([]byte(`{"token":"x"}`))
-	_ = conn1.Close()
-
-	select {
-	case data := <-tunnelDone:
-		// The first byte '{' was peeked, so the full JSON should be readable
-		assert.True(t, len(data) > 0 && data[0] == '{', "tunnel should receive JSON starting with '{'")
-		t.Logf("tunnel listener received: %s", data)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for tunnel listener")
-	}
-
-	// Test 2: Send a TLS ClientHello (first byte 0x16) → should appear on HTTPSListener
-	httpsDone := make(chan byte, 1)
-	go func() {
-		conn, err := mux.HTTPSListener().Accept()
-		if err != nil {
-			return
-		}
-		buf := make([]byte, 1)
-		_, _ = conn.Read(buf)
-		_ = conn.Close()
-		httpsDone <- buf[0]
-	}()
-
-	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort))
-	require.NoError(t, err)
-	_, _ = conn2.Write([]byte{0x16, 0x03, 0x01}) // TLS record header
-	_ = conn2.Close()
-
-	select {
-	case firstByte := <-httpsDone:
-		assert.Equal(t, byte(0x16), firstByte, "HTTPS listener should receive TLS byte")
-		t.Logf("HTTPS listener received first byte: 0x%02x", firstByte)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for HTTPS listener")
-	}
+	// Test 2: Send a truncated TLS record header. Closing only the write side
+	// lets the mux route it to HTTPS on EOF while keeping the connection open
+	// until the consumer has read and verified every byte.
+	tlsHeader := []byte{0x16, 0x03, 0x01}
+	routedTo, data = mux.send(t, tlsHeader)
+	assert.Equal(t, "https", routedTo)
+	assert.Equal(t, tlsHeader, data, "HTTPS listener should receive the full TLS record header")
+	t.Logf("HTTPS listener received first byte: 0x%02x", data[0])
 }
 
 // TestConnMuxWithTunnelClient verifies that a tunnel client can connect through
@@ -238,7 +194,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
 		connectCh <- spot
 	}
-	go func() { _ = tunnelServer.Serve(ctx, mux.TunnelListener()) }()
+	serveTunnelServer(t, ctx, tunnelServer, mux.TunnelListener())
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
 
 	// Start tunnel client pointing at the mux port (same as HTTPS); the
@@ -272,9 +228,14 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 // one.
 func waitForListener(t *testing.T, addr string) {
 	t.Helper()
-	if _, err := dialRetry(addr, 5*time.Second); err != nil {
+	conn, err := dialRetry(addr, 5*time.Second)
+	if err != nil {
 		t.Fatalf("listener %s never came up: %v", addr, err)
 	}
+	// Close the probe. Left open, the server's handler for it blocks reading
+	// the first byte until its 10s handshake deadline, a session goroutine
+	// that outlives the test (#3009).
+	_ = conn.Close()
 }
 
 // dialRetry dials addr until it succeeds or timeout elapses, returning the

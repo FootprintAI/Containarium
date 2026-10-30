@@ -59,9 +59,9 @@ type profileBackendReq struct {
 
 // capabilityBenchmark mirrors the proto CapabilityBenchmark wire shape.
 type capabilityBenchmark struct {
-	CpuOpsPerSec   int64 `json:"cpuOpsPerSec,omitempty"`
-	MemBytesPerSec int64 `json:"memBytesPerSec,omitempty"`
-	DurationMs     int64 `json:"durationMs,omitempty"`
+	CpuOpsPerSec   int64 `json:"cpuOpsPerSec,omitempty,string"`
+	MemBytesPerSec int64 `json:"memBytesPerSec,omitempty,string"`
+	DurationMs     int64 `json:"durationMs,omitempty,string"`
 }
 
 // capabilityProfile mirrors the proto CapabilityProfile wire shape (camelCase
@@ -69,8 +69,8 @@ type capabilityBenchmark struct {
 type capabilityProfile struct {
 	CpuCores         int32                `json:"cpuCores,omitempty"`
 	CpuModel         string               `json:"cpuModel,omitempty"`
-	TotalMemoryBytes int64                `json:"totalMemoryBytes,omitempty"`
-	TotalDiskBytes   int64                `json:"totalDiskBytes,omitempty"`
+	TotalMemoryBytes int64                `json:"totalMemoryBytes,omitempty,string"`
+	TotalDiskBytes   int64                `json:"totalDiskBytes,omitempty,string"`
 	GpuModel         string               `json:"gpuModel,omitempty"`
 	GpuDriverVersion string               `json:"gpuDriverVersion,omitempty"`
 	GpuAvailable     bool                 `json:"gpuAvailable,omitempty"`

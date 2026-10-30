@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -107,4 +108,9 @@ func hasScope(scopes []string, want string) bool {
 // auth.HasScope so the policy lives in one place.
 func toolAllowed(grantedScopes []string, tool *Tool) bool {
 	return auth.HasScope(grantedScopes, tool.RequiredScope)
+}
+
+// requiredScopeText renders the scope that satisfies a tool for a denial message.
+func requiredScopeText(tool *Tool) string {
+	return fmt.Sprintf("%q", tool.RequiredScope)
 }

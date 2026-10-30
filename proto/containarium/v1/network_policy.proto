@@ -17,6 +17,16 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 // BPF loader (a later increment) consumes the stored policies and programs the
 // kernel. Admin-only — policies are fleet-shaping config, not tenant-editable.
 service NetworkPolicyService {
+  // Atomically edits destination ingress sources; all revisions must match.
+  rpc PatchTenantAccess(PatchTenantAccessRequest) returns (PatchTenantAccessResponse) {
+    option (google.api.http) = {post: "/v1/network-policies/tenant-access" body: "*"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Patch cross-Tenant ingress access"
+      description: "Administrator and network-policy:write required. Updates only ingress sources in one transaction; full-policy revision conflicts abort the batch. Does not test TCP."
+      tags: "NetworkPolicy"
+    };
+  }
+
   // SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
   // The policy is validated + normalized; the stored form is echoed back.
   rpc SetNetworkPolicy(SetNetworkPolicyRequest) returns (SetNetworkPolicyResponse) {
@@ -96,6 +106,22 @@ service NetworkPolicyService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Plan network policy";
       description: "List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // GetNetworkPolicyStatus reports what THIS daemon has actually loaded into
+  // the kernel for a tenant: the effective modes after the host's enforce
+  // guard, when it was last reconciled, whether enforcement is armed here, and the
+  // traffic the eBPF program does not cover. It reads the applied BPF state,
+  // not the stored policy, and says unknown when it cannot tell. Read-only.
+  rpc GetNetworkPolicyStatus(GetNetworkPolicyStatusRequest) returns (GetNetworkPolicyStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/network-policies/{tenant}/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get network policy status";
+      description: "Report what this daemon has actually loaded for a tenant: effective mode and egress mode (after the host's enforce guard), last reconcile time, whether enforcement is armed on this host, and uncovered traffic paths. Reads the applied state, not the stored policy. Admin-only.";
       tags: "NetworkPolicy";
     };
   }
@@ -185,4 +211,149 @@ message PlanNetworkPolicyResponse {
   // Caveats the caller should show, e.g. that destinations allowed by
   // egress_domains are not subtracted.
   repeated string notes = 6;
+}
+
+// GetNetworkPolicyStatusRequest names the tenant to report on.
+message GetNetworkPolicyStatusRequest {
+  // Tenant to report on (required).
+  string tenant = 1;
+}
+
+// GetNetworkPolicyStatusResponse carries the tenant's applied state.
+message GetNetworkPolicyStatusResponse {
+  NetworkPolicyStatus status = 1;
+}
+
+// NetworkPolicyAppliedState says whether this daemon has a tenant's policy
+// loaded, and so whether the effective modes can be read at all.
+enum NetworkPolicyAppliedState {
+  // The daemon cannot tell (e.g. the enforcer is running but has not yet
+  // completed a reconcile pass). Effective modes are UNSPECIFIED.
+  NETWORK_POLICY_APPLIED_STATE_UNSPECIFIED = 0;
+  // No eBPF enforcer is running on this daemon (not configured, or it failed
+  // to load), so nothing is enforced or observed. Effective modes are
+  // UNSPECIFIED.
+  NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING = 1;
+  // The enforcer is running but no running box of this tenant has a policy
+  // loaded (no running boxes, or none could be attached). Effective modes are
+  // UNSPECIFIED.
+  NETWORK_POLICY_APPLIED_STATE_NOT_LOADED = 2;
+  // Every running box of the tenant has its policy loaded; the effective
+  // modes are what the kernel holds for all of them.
+  NETWORK_POLICY_APPLIED_STATE_LOADED = 3;
+  // Some, but not all, of the tenant's running boxes have the policy loaded
+  // (boxes_not_loaded > 0). The effective modes are what the kernel holds for
+  // the loaded boxes only; the traffic of the other boxes is not policed, so
+  // the tenant is NOT fully covered.
+  NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED = 4;
+  // The last completed reconcile pass is too old to trust (older than three
+  // reconcile intervals): the reconciler is stalled, e.g. every pass fails
+  // to read the containers or the policy store. What the kernel holds now is
+  // unknown, so the effective modes and box counts are UNSPECIFIED;
+  // last_reconciled_at shows how old the last good pass is.
+  NETWORK_POLICY_APPLIED_STATE_STALE = 5;
+}
+
+// NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.
+enum NetworkPolicyUncoveredPath {
+  NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED = 0;
+  // IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.
+  NETWORK_POLICY_UNCOVERED_PATH_IPV6 = 1;
+  // Domain entries: egress_domains are re-resolved on a refresh loop (at
+  // most every 60 seconds, sooner for a shorter record TTL), so an address a
+  // domain moves to is denied, and an address it left still allowed, until
+  // the next refresh and reconcile.
+  NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG = 2;
+  // The host kernel is known to be too old for egress enforcement (TCX attach
+  // needs 6.6 or newer), so the egress program cannot be attached here whatever
+  // the other fields say. Reported in every state, including when no enforcer
+  // is running. A kernel release that cannot be read or parsed is unknown and
+  // is not reported as unsupported (#2972).
+  NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED = 3;
+  // The tenant's egress allow-list in the kernel is not what its policy says:
+  // the last reconcile pass failed to add or remove at least one entry. In
+  // enforce mode a missing entry denies traffic the policy allows, and an entry
+  // that could not be removed keeps allowing traffic the policy no longer does.
+  // The failed entries are retried on the next pass.
+  NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE = 4;
+}
+
+// NetworkPolicySource says which policy a tenant's loaded state came from.
+enum NetworkPolicySource {
+  // Unknown: nothing is loaded for the tenant, the daemon has not completed a
+  // pass, or the host's default egress posture is off and the tenant has no
+  // stored policy.
+  NETWORK_POLICY_SOURCE_UNSPECIFIED = 0;
+  // The tenant has no stored policy and runs the host's default egress
+  // allow-list (log_only).
+  NETWORK_POLICY_SOURCE_HOST_DEFAULT = 1;
+  // The tenant runs a policy stored through SetNetworkPolicy.
+  NETWORK_POLICY_SOURCE_STORED = 2;
+}
+
+// NetworkPolicyStatus is a tenant's applied network policy on this daemon.
+message NetworkPolicyStatus {
+  string tenant = 1;
+  // Whether the policy is loaded here; the modes below are only meaningful
+  // when it is LOADED or PARTIALLY_LOADED (for PARTIALLY_LOADED they cover
+  // the loaded boxes only).
+  NetworkPolicyAppliedState state = 2;
+  // Mode the kernel applies to the cross-tenant, intra-tenant, metadata,
+  // virtual-patch and signature checks, after the host's enforce guard.
+  // UNSPECIFIED = unknown.
+  NetworkPolicyMode effective_mode = 3;
+  // Mode the kernel applies to the egress allow-list, after the host's
+  // enforce guard. UNSPECIFIED = unknown.
+  NetworkPolicyMode effective_egress_mode = 4;
+  // End of the last successful reconcile pass on this daemon. Passes run
+  // about every 10 seconds (and on container events) and rewrite the kernel
+  // config each time, so this is refreshed continuously: it is NOT the time
+  // the policy last changed. A value older than a few reconcile intervals
+  // means the reconciler is stalled; past three intervals the daemon reports
+  // STALE. Unset when no pass has completed (or the enforcer is not running).
+  google.protobuf.Timestamp last_reconciled_at = 5;
+  // Whether this host arms enforcement (CONTAINARIUM_NETWORK_POLICY_ENFORCE).
+  // When false, a requested ENFORCE is loaded as LOG_ONLY.
+  bool enforcement_armed = 6;
+  // Running boxes of the tenant whose policy is loaded.
+  uint32 boxes_loaded = 7;
+  // Running boxes of the tenant whose policy could not be loaded (veth not
+  // resolved, map write or attach failed). Their traffic is not policed.
+  uint32 boxes_not_loaded = 8;
+  // Traffic the loaded policy does not decide.
+  repeated NetworkPolicyUncoveredPath uncovered_paths = 9;
+  // Which policy the loaded state comes from: the host default or a stored
+  // policy. Only meaningful when state is LOADED or PARTIALLY_LOADED.
+  NetworkPolicySource policy_source = 10;
+}
+
+message TenantAccessChange {
+  // Destination policy: listed sources may initiate connections into it.
+  string destination = 1;
+  repeated string add_sources = 2;
+  repeated string remove_sources = 3;
+  // SHA256 of the entire observed policy, or "absent". Required to prevent lost previews.
+  string expected_revision = 4;
+}
+message PatchTenantAccessRequest {
+  repeated TenantAccessChange changes = 1;
+}
+message TenantAccessPolicy {
+  NetworkPolicy policy = 1;
+  string revision = 2;
+}
+message PatchTenantAccessResponse {
+  repeated TenantAccessPolicy policies = 1;
+  // A committed store write is separate from guard convergence and TCP testing.
+  TenantAccessApplicationState application_state = 2;
+  bool connectivity_tested = 3;
+}
+
+
+// TenantAccessApplicationState describes enforcement evidence after a commit.
+enum TenantAccessApplicationState {
+  TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED = 0;
+  TENANT_ACCESS_APPLICATION_STATE_PENDING = 1;
+  TENANT_ACCESS_APPLICATION_STATE_GUARD_VERIFIED = 2;
+  TENANT_ACCESS_APPLICATION_STATE_DEGRADED = 3;
 }

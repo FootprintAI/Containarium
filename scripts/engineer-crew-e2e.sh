@@ -221,6 +221,8 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/lib/wait-daemon-ready.sh"
 
 # ========================================================================
 # Configuration
@@ -238,6 +240,9 @@ CREW_ID="${CONTAINARIUM_E2E_CREW_ID:-engineer-crew}"
 # boxes, and a member list that silently grew should fail this lane loudly
 # rather than have it check fewer boxes than the crew has.
 CREW_MEMBERS="issue-implementer diff-reviewer"
+# The crew's pack_producer (#2799). Not an agent: it is provisioned by the
+# crew run itself with no agent runtime check, and makes no model call.
+PACK_PRODUCER="test-runner"
 
 # The pinned public fixture, same as scripts/agent-skill-lease-e2e.sh: GitHub's
 # own decade-old fork-tutorial repo, small, public, and untouched since 2014,
@@ -336,7 +341,7 @@ cleanup() {
   # Member boxes are named deterministically from the skill id, so a red run
   # would otherwise hand its boxes — including a serve-mode agent-runtime
   # holding a stale gateway token — to the next run.
-  for m in $CREW_MEMBERS; do
+  for m in $CREW_MEMBERS $PACK_PRODUCER; do
     if sudo incus info "agent-$m-container" >/dev/null 2>&1; then
       log "sweeping member box agent-$m-container"
       sudo incus delete --force "agent-$m-container" 2>/dev/null
@@ -496,7 +501,7 @@ DAEMON_WAIT_TRIES="${CONTAINARIUM_E2E_CREW_DAEMON_WAIT_TRIES:-300}"
 log "waiting for the daemon's HTTP gateway (up to $((DAEMON_WAIT_TRIES * 2))s)"
 for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   sudo kill -0 "$DAEMON_PID" 2>/dev/null || fail "daemon exited during startup"
-  if curl -s -o /dev/null "http://127.0.0.1:$HTTP_PORT/v1/crews"; then
+  if daemon_is_ready "$HTTP_PORT" /v1/crews; then
     break
   fi
   [ "$i" = "$DAEMON_WAIT_TRIES" ] && fail "daemon HTTP gateway not answering after $((DAEMON_WAIT_TRIES * 2))s"
@@ -691,6 +696,22 @@ ARTIFACT="$(printf '%s' "$run_body" | jq -r '.run.artifactJson // empty')"
   || fail "assertion 2: CrewRun.artifact_json is empty on a COMPLETED run — the reviewer hop returned nothing to open a PR from"
 run_commit="$(printf '%s' "$run_body" | jq -r '.run.gitCommit // empty')"
 ok "assertion 2: run $RUN_ID is CREW_RUN_STATE_COMPLETED with a $(printf '%s' "$ARTIFACT" | wc -c | tr -d ' ')-byte artifact (git_commit $run_commit)"
+
+# --- assertion 2b: the Proof Pack came from a box other than the coder's ---
+# (#2799.) The fixture declares no test commands and has no Makefile, so the
+# expected status is NO_COMMANDS; any status proves the commands were run in
+# the producer's box. An error means no pack was produced at all.
+pack_producer_box="$(printf '%s' "$run_body" | jq -r '.run.proofPack.producerBox // empty')"
+pack_coder_box="$(printf '%s' "$run_body" | jq -r '.run.proofPack.coderBox // empty')"
+pack_status="$(printf '%s' "$run_body" | jq -r '.run.proofPack.status // empty')"
+if [ "$pack_producer_box" != "agent-$PACK_PRODUCER-container" ] || [ "$pack_coder_box" != "agent-issue-implementer-container" ]; then
+  fail "assertion 2b: proof_pack producer_box='$pack_producer_box' coder_box='$pack_coder_box', want agent-$PACK_PRODUCER-container and agent-issue-implementer-container"
+fi
+case "$pack_status" in
+  PROOF_PACK_STATUS_PASSED|PROOF_PACK_STATUS_FAILED|PROOF_PACK_STATUS_NO_COMMANDS) ;;
+  *) fail "assertion 2b: no Proof Pack was produced (status '$pack_status'): $(printf '%s' "$run_body" | jq -r '.run.proofPack.error // "(no proof_pack on the run)"')" ;;
+esac
+ok "assertion 2b: Proof Pack $pack_status produced in $pack_producer_box, not the coder's $pack_coder_box"
 
 # --- sabotage hooks: applied to the harness's own view of the artifact ----
 # Deliberately AFTER the real run and BEFORE the assertions that read these

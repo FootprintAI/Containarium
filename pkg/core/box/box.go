@@ -65,8 +65,9 @@ type ResourceLimits struct {
 // the spec exist and returns a BoxStatus. Create must be idempotent on
 // re-create (the agent-skills bring-up taught us this the hard way, #669).
 type BoxSpec struct {
-	Ref   BoxRef
-	Image string
+	NetworkTenant string // Explicit native NIC security domain; local Linux LXC only.
+	Ref           BoxRef
+	Image         string
 	// Mode selects the box's SSH session behavior on backends that support it
 	// (K8s → the agent-box image's AGENTBOX_MODE: "mcp" forced-command MCP, or
 	// "shell" interactive login shell). Empty uses the backend's configured
@@ -160,15 +161,17 @@ type BoxEndpoint struct {
 // The backend is responsible for translating its substrate's native form into
 // this shape — the server depends on BoxStatus, not on any incus type.
 type BoxStatus struct {
-	Ref       BoxRef
-	State     pb.ContainerState
-	IPAddress string
-	Resources ResourceLimits
-	Labels    map[string]string
-	GPU       string   // first GPU device, for display/back-compat
-	GPUs      []string // all attached GPU devices
-	BackendID string   // which backend/peer the box runs on
-	CreatedAt time.Time
+	NetworkTenant       string
+	NetworkTenantSource pb.NetworkTenantSource
+	Ref                 BoxRef
+	State               pb.ContainerState
+	IPAddress           string
+	Resources           ResourceLimits
+	Labels              map[string]string
+	GPU                 string   // first GPU device, for display/back-compat
+	GPUs                []string // all attached GPU devices
+	BackendID           string   // which backend/peer the box runs on
+	CreatedAt           time.Time
 	// Isolation is how the box is actually isolated, read back from the
 	// backend (LXC: the Incus instance type). UNSPECIFIED when unknown.
 	Isolation pb.IsolationType
@@ -186,6 +189,18 @@ type BoxStatus struct {
 	StoppedAt                 time.Time
 	DeleteAfterStoppedSeconds int64
 	DeletePolicy              string // "protected" or "" (unprotected)
+	ToolAccess                string // "none", "build_tools", "full_sudo", or "" (none recorded)
+
+	// Stack is the software stack the box was created with. LXC only
+	// (user.containarium.stack); empty on K8s, which does not persist it, and
+	// on LXC boxes created before the key existed.
+	Stack string
+
+	// PodmanEnabled is whether the box was created with podman support. LXC
+	// reads user.containarium.podman_enabled back; boxes created before that
+	// key existed report true (the value status always returned). The K8s
+	// backend has no podman toggle and reports true.
+	PodmanEnabled bool
 
 	// Image is a human-readable label for the image the box was launched
 	// from (LXC: Incus's image.description / volatile.base_image config

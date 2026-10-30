@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	"github.com/footprintai/containarium/pkg/core/pki"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -42,6 +43,10 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 
 // Config holds the sentinel configuration.
 type Config struct {
+	// SSHUpstreamPolicy enables the shared private upstream controller when set.
+	SSHUpstreamPolicy string
+	SSHUpstreamState  string
+	SSHUpstreamSocket string
 	// Private manager-to-sshpiperd bridge. Empty disables it for embedders.
 	SSHAuthzSocket     string
 	HealthPort         int
@@ -115,9 +120,12 @@ type Config struct {
 // Supports multiple backends (GCP + tunnel) in hybrid mode.
 type Manager struct {
 	// sshBanSockets overrides local plugin endpoints in isolated tests.
-	sshBanSockets map[pb.SSHBanListener]string
-	config        Config
-	provider      CloudProvider // primary provider (GCP in hybrid mode)
+	sshBanSockets           map[pb.SSHBanListener]string
+	sshUpstream             *sshcontrol.Controller
+	sshUpstreamMu           sync.RWMutex
+	sshUpstreamStartupFault atomic.Bool
+	config                  Config
+	provider                CloudProvider // primary provider (GCP in hybrid mode)
 
 	state atomic.Value // holds State
 
@@ -256,6 +264,11 @@ type Manager struct {
 	// Production wiring calls SetHMACSecret() with the env var
 	// CONTAINARIUM_SENTINEL_AUTH_SECRET at startup.
 	hmacSecret []byte
+
+	// authHealth records, per primary, whether its last request to a
+	// daemon-AUTH-gated route authenticated or got 401 (#2892). Zero value
+	// is ready to use. See primary_auth_health.go.
+	authHealth primaryAuthTracker
 
 	// adminSecret gates POST /sentinel/tunnel-tokens (registering a
 	// freshly-minted tunnel-join token at runtime). Deliberately a
@@ -664,6 +677,11 @@ func (m *Manager) SetHTTPSListener(ln *chanListener) {
 //
 // Optional query parameter:
 //
+// Pool data is daemon-only (#3119): a request without a valid daemon signature
+// (same HMAC secret as /sentinel/primaries) gets the peers without `pool`, and
+// ?pool= is ignored, so the route cannot be used to enumerate or probe pool
+// names. The rest of this comment describes the signed caller's view.
+//
 //	?pool=<name>  Return only peers in the named pool. Pass ?pool= (empty value)
 //	              to return only peers without a pool tag. Omit the parameter
 //	              entirely to return all peers (back-compat default).
@@ -676,7 +694,12 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			Pool      Pool   `json:"pool,omitempty"`
 		}
 
+		// Signed daemon callers only; an unconfigured secret trusts nobody.
+		signed := len(m.hmacSecret) >= auth.SentinelMinSecretLen &&
+			auth.VerifySentinelRequest(r, m.hmacSecret, time.Now()) == nil
+
 		poolFilter, hasPoolFilter := r.URL.Query()["pool"]
+		hasPoolFilter = hasPoolFilter && signed
 		var wantPool Pool
 		if hasPoolFilter {
 			wantPool = Pool(poolFilter[0])
@@ -691,12 +714,15 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			if hasPoolFilter && b.Pool != wantPool {
 				continue
 			}
-			peers = append(peers, peerInfo{
+			pi := peerInfo{
 				ID:        b.ID,
 				ProxyPath: "/peer/" + b.ID,
 				Healthy:   b.Healthy,
-				Pool:      b.Pool,
-			})
+			}
+			if signed {
+				pi.Pool = b.Pool
+			}
+			peers = append(peers, pi)
 		}
 
 		// Marshal first so we can sign the exact bytes the daemon will
@@ -780,6 +806,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				return
 			}
 			stored := m.primaries.Register(p)
+			// Only reachable behind daemonAuthGate: the request authenticated,
+			// so its pool may now be tied to its source address (#2892).
+			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
 			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
@@ -790,6 +819,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			m.authHealth.bind(updated.Pool, requestSourceAddr(r))
 			_ = json.NewEncoder(w).Encode(updated)
 
 		case r.Method == http.MethodDelete && rest != "":
@@ -797,6 +827,9 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
+			// Kept after deregistration: a daemon restarted with a new secret
+			// deregisters with the old one, then 401s re-registering.
+			m.authHealth.bind(Pool(rest), requestSourceAddr(r))
 			log.Printf("[sentinel] primary unregistered: pool=%q", rest)
 			w.WriteHeader(http.StatusNoContent)
 
@@ -808,6 +841,11 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
+	stopUpstream := m.superviseSSHUpstream(ctx, 5*time.Second)
+	defer stopUpstream()
+	if ctx.Err() != nil {
+		return nil
+	}
 	if m.config.SSHAuthzSocket != "" {
 		stop, err := m.startSSHAuthzBridge(m.config.SSHAuthzSocket)
 		if err != nil {
@@ -986,6 +1024,11 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.healthyCount >= m.config.HealthyThreshold && !b.Healthy {
 				b.Healthy = true
 				m.recordBackendHealth(b.ID, true)
+				if controller := m.sshUpstreamController(); controller != nil {
+					if _, err := controller.HintSSHUpstreamRecovery(ctx, &pb.HintSSHUpstreamRecoveryRequest{BackendId: b.ID}); err != nil {
+						log.Printf("[sentinel] SSH recovery hint: %v", err)
+					}
+				}
 				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
 			}
 		} else {
@@ -1525,6 +1568,15 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		sni, peekedConn, peekErr := peekSNI(conn)
 		_ = conn.SetReadDeadline(time.Time{})
+
+		// The watchdog measures our mux/dispatch/router, independently of
+		// backend health (#1139). An unmatched SNI normally uses the fallback,
+		// so .invalid alone did not keep this probe local: a blackholed backend
+		// made a healthy sentinel exit. Closing here proves the entire local
+		// path serviced the ClientHello, before any tenant route or dial.
+		if peekErr == nil && sni == selfCheckSNI {
+			return
+		}
 
 		var (
 			dst net.Conn

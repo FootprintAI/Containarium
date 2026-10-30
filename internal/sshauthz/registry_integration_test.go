@@ -8,9 +8,13 @@
 package sshauthz
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +22,12 @@ import (
 )
 
 func pgKeys(t *testing.T) *PGKeyStore {
+	t.Helper()
+	return pgKeysHeld(t, t.TempDir())
+}
+
+// pgKeysHeld is pgKeys with the holder lookup reading homeRoot.
+func pgKeysHeld(t *testing.T, homeRoot string) *PGKeyStore {
 	t.Helper()
 	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
 	if dsn == "" {
@@ -33,7 +43,7 @@ func pgKeys(t *testing.T) *PGKeyStore {
 	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS ssh_keys`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	s, err := NewPGKeyStore(ctx, pool)
+	s, err := NewPGKeyStore(ctx, pool, FileHolders{HomeRoot: homeRoot})
 	if err != nil {
 		t.Fatalf("NewPGKeyStore: %v", err)
 	}
@@ -97,11 +107,43 @@ func TestPGKeyStore_FirstRegistrationWins(t *testing.T) {
 	}
 }
 
-// Decision (#2517): RemoveSSHKey revokes the key for every account, and a
-// re-add is a fresh registration (new owner, new created_at, active).
-func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
+// Decision (#3187, replacing #2517's "every account"): a revocation applies
+// only to the row the revoking account owns. Another account holding the
+// same public key cannot revoke the owner's entry.
+func TestPGKeyStore_RevokeByNonOwnerLeavesRowActive(t *testing.T) {
 	s := pgKeys(t)
 	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	for _, other := range []string{"carol", "bob-container-carol"} {
+		if err := s.Revoke(ctx, mustRecord(t, pub, other, SourceAPI, revokeAt), revokeAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := lookup(t, s, rec.Fingerprint)
+	if !got.RevokedAt.IsZero() || got.Username != "bob" || !got.CreatedAt.Equal(caseNow) {
+		t.Fatalf("a non-owner revoked or rewrote bob's row: %+v", got)
+	}
+}
+
+// A non-owner's revoke changes nothing and returns nil, so it is logged once
+// (naming the revoking account and the fingerprint) for an operator to see
+// that the registry entry was left to its owner. The owner's revoke, an
+// owner's repeat revoke and a revoke of an unknown key change a row and log
+// nothing.
+func TestPGKeyStore_RevokeByNonOwnerIsLogged(t *testing.T) {
+	s := pgKeys(t)
+	ctx := context.Background()
+	var buf bytes.Buffer
+	orig, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(orig); log.SetFlags(flags) })
+
 	pub := testKey(t)
 	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
 	if err := s.Register(ctx, rec); err != nil {
@@ -111,9 +153,46 @@ func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
 	if err := s.Revoke(ctx, mustRecord(t, pub, "carol", SourceAPI, revokeAt), revokeAt); err != nil {
 		t.Fatal(err)
 	}
+	out := buf.String()
+	if n := strings.Count(out, "\n"); n != 1 || !strings.Contains(out, "carol") || !strings.Contains(out, rec.Fingerprint) {
+		t.Fatalf("non-owner revoke: want one log line naming carol and %s, got %q", rec.Fingerprint, out)
+	}
+
+	buf.Reset()
+	for i := 0; i < 2; i++ { // owner's revoke, then the owner's repeat revoke
+		if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unknown := testKey(t)
+	if err := s.Revoke(ctx, mustRecord(t, unknown, "dave", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("owner or unknown-key revoke logged: %q", buf.String())
+	}
+	if got := lookup(t, s, rec.Fingerprint); got.RevokedAt.IsZero() {
+		t.Fatalf("owner's revoke did not revoke: %+v", got)
+	}
+}
+
+// The owner's revocation revokes the row, and a re-add is a fresh
+// registration (new owner, new created_at, active).
+func TestPGKeyStore_RevokeThenReAdd(t *testing.T) {
+	s := pgKeys(t)
+	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "bob", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatal(err)
+	}
 	got := lookup(t, s, rec.Fingerprint)
 	if !got.RevokedAt.Equal(revokeAt) || got.Username != "bob" {
-		t.Fatalf("revoke by another account must revoke the shared row and keep its owner: %+v", got)
+		t.Fatalf("the owner's revoke must revoke its row and keep its owner: %+v", got)
 	}
 	// A second revoke keeps the original revocation time.
 	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt.Add(time.Hour)), revokeAt.Add(time.Hour)); err != nil {
@@ -182,5 +261,173 @@ func TestPGKeyStore_BackfillTwiceAddsNothing(t *testing.T) {
 	}
 	if count != len(want) {
 		t.Fatalf("rows = %d, want %d", count, len(want))
+	}
+}
+
+// holdKey writes pub into homeRoot/<user>/.ssh/authorized_keys.
+func holdKey(t *testing.T, homeRoot, user, pub string) {
+	t.Helper()
+	dir := filepath.Join(homeRoot, user, ".ssh")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "authorized_keys"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(pub + "\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// #3222, Alice-first order: alice registers bob's public key before bob does,
+// so first-registration-wins leaves her as the row's owner. Bob then holds
+// the same key in his own authorized_keys. Alice's revoke must be refused and
+// the row must stay active; it used to revoke bob's access.
+func TestPGKeyStore_RevokeRefusedWhileAnotherAccountHoldsKey(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+	pub := testKey(t)
+
+	aliceRec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, aliceRec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(ctx, mustRecord(t, pub, "bob", SourceAPI, caseNow.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	holdKey(t, home, "alice", pub)
+	holdKey(t, home, "bob", pub)
+	if got := lookup(t, s, aliceRec.Fingerprint); got.Username != "alice" || !got.RevokedAt.IsZero() {
+		t.Fatalf("precondition: row = %+v, want active and owned by alice", got)
+	}
+
+	revokeAt := caseNow.Add(time.Hour)
+	err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt)
+	if !errors.Is(err, ErrKeyHeldByOtherAccount) {
+		t.Fatalf("Revoke = %v, want ErrKeyHeldByOtherAccount", err)
+	}
+	if strings.Contains(err.Error(), "bob") {
+		t.Fatalf("the error names the other holder: %v", err)
+	}
+	if got := lookup(t, s, aliceRec.Fingerprint); !got.RevokedAt.IsZero() {
+		t.Fatalf("alice revoked a key bob still holds: %+v", got)
+	}
+
+	// Once bob no longer holds it, alice is the sole holder and can revoke.
+	if err := os.Remove(filepath.Join(home, "bob", ".ssh", "authorized_keys")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatalf("sole holder's revoke: %v", err)
+	}
+	if got := lookup(t, s, aliceRec.Fingerprint); got.RevokedAt.IsZero() {
+		t.Fatal("the sole holder's revoke did not revoke the key")
+	}
+}
+
+// A key with no row is the same: Revoke would insert a revoked row, which
+// would lock out whoever holds the key, so it is refused while another
+// account holds it. With no other holder the revoked row is inserted (so a
+// later backfill cannot register the key as live).
+func TestPGKeyStore_RevokeOfKeyWithNoRow(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+	held, free := testKey(t), testKey(t)
+	holdKey(t, home, "bob", held)
+	revokeAt := caseNow.Add(time.Hour)
+
+	heldRec := mustRecord(t, held, "alice", SourceAPI, revokeAt)
+	if err := s.Revoke(ctx, heldRec, revokeAt); !errors.Is(err, ErrKeyHeldByOtherAccount) {
+		t.Fatalf("revoke of a no-row key bob holds = %v, want ErrKeyHeldByOtherAccount", err)
+	}
+	if _, err := s.Lookup(ctx, heldRec.Fingerprint); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("refused revoke left a row behind: %v", err)
+	}
+
+	freeRec := mustRecord(t, free, "alice", SourceAPI, revokeAt)
+	if err := s.Revoke(ctx, freeRec, revokeAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookup(t, s, freeRec.Fingerprint); got.RevokedAt.IsZero() || got.Username != "alice" {
+		t.Fatalf("no-row revoke = %+v, want a revoked row owned by alice", got)
+	}
+}
+
+// A non-owner's revoke never takes effect, so it is not refused for a held
+// key: bob's drop of a copy of alice's key changes nothing in the registry.
+func TestPGKeyStore_NonOwnerRevokeNotRefusedWhenOwnerHoldsKey(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+	pub := testKey(t)
+	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	holdKey(t, home, "alice", pub)
+	revokeAt := caseNow.Add(time.Hour)
+	if err := s.Revoke(ctx, mustRecord(t, pub, "bob", SourceAPI, revokeAt), revokeAt); err != nil {
+		t.Fatalf("non-owner revoke: %v", err)
+	}
+	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() || got.Username != "alice" {
+		t.Fatalf("row changed: %+v", got)
+	}
+}
+
+// An unreadable HomeRoot makes the holder check unanswerable: Revoke must
+// error and leave the row as it was, for an owned row and for a key with no
+// row (#3241).
+func TestPGKeyStore_RevokeFailsClosedOnUnreadableHomeRoot(t *testing.T) {
+	s := pgKeysHeld(t, filepath.Join(t.TempDir(), "does-not-exist"))
+	ctx := context.Background()
+	pub, fresh := testKey(t), testKey(t)
+	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+
+	if err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt); err == nil {
+		t.Fatal("Revoke succeeded with an unreadable HomeRoot")
+	}
+	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() || got.Username != "alice" {
+		t.Fatalf("row changed: %+v", got)
+	}
+
+	freshRec := mustRecord(t, fresh, "alice", SourceAPI, revokeAt)
+	if err := s.Revoke(ctx, freshRec, revokeAt); err == nil {
+		t.Fatal("no-row Revoke succeeded with an unreadable HomeRoot")
+	}
+	if _, err := s.Lookup(ctx, freshRec.Fingerprint); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("failed revoke left a row behind: %v", err)
+	}
+}
+
+// A home the scan cannot read might hold the key: Revoke must error and leave
+// the row as it was, rather than read the unreadable account as "no holder"
+// (#3241). The sole readable holder's key is held by nobody else we can see.
+func TestPGKeyStore_RevokeFailsClosedOnUnreadableAccount(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+	pub := testKey(t)
+	holdKey(t, home, "alice", pub)
+	rec := mustRecord(t, pub, "alice", SourceAPI, caseNow)
+	if err := s.Register(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, "mallory")); err != nil {
+		t.Fatal(err)
+	}
+	revokeAt := caseNow.Add(time.Hour)
+	if err := s.Revoke(ctx, mustRecord(t, pub, "alice", SourceAPI, revokeAt), revokeAt); err == nil {
+		t.Fatal("Revoke succeeded while an account's authorized_keys could not be read")
+	}
+	if got := lookup(t, s, rec.Fingerprint); !got.RevokedAt.IsZero() {
+		t.Fatalf("row revoked: %+v", got)
 	}
 }

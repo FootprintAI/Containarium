@@ -1,9 +1,13 @@
 package mcp
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizeZapRisk(t *testing.T) {
@@ -44,4 +48,29 @@ func TestGetInt64Arg(t *testing.T) {
 			assert.Equal(t, c.ok, ok)
 		})
 	}
+}
+
+// #2659: install_clamav posts the box name to the daemon's install route and
+// the handler refuses a missing name before any request is made.
+func TestClientInstallClamav(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/v1/security/clamav-install", r.URL.Path)
+		var body map[string]string
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "alice-container", body["container_name"])
+		_ = json.NewEncoder(w).Encode(InstallClamavResponse{Outcome: "CLAMAV_INSTALL_OUTCOME_INSTALLED", Message: "ok"})
+	}))
+	defer srv.Close()
+
+	resp, err := NewClient(srv.URL, "test-token").InstallClamav("alice-container")
+	require.NoError(t, err)
+	assert.Equal(t, "CLAMAV_INSTALL_OUTCOME_INSTALLED", resp.Outcome)
+
+	out, err := handleInstallClamav(NewClient(srv.URL, "test-token"), map[string]interface{}{"container_name": "alice-container"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "CLAMAV_INSTALL_OUTCOME_INSTALLED")
+
+	_, err = handleInstallClamav(NewClient(srv.URL, "test-token"), map[string]interface{}{})
+	assert.ErrorContains(t, err, "container_name is required")
 }

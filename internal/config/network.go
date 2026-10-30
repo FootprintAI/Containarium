@@ -16,6 +16,23 @@ const (
 	// (docs/architecture/tenant-network-guard.md). Unset is enforce; only
 	// "off" disables (nicguard.ParseMode).
 	EnvTenantGuard = "CONTAINARIUM_TENANT_GUARD"
+	// EnvDefaultEgress selects the egress posture of a tenant with no stored
+	// network policy (#2577, stage 1 of the staged default-deny decision).
+	// Unset is the default allow-list in log_only; only "off" restores the
+	// bare observe-only fallback. It never arms enforcement.
+	EnvDefaultEgress = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS"
+	// EnvDefaultEgressDomains / EnvDefaultEgressCIDRs are comma-separated
+	// additions to that default allow-list: the model gateway and the control
+	// plane, which are deployment-specific.
+	EnvDefaultEgressDomains = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS"
+	EnvDefaultEgressCIDRs   = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRs"
+	// EnvNativeAccountTenancy arms automatic per-user account network
+	// namespaces: with it set, a non-admin local-LXC create that names no
+	// network Tenant is tenanted under "account:<username>". Unset (the
+	// default) keeps omitted-field creates on the legacy un-tenanted path,
+	// so the tenancy precondition can never block an operator who did not
+	// ask for it. The shared-Tenant admin surface is unaffected either way.
+	EnvNativeAccountTenancy = "CONTAINARIUM_NATIVE_ACCOUNT_TENANCY"
 )
 
 // Network is the typed view of the CONTAINARIUM_NETWORK_* namespace — the eBPF
@@ -43,6 +60,17 @@ type Network struct {
 	// TenantGuard is the raw CONTAINARIUM_TENANT_GUARD value, parsed the
 	// same way. (EnvTenantGuard)
 	TenantGuard string
+
+	// DefaultEgress, DefaultEgressDomains and DefaultEgressCIDRs are the raw
+	// values of the three variables above, parsed by
+	// netpolicy.ParseDefaultEgress.
+	DefaultEgress        string
+	DefaultEgressDomains string
+	DefaultEgressCIDRs   string
+
+	// NativeAccountTenancy arms automatic per-user account network namespaces
+	// (EnvNativeAccountTenancy). Off by default.
+	NativeAccountTenancy bool
 }
 
 // LoadNetwork reads the CONTAINARIUM_NETWORK_* namespace once. The two arming
@@ -55,5 +83,11 @@ func LoadNetwork() Network {
 		PolicySignatures: getBool(EnvNetworkPolicySignatures),
 		CoreGuard:        getString(EnvCoreGuard, ""),
 		TenantGuard:      getString(EnvTenantGuard, ""),
+
+		DefaultEgress:        getString(EnvDefaultEgress, ""),
+		DefaultEgressDomains: getString(EnvDefaultEgressDomains, ""),
+		DefaultEgressCIDRs:   getString(EnvDefaultEgressCIDRs, ""),
+
+		NativeAccountTenancy: getBool(EnvNativeAccountTenancy),
 	}
 }

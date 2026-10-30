@@ -148,6 +148,7 @@ func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
 	  "reachable": true,
 	  "credentialValid": true,
 	  "credentialBreadth": "TRACKER_CREDENTIAL_BREADTH_BROAD",
+	  "credentialKind": "TRACKER_CREDENTIAL_KIND_GROUP",
 	  "credentialScopes": ["repo", "read:org"],
 	  "credentialExpiresAt": "2027-05-01T00:00:00Z"
 	}`
@@ -181,6 +182,9 @@ func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
 	}
 	if resp.GetCredentialBreadth() != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
 		t.Errorf("CredentialBreadth = %v, want BROAD", resp.GetCredentialBreadth())
+	}
+	if resp.GetCredentialKind() != pb.TrackerCredentialKind_TRACKER_CREDENTIAL_KIND_GROUP {
+		t.Errorf("CredentialKind = %v, want GROUP", resp.GetCredentialKind())
 	}
 	if len(resp.GetCredentialScopes()) != 2 {
 		t.Errorf("CredentialScopes = %v, want 2 entries", resp.GetCredentialScopes())
@@ -345,6 +349,40 @@ func TestSubmitTrackerChange_PathMethodAndBody(t *testing.T) {
 	}
 	if change.GetNumber() != 6 || change.GetBranch() != "agent/run-1/1-x" {
 		t.Errorf("change = %+v, want number=6 branch=agent/run-1/1-x", change)
+	}
+}
+
+func TestSubmitTrackerChangeFiles_PathMethodAndBody(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"change": {"number": 8, "branch": "containarium/issue-1"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	change, err := c.SubmitTrackerChangeFiles(&pb.SubmitTrackerChangeFilesRequest{
+		Username: "alice", Connection: "default", Issue: 1, Title: "My change",
+		Files: []*pb.TrackerChangeFile{{Path: "docs/a.md", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitTrackerChangeFiles: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/tracker/connections/alice/default/changes:files" {
+		t.Errorf("%s %s, want POST /v1/tracker/connections/alice/default/changes:files", gotMethod, gotPath)
+	}
+	if !strings.Contains(string(gotBody), `"path":"docs/a.md"`) {
+		t.Errorf("request body = %s, want it to carry the files", gotBody)
+	}
+	if change.GetNumber() != 8 || change.GetBranch() != "containarium/issue-1" {
+		t.Errorf("change = %+v, want number=8 branch=containarium/issue-1", change)
 	}
 }
 

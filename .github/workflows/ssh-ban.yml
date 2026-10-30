@@ -4,8 +4,9 @@ on:
   pull_request:
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'internal/cmd/sentinel*'
       - 'proto/containarium/v1/ssh_ban.proto'
+      - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
       - 'go.mod'
@@ -15,8 +16,9 @@ on:
     branches: [main]
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'internal/cmd/sentinel*'
       - 'proto/containarium/v1/ssh_ban.proto'
+      - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
       - 'go.mod'
@@ -32,16 +34,111 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  guarded-upstream-firewall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.10'
+      - name: Install actual SSH, jail, tracing and isolated firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y openssh-server fail2ban strace iptables iproute2
+          sudo mkdir -p /run/sshd
+      - name: Build production artifact and pinned upstream tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh-upstream-proof"
+          gh release download v1.6.1 --repo tg123/sshpiper \
+            --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-upstream-proof"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-upstream-proof/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ssh-upstream-proof/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
+            -C "$RUNNER_TEMP/ssh-upstream-proof" sshpiperd plugins/yaml
+          go build -o "$RUNNER_TEMP/ssh-upstream-proof/containariumd" ./cmd/containariumd
+          go test -race -tags integration,sshfirewall -c \
+            -o "$RUNNER_TEMP/ssh-upstream-proof/firewall.test" ./internal/sentinel/sshban
+          dpkg-query -W openssh-server fail2ban iptables > "$RUNNER_TEMP/ssh-upstream-proof/versions.log"
+      - name: Prove multi-minute outage and real jail enforcement in a private network
+        run: |
+          set -euo pipefail
+          sudo unshare --net bash -c '
+            set -euo pipefail
+            ip link set lo up
+            export SSH_UPSTREAM_ISOLATED_NETNS=1
+            export SSH_BAN_SSHPIPERD="$1/sshpiperd"
+            export SSH_BAN_YAML="$1/plugins/yaml"
+            export SSH_BAN_DAEMON="$1/containariumd"
+            export SSH_UPSTREAM_EVIDENCE_DIR="$1/evidence"
+            "$1/firewall.test" -test.run "^TestIntegrationGuardedSSH(Live|Drop)Firewall$" -test.v -test.timeout 18m
+          ' _ "$RUNNER_TEMP/ssh-upstream-proof" | tee "$RUNNER_TEMP/ssh-upstream-proof/verification.log"
+          for t in TestIntegrationGuardedSSHLiveFirewall TestIntegrationGuardedSSHDropFirewall; do
+            grep -Fq -- "--- PASS: $t " "$RUNNER_TEMP/ssh-upstream-proof/verification.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
+      - name: Make allowlisted evidence readable to artifact uploader
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/ssh-upstream-proof"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: guarded-upstream-firewall
+          path: |
+            ${{ runner.temp }}/ssh-upstream-proof/*.log
+            ${{ runner.temp }}/ssh-upstream-proof/evidence
+
+  backend-jail-characterization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.10'
+      - name: Install real backend SSH and jail prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y openssh-server fail2ban
+          mkdir -p "$RUNNER_TEMP/backend-jail"
+          dpkg-query -W openssh-server fail2ban python3-pyasyncore > "$RUNNER_TEMP/backend-jail/versions.log"
+      - name: Characterize real SSH logs and jail decisions without host firewall changes
+        env:
+          BACKEND_JAIL_EVIDENCE: ${{ runner.temp }}/backend-jail/evidence
+        run: |
+          set -euo pipefail
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/backendjail | tee "$RUNNER_TEMP/backend-jail/verification.log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: backend-jail-characterization
+          path: ${{ runner.temp }}/backend-jail
+
   ssh-enforcement:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
+          cache-name: shared
+      - name: Install TCP syscall tracer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y strace
+      - name: Verify shared backend admission with the race detector
+        run: go test -race -count=1 -v ./internal/sentinel/sshgate ./internal/sentinel/sshcontrol
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -50,6 +147,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ssh-ban"
           gh release download v1.6.1 --repo tg123/sshpiper \
             --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-ban"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-ban/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ssh-ban/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
             -C "$RUNNER_TEMP/ssh-ban" sshpiperd plugins/yaml plugins/failtoban
       - name: Build production plugin and prove real SSH behavior
@@ -60,16 +159,78 @@ jobs:
           export SSH_BAN_YAML="$RUNNER_TEMP/ssh-ban/plugins/yaml"
           export SSH_BAN_DAEMON="$RUNNER_TEMP/ssh-ban/containariumd"
           export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
+          export SSH_UPSTREAM_EVIDENCE_DIR="$RUNNER_TEMP/ssh-ban/evidence"
+          export ANONDOOR_SSHPIPERD="$SSH_BAN_SSHPIPERD"
+          go test -race -count=1 -v ./internal/sentinel/sshupstream | tee "$RUNNER_TEMP/ssh-ban/adapter-unit.log"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
-      - uses: hashicorp/setup-terraform@v3
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/anondoor \
+            -run '^TestIntegration_PublicKeyApprovalThrough(Transport|Guarded)Adapter$' | tee "$RUNNER_TEMP/ssh-ban/approval-adapter.log"
+          for t in TestIntegration_PublicKeyApprovalThroughTransportAdapter TestIntegration_PublicKeyApprovalThroughGuardedAdapter; do
+            grep -Fq -- "--- PASS: $t " "$RUNNER_TEMP/ssh-ban/approval-adapter.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: '1.13.4'
           terraform_wrapper: false
       - name: Validate real policy templates without cloud credentials
         run: bash scripts/test-ssh-ban-templates.sh
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: ssh-ban-verification
-          path: ${{ runner.temp }}/ssh-ban/verification.log
+          path: |
+            ${{ runner.temp }}/ssh-ban/*.log
+            ${{ runner.temp }}/ssh-ban/evidence
+
+  # The ssh-authz plugin is the enforce-mode security boundary (#2520); its
+  # integration tests skip unless these binaries are provided, so a job that
+  # does not provide them would pass while proving nothing (#2646).
+  ssh-authz-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.10'
+          cache-name: shared
+      - name: Install pinned upstream SSH binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh-authz"
+          gh release download v1.6.1 --repo tg123/sshpiper \
+            --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-authz"
+          # sha256 from the v1.6.1 release checksums.txt; a retagged or altered asset fails here.
+          echo "95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1  $RUNNER_TEMP/ssh-authz/sshpiperd_with_plugins_linux_x86_64.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ssh-authz/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
+            -C "$RUNNER_TEMP/ssh-authz" sshpiperd plugins/yaml
+      - name: Build production plugin and run the real-chain tests
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/ssh-authz/containariumd" ./cmd/containariumd
+          export SSH_AUTHZ_SSHPIPERD="$RUNNER_TEMP/ssh-authz/sshpiperd"
+          export SSH_AUTHZ_YAML="$RUNNER_TEMP/ssh-authz/plugins/yaml"
+          export SSH_AUTHZ_CONTAINARIUM="$RUNNER_TEMP/ssh-authz/containariumd"
+          go test -race -tags integration -count=1 -timeout 3m -v -run Integration \
+            ./internal/sentinel/sshauthz | tee "$RUNNER_TEMP/ssh-authz/verification.log"
+          # A skipped test proves nothing: fail unless each one actually ran.
+          for t in TestIntegrationAuditOnlyChain TestIntegrationEnforceChain TestIntegrationEnforceMultiOfferGap \
+            TestIntegrationEnforceAllowThenDeny TestIntegrationEnforcePasswordFirst TestIntegrationEnforceSessionRecords \
+            TestIntegrationEnforceDeviceApproval TestIntegrationEnforceDeviceApprovalDenied TestIntegrationEnforceDeviceApprovalExpires \
+            TestIntegrationEnforceDeviceApprovalSignedNeverAnswered TestIntegrationEnforceDeviceApprovalFakeAgentCannotBorrow \
+            TestIntegrationEnforceDeviceApprovalClientDropStopsPolling; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
+              || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: ssh-authz-verification
+          path: ${{ runner.temp }}/ssh-authz/verification.log

@@ -1,9 +1,9 @@
 name: sdlc-skills-lock
 
-# pkg/core/sdlcskills/sdlc-skills.lock pins the open-sdlc-skills commit and the
-# sha256 of the tarball built from it (#2065). This rebuilds the tarball from
-# the pinned commit and fails if the digest in the lock does not match, so a
-# hand-edited ref or a stale digest cannot reach a release.
+# pkg/core/sdlcskills/sdlc-skills.lock pins one or more skill sources and each
+# deterministic tarball digest (#2065, #3048). This rebuilds the default sdlc
+# source and also inspects every configured source for namespace collisions.
+# A hand-edited ref, stale digest, or colliding namespace cannot reach a release.
 
 on:
   pull_request:
@@ -28,7 +28,7 @@ jobs:
     name: sdlc-skills lock matches a rebuild
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Rebuild from the pinned commit and compare the digest
         run: scripts/build-sdlc-skills-bundle.sh "$RUNNER_TEMP/sdlc"
       - name: The pinned engineer-implement still has the section the hosted skill composes in (#2488)

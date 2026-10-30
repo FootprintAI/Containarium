@@ -24,6 +24,17 @@ type authorizedKeysOps struct {
 	add    func(username, pubKey string) error
 	remove func(username, pubKey string) error
 	count  func(username string) (int32, error)
+	// replace makes the file hold exactly keys (plus platform-managed lines).
+	// hooks run inside the per-user critical section; see
+	// container.ReplaceAuthorizedKeys.
+	replace func(username string, keys []string, hooks container.ReplaceHooks) ([]string, error)
+}
+
+func (o authorizedKeysOps) replaceKeys(username string, keys []string, hooks container.ReplaceHooks) ([]string, error) {
+	if o.replace != nil {
+		return o.replace(username, keys, hooks)
+	}
+	return container.ReplaceAuthorizedKeys(username, keys, hooks)
 }
 
 func (o authorizedKeysOps) addKey(username, pubKey string) error {
@@ -70,7 +81,12 @@ func (s *ContainerServer) registerSSHKey(ctx context.Context, username, pubKey s
 	return s.sshKeys.Register(ctx, rec)
 }
 
-// revokeSSHKey revokes pubKey for every account. Nil registry = no-op.
+// revokeSSHKey revokes pubKey's registry entry if username owns it (by user
+// id for an owner account) or the entry has no owner; an entry another
+// account owns is left active (#3187, #3217). It returns
+// sshauthz.ErrKeyHeldByOtherAccount while another account still holds the
+// key (#3222), leaving the entry active and, if username owned it, releasing
+// it (#3217). Nil registry = no-op.
 func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey string) error {
 	if s.sshKeys == nil {
 		return nil
@@ -133,14 +149,14 @@ func (c collaboratorRows) CollaboratorExists(ctx context.Context, containerName,
 // keys would be refused as UNKNOWN_KEY, so the decider stays off until a
 // restart backfills successfully.
 func setupSSHKeyRegistry(ctx context.Context, collabStore *collaborator.Store, cs *ContainerServer, maxKeyAge time.Duration) *sshauthz.SelfHostDecider {
-	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool())
+	const homeRoot = "/home"
+	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool(), sshauthz.FileHolders{HomeRoot: homeRoot})
 	if err != nil {
 		log.Printf("Warning: ssh key registry unavailable: %v (SSH authorization decider disabled)", err)
 		return nil
 	}
 	cs.SetSSHKeyRegistry(keys)
 
-	const homeRoot = "/home"
 	added, err := sshauthz.Backfill(ctx, keys, homeRoot, time.Now())
 	if err != nil {
 		log.Printf("Warning: ssh key registry backfill from %s failed after %d rows: %v (SSH authorization decider disabled until a restart backfills)", homeRoot, added, err)

@@ -1,7 +1,7 @@
 # Design: inbound guardrail scan at the model gateway, and a server-side guardrail policy
 
 **Date:** 2026-10-07
-**Status:** proposed
+**Status:** implemented — the inbound scan at the model gateway (#2367, `internal/modelgateway`), the server-side policy service and CLI/MCP (#2368, `internal/guardrailpolicy`) and the non-skippable deploy gate (#2368, `DeployRecipe`) have landed. Kernel-level enforcement (Q1) remains out of scope (#2374). Where this document and the code differ, the code is authoritative.
 **Stack:** protobuf/gRPC (grpc-gateway) + Docker; Go only (no new language)
 **Issues:** #2367 (inbound scan), #2368 (server-side, non-skippable policy). Sprint umbrella #2373, decisions Q10 and Q11.
 **Builds on:** [`guardrail.md`](guardrail.md) (the local scan → redact → gate → attest flow).
@@ -220,7 +220,7 @@ Fail-closed scope, stated precisely:
 | Policy store reports **not configured** (the explicit, stored "no policy" state), or has no inbound BLOCK rule | Passes through, unchanged |
 | Policy store **cannot be read** (database error, timeout) | Treated as an error, **not** as "no policy": blocked for a tenant that last had an active inbound rule (the gateway keeps the last known policy revision for this decision), and logged and counted. A transient outage never turns an active policy off |
 | **Cold start**: a policy provider is wired but the **first read has not succeeded** (no cached revision, so the gateway cannot know whether any tenant has an active rule) | The gateway does not guess in either direction. It is **not ready** (its health check fails) and answers model calls with a typed `PolicyUnavailable` 503 until the first read returns a policy or `ErrNotConfigured`. This applies only when a provider is wired; the no-provider case is the standalone row below. The wait is bounded by the daemon's own startup, not by a timeout that falls back to passing traffic |
-| Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so at startup; runs report `UNSCANNED_NO_POLICY`. This is a visible state, not a silent one |
+| Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so in its startup log. `code run` asks the daemon, not this binary, so it cannot see this state; the startup log is the signal. This is a visible state, not a silent one |
 | Finding of a BLOCK kind | Blocked |
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
@@ -279,7 +279,7 @@ Because a wired gateway refuses model calls until its first policy read
 succeeds, a daemon whose configured policy store is unreachable at start
 refuses model calls until it recovers; a daemon with no database uses the
 in-memory store and starts ready. The standalone `model-gateway` binary has no
-policy source and stays unscanned, as `UNSCANNED_NO_POLICY` says.
+policy source and stays unscanned. `code run` asks the daemon, which reports `BASELINE` when no policy is stored, and `UNSCANNED_NO_POLICY` now means a policy is configured with no inbound BLOCK rule; for the standalone binary the startup log is the signal (see the caveat under `guardrail status`).
 
 ### Audit entry
 
@@ -329,6 +329,7 @@ enum CodeModelTrafficScanning {
   CODE_MODEL_TRAFFIC_SCANNING_SCANNED = 1;              // gateway credential, inbound policy active
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY = 2;  // gateway credential, no inbound rule
   CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY = 3; // tenant's own key, traffic does not cross the gateway
+  CODE_MODEL_TRAFFIC_SCANNING_BASELINE = 4;             // gateway credential, no policy ever set: built-in baseline scan (#2851)
 }
 ```
 
@@ -337,8 +338,128 @@ plus the current server policy; it is computed once at run start and printed
 on stderr by `containarium code run` (and shown by the `code_run` MCP tool,
 which only runs the tenant-key path). If the policy cannot be read the value
 is `UNSPECIFIED` and the line says the status is unknown; the run is never
-blocked by that read. `guardrail.InboundBlockKinds` is the one definition of
+blocked by that read. For a gateway run the value follows the daemon's
+effective policy (the one `containarium guardrail status` reports, #2737): no
+policy set is `BASELINE`, a policy with an inbound BLOCK rule is `SCANNED`, and
+a policy with no inbound BLOCK rule stays `UNSCANNED_NO_POLICY` (#2851).
+`guardrail.InboundBlockKinds` is the one definition of
 "an inbound BLOCK rule is in force", shared with the gateway.
+
+### Scanned by default: the baseline, and how to read the effective policy (#2575)
+
+**What is scanned by default.** A daemon on which no admin has ever set a
+guardrail policy scans model responses against a small built-in baseline
+(#2736, `internal/guardrail/baseline.go`). It is separate from the engine's
+rules, so a pluggable engine cannot change what a default install checks:
+
+| Rule id | Matches |
+| --- | --- |
+| `baseline.pem_private_key` | a PEM private-key header (`-----BEGIN ... PRIVATE KEY-----`) |
+| `baseline.aws_access_key_id` | an AWS access key id (`AKIA` / `ASIA` + 16) |
+| `baseline.google_api_key` | a Google API key (`AIza` + 35) |
+| `baseline.azure_storage_account_key` | `AccountKey=<88 chars>` in an Azure storage connection string |
+
+**In which mode.** The baseline is **log-only**. The response goes to the
+client byte for byte as it arrives, streamed or not, and nothing is held
+back. A copy of up to the hold limit is scanned once the last byte has been
+written. Each rule that matched writes one `model_gateway.inbound_detection`
+audit entry with the rule id, kind, action `log` and match count, plus an
+`INBOUND-BASELINE` log line. The matched text is never recorded. A response
+over the limit, or one with a content encoding, is counted as
+`baseline_unscanned` on `/__gateway/status` and is never blocked. That is the
+default, **LOG** mode.
+
+**Block mode (#2738).** An admin can switch the baseline to **BLOCK** with
+`containarium guardrail baseline set --mode block`
+(`GuardrailPolicyService.SetGuardrailBaselineMode`, `PUT /v1/guardrail/baseline`,
+a `GuardrailBaselineMode` enum) and back with `--mode log`. The mode is one
+setting per daemon, stored next to the policy but not in it (Postgres table
+`guardrail_baseline`, or memory on a daemon without a database), so setting it
+never marks a policy as configured. Every switch increments the setting's
+revision. Non-admins are refused.
+
+Auditing depends on whether the guardrail server was given an audit store
+at startup:
+- **With an audit store**, the switch writes a
+  `guardrail.baseline.set` audit entry naming the caller, with the previous
+  and new mode and revision. The entry is part of the change: it is written
+  while the store holds the new setting uncommitted, and if the write fails,
+  the change is rolled back and the call fails, so the mode never changes
+  without its entry. In the rare case that the commit fails after the entry
+  was written, the entry names a revision the store never reached, and
+  `guardrail status` shows the lower revision. This differs from
+  `guardrail.policy.set`, whose audit write is best-effort.
+- **With no audit store**, the switch succeeds and **no audit entry is
+  written**. There are three ways to get here, and the last two can happen
+  on a daemon that does have Postgres:
+  1. the daemon has no Postgres;
+  2. REST is disabled, because the audit store is wired to the guardrail
+     server only when REST is enabled;
+  3. the audit store failed to start, for example because Postgres was down
+     at startup. The audit store is not retried later, even when the policy
+     store is installed afterwards by its own retry.
+
+  Whether the switch should be refused in these cases is an open question.
+
+The switch invalidates the gateway's cached policy read. A read that was
+already in flight when the switch committed does not refresh the cache, so
+the switch applies on the next call after it returns. This assumes the store
+can be read on that call. If a read was in flight during a LOG to BLOCK
+switch and the next read fails, the gateway keeps the stale LOG it last read
+until the store can be read again.
+
+In BLOCK mode the baseline uses the admin policy's hold-and-block path
+("Enforcement in the gateway" above) with the baseline rules in place of the
+engine:
+
+- A response, streamed or not, is held to its end, scanned, then replayed
+  unchanged or blocked with the typed 502. A held stream adds the hold latency
+  in the table below to every response on a default install, which is why LOG
+  is the default.
+- A match writes one `model_gateway.inbound_detection` entry per rule with
+  action `block`, plus one `model_gateway.inbound_block` entry (reason
+  `finding`, kind `SECRET`, engine id `baseline`).
+- The fail-closed rows of the scope table apply: a 2xx response that is over
+  the hold limit, compressed, or neither JSON nor an event stream is blocked
+  rather than counted as `baseline_unscanned`. This applies to every tenant
+  on the daemon.
+- A non-2xx response that is neither JSON nor an event stream (an upstream
+  error) still passes through unchanged, as in the scope table. It is teed
+  and scanned as in LOG mode, so a match records a detection with action
+  `log`. BLOCK never records less than LOG.
+- A failed read of the mode is handled like a failed policy read: the last
+  known mode decides, so an outage never turns BLOCK into LOG, and a gateway
+  that has never read it refuses model calls (`PolicyUnavailable`).
+
+`/__gateway/status` reports the last known mode as `baseline_mode`. Under a
+configured admin policy the stored mode is kept but unused.
+
+**What turns it off.** Any configured admin policy turns the baseline off,
+including an empty policy or one with outbound rules only. From then on the
+admin policy alone decides whether responses are scanned, which happens only
+when it has an inbound BLOCK rule. No command unsets a policy, so once a
+daemon has had a policy it does not go back to the baseline.
+
+**Reading the effective policy.** Run `containarium guardrail status`. It
+calls `GuardrailPolicyService.GetGuardrailStatus` (`GET /v1/guardrail/status`),
+which any authenticated caller may use. The daemon derives the value from the
+same policy store the model gateway reads:
+
+| `guardrail status` | `GuardrailEffectivePolicy` | Store state | What happens to responses |
+| --- | --- | --- | --- |
+| `baseline` | `BASELINE` | no policy was ever set | scanned with the baseline rules, log-only or blocking per the baseline mode; `baseline_rule_ids` lists them |
+| `admin` | `ADMIN` | a policy with at least one inbound BLOCK rule | scanned for, and blocked on, the kinds in `inbound_block_kinds` |
+| `none` | `NONE` | a policy with no inbound BLOCK rule | not scanned |
+
+The response also carries `baseline` (#2738): the stored mode, its revision
+and who set it, printed as a `Baseline mode:` line (`log (default, never
+set)` until an admin sets it). It is reported under every value, and under
+`admin` or `none` it is marked as not in effect. If the policy or the mode
+cannot be read, the call fails with an error and never reports `none`,
+`baseline` or a default mode. `--json` prints the response as protojson. The command
+reports the policy. It does not report whether this daemon serves a model
+gateway at all: a daemon without one, or the standalone gateway binary, scans
+nothing whatever the status says.
 
 ## Part 2 — server-side policy and the deploy gate (#2368)
 
@@ -399,11 +520,88 @@ fail-closed table). The ungated fallback applies **only** to ungated
 deploys: a gated recipe with no policy is refused, as the gate procedure
 below states.
 
+### Signer rotation and revocation (#2729)
+
+Decisions Q3 to Q6 on #2729. Rotation and revocation happen in the stored
+server policy, next to `trusted_signers` and outside `policy`, so neither
+changes `policy_hash`.
+
+```proto
+message GuardrailRevokedKey {
+  string key_id = 1;                          // SHA-256 of the public key, hex
+  google.protobuf.Timestamp revoked_at = 2;   // stamped by the server on the Set that adds it
+  string reason = 3;                          // required; named by every refused verify
+}
+message GuardrailTrustBundle {                // the offline verifier's input (protojson)
+  repeated GuardrailTrustedSigner signers = 1;
+  repeated GuardrailRevokedKey revoked = 2;
+}
+// ServerGuardrailPolicy.revoked_signers = 6
+// SetGuardrailPolicyRequest.revoked_signers = 3, optional expected_revision = 4
+```
+
+- **Rotation** adds the new signer and keeps the old one. Attestations
+  made with either key verify. Removing the old signer from
+  `trusted_signers` without revoking it makes every attestation it signed
+  fail as `ErrUntrustedSigner`. That is how to retire a key that was not
+  compromised.
+- **Revocation** moves a key from `trusted_signers` to `revoked_signers`.
+  Every attestation the key signed then fails with `ErrRevokedSigner`, and
+  the error names the key id, `revoked_at` and the reason. That includes
+  attestations whose `attested_at` is earlier than the revocation, because
+  the signer sets that timestamp and a stolen key could backdate it. The
+  data owner re-attests the data they still need with the new key. A "valid
+  if signed before X" cutoff has to wait for a trusted timestamp, which is
+  the RFC 3161 work on the anchor sinks. The revocation check runs before the
+  trusted-signer lookup, so a revoked key is reported as revoked even when
+  no trusted signer is left.
+- **Revocation is permanent and admin-only.** It goes through the existing
+  `SetGuardrailPolicy`: admin role, validated, revision incremented, and
+  audited, with `revoked_signer_key_ids` in the `guardrail.policy.set`
+  detail. `INVALID_ARGUMENT` is returned for a revoked key without a reason,
+  a malformed key id, a duplicate, or a key that is both trusted and revoked.
+  A Set that drops a stored revocation or changes its reason gets
+  `FAILED_PRECONDITION`. Nothing can be un-revoked, and a revoked key can
+  never be trusted again.
+- **Read-edit-write is race-free.** `expected_revision` on the request is
+  compared with the stored revision under the store's lock (the row lock in
+  Postgres). A mismatch is `ABORTED` and nothing changes. When the field is
+  absent, the Set applies as before.
+- **CLI**: `containarium guardrail signer rotate --add <pub>` and
+  `signer revoke <key-id> --reason ...` do the read-edit-write with
+  `expected_revision` (admin only); `signer bundle [--out f]` exports the
+  server's `GuardrailTrustBundle` as protojson; `guardrail verify
+  --trust-bundle <file>` checks an attestation offline against it (a revoked
+  key fails naming key, time and reason; mutually exclusive with
+  `--public-key`; ignored when a server policy is in force). No MCP tool
+  writes the policy, so there is nothing to wrap.
+
+What rotation and revocation do **not** protect against:
+
+- **Key custody is out of scope (Q6).** The signing key stays a file on the
+  data owner's machine. A key stolen and used before anyone notices produces
+  attestations that verify until an admin revokes the key.
+- **The data owner cannot revoke their own key.** Only an admin can. If the
+  owner is the one who notices the compromise, they have to reach an admin,
+  and attestations keep verifying until then.
+- **Offline verifiers learn of a revocation only from a fresh bundle.** An
+  offline check against an old `GuardrailTrustBundle`, or with
+  `--public-key` alone, does not see later revocations.
+- **Sealed Proof Packs and audit anchors are not affected either way.** They
+  hold digests and chain hashes, not signatures or keys
+  (`internal/proofpack/signer_independence_test.go`). A pack sealed before
+  a rotation or a revocation still verifies afterwards.
+
 ### CLI
 
 ```
 containarium guardrail policy get [--json]
 containarium guardrail policy set --file policy.json
+containarium guardrail status [--json]     # effective response policy (#2737)
+containarium guardrail baseline set --mode log|block   # admin, audited (#2738)
+containarium guardrail signer rotate --add new.pub [--label l]  # admin; keeps old keys (#2729)
+containarium guardrail signer revoke <key-id> --reason r     # admin; permanent (#2729)
+containarium guardrail signer bundle [--out bundle.json]     # trusted + revoked keys (#2729)
 ```
 
 The CLI is the canonical interface and the MCP tools are thin wrappers over
@@ -610,11 +808,11 @@ fake engine
   and after it returns a policy it enforces. No timeout path passes traffic.
 - Policy-read rows: `ErrNotConfigured` passes through; a store error blocks
   for a tenant with an active rule and does not turn the policy off; a
-  standalone gateway with no provider reports `UNSCANNED_NO_POLICY` and logs
-  that at startup.
+  standalone gateway with no provider logs that it is unscanned at startup
+  (`code run` cannot see that binary).
 - Audit assertion: the recorded `InboundBlock` has kinds and counts and the
   fixture's flagged string appears nowhere in it or in logs.
-- `code run` scan-status: three rows, one per enum value.
+- `code run` scan-status: four states (`SCANNED`, `BASELINE`, `UNSCANNED_NO_POLICY`, `UNSCANNED_TENANT_KEY`) plus unknown (`UNSPECIFIED`), each pinned by a row; a failed dial or read reports unknown and never blocks the run.
 
 **Gate (PR C)**
 - `TestDeployGate`: async refused; no server policy refused; no signer

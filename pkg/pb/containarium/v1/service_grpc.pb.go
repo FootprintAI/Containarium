@@ -41,13 +41,19 @@ const (
 	ContainerService_ToggleAutoSleep_FullMethodName           = "/containarium.v1.ContainerService/ToggleAutoSleep"
 	ContainerService_SetContainerTTL_FullMethodName           = "/containarium.v1.ContainerService/SetContainerTTL"
 	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
+	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
+	ContainerService_GetBoxRunUserStatus_FullMethodName       = "/containarium.v1.ContainerService/GetBoxRunUserStatus"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
+	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
+	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
+	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
@@ -68,7 +74,6 @@ const (
 	ContainerService_ValidateGPU_FullMethodName               = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName            = "/containarium.v1.ContainerService/TriggerUpgrade"
 	ContainerService_GetUpgradeStatus_FullMethodName          = "/containarium.v1.ContainerService/GetUpgradeStatus"
-	ContainerService_GetBridgeDNSStatus_FullMethodName        = "/containarium.v1.ContainerService/GetBridgeDNSStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName         = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_SetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/SetMetricsExport"
 	ContainerService_GetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/GetMetricsExport"
@@ -241,6 +246,12 @@ type ContainerServiceClient interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(ctx context.Context, in *SetContainerDeletePolicyRequest, opts ...grpc.CallOption) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerToolAccess records the tool-access level for platform-started
+	// (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+	// FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+	// user.containarium.tool_access, so it survives daemon restart with no
+	// separate store, and is read back on list/get as Container.tool_access.
+	SetContainerToolAccess(ctx context.Context, in *SetContainerToolAccessRequest, opts ...grpc.CallOption) (*SetContainerToolAccessResponse, error)
 	// SetContainerAttribution merges labels onto an EXISTING container's config
 	// (cloud #746). The hosted control plane stamps attribution labels
 	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -252,6 +263,8 @@ type ContainerServiceClient interface {
 	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -260,6 +273,12 @@ type ContainerServiceClient interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(ctx context.Context, in *StartBoxRunRequest, opts ...grpc.CallOption) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -273,6 +292,19 @@ type ContainerServiceClient interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
+	// GetRunApprovalKey returns the public key a box's permission-request
+	// answers are signed with (#2184). `code run --approvals ask` hands it to
+	// the box. Same access as StartBoxRun.
+	GetRunApprovalKey(ctx context.Context, in *GetRunApprovalKeyRequest, opts ...grpc.CallOption) (*GetRunApprovalKeyResponse, error)
+	// ListRunInputs lists the open permission requests of a box run (#2184).
+	// Same access as StartBoxRun.
+	ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error)
+	// AnswerRunInput answers one permission request of a box run (#2184).
+	// Answering a request that is already closed or expired changes nothing
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
+	AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -358,10 +390,6 @@ type ContainerServiceClient interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
-	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-	// app-hosting base domain to core-caddy matches core-caddy's live address,
-	// and why not when it does not (#2188). Admin-only.
-	GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -657,6 +685,16 @@ func (c *containerServiceClient) SetContainerDeletePolicy(ctx context.Context, i
 	return out, nil
 }
 
+func (c *containerServiceClient) SetContainerToolAccess(ctx context.Context, in *SetContainerToolAccessRequest, opts ...grpc.CallOption) (*SetContainerToolAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetContainerToolAccessResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetContainerToolAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetContainerAttributionResponse)
@@ -677,6 +715,16 @@ func (c *containerServiceClient) AddSSHKey(ctx context.Context, in *AddSSHKeyReq
 	return out, nil
 }
 
+func (c *containerServiceClient) SetSSHKeys(ctx context.Context, in *SetSSHKeysRequest, opts ...grpc.CallOption) (*SetSSHKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetSSHKeysResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetSSHKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RemoveSSHKeyResponse)
@@ -691,6 +739,16 @@ func (c *containerServiceClient) StartBoxRun(ctx context.Context, in *StartBoxRu
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StartBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBoxRunUserStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetBoxRunUserStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -721,6 +779,36 @@ func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StopBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetRunApprovalKey(ctx context.Context, in *GetRunApprovalKeyRequest, opts ...grpc.CallOption) (*GetRunApprovalKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRunApprovalKeyResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetRunApprovalKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunInputsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListRunInputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnswerRunInputResponse)
+	err := c.cc.Invoke(ctx, ContainerService_AnswerRunInput_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -921,16 +1009,6 @@ func (c *containerServiceClient) GetUpgradeStatus(ctx context.Context, in *GetUp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetUpgradeStatusResponse)
 	err := c.cc.Invoke(ctx, ContainerService_GetUpgradeStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *containerServiceClient) GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetBridgeDNSStatusResponse)
-	err := c.cc.Invoke(ctx, ContainerService_GetBridgeDNSStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1278,6 +1356,12 @@ type ContainerServiceServer interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerToolAccess records the tool-access level for platform-started
+	// (unattended) agent runs on a container (#2944): NONE, BUILD_TOOLS or
+	// FULL_SUDO, or UNSPECIFIED to clear it. Persisted on the Incus config under
+	// user.containarium.tool_access, so it survives daemon restart with no
+	// separate store, and is read back on list/get as Container.tool_access.
+	SetContainerToolAccess(context.Context, *SetContainerToolAccessRequest) (*SetContainerToolAccessResponse, error)
 	// SetContainerAttribution merges labels onto an EXISTING container's config
 	// (cloud #746). The hosted control plane stamps attribution labels
 	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
@@ -1289,6 +1373,8 @@ type ContainerServiceServer interface {
 	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
+	// SetSSHKeys replaces the caller-managed SSH public keys of a container
+	SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error)
 	// StartBoxRun starts (or resumes) a coding-agent run on a box through the
@@ -1297,6 +1383,12 @@ type ContainerServiceServer interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -1310,6 +1402,19 @@ type ContainerServiceServer interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
+	// GetRunApprovalKey returns the public key a box's permission-request
+	// answers are signed with (#2184). `code run --approvals ask` hands it to
+	// the box. Same access as StartBoxRun.
+	GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error)
+	// ListRunInputs lists the open permission requests of a box run (#2184).
+	// Same access as StartBoxRun.
+	ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error)
+	// AnswerRunInput answers one permission request of a box run (#2184).
+	// Answering a request that is already closed or expired changes nothing
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
+	AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -1395,10 +1500,6 @@ type ContainerServiceServer interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
-	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
-	// app-hosting base domain to core-caddy matches core-caddy's live address,
-	// and why not when it does not (#2188). Admin-only.
-	GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -1540,17 +1641,26 @@ func (UnimplementedContainerServiceServer) SetContainerTTL(context.Context, *Set
 func (UnimplementedContainerServiceServer) SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerDeletePolicy not implemented")
 }
+func (UnimplementedContainerServiceServer) SetContainerToolAccess(context.Context, *SetContainerToolAccessRequest) (*SetContainerToolAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetContainerToolAccess not implemented")
+}
 func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerAttribution not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
 }
+func (UnimplementedContainerServiceServer) SetSSHKeys(context.Context, *SetSSHKeysRequest) (*SetSSHKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSSHKeys not implemented")
+}
 func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSSHKey not implemented")
 }
 func (UnimplementedContainerServiceServer) StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBoxRunUserStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListBoxRuns not implemented")
@@ -1560,6 +1670,15 @@ func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailB
 }
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
+}
+func (UnimplementedContainerServiceServer) ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRunInputs not implemented")
+}
+func (UnimplementedContainerServiceServer) AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AnswerRunInput not implemented")
 }
 func (UnimplementedContainerServiceServer) AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCollaborator not implemented")
@@ -1620,9 +1739,6 @@ func (UnimplementedContainerServiceServer) TriggerUpgrade(context.Context, *Trig
 }
 func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUpgradeStatus not implemented")
-}
-func (UnimplementedContainerServiceServer) GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetBridgeDNSStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -2098,6 +2214,24 @@ func _ContainerService_SetContainerDeletePolicy_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetContainerToolAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetContainerToolAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetContainerToolAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetContainerToolAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetContainerToolAccess(ctx, req.(*SetContainerToolAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_SetContainerAttribution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetContainerAttributionRequest)
 	if err := dec(in); err != nil {
@@ -2134,6 +2268,24 @@ func _ContainerService_AddSSHKey_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetSSHKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSSHKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetSSHKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetSSHKeys(ctx, req.(*SetSSHKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_RemoveSSHKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveSSHKeyRequest)
 	if err := dec(in); err != nil {
@@ -2166,6 +2318,24 @@ func _ContainerService_StartBoxRun_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StartBoxRun(ctx, req.(*StartBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetBoxRunUserStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBoxRunUserStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetBoxRunUserStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, req.(*GetBoxRunUserStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2220,6 +2390,60 @@ func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetRunApprovalKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRunApprovalKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetRunApprovalKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetRunApprovalKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetRunApprovalKey(ctx, req.(*GetRunApprovalKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListRunInputs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunInputsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListRunInputs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListRunInputs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListRunInputs(ctx, req.(*ListRunInputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_AnswerRunInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnswerRunInputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).AnswerRunInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_AnswerRunInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).AnswerRunInput(ctx, req.(*AnswerRunInputRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2580,24 +2804,6 @@ func _ContainerService_GetUpgradeStatus_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).GetUpgradeStatus(ctx, req.(*GetUpgradeStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _ContainerService_GetBridgeDNSStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetBridgeDNSStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ContainerService_GetBridgeDNSStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, req.(*GetBridgeDNSStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3040,6 +3246,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_SetContainerDeletePolicy_Handler,
 		},
 		{
+			MethodName: "SetContainerToolAccess",
+			Handler:    _ContainerService_SetContainerToolAccess_Handler,
+		},
+		{
 			MethodName: "SetContainerAttribution",
 			Handler:    _ContainerService_SetContainerAttribution_Handler,
 		},
@@ -3048,12 +3258,20 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_AddSSHKey_Handler,
 		},
 		{
+			MethodName: "SetSSHKeys",
+			Handler:    _ContainerService_SetSSHKeys_Handler,
+		},
+		{
 			MethodName: "RemoveSSHKey",
 			Handler:    _ContainerService_RemoveSSHKey_Handler,
 		},
 		{
 			MethodName: "StartBoxRun",
 			Handler:    _ContainerService_StartBoxRun_Handler,
+		},
+		{
+			MethodName: "GetBoxRunUserStatus",
+			Handler:    _ContainerService_GetBoxRunUserStatus_Handler,
 		},
 		{
 			MethodName: "ListBoxRuns",
@@ -3066,6 +3284,18 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopBoxRun",
 			Handler:    _ContainerService_StopBoxRun_Handler,
+		},
+		{
+			MethodName: "GetRunApprovalKey",
+			Handler:    _ContainerService_GetRunApprovalKey_Handler,
+		},
+		{
+			MethodName: "ListRunInputs",
+			Handler:    _ContainerService_ListRunInputs_Handler,
+		},
+		{
+			MethodName: "AnswerRunInput",
+			Handler:    _ContainerService_AnswerRunInput_Handler,
 		},
 		{
 			MethodName: "AddCollaborator",
@@ -3146,10 +3376,6 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUpgradeStatus",
 			Handler:    _ContainerService_GetUpgradeStatus_Handler,
-		},
-		{
-			MethodName: "GetBridgeDNSStatus",
-			Handler:    _ContainerService_GetBridgeDNSStatus_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",

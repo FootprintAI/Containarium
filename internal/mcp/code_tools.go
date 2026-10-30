@@ -11,6 +11,7 @@ import (
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Platform-MCP wrappers for `containarium code` (#1698). Every operation here
@@ -123,6 +124,10 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 
 	ctx := context.Background()
+	// Snapshot the engine's session directory before the run starts, so
+	// discovery adopts only a session this run creates (a resumed run's id is
+	// the literal sessionID and needs none).
+	discover := sessionID == "" && mcpSnapshotSessionDirectory(ctx, sess, name)
 	started, err := sess.ProcessStart(ctx,
 		name,
 		command,
@@ -132,7 +137,9 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("start run on %q: %w", box, err)
 	}
-	mcpStartSessionDiscovery(ctx, sess, started.LogPath)
+	if discover {
+		mcpStartSessionDiscovery(ctx, sess, name)
+	}
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return fmt.Sprintf(
@@ -141,8 +148,30 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 		started.Name, started.PID, box,
 		// This tool only builds the Claude tenant-secret command, so its
 		// traffic never crosses the gateway.
-		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, nil, true)),
+		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED)),
 		started.LogPath, next, out, started.Name, next), nil
+}
+
+// mcpSessionSidecar is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func mcpSessionSidecar(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// mcpSnapshotSessionDirectory records the engine's existing session entries
+// before the run starts (see engine/session_discovery.go). False means no
+// snapshot, so discovery must be skipped: an absent id, never a wrong one.
+func mcpSnapshotSessionDirectory(ctx context.Context, sess *coderun.Session, name string) bool {
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
+	if !ok {
+		return false
+	}
+	_, err = sess.ShellExec(ctx, cmd)
+	return err == nil
 }
 
 // mcpStartSessionDiscovery best-effort backgrounds the lookup of this run's
@@ -151,13 +180,12 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 // handleCodeRun), so the engine is fixed; a lookup failure is never fatal —
 // code_runs simply reports no session id for this run, which the AC already
 // allows.
-func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, logPath string) {
+func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, name string) {
 	home, err := sess.HomeDir(ctx)
 	if err != nil {
 		return
 	}
-	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, sidecarPath)
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
 	if !ok {
 		return
 	}
@@ -234,10 +262,17 @@ func handleCodeStatus(client API, args map[string]interface{}) (string, error) {
 	if line == "" {
 		return fmt.Sprintf("no run named %q on %s", name, box), nil
 	}
+	out := line
 	if !running {
-		return line + "\n" + coderun.ExitCodeLine(listing, name), nil
+		out += "\n" + coderun.ExitCodeLine(listing, name)
 	}
-	return line, nil
+	// #2183: the same approval lines `code status` prints.
+	if approvals, err := sess.ApprovalStatus(context.Background(), name, running, time.Now()); err != nil {
+		out += "\nnote: could not read this run's permission requests: " + err.Error()
+	} else if approvals != "" {
+		out += "\n" + approvals
+	}
+	return out, nil
 }
 
 // handleCodeStop reaps a run. The log is deliberately left readable so its

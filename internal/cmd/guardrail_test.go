@@ -16,6 +16,8 @@ func resetGuardrailFlags() {
 	guardrailRedactKey, guardrailSignKey, guardrailAttestFile = "", "", ""
 	guardrailPublicKey, guardrailKeygenPrefix = "", ""
 	guardrailRequireKinds = nil
+	guardrailTrustBundle, guardrailSignerAdd, guardrailSignerLabel = "", "", ""
+	guardrailSignerReason, guardrailSignerOut = "", ""
 }
 
 // guardrailTestHomeEnv marks the private HOME runGuardrail set for the

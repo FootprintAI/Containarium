@@ -22,10 +22,16 @@
 #                             because in-transit corruption is the
 #                             primary integrity threat for air-gapped
 #                             distribution).
+#   --skip-apt                don't install the bundled .deb packages;
+#                             Incus, ZFS, jq and curl must already be on
+#                             the host. Without it an apt/ with no .deb
+#                             is an error.
 #   --skip-sidecars           don't import sidecar images (do it later)
-#   --skip-base-image         don't import the containarium-base Incus
-#                             image (do it later)
 #   --skip-firewall           don't touch ufw rules
+#   --skip-base-image         accepted and ignored: the bundle ships no
+#                             base image (#3061)
+#   --mtls                    open 50051/tcp in ufw for the external mTLS gRPC
+#                             listener (the daemon must also run with --mtls)
 
 set -e
 
@@ -47,23 +53,25 @@ BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$BUNDLE_DIR/bin"
 APT_DIR="$BUNDLE_DIR/apt"
 SIDECAR_DIR="$BUNDLE_DIR/sidecars"
-IMAGE_DIR="$BUNDLE_DIR/images"
 CHECKSUM_FILE="$BUNDLE_DIR/CHECKSUMS.sha256"
 VERSION_FILE="$BUNDLE_DIR/VERSION"
 
 # Flag defaults
 SKIP_CHECKSUM_VERIFY=0
+SKIP_APT=0
 SKIP_SIDECARS=0
-SKIP_BASE_IMAGE=0
 SKIP_FIREWALL=0
+ENABLE_MTLS=0
 
 # ---- argparse ----
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-checksum-verify) SKIP_CHECKSUM_VERIFY=1 ;;
+    --skip-apt)             SKIP_APT=1 ;;
     --skip-sidecars)        SKIP_SIDECARS=1 ;;
-    --skip-base-image)      SKIP_BASE_IMAGE=1 ;;
+    --skip-base-image)      echo "--skip-base-image: ignored, this bundle ships no base image" >&2 ;;
     --skip-firewall)        SKIP_FIREWALL=1 ;;
+    --mtls)                 ENABLE_MTLS=1 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -50
       exit 0
@@ -166,22 +174,34 @@ verify_checksums() {
 }
 
 install_apt_dependencies() {
-    log_info "Installing system dependencies from $APT_DIR (no network)"
-
-    if [ ! -d "$APT_DIR" ] || [ -z "$(ls -A "$APT_DIR" 2>/dev/null | grep -v '\.MANUAL' || true)" ]; then
-        log_warn "No .deb packages in bundle apt/ directory"
-        log_warn "Skipping apt step — assuming required packages are pre-installed"
-        log_warn "(curl, wget, gnupg, jq, ca-certificates, zfsutils-linux, incus,"
-        log_warn " incus-client, incus-extra, build-essential, libicu-dev)"
+    if [ "$SKIP_APT" = "1" ]; then
+        log_info "Skipping bundled .deb install (--skip-apt); Incus, ZFS, jq and curl must already be installed"
         return 0
     fi
 
-    # `apt-get install ./path/*.deb` installs from local files and resolves
-    # local-only deps without contacting the network. --no-download
-    # makes any unmet dep fail loudly instead of trying to fetch it.
-    log_info "Running: apt-get install --no-download --yes ./apt/*.deb"
-    apt-get install --no-download --yes "$APT_DIR"/*.deb || \
-        log_warn "apt-get install exited non-zero; checking critical commands below"
+    log_info "Installing system dependencies from $APT_DIR (no network)"
+
+    # An empty apt/ is an error, not a skip (#3061): carrying on installed
+    # Containarium without the packages it needs.
+    shopt -s nullglob
+    local debs=("$APT_DIR"/*.deb)
+    shopt -u nullglob
+    if [ ${#debs[@]} -eq 0 ]; then
+        log_error "No .deb packages in the bundle's apt/ directory ($APT_DIR)"
+        log_error "This bundle cannot install Incus, ZFS, jq or curl on an air-gapped host."
+        log_error "If they are already installed, re-run with --skip-apt."
+        exit 1
+    fi
+
+    # With --no-download apt only uses archives already in its cache. Local
+    # file arguments alone do not populate that cache: on a fresh host apt
+    # handed dpkg a bare filename and failed (#3258). Use the verified bundle
+    # itself as the archive cache, keeping downloads disabled.
+    log_info "Running: apt-get install --no-download --yes (archive cache: $APT_DIR)"
+    if ! apt-get -o "Dir::Cache::archives=$APT_DIR" install --no-download --yes "${debs[@]}"; then
+        log_error "Failed to install bundled .deb packages; stopping offline installation"
+        exit 1
+    fi
 
     # Verify the critical pieces landed.
     local missing=()
@@ -316,7 +336,11 @@ setup_firewall() {
 
     if command -v ufw &> /dev/null; then
         ufw allow 22/tcp comment 'SSH' || true
-        ufw allow 50051/tcp comment 'Containarium gRPC' || true
+        # The daemon serves an external gRPC listener only with --mtls; without
+        # it 50051 has nothing behind it, so leave the port closed (#3063).
+        if [ "${ENABLE_MTLS:-0}" = "1" ]; then
+            ufw allow 50051/tcp comment 'Containarium gRPC (mTLS)' || true
+        fi
         ufw allow 8080/tcp comment 'Containarium REST API' || true
 
         if ! ufw status | grep -q "Status: active"; then
@@ -344,41 +368,6 @@ generate_initial_token() {
             chmod 600 "$CONFIG_DIR/admin.token"
             log_success "Admin token saved to: $CONFIG_DIR/admin.token"
         fi
-    fi
-}
-
-import_base_image() {
-    if [ "$SKIP_BASE_IMAGE" = "1" ]; then
-        log_info "Skipping base-image import (--skip-base-image)"
-        return 0
-    fi
-
-    if [ ! -d "$IMAGE_DIR" ]; then
-        log_info "No images/ directory in bundle — skipping base-image import"
-        return 0
-    fi
-
-    shopt -s nullglob
-    local found=0
-    for img in "$IMAGE_DIR"/containarium-base-*.tar.gz "$IMAGE_DIR"/containarium-base-*.tar; do
-        if [ -f "$img" ]; then
-            found=1
-            local alias_name
-            # Derive alias from filename:
-            #   containarium-base-v0.19.0.tar.gz → containarium-base:v0.19.0
-            alias_name="$(basename "$img" \
-                | sed -E 's/^(containarium-base)-(v[0-9.]+)\.tar(\.gz)?$/\1:\2/')"
-            log_info "incus image import $img --alias $alias_name"
-            incus image import "$img" --alias "$alias_name" 2>&1 \
-                | grep -v 'already exists' || true
-            log_success "Imported base image: $alias_name"
-        fi
-    done
-    shopt -u nullglob
-
-    if [ "$found" = "0" ]; then
-        log_info "No containarium-base image tarball in bundle — skipping"
-        log_info "(Tier 3 customers without a base image can use stock Ubuntu)"
     fi
 }
 
@@ -450,11 +439,12 @@ print_completion_message() {
     echo "   2. Check status:"
     echo "      sudo systemctl status containarium"
     echo ""
-    echo "   3. Create your first container (uses the bundled base image,"
-    echo "      no network calls):"
+    echo "   3. Create your first container. The bundle ships no base image:"
+    echo "      import one you transferred yourself, then use its alias:"
     echo ""
+    echo "      sudo incus image import <file> --alias <local-image-alias>"
     echo "      sudo containarium create test-1 \\"
-    echo "        --image containarium-base:v${bundle_version} \\"
+    echo "        --image <local-image-alias> \\"
     echo "        --ssh-key ~/.ssh/id_ed25519.pub"
     echo ""
     echo "   4. (Optional) Provision a self-hosted GHA runner. For GitHub"
@@ -495,10 +485,12 @@ main() {
     create_systemd_service
     setup_firewall
     generate_initial_token
-    import_base_image
     import_sidecars
     print_completion_message
 }
 
-# Run main function
-main "$@"
+# Run main when executed; sourcing only defines the functions (used by
+# scripts/ci/test-offline-bundle.sh).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

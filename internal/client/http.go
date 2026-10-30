@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/runlog"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -188,22 +189,25 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 
 // Container response types matching the protobuf JSON output
 type containerResponse struct {
-	Name                 string            `json:"name"`
-	Username             string            `json:"username"`
-	SshHost              string            `json:"sshHost"`
-	State                string            `json:"state"`
-	Resources            *resourceLimits   `json:"resources"`
-	Network              *networkInfo      `json:"network"`
-	CreatedAt            string            `json:"createdAt"`
-	Labels               map[string]string `json:"labels"`
-	Image                string            `json:"image"`
-	PodmanEnabled        bool              `json:"dockerEnabled"`
-	GpuDevice            string            `json:"gpuDevice"`
-	GpuDevices           []string          `json:"gpuDevices"`
-	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
-	MonitoringEnabled    bool              `json:"monitoringEnabled"`
-	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
-	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
+	Name                 string                    `json:"name"`
+	Username             string                    `json:"username"`
+	SshHost              string                    `json:"sshHost"`
+	State                string                    `json:"state"`
+	Resources            *resourceLimits           `json:"resources"`
+	Network              *networkInfo              `json:"network"`
+	CreatedAt            string                    `json:"createdAt"`
+	Labels               map[string]string         `json:"labels"`
+	NetworkTenant        string                    `json:"networkTenant"`
+	NetworkTenantSource  incus.NetworkTenantSource `json:"networkTenantSource"`
+	Image                string                    `json:"image"`
+	PodmanEnabled        bool                      `json:"podmanEnabled"`
+	GpuDevice            string                    `json:"gpuDevice"`
+	GpuDevices           []string                  `json:"gpuDevices"`
+	Isolation            string                    `json:"isolation"`  // protojson enum name, e.g. ISOLATION_TYPE_VM
+	ToolAccess           string                    `json:"toolAccess"` // protojson enum name, e.g. BOX_TOOL_ACCESS_NONE
+	MonitoringEnabled    bool                      `json:"monitoringEnabled"`
+	AutoSleepEnabled     bool                      `json:"autoSleepEnabled"`
+	IdleThresholdMinutes int32                     `json:"idleThresholdMinutes"`
 }
 
 type resourceLimits struct {
@@ -225,6 +229,8 @@ type listContainersResponse struct {
 
 type createContainerResponse struct {
 	Container *containerResponse `json:"container"`
+	// DryRun echoes a validate-only request (#2925); Container is nil then.
+	DryRun bool `json:"dryRun"`
 }
 
 type getContainerResponse struct {
@@ -251,20 +257,26 @@ type systemInfo struct {
 	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
 	CpuAdmissionMode      string  `json:"cpuAdmissionMode"`
 	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
+	// Storage pools (#2823), decoded per entry with protojson.
+	StoragePools []json.RawMessage `json:"storagePools"`
+	// Managed backup key (#3213); absent on an older daemon → false.
+	ManagedBackupKeyConfigured bool `json:"managedBackupKeyConfigured"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
-		Name:                 c.Name,
-		Username:             c.Username,
-		SSHHost:              c.SshHost,
-		State:                c.State,
-		Labels:               c.Labels,
+		Name:     c.Name,
+		Username: c.Username,
+		SSHHost:  c.SshHost,
+		State:    c.State,
+		Labels:   c.Labels,
+		Tenant:   c.NetworkTenant, NetworkTenantSource: c.NetworkTenantSource,
 		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
 		IdleThresholdMinutes: c.IdleThresholdMinutes,
+		PodmanEnabled:        c.PodmanEnabled,
 	}
 
 	if c.Network != nil {
@@ -278,6 +290,11 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 
 	info.GPU = c.GpuDevice
 	info.GPUs = c.GpuDevices
+	if lvl, ok := pb.BoxToolAccess_value[c.ToolAccess]; ok {
+		if v, ok := toolaccess.ConfigValue(pb.BoxToolAccess(lvl)); ok {
+			info.ToolAccess = v
+		}
+	}
 
 	info.CreatedAt = parseCreatedAt(c.CreatedAt)
 
@@ -354,7 +371,17 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) (*incus.ContainerInfo, error) {
+	if len(networkTenant) > 0 && networkTenant[0] != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -382,6 +409,9 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		TenantID:     enc.TenantID,
 		Region:       region,
 	}
+	if len(networkTenant) > 0 {
+		req.NetworkTenant = networkTenant[0]
+	}
 	if len(labels) > 0 {
 		req.Labels = labels
 	}
@@ -400,6 +430,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	if ttlSeconds > 0 {
 		req.TTLSeconds = ttlSeconds
 	}
+	req.DisableAutoSleep = disableAutoSleep
 	if idleStopMinutes > 0 {
 		req.IdleStopMinutes = idleStopMinutes
 	}
@@ -427,6 +458,47 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 
 	info := containerToIncusInfo(result.Container)
 	return &info, nil
+}
+
+// ValidateCreate is GRPCClient.ValidateCreate over the REST API (#2925): it
+// POSTs req with dryRun set and requires the daemon to echo it. The body is the
+// request message itself (protojson, the camelCase names grpc-gateway accepts),
+// not a second hand-written copy of the create fields.
+func (c *HTTPClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	if req.GetNetworkTenant() != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return err
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
+	if !ok {
+		return fmt.Errorf("clone create request: unexpected type")
+	}
+	dry.DryRun = true
+	body, err := protojson.Marshal(dry)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", body)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	result, err := parseResponse[createContainerResponse](resp)
+	if err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+	if !result.DryRun {
+		return errDryRunNotHonoured
+	}
+	return nil
 }
 
 // ToggleAutoSleep writes the per-container auto-sleep opt-in
@@ -551,6 +623,49 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	}
 
 	out := &pb.SetContainerDeletePolicyResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// SetContainerToolAccess records the tool-access level for platform-started
+// runs on a container via the REST shim (#2944); BOX_TOOL_ACCESS_UNSPECIFIED
+// clears it. A 404 (a daemon too old to expose /v1/containers/{name}/tool-access)
+// is mapped to gRPC codes.Unimplemented so callers see the same soft-path across
+// both transports.
+func (c *HTTPClient) SetContainerToolAccess(username string, level pb.BoxToolAccess) (*pb.SetContainerToolAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/tool-access", url.PathEscape(username))
+	// The enum goes by its proto JSON name so grpc-gateway decodes it into the
+	// BoxToolAccess enum.
+	body, err := json.Marshal(setContainerToolAccessRequest{ToolAccess: level.String()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set tool access: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerToolAccess (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set tool access: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerToolAccessResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
@@ -1418,10 +1533,36 @@ func (c *HTTPClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list box runs")
 	}
 	out := &pb.ListBoxRunsResponse{}
-	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.GetRuns(), nil
+}
+
+// GetBoxRunUserStatus is the REST form of GRPCClient.GetBoxRunUserStatus (#3274).
+// A 404 (a daemon too old to expose the route) maps to codes.Unimplemented so
+// callers see the same soft path across both transports.
+func (c *HTTPClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/containers/%s/run-user/status", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get box run user status: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose GetBoxRunUserStatus (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get box run user status")
+	}
+	out := &pb.GetBoxRunUserStatusResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 // TailBoxRunLog reads one window of a box run's log via HTTP (#2123).
@@ -1438,10 +1579,51 @@ func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail box run log")
 	}
 	out := &pb.TailBoxRunLogResponse{}
-	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out, nil
+}
+
+// GetRunApprovalKey returns a box's approval public key via HTTP (#2184).
+func (c *HTTPClient) GetRunApprovalKey(username string) (*pb.GetRunApprovalKeyResponse, error) {
+	out := &pb.GetRunApprovalKeyResponse{}
+	return out, c.doProto(http.MethodGet, runlog.RunApprovalKeyPath(username), nil, out, "get run approval key")
+}
+
+// ListRunInputs lists a box run's open permission requests via HTTP (#2184).
+func (c *HTTPClient) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error) {
+	out := &pb.ListRunInputsResponse{}
+	return out, c.doProto(http.MethodGet, runlog.RunInputsPath(req.GetUsername(), req.GetRunName()), nil, out, "list run inputs")
+}
+
+// AnswerRunInput answers one permission request via HTTP (#2184).
+func (c *HTTPClient) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.AnswerRunInputResponse{}
+	return out, c.doProto(http.MethodPost, runlog.RunInputAnswerPath(req.GetUsername(), req.GetRunName(), req.GetRequestId()), body, out, "answer run input")
+}
+
+// doProto sends one request and decodes a proto JSON response into out.
+func (c *HTTPClient) doProto(method, path string, body []byte, out proto.Message, what string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, path, body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, what)
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
 }
 
 // DebugContainer returns a diagnostic report for a container's SSH path.
@@ -1524,9 +1706,30 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 			result.Info.CoreCommittedCpuCores,
 			pb.CPUAdmissionMode(pb.CPUAdmissionMode_value[result.Info.CpuAdmissionMode]),
 			result.Info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromJSON(result.Info.StoragePools),
 	}
 
 	return info, nil
+}
+
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *HTTPClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/system/info", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	result, err := parseResponse[getSystemInfoResponse](resp)
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	if result.Info == nil {
+		return false, fmt.Errorf("no system info returned in response")
+	}
+	return result.Info.ManagedBackupKeyConfigured, nil
 }
 
 // InstallStack installs a stack or base script on a running container via HTTP
@@ -1975,7 +2178,7 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 // (#2228), keyed by skill_id, wins over that member's own manifest engine; a
 // member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own
 // choice, unchanged pre-#2228 behavior.
-func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
@@ -1988,6 +2191,7 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverridesJSON(engineOverrides),
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -2004,6 +2208,33 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 	out := &pb.RunCrewResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Run, nil
+}
+
+// RunCrewGraph dispatches a typed graph through the existing crew endpoint.
+func (c *HTTPClient) RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(req.CrewId)), body)
+	if err != nil {
+		return nil, err
+	}
+	defer drainClose(resp)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(data, resp.StatusCode, "run crew graph")
+	}
+	out := &pb.RunCrewResponse{}
+	if err := protojson.Unmarshal(data, out); err != nil {
+		return nil, err
 	}
 	return out.Run, nil
 }
@@ -2026,6 +2257,58 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.Run, nil
+}
+
+// PlanTaskGraph runs the planner without executing graph nodes.
+func (c *HTTPClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode planner request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:plan", body)
+	if err != nil {
+		return nil, fmt.Errorf("plan task graph: %w", err)
+	}
+	defer drainClose(resp)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read planner response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(data, resp.StatusCode, "plan task graph")
+	}
+	out := &pb.PlanTaskGraphResponse{}
+	if err := protojson.Unmarshal(data, out); err != nil {
+		return nil, fmt.Errorf("decode planner response: %w", err)
+	}
+	return out, nil
+}
+
+// ValidateTaskGraph checks a task graph against the daemon's catalogs via
+// HTTP (#2803).
+func (c *HTTPClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body, err := protojson.Marshal(&pb.ValidateTaskGraphRequest{Graph: g})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/task-graphs:validate", body)
+	if err != nil {
+		return nil, fmt.Errorf("validate task graph: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "validate task graph")
+	}
+	out := &pb.ValidateTaskGraphResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 // TailRunLog reads one window of a run's journal via HTTP (#2096).
@@ -2300,7 +2583,17 @@ func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 // GetGuardrailPolicy reads the server-side guardrail policy via HTTP (#2368).
 func (c *HTTPClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
 	out := &pb.GetGuardrailPolicyResponse{}
-	if err := c.guardrailPolicyCall(http.MethodGet, nil, out, "get guardrail policy"); err != nil {
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/guardrail/policy", nil, out, "get guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetGuardrailStatus reads the effective response guardrail policy via HTTP
+// (#2737).
+func (c *HTTPClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error) {
+	out := &pb.GetGuardrailStatusResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/guardrail/status", nil, out, "get guardrail status"); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2314,16 +2607,95 @@ func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SetGuardrailPolicyResponse{}
-	if err := c.guardrailPolicyCall(http.MethodPut, body, out, "set guardrail policy"); err != nil {
+	if err := c.guardrailPolicyCall(http.MethodPut, "/v1/guardrail/policy", body, out, "set guardrail policy"); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *HTTPClient) guardrailPolicyCall(method string, body []byte, out proto.Message, op string) error {
+// SetGuardrailBaselineMode switches the baseline response scan between LOG
+// and BLOCK via HTTP (#2738; admin only).
+func (c *HTTPClient) SetGuardrailBaselineMode(mode pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error) {
+	body, err := protojson.Marshal(&pb.SetGuardrailBaselineModeRequest{Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetGuardrailBaselineModeResponse{}
+	if err := c.guardrailPolicyCall(http.MethodPut, "/v1/guardrail/baseline", body, out, "set guardrail baseline mode"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// retentionHTTPCall runs one RetentionService call through the gateway (#2875).
+func retentionHTTPCall[T proto.Message](c *HTTPClient, method, path string, req proto.Message, out T, op string) (T, error) {
+	var body []byte
+	if req != nil {
+		var err error
+		if body, err = protojson.Marshal(req); err != nil {
+			var zero T
+			return zero, fmt.Errorf("encode request: %w", err)
+		}
+	}
+	if err := c.guardrailPolicyCall(method, path, body, out, op); err != nil {
+		var zero T
+		return zero, err
+	}
+	return out, nil
+}
+
+// GetRetentionPolicy reads the retention windows via HTTP (admin only).
+func (c *HTTPClient) GetRetentionPolicy() (*pb.GetRetentionPolicyResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/policy", nil, &pb.GetRetentionPolicyResponse{}, "get retention policy")
+}
+
+// SetRetentionPolicy changes retention windows via HTTP (admin only).
+func (c *HTTPClient) SetRetentionPolicy(req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/policy", req, &pb.SetRetentionPolicyResponse{}, "set retention policy")
+}
+
+// ListLegalHolds lists the active legal holds via HTTP (admin only).
+func (c *HTTPClient) ListLegalHolds() (*pb.ListLegalHoldsResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/holds", nil, &pb.ListLegalHoldsResponse{}, "list legal holds")
+}
+
+// GetRetentionMode reads the retention mode via HTTP (admin only).
+func (c *HTTPClient) GetRetentionMode() (*pb.GetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodGet, "/v1/retention/mode", nil, &pb.GetRetentionModeResponse{}, "get retention mode")
+}
+
+// SetRetentionMode switches the retention mode via HTTP (admin only).
+func (c *HTTPClient) SetRetentionMode(req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/mode", req, &pb.SetRetentionModeResponse{}, "set retention mode")
+}
+
+// GetRetentionReport reads the retention report via HTTP (admin only);
+// refresh runs a count-only preview now instead of returning the last
+// periodic report.
+func (c *HTTPClient) GetRetentionReport(refresh bool) (*pb.GetRetentionReportResponse, error) {
+	path := "/v1/retention/report"
+	if refresh {
+		path += "?refresh=true"
+	}
+	return retentionHTTPCall(c, http.MethodGet, path, nil, &pb.GetRetentionReportResponse{}, "get retention report")
+}
+
+// SetLegalHold places a legal hold on an org via HTTP (admin only). The org
+// travels in the path.
+func (c *HTTPClient) SetLegalHold(req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	return retentionHTTPCall(c, http.MethodPut, "/v1/retention/holds/"+url.PathEscape(req.GetOrgId()),
+		&pb.SetLegalHoldRequest{Reason: req.GetReason()}, &pb.SetLegalHoldResponse{}, "set legal hold")
+}
+
+// ReleaseLegalHold releases an org's legal hold via HTTP (admin only).
+func (c *HTTPClient) ReleaseLegalHold(orgID string) (*pb.ReleaseLegalHoldResponse, error) {
+	return retentionHTTPCall(c, http.MethodDelete, "/v1/retention/holds/"+url.PathEscape(orgID), nil, &pb.ReleaseLegalHoldResponse{}, "release legal hold")
+}
+
+func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out proto.Message, op string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := c.doRequest(ctx, method, "/v1/guardrail/policy", body)
+	resp, err := c.doRequest(ctx, method, path, body)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -3065,6 +3437,21 @@ func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 	out := &pb.SubmitTrackerChangeResponse{}
 	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if err := c.trackerDo(http.MethodPost, path, "submit tracker change", body, out); err != nil {
+		return nil, err
+	}
+	return out.Change, nil
+}
+
+// SubmitTrackerChangeFiles opens a change request from a file set over
+// the connection's broker credential (#3005), via REST.
+func (c *HTTPClient) SubmitTrackerChangeFiles(req *pb.SubmitTrackerChangeFilesRequest) (*pb.TrackerChange, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SubmitTrackerChangeFilesResponse{}
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes:files", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if err := c.trackerDo(http.MethodPost, path, "submit tracker change files", body, out); err != nil {
 		return nil, err
 	}
 	return out.Change, nil

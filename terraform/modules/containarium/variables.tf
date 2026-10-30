@@ -3,6 +3,36 @@
 # =============================================================================
 # Unified variable definitions for both dev and production consumers.
 
+variable "ssh_upstream_failure_budget" {
+  description = "Aggregate backend jail-risk budget, shared by main and anonymous SSH. Default leaves one unit below the tested maxretry=3 profile."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.ssh_upstream_failure_budget >= 1 && var.ssh_upstream_failure_budget <= 65536 && floor(var.ssh_upstream_failure_budget) == var.ssh_upstream_failure_budget
+    error_message = "Upstream failure budget must be an integer from 1 to 65536."
+  }
+}
+
+variable "ssh_upstream_risk_per_attempt" {
+  description = "Conservative matching jail records per admitted SSH setup; verify against the actual backend filter."
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.ssh_upstream_risk_per_attempt >= 1 && var.ssh_upstream_risk_per_attempt <= 65536 && floor(var.ssh_upstream_risk_per_attempt) == var.ssh_upstream_risk_per_attempt
+    error_message = "Per-attempt risk must be an integer from 1 to 65536."
+  }
+}
+
+variable "ssh_upstream_window_seconds" {
+  description = "Verified backend findtime, in seconds. Exhausted risk waits for this window; initial installation also waits once."
+  type        = number
+  default     = 600
+  validation {
+    condition     = var.ssh_upstream_window_seconds >= 1 && var.ssh_upstream_window_seconds <= 86400 && floor(var.ssh_upstream_window_seconds) == var.ssh_upstream_window_seconds
+    error_message = "Upstream risk window must be an integer from 1 to 86400 seconds."
+  }
+}
+
 variable "ssh_ban_max_failures" {
   description = "Sentinel SSH failed-callback threshold per source IP."
   type        = number
@@ -31,6 +61,18 @@ variable "ssh_ban_ignore_cidrs" {
     condition     = alltrue([for prefix in var.ssh_ban_ignore_cidrs : can(cidrhost(prefix, 0)) && can(regex("^[0-9a-fA-F:.]+/[0-9]+$", prefix)) && !can(regex("(?i)::ffff:", prefix))])
     error_message = "SSH ban exemptions must be IPv4/IPv6 CIDRs without whitespace, flags, or mapped IPv4 addresses."
   }
+}
+
+variable "ssh_ban_audit_records" {
+  description = "Record failed SSH authentications and bans from both listeners' ssh-ban-plugin into the SSH session records file the shipper already delivers to the backend's audit chain (#2419). Needs a containariumd whose ssh-ban-plugin has --records-file; an older binary rejects the flag and sshpiper will not start, so this is off by default. See docs/SENTINEL-SSH-SESSION-AUDIT.md."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_enforce" {
+  description = "Refuse SSH keys the backend's live authorization denies (fails closed after the 5m grace). False only audits. See docs/SENTINEL-SSH-AUTHZ.md."
+  type        = bool
+  default     = false
 }
 
 # -----------------------------------------------------------------------------
@@ -545,18 +587,17 @@ variable "anon_daemon_url" {
   }
 }
 
-# Bridge DNS carve-outs for the backend daemon (#2232, #2189). With app
-# hosting on, the bridge resolves every name under base_domain to core-caddy;
-# names core-caddy does not serve — the control plane's API host, the
-# sentinel's SSH apex — must be carved out or boxes cannot reach them.
+# Deprecated and ignored (#2734): the daemon no longer writes a bridge DNS
+# record, so there is nothing to carve out. Kept so existing module calls that
+# set it still plan; removed together with the daemon flag in #2735.
 variable "dns_passthrough_hosts" {
-  description = "Hostnames under base_domain that boxes must resolve upstream instead of at core-caddy (rendered as one --dns-passthrough-host flag each), e.g. the control plane's hostname. Empty = only ssh_host is carved out."
+  description = "Deprecated, ignored (#2734). Was: hostnames carved out of the bridge DNS record (--dns-passthrough-host). The daemon no longer writes that record."
   type        = list(string)
   default     = []
 }
 
 variable "ssh_host" {
-  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial, and carved out of the base-domain bridge record. Empty = direct mode, and the SSH apex is NOT carved out."
+  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial. Empty = direct mode."
   type        = string
   default     = ""
 }

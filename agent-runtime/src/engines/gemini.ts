@@ -1,4 +1,10 @@
-import { GoogleGenAI, mcpToTool, type GenerateContentResponse } from "@google/genai";
+import {
+  GoogleGenAI,
+  mcpToTool,
+  type Content,
+  type GenerateContentParameters,
+  type GenerateContentResponse,
+} from "@google/genai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
@@ -90,19 +96,72 @@ export class GeminiEngine implements Engine {
         },
       });
       journalGeminiResponse(response, journal);
-      return { outputJson: (response.text ?? "").trim(), usage: response.usageMetadata };
+      return {
+        outputJson: (response.text ?? "").trim(),
+        usage: response.usageMetadata,
+        followUp: geminiFollowUp(
+          (params) => ai.models.generateContent(params),
+          { model: cfg.model || "gemini-2.5-flash", systemPrompt: cfg.systemPrompt, task },
+          response,
+        ),
+      };
     } finally {
       await Promise.allSettled(mcpClients.map((c) => c.close()));
     }
   }
 }
 
+// GeminiGenerate is ai.models.generateContent; a seam for tests.
+export type GeminiGenerate = (params: GenerateContentParameters) => Promise<GenerateContentResponse>;
+
+// GeminiTurn is what the first call was made with.
+export interface GeminiTurn {
+  readonly model: string;
+  readonly systemPrompt: string;
+  readonly task: string;
+}
+
+// geminiFollowUp continues a finished generateContent call (#2513).
+// generateContent is stateless, so the follow-up replays the conversation:
+// the automatic function-calling history (which starts with the task; just the
+// task when there was no tool loop), then the model's last turn, then the
+// follow-up prompt. The MCP clients are closed by then, so no tools are
+// mounted and the reply is text. Function calls left without a response (a
+// loop cut off at maximumRemoteCalls) are dropped from the last turn: the API
+// rejects a call that no response follows.
+export function geminiFollowUp(
+  generate: GeminiGenerate,
+  turn: GeminiTurn,
+  response: Partial<Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "candidates">>,
+): (prompt: string, journal: JournalSink) => Promise<EngineResult> {
+  const history: Content[] = response.automaticFunctionCallingHistory?.length
+    ? [...response.automaticFunctionCallingHistory]
+    : [{ role: "user", parts: [{ text: turn.task }] }];
+  const last = response.candidates?.[0]?.content;
+  const lastParts = (last?.parts ?? []).filter((p) => !p.functionCall);
+  if (lastParts.length > 0) history.push({ role: last?.role ?? "model", parts: lastParts });
+  return async (prompt, journal) => {
+    const reply = await generate({
+      model: turn.model,
+      contents: [...history, { role: "user", parts: [{ text: prompt }] }],
+      config: turn.systemPrompt ? { systemInstruction: turn.systemPrompt } : {},
+    });
+    // No tools are mounted, so the reply carries no function-calling history.
+    journalGeminiResponse(reply, journal);
+    return { outputJson: (reply.text ?? "").trim(), usage: reply.usageMetadata };
+  };
+}
+
 // journalGeminiResponse journals a generateContent response: the model's
 // text and function calls and the tool responses from the automatic
 // function-calling history (the user's own prompt and model thoughts are
-// skipped), then the final text.
+// skipped), then the final text. When the model ended without a final text, or
+// ended for any reason but STOP, a status row names the finish reason (#2513):
+// the tool rows alone cannot tell a model that stopped silently from one cut
+// off by MAX_TOKENS or a safety block.
 export function journalGeminiResponse(
-  response: Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "text">,
+  response: Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "text"> &
+    Partial<Pick<GenerateContentResponse, "candidates" | "promptFeedback">>,
   journal: JournalSink,
 ): void {
   for (const content of response.automaticFunctionCallingHistory ?? []) {
@@ -123,4 +182,25 @@ export function journalGeminiResponse(
   }
   const text = response.text;
   if (text) journal.append({ kind: "assistant", text });
+  const ending = describeGeminiEnding(response, !!text?.trim());
+  if (ending) journal.append({ kind: "status", text: ending });
+}
+
+// describeGeminiEnding explains how the model's turn ended, or returns
+// undefined for the unremarkable case (a final text, finish reason STOP).
+// Only enumerated, bounded fields are used: the finish reason, the API's own
+// finish message and the prompt-block reason, never model output.
+export function describeGeminiEnding(
+  response: Partial<Pick<GenerateContentResponse, "candidates" | "promptFeedback">>,
+  hasFinalText: boolean,
+): string | undefined {
+  const candidate = response.candidates?.[0];
+  const reason = candidate?.finishReason;
+  if (hasFinalText && (reason === undefined || String(reason) === "STOP")) return undefined;
+  const fields = [`finish_reason=${reason ?? "unknown"}`];
+  if (candidate?.finishMessage) fields.push(`finish_message=${JSON.stringify(candidate.finishMessage.slice(0, 200))}`);
+  if (response.promptFeedback?.blockReason) fields.push(`block_reason=${response.promptFeedback.blockReason}`);
+  return hasFinalText
+    ? `model ended abnormally after its final message: ${fields.join(" ")}`
+    : `model ended without a final message: ${fields.join(" ")}`;
 }

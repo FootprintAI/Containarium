@@ -1,10 +1,21 @@
+import {
+  CredentialAuthenticationError,
+  type AuthenticationSource,
+} from "../credential-state.js";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 import type { JournalSink } from "../journal.js";
-import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js";
+import { describeRunEnding, type EndingField, type RunEnding } from "./ending.js";
+import {
+  claudeAllowedTools,
+  claudeMcpServers,
+  mcpServerSpecs,
+} from "../mcp.js";
 
 // ClaudeQuery is the shape of the Agent SDK's query(), injectable for tests.
-export type ClaudeQuery = (params: Parameters<typeof query>[0]) => AsyncIterable<SDKMessage>;
+export type ClaudeQuery = (
+  params: Parameters<typeof query>[0],
+) => AsyncIterable<SDKMessage>;
 
 type ClaudeResult = Extract<SDKMessage, { type: "result" }>;
 
@@ -32,15 +43,39 @@ type ClaudeResult = Extract<SDKMessage, { type: "result" }>;
 //
 // Journal (#2095): every assistant text block, tool_use block and tool_result
 // block the query() iterator yields is appended as it arrives; an error
-// result is journaled as an error.
+// result is journaled as an error. When the run ends without a final message
+// or ends any way but an ordinary end_turn, a status row names the stop
+// reason and previews the final message (#2513; see ending.ts).
 export class ClaudeEngine implements Engine {
   readonly name = "claude";
 
   // queryFn is the Agent SDK's query(); a seam for tests.
   constructor(private readonly queryFn: ClaudeQuery = query) {}
 
-  async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
+  run(
+    task: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+  ): Promise<EngineResult> {
+    return this.turn(task, cfg, journal, undefined);
+  }
+
+  // turn runs one query. resume is the SDK session to continue (undefined
+  // starts a new one); the result's followUp resumes this turn's session, so
+  // the model has the run it just did in context (#2513).
+  private async turn(
+    task: string,
+    cfg: EngineConfig,
+    journal: JournalSink,
+    resume: string | undefined,
+  ): Promise<EngineResult> {
+    let sessionId: string | undefined;
+    let source: AuthenticationSource = cfg.authenticationSource ?? "unknown";
+    let externalProvider = false;
     let text = "";
+    // The text after the last tool call: the final message the skill
+    // contract asks for (#2513), as opposed to narration between tool calls.
+    let finalText = "";
     let usage: unknown;
     let result: ClaudeResult | undefined;
     // tool_use id -> tool name, so a tool_result line can name its tool.
@@ -54,55 +89,187 @@ export class ClaudeEngine implements Engine {
       permissionMode: "dontAsk",
       allowedTools: claudeAllowedTools(specs),
       mcpServers: claudeMcpServers(specs),
-      ...(cfg.outputSchema ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } } : {}),
+      ...(cfg.outputSchema
+        ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } }
+        : {}),
+      ...(resume ? { resume } : {}),
     } as Parameters<typeof query>[0]["options"];
 
-    for await (const m of this.queryFn({ prompt: task, options })) {
-      if (m.type === "assistant") {
-        for (const block of m.message.content ?? []) {
-          if (block.type === "text" && block.text) {
-            text += block.text;
-            journal.append({ kind: "assistant", text: block.text });
-          } else if (block.type === "tool_use") {
-            toolNames.set(block.id, block.name);
-            journal.append({ kind: "tool_use", tool: block.name, input: JSON.stringify(block.input ?? {}) });
+    let dispose: (() => void) | undefined;
+    try {
+      const stream = this.queryFn({ prompt: task, options });
+      if ("close" in stream && typeof stream.close === "function") {
+        const close = stream.close;
+        dispose = () => {
+          close.call(stream);
+        };
+      }
+      // SDK account info is nonsecret provenance and is available before model
+      // inference. Do not inspect email/account identifiers or credential values.
+      if ("accountInfo" in stream && typeof stream.accountInfo === "function") {
+        try {
+          const info = (await stream.accountInfo()) as {
+            apiKeySource?: string;
+            apiProvider?: string;
+          };
+          externalProvider = Boolean(
+            info.apiProvider && info.apiProvider !== "firstParty",
+          );
+          source = externalProvider
+            ? "key"
+            : info.apiKeySource === "oauth"
+              ? "oauth"
+              : ["user", "project", "org", "temporary"].includes(
+                    info.apiKeySource ?? "",
+                  )
+                ? "key"
+                : source;
+        } catch (e) {
+          if (
+            typeof e === "object" &&
+            e !== null &&
+            "status" in e &&
+            e.status === 401
+          )
+            throw new CredentialAuthenticationError(source);
+          // Optional metadata lookup failures must not break a valid run.
+          // The authoritative init message may still identify its source.
+        }
+      }
+      for await (const m of stream) {
+        if (typeof m.session_id === "string" && m.session_id) sessionId = m.session_id;
+        if (m.type === "system" && m.subtype === "init") {
+          source = externalProvider
+            ? "key"
+            : m.apiKeySource === "oauth"
+              ? "oauth"
+              : ["user", "project", "org", "temporary"].includes(m.apiKeySource)
+                ? "key"
+                : "unknown";
+        }
+        if (m.type === "assistant") {
+          if (m.error === "authentication_failed")
+            throw new CredentialAuthenticationError(source);
+          for (const block of m.message.content ?? []) {
+            if (block.type === "text" && block.text) {
+              text += block.text;
+              finalText += block.text;
+              journal.append({ kind: "assistant", text: block.text });
+            } else if (block.type === "tool_use") {
+              finalText = "";
+              toolNames.set(block.id, block.name);
+              journal.append({
+                kind: "tool_use",
+                tool: block.name,
+                input: JSON.stringify(block.input ?? {}),
+              });
+            }
           }
+        } else if (m.type === "user") {
+          const content = m.message.content;
+          if (typeof content === "string") continue;
+          for (const block of content ?? []) {
+            if (block.type !== "tool_result") continue;
+            journal.append({
+              kind: "tool_result",
+              tool: toolNames.get(block.tool_use_id) ?? "unknown",
+              text: toolResultText(block.content),
+            });
+          }
+        } else if (m.type === "result") {
+          if ("api_error_status" in m && m.api_error_status === 401)
+            throw new CredentialAuthenticationError(source);
+          usage = m.usage;
+          result = m;
+          if (m.subtype !== "success") {
+            journal.append({ kind: "error", text: resultErrorText(m) });
+          }
+          break;
         }
-      } else if (m.type === "user") {
-        const content = m.message.content;
-        if (typeof content === "string") continue;
-        for (const block of content ?? []) {
-          if (block.type !== "tool_result") continue;
-          journal.append({
-            kind: "tool_result",
-            tool: toolNames.get(block.tool_use_id) ?? "unknown",
-            text: toolResultText(block.content),
-          });
-        }
-      } else if (m.type === "result") {
-        usage = m.usage;
-        result = m;
-        if (m.subtype !== "success") {
-          journal.append({ kind: "error", text: resultErrorText(m) });
-        }
-        break;
+      }
+    } catch (e) {
+      if (e instanceof CredentialAuthenticationError) throw e;
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        "status" in e &&
+        e.status === 401
+      )
+        throw new CredentialAuthenticationError(source);
+      throw e;
+    } finally {
+      try {
+        dispose?.();
+      } catch {
+        process.stderr.write("agent-runtime: SDK cleanup unavailable\n");
       }
     }
-
+    const ending = describeRunEnding(
+      claudeEnding(result, finalText, !!cfg.outputSchema),
+    );
+    if (ending) journal.append({ kind: "status", text: ending });
+    const authenticated =
+      result?.subtype === "success" && result.is_error === false;
     if (cfg.outputSchema) {
-      return { outputJson: JSON.stringify(structuredOutput(result)), usage };
+      return {
+        outputJson: JSON.stringify(structuredOutput(result)),
+        usage,
+        authenticationSucceeded: authenticated,
+        authenticationSource: source,
+      };
     }
-    return { outputJson: text.trim(), usage };
+    // A schema-bound run never needs one: it returns structured output or
+    // throws above.
+    const resumeFrom = sessionId;
+    return {
+      outputJson: text.trim(),
+      usage,
+      authenticationSucceeded: authenticated,
+      authenticationSource: source,
+      ...(resumeFrom
+        ? { followUp: (next: string, nextJournal: JournalSink) => this.turn(next, cfg, nextJournal, resumeFrom) }
+        : {}),
+    };
   }
+}
+
+// claudeEnding reads how the turn ended from the result message (#2513): the
+// API stop reason, the SDK's terminal reason and the result subtype. Anything
+// but a successful end_turn (or an unreported stop reason) that completed is
+// abnormal; so is a run with no result message at all.
+function claudeEnding(
+  result: ClaudeResult | undefined,
+  finalText: string,
+  schemaBound: boolean,
+): RunEnding {
+  const stop = result?.stop_reason ?? null;
+  const terminal = result?.terminal_reason;
+  const fields: EndingField[] = [{ name: "stop_reason", value: stop ?? "unknown" }];
+  if (terminal) fields.push({ name: "terminal_reason", value: terminal });
+  fields.push({ name: "result", value: result?.subtype ?? "none" });
+  if (result?.subtype === "success" && result.is_error) fields.push({ name: "is_error", value: "true" });
+  const abnormal =
+    result === undefined ||
+    result.subtype !== "success" ||
+    result.is_error ||
+    (stop !== null && stop !== "end_turn") ||
+    (terminal !== undefined && terminal !== "completed");
+  const hasFinalOutput = schemaBound
+    ? result?.subtype === "success" && result.structured_output !== undefined
+    : finalText.trim() !== "";
+  return { finalMessage: finalText, hasFinalOutput, abnormal, fields };
 }
 
 // structuredOutput is the SDK-validated output of a schema-bound run, or
 // throws naming why there is none.
 function structuredOutput(result: ClaudeResult | undefined): unknown {
   const want = "no structured output matching agent_card.output_schema_json";
-  if (result === undefined) throw new Error(`claude: run ended without a result message — ${want}`);
-  if (result.subtype !== "success") throw new Error(`claude: ${resultErrorText(result)} — ${want}`);
-  if (result.structured_output === undefined) throw new Error(`claude: run ended with ${want}`);
+  if (result === undefined)
+    throw new Error(`claude: run ended without a result message — ${want}`);
+  if (result.subtype !== "success")
+    throw new Error(`claude: ${resultErrorText(result)} — ${want}`);
+  if (result.structured_output === undefined)
+    throw new Error(`claude: run ended with ${want}`);
   return result.structured_output;
 }
 
@@ -115,8 +282,14 @@ function resultErrorText(result: ClaudeResult): string {
 
 // toolResultText flattens a tool_result's content to text: text blocks
 // verbatim, anything else (an image, a document) as a [type] placeholder.
-function toolResultText(content: string | ReadonlyArray<{ type: string; text?: string }> | undefined): string {
+function toolResultText(
+  content: string | ReadonlyArray<{ type: string; text?: string }> | undefined,
+): string {
   if (content === undefined) return "";
   if (typeof content === "string") return content;
-  return content.map((b) => (b.type === "text" && typeof b.text === "string" ? b.text : `[${b.type}]`)).join("\n");
+  return content
+    .map((b) =>
+      b.type === "text" && typeof b.text === "string" ? b.text : `[${b.type}]`,
+    )
+    .join("\n");
 }

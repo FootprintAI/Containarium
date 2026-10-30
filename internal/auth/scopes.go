@@ -51,6 +51,13 @@ const (
 	// (destructively) over it — both warrant their own grant.
 	ScopeBackupsRead  = "backups:read"
 	ScopeBackupsWrite = "backups:write"
+	// backups:verify (#3186) is the narrow scope for a restore-test
+	// (verifier) token: VerifyBackup accepts it, and it grants none of
+	// create/restore/delete/prune. The v0.120.1 migration window has ended
+	// (#3219): backups:write does not authorize VerifyBackup or the
+	// verify_backup MCP tool. Re-mint verifier tokens with
+	// backups:read,backups:verify.
+	ScopeBackupsVerify = "backups:verify"
 
 	// shared volumes (VolumeServer). A write can create/attach/delete
 	// CephFS volumes mounted RW across tenants — cross-tenant data
@@ -67,6 +74,15 @@ const (
 	ScopeSecurityRead  = "security:read"
 	ScopeSecurityWrite = "security:write"
 
+	// security:trigger-for-owner — carried by a service credential (the
+	// managed control plane's driver token) that has ALREADY authorized the
+	// end user as the box's owner and starts the in-box malware scan on
+	// that owner's behalf (#2655). It is the only way a non-owner token
+	// passes RequireContainerOwner. It is matched literally: neither the
+	// wildcard scope nor an unscoped admin token carries it, so an operator
+	// token cannot start a scan of a customer's box.
+	ScopeSecurityTriggerForOwner = "security:trigger-for-owner"
+
 	// alerting rules + webhook config
 	ScopeAlertsRead  = "alerts:read"
 	ScopeAlertsWrite = "alerts:write"
@@ -77,6 +93,17 @@ const (
 	// developer-loop tools (push, sync, sync_ssh_config)
 	ScopeCodeWrite = "code:write"
 	ScopeSSHWrite  = "ssh:write"
+
+	// code:answer answers a box code run's permission requests
+	// (AnswerRunInput, #3191). An allow lets the agent run the tool call it
+	// asked for, so the credential that answers must be one the agent on the
+	// box cannot hold: AnswerRunInput needs this scope in addition to the
+	// box-run rule (ssh:write, owner or collaborator). It is matched
+	// literally: neither the wildcard nor an unscoped token carries it,
+	// because a skill run's in-box token can be "*" and a login token can be
+	// unscoped. No in-box mint path grants it (runForbiddenScopes), and
+	// ExchangeDelegatedToken passes it on only from a caller that names it.
+	ScopeCodeAnswer = "code:answer"
 
 	// JWT lifecycle (revoke). Admin role still required on
 	// the server side — this scope just narrows what an
@@ -100,6 +127,13 @@ const (
 	// AgentSkillService, not the skill's in-box token.
 	ScopeAgentsRead = "agents:read"
 	ScopeAgentsRun  = "agents:run"
+	// agents:run-for-org — carried by a service credential (the managed
+	// control plane's driver token) that has ALREADY authorized the end user
+	// and starts a skill/crew run attributed to an organization, so the run
+	// spends that org's registered provider key. Matched literally:
+	// neither the wildcard nor an unscoped admin token carries it, so an
+	// operator token cannot spend another org's key.
+	ScopeAgentsRunForOrg = "agents:run-for-org"
 	// agents:call delegates a task to a running peer agent over A2A
 	// (SendAgentTask). Separate from agents:run: running a skill provisions a
 	// box, calling a peer only sends it work.
@@ -140,9 +174,10 @@ const (
 
 	// read-only scopes for surfaces that were admin-only, so a least-privilege
 	// (e.g. compliance/evidence) token can read one without full admin (#621).
-	ScopeAuditRead         = "audit:read"          // audit-log query
-	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
-	ScopeTokensRead        = "tokens:read"         // token listing
+	ScopeAuditRead          = "audit:read"          // audit-log query
+	ScopeNetworkPolicyRead  = "network-policy:read" // NetworkPolicyService Get/List
+	ScopeNetworkPolicyWrite = "network-policy:write"
+	ScopeTokensRead         = "tokens:read" // token listing
 
 	// audit:ingest (#2415) is the ONLY scope that may append externally
 	// sourced rows to the tamper-evident audit chain — today, the
@@ -203,20 +238,20 @@ var AllScopes = []string{
 	ScopeContainersRead, ScopeContainersWrite,
 	ScopeSecretsRead, ScopeSecretsWrite,
 	ScopeKMSAdmin,
-	ScopeBackupsRead, ScopeBackupsWrite,
+	ScopeBackupsRead, ScopeBackupsWrite, ScopeBackupsVerify,
 	ScopeVolumesRead, ScopeVolumesWrite,
 	ScopeRoutesRead, ScopeRoutesWrite,
-	ScopeSecurityRead, ScopeSecurityWrite,
+	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
-	ScopeCodeWrite, ScopeSSHWrite,
+	ScopeCodeWrite, ScopeSSHWrite, ScopeCodeAnswer,
 	ScopeTokensWrite, ScopeTokensDelegate,
-	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
+	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsRunForOrg, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeSSHAuthorize,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
-	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeNetworkPolicyWrite, ScopeTokensRead,
 	ScopeAuditIngest,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,

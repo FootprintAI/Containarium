@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,7 +19,6 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
-	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -27,11 +28,15 @@ import (
 	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
+	"github.com/footprintai/containarium/internal/netbpf"
+	"github.com/footprintai/containarium/internal/poolcapacity"
+	"github.com/footprintai/containarium/internal/proofpack"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	"github.com/footprintai/containarium/pkg/core/backup"
@@ -49,6 +54,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -77,6 +83,7 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
+	nativeTenantReady func() bool
 	pb.UnimplementedContainerServiceServer
 	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
 	// Nil in production; a test seam for a wedged local incusd (#2318).
@@ -144,6 +151,23 @@ type ContainerServer struct {
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
+
+	// approvalSecret is what box approval keys are derived from (#2184,
+	// box_run_inputs.go): the daemon's JWT secret, set by DualServer. Nil
+	// leaves the approval RPCs Unavailable. runInputConfirmWait is a test
+	// seam for how long AnswerRunInput waits for the box's response; zero
+	// means the default.
+	approvalSecret      []byte
+	runInputConfirmWait time.Duration
+	// runInputJournalCap is a test seam for maxRunInputJournal; zero means
+	// the default.
+	runInputJournalCap int64
+
+	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
+	// recorded for a box (#2944): "" = none recorded, so the run keeps the
+	// owner's identity. Tests set it; production reads the Incus config.
+	boxRunToolAccess      func(ctx context.Context, username string) (string, error)
+	boxRunEnsureToolchain func(username string) error // test seam; production uses manager
 	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
 	// check through record write) per (box, name) (#2260 review: concurrent
 	// calls for the same not-yet-existing name could both pass the collision
@@ -151,11 +175,10 @@ type ContainerServer struct {
 	// the log and orphaning a PID with no record naming it). sync.Map's zero
 	// value is ready to use — no constructor needed, so test literals that
 	// build a bare &ContainerServer{} still get correct serialization.
-	boxRunLocks       sync.Map // key: box+":"+name -> *sync.Mutex
-	emitter           *events.Emitter
-	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
-	pendingCreations  map[string]*PendingCreation
-	pendingMu         sync.RWMutex
+	boxRunLocks      sync.Map // key: box+":"+name -> *sync.Mutex
+	emitter          *events.Emitter
+	pendingCreations map[string]*PendingCreation
+	pendingMu        sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string
@@ -282,6 +305,9 @@ type ContainerServer struct {
 	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
 	// nil/empty on an unwired server still yields a (config-empty) measurement.
 	integrityConfigState map[string]string
+	// integrityExecWatch reports, per measurement, whether the exec watcher
+	// actually loaded and attached its object (#3120). Nil means no watcher.
+	integrityExecWatch func() bool
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -364,6 +390,13 @@ type ContainerServer struct {
 	// back to submit.NewGitPusher(). Tests substitute a fake so a unit
 	// test never shells out to real git or touches the network.
 	submitPusher submit.GitPusher
+	// proofPackExecer overrides the backend SubmitTrackerChange generates
+	// the run's Proof Pack through (#2798); nil means s.manager. Tests only.
+	proofPackExecer proofpack.Execer
+
+	// submitFilePusher overrides SubmitTrackerChangeFiles' commit-and-push
+	// backend (#3005). Nil in production (submit.NewGitPusher()).
+	submitFilePusher submit.FilePusher
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
@@ -402,9 +435,10 @@ type ContainerServer struct {
 	// back to network.ip_address.
 	sshHost string
 
-	// bridgeDNS is the reconciler behind GetBridgeDNSStatus (#2188), set by
-	// DualServer wiring. nil = not managed by this daemon.
-	bridgeDNS *bridgedns.Reconciler
+	// managedBackupKey is true when the backup service built a managed-key
+	// wrapper (CONTAINARIUM_BACKUP_KMS_KEY_NAME); GetSystemInfo reports it so
+	// `backup status` knows unregistered tenants are still encrypted (#3213).
+	managedBackupKey bool
 
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
@@ -432,6 +466,13 @@ type ContainerServer struct {
 	// github_tag path return Unavailable, same as an unconfigured autoUpdater
 	// does for the sentinel path.
 	binaryPath string
+
+	// storagePools returns the pool capacity monitor's last snapshot (#2823).
+	// Nil until SetStoragePoolSource; GetSystemInfo then reports no pools.
+	storagePools func() poolcapacity.Snapshot
+	// headroom refuses creates and snapshots on a pool past its floor
+	// (#3128). Nil admits everything.
+	headroom *poolcapacity.Guard
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -501,6 +542,48 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 	return nil, false
 }
 
+// createTargetsPeer reports whether the create is bound for a remote backend,
+// by the same rule as the forwarding block in createContainerAuthorized. It is
+// evaluated AFTER pool placement has set req.BackendId, so a --pool create that
+// placement routes to a peer is a peer-bound create too (#2952).
+func (s *ContainerServer) createTargetsPeer(req *pb.CreateContainerRequest) bool {
+	return req.BackendId != "" && s.peerPool != nil && req.BackendId != s.peerPool.LocalBackendID()
+}
+
+// validateStackOnPeer checks req.Stack against the catalog of the peer the
+// create is bound for (#2952). It rejects only when it has read a non-empty
+// catalog that lacks the stack. Anything it cannot conclude (no stack asked
+// for, the peer unknown or unhealthy, the catalog unreadable or empty) is
+// let through: the forwarding block reports an unreachable peer with its own
+// error, and a peer validates every create it receives for itself, so this
+// check exists to fail early, before storage is allocated, not to be the only
+// line of defence.
+func (s *ContainerServer) validateStackOnPeer(ctx context.Context, req *pb.CreateContainerRequest) error {
+	if req.Stack == "" || s.peerPool == nil {
+		return nil
+	}
+	peer := s.peerPool.Get(req.BackendId)
+	if peer == nil || !peer.Healthy {
+		return nil
+	}
+	ids, err := peer.ForwardListStacks(ctx, extractAuthToken(ctx))
+	if err != nil {
+		log.Printf("[create] could not read backend %q's stack catalog (%v); leaving the stack check to the backend", req.BackendId, err)
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		if id == req.Stack {
+			return nil
+		}
+	}
+	sort.Strings(ids)
+	return status.Errorf(codes.InvalidArgument, "unknown stack %q on backend %q; valid stacks there: %s",
+		req.Stack, req.BackendId, strings.Join(ids, ", "))
+}
+
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -529,12 +612,46 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	// Namespace normalization must not turn a caller's reused dry-run request
+	// into an apparently explicit assignment on the next call.
+	if req.NetworkTenant == "" && auth.RequireRole(ctx, auth.RoleAdmin) != nil && s.nativeTenantLocalLXC() {
+		req = proto.Clone(req).(*pb.CreateContainerRequest)
+	}
 	// Audit B-MED-1 / B-MED-2 / B-LOW-1: cap the unbounded
 	// repeated-string / map fields before any allocation-heavy
 	// work runs. Done after the tenant check (don't enumerate
 	// resource caps to unauthenticated callers) but before pool
 	// resolution and peer routing.
 	if err := validateCreateContainerBounds(req); err != nil {
+		return nil, err
+	}
+	// Pool resolution — if a pool is requested, either validate that
+	// the explicit backend_id belongs to that pool, or pick any
+	// healthy backend in the pool when backend_id is empty.
+	//
+	// This runs BEFORE the stack check and before any storage is allocated
+	// (#2952): it only chooses a backend (it sets req.BackendId), it provisions
+	// nothing, and the stack has to be checked against the catalog of the
+	// backend that will actually create the box.
+	if req.Pool != "" {
+		if err := s.resolvePoolPlacement(req); err != nil {
+			return nil, err
+		}
+	}
+	if err := authorizeNetworkTenantCreate(ctx, req, s.nativeTenantLocalLXC() && !s.createTargetsPeer(req), accountTenancyArmed()); err != nil {
+		return nil, err
+	}
+	if req.NetworkTenant != "" && (s.nativeTenantReady == nil || !s.nativeTenantReady()) {
+		return nil, status.Error(codes.FailedPrecondition, "native network Tenant requires ready enforced local LXC Guard")
+	}
+	// Unknown stack (#2860, #2952): refuse before any allocation. The catalog
+	// that counts is the one of the backend that will create the box: this
+	// daemon's, or the peer's, which may define stacks this daemon does not.
+	if s.createTargetsPeer(req) {
+		if err := s.validateStackOnPeer(ctx, req); err != nil {
+			return nil, err
+		}
+	} else if err := validateStackID(req.Stack); err != nil {
 		return nil, err
 	}
 	// #1294's unconditional refusal used to sit here, on the grounds that the
@@ -557,6 +674,13 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// 0 = no auto-sleep; > 0 enables it with that idle threshold (minutes).
 	if req.IdleStopMinutes < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "idle_stop_minutes must be >= 0, got %d", req.IdleStopMinutes)
+	}
+	// disable_auto_sleep (#2759) means "no idle-stop timer"; asking for one in
+	// the same breath is a contradiction, not something to resolve by guessing.
+	// A standalone daemon otherwise ignores the flag: it never enables
+	// auto-sleep unless idle_stop_minutes > 0.
+	if req.DisableAutoSleep && req.IdleStopMinutes > 0 {
+		return nil, status.Error(codes.InvalidArgument, "disable_auto_sleep and idle_stop_minutes > 0 are contradictory: set one")
 	}
 	// Birth stopped→delete (#525): same — reject a negative window early.
 	// 0 = never delete on stop; > 0 reaps a box left stopped that long.
@@ -585,7 +709,15 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// image, and a ZFS clone takes its key from where it is made (#1335).
 	var encPool string
 	var encRef zfskey.KeyRef
-	if req.GetEncrypted() {
+	if req.GetEncrypted() && req.GetDryRun() {
+		// Validate only (#2925): EnsureTenantStorage creates the tenant's
+		// encrypted dataset and pool, which a dry run must not do. What it
+		// would have refused for lack of wiring it is still refused for here,
+		// with the same error as the real path below.
+		if !s.encryption.enabled() {
+			return nil, errEncryptionNotWired
+		}
+	} else if req.GetEncrypted() {
 		encPool, encRef, err = s.encryption.EnsureTenantStorage(ctx, encryptionTenantFor(req))
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, err.Error())
@@ -595,20 +727,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		// the container on the daemon's default pool — unencrypted, reported
 		// as encrypted, which is precisely what #1294 refused to ship.
 		if encPool == "" {
-			return nil, status.Error(codes.FailedPrecondition,
-				"encrypted=true resolved no storage pool for this tenant: the daemon has key "+
-					"custody configured but no encryption storage wired, so the container would "+
-					"be created on the default pool without encryption. Refusing rather than "+
-					"delivering plaintext under an encryption guarantee")
-		}
-	}
-
-	// Pool resolution — if a pool is requested, either validate that
-	// the explicit backend_id belongs to that pool, or pick any
-	// healthy backend in the pool when backend_id is empty.
-	if req.Pool != "" {
-		if err := s.resolvePoolPlacement(req); err != nil {
-			return nil, err
+			return nil, errEncryptionNotWired
 		}
 	}
 
@@ -622,6 +741,17 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			}
 			if !peer.Healthy {
 				return nil, fmt.Errorf("backend %q is not healthy", req.BackendId)
+			}
+			if req.GetDryRun() {
+				// #2925: not forwarded. A peer that predates dry_run would
+				// ignore it and really create the box. The stack was checked
+				// against the peer's catalog above (#2952); the peer's other
+				// checks are not run.
+				return &pb.CreateContainerResponse{
+					DryRun: true,
+					Message: fmt.Sprintf("Validated by this daemon, and the stack against backend %q's catalog; that backend's "+
+						"other checks (image policy, capacity) were not run.", req.BackendId),
+				}, nil
 			}
 			// Forward to peer — extract auth token from context
 			authToken := extractAuthToken(ctx)
@@ -679,6 +809,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// Build the runtime-neutral box spec
 	spec := box.BoxSpec{
 		Ref:                    box.BoxRef{Tenant: req.Username},
+		NetworkTenant:          req.NetworkTenant,
 		Image:                  req.Image,
 		SSHKeys:                req.SshKeys,
 		Labels:                 req.Labels,
@@ -760,9 +891,31 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// the Box-CR/sync paths (the top-level defer), inside the goroutine for
 	// async, matching exactly how asyncHandledInline already splits
 	// platformStats reporting between those two completion shapes.
+	// Pool headroom floor (#3128): refuse before anything is allocated on a
+	// pool past its floor. encPool is the tenant's pool for an encrypted
+	// create and "" (the daemon's default pool) otherwise. An encrypted dry
+	// run has not resolved its tenant pool, so there is no pool to check.
+	if !req.GetEncrypted() || encPool != "" {
+		if err := s.admitPoolHeadroom(encPool, poolcapacity.OperationCreate); err != nil {
+			return nil, err
+		}
+	}
+
 	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
 	if admitErr != nil {
 		return nil, admitErr
+	}
+
+	// Validate only (#2925): every check above has passed and nothing has been
+	// provisioned. Release the cores admission just reserved, or a dry run
+	// would block real creates for the reservation TTL. Not counted as a
+	// provisioning attempt (#1083), which starts below.
+	if req.GetDryRun() {
+		cpuRelease()
+		return &pb.CreateContainerResponse{
+			DryRun:  true,
+			Message: fmt.Sprintf("Dry run: a create for %s would be accepted. Nothing was created.", req.Username),
+		}, nil
 	}
 
 	// #1083: everything past this point is a genuine attempt to provision
@@ -1697,6 +1850,16 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	}
 }
 
+// lifecycleError wraps a start/stop failure with a gRPC code so the gateway
+// stops reporting every failure as Unknown (#3242): a missing instance is
+// NotFound, anything else gets fallback. The message keeps the original text.
+func lifecycleError(fallback codes.Code, msg string, cause error) error {
+	if incus.IsNotFound(cause) {
+		return status.Error(codes.NotFound, msg)
+	}
+	return status.Error(fallback, msg)
+}
+
 // StartContainer starts a stopped container
 func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartContainerRequest) (*pb.StartContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -1709,6 +1872,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
+	alreadyRunning := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: resume the Sandbox (operatingMode=Running); the
 		// agent-sandbox controller recreates the pod with the retained PVC.
@@ -1722,7 +1886,9 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		if err := s.encryption.PreStart(ctx, req.Username+"-container"); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
-		if err := s.manager.Start(req.Username); err != nil {
+		if c, err := s.manager.StartIfStopped(req.Username); err == nil {
+			alreadyRunning = !c
+		} else {
 			// Try peer
 			if s.peerPool != nil {
 				authToken := extractAuthToken(ctx)
@@ -1731,7 +1897,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					// #1905: don't report "failed to start" (which reads as
 					// "no such container") when the container may actually
 					// be sitting on a backend we just couldn't reach.
-					return nil, fmt.Errorf("cannot start %s: %d backend(s) unreachable (%s)",
+					return nil, status.Errorf(codes.Unavailable, "cannot start %s: %d backend(s) unreachable (%s)",
 						req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 				}
 				if peer != nil {
@@ -1759,7 +1925,23 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					}
 				}
 			}
-			return nil, fmt.Errorf("failed to start container: %w", err)
+			return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to start container: %v", err), err)
+		}
+
+		// #3242: the end state already held; nothing changed, so skip the
+		// start-time stamps, secret re-delivery and the started event.
+		if alreadyRunning {
+			info, gerr := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+			if gerr != nil {
+				return nil, fmt.Errorf("container already running but failed to get info: %w", gerr)
+			}
+			resp := &pb.StartContainerResponse{
+				Message: fmt.Sprintf("Container for user %s was already running", req.Username),
+			}
+			if info != nil {
+				resp.Container = toProtoContainer(info)
+			}
+			return resp, nil
 		}
 
 		// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
@@ -1890,13 +2072,14 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		return nil, err
 	}
 
+	alreadyStopped := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: suspend the Sandbox (operatingMode=Suspended); the
 		// controller deletes only the pod — PVC + Service + identity persist.
 		if err := bb.Stop(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
 			return nil, fmt.Errorf("failed to stop container: %w", err)
 		}
-	} else if err := s.manager.Stop(req.Username, req.Force); err != nil {
+	} else if c, err := s.manager.StopIfRunning(req.Username, req.Force); err != nil {
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -1904,7 +2087,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 			if peer == nil && len(unreachablePeers) > 0 {
 				// #1905: don't report "failed to stop" as if the container
 				// didn't exist when its backend was merely unreachable.
-				return nil, fmt.Errorf("cannot stop %s: %d backend(s) unreachable (%s)",
+				return nil, status.Errorf(codes.Unavailable, "cannot stop %s: %d backend(s) unreachable (%s)",
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
@@ -1917,7 +2100,26 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 				}
 			}
 		}
-		return nil, fmt.Errorf("failed to stop container: %w", err)
+		return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to stop container: %v", err), err)
+	} else if !c {
+		// #3242: the end state already held. Nothing changed, so none of the
+		// post-stop work runs: re-stamping stopped_at would keep postponing the
+		// stopped->delete timer (#525) on every redundant stop.
+		alreadyStopped = true
+	}
+
+	if alreadyStopped {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return nil, fmt.Errorf("container already stopped but failed to get info: %w", err)
+		}
+		resp := &pb.StopContainerResponse{
+			Message: fmt.Sprintf("Container for user %s was already stopped", req.Username),
+		}
+		if info != nil {
+			resp.Container = toProtoContainer(info)
+		}
+		return resp, nil
 	}
 
 	// Post-stop hook (#1201): drop the encryption key so the stopped
@@ -2666,6 +2868,115 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	}, nil
 }
 
+// setSSHKeysRegistryTimeout bounds the registry work SetSSHKeys does while
+// holding the per-user authorized_keys lock. A var so tests can shorten it.
+var setSSHKeysRegistryTimeout = 10 * time.Second
+
+// SetSSHKeys makes the user's host-side authorized_keys hold exactly the
+// requested keys (#2945). Authorization is AddSSHKey's: ssh:write plus
+// tenant access to the box.
+//
+// Every key is validated before any write, so one bad entry fails the call
+// with no change. Platform-managed lines (the sentinel's upstream key) are
+// preserved by the file layer and never revoked, so a caller cannot lock the
+// platform out. Keys dropped by the call are revoked in the ssh_keys
+// registry exactly as RemoveSSHKey does (only the entries this account owns,
+// #3187), except that a key another account still holds is dropped from this
+// account's file without being revoked (#3222). Kept keys are registered like
+// AddSSHKey does. An empty list is accepted only with allow_empty, so an
+// omitted field cannot wipe a box.
+func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
+		return nil, err
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if len(req.SshPublicKeys) > container.MaxAuthorizedKeys {
+		return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys has %d entries, over the limit of %d", len(req.SshPublicKeys), container.MaxAuthorizedKeys)
+	}
+	switch {
+	case len(req.SshPublicKeys) == 0 && !req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "ssh_public_keys is empty: set allow_empty=true to remove every key")
+	case len(req.SshPublicKeys) > 0 && req.AllowEmpty:
+		return nil, status.Error(codes.InvalidArgument, "allow_empty must be false when ssh_public_keys is given")
+	}
+	fingerprints := make(map[string]bool, len(req.SshPublicKeys))
+	for i, k := range req.SshPublicKeys {
+		if err := container.ValidateStrictSSHPublicKey(k); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		rec, err := sshauthz.NewKeyRecord(k, req.Username, sshauthz.SourceAPI, s.sshKeyClock())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "ssh_public_keys[%d]: %v", i, err)
+		}
+		fingerprints[rec.Fingerprint] = true
+	}
+
+	// Same heal as AddSSHKey for a box created without a host account.
+	if s.manager != nil {
+		if _, gerr := s.manager.Get(req.Username); gerr == nil {
+			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+				return nil, fmt.Errorf("ensure host account: %w", err)
+			}
+		}
+	}
+
+	// Both registry steps run inside the file layer's per-user critical
+	// section, so concurrent Sets are ordered end to end (a later Set's
+	// revocation can never be undone by an earlier Set's registration), and
+	// each is bounded so a slow registry cannot hold the lock indefinitely.
+	//
+	// Revoke first: if it fails nothing is written and a retry still sees the
+	// keys. (Revoked but still in the file, if the write then fails, is the
+	// safe direction.) Register after the write; it is idempotent, so a
+	// failure here is retried by repeating the call.
+	removed, err := s.authorizedKeys.replaceKeys(req.Username, req.SshPublicKeys, container.ReplaceHooks{
+		BeforeWrite: func(drop []string) error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range drop {
+				err := s.revokeSSHKey(rctx, req.Username, k)
+				if errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+					// Another account still holds this key: this call only
+					// removes this account's entry (#3222). The registry row
+					// stays active for the other holder.
+					continue
+				}
+				if err != nil {
+					return registryError("set ssh keys", err)
+				}
+			}
+			return nil
+		},
+		AfterWrite: func() error {
+			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
+			defer cancel()
+			for _, k := range req.SshPublicKeys {
+				if err := s.registerSSHKey(rctx, req.Username, k, sshauthz.SourceAPI); err != nil {
+					return registryError("set ssh keys", err)
+				}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("replace authorized keys: %w", err)
+	}
+
+	// Revoked keys left in sshpiper's table would stay working credentials.
+	s.notifySentinelKeyChange(ctx, "set_ssh_keys "+req.Username)
+
+	return &pb.SetSSHKeysResponse{
+		Message:     fmt.Sprintf("SSH keys set for %s", req.Username),
+		RemovedKeys: safecast.I32(len(removed)),
+		TotalKeys:   safecast.I32(len(fingerprints)),
+	}, nil
+}
+
 // RemoveSSHKey removes a specific SSH public key from the user's
 // host-side authorized_keys file. No-op if the key isn't present.
 func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKeyRequest) (*pb.RemoveSSHKeyResponse, error) {
@@ -2682,13 +2993,23 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		return nil, err
 	}
 
+	// Revoke before the file changes, as SetSSHKeys does: a registry failure
+	// leaves the key in place and is reported, so the caller's retry repeats
+	// the revocation. Only the entry this account owns is revoked (#3187), and
+	// not while another account still holds the key (#3222).
+	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
+		if !errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+			return nil, registryError("remove ssh key", err)
+		}
+		// Another account still holds this key: only this account's entry is
+		// removed and the registry row stays active for the other holder
+		// (#3222), as SetSSHKeys does. The response does not name the holder; an
+		// unreadable account fails the call with ErrHolderUnknown, which names
+		// no account either (the daemon log does).
+		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
+	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
-	}
-	// A removed key is revoked for every account that holds it (#2517
-	// decision: fails closed). A failure is reported so the caller retries.
-	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
-		return nil, registryError("remove ssh key", err)
 	}
 
 	total, err := s.authorizedKeys.countKeys(req.Username)
@@ -2933,6 +3254,12 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
+	// #3057: enforce the same scope the MCP layer maps this tool to, so a
+	// scoped admin token cannot bypass it over REST/gRPC. A nil scope claim
+	// stays unrestricted (legacy tokens), per RequireScope.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 
 	// Remote backend → forward to the owning peer (it upgrades its own daemon).
 	if req.BackendId != "" && req.BackendId != s.localBackendID() {
@@ -2970,6 +3297,11 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	if usingGitHub {
 		if s.binaryPath == "" {
 			return nil, status.Error(codes.Unavailable, "GitHub-direct upgrade is not configured on this daemon (no binary path wired)")
+		}
+		// #3059: report a refused downgrade on the RPC itself rather than as
+		// a failed async job. runGitHubUpgrade re-checks as defense in depth.
+		if err := checkDowngrade(runningVersion(), req.GithubTag, req.AllowDowngrade); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 	} else if s.autoUpdater == nil {
 		// cloud#1547: this used to return with NO log line at all — on a BYOC
@@ -3024,7 +3356,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		var changed bool
 		var err error
 		if usingGitHub {
-			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force)
+			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force, req.AllowDowngrade)
 		} else {
 			changed, err = s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
 		}
@@ -3067,6 +3399,12 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 // #354.
 func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgradeStatusRequest) (*pb.GetUpgradeStatusResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	// #3057: enforce the same scope the MCP layer maps this tool to, so a
+	// scoped admin token cannot bypass it over REST/gRPC. A nil scope claim
+	// stays unrestricted (legacy tokens), per RequireScope.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
 		return nil, err
 	}
 	if req.UpgradeId == "" {
@@ -3175,12 +3513,17 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// direct/in-network mode — so an agent can tell from get_system_info
 		// whether an external SSH/deploy entrypoint exists. See #1011.
 		SshIngressHost: s.sshHost,
+		// How this daemon's peer calls are secured (#3079).
+		PeerTransport: peerTransportOf(s.peerPool),
 		// Tenant-committed CPU cores on this host — pairs with TotalCpus to
 		// answer "is this host over its CPU overcommit ceiling right now"
 		// (#1580). Reuses the same containers list already fetched above,
 		// and the same core-role exclusion the admission gate (#1029) uses,
 		// via committedTenantCores — one summation shared by both, not two.
 		CommittedCpuCores: committedTenantCores(containers, nil),
+		// Optional API features, so a client can gate request fields an
+		// older daemon would reject.
+		Capabilities: daemonCapabilities(),
 	}
 	// The rest of the CPU budget (#2284): the platform's own core-role
 	// commitment next to the tenant one, and the gate's posture so a
@@ -3190,6 +3533,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	info.CoreCommittedCpuCores = budget.CoreCommittedCores
 	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
 	info.CpuOvercommitFactor = budget.OvercommitFactor
+	s.withBackupKeyInfo(info)
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -3198,6 +3542,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	if driver, derr := client.PoolDriver("default"); derr == nil {
 		info.Storage = backendStorageFromPool("default", driver)
 	}
+	info.StoragePools = s.storagePoolCapacities()
 
 	// This backend's spare-capacity advertisement (#680) and capability
 	// profile (#681), so a peer's GetSystemInfo carries them to the
@@ -3987,9 +4332,26 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
-	// at an object on disk; that object's bytes are exactly what we attest.
-	if bpfObj := strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyBPFObject)); bpfObj != "" {
-		in.Programs = append(in.Programs, integrity.ProgramObject{Name: bpfObj, Path: bpfObj})
+	// at an object (a path on disk, or the one embedded in the binary); those
+	// loaded bytes are exactly what we attest for this object.
+	setting := os.Getenv(appconfig.EnvNetworkPolicyBPFObject)
+	progs, err := integrityProgramObjects(setting, netbpf.EmbeddedObject())
+	if err != nil {
+		return integrity.Measurement{}, err
+	}
+	in.Programs = append(in.Programs, progs...)
+
+	// The exec-watch object (#2637) is loaded from the same setting, but only
+	// when the exec watcher actually loaded it (read live each measurement); an
+	// object that never loaded is not attested (#3120). Running is a snapshot:
+	// a watcher that stops right after the probe can leave one heartbeat's
+	// attestation stale.
+	if s.integrityExecWatch != nil && s.integrityExecWatch() {
+		execProgs, err := integrityExecWatchObjects(setting, netbpf.EmbeddedExecObject())
+		if err != nil {
+			return integrity.Measurement{}, err
+		}
+		in.Programs = append(in.Programs, execProgs...)
 	}
 
 	// Node identity signer: the sentinel-issued peer leaf key.
@@ -4002,6 +4364,75 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	}
 
 	return integrity.Compute(in)
+}
+
+// integrityProgramObjects maps the network-policy object setting to the program
+// objects the self-measurement digests. A path is digested from disk under its
+// own name. The embedded selector (netbpf.IsEmbeddedValue) has no file, so the
+// bytes the enforcer actually loads (netbpf.EmbeddedObject) are digested under
+// the stable name "embedded" whichever alias was configured (#3079).
+func integrityProgramObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	if netbpf.IsEmbeddedValue(setting) {
+		if len(embedded) == 0 {
+			return nil, fmt.Errorf("network-policy object %q selects the embedded BPF object but this build has none", setting)
+		}
+		return []integrity.ProgramObject{{Name: "embedded", Data: embedded}}, nil
+	}
+	return []integrity.ProgramObject{{Name: setting, Path: setting}}, nil
+}
+
+// execWatchEmbeddedName is the stable programDigests name of the embedded
+// exec-watch object, whichever alias selected it (#3120).
+const execWatchEmbeddedName = "execwatch-embedded"
+
+// integrityExecWatchObjects maps the network-policy object setting to the
+// exec-watch object the exec watcher loads from it (netbpf.ExecObjectSource,
+// the same selection netbpf.ResolveExecWatch uses), so the bytes digested are
+// the bytes handed to the loader. The embedded object is digested under
+// "execwatch-embedded"; a sibling file under its own path. An empty setting
+// means no program (the watcher is only started with a non-empty setting). An
+// object the watcher cannot load (none bundled, or the sibling file missing)
+// is skipped, not an error: the watcher reports that itself as
+// `unavailable (...)` and nothing is loaded to attest. Other file errors
+// surface when the measurement digests the path. The stat and the digest are
+// separate reads: the digest is of the file at measurement time, recomputed on
+// every heartbeat.
+func integrityExecWatchObjects(setting string, embedded []byte) ([]integrity.ProgramObject, error) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return nil, nil
+	}
+	isEmbedded, path := netbpf.ExecObjectSource(setting)
+	if isEmbedded {
+		if len(embedded) == 0 {
+			return nil, nil
+		}
+		return []integrity.ProgramObject{{Name: execWatchEmbeddedName, Data: embedded}}, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return []integrity.ProgramObject{{Name: path, Path: path}}, nil
+}
+
+// wireExecWatcherIntegrity connects a constructed exec watcher to the
+// self-measurement; a nil watcher (sentry off) leaves it unwired.
+func wireExecWatcherIntegrity(cs *ContainerServer, w *ExecWatcher) {
+	if w == nil {
+		return
+	}
+	cs.SetIntegrityExecWatch(w.Running)
+}
+
+// SetIntegrityExecWatch wires a live probe of whether the exec watcher loaded
+// and attached its object, so the self-measurement attests the exec-watch
+// object only while it is loaded. Pass ExecWatcher.Running.
+func (s *ContainerServer) SetIntegrityExecWatch(loaded func() bool) {
+	s.integrityExecWatch = loaded
 }
 
 // SetIntegrityConfig wires the integrity-relevant policy/config posture this
@@ -4220,9 +4651,11 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	}
 
 	pc := &pb.Container{
-		Name:     st.Ref.Name,
-		Username: st.Ref.Tenant,
-		State:    st.State,
+		Name:                st.Ref.Name,
+		NetworkTenant:       st.NetworkTenant,
+		NetworkTenantSource: st.NetworkTenantSource,
+		Username:            st.Ref.Tenant,
+		State:               st.State,
 		Resources: &pb.ResourceLimits{
 			Cpu:           st.Resources.CPU,
 			Memory:        st.Resources.Memory,
@@ -4234,10 +4667,14 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: st.IPAddress,
 		},
-		Labels:               st.Labels,
-		CreatedAt:            st.CreatedAt.Unix(),
-		PodmanEnabled:        true, // TODO: Get from container config
-		Stack:                "",   // TODO: Get from container labels
+		Labels:    st.Labels,
+		CreatedAt: st.CreatedAt.Unix(),
+		// Read back from the box (user.containarium.podman_enabled); boxes
+		// created before that key existed report true. See #2858.
+		PodmanEnabled: st.PodmanEnabled,
+		// Empty when no stack is recorded: K8s does not persist it, and LXC
+		// boxes created before user.containarium.stack existed have none.
+		Stack:                st.Stack,
 		GpuDevice:            st.GPU,
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
@@ -4269,6 +4706,9 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	if st.DeletePolicy == incus.DeletePolicyProtected {
 		pc.DeletePolicy = pb.DeletePolicy_DELETE_POLICY_PROTECTED
 	}
+	// Tool-access level for platform-started runs (#2944): absent or any
+	// unrecognised value reads back as UNSPECIFIED (none recorded).
+	pc.ToolAccess = toolaccess.FromConfig(st.ToolAccess)
 	return pc
 }
 
@@ -4331,6 +4771,17 @@ func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
 func (s *ContainerServer) SetCPUOvercommitPolicy(factor float64, enforce bool) {
 	s.cpuOvercommitFactor = factor
 	s.cpuOvercommitEnforce = enforce
+}
+
+// SetManagedBackupKeyConfigured records whether this daemon has a managed
+// backup key, for SystemInfo.managed_backup_key_configured (#3213).
+func (s *ContainerServer) SetManagedBackupKeyConfigured(configured bool) {
+	s.managedBackupKey = configured
+}
+
+// withBackupKeyInfo stamps the managed-backup-key report onto info.
+func (s *ContainerServer) withBackupKeyInfo(info *pb.SystemInfo) {
+	info.ManagedBackupKeyConfigured = s.managedBackupKey
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's

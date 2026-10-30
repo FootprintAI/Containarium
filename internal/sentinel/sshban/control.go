@@ -1,6 +1,7 @@
 package sshban
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +13,8 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // DefaultSocket isolates control endpoints for the two independently enforcing
@@ -68,9 +71,18 @@ func ListenControl(path string, g *Guard) (func(), error) {
 		_ = l.Close()
 		return nil, err
 	}
-	server := grpc.NewServer()
+	// Control reads can prune windows and emit audit records, so they share the
+	// shutdown barrier with SSH callbacks.
+	server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if !g.beginCallback() {
+			return nil, status.Error(codes.Unavailable, "ssh-ban control socket is shutting down")
+		}
+		defer g.endCallback()
+		return handler(ctx, req)
+	}))
 	pb.RegisterSentinelSSHBanServiceServer(server, g)
-	go func() { _ = server.Serve(l) }()
+	serveDone := make(chan struct{})
+	go func() { defer close(serveDone); _ = server.Serve(l) }()
 	var once sync.Once
-	return func() { once.Do(func() { server.Stop(); _ = l.Close() }) }, nil
+	return func() { once.Do(func() { server.Stop(); _ = l.Close(); <-serveDone }) }, nil
 }

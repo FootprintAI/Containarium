@@ -84,9 +84,12 @@ func runSentinelSSHSessionPlugin(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = recorder.Close() }()
 
+	// SkipUnobserved: in enforce mode ssh-authz-plugin routes the connection
+	// and writes its records; this plugin never sees the credential (#2741).
 	plugin := &sshsession.Plugin{
-		Recorder: recorder,
-		Target:   sshsession.NewTargetResolver(sentinelSSHSessionPluginConfigFile),
+		Recorder:       recorder,
+		Target:         sshsession.NewTargetResolver(sentinelSSHSessionPluginConfigFile),
+		SkipUnobserved: true,
 	}
 
 	piperPlugin, err := libplugin.NewFromStdio(plugin.Config())

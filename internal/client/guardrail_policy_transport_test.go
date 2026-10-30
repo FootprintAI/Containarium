@@ -204,3 +204,95 @@ func TestGuardrailPolicy_NonAdminSetRefusedOnBothTransports(t *testing.T) {
 		t.Fatalf("non-admin Get = (%v, %v), want readable and still not configured", got, err)
 	}
 }
+
+// TestGuardrailStatus_RESTAndGRPCAgree (#2737): GET /v1/guardrail/status and
+// the gRPC call report the same effective policy to a non-admin caller,
+// before and after a policy with an inbound BLOCK rule is set.
+func TestGuardrailStatus_RESTAndGRPCAgree(t *testing.T) {
+	srv := server.NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	clients := map[string]interface {
+		GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error)
+	}{
+		"grpc": startGRPCGuardrailPolicy(t, srv, false),
+		"rest": startGatewayGuardrailPolicy(t, srv, false),
+	}
+	check := func(want pb.GuardrailEffectivePolicy) {
+		t.Helper()
+		var first *pb.GetGuardrailStatusResponse
+		for name, c := range clients {
+			got, err := c.GetGuardrailStatus()
+			if err != nil || got.GetResponsePolicy() != want {
+				t.Fatalf("%s GetGuardrailStatus = (%v, %v), want %v", name, got, err, want)
+			}
+			if first != nil && !proto.Equal(first, got) {
+				t.Fatalf("transports disagree:\n %v\n %v", first, got)
+			}
+			first = got
+		}
+	}
+	check(pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_BASELINE)
+
+	admin := startGRPCGuardrailPolicy(t, srv, true)
+	if _, err := admin.SetGuardrailPolicy(&pb.SetGuardrailPolicyRequest{Policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{
+		{Kind: pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, Action: pb.GuardrailAction_GUARDRAIL_ACTION_BLOCK},
+	}}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	check(pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_ADMIN)
+}
+
+// TestGuardrailBaselineMode_RESTAndGRPCAgree (#2738): PUT
+// /v1/guardrail/baseline through the generated grpc-gateway shim and the
+// gRPC call switch the same stored mode, status reports it identically on
+// both, and a non-admin is refused on both without changing it.
+func TestGuardrailBaselineMode_RESTAndGRPCAgree(t *testing.T) {
+	srv := server.NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	type baselineClient interface {
+		SetGuardrailBaselineMode(pb.GuardrailBaselineMode) (*pb.SetGuardrailBaselineModeResponse, error)
+		GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error)
+	}
+	admins := map[string]baselineClient{
+		"grpc": startGRPCGuardrailPolicy(t, srv, true),
+		"rest": startGatewayGuardrailPolicy(t, srv, true),
+	}
+	users := map[string]baselineClient{
+		"grpc": startGRPCGuardrailPolicy(t, srv, false),
+		"rest": startGatewayGuardrailPolicy(t, srv, false),
+	}
+	wantMode := func(mode pb.GuardrailBaselineMode, rev int64) {
+		t.Helper()
+		var first *pb.GetGuardrailStatusResponse
+		for name, c := range users {
+			got, err := c.GetGuardrailStatus()
+			if err != nil || got.GetBaseline().GetMode() != mode || got.GetBaseline().GetRevision() != rev {
+				t.Fatalf("%s status = (%v, %v), want baseline %v at revision %d", name, got, err, mode, rev)
+			}
+			if first != nil && !proto.Equal(first, got) {
+				t.Fatalf("transports disagree:\n %v\n %v", first, got)
+			}
+			first = got
+		}
+	}
+	wantMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG, 0)
+
+	set, err := admins["rest"].SetGuardrailBaselineMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK)
+	if err != nil || set.GetBaseline().GetRevision() != 1 || set.GetBaseline().GetUpdatedBy() != "ops" {
+		t.Fatalf("rest set BLOCK = (%v, %v), want revision 1 by ops", set, err)
+	}
+	wantMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK, 1)
+	if _, err := admins["grpc"].SetGuardrailBaselineMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG); err != nil {
+		t.Fatalf("grpc set LOG: %v", err)
+	}
+	wantMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG, 2)
+
+	if _, err := users["grpc"].SetGuardrailBaselineMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("grpc non-admin set = %v, want PermissionDenied", err)
+	}
+	if _, err := users["rest"].SetGuardrailBaselineMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_BLOCK); err == nil {
+		t.Fatal("rest non-admin set succeeded, want a refusal")
+	}
+	if _, err := admins["rest"].SetGuardrailBaselineMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_UNSPECIFIED); err == nil {
+		t.Fatal("rest set UNSPECIFIED succeeded, want a refusal")
+	}
+	wantMode(pb.GuardrailBaselineMode_GUARDRAIL_BASELINE_MODE_LOG, 2)
+}

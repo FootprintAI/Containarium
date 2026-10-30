@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -57,7 +58,7 @@ b64_3() { base64 <&3 | tr -d '\n'; exec 3<&-; }
 `
 
 // boxRunListScript prints "B <boot-id>", "P <live pids>", then one
-// "R <file> <base64 record> <base64 exit sidecar | -> <base64 session id | ->"
+// "R <file> <base64 record> <base64 exit sidecar | -> <base64 session id | -> <base64 result log | ->"
 // line per record file. The session sidecar (#2193) is a plain-text file
 // (not JSON, unlike the record/exit sidecar), so it is still read through
 // open3's same symlink/regular-file guard — it lives in the same
@@ -74,9 +75,39 @@ for f in "$d"/*.json; do
   if open3 "${f%%.json}.exit"; then x=$(b64_3); fi
   sid=-
   if open3 "${f%%.json}.session"; then sid=$(b64_3); fi
-  echo "R ${f##*/} ${r:--} ${x:--} ${sid:--}"
+  res=-
+  if [ "$x" != - ] && grep -q -e '--output-format json' "$f" 2>/dev/null && open3 "${f%%.json}.log"; then
+    res=$(head -c %d <&3 | base64 | tr -d '\n'); exec 3<&-
+  fi
+  tl=-
+  if open3 "${f%%.json}.tools"; then tl=$(head -c %d <&3 | base64 | tr -d '\n'); exec 3<&-; fi
+  echo "R ${f##*/} ${r:--} ${x:--} ${sid:--} ${res:--} ${tl:--}"
 done
-`, shellSingleQuote(dir), boxRunOpenFn)
+`, shellSingleQuote(dir), boxRunOpenFn, boxRunResultReadLimit, boxRunToolsReadLimit)
+}
+
+// boxRunResultReadLimit caps how much of an exited structured run's log the
+// list script ships back so the daemon can read the result object's
+// session_id. A larger object is truncated, fails to decode, and yields no id
+// (fail closed).
+const boxRunResultReadLimit = 1 << 20
+
+// structuredSessionID returns the session id from a structured run's log: the
+// engine's single JSON result object, decoded as JSON, using ONLY its
+// top-level "session_id" (a same-named key nested in, say, a tool input is
+// never consulted). Truncated or invalid JSON, a missing or non-string id, or
+// an id that is not a safe run path component yields "".
+func structuredSessionID(log []byte) string {
+	var res struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(log, &res); err != nil {
+		return ""
+	}
+	if !validRunPathID(res.SessionID) {
+		return ""
+	}
+	return res.SessionID
 }
 
 // boxRunTailScript prints the run's record ("R <base64>" or "missing"), its
@@ -102,6 +133,7 @@ type boxRunView struct {
 	fileName  string
 	record    agentbox.RunRecord
 	sessionID string
+	tools     []*pb.BoxRunTool
 }
 
 func decodeB64Field(s string) ([]byte, error) {
@@ -130,7 +162,7 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 			}
 		case "R":
 			fields := strings.Fields(rest)
-			if len(fields) != 4 || !agentbox.IsCurrentRecordFile(fields[0]) {
+			if len(fields) != 6 || !agentbox.IsCurrentRecordFile(fields[0]) {
 				continue
 			}
 			name := strings.TrimSuffix(fields[0], ".json")
@@ -153,10 +185,26 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 			if err != nil {
 				sessionIDBytes = nil
 			}
+			sessionID := strings.TrimSpace(string(sessionIDBytes))
+			// A structured run's own result object, when present and valid,
+			// is authoritative over any sidecar (the engine's reported id is
+			// the one to resume next).
+			if resBytes, err := decodeB64Field(fields[4]); err == nil && len(resBytes) > 0 {
+				if id := structuredSessionID(resBytes); id != "" {
+					sessionID = id
+				}
+			}
+			// The run wrapper's own toolchain report (#2954); absent or malformed
+			// means no tools, never an error.
+			var tools []*pb.BoxRunTool
+			if toolBytes, err := decodeB64Field(fields[5]); err == nil && len(toolBytes) > 0 {
+				tools = parseBoxRunTools(toolBytes)
+			}
 			views = append(views, boxRunView{
 				fileName:  name,
 				record:    agentbox.FoldExitSidecar(record, sidecar),
-				sessionID: strings.TrimSpace(string(sessionIDBytes)),
+				sessionID: sessionID,
+				tools:     tools,
 			})
 		}
 	}
@@ -178,6 +226,7 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })
 		run := boxRunProto(v.fileName, dir, v.record, outcome)
 		run.SessionId = v.sessionID
+		run.Tools = v.tools
 		runs = append(runs, run)
 	}
 	return runs
@@ -201,6 +250,7 @@ func boxRunProto(name, dir string, r agentbox.RunRecord, outcome agentbox.RunOut
 	default:
 		run.Outcome = pb.BoxRunOutcome_BOX_RUN_OUTCOME_UNKNOWN
 	}
+	run.Model = r.Model
 	if r.ExitCode != nil {
 		code := int32(*r.ExitCode) // #nosec G115 -- a process exit status fits in int32
 		run.ExitCode = &code

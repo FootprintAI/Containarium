@@ -10,6 +10,11 @@
 #   OS        target OS (linux only today)
 #   ARCH      amd64 | arm64
 #   REPO_ROOT defaults to the repo root inferred from this script's path
+#   BUNDLE_ALLOW_EMPTY_APT=1
+#             dev builds only: build even though the cache holds no .deb.
+#             The installer then needs --skip-apt. Never set in the release
+#             workflow, which also checks the tarball's content
+#             (scripts/bundle/check-bundle-content.sh).
 #
 # Pre-requisites (the Makefile target handles these):
 #
@@ -26,9 +31,12 @@
 #   ├── bin/{containarium,mcp-server,agent-box,actions-runner-*.tar.gz}
 #   ├── sidecars/*.tar
 #   ├── toolchains/{go*,node*,pnpm*,buf*,golangci-lint*}
-#   ├── apt/*.deb
-#   ├── images/                       # populated separately (build-base-image)
+#   ├── apt/*.deb                     # required; see BUNDLE_ALLOW_EMPTY_APT
 #   └── docs/{INSTALL.md,VERIFY.md,GHES.md}
+#
+# No images/ directory (#3061): nothing builds the containarium-base Incus
+# image yet, so the directory always shipped empty. It comes back with its
+# producer.
 
 set -euo pipefail
 
@@ -96,7 +104,6 @@ mkdir -p \
   "$STAGING/sidecars" \
   "$STAGING/toolchains" \
   "$STAGING/apt" \
-  "$STAGING/images" \
   "$STAGING/docs"
 
 # ---- 3. Core binaries ----
@@ -123,13 +130,27 @@ fi
 # ---- 5. Toolchains ----
 if [ -d "$CACHE_DIR/toolchains" ]; then
   log_info "Copying toolchains"
-  cp -r "$CACHE_DIR/toolchains/." "$STAGING/toolchains/" 2>/dev/null || true
+  cp -r "$CACHE_DIR/toolchains/." "$STAGING/toolchains/"
 fi
 
 # ---- 6. APT packages ----
-if [ -d "$CACHE_DIR/apt" ]; then
-  log_info "Copying apt packages"
-  cp -r "$CACHE_DIR/apt/." "$STAGING/apt/" 2>/dev/null || true
+# Only .deb files are copied, and an apt/ without one fails the build (#3061):
+# a release once shipped an empty apt/, and the installer then had nothing to
+# install on an air-gapped host.
+shopt -s nullglob
+debs=("$CACHE_DIR/apt"/*.deb)
+shopt -u nullglob
+if [ "${#debs[@]}" -gt 0 ]; then
+  log_info "Copying ${#debs[@]} apt packages"
+  cp "${debs[@]}" "$STAGING/apt/"
+elif [ "${BUNDLE_ALLOW_EMPTY_APT:-}" = "1" ]; then
+  log_warn "no .deb in $CACHE_DIR/apt — continuing (BUNDLE_ALLOW_EMPTY_APT=1, dev build)"
+  log_warn "the installer needs --skip-apt for this bundle"
+else
+  log_error "no .deb files in $CACHE_DIR/apt"
+  log_error "run DEPS_ONLY=apt scripts/bundle/download-deps.sh on an Ubuntu 24.04 builder"
+  log_error "(dev builds only: BUNDLE_ALLOW_EMPTY_APT=1 builds without them)"
+  exit 1
 fi
 
 # ---- 7. Sidecar images ----

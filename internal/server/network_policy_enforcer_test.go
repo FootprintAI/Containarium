@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -40,11 +41,11 @@ func TestRefreshDomains_StoreOutageBacksOff(t *testing.T) {
 	clk := newResolverClock()
 	f := &fakeTTLResolver{answers: map[string]dnsAnswer{"a.example": {Addrs: addrs("192.0.2.5"), TTL: 30 * time.Second}}}
 	e.resolver = newDomainResolver(f, clk.now)
-	e.refreshDomains()
+	e.refreshDomains(true)
 
 	store.fail = true
 	clk.advance(30 * time.Second) // a.example is now due
-	e.refreshDomains()
+	e.refreshDomains(true)
 	if got := e.resolver.NextRefreshDelay(); got != 30*time.Second {
 		t.Fatalf("after a store outage NextRefreshDelay = %v, want the 30s interval (not the 1s floor)", got)
 	}
@@ -79,7 +80,7 @@ func TestDomainRefreshLoop_FollowsTTL(t *testing.T) {
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	dns := &countingTTLResolver{ttl: 0}
 	e.resolver = newDomainResolver(dns, time.Now)
-	e.refreshDomains() // what Start does before launching the loop
+	e.refreshDomainsForStartup() // what Start does before launching the loop
 
 	e.wg.Add(1)
 	go e.domainRefreshLoop()
@@ -110,7 +111,7 @@ func TestCompiledPolicies_DomainAddrsReachEnforcerAsIPv4Only(t *testing.T) {
 	e.resolver = newDomainResolver(&fakeTTLResolver{answers: map[string]dnsAnswer{
 		"dual.example": {Addrs: addrs("192.0.2.5", "2001:db8::5"), TTL: 30 * time.Second},
 	}}, newResolverClock().now)
-	e.refreshDomains()
+	e.refreshDomains(true)
 
 	if got := len(e.resolver.Addrs("dual.example")); got != 2 {
 		t.Fatalf("setup: resolver should hold both families, got %d addrs", got)
@@ -132,13 +133,29 @@ type fakeInspector struct {
 	containers []incus.ContainerInfo
 	veth       string
 	rawCalls   map[string]int
+	// host-side NIC facts for every container (#2618)
+	network, hwaddr, staticIP string
 }
 
 func (f *fakeInspector) ListContainers() ([]incus.ContainerInfo, error) { return f.containers, nil }
 
 func (f *fakeInspector) GetRawInstance(name string) (map[string]string, string, error) {
 	f.rawCalls[name]++
-	return map[string]string{"volatile.eth0.host_name": f.veth}, "", nil
+	cfg := map[string]string{"volatile.eth0.host_name": f.veth}
+	if f.hwaddr != "" {
+		cfg["volatile.eth0.hwaddr"] = f.hwaddr
+	}
+	return cfg, "", nil
+}
+
+// GetRawInstanceDevices returns one nic device on f.network with f.staticIP as
+// its ipv4.address (when set), the host-side facts #2618 reads.
+func (f *fakeInspector) GetRawInstanceDevices(string) (map[string]map[string]string, error) {
+	dev := map[string]string{"type": "nic", "network": f.network}
+	if f.staticIP != "" {
+		dev["ipv4.address"] = f.staticIP
+	}
+	return map[string]map[string]string{"eth0": dev}, nil
 }
 
 // firstHostIface returns a host interface name that net.InterfaceByName can
@@ -229,6 +246,16 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 	}
 	tagged := map[string]bool{}
 	for _, v := range views {
+		if v.ValidateOnly {
+			// #2618: present, but marking-only — no tenant, no ip_tenant row.
+			if v.Name != "controlplane-container" {
+				t.Errorf("%s is validate-only; only the control plane should be here", v.Name)
+			}
+			if v.Tenant != "" {
+				t.Errorf("control plane view = %+v, want no tenant", v)
+			}
+			continue
+		}
 		tagged[v.Name] = true
 	}
 	if tagged["controlplane-container"] {
@@ -239,5 +266,38 @@ func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
 	}
 	if !tagged["core-postgres-container"] {
 		t.Error("non-control-plane core services must stay tagged (still isolated from tenants)")
+	}
+	// The guest IP is read for every instance (it cross-checks the DHCP lease,
+	// #2618 S4), but a validate-only instance's never reaches ip_tenant.
+	plan := planReconcile(views, nil, true)
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 200}]; ok {
+		t.Error("control plane IP reached ip_tenant")
+	}
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 11}]; !ok {
+		t.Error("core-postgres IP must be in ip_tenant")
+	}
+}
+
+// TestReconcile_ExecWatcherRunsDuringPolicyStoreOutage: the exec watcher
+// needs only the container list, so a policy-store (Postgres) outage must
+// not stop a newly started box from being added to watched_cgroups.
+func TestReconcile_ExecWatcherRunsDuringPolicyStoreOutage(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	m := newFakeCgroupMap()
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	insp := &fakeInspector{containers: []incus.ContainerInfo{running("box-a", 100)}, rawCalls: map[string]int{}}
+	store := &listFailingStore{NetworkPolicyStore: NewMemNetworkPolicyStore(), fail: true}
+	e := NewNetworkPolicyEnforcer("", store, NewMemTenantRegistry(), insp, nil, nil, false)
+	e.ctx = context.Background()
+	e.SetExecWatcher(w)
+	// A zero Loader only gets reconcile past its "not started" guard; the
+	// store outage returns before anything touches it.
+	e.loader = &netbpf.Loader{}
+
+	if err := e.reconcile(context.Background()); err == nil {
+		t.Fatal("reconcile succeeded with the policy store down, want its error")
+	}
+	if ids := m.ids(); len(ids) != 1 || ids[0] != ino["lxc.payload.box-a"] {
+		t.Fatalf("watched_cgroups = %v during a policy-store outage, want box-a's id %d", ids, ino["lxc.payload.box-a"])
 	}
 }

@@ -167,7 +167,20 @@ func (r *Reconciler) Run(ctx context.Context, events <-chan struct{}) {
 // returned so the caller can refuse the create rather than start a box
 // that co-tenants can reach.
 func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) error {
+	return r.prepare(ctx, containerName, tenant, false)
+}
+
+// PrepareNetworkTenant requires working ENFORCE + NIC-ACL support at birth.
+// In contrast to legacy Prepare it never silently skips unsupported hosts.
+func (r *Reconciler) PrepareNetworkTenant(ctx context.Context, containerName, tenant string) error {
+	return r.prepare(ctx, containerName, tenant, true)
+}
+
+func (r *Reconciler) prepare(ctx context.Context, containerName, tenant string, required bool) error {
 	if r.cfg.Mode != nicguard.ModeEnforce {
+		if required {
+			return fmt.Errorf("explicit network Tenant requires ENFORCE NIC guard")
+		}
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -180,6 +193,9 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 	defer r.writeMu.Unlock()
 	if _, err := nicguard.CheckSupport(r.be); err != nil {
 		if nicguard.Unsupported(err) {
+			if required {
+				return fmt.Errorf("explicit network Tenant requires supported NIC ACLs: %w", err)
+			}
 			// This host cannot carry bridge NIC ACLs at all (driver or
 			// Incus too old). Refusing every create here would turn a
 			// missing capability into an outage; the pass reports it and
@@ -293,6 +309,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			continue
 		}
 		if err := r.attach(b.Name, e.ACLName); err != nil {
+			if r.instanceGone(b.Name, err) {
+				// The instance was removed between the list that produced it and
+				// this write, typically the rollback of a failed create (#2850).
+				// There is nothing left to guard, so it is neither an entry nor
+				// a pass failure.
+				log.Printf("[tenantguard] %s was removed during the pass; skipping its NIC (%v)", b.Name, firstLine(err))
+				continue
+			}
 			e.LastError = err.Error()
 			note(err)
 			entries = append(entries, e)
@@ -449,6 +473,63 @@ func tenantNICKeys() map[string]string {
 var (
 	transientAttempts = 5
 	transientBackoff  = 200 * time.Millisecond
+)
+
+// instanceGone reports whether a NIC write failed because the instance is
+// being or has been removed (#2850). A failure alone never decides it: the
+// host is listed again, and only an instance that is absent counts. An error
+// that reads like a vanished dataset or instance gets a few spaced re-checks,
+// because the rollback that caused it may not have finished yet; any other
+// error gets one immediate re-check. An instance still listed after that is a
+// real fault, and the caller reports it.
+func (r *Reconciler) instanceGone(name string, err error) bool {
+	checks := 1
+	if looksGone(err) {
+		checks = goneChecks
+	}
+	for i := 0; i < checks; i++ {
+		if i > 0 {
+			time.Sleep(goneBackoff)
+		}
+		list, lerr := r.be.ListContainers()
+		if lerr != nil {
+			return false
+		}
+		present := false
+		for _, c := range list {
+			if c.Name == name {
+				present = true
+				break
+			}
+		}
+		if !present {
+			return true
+		}
+	}
+	return false
+}
+
+// looksGone matches the messages Incus and ZFS give for a dataset or instance
+// that is no longer there.
+func looksGone(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "not found")
+}
+
+// firstLine trims a multi-part error to its first line for a log message.
+func firstLine(err error) string {
+	msg := err.Error()
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		return msg[:i]
+	}
+	return msg
+}
+
+// goneChecks and goneBackoff bound how long a failed NIC write waits to learn
+// whether the instance is being removed (#2850); a test lowers the backoff.
+var (
+	goneChecks  = 4
+	goneBackoff = 250 * time.Millisecond
 )
 
 func isTransient(err error) bool {

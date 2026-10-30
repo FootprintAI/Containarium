@@ -38,6 +38,7 @@ func TestRequestPayloadWireFormat(t *testing.T) {
 		{"toggleAutoSleepRequest", toggleAutoSleepRequest{}, []string{"enabled", "idle_threshold_minutes"}},
 		{"setContainerTTLRequest", setContainerTTLRequest{}, []string{"duration_seconds"}},
 		{"setContainerDeletePolicyRequest", setContainerDeletePolicyRequest{}, []string{"delete_policy"}},
+		{"setContainerToolAccessRequest", setContainerToolAccessRequest{}, []string{"tool_access"}},
 		{"setContainerAttributionRequest", setContainerAttributionRequest{}, []string{"labels"}},
 		{"startContainerRequest", startContainerRequest{}, []string{"ready_timeout_seconds", "wait_for_ready"}},
 		{"stopContainerRequest", stopContainerRequest{}, []string{"force"}},
@@ -108,7 +109,7 @@ func TestConditionalFieldsAreOmittedWhenUnset(t *testing.T) {
 		keys := marshalKeys(t, createContainerRequest{})
 		for _, absent := range []string{
 			"gitSource", "gitRef", "gitCredential", "workspacePath",
-			"ttlSeconds", "idleStopMinutes", "deleteAfterStoppedSeconds",
+			"ttlSeconds", "idleStopMinutes", "disableAutoSleep", "deleteAfterStoppedSeconds",
 		} {
 			if contains(keys, absent) {
 				t.Errorf("%q must be absent when unset", absent)

@@ -4,6 +4,8 @@
 package threatdetect
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -51,6 +53,11 @@ type FlowEvidence struct {
 	Protocol string `json:"protocol"`
 	Bytes    int64  `json:"bytes"`
 	Packets  int64  `json:"packets"`
+	// FirstSeen/LastSeen and Matched are set by the mining-behavior rule
+	// (#2635) only; see pb.FlowEvidence.
+	FirstSeen time.Time `json:"first_seen,omitzero"`
+	LastSeen  time.Time `json:"last_seen,omitzero"`
+	Matched   string    `json:"matched,omitempty"`
 }
 
 // DenyEvidence is an aggregated count of policy-deny events matching one
@@ -85,6 +92,60 @@ type ListenerEvidence struct {
 	Note        string `json:"note,omitempty"`
 }
 
+// CPUEvidence summarises a container's CPU usage over a detection window
+// (#2635), in cores.
+type CPUEvidence struct {
+	MeanCores     float64 `json:"mean_cores"`
+	PeakCores     float64 `json:"peak_cores"`
+	WindowSeconds int64   `json:"window_seconds"`
+	Samples       int32   `json:"samples"`
+}
+
+// ProcStartTicks is a point on the boot clock in /proc/<pid>/stat field 22
+// units: clock ticks (USER_HZ) since boot (CLOCK_BOOTTIME). A process's
+// field 22 (its fork time) is constant for its life, and the exec watcher
+// stamps each exec on the same clock; the kill refuses a pid whose start
+// time is later than the matched exec's stamp, which is the identity check
+// against pid reuse (#2765). 0 means unknown. Never converted to a
+// wall-clock time.
+type ProcStartTicks uint64
+
+// ExecEvidence is one process exec attached to a finding (#2637, used by the
+// miner-signature rule #2638): the host-side exec telemetry record,
+// attributed to the container. PID/PPID are host-namespace ids.
+type ExecEvidence struct {
+	PID           uint32 `json:"pid"`
+	PPID          uint32 `json:"ppid"`
+	UID           uint32 `json:"uid"`
+	Comm          string `json:"comm"`
+	Filename      string `json:"filename"`
+	Argv          string `json:"argv"`
+	ArgvTruncated bool   `json:"argv_truncated,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	Matched       string `json:"matched,omitempty"`
+
+	// StartTime is the boot-clock stamp the exec watcher put on the exec when
+	// it decoded it: an upper bound for the process's start time (#2765). The
+	// kill refuses a pid that started after it. Not on the wire message: it
+	// is an internal identity check.
+	StartTime ProcStartTicks `json:"start_time,omitempty"`
+}
+
+// ToProto renders the evidence as the wire message.
+func (e ExecEvidence) ToProto() *pb.ExecEvidence {
+	return &pb.ExecEvidence{
+		Pid:           e.PID,
+		Ppid:          e.PPID,
+		Uid:           e.UID,
+		Comm:          e.Comm,
+		Filename:      e.Filename,
+		Argv:          e.Argv,
+		ArgvTruncated: e.ArgvTruncated,
+		Sha256:        e.SHA256,
+		Matched:       e.Matched,
+	}
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. It is the named struct written into the
 // security_findings.evidence JSONB column — a storage encoding, never an
@@ -94,12 +155,14 @@ type Evidence struct {
 	Denies    []DenyEvidence     `json:"denies,omitempty"`
 	Configs   []ConfigEvidence   `json:"configs,omitempty"`
 	Listeners []ListenerEvidence `json:"listeners,omitempty"`
+	CPU       []CPUEvidence      `json:"cpu,omitempty"`
+	Execs     []ExecEvidence     `json:"execs,omitempty"`
 }
 
 // Capped returns a copy of e with each evidence kind truncated to the most
 // recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU, Execs: e.Execs}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
@@ -111,6 +174,12 @@ func (e Evidence) Capped() Evidence {
 	}
 	if len(out.Listeners) > EvidenceCap {
 		out.Listeners = out.Listeners[len(out.Listeners)-EvidenceCap:]
+	}
+	if len(out.CPU) > EvidenceCap {
+		out.CPU = out.CPU[len(out.CPU)-EvidenceCap:]
+	}
+	if len(out.Execs) > EvidenceCap {
+		out.Execs = out.Execs[len(out.Execs)-EvidenceCap:]
 	}
 	return out
 }
@@ -134,6 +203,8 @@ func (e Evidence) merged(more Evidence) Evidence {
 		Denies:    append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
 		Configs:   mergeConfigEvidence(e.Configs, more.Configs),
 		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
+		CPU:       append(append([]CPUEvidence(nil), e.CPU...), more.CPU...),
+		Execs:     append(append([]ExecEvidence(nil), e.Execs...), more.Execs...),
 	}
 }
 
@@ -151,6 +222,188 @@ func mergeConfigEvidence(old, more []ConfigEvidence) []ConfigEvidence {
 		}
 	}
 	return out
+}
+
+// FindingResponse records what the process responder (#2636) did about a
+// finding: the action, its state, and when it was applied, expires and was
+// released. Stored as the security_findings.response JSONB column, with
+// enum names rather than numbers so the column reads in psql and survives
+// the enums growing.
+type FindingResponse struct {
+	Action        pb.ProcessAction
+	State         pb.ResponseState
+	ProcessKilled bool
+	// KilledPID is the host pid the responder last killed, Kills how many it
+	// has killed for this finding, and KillSkipReason why the last attempted
+	// kill did not happen. The webhook delivers them (#2775); see deliveryGate
+	// for how a respawning miner is bounded.
+	KilledPID      uint32
+	Kills          uint32
+	KillSkipReason pb.KillSkipReason
+	AppliedAt      time.Time
+	ExpiresAt      time.Time
+	ReleasedAt     time.Time
+	ReleasedBy     string
+	Error          string
+	// Container is the box this response is about (#2820): a shared
+	// miner-signature finding gets one record per box, each delivered on its
+	// own. See ResponseWriter for which box the stored finding shows.
+	Container string
+}
+
+// findingResponseJSON is the storage encoding of FindingResponse.
+type findingResponseJSON struct {
+	Action        string    `json:"action"`
+	State         string    `json:"state"`
+	ProcessKilled bool      `json:"process_killed,omitempty"`
+	KilledPID     uint32    `json:"killed_pid,omitempty"`
+	Kills         uint32    `json:"kills,omitempty"`
+	KillSkip      string    `json:"kill_skip_reason,omitempty"`
+	AppliedAt     time.Time `json:"applied_at,omitzero"`
+	ExpiresAt     time.Time `json:"expires_at,omitzero"`
+	ReleasedAt    time.Time `json:"released_at,omitzero"`
+	ReleasedBy    string    `json:"released_by,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	Container     string    `json:"container,omitempty"`
+}
+
+// KeepKillOf makes the kill on record sticky (#2766, #2775): when prev has a
+// kill and r (a write from a box that killed nothing, such as its release)
+// has none, r takes prev's process_killed, latest pid, count and skip reason
+// (or its lack of one: #2816, a skip r carries does not survive), so the
+// stored response never says killed with pid 0 and a shared finding keeps
+// another box's kill. A write that carries its own kill is left alone unless
+// its count is lower than prev's: a stale kill (such as a release's fallback
+// to its action row's pid) never rolls the count back. stickyResponseSQL
+// does the same for the Postgres store in one UPDATE.
+func (r *FindingResponse) KeepKillOf(prev *FindingResponse) {
+	if prev == nil || !prev.ProcessKilled || r.ProcessKilled && r.Kills >= prev.Kills {
+		return
+	}
+	r.ProcessKilled, r.KilledPID, r.Kills, r.KillSkipReason = true, prev.KilledPID, prev.Kills, prev.KillSkipReason
+}
+
+// skipName is the stored name of a skip reason; none stores nothing.
+func skipName(r pb.KillSkipReason) string {
+	if r == pb.KillSkipReason_KILL_SKIP_REASON_UNSPECIFIED {
+		return ""
+	}
+	return r.String()
+}
+
+// MarshalJSON encodes enums by name.
+func (r FindingResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(findingResponseJSON{
+		Action: r.Action.String(), State: r.State.String(), ProcessKilled: r.ProcessKilled,
+		KilledPID: r.KilledPID, Kills: r.Kills, KillSkip: skipName(r.KillSkipReason),
+		AppliedAt: r.AppliedAt, ExpiresAt: r.ExpiresAt, ReleasedAt: r.ReleasedAt,
+		ReleasedBy: r.ReleasedBy, Error: r.Error, Container: r.Container,
+	})
+}
+
+// UnmarshalJSON decodes enums by name; an unknown name decodes to the
+// UNSPECIFIED value rather than failing the whole finding read.
+func (r *FindingResponse) UnmarshalJSON(b []byte) error {
+	var j findingResponseJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	*r = FindingResponse{
+		Action:        pb.ProcessAction(pb.ProcessAction_value[j.Action]),
+		State:         pb.ResponseState(pb.ResponseState_value[j.State]),
+		ProcessKilled: j.ProcessKilled, KilledPID: j.KilledPID, Kills: j.Kills,
+		KillSkipReason: pb.KillSkipReason(pb.KillSkipReason_value[j.KillSkip]),
+		AppliedAt:      j.AppliedAt, ExpiresAt: j.ExpiresAt, ReleasedAt: j.ReleasedAt,
+		ReleasedBy: j.ReleasedBy, Error: j.Error, Container: j.Container,
+	}
+	return nil
+}
+
+// ToProto converts the response to its wire form; nil for a nil receiver.
+func (r *FindingResponse) ToProto() *pb.FindingResponse {
+	if r == nil {
+		return nil
+	}
+	return &pb.FindingResponse{
+		Action:         r.Action,
+		State:          r.State,
+		ProcessKilled:  r.ProcessKilled,
+		KilledPid:      r.KilledPID,
+		Kills:          r.Kills,
+		KillSkipReason: r.KillSkipReason,
+		AppliedAt:      timestampProto(r.AppliedAt),
+		ExpiresAt:      timestampProto(r.ExpiresAt),
+		ReleasedAt:     timestampProto(r.ReleasedAt),
+		ReleasedBy:     r.ReleasedBy,
+		Error:          r.Error,
+		Container:      r.Container,
+	}
+}
+
+// ResponseWriter is what the process responder needs from a finding store
+// beyond FindingSink/FindingReader: recording what it did. Both stores
+// satisfy it.
+type ResponseWriter interface {
+	// SetResponse replaces the finding's response, emits the updated
+	// finding on the event bus, hands it to the notifier (a response
+	// transition is a webhook delivery, #2718), and returns it.
+	// ErrFindingNotFound if id does not exist. The kill facts are sticky
+	// (#2766, #2816): when the finding has a kill on record and r carries no
+	// kill, or one with a lower count, the stored kill (process_killed, the
+	// latest pid, the count and the skip reason) is kept whole in the same
+	// write, as FindingResponse.KeepKillOf describes.
+	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
+	// SetResponseHeld records box's response while another box of a shared
+	// finding still holds an applied action (#2820): standing (that box's
+	// APPLIED record) is what the finding stores and shows, so it never
+	// reads RELEASED, EXPIRED or FAILED while a box is still throttled or
+	// frozen, and box is what the webhook delivers, naming box.Container.
+	// The kill on record stays sticky on both, as in SetResponse.
+	SetResponseHeld(ctx context.Context, id int64, box, standing FindingResponse) (*Finding, error)
+	// ResolveWithResponse records r and resolves the finding in one write:
+	// the release of the last box holding it (#2820). It is one webhook
+	// delivery, the resolve, carrying r (so the consumer learns both that
+	// the box was released and that the finding resolved). When the finding
+	// is no longer open, r is still recorded and delivered as SetResponse
+	// would, and the error wraps ErrFindingNotOpen; ErrFindingNotFound when
+	// id does not exist. Any other error does not say whether r was written:
+	// the Postgres store reads the row back after its UPDATE, so a failed
+	// read (or a failed SetResponse on the not-open path) can come after r
+	// was recorded and the finding resolved, with nothing delivered. A
+	// caller that must be sure re-reads the finding, or records r again (the
+	// process responder does: SetResponse of the same record is harmless).
+	ResolveWithResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
+}
+
+// ResponseDelivery is the finding a response write hands the webhook:
+// stored as the store now has it, carrying box (the record of the box the
+// write is about) as its response, with the kill on record kept as the store
+// keeps it, and naming box.Container as the finding's container (#2820: the
+// stored row keeps the box that first opened a shared finding, which says
+// nothing about which box this delivery is for). A copy: later writes to
+// the stored finding do not change it.
+func ResponseDelivery(stored *Finding, box FindingResponse) *Finding {
+	out := *stored
+	box.KeepKillOf(stored.Response)
+	out.Response = &box
+	if box.Container != "" {
+		out.Container = box.Container
+	}
+	return &out
+}
+
+// resolveDelivery is the finding a plain resolve (Resolve, not
+// ResolveWithResponse) hands the webhook (#2835): the stored finding, naming
+// the box of the response it carries, if any, so that every post carrying a
+// response names that response's box at the top level. The stored row keeps
+// the box that first opened a shared finding, which says nothing about the
+// response. A copy.
+func resolveDelivery(stored *Finding) *Finding {
+	if stored.Response == nil {
+		out := *stored
+		return &out
+	}
+	return ResponseDelivery(stored, *stored.Response)
 }
 
 // FindingState is the lifecycle state of a Finding.
@@ -173,7 +426,11 @@ type ListFilter struct {
 	TenantID string
 	Since    time.Time
 	State    FindingState // "" = any state
-	Limit    int          // <= 0 or > 200 => default/cap 50/200
+	// Rule narrows to one rule; unset (THREAT_RULE_ID_UNSPECIFIED) = any rule.
+	Rule pb.ThreatRuleId
+	// BackendID narrows to findings written by one backend; "" = any backend.
+	BackendID string
+	Limit     int // <= 0 or > 200 => default/cap 50/200
 }
 
 // Finding is a single security finding: an open or resolved instance of a
@@ -193,6 +450,26 @@ type Finding struct {
 	Evidence  Evidence
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// Response is what the process responder did about this finding, nil
+	// when nothing acted on it (#2636).
+	Response *FindingResponse
+}
+
+// clone copies Evidence and Response separately so later changes cannot alter the snapshot.
+func (f *Finding) clone() *Finding {
+	snapshot := *f
+	snapshot.Evidence.Flows = slices.Clone(f.Evidence.Flows)
+	snapshot.Evidence.Denies = slices.Clone(f.Evidence.Denies)
+	snapshot.Evidence.Configs = slices.Clone(f.Evidence.Configs)
+	snapshot.Evidence.Listeners = slices.Clone(f.Evidence.Listeners)
+	snapshot.Evidence.CPU = slices.Clone(f.Evidence.CPU)
+	snapshot.Evidence.Execs = slices.Clone(f.Evidence.Execs)
+
+	if f.Response != nil {
+		response := *f.Response
+		snapshot.Response = &response
+	}
+	return &snapshot
 }
 
 // ToProto converts a Finding to its wire representation.
@@ -208,13 +485,16 @@ func (f *Finding) ToProto() *pb.Finding {
 	flows := make([]*pb.FlowEvidence, 0, len(f.Evidence.Flows))
 	for _, fl := range f.Evidence.Flows {
 		flows = append(flows, &pb.FlowEvidence{
-			SrcIp:    fl.SrcIP,
-			DstIp:    fl.DstIP,
-			SrcPort:  fl.SrcPort,
-			DstPort:  fl.DstPort,
-			Protocol: fl.Protocol,
-			Bytes:    fl.Bytes,
-			Packets:  fl.Packets,
+			SrcIp:     fl.SrcIP,
+			DstIp:     fl.DstIP,
+			SrcPort:   fl.SrcPort,
+			DstPort:   fl.DstPort,
+			Protocol:  fl.Protocol,
+			Bytes:     fl.Bytes,
+			Packets:   fl.Packets,
+			FirstSeen: timestampProto(fl.FirstSeen),
+			LastSeen:  timestampProto(fl.LastSeen),
+			Matched:   fl.Matched,
 		})
 	}
 	denies := make([]*pb.DenyEvidence, 0, len(f.Evidence.Denies))
@@ -250,6 +530,21 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	cpu := make([]*pb.CPUEvidence, 0, len(f.Evidence.CPU))
+	for _, c := range f.Evidence.CPU {
+		cpu = append(cpu, &pb.CPUEvidence{
+			MeanCores:     c.MeanCores,
+			PeakCores:     c.PeakCores,
+			WindowSeconds: c.WindowSeconds,
+			Samples:       c.Samples,
+		})
+	}
+
+	execs := make([]*pb.ExecEvidence, 0, len(f.Evidence.Execs))
+	for _, x := range f.Evidence.Execs {
+		execs = append(execs, x.ToProto())
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -265,8 +560,11 @@ func (f *Finding) ToProto() *pb.Finding {
 			Denies:    denies,
 			Configs:   configs,
 			Listeners: listeners,
+			Cpu:       cpu,
+			Execs:     execs,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
+		Response:  f.Response.ToProto(),
 	}
 }

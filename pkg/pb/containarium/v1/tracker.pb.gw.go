@@ -1163,6 +1163,67 @@ func local_request_TrackerService_SubmitTrackerChange_0(ctx context.Context, mar
 	return msg, metadata, err
 }
 
+func request_TrackerService_SubmitTrackerChangeFiles_0(ctx context.Context, marshaler runtime.Marshaler, client TrackerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SubmitTrackerChangeFilesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	val, ok = pathParams["connection"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "connection")
+	}
+	protoReq.Connection, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "connection", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.SubmitTrackerChangeFiles(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_TrackerService_SubmitTrackerChangeFiles_0(ctx context.Context, marshaler runtime.Marshaler, server TrackerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SubmitTrackerChangeFilesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	val, ok = pathParams["connection"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "connection")
+	}
+	protoReq.Connection, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "connection", err)
+	}
+	msg, err := server.SubmitTrackerChangeFiles(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 // RegisterTrackerServiceHandlerServer registers the http handlers for service TrackerService to "mux".
 // UnaryRPC     :call TrackerServiceServer directly.
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
@@ -1529,6 +1590,26 @@ func RegisterTrackerServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		}
 		forward_TrackerService_SubmitTrackerChange_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_TrackerService_SubmitTrackerChangeFiles_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/SubmitTrackerChangeFiles", runtime.WithHTTPPathPattern("/v1/tracker/connections/{username}/{connection}/changes:files"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_TrackerService_SubmitTrackerChangeFiles_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_TrackerService_SubmitTrackerChangeFiles_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 
 	return nil
 }
@@ -1875,47 +1956,66 @@ func RegisterTrackerServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		}
 		forward_TrackerService_SubmitTrackerChange_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_TrackerService_SubmitTrackerChangeFiles_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/SubmitTrackerChangeFiles", runtime.WithHTTPPathPattern("/v1/tracker/connections/{username}/{connection}/changes:files"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_TrackerService_SubmitTrackerChangeFiles_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_TrackerService_SubmitTrackerChangeFiles_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	return nil
 }
 
 var (
-	pattern_TrackerService_SetTrackerConnection_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "tracker", "connections"}, ""))
-	pattern_TrackerService_GetTrackerConnection_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
-	pattern_TrackerService_ListTrackerConnections_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "tracker", "connections", "username"}, ""))
-	pattern_TrackerService_DeleteTrackerConnection_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
-	pattern_TrackerService_SetTrackerRoute_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "routes", "scope"}, ""))
-	pattern_TrackerService_ListTrackerRoutes_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "routes"}, ""))
-	pattern_TrackerService_DeleteTrackerRoute_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "routes", "scope"}, ""))
-	pattern_TrackerService_DispatchTrackerIssues_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "dispatch"}, ""))
-	pattern_TrackerService_ListTrackerDispatches_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "dispatches"}, ""))
-	pattern_TrackerService_GetTrackerStatus_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "name", "status"}, ""))
-	pattern_TrackerService_GetTrackerIssue_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number"}, ""))
-	pattern_TrackerService_ListTrackerIssues_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "issues"}, ""))
-	pattern_TrackerService_GetTrackerChange_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "changes", "number"}, ""))
-	pattern_TrackerService_CommentOnTrackerIssue_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "comments"}, ""))
-	pattern_TrackerService_ClaimTrackerIssue_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "claim"}, ""))
-	pattern_TrackerService_SetTrackerIssueLabels_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "labels"}, ""))
-	pattern_TrackerService_CreateTrackerIssue_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "issues"}, ""))
-	pattern_TrackerService_SubmitTrackerChange_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "changes"}, ""))
+	pattern_TrackerService_SetTrackerConnection_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "tracker", "connections"}, ""))
+	pattern_TrackerService_GetTrackerConnection_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
+	pattern_TrackerService_ListTrackerConnections_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "tracker", "connections", "username"}, ""))
+	pattern_TrackerService_DeleteTrackerConnection_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
+	pattern_TrackerService_SetTrackerRoute_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "routes", "scope"}, ""))
+	pattern_TrackerService_ListTrackerRoutes_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "routes"}, ""))
+	pattern_TrackerService_DeleteTrackerRoute_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "routes", "scope"}, ""))
+	pattern_TrackerService_DispatchTrackerIssues_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "dispatch"}, ""))
+	pattern_TrackerService_ListTrackerDispatches_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "dispatches"}, ""))
+	pattern_TrackerService_GetTrackerStatus_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "name", "status"}, ""))
+	pattern_TrackerService_GetTrackerIssue_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number"}, ""))
+	pattern_TrackerService_ListTrackerIssues_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "issues"}, ""))
+	pattern_TrackerService_GetTrackerChange_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "tracker", "connections", "username", "connection", "changes", "number"}, ""))
+	pattern_TrackerService_CommentOnTrackerIssue_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "comments"}, ""))
+	pattern_TrackerService_ClaimTrackerIssue_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "claim"}, ""))
+	pattern_TrackerService_SetTrackerIssueLabels_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"v1", "tracker", "connections", "username", "connection", "issues", "number", "labels"}, ""))
+	pattern_TrackerService_CreateTrackerIssue_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "issues"}, ""))
+	pattern_TrackerService_SubmitTrackerChange_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "changes"}, ""))
+	pattern_TrackerService_SubmitTrackerChangeFiles_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "connection", "changes"}, "files"))
 )
 
 var (
-	forward_TrackerService_SetTrackerConnection_0    = runtime.ForwardResponseMessage
-	forward_TrackerService_GetTrackerConnection_0    = runtime.ForwardResponseMessage
-	forward_TrackerService_ListTrackerConnections_0  = runtime.ForwardResponseMessage
-	forward_TrackerService_DeleteTrackerConnection_0 = runtime.ForwardResponseMessage
-	forward_TrackerService_SetTrackerRoute_0         = runtime.ForwardResponseMessage
-	forward_TrackerService_ListTrackerRoutes_0       = runtime.ForwardResponseMessage
-	forward_TrackerService_DeleteTrackerRoute_0      = runtime.ForwardResponseMessage
-	forward_TrackerService_DispatchTrackerIssues_0   = runtime.ForwardResponseMessage
-	forward_TrackerService_ListTrackerDispatches_0   = runtime.ForwardResponseMessage
-	forward_TrackerService_GetTrackerStatus_0        = runtime.ForwardResponseMessage
-	forward_TrackerService_GetTrackerIssue_0         = runtime.ForwardResponseMessage
-	forward_TrackerService_ListTrackerIssues_0       = runtime.ForwardResponseMessage
-	forward_TrackerService_GetTrackerChange_0        = runtime.ForwardResponseMessage
-	forward_TrackerService_CommentOnTrackerIssue_0   = runtime.ForwardResponseMessage
-	forward_TrackerService_ClaimTrackerIssue_0       = runtime.ForwardResponseMessage
-	forward_TrackerService_SetTrackerIssueLabels_0   = runtime.ForwardResponseMessage
-	forward_TrackerService_CreateTrackerIssue_0      = runtime.ForwardResponseMessage
-	forward_TrackerService_SubmitTrackerChange_0     = runtime.ForwardResponseMessage
+	forward_TrackerService_SetTrackerConnection_0     = runtime.ForwardResponseMessage
+	forward_TrackerService_GetTrackerConnection_0     = runtime.ForwardResponseMessage
+	forward_TrackerService_ListTrackerConnections_0   = runtime.ForwardResponseMessage
+	forward_TrackerService_DeleteTrackerConnection_0  = runtime.ForwardResponseMessage
+	forward_TrackerService_SetTrackerRoute_0          = runtime.ForwardResponseMessage
+	forward_TrackerService_ListTrackerRoutes_0        = runtime.ForwardResponseMessage
+	forward_TrackerService_DeleteTrackerRoute_0       = runtime.ForwardResponseMessage
+	forward_TrackerService_DispatchTrackerIssues_0    = runtime.ForwardResponseMessage
+	forward_TrackerService_ListTrackerDispatches_0    = runtime.ForwardResponseMessage
+	forward_TrackerService_GetTrackerStatus_0         = runtime.ForwardResponseMessage
+	forward_TrackerService_GetTrackerIssue_0          = runtime.ForwardResponseMessage
+	forward_TrackerService_ListTrackerIssues_0        = runtime.ForwardResponseMessage
+	forward_TrackerService_GetTrackerChange_0         = runtime.ForwardResponseMessage
+	forward_TrackerService_CommentOnTrackerIssue_0    = runtime.ForwardResponseMessage
+	forward_TrackerService_ClaimTrackerIssue_0        = runtime.ForwardResponseMessage
+	forward_TrackerService_SetTrackerIssueLabels_0    = runtime.ForwardResponseMessage
+	forward_TrackerService_CreateTrackerIssue_0       = runtime.ForwardResponseMessage
+	forward_TrackerService_SubmitTrackerChange_0      = runtime.ForwardResponseMessage
+	forward_TrackerService_SubmitTrackerChangeFiles_0 = runtime.ForwardResponseMessage
 )

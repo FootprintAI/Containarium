@@ -7,7 +7,8 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
-// BackupDestination is where a logical dump is stored *off* the database
+// BackupDestination selects archive storage or a Kubernetes PVC snapshot.
+// For LOCAL and GCS, the logical dump is stored *off* the database
 // host. The whole point of the feature is getting the data off-box, so a
 // destination is always required — there is no "stay on the same disk"
 // option (a dump that shares a failure domain with the database it came
@@ -25,9 +26,13 @@ enum BackupDestination {
   // (`gcloud storage cp`). True off-host durability; the recommended
   // production destination.
   BACKUP_DESTINATION_GCS = 2;
+
+  // Kubernetes CSI snapshot of the box data PVC. Requires scope BOX.
+  // Encryption and durability are provided by the CSI storage backend.
+  BACKUP_DESTINATION_SNAPSHOT = 3;
 }
 
-// BackupEngine identifies the database engine a backup was taken from.
+// BackupEngine identifies the database or box backup implementation.
 //
 // Postgres is the only engine implemented today; the enum exists so that a
 // second one has somewhere to be named, and so that the engine a record was
@@ -48,6 +53,12 @@ enum BackupEngine {
   // and deleted, but is never restored or restore-tested by the platform —
   // apply it with the tenant's own tooling.
   BACKUP_ENGINE_HOOK = 2;
+
+  // A box backup (scope BACKUP_SCOPE_BOX): an Incus instance archive or,
+  // with destination SNAPSHOT, a Kubernetes data-PVC snapshot. Snapshot
+  // encryption and durability are controlled by the CSI storage backend.
+  // Box backups are never restored by a database engine.
+  BACKUP_ENGINE_BOX = 3;
 }
 
 // BackupKeyMode names who holds the key that opens an encrypted backup
@@ -97,6 +108,31 @@ enum HookFormat {
   // into an explicitly named target container other than its source
   // (never in place: the daemon cannot reach the source's Postgres).
   HOOK_FORMAT_PG_CUSTOM = 2;
+}
+
+// BackupScope names what a backup captures (#2800, slice 1 of #2372).
+//
+// The zero value is today's database backup, so every client and every
+// stored record that predates this enum keeps meaning exactly what it
+// meant. A BOX backup is the off-host, durable copy of a whole box; a ZFS
+// snapshot (ContainerService) is the host-local, in-place one. See
+// docs/architecture/container-snapshots.md for the split.
+enum BackupScope {
+  // Unset: a database backup, identical to BACKUP_SCOPE_DATABASE. What
+  // every request and record written before this field existed reads as.
+  BACKUP_SCOPE_UNSPECIFIED = 0;
+
+  // A logical database dump (pg_dump, or a tenant backup hook): today's
+  // behaviour.
+  BACKUP_SCOPE_DATABASE = 1;
+
+  // The whole box: its root filesystem and attached volumes, minus /tmp,
+  // /var/tmp, /var/cache and /run, with container config and device
+  // metadata in a manifest; snapshot history is not included. The box is
+  // the request's `username` (the box "<username>-container"). A BOX
+  // request carries no database `connection` and no `hook`, and must name
+  // an explicit encryption key_mode: plaintext is refused for BOX.
+  BACKUP_SCOPE_BOX = 2;
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -156,7 +192,8 @@ message BackupRecord {
   // user-held key (#1831). size_bytes and sha256 then describe the
   // ciphertext — what is actually stored — so integrity is verified
   // before decryption. Restoring requires the matching identity, which
-  // the platform never holds.
+  // the platform never holds. False means the stored bytes are plaintext
+  // (#3169): readable by anyone with read access to the destination.
   bool encrypted = 12;
 
   // The age X25519 recipient ("age1…") the dump was encrypted to. A
@@ -187,6 +224,11 @@ message BackupRecord {
   // (#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for
   // pg_dump records.
   HookFormat hook_format = 18;
+
+  // What the backup captured (#2800). Always set on a record the daemon
+  // returns: DATABASE for every database backup, including records
+  // written before this field existed.
+  BackupScope scope = 19;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -343,6 +385,23 @@ message CreateBackupRequest {
   // available in the container) and can be restore-tested. Rejected
   // without `hook`.
   HookFormat hook_format = 9;
+
+  // What to back up (#2800). UNSPECIFIED and DATABASE are today's database
+  // backup, unchanged. BOX backs up the whole box named by `username`; it
+  // is rejected with INVALID_ARGUMENT when `connection`, `hook` or
+  // `hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is
+  // never plaintext, so the mode is named, not defaulted). `destination`,
+  // `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
+  // database backup.
+  BackupScope scope = 10;
+
+  // Refuse to store plaintext (#3169). When true and the dump would be
+  // stored with no key at all — no age_recipient given, none registered
+  // for the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key
+  // on this daemon — the request fails with FAILED_PRECONDITION before any
+  // container is touched, so no object is written. False keeps today's
+  // behaviour: such a dump is stored unencrypted (and logged as a WARNING).
+  bool require_encryption = 11;
 }
 
 message CreateBackupResponse {
@@ -392,7 +451,9 @@ message GetBackupResponse {
 // database via pg_restore. Destructive: with `clean` set it drops and
 // recreates objects before loading.
 message RestoreBackupRequest {
-  // Backup to restore.
+  // Backup to restore. A SNAPSHOT backup restarts its source box on a new
+  // PVC in the same namespace, retaining the old PVC. connection, clean,
+  // age_identity and target_container must be unset for snapshot restores.
   string id = 1;
 
   // Connection parameters for pg_restore inside the target container.
@@ -431,19 +492,21 @@ message RestoreBackupResponse {
 //
 // The target is always a container other than the one the backup came
 // from — verification must never touch the source database. Supply a
-// disposable container as the target; the daemon rejects a request whose
-// target resolves to the source container.
+// different tenant's disposable container as the target (admin only), or
+// the backup's own tenant for a daemon-managed isolated verification container.
 message VerifyBackupRequest {
   // Backup to verify.
   string id = 1;
 
-  // Tenant whose container is used as the throwaway restore target.
-  // Required, and must differ from the backup's own tenant container.
+  // Required target tenant. The backup's own tenant selects a fresh,
+  // daemon-managed isolated Postgres 16 container, deleted after verification.
+  // A different tenant selects that tenant's existing container (admin only).
   string target_username = 2;
 
   // Connection parameters for the *target* container's Postgres. The
   // scratch database name is generated by the daemon, so
-  // connection.database is ignored here.
+  // connection.database is ignored here. All connection fields are ignored
+  // for the daemon-managed target, which uses generated local credentials.
   PgConnection connection = 3;
 
   // For a record with encrypted=true: the age X25519 identity
@@ -526,7 +589,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Create a backup";
-      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.";
+      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.";
       tags: "Backups";
     };
   }

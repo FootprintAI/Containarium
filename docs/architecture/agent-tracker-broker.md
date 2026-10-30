@@ -224,10 +224,13 @@ SubmitTrackerChange(issue, title, description, draft)      ← no remote, no ref
   1  base := run record's git_commit                        (FAILED_PRECONDITION if the run had no git_source)
   2  exec in box:  git bundle create <seed>/out.bundle <base>..HEAD
   3  pull file out (size-capped, default 50 MiB) → host tmpdir, mode 0600
+  3a Proof Pack (#2798): generate in the run's box, at HEAD = the bundled head;
+       seal into the audit chain (FAILED_PRECONDITION / UNAVAILABLE, nothing pushed, on failure)
   4  GitPusher.PushBundle:
        git init --bare <tmp>; git bundle verify; git fetch <bundle>
-       git push <remote-url> <sha>:refs/heads/agent/<run-id-short>/<issue>-<slug>   (no --force)
-  5  Provider.OpenChange(head branch, closing reference, stamped description)
+       commit .containarium/proof-pack.json on top of <sha> (private index; replaces any agent copy)
+       git push <remote-url> <sha'>:refs/heads/agent/<run-id-short>/<issue>-<slug>   (no --force)
+  5  Provider.OpenChange(head branch, closing reference, stamped description + pack digest)
   6  audit(commit range, branch, change number); rm -rf <tmp>   (deferred; runs on every path)
 ```
 
@@ -285,7 +288,7 @@ is parsed and validated in `seed.ts`, not cast.
 | Boundary | Contract | Source of truth | Generated |
 | --- | --- | --- | --- |
 | Any caller ↔ daemon | `TrackerService`: `Create/Get/List/DeleteTrackerConnection`, `GetTrackerStatus`, `GetTrackerIssue`, `ListTrackerIssues`, `GetTrackerChange`, `CommentOnTrackerIssue`, `ClaimTrackerIssue`, `SetTrackerIssueLabels`, `SubmitTrackerChange` | `proto/containarium/v1/tracker.proto` with `google.api.http` + OpenAPI annotations | `pkg/pb`, `.pb.gw.go`, swagger via `make proto` |
-| Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`) | same | same |
+| Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`), `TrackerCredentialKind` (`PROJECT`, `GROUP`, `PERSONAL`) | same | same |
 | Secrets | `SECRET_DELIVERY_BROKER_ONLY = 4` | `secrets.proto` | same |
 | Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claims `tracker_conn` + `run_tenant` on `auth.Claims` (minted together as `auth.RunBinding`) | `agent.proto`; `internal/auth/token.go` | — |
 | Scopes | `tracker:read`, `tracker:write`, `tracker:admin` (connection CRUD) | `internal/auth/scopes.go` | — |

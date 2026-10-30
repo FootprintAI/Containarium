@@ -1,5 +1,7 @@
 # Containarium API + Service Design (Phase 7)
 
+> Status: **Implemented** (historical design note). The daemon and API this note proposed ship as `containariumd` (`cmd/containariumd`) with the contract in `proto/containarium/v1`; the code and the generated swagger doc are authoritative where they differ from the phase plan below.
+
 This document outlines the design for exposing Containarium as an API service with a daemon.
 
 ## Current State (Phase 6)

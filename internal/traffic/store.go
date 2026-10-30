@@ -27,8 +27,12 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Test the connection
-	if err := pool.Ping(ctx); err != nil {
+	// Test the connection under a bounded deadline: pgx's dial has no timeout
+	// of its own, so an unresponsive Postgres would block daemon startup
+	// before it serves (#2824).
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
@@ -212,13 +216,35 @@ func (s *Store) SaveConnection(ctx context.Context, conn *pb.Connection) error {
 
 // QueryParams holds parameters for querying traffic history
 type QueryParams struct {
+	// ContainerName scopes the query to one box. Empty means every box
+	// (host-wide, #2884): callers must have authorized that before setting it.
 	ContainerName string
-	StartTime     time.Time
-	EndTime       time.Time
-	DestIP        string
-	DestPort      int
-	Offset        int
-	Limit         int
+	// StartTime and EndTime bound started_at, both inclusive.
+	StartTime time.Time
+	EndTime   time.Time
+	DestIP    string
+	DestPort  int
+	Offset    int
+	Limit     int
+}
+
+// OldestRecord returns started_at of the oldest connection held for a box (all
+// boxes when containerName is empty), or nil when nothing is held. It lets a
+// caller distinguish "no matching traffic" from "nothing collected" (#2884).
+func (s *Store) OldestRecord(ctx context.Context, containerName string) (*time.Time, error) {
+	var oldest *time.Time
+	var err error
+	if containerName == "" {
+		err = s.pool.QueryRow(ctx, `SELECT MIN(started_at) FROM traffic_connections`).Scan(&oldest)
+	} else {
+		err = s.pool.QueryRow(ctx,
+			`SELECT MIN(started_at) FROM traffic_connections WHERE container_name = $1`,
+			containerName).Scan(&oldest)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read oldest record: %w", err)
+	}
+	return oldest, nil
 }
 
 // QueryConnections retrieves historical connections matching the criteria
@@ -242,15 +268,21 @@ func (s *Store) QueryConnections(ctx context.Context, params QueryParams) ([]*pb
 		SELECT id, container_name, protocol, host(source_ip), source_port, host(dest_ip), dest_port,
 		       direction, bytes_sent, bytes_received, started_at, ended_at, duration_seconds
 		FROM traffic_connections
-		WHERE container_name = $1 AND started_at >= $2 AND started_at <= $3
+		WHERE started_at >= $1 AND started_at <= $2
 	`
 	countQuery := `
 		SELECT COUNT(*) FROM traffic_connections
-		WHERE container_name = $1 AND started_at >= $2 AND started_at <= $3
+		WHERE started_at >= $1 AND started_at <= $2
 	`
 
-	args := []interface{}{params.ContainerName, params.StartTime, params.EndTime}
-	argIndex := 4
+	args := []interface{}{params.StartTime, params.EndTime}
+	argIndex := 3
+	if params.ContainerName != "" {
+		baseQuery += fmt.Sprintf(" AND container_name = $%d", argIndex)
+		countQuery += fmt.Sprintf(" AND container_name = $%d", argIndex)
+		args = append(args, params.ContainerName)
+		argIndex++
+	}
 
 	if params.DestIP != "" {
 		baseQuery += fmt.Sprintf(" AND dest_ip = $%d", argIndex)

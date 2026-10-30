@@ -12,6 +12,8 @@ import (
 )
 
 var (
+	crewRunGraphFile         string
+	crewRunConcurrency       uint32
 	crewRunBackendID         string
 	crewRunPool              string
 	crewRunInput             string
@@ -19,6 +21,7 @@ var (
 	crewRunGitRef            string
 	crewRunGitCredentialFile string
 	crewRunEngineOverrides   []string
+	crewRunModelOverrides    []string
 )
 
 var crewListCmd = &cobra.Command{
@@ -63,6 +66,8 @@ var crewStatusCmd = &cobra.Command{
 
 func init() {
 	crewCmd.AddCommand(crewListCmd, crewGetCmd, crewRunCmd, crewStatusCmd)
+	crewRunCmd.Flags().StringVar(&crewRunGraphFile, "plan", "", "TaskGraph YAML/JSON file (ORCHESTRATOR/FREEFORM only)")
+	crewRunCmd.Flags().Uint32Var(&crewRunConcurrency, "concurrency", 0, "Parallel graph nodes (0 defaults to 5)")
 	crewRunCmd.Flags().StringVar(&crewRunBackendID, "backend-id", "", "Target backend ID")
 	crewRunCmd.Flags().StringVar(&crewRunPool, "pool", "", "Target pool")
 	crewRunCmd.Flags().StringVar(&crewRunInput, "input", "", "Crew input as a JSON string (defaults to {})")
@@ -74,6 +79,29 @@ func init() {
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for each member's fetch; never written to any box's .git/config.")
 	crewRunCmd.Flags().StringArrayVar(&crewRunEngineOverrides, "engine", nil,
 		"Override one member's engine: <skill-id>=<engine>, one of "+strings.Join(agentengine.Names(), ", ")+" (repeatable). A member with no entry keeps its manifest's own choice.")
+	crewRunCmd.Flags().StringArrayVar(&crewRunModelOverrides, "model", nil,
+		"Override one member's model: <skill-id>=<model-id> (repeatable). The id is passed through as is; a member with no entry keeps its skill's own model. Needs a named engine for that member (its manifest's, or --engine).")
+}
+
+// resolveCrewRunModelOverrides parses --model <skill-id>=<model-id> pairs into
+// the per-member map RunCrewRequest.model_overrides carries (#3259). A member
+// named more than once is an error, for the same reason as --engine.
+func resolveCrewRunModelOverrides() (map[string]string, error) {
+	if len(crewRunModelOverrides) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(crewRunModelOverrides))
+	for _, kv := range crewRunModelOverrides {
+		skillID, model, ok := strings.Cut(kv, "=")
+		if !ok || skillID == "" || model == "" {
+			return nil, fmt.Errorf("invalid --model %q (want <skill-id>=<model-id>)", kv)
+		}
+		if _, exists := out[skillID]; exists {
+			return nil, fmt.Errorf("--model %s given more than once", skillID)
+		}
+		out[skillID] = model
+	}
+	return out, nil
 }
 
 // resolveCrewRunEngineOverrides parses --engine <skill-id>=<engine> pairs
@@ -178,6 +206,10 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	modelOverrides, err := resolveCrewRunModelOverrides()
+	if err != nil {
+		return err
+	}
 
 	c, err := newCrewClient()
 	if err != nil {
@@ -186,8 +218,22 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Running crew %q...\n", args[0])
-	run, err := c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput,
-		crewRunGitSource, crewRunGitRef, gitCredential, engineOverrides)
+	var run *pb.CrewRun
+	if crewRunGraphFile != "" {
+		graph, parseErr := loadTaskGraph(crewRunGraphFile)
+		if parseErr != nil {
+			return parseErr
+		}
+		run, err = c.RunCrewGraph(&pb.RunCrewRequest{CrewId: args[0], BackendId: crewRunBackendID,
+			Pool: crewRunPool, Graph: graph, Concurrency: crewRunConcurrency, InputJson: crewRunInput,
+			GitSource: crewRunGitSource, GitRef: crewRunGitRef, GitCredential: gitCredential, EngineOverrides: engineOverrides, ModelOverrides: modelOverrides})
+	} else {
+		if crewRunConcurrency != 0 {
+			return fmt.Errorf("--concurrency requires --plan")
+		}
+		run, err = c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput,
+			crewRunGitSource, crewRunGitRef, gitCredential, engineOverrides, modelOverrides)
+	}
 	if err != nil {
 		return err
 	}
@@ -226,6 +272,15 @@ func printCrewRun(run *pb.CrewRun) {
 	}
 	if run.Error != "" {
 		fmt.Printf("Error:    %s\n", run.Error)
+	}
+	for _, node := range run.NodeResults {
+		fmt.Printf("Node: %s  State: %s  Run: %s\n", node.NodeId, node.State, node.RunId)
+		if node.Error != "" {
+			fmt.Printf("  Error: %s\n", node.Error)
+		}
+		if node.OutputJson != "" {
+			fmt.Printf("  Output: %s\n", node.OutputJson)
+		}
 	}
 	if run.ArtifactJson != "" {
 		fmt.Printf("Artifact: %s\n", run.ArtifactJson)

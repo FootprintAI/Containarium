@@ -1,0 +1,135 @@
+name: workflow-lint
+
+# Supply-chain gate (#2793, story 4 of #2649): every `uses:` is a full commit
+# SHA, and workflows pass actionlint. zizmor (#2904) additionally fails the
+# lane on pull_request_target, template injection from event data in `run:`,
+# and over-broad `permissions:` (scripts/ci/check-workflow-security.sh; a
+# seeded violation of each rule is its self-test). Dependabot keeps the pins
+# fresh; it reads the trailing `# vX` comment.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/**'
+      - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/check-workflow-security.sh'
+      - 'scripts/ci/testdata/zizmor/**'
+      - 'scripts/ci/release-only-diff.sh'
+      - '.github/CODEOWNERS'
+      - 'scripts/ci/check-codeowners.sh'
+      - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/fake-gh-repo-settings.sh'
+      - 'scripts/ci/testdata/repo-settings/**'
+      - 'scripts/admin/apply-repo-settings.sh'
+      - 'scripts/**'
+      - 'Makefile'
+      - '**/Dockerfile*'
+      - 'docs/security/BUILD-SUPPLY-CHAIN.md'
+      - 'terraform/**/startup-sentinel.sh'
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'scripts/ci/check-action-pins.sh'
+      - 'scripts/ci/check-workflow-security.sh'
+      - 'scripts/ci/testdata/zizmor/**'
+      - 'scripts/ci/release-only-diff.sh'
+      - '.github/CODEOWNERS'
+      - 'scripts/ci/check-codeowners.sh'
+      - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/fake-gh-repo-settings.sh'
+      - 'scripts/ci/testdata/repo-settings/**'
+      - 'scripts/admin/apply-repo-settings.sh'
+      - 'scripts/**'
+      - 'Makefile'
+      - '**/Dockerfile*'
+      - 'docs/security/BUILD-SUPPLY-CHAIN.md'
+      - 'terraform/**/startup-sentinel.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  # zizmorcore/zizmor release asset zizmor-x86_64-unknown-linux-gnu.tar.gz
+  # (sha256 from the release's published asset digest). Bump both together.
+  ZIZMOR_VERSION: 1.31.1
+  ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+
+jobs:
+  workflow-lint:
+    name: actionlint + zizmor + SHA pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: CODEOWNERS coverage self-test (seeded gaps must fail)
+        # #2792: the file must cover every path decided on #2649 with both owners.
+        run: scripts/ci/check-codeowners.sh --self-test
+
+      - name: CODEOWNERS covers the decided paths
+        run: scripts/ci/check-codeowners.sh
+
+      - name: Repo-settings script tests (dry run writes nothing, protection preserved)
+        run: scripts/ci/test-apply-repo-settings.sh
+
+      - name: Action allow-list covers every third-party action in use
+        # The admin script's allow-list must not lock CI out once enforced.
+        run: scripts/admin/apply-repo-settings.sh --check-allow-list
+
+      - name: Pin checker self-test
+        run: scripts/ci/check-action-pins.sh --self-test
+
+      - name: Require SHA-pinned actions
+        run: scripts/ci/check-action-pins.sh .github
+
+      - name: Release-only diff detector self-test
+        # Decides which PRs may skip the heavy jobs
+        # (.github/actions/release-only-diff); a wrong "true" skips real tests.
+        run: scripts/ci/release-only-diff.sh --self-test
+
+      - name: Build-fetch inventory self-test (seeded unlisted fetches must fail)
+        run: scripts/ci/check-build-fetches.sh --self-test
+
+      - name: Require every build-time fetch to be inventoried and pinned
+        # Also rejects any `@latest` tool install and project-level `npm install`.
+        run: scripts/ci/check-build-fetches.sh
+
+      - name: Sentinel sshpiperd checksum gate self-test (seeded broken copies must fail)
+        run: scripts/ci/check-sentinel-sshpiper-checksum.sh --self-test
+
+      - name: Require both sentinel startup scripts to verify the sshpiperd sha256
+        # Same value as ssh-ban.yml; terraform/* is outside the build-fetch inventory (#3103).
+        run: scripts/ci/check-sentinel-sshpiper-checksum.sh
+
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color'
+
+      - name: Install zizmor (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/zizmor.tgz" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  $RUNNER_TEMP/zizmor.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor.tgz" -C "$RUNNER_TEMP" zizmor
+
+      - name: Workflow security rules self-test (seeded violations must fail)
+        # One seeded bad workflow per rule under scripts/ci/testdata/zizmor
+        # (pull_request_target + head checkout, template injection, broad
+        # permissions) must be rejected, and the good one accepted.
+        run: ZIZMOR="$RUNNER_TEMP/zizmor" scripts/ci/check-workflow-security.sh --self-test
+
+      - name: zizmor (pull_request_target, template injection, permissions)
+        run: ZIZMOR="$RUNNER_TEMP/zizmor" scripts/ci/check-workflow-security.sh

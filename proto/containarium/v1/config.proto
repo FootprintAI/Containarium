@@ -278,6 +278,92 @@ message SystemInfo {
   // distinguishable from "profiled CPU-only". Carried here for the same
   // peer fan-out as headroom (#2135).
   CapabilityProfile capability_profile = 29;
+
+  // capabilities lists the optional API features this daemon supports, as
+  // the stable names in internal/server's DaemonCap* constants. A client
+  // checks for a name BEFORE sending a request field an older daemon would
+  // reject (the REST mux rejects unknown JSON fields). Absent from an older
+  // daemon: an empty list means "none of the optional features", so a
+  // client must treat a missing name as unsupported. Names are only ever
+  // added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
+  // "box_run_structured_output" (StartBoxRunRequest.structured_output) and
+  // "box_run_model" (StartBoxRunRequest.model, BoxRun.model).
+  // An open string set rather than an enum so a newer daemon's extra names
+  // never fail to decode in an older client.
+  repeated string capabilities = 30;
+
+  // storage_pools is every Incus storage pool's fill as the daemon's pool
+  // capacity monitor last read it (#2823), so a nearly full pool is visible
+  // per pool rather than hidden in the summed disk fields above. Served from
+  // the monitor's snapshot (no extra Incus call); empty when the monitor has
+  // not read yet or the daemon predates the field.
+  repeated StoragePoolCapacity storage_pools = 31;
+
+  // peer_transport is how this daemon's own calls to peer backends are
+  // secured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a
+  // supported setup (peer mTLS off, or no peer CA on the sentinel) but it
+  // means those calls go over plain HTTP, not over the pinned peer-PKI
+  // TLS, so an operator can see the degraded state instead of finding one
+  // startup log line. UNSPECIFIED means this daemon has no sentinel URL and no
+  // peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
+  // the sentinel-backend tunnel. See #3079.
+  PeerTransport peer_transport = 32;
+
+  // managed_backup_key_configured is true when this daemon has a managed
+  // backup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup
+  // it takes is encrypted even for a tenant with no registered age
+  // recipient. `containarium backup status` reads it to avoid flagging such
+  // tenants as unencrypted. False covers both "no managed key" and a daemon
+  // that predates the field, so a client must treat false as "not known to
+  // be encrypted". See #3213.
+  bool managed_backup_key_configured = 33;
+}
+
+// PeerTransport is the transport this daemon uses for its calls to peer
+// backends.
+enum PeerTransport {
+  // No sentinel and no peers (no peer calls), or the daemon predates the field.
+  PEER_TRANSPORT_UNSPECIFIED = 0;
+  // Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was
+  // obtained from the sentinel).
+  PEER_TRANSPORT_HTTP = 1;
+  // Peer calls use HTTPS with the sentinel-issued leaf cert and the pinned
+  // peer CA.
+  PEER_TRANSPORT_MTLS = 2;
+}
+
+// StoragePoolCapacity is one storage pool's fill (#2823).
+message StoragePoolCapacity {
+  // Storage pool name.
+  string pool = 1;
+
+  // The pool's driver as a typed constant.
+  StorageDriver driver = 2;
+
+  // Bytes used and usable size, as Incus reports them for the pool. For ZFS,
+  // Incus derives the size as used + available, so ZFS slop space is already
+  // excluded (read from the Incus driver; not verified on a live pool).
+  int64 used_bytes = 3;
+  int64 total_bytes = 4;
+
+  // Fill level against the daemon's fixed thresholds (warning >= 85%,
+  // critical >= 95% of used_bytes / total_bytes).
+  StoragePoolCapacityLevel level = 5;
+
+  // When the monitor read the pool.
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+// StoragePoolCapacityLevel is a storage pool's fill level (#2823).
+enum StoragePoolCapacityLevel {
+  // The pool did not report a size.
+  STORAGE_POOL_CAPACITY_LEVEL_UNSPECIFIED = 0;
+  // Below the warning threshold.
+  STORAGE_POOL_CAPACITY_LEVEL_OK = 1;
+  // At or above 85%.
+  STORAGE_POOL_CAPACITY_LEVEL_WARNING = 2;
+  // At or above 95%: containers on the pool may soon stop writing.
+  STORAGE_POOL_CAPACITY_LEVEL_CRITICAL = 3;
 }
 
 // CPUAdmissionMode is the CPU overcommit admission gate's posture
@@ -516,6 +602,13 @@ message TriggerUpgradeRequest {
   // air-gapped hosts, which have no GitHub egress and must keep the
   // sentinel path regardless — this field existing changes nothing for them.
   string github_tag = 3;
+
+  // Permit github_tag to name a release older than the running daemon
+  // version (a deliberate rollback). Default false: such a tag is refused
+  // with FAILED_PRECONDITION. Only both-parse-as-semver comparisons can
+  // refuse; "latest", dev builds and unparseable versions are not blocked.
+  // Has no effect on the sentinel-served path.
+  bool allow_downgrade = 4;
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
@@ -568,70 +661,6 @@ message GetUpgradeStatusResponse {
   // Version the upgrade was installing, as recorded when it was triggered.
   // Empty when unknown, including after a restart dropped the job. #2171.
   string target_version = 5;
-}
-
-// BridgeDNSState is the reconcile state of the bridge DNS record that resolves
-// the app-hosting base domain to core-caddy (#2188).
-enum BridgeDNSState {
-  BRIDGE_DNS_STATE_UNSPECIFIED = 0;
-  // The daemon is not running the reconciler: app hosting is off, or core-caddy
-  // is not managed by this daemon (an operator-supplied Caddy admin URL).
-  BRIDGE_DNS_STATE_NOT_MANAGED = 1;
-  // The reconciler is running but no pass has finished yet.
-  BRIDGE_DNS_STATE_PENDING = 2;
-  // The record on the bridge equals what the daemon renders for core-caddy's
-  // live address.
-  BRIDGE_DNS_STATE_IN_SYNC = 3;
-  // The last pass could not converge (see last_error): core-caddy's address
-  // could not be established, the record could not be read, or the write failed.
-  BRIDGE_DNS_STATE_DEGRADED = 4;
-  // The bridge has no record and this daemon will not create one (#2232):
-  // it only repairs a record that already exists, or creates one in the run
-  // that installs core-caddy, or when started with --bridge-dns-create.
-  BRIDGE_DNS_STATE_ABSENT = 5;
-}
-
-// GetBridgeDNSStatusRequest asks for the bridge DNS reconciler's last pass.
-message GetBridgeDNSStatusRequest {}
-
-// GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot.
-message GetBridgeDNSStatusResponse {
-  BridgeDNSState state = 1;
-
-  // Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty
-  // when IN_SYNC.
-  string reason = 2;
-
-  // Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0).
-  string bridge = 3;
-
-  // core-caddy's address as of the last pass; empty when it could not be
-  // established.
-  string caddy_ip = 4;
-
-  // The raw.dnsmasq value the daemon wants for that address, and the value the
-  // bridge held after the last pass (equal once IN_SYNC). Operator-configured
-  // hostnames appear here, so this is admin-only.
-  string desired = 5;
-  string current = 6;
-
-  // Why the last pass could not converge; empty when it did.
-  string last_error = 7;
-
-  // Passes that found the record different from the desired value.
-  int32 drift_count = 8;
-
-  // When the last pass finished, and when the record was last rewritten.
-  // Unset until the first pass / first rewrite.
-  google.protobuf.Timestamp last_pass = 9;
-  google.protobuf.Timestamp last_applied = 10;
-  // What the last write was: "created" (no record existed — the daemon made
-  // one, announced in the log) or "repaired" (an existing record was brought
-  // back to the desired value). Empty until the daemon has written. #2232.
-  string last_action = 11;
-  // When this daemon created the record from nothing; unset if it only
-  // ever repaired one.
-  google.protobuf.Timestamp created_at = 12;
 }
 
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or
@@ -715,6 +744,17 @@ message NetworkPolicy {
   // Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly
   // as its lists say. See EgressPreset.
   EgressPreset egress_preset = 10;
+
+  // Enforcement mode for the egress allow-list ONLY. `mode` keeps governing
+  // the cross-tenant, intra-tenant, metadata, virtual-patch and signature
+  // checks; this field decides whether a flow to a destination outside the
+  // allow-list (egress_cidrs + resolved egress_domains) is dropped or only
+  // logged. It lets an operator soak a narrower allow-list in LOG_ONLY while
+  // the cross-tenant drop stays in ENFORCE. UNSPECIFIED (the default, and what
+  // every policy written before this field carries) means "follow `mode`", so
+  // existing policies behave exactly as before. The daemon-wide enforce guard
+  // downgrades ENFORCE here exactly as it does for `mode`.
+  NetworkPolicyMode egress_mode = 11;
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a
@@ -759,6 +799,8 @@ message GetNetworkPolicyRequest {
 }
 message GetNetworkPolicyResponse {
   NetworkPolicy policy = 1;
+  // SHA256 of the complete observed policy for optimistic ingress edits.
+  string revision = 2;
 }
 
 message ListNetworkPoliciesRequest {}

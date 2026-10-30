@@ -207,8 +207,8 @@ stored object is named `<id>.dump.age` and the record carries
   ```
 
 **Where the encryption happens, honestly:** in this release the dump is
-encrypted **in the daemon process, in memory**, after it is pulled from
-the container and before it is written anywhere. That guarantees ciphertext-
+encrypted **as a stream in the daemon process**, while it is pulled from
+the container and before it is written to host staging. That guarantees ciphertext-
 only at rest and off-host, and that the operator cannot read a stored
 backup. It does not guard against a compromised daemon at dump time — but
 that daemon already has root exec into every tenant, so no additional
@@ -218,6 +218,79 @@ binary in the tenant image) is a follow-up.
 The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
+
+
+**Unencrypted dumps (#3169).** Encryption is opt-in per tenant. A tenant with
+no registered `CONTAINARIUM_BACKUP_AGE_RECIPIENT` (on a daemon with no managed
+backup key) is stored in plaintext, and every surface says so:
+
+- `backup create` prints `Encrypted: no` and a `WARNING ... UNENCRYPTED` line;
+  the daemon logs `[backup] WARNING UNENCRYPTED user=<tenant>`.
+- The backup record the API returns has `encrypted: false`; `backup list` shows `NO` in its
+  `ENCRYPTED` column and `backup get` prints `Encrypted: NO`.
+- `backup-all-tenants.sh` names each such tenant on a
+  `WARNING UNENCRYPTED tenant=<tenant>` line and in a closing
+  `N/M tenant(s) stored UNENCRYPTED` count. It still backs up every tenant,
+  then exits **3**, so the unit result and the timer-health metric turn red.
+  (Exit 1, any failed tenant, takes precedence.)
+
+**Refusing plaintext (recommended).** `backup create --require-encryption`
+fails a backup that would be stored with no key, names the tenant, and writes
+no object. For the nightly run, set `CONTAINARIUM_BACKUP_REQUIRE_ENCRYPTION=1`
+in `/etc/containarium/backup.env`: such a tenant then counts as a failed
+tenant (exit 1) while the others still run. The default is off, so existing
+setups are unchanged. The `create_backup` MCP tool takes the same option as `require_encryption: true`.
+
+**Check before the first bad run.** `containarium backup status --server <host>`
+reads `backup-tenants.conf` (`--conf`, default
+`/etc/containarium/backup-tenants.conf`) and lists every configured tenant
+with no recipient registered on that daemon; it exits non-zero if any are
+missing or could not be checked.
+
+**Managed backup key (#3213).** `backup status` asks the daemon whether it
+has a managed backup key (`managed_backup_key_configured` on the system info
+response, set when `CONTAINARIUM_BACKUP_KMS_KEY_NAME` is configured). On such a
+daemon every dump is encrypted, so a tenant with no registered recipient is
+listed `✓` ("encrypted by the daemon's managed backup key") and does not fail
+the exit code. On a daemon without a managed key it is still listed `✗` and
+the command exits non-zero. If the system-info lookup fails (a transport error,
+or a caller that may not read system info) `backup status` prints a warning and
+reports such tenants `✗` as "encryption not confirmed", and still exits
+non-zero. An older daemon does not fail the lookup: it answers successfully
+without the field, which reads as "no managed key", so `backup status` prints
+no warning and lists such tenants `✗` UNENCRYPTED, even if that daemon has a
+managed key it cannot report.
+
+**Moving a tenant to another host.** Registered secrets, including the backup
+recipient, are stored per daemon and do **not** travel with a copied
+container (`incus copy`, export/import, or `zfs send`). On the new host,
+re-register them (`containarium secrets set <tenant>
+CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...`) and run `backup status` before the
+first backup there. Without that step, every backup of that tenant on the new
+host is stored in plaintext.
+
+### Streaming and archive size limits (#2303)
+
+Create streams the container dump through optional age encryption into a
+private staging file, hashing the stored bytes as they are written.
+Restore and Verify hash the entire stored archive before streaming it to
+the target; encrypted archives are decrypted directly into the target
+container's temporary file. The complete age stream must authenticate
+through EOF before any `pg_restore` runs. Failed or partial target files
+are removed, and encrypted plaintext is never staged on the daemon host.
+
+Both plaintext and stored ciphertext are limited to **16 GiB** by default.
+The age header and authentication overhead count toward the stored limit.
+An oversized source, downloaded object, or archive fails with
+`backup dump exceeds size limit`; no partial backup is indexed. The core
+manager's `WithMaxDumpBytes` option can set a different positive bound.
+GCS downloads stream through the same bound, including when recorded
+metadata understates an object's size. Temporary downloads are unique per
+operation and removed on failure or when their reader closes.
+
+The Incus client streams file uploads without buffering. A forward-only
+stream cannot be replayed after an HTTP redirect; such a replay fails
+explicitly. Retry the operation against the container's serving endpoint.
 
 ### C. Managed keys: a KMS-wrapped per-backup identity (#2402)
 
@@ -434,33 +507,85 @@ A job whose purpose is to decrypt and restore backups (a nightly verifier)
 should not hold an admin token: the identity that can read every tenant's
 secrets would also be the one that unwraps backup keys. `ListBackups` and
 `VerifyBackup` need much less. Mint one **non-admin token bound to a single
-tenant**, with exactly the two backup scopes:
+tenant**, with exactly the two backup scopes `backups:read` and
+`backups:verify`:
 
 ```bash
 sudo containarium token generate \
   --username <tenant> --roles user \
-  --scopes backups:read,backups:write \
+  --scopes backups:read,backups:verify \
   --expiry 720h \
   --secret-file /etc/containarium/jwt.secret --raw
 ```
 
-- `backups:write` is required because `VerifyBackup` restores the dump into
-  a scratch database. `backups:read` covers `ListBackups`.
+- `backups:verify` is what `VerifyBackup` needs: it restores the dump into a
+  scratch database in an isolated container. `backups:read` covers
+  `ListBackups`. A token holding only these two is refused `CreateBackup`,
+  `RestoreBackup`, `DeleteBackup` and `PruneBackups`, which still need
+  `backups:write`.
+- **Re-mint legacy verifier tokens before upgrading from v0.120.1.** The
+  one-release migration window has ended (#3219). `VerifyBackup` and the
+  `verify_backup` MCP tool require `backups:verify`; a token carrying only
+  `backups:read,backups:write` is refused with `PermissionDenied` (HTTP 403).
+  The RPC error names `backups:verify` and includes the token-generation
+  command. Re-mint each verifier token on the daemon host with the command
+  above, switch the job to it, then revoke the old one with
+  `containarium token revoke`. The old token still grants create, restore,
+  delete and prune for its tenant; the replacement drops those powers.
 - The token is bound to the tenant by its username. It can list and verify
-  **that tenant's** backups, and the restore target (`--target`) must be
-  that tenant's own container too: a token for one tenant cannot verify
+  **that tenant's** backups. Set `--target` to that same tenant username:
+  the daemon creates a fresh, isolated Postgres 16 container labelled with
+  the tenant, verifies there, then stops and deletes it. It never restores
+  into the source container. A token for one tenant cannot verify
   another tenant's backup, cannot restore into another tenant's container,
-  and `ListBackups` naming another tenant returns only the caller's own
-  records. `ListContainers` and `GetSecret` are denied outright (their scopes
+  and `ListBackups` naming another tenant returns `PermissionDenied`.
+  An omitted username lists the caller's own records.
+  `ListContainers` and `GetSecret` are denied outright (their scopes
   are not granted).
-- One token per backup set. The lifetime is 720h, the daemon's cap; rotate
-  it on the same timer that refreshes any other long-lived token, well before
-  it lapses (see the remote-runner note above), and revoke it with
-  `containarium token revoke` like any other.
+- One token per backup set. The example uses the proposed 720h lifetime;
+  TTL and rotation policy remain to be confirmed on #2406. The proposed
+  rotation uses the driver-token refresh timer, before expiry. Revoke it
+  with `containarium token revoke` like any other.
+
+```bash
+CONTAINARIUM_TOKEN="$VERIFIER_TOKEN" containarium backup list <tenant> --server <host>
+CONTAINARIUM_TOKEN="$VERIFIER_TOKEN" containarium backup verify <backup-id> \
+  --target <tenant> --server <host>
+```
+
+The managed target uses Ubuntu 24.04 (`images:ubuntu/24.04`), installs
+Postgres 16, and uses generated loopback-only connection credentials;
+request connection parameters (`--db-*`) are ignored in this mode. The
+daemon needs working Incus, image access, and access to Ubuntu package
+repositories. Operators may set `CONTAINARIUM_BACKUP_VERIFY_IMAGE` to a
+local Ubuntu 24.04 image alias. Each target has limits of 2 CPUs, 1 GB RAM,
+and 20 GB disk on the daemon's configured pool. Normal and failed runs
+delete the target; a 24-hour TTL lets the daemon's TTL sweeper reap a
+target left by a daemon crash or a failed cleanup. Cleanup failures are
+logged. Dumps requiring a newer PostgreSQL version or extra extensions
+need a separately prepared target selected by an administrator.
 
 This shape is pinned by `TestBackupScopedToken_AllowsOwnBackupsOnly`
 (`internal/server/backup_scoped_token_test.go`), which fails if any of those
-denials is lifted.
+denials is lifted. `scripts/backup-scoped-token-e2e.sh` exercises the
+documented token-generation command, listing, a successful restore test,
+denials, source preservation, and target cleanup against a real daemon
+and Incus in the `Incus create path` CI lane.
+
+`TestBackupRPCScopeDecisions_CoversEveryRPC` fails when `BackupService` gains
+an RPC with no recorded scope decision, and
+`TestBackupRPCScopeDecisions_Enforced` checks each recorded decision. Every
+backup RPC, including whole-box `CreateBackup`, requires `backups:read`,
+`backups:verify` (`VerifyBackup` only) or `backups:write`
+(create/restore/delete/prune), and refuses another
+tenant's data. `TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs`
+pins that a `backups:verify` token is refused create, restore, delete and
+prune. `TestBackupRPCScopeDecisions_VerifyRequiresVerifyScope` pins the
+scope decisions and actionable refusal, and
+`TestBackupRPCScopeDecisions_VerifyLegacyRefusedBeforeRequestProcessing`
+pins that legacy tokens are refused before validation or backup lookup,
+without logging through the removed deprecation path. The real-daemon
+script checks that legacy verify returns HTTP 403 with re-mint instructions.
 
 ### Watching and alerting
 
@@ -618,8 +743,8 @@ What it does, and the properties that matter for the control:
 
 - **The source container is never touched.** The dump is loaded into a
   scratch database inside the `--target` container. If `--target`
-  resolves to the container the backup came from, verification refuses to
-  run rather than restoring over live data.
+  names the backup's own tenant, the daemon provisions a separate isolated
+  container. The core always rejects the source container as a target.
 - **The scratch database is disposable.** It is created for the test and
   dropped on the way out — on the failing path too, so a failed
   verification does not leave debris in the target.
@@ -642,10 +767,11 @@ Pick any container with a Postgres and spare capacity as the target; a
 disposable one you create for the purpose is the cleanest choice, since
 verification only needs the engine, never the target's own data.
 
-> **Scope note.** The platform does not yet *provision* the throwaway
-> target for you — you supply it. Platform-provisioned ephemeral
-> verification containers are tracked separately; see #1159 for the
-> rationale.
+> **Scope note.** Same-tenant targets are provisioned and deleted by the
+> daemon. Cross-tenant targets remain operator-supplied and admin-only.
+> Each tenant may run only one managed verification at a time; another
+> request receives `ResourceExhausted` until verification and cleanup finish.
+> See #1159 for the source-isolation rationale.
 
 Restore (`backup restore`) shares the same integrity gate: the SHA-256 is
 checked before the dump touches the database, and a mismatch aborts
@@ -679,7 +805,7 @@ rather than loading corrupt data.
 - **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
 - **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete/prune)
+- **Auth scopes**: `backups:read` (list/get), `backups:verify` (verify only), `backups:write` (create/restore/delete/prune)
 - **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
 - **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify

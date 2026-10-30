@@ -38,8 +38,30 @@ func TestOnDenyEvent_CallsDenyHook(t *testing.T) {
 	ev := netbpf.DenyEvent{TenantID: 7, Dport: 443, Proto: 6}
 	e.OnDenyEvent(context.Background(), ev)
 
-	if len(got) != 1 || got[0] != ev {
-		t.Fatalf("deny hook calls = %+v, want exactly one call with %+v", got, ev)
+	// No enforce entry for tenant 7, so the hook sees it as observation-only.
+	want := ev
+	want.LogOnly = true
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("deny hook calls = %+v, want exactly one call with %+v", got, want)
+	}
+}
+
+// #2612: the hook must learn whether the tenant's policy is enforced, since
+// the BPF program emits the event for a log_only would-deny exactly as for a
+// drop.
+func TestOnDenyEvent_HookCarriesTenantMode(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.mu.Lock()
+	e.enforced[1] = true // tenant 1 enforced; tenant 2 observation-only
+	e.mu.Unlock()
+
+	var got []netbpf.DenyEvent
+	e.SetDenyHook(func(ev netbpf.DenyEvent) { got = append(got, ev) })
+	e.OnDenyEvent(context.Background(), netbpf.DenyEvent{TenantID: 1})
+	e.OnDenyEvent(context.Background(), netbpf.DenyEvent{TenantID: 2})
+
+	if len(got) != 2 || got[0].LogOnly || !got[1].LogOnly {
+		t.Fatalf("LogOnly = enforced:%v observation:%v, want false/true (events %+v)", got[0].LogOnly, got[1].LogOnly, got)
 	}
 }
 

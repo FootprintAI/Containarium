@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,13 +16,15 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
 )
 
 // Manager handles container lifecycle operations
 type Manager struct {
-	incus incus.Backend
+	incus         incus.Backend
+	toolchainRoot string // test override; production uses toolchain.HostRoot
 	// mirrors are the operator-configured registry pull-through mirrors (#908)
 	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
 	// pull from upstream registries as before. See registry_mirror.go.
@@ -51,13 +54,16 @@ const defaultCloudInitWait = 5 * time.Second
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
-	Username string
-	Image    string
-	CPU      string
-	Memory   string
-	Disk     string   // Disk size (e.g., "20GB")
-	GPUs     []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
-	StaticIP string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+	// NetworkTenant is an explicit, administrator-authorized NIC security domain.
+	// It is independent of the encryption tenant_id and of cloud labels.
+	NetworkTenant string
+	Username      string
+	Image         string
+	CPU           string
+	Memory        string
+	Disk          string   // Disk size (e.g., "20GB")
+	GPUs          []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
+	StaticIP      string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 
 	// StoragePool overrides the daemon-wide storage pool for this create.
 	// Empty uses the configured pool (#1213). See box.BoxSpec.StoragePool for
@@ -166,12 +172,33 @@ var (
 	// ensureJumpServerAccountFn creates the account with no key material, for
 	// boxes created without SSH keys (#2489).
 	ensureJumpServerAccountFn = EnsureJumpServerAccount
+	// userExistsFn and deleteJumpServerAccountFn let a failed create remove the
+	// host account it made, and let tests keep `id` and `userdel` off the host
+	// (#2850).
+	userExistsFn              = userExists
+	deleteJumpServerAccountFn = DeleteJumpServerAccount
 )
 
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
+	if opts.NetworkTenant != "" {
+		if err := incus.ValidateNetworkTenant(opts.NetworkTenant); err != nil {
+			return nil, err
+		}
+		if cloud := opts.Labels[incus.CloudOrgIDLabel]; cloud != "" && cloud != opts.NetworkTenant {
+			return nil, fmt.Errorf("network Tenant conflicts with cloud attribution")
+		}
+	}
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
+
+	// An unknown stack is refused before anything is created (#2860):
+	// installPackages silently skips an ID it cannot resolve, which would
+	// leave a box with nothing installed. The RPC rejects it first; this
+	// guards callers that reach the Manager directly.
+	if err := stacks.GetDefault().CheckStackID(opts.Stack); err != nil {
+		return nil, err
+	}
 
 	if opts.Verbose {
 		fmt.Printf("Creating container: %s\n", containerName)
@@ -234,9 +261,24 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if opts.Verbose {
 		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
 	}
-	labelConfig := make(map[string]string, len(opts.Labels))
+	labelConfig := make(map[string]string, len(opts.Labels)+1)
+	if opts.NetworkTenant != "" {
+		if isVM {
+			return nil, fmt.Errorf("explicit network Tenant requires LXC")
+		}
+		// Persist the native membership with the initial instance config.
+		// Generic labels are not authoritative network membership.
+		labelConfig[incus.TenantLabelKey] = opts.NetworkTenant
+	}
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
+	}
+	// Record the requested stack so list/get can report it later (#2163).
+	// Create refuses an unknown stack above, so this is always a resolvable
+	// ID; the check stays as defence in depth so a stack that was never
+	// installed can never be recorded.
+	if opts.Stack != "" && stacks.GetDefault().ValidateStackID(opts.Stack) {
+		labelConfig[incus.StackKey] = opts.Stack
 	}
 
 	config := incus.ContainerConfig{
@@ -246,10 +288,14 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Memory:                 opts.Memory,
 		EnableNesting:          opts.EnablePodman,
 		EnablePodmanPrivileged: opts.EnablePodmanPrivileged,
-		AutoStart:              opts.AutoStart,
-		Env:                    otelEnvVars(opts, containerName),
-		ExtraConfig:            labelConfig,
+		// Explicit membership requires a guarded, non-started instance.
+		AutoStart:   opts.AutoStart && opts.NetworkTenant == "",
+		Env:         otelEnvVars(opts, containerName),
+		ExtraConfig: labelConfig,
 	}
+	// Record whether podman was requested, always, so a box created with it
+	// off is distinguishable from a legacy box with no key (#2858).
+	config.ExtraConfig[incus.PodmanEnabledKey] = strconv.FormatBool(opts.EnablePodman)
 
 	// VMs: nesting and privileged podman are LXC concepts (the guest has its
 	// own kernel; Docker inside it needs nothing from the host). Windows
@@ -326,6 +372,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		config.GPUs = gpus
 	}
 
+	if !isWindows && config.InstanceType != incusapi.InstanceTypeVM && toolchain.Available(m.managedToolchainRoot()) {
+		config.ManagedToolchainRoot = m.managedToolchainRoot()
+	}
 	if err := m.timed(StageCreateInstance, func() error {
 		return m.incus.CreateContainer(config)
 	}); err != nil {
@@ -335,8 +384,12 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// Guard the NIC before the first start (tenant network guard): a box
 	// that cannot be guarded is deleted rather than started reachable.
 	if err := m.guardNIC(containerName, opts); err != nil {
-		_ = m.incus.DeleteContainer(containerName)
-		return nil, err
+		return nil, m.cleanupGuardedCreate(containerName, err)
+	}
+	if opts.NetworkTenant != "" && opts.AutoStart {
+		if err := m.incus.SetConfig(containerName, "boot.autostart", "true"); err != nil {
+			return nil, m.cleanupGuardedCreate(containerName, fmt.Errorf("%w: guarded autostart: %v", ErrNICGuard, err))
+		}
 	}
 
 	// Step 2: Start container
@@ -372,6 +425,11 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if opts.Verbose {
 		fmt.Println("  [3/7] Creating jump server account (proxy-only)...")
 	}
+
+	// Whether the account was already there decides, on a failed create,
+	// whether it is ours to remove (#2850). Read before the goroutine starts so
+	// the answer cannot be "yes" only because the goroutine got there first.
+	accountPreexisted := userExistsFn(opts.Username)
 
 	var jumpAccountDone chan error
 	if len(opts.SSHKeys) > 0 {
@@ -429,8 +487,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		ipAddr, err = m.incus.WaitForNetwork(containerName, 30*time.Second)
 		return err
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to get container IP: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to get container IP: %w", err))
 	}
 
 	if opts.Verbose {
@@ -474,8 +532,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	} else if err := m.timed(StageInstallPackages, func() error {
 		return m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family)
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to install packages: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to install packages: %w", err))
+	}
+
+	if config.ManagedToolchainRoot != "" {
+		if err := m.incus.Exec(containerName, []string{"sh", "-c", toolchain.SetupScript()}); err != nil {
+			// Optional for box creation (NONE/FULL_SUDO must remain usable).
+			// BUILD_TOOLS repeats this check and refuses a broken/conflicting
+			// tool setup before starting any run.
+			log.Printf("[toolchains] %s: tools unavailable: %v", containerName, err)
+		}
 	}
 
 	// Bring the box under the sshd policy at birth (#2424), on the baked
@@ -501,8 +568,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if err := m.timed(StageCreateUser, func() error {
 		return m.createUser(containerName, opts.Username, family)
 	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+			fmt.Errorf("failed to create user: %w", err))
 	}
 
 	// Step 7: Add SSH keys (including jump server's key for ProxyJump support)
@@ -532,8 +599,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if err := m.timed(StageAddSSHKeys, func() error {
 			return m.addSSHKeys(containerName, opts.Username, allKeys)
 		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to add SSH keys: %w", err)
+			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+				fmt.Errorf("failed to add SSH keys: %w", err))
 		}
 	} else {
 		if opts.Verbose {
@@ -552,19 +619,18 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if err := m.timed(StageGitSource, func() error {
 			return m.provisionGitSource(containerName, opts)
 		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to provision git source: %w", err)
+			return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
+				fmt.Errorf("failed to provision git source: %w", err))
 		}
 	}
 
-	// Join the jump-account goroutine (step 3). An early error return
-	// above skips this join deliberately: the goroutine's send is buffered
-	// so it never leaks, and a host account created for a failed create
-	// dangles exactly as it did when the account was created up front.
+	// Join the jump-account goroutine (step 3). Every failure return above
+	// joins it too, through abortCreate (#2850): it used to be skipped, which
+	// left the host account behind, and left the goroutine free to create it
+	// after the rollback had already run.
 	if jumpAccountDone != nil {
 		if err := <-jumpAccountDone; err != nil {
-			_ = m.cleanup(containerName)
-			return nil, err
+			return nil, m.abortCreate(containerName, opts.Username, nil, accountPreexisted, err)
 		}
 	}
 
@@ -1128,6 +1194,22 @@ func (m *Manager) WriteFile(containerName, path string, content []byte, mode str
 	return fmt.Errorf("WriteFile not supported on this incus backend (mock?)")
 }
 
+// ReadFileStream retrieves a file without buffering it in host memory.
+func (m *Manager) ReadFileStream(containerName, path string) (io.ReadCloser, error) {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.ReadFileStream(containerName, path)
+	}
+	return nil, fmt.Errorf("ReadFileStream not supported on this incus backend")
+}
+
+// WriteFileStream consumes a file stream, including any final read error.
+func (m *Manager) WriteFileStream(containerName, path string, content io.Reader, mode string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.WriteFileStream(containerName, path, content, mode)
+	}
+	return fmt.Errorf("WriteFileStream not supported on this incus backend")
+}
+
 // PushFile is WriteFile streamed from content instead of held in memory
 // (the guardrail deploy gate delivers whole datasets this way).
 func (m *Manager) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
@@ -1224,6 +1306,43 @@ func (m *Manager) Start(username string) error {
 	return m.incus.StartContainer(containerName)
 }
 
+// StopIfRunning stops the container unless it is already stopped (#3242). A
+// stop request asks for an end state; when that state already holds the call
+// succeeds with changed=false and sends no action to the backend, so callers can
+// skip post-stop work (stamping stopped_at, dropping the key, emitting an
+// event). The state is re-read when the backend's stop fails: a concurrent stop
+// that won the race leaves the instance Stopped, which is success for this
+// caller too (changed=false). Any other failure, including a lookup that
+// reports the instance missing, is returned unchanged for the caller to
+// classify.
+func (m *Manager) StopIfRunning(username string, force bool) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Stopped", func(n string) error { return m.incus.StopContainer(n, force) })
+}
+
+// StartIfStopped is the start counterpart of StopIfRunning: an instance that is
+// already Running is success with changed=false (#3242).
+func (m *Manager) StartIfStopped(username string) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Running", m.incus.StartContainer)
+}
+
+func (m *Manager) ensureState(containerName, want string, act func(string) error) (bool, error) {
+	info, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return false, err
+	}
+	if info != nil && info.State == want {
+		return false, nil
+	}
+	if err := act(containerName); err != nil {
+		// Close the read-then-act race: someone else reached the end state.
+		if cur, gerr := m.incus.GetContainer(containerName); gerr == nil && cur != nil && cur.State == want {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete deletes a container
 func (m *Manager) Delete(username string, force bool) error {
 	containerName := username + "-container"
@@ -1250,6 +1369,41 @@ func (m *Manager) Delete(username string, force bool) error {
 }
 
 // cleanup removes a container (used on creation failure)
+// jumpAccountJoinTimeout bounds how long a failing create waits for the
+// concurrent account creation (flock -w 30 and a few retries bound it already;
+// this is the backstop). A var so a test can shorten it.
+var jumpAccountJoinTimeout = 2 * time.Minute
+
+// abortCreate rolls back a Linux create that failed after step 3 started the
+// host jump-account goroutine, and returns cause (#2850). The container is
+// removed as before. Then, if the account goroutine is still in flight
+// (jumpAccountDone non-nil) it is waited for, so the account cannot be created
+// after the removal below; and an account that did not exist when this create
+// started is removed, because nothing else will: the daemon's delete path acts
+// on a box that exists, and this one is gone. An account that already existed
+// is not ours and is left alone.
+//
+// Best-effort and quiet: a failure to remove the account is logged and never
+// replaces cause, which is what the caller needs to see.
+func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-chan error, accountPreexisted bool, cause error) error {
+	_ = m.cleanup(containerName)
+	if jumpAccountDone != nil {
+		select {
+		case <-jumpAccountDone:
+		case <-time.After(jumpAccountJoinTimeout):
+			log.Printf("[create] %s: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
+			return cause
+		}
+	}
+	if accountPreexisted {
+		return cause
+	}
+	if err := deleteJumpServerAccountFn(username, false); err != nil {
+		log.Printf("[create] %s: could not remove the host account %q left by the failed create: %v", containerName, username, err)
+	}
+	return cause
+}
+
 func (m *Manager) cleanup(containerName string) error {
 	// Try to stop first (ignore errors)
 	_ = m.incus.StopContainer(containerName, true)
@@ -1439,9 +1593,17 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	pkgMgr := ospkg.ForFamily(family)
 	familyStr := string(family)
 
-	// Update package repos
-	if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
-		return fmt.Errorf("package repo update failed: %w", err)
+	// Update package repos. A base script that installs no packages (the
+	// startup reconcile's timezone script) has nothing to refresh the index
+	// for; running the update anyway cost every running container a round of
+	// mirror traffic on each daemon start and failed outright on boxes without
+	// the package manager (#2617). Dev stacks keep the update: their
+	// pre-install steps may install packages themselves.
+	pkgs := stack.GetPackagesForFamily(familyStr)
+	if !isBaseScript || len(pkgs) > 0 {
+		if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
+			return fmt.Errorf("package repo update failed: %w", err)
+		}
 	}
 
 	// Run pre-install commands as root
@@ -1453,7 +1615,6 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	}
 
 	// Install packages
-	pkgs := stack.GetPackagesForFamily(familyStr)
 	if len(pkgs) > 0 {
 		if err := m.incus.Exec(containerName, pkgMgr.InstallCmd(pkgs)); err != nil {
 			return fmt.Errorf("package install failed: %w", err)
@@ -1472,6 +1633,23 @@ func (m *Manager) InstallStack(username, stackID string) error {
 			// Dev stacks: run as user
 			userCmd := []string{"su", "-", effectiveUser, "-c", cmd}
 			_ = m.incus.Exec(containerName, userCmd)
+		}
+	}
+
+	// Record the stack so list/get report it (#2859). Single-valued: a second
+	// stack replaces the first, matching Container.stack. Base scripts are not
+	// stacks (the startup reconcile runs one in every box) and never record.
+	// A failure to record is logged, not returned: the install itself succeeded.
+	// One retry on any SetConfig error (no typed conflict error exists): the
+	// write is a read-modify-write that can lose an Incus ETag race to another
+	// config update on the same instance, and a second attempt re-reads.
+	if !isBaseScript {
+		err := m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		if err != nil {
+			err = m.incus.SetConfig(containerName, incus.StackKey, stackID)
+		}
+		if err != nil {
+			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
 		}
 	}
 
