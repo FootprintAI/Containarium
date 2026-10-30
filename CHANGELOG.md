@@ -10,14 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrading
 
 - **Legacy `backups:write` verifier tokens stop working** (#3219). The v0.120.1 deprecation window has ended: `VerifyBackup` and the `verify_backup` MCP tool now require `backups:verify`. Before upgrading, re-mint each verifier token on the daemon host with `containarium token generate --username <tenant> --roles user --scopes backups:read,backups:verify --expiry 720h --secret-file <jwt-secret-file> --raw`, switch the job to the replacement and revoke the old token. A legacy scoped token receives `PermissionDenied` (HTTP 403); the RPC error includes re-mint instructions. Create, restore, delete and prune still require `backups:write`. The legacy authorization and deprecation-log branches, including the unused matched-scope and MCP alternate-scope helpers, have been removed.
+### Removed
+
+- **The deprecated bridge-DNS flags are removed** (#2735, slice D of #2263). `--bridge-dns-reconcile`, `--bridge-dns-create` and `--dns-passthrough-host` were hidden no-ops starting in v0.120.0. Remove them from custom systemd units and startup scripts before upgrading: the daemon now rejects them as unknown flags. The shipped startup templates already omit them. `--ssh-host` and the kernel hairpin rules are unchanged.
 
 ### Changed
 
 - **`SubmitTrackerChangeFiles` adds a commit to an existing head branch and reuses its open change request** (#3288). A second call for the same `head_branch` used to fail: the commit was built on the base branch, so the non-forced push was rejected once the branch had commits, and GitLab refuses a second open merge request for a source branch. Now, when `head_branch` already exists on the remote, the daemon fetches it and builds the new commit on its tip, so the push is a fast-forward that keeps the earlier commits; files identical to the tip's add nothing. The push is still never forced: if the tip moves between fetch and push, the call fails with `ABORTED`, says the branch moved, and leaves the remote as the other writer left it. When `head_branch` already has an open change request in the connection's own project (GitHub: `pulls?head=<owner>:<branch>&state=open`; GitLab: `merge_requests?source_branch=<branch>&state=opened`; a fork's same-named branch never matches), that change is returned and its title, description and draft state are left alone; a branch whose earlier change was merged or closed gets a new one. The audit row records `reused_change`. A head branch that does not exist yet behaves as before. `GetTrackerChange` now also fills `branch` (the pull request's head ref, the merge request's source branch) on both providers.
-
-### Removed
-
-- **The deprecated bridge-DNS flags are removed** (#2735, slice D of #2263). `--bridge-dns-reconcile`, `--bridge-dns-create` and `--dns-passthrough-host` were hidden no-ops starting in v0.120.0. Remove them from custom systemd units and startup scripts before upgrading: the daemon now rejects them as unknown flags. The shipped startup templates already omit them. `--ssh-host` and the kernel hairpin rules are unchanged.
 
 ## [0.122.0] - 2026-10-29
 
