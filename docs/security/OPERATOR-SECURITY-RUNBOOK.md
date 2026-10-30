@@ -1306,18 +1306,31 @@ in-memory store is the store, and a policy set is lost on restart.
 
 ## Daemon starting while core Postgres is down
 
+With REST enabled, the daemon binds its HTTP port before waiting for core
+containers and Postgres (#3044, #3130). During those waits, `GET /health`
+answers HTTP 200 with `status: degraded`, the daemon version, and a fixed
+reason such as `waiting for core containers` or `postgres unavailable`.
+Other HTTP paths answer 503 with `Retry-After: 5` until the gateway takes
+over the same listener. The listener remains open during the handover.
+
 Every database-backed store shares one **startup Postgres check** (#2824).
 That covers secrets, tracker, app hosting, routes, passthrough,
 collaborators, the security/pentest/ZAP scan stores, audit, alerts, the
 credential-expiry watch and the threat-detection finding store. The check
 pings Postgres until `CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT` (a Go duration,
 default `20s`) runs out. If Postgres has not answered by then, the daemon
-skips every one of those stores at once, opens its listeners and serves
-**DEGRADED**. Before this change each store retried on its own, one after
+skips every one of those stores at once and serves **DEGRADED** on the
+normal gateway. Before this change each store retried on its own, one after
 another, and the API stayed dark for minutes.
 
 While DEGRADED:
 
+- `GET /health` continues to answer HTTP 200 with
+  `{"status":"degraded","reason":"postgres unavailable","version":"..."}`
+  after the startup listener hands over to the gateway. HTTP 200 means the
+  daemon is alive; inspect the body or the readiness endpoint to determine
+  whether its database-backed features are ready. A TCP connection to
+  Postgres returning is not enough to mark the skipped stores healthy.
 - The log has one line,
   `DEGRADED: startup Postgres check failed within 20s (...); skipping database-backed stores`.
 - `containarium doctor` prints
@@ -1332,6 +1345,14 @@ While DEGRADED:
   REQUIRE_ENVELOPE/KMS checks run unchanged on the next normal start. The
   guardrail and egress policy stores keep their own background retry
   (previous section).
+- When the network-policy store is the in-memory fallback for a configured
+  Postgres, operator policy set, deny-rule patch, policy delete, signature
+  set and signature delete calls return `UNAVAILABLE` (HTTP 503), explaining
+  that the store is degraded and nothing was changed (#3131). Reads still
+  work. Cloud policy sync, agent-skill launch policies and auto-quarantine
+  keep writing to memory so their live enforcement remains active; these
+  writes are not durable. A deliberately configured memory-only daemon
+  (no Postgres connection string) keeps accepting policy writes.
 
 **Recovery.** By default you restart the daemon once Postgres is back. To
 have it restart itself, set `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`:
@@ -1351,6 +1372,26 @@ has `Restart=on-failure`: `containarium service install`,
 `scripts/containarium.service` and the Terraform startup scripts. If you run
 your own unit, check for `Restart=on-failure` (or `always`), and check that
 75 is not listed in `SuccessExitStatus=`. Otherwise leave the flag off.
+
+For manual recovery, restore Postgres connectivity, run
+`sudo systemctl restart containarium`, then check both endpoints:
+
+```bash
+curl --fail --silent http://localhost:8080/health
+curl --fail --silent 'http://localhost:8080/v1/health?service=containarium.core_postgres'
+```
+
+Use the daemon's configured HTTP port if it differs from 8080. Expect
+`status: healthy` and `status: SERVING`, respectively. Retry any operator
+policy changes that were rejected; they were not queued. Inspect the
+daemon log if either endpoint still reports degraded or NOT_SERVING.
+
+Only the guardrail and coding-tool egress policy stores currently recover
+in-process. The other stores skipped at startup, including the
+network-policy store, need the manual restart or opt-in supervised restart
+above. General recovery without restarting is tracked separately in #2855.
+The deployed outage drill is documented in
+[Daemon Postgres degraded-start verification](../testing/daemon-postgres-degraded-start.md).
 
 ## Auditing recent administrative actions
 

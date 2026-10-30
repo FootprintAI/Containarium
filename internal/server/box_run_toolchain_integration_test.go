@@ -95,9 +95,12 @@ func TestIntegrationIncus_ManagedToolchainVolume(t *testing.T) {
 				t.Fatalf("kernel must reject a write even as root: exit=%d stderr=%s err=%v", code, stderr, err)
 			}
 			// Exercise the actual run wrapper's report as the unprivileged user.
-			probe := boxRunToolsPreProbe("/tmp/managed.tools.tmp") + boxRunToolsPostProbe("/tmp/managed.tools.tmp", "/tmp/managed.tools")
+			// Boot-time systemd-tmpfiles can still clear /tmp here. Real runs
+			// keep their sidecars in the run directory, so use the user's home.
+			const reportPath = "/home/ctn-run/managed.tools"
+			probe := boxRunToolsPreProbe(reportPath+".tmp") + boxRunToolsPostProbe(reportPath+".tmp", reportPath)
 			execRoot("su -s /bin/sh ctn-run -c " + shellSingleQuote(probe))
-			tools := parseBoxRunTools([]byte(execRoot("cat /tmp/managed.tools")))
+			tools := parseBoxRunTools([]byte(execRoot("cat " + shellSingleQuote(reportPath))))
 			found := map[string]bool{}
 			for _, tool := range tools {
 				found[tool.GetName()] = true
