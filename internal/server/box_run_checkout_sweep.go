@@ -120,13 +120,12 @@ done
 
 // runCheckoutEntry is one line of runCheckoutListScript's output.
 type runCheckoutEntry struct {
-	name     string
-	kind     byte // 'd', 'l' or 'o'
-	newest   time.Time
-	hasTime  bool
-	sizeKiB  int64
-	inUse    bool
-	refusedX bool // the X line: ~/work is not where it claims to be
+	name    string
+	kind    byte // 'd', 'l' or 'o'
+	newest  time.Time
+	hasTime bool
+	sizeKiB int64
+	inUse   bool
 }
 
 // parseRunCheckoutList parses runCheckoutListScript's output. A line that does
