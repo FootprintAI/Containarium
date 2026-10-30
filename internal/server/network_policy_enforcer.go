@@ -1364,7 +1364,8 @@ func (e *NetworkPolicyEnforcer) applyTrustedUplinks() {
 
 // managedVethNames lists the host veth names of the running managed containers,
 // sorted: refuseVethCarriers reports the first unreadable veth, so a stable order
-// keeps its error text (and the log-once dedupe on it) stable across passes.
+// keeps its error text (and the log-once dedupe on it) stable across passes,
+// and determines which carriers are identified before the first unreadable master.
 func managedVethNames(cache map[string]vethInfo) []string {
 	out := make([]string, 0, len(cache))
 	for _, info := range cache {

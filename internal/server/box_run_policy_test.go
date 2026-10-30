@@ -138,9 +138,10 @@ func runWithLevel(t *testing.T, level, engineJSON string) policyRun {
 	var r policyRun
 	runHome := "/srv/" + boxRunUnprivilegedUser
 	s := &ContainerServer{
-		boxRunLogDir:       t.TempDir(),
-		boxRunCollaborator: func(owner, subject string) (bool, error) { return false, nil },
-		boxRunToolAccess:   func(ctx context.Context, username string) (string, error) { return level, nil },
+		boxRunLogDir:          t.TempDir(),
+		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return level, nil },
+		boxRunEnsureToolchain: func(string) error { return nil }, // mounted host release
 		boxRunExec: func(box, script string) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()
