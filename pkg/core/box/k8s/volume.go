@@ -292,10 +292,19 @@ func (b *Backend) restartSandboxForVolumeChange(ctx context.Context, tenant stri
 	// suspension can preserve the old Pod and its old mounts. Require an
 	// observation of the current generation so a previous suspension cannot
 	// satisfy this wait. A timeout leaves the Sandbox suspended for recovery.
+	//
+	// A failed read is retried until the deadline, since one apiserver blip
+	// would otherwise leave the Sandbox suspended. A deleted Sandbox ends the
+	// wait at once, and the last read error is kept in the final error.
+	var lastReadErr error
 	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
 		current, err := b.sandboxes.AgentsV1beta1().Sandboxes(b.namespaceFor(tenant)).Get(ctx, sb.Name, metav1.GetOptions{})
-		if err != nil {
+		if apierrors.IsNotFound(err) {
 			return false, err
+		}
+		if err != nil {
+			lastReadErr = err
+			return false, nil
 		}
 		if current.UID != sb.UID || current.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
 			return false, fmt.Errorf("sandbox changed while waiting for suspension")
@@ -304,6 +313,9 @@ func (b *Backend) restartSandboxForVolumeChange(ctx context.Context, tenant stri
 		return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration >= current.Generation, nil
 	})
 	if err != nil {
+		if lastReadErr != nil {
+			err = fmt.Errorf("%w (last read error: %w)", err, lastReadErr)
+		}
 		return fmt.Errorf("k8s: wait for sandbox %q suspension before applying shared-volume change: %w", sb.Name, err)
 	}
 	if err := b.setSandboxOperatingMode(ctx, tenant, sb.Name, sandboxv1beta1.SandboxOperatingModeRunning); err != nil {
