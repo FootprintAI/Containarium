@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The deprecated bridge-DNS flags are removed** (#2735, slice D of #2263). `--bridge-dns-reconcile`, `--bridge-dns-create` and `--dns-passthrough-host` were hidden no-ops starting in v0.120.0. Remove them from custom systemd units and startup scripts before upgrading: the daemon now rejects them as unknown flags. The shipped startup templates already omit them. `--ssh-host` and the kernel hairpin rules are unchanged.
+
 ## [0.122.0] - 2026-10-29
 
 ### Added
