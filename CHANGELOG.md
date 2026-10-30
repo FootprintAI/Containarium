@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Legacy `backups:write` verifier tokens stop working** (#3219). Releases v0.120.1 through v0.122.0 still accepted them and logged a deprecation line; that window has ended: `VerifyBackup` and the `verify_backup` MCP tool now require `backups:verify`. Before upgrading, re-mint each verifier token on the daemon host with `containarium token generate --username <tenant> --roles user --scopes backups:read,backups:verify --expiry 720h --secret-file <jwt-secret-file> --raw`, switch the job to the replacement and revoke the old token. A legacy scoped token receives `PermissionDenied` (HTTP 403); the RPC error includes re-mint instructions. Create, restore, delete and prune still require `backups:write`. The legacy authorization and deprecation-log branches, including the unused matched-scope and MCP alternate-scope helpers, have been removed.
 
+### Fixed
+
+- **A shared-volume attach or detach on a running Kubernetes box no longer fails on one transient read error while waiting for the box to suspend** (#3282 post-merge review, refs #3297). The wait for the Sandbox's `Suspended` condition used to give up on the first failed read, which left the box suspended with the new mounts already written; it now retries failed reads until the existing 2-minute limit and reports the last read error if that limit is reached. A deleted Sandbox still ends the wait at once. The box is still left suspended, and not resumed, when the wait itself fails; whether and how to recover that case is open in #3297.
+
 ### Removed
 
 - **The deprecated bridge-DNS flags are removed** (#2735, slice D of #2263). `--bridge-dns-reconcile`, `--bridge-dns-create` and `--dns-passthrough-host` were hidden no-ops starting in v0.120.0. Remove them from custom systemd units and startup scripts before upgrading: the daemon now rejects them as unknown flags. The shipped startup templates already omit them. `--ssh-host` and the kernel hairpin rules are unchanged.

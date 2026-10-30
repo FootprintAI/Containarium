@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clienttesting "k8s.io/client-go/testing"
@@ -83,6 +84,61 @@ func TestVolumeRestartWaitsForCurrentSuspension(t *testing.T) {
 	}
 	if !resumed || observations != 3 {
 		t.Fatalf("resumed=%t observations=%d; want resume after three observations", resumed, observations)
+	}
+}
+
+func TestVolumeRestartRetriesTransientReadErrors(t *testing.T) {
+	sb := volumeRestartSandbox()
+	b, _, _ := testBackend()
+	sc := volumeRestartClient(t, sb)
+	b.sandboxes = sc
+	reads := 0
+	sc.PrependReactor("get", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		reads++
+		if reads <= 2 {
+			return true, nil, errors.New("apiserver briefly unavailable")
+		}
+		current, err := sc.Tracker().Get(sandboxv1beta1.SchemeGroupVersion.WithResource("sandboxes"), sb.Namespace, sb.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		got := current.(*sandboxv1beta1.Sandbox).DeepCopy()
+		got.Status.Conditions = []metav1.Condition{{
+			Type: string(sandboxv1beta1.SandboxConditionSuspended), Status: metav1.ConditionTrue, ObservedGeneration: got.Generation,
+		}}
+		return true, got, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.restartSandboxForVolumeChange(ctx, "test", sb); err != nil {
+		t.Fatalf("a transient read error must not abort the wait: %v", err)
+	}
+	current, err := sc.Tracker().Get(sandboxv1beta1.SchemeGroupVersion.WithResource("sandboxes"), sb.Namespace, sb.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := current.(*sandboxv1beta1.Sandbox).Spec.OperatingMode; got != sandboxv1beta1.SandboxOperatingModeRunning {
+		t.Fatalf("operating mode %q after the retried wait; want Running", got)
+	}
+}
+
+func TestVolumeRestartStopsWaitingWhenSandboxIsDeleted(t *testing.T) {
+	sb := volumeRestartSandbox()
+	b, _, _ := testBackend()
+	sc := volumeRestartClient(t, sb)
+	b.sandboxes = sc
+	sc.PrependReactor("get", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(sandboxv1beta1.SchemeGroupVersion.WithResource("sandboxes").GroupResource(), sb.Name)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := b.restartSandboxForVolumeChange(ctx, "test", sb)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("error=%v; want NotFound", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("kept polling a Sandbox that no longer exists")
 	}
 }
 
