@@ -237,33 +237,6 @@ type getContainerResponse struct {
 	Container *containerResponse `json:"container"`
 }
 
-type getSystemInfoResponse struct {
-	Info *systemInfo `json:"info"`
-}
-
-type systemInfo struct {
-	IncusVersion      string `json:"incusVersion"`
-	KernelVersion     string `json:"kernelVersion"`
-	OperatingSystem   string `json:"operatingSystem"`
-	TotalContainers   int32  `json:"totalContainers"`
-	RunningContainers int32  `json:"runningContainers"`
-	TotalCPUCores     int32  `json:"totalCpuCores"`
-	// grpc-gateway renders proto int64 as a quoted decimal string (#3250).
-	TotalMemoryBytes     int64 `json:"totalMemoryBytes,string"`
-	AvailableMemoryBytes int64 `json:"availableMemoryBytes,string"`
-	// CPU budget (#2284), as grpc-gateway emits SystemInfo: camelCase keys,
-	// the enum by name. Absent on an older daemon → zero values → no budget.
-	TotalCpus             int32   `json:"totalCpus"`
-	CommittedCpuCores     float64 `json:"committedCpuCores"`
-	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
-	CpuAdmissionMode      string  `json:"cpuAdmissionMode"`
-	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
-	// Storage pools (#2823), decoded per entry with protojson.
-	StoragePools []json.RawMessage `json:"storagePools"`
-	// Managed backup key (#3213); absent on an older daemon → false.
-	ManagedBackupKeyConfigured bool `json:"managedBackupKeyConfigured"`
-}
-
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
@@ -1714,6 +1687,24 @@ func (c *HTTPClient) GetConsoleLog(username string) (*pb.GetConsoleLogResponse, 
 
 // GetSystemInfo gets system information via HTTP
 func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
+	info, err := c.getSystemInfo()
+	if err != nil {
+		return nil, err
+	}
+	return &incus.ServerInfo{
+		Version:              info.IncusVersion,
+		KernelVersion:        info.KernelVersion,
+		TotalMemoryBytes:     info.TotalMemoryBytes,
+		AvailableMemoryBytes: info.AvailableMemoryBytes,
+		CPUBudget: cpuBudgetFromWire(info.TotalCpus, info.CommittedCpuCores,
+			info.CoreCommittedCpuCores, info.CpuAdmissionMode, info.CpuOvercommitFactor),
+		StoragePools: storagePoolsFromWire(info.StoragePools),
+	}, nil
+}
+
+// getSystemInfo shares the generated response decoder with backup status.
+// DiscardUnknown keeps older clients compatible with newer daemons (#3292).
+func (c *HTTPClient) getSystemInfo() (*pb.SystemInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1722,46 +1713,34 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 		return nil, fmt.Errorf("failed to get system info: %w", err)
 	}
 
-	result, err := parseResponse[getSystemInfoResponse](resp)
+	defer drainClose(resp)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get system info: %w", err)
+		return nil, fmt.Errorf("failed to get system info: failed to read response body: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("failed to get system info: %w", httpError(body, resp.StatusCode, "get system info"))
+	}
+	var result pb.GetSystemInfoResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to get system info: failed to parse response: %w", err)
 	}
 
 	if result.Info == nil {
 		return nil, fmt.Errorf("no system info returned in response")
 	}
 
-	info := &incus.ServerInfo{
-		Version:       result.Info.IncusVersion,
-		KernelVersion: result.Info.KernelVersion,
-		CPUBudget: cpuBudgetFromWire(result.Info.TotalCpus, result.Info.CommittedCpuCores,
-			result.Info.CoreCommittedCpuCores,
-			pb.CPUAdmissionMode(pb.CPUAdmissionMode_value[result.Info.CpuAdmissionMode]),
-			result.Info.CpuOvercommitFactor),
-		StoragePools: storagePoolsFromJSON(result.Info.StoragePools),
-	}
-
-	return info, nil
+	return result.Info, nil
 }
 
 // ManagedBackupKeyConfigured reports whether the daemon has a managed backup
 // key, from SystemInfo.managed_backup_key_configured (#3213).
 func (c *HTTPClient) ManagedBackupKeyConfigured() (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/system/info", nil)
+	info, err := c.getSystemInfo()
 	if err != nil {
-		return false, fmt.Errorf("failed to get system info: %w", err)
+		return false, err
 	}
-	result, err := parseResponse[getSystemInfoResponse](resp)
-	if err != nil {
-		return false, fmt.Errorf("failed to get system info: %w", err)
-	}
-	if result.Info == nil {
-		return false, fmt.Errorf("no system info returned in response")
-	}
-	return result.Info.ManagedBackupKeyConfigured, nil
+	return info.ManagedBackupKeyConfigured, nil
 }
 
 // InstallStack installs a stack or base script on a running container via HTTP

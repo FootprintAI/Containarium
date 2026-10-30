@@ -836,6 +836,10 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// Memory totals reported by the daemon. A zero total means unreported
+	// (local mode or an older daemon), so the CLI omits the memory block.
+	TotalMemoryBytes     int64
+	AvailableMemoryBytes int64
 	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
 	// admission-gate posture (#2284). Nil when the source did not report
 	// one — local Incus mode, or a daemon that predates the field.

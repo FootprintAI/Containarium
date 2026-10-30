@@ -1,21 +1,24 @@
 package client
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // grpc-gateway renders proto int64 fields as quoted decimal strings, so a
 // plain int64 field fails the whole response decode and `containarium info`
-// prints an error instead of the host's data (#3250). The body below uses the
-// wire struct's key names and the gateway's quoted-int64 encoding.
+// prints an error instead of the host's data (#3250). Assert the public
+// result, including memory and pools, using the proto's actual JSON names.
 func TestGetSystemInfoDecodesQuotedInt64(t *testing.T) {
 	body := `{"info":{
-		"incusVersion":"6.0.2","kernelVersion":"6.8.0","operatingSystem":"Ubuntu 24.04",
-		"totalContainers":7,"runningContainers":3,"totalCpuCores":16,
+		"incusVersion":"6.0.2","kernelVersion":"6.8.0","os":"Ubuntu 24.04",
+		"containersTotal":7,"containersRunning":3,
 		"totalMemoryBytes":"34359738368","availableMemoryBytes":"17179869184",
 		"totalCpus":12,"committedCpuCores":4.5,"coreCommittedCpuCores":2.25,
-		"cpuAdmissionMode":"CPU_ADMISSION_MODE_ENFORCING","cpuOvercommitFactor":2.5
+		"cpuAdmissionMode":"CPU_ADMISSION_MODE_ENFORCING","cpuOvercommitFactor":2.5,
+		"storagePools":[{"pool":"p1","driver":"STORAGE_DRIVER_ZFS","usedBytes":"96","totalBytes":"100",
+			"level":"STORAGE_POOL_CAPACITY_LEVEL_CRITICAL","observedAt":"2026-10-21T00:00:00Z"}]
 	}}`
 	_, c := newBodyRecorder(t, body)
 
@@ -30,19 +33,17 @@ func TestGetSystemInfoDecodesQuotedInt64(t *testing.T) {
 		t.Errorf("CPU budget not decoded: %+v", info.CPUBudget)
 	}
 
-	// GetSystemInfo copies only the fields incus.ServerInfo carries, so
-	// decode the same wire body here to prove the quoted int64s land.
-	var wire getSystemInfoResponse
-	if err := json.Unmarshal([]byte(body), &wire); err != nil {
-		t.Fatalf("decode wire body: %v", err)
+	if info.TotalMemoryBytes != 34359738368 {
+		t.Errorf("totalMemoryBytes = %d, want 34359738368", info.TotalMemoryBytes)
 	}
-	if wire.Info == nil {
-		t.Fatal("no info in wire body")
+	if info.AvailableMemoryBytes != 17179869184 {
+		t.Errorf("availableMemoryBytes = %d, want 17179869184", info.AvailableMemoryBytes)
 	}
-	if wire.Info.TotalMemoryBytes != 34359738368 {
-		t.Errorf("totalMemoryBytes = %d, want 34359738368", wire.Info.TotalMemoryBytes)
+	wantPool := incus.StoragePoolCapacity{
+		StoragePoolUsage: incus.StoragePoolUsage{Name: "p1", Driver: "zfs", UsedBytes: 96, TotalBytes: 100},
+		Level:            incus.StoragePoolLevelCritical,
 	}
-	if wire.Info.AvailableMemoryBytes != 17179869184 {
-		t.Errorf("availableMemoryBytes = %d, want 17179869184", wire.Info.AvailableMemoryBytes)
+	if len(info.StoragePools) != 1 || info.StoragePools[0] != wantPool {
+		t.Errorf("storage pools = %+v, want %+v", info.StoragePools, wantPool)
 	}
 }
