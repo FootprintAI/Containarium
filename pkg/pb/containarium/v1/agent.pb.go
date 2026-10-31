@@ -3701,7 +3701,8 @@ type RunCrewRequest struct {
 	// provider does not list is refused before the run starts, when the daemon can
 	// list that provider's models. With `graph` (#3264) a key names a skill used
 	// by a graph node (a skill node, or a member of a crew node) and each node runs
-	// on its entry.
+	// on its entry; the provider-list check then runs when each node starts, so a
+	// later node can be refused after earlier nodes have already run.
 	// CrewRun.member_models reports what each member ran with.
 	ModelOverrides map[string]string `protobuf:"bytes,13,rep,name=model_overrides,json=modelOverrides,proto3" json:"model_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields  protoimpl.UnknownFields

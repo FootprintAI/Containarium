@@ -41,7 +41,7 @@ func TestValidateCrewModelOverrides(t *testing.T) {
 			EngineOverrides: map[string]pb.AgentEngine{"no-engine": pb.AgentEngine_AGENT_ENGINE_CODEX}}, codes.OK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateModelOverrides(crew.GetSkillIds(), tc.req, get)
+			err := validateModelOverrides("crew", crew.GetSkillIds(), tc.req, get)
 			if status.Code(err) != tc.want {
 				t.Fatalf("code = %v (%v), want %v", status.Code(err), err, tc.want)
 			}
