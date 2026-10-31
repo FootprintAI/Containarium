@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -20,6 +23,11 @@ func TestParseStaticPeer(t *testing.T) {
 		{name: "ipv6 with brackets", in: "backend-b=[::1]:8080", want: StaticPeer{ID: "backend-b", Addr: "[::1]:8080"}},
 		{name: "ipv6 without brackets", in: "backend-b=::1:8080", wantErr: true},
 		{name: "id reserved for sentinel-discovered peers", in: "tunnel-gpu=10.0.0.2:8080", wantErr: true},
+		{name: "non-numeric port", in: "backend-b=10.0.0.2:http", wantErr: true},
+		{name: "port zero", in: "backend-b=10.0.0.2:0", wantErr: true},
+		{name: "port above 65535", in: "backend-b=10.0.0.2:70000", wantErr: true},
+		{name: "highest port", in: "backend-b=10.0.0.2:65535", want: StaticPeer{ID: "backend-b", Addr: "10.0.0.2:65535"}},
+		{name: "lowest port", in: "backend-b=10.0.0.2:1", want: StaticPeer{ID: "backend-b", Addr: "10.0.0.2:1"}},
 		{name: "empty entry", in: "", wantErr: true},
 		{name: "blank entry", in: "   ", wantErr: true},
 		{name: "empty id", in: "=10.0.0.2:8080", wantErr: true},
@@ -169,5 +177,52 @@ func TestNewPeerPool_SkipsAPeerWithTheLocalBackendID(t *testing.T) {
 	}
 	if pool.Get("other") == nil {
 		t.Error("the other peer should be kept")
+	}
+}
+
+// sentinelListing serves a sentinel /sentinel/peers response with the given
+// peers, so discover() can be run against a fixed list.
+func sentinelListing(t *testing.T, peers []map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peers": peers})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Discovery removes pool keys that look sentinel-discovered once the sentinel
+// stops listing them. A static peer is never discovered, so it must survive
+// even when its address-only key happens to begin with the discovered prefix.
+func TestDiscover_KeepsStaticPeers(t *testing.T) {
+	srv := sentinelListing(t, nil)
+
+	p := NewPeerPool("local", srv.URL, []string{"tunnel-lab", "backend-b=10.0.0.2:8080"}, "")
+	p.discover()
+
+	if p.Get("tunnel-lab") == nil {
+		t.Error("an address-only static peer whose key starts with the discovered prefix must survive discovery")
+	}
+	if p.Get("backend-b") == nil {
+		t.Error("a static peer with an explicit id must survive discovery")
+	}
+}
+
+// If the sentinel lists a peer under the same id as a static one, the static
+// peer's address is not redirected through the sentinel proxy.
+func TestDiscover_DoesNotOverwriteAStaticPeerAddress(t *testing.T) {
+	srv := sentinelListing(t, []map[string]any{
+		{"id": "backend-b", "proxy_path": "/peer/backend-b", "healthy": true},
+	})
+
+	p := NewPeerPool("local", srv.URL, []string{"backend-b=10.0.0.2:8080"}, "")
+	p.discover()
+
+	peer := p.Get("backend-b")
+	if peer == nil {
+		t.Fatal("static peer disappeared")
+	}
+	if peer.Addr != "10.0.0.2:8080" {
+		t.Errorf("static peer address was overwritten to %q", peer.Addr)
 	}
 }

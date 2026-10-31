@@ -16,6 +16,7 @@ import (
 	neturl "net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +39,15 @@ type PeerClient struct {
 	Healthy    bool
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
-	scheme     string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
+
+	// static marks a peer added from --peers rather than found through the
+	// sentinel. Discovery neither removes a static peer nor rewrites its
+	// address, whatever its key looks like.
+	static bool
+	// shadowWarned limits the "sentinel lists a static peer's id" log line to
+	// once per peer instead of once per discovery tick.
+	shadowWarned bool
+	scheme       string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
 
 	// Cached system info from last discovery poll
 	CachedHostname       string
@@ -163,8 +172,9 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 			continue
 		}
 		p.peers[sp.ID] = &PeerClient{
-			ID:   sp.ID,
-			Addr: sp.Addr,
+			ID:     sp.ID,
+			Addr:   sp.Addr,
+			static: true,
 			client: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -224,6 +234,9 @@ func ParseStaticPeer(entry string) (StaticPeer, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" || port == "" || strings.Contains(addr, "=") {
 		return StaticPeer{}, fmt.Errorf("peer %q: address %q must be host:port (an IPv6 host needs brackets: [::1]:8080)", entry, addr)
+	}
+	if n, perr := strconv.ParseUint(port, 10, 16); perr != nil || n == 0 {
+		return StaticPeer{}, fmt.Errorf("peer %q: port %q must be a number from 1 to 65535", entry, port)
 	}
 	return StaticPeer{ID: id, Addr: addr}, nil
 }
@@ -641,6 +654,13 @@ func (p *PeerPool) discover() {
 		peerAddr := fmt.Sprintf("%s:%s%s", sentinelHost, sentinelPort, peer.ProxyPath)
 
 		if existing, ok := p.peers[peer.ID]; ok {
+			if existing.static {
+				if !existing.shadowWarned {
+					log.Printf("[peers] sentinel lists %q, which is also a static peer; keeping the static address", peer.ID)
+					existing.shadowWarned = true
+				}
+				continue
+			}
 			existing.Addr = peerAddr
 			existing.Pool = peer.Pool
 			existing.Healthy = peer.Healthy
@@ -669,7 +689,7 @@ func (p *PeerPool) discover() {
 	// Remove peers that are no longer in the sentinel's list
 	// (but don't remove static peers)
 	for id := range p.peers {
-		if !discovered[id] && isDiscoveredPeer(id) {
+		if !discovered[id] && !p.peers[id].static && isDiscoveredPeer(id) {
 			log.Printf("[peers] peer removed: %s", id)
 			delete(p.peers, id)
 		}
