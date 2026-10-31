@@ -56,7 +56,9 @@ const defaultReconcileInterval = 60 * time.Second
 // DualServer alongside the autosleep manager — same
 // shape, same lifetime.
 type secretsReconciler struct {
-	store    *secrets.Store
+	// store returns the current secrets store, read on every tick so one
+	// installed after a degraded start (#3327) is picked up; nil skips.
+	store    func() *secrets.Store
 	incus    *incus.Client
 	stamp    func(ctx context.Context, username string) (int, error)
 	interval time.Duration
@@ -65,7 +67,7 @@ type secretsReconciler struct {
 	stopOnce sync.Once
 }
 
-func newSecretsReconciler(store *secrets.Store, ic *incus.Client, stamp func(ctx context.Context, username string) (int, error), interval time.Duration) *secretsReconciler {
+func newSecretsReconciler(store func() *secrets.Store, ic *incus.Client, stamp func(ctx context.Context, username string) (int, error), interval time.Duration) *secretsReconciler {
 	if interval <= 0 {
 		interval = defaultReconcileInterval
 	}
@@ -122,7 +124,11 @@ func (r *secretsReconciler) tick(ctx context.Context) {
 	if r.store == nil || r.incus == nil || r.stamp == nil {
 		return
 	}
-	users, err := r.store.UsernamesWithFileDelivery(ctx)
+	store := r.store()
+	if store == nil {
+		return
+	}
+	users, err := store.UsernamesWithFileDelivery(ctx)
 	if err != nil {
 		log.Printf("[secrets-reconciler] list file-mode tenants: %v", err)
 		return

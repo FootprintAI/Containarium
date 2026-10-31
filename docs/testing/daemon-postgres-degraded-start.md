@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -24,7 +24,12 @@ restart's consecutive-success and minimum-uptime requirements. The
 store-recovery tests (#3326) use a fake Postgres that is down and then up:
 a registered family turns from `NOT_SERVING` to `SERVING` with no restart,
 two families share one pool and one dial per attempt, and the self-restart
-watcher holds while a family is pending.
+watcher holds while a family is pending. The secrets-recovery tests (#3327)
+apply that to the tenant secrets store: its RPCs answer `UNAVAILABLE` and
+`containarium.secrets` is `NOT_SERVING` while Postgres is down, the store
+installs once it answers, and `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
+backend refuses the late install. The set/get round trip runs only with
+`CONTAINARIUM_TEST_DSN` set (the store-integration lane).
 
 ## Deployed outage drill
 

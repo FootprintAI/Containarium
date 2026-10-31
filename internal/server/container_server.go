@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/alert"
@@ -349,12 +350,15 @@ type ContainerServer struct {
 	// migration (MoveContainer returns "not configured" then).
 	moveRunner incus.MigrationRunner
 
-	// secretsStore is the tenant-secrets backend. Nil on daemons
-	// that don't have Postgres wired up (--standalone); the
-	// SecretsService RPCs return Unavailable in that case.
+	// secretsStoreRef is the tenant-secrets backend, read through
+	// loadSecretsStore and written through SetSecretsStore. Nil on
+	// daemons that don't have Postgres wired up (--standalone), and
+	// after a degraded start until the late-install helper installs it
+	// (#3327) — atomic because that install lands while RPCs are
+	// served. While nil the SecretsService RPCs return Unavailable.
 	// CreateContainer / StartContainer call LoadAllForUser to
 	// stamp environment.<NAME>=<value> at LXC start time.
-	secretsStore *secrets.Store
+	secretsStoreRef atomic.Pointer[secrets.Store]
 
 	// trackerStore holds tracker connections (#1921). Nil on daemons that
 	// don't have Postgres wired up; the TrackerService RPCs return
@@ -413,9 +417,11 @@ type ContainerServer struct {
 	submitFilePusher submit.FilePusher
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
-	// Set once at startup in dual_server.go alongside the secrets
-	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND
-	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved at boot.
+	// Set in dual_server.go alongside the secrets store: at startup,
+	// or by the secrets store's late install after a degraded start
+	// (#3327), so kmsMu guards it. Reflects CONTAINARIUM_KMS_BACKEND
+	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved by the last attempt.
+	kmsMu           sync.RWMutex
 	kmsBackend      string
 	kmsDescription  string
 	kmsConfigured   bool
@@ -1234,7 +1240,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// create, and RefreshSecrets is the retry). Runs after the box exists,
 	// which on K8s matters: the Secret lands in the tenant namespace, and
 	// that namespace is created with the box.
-	if s.secretsStore != nil {
+	if s.loadSecretsStore() != nil {
 		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
 		} else if n > 0 {
@@ -1980,7 +1986,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// any rotations that happened while the box was stopped; existing
 		// processes won't see the change (POSIX inherit-at-fork), but new
 		// execs and new sessions will.
-		if s.secretsStore != nil {
+		if s.loadSecretsStore() != nil {
 			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 				log.Printf("[secrets] failed to re-deliver on start of %s's box: %v (continuing)", req.Username, err)
 			} else if n > 0 {

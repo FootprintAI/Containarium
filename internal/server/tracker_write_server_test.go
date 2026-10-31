@@ -178,11 +178,11 @@ func (f *fakeWriterProvider) DefaultBranch(context.Context, tracker.Conn) (strin
 func setUpWriterConnection(t *testing.T, user string, provider *fakeWriterProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		secretsStore:      mustTestSecretsStore(t),
 		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
 		claimLocks:        tracker.NewClaimLocks(),
 	}
+	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
 		Username: user, Name: "GH_TOKEN", Value: "ghp_x",

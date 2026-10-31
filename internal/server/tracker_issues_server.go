@@ -36,10 +36,11 @@ func (s *ContainerServer) resolveReaderConn(ctx context.Context, username, conne
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, tracker.Conn{}, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	cred, err := s.secretsStore.BrokerCredential(ctx, username, trackerConn.CredentialSecret)
+	cred, err := store.BrokerCredential(ctx, username, trackerConn.CredentialSecret)
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "resolve broker credential: %v", err)
 	}

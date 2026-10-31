@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"k8s.io/client-go/kubernetes"
@@ -71,7 +72,6 @@ import (
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
-	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	"github.com/footprintai/containarium/pkg/core/zfscrypt"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -337,6 +337,7 @@ type DualServer struct {
 	sandboxServer            *SandboxServer          // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
 	sandboxTTLSweeperManager *ttlsweeper.Manager     // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler      // Phase 4.3 Phase B-3
+	secretsLateInstall       bool                    // secrets store pending with the late-install helper (#3327)
 	networkPolicyEnforcer    *NetworkPolicyEnforcer  // #315 Phase A — eBPF per-tenant net policy (off unless configured)
 	coreGuard                *coreguard.Reconciler   // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
 	tenantGuard              *tenantguard.Reconciler // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
@@ -864,10 +865,14 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	postgresConnString := config.PostgresConnString
 	// Late install of store families after a degraded start (#3326): one
 	// pool, one backoff loop, per-family readiness. A family whose startup
-	// install did not happen registers here as it is migrated (#3327
-	// onwards; none yet); Run starts below, after every registration. The
-	// DSN is read at dial time, because it is finalized further down.
+	// install did not happen registers here as it is migrated (the secrets
+	// store, #3327); Run starts below, after every registration. The DSN is
+	// read at dial time, because it is finalized further down.
 	storeRecovery := newStoreRecovery(policyStoreHealth, func() string { return postgresConnString })
+	// secretsLateInstall: the secrets store did not install at startup and
+	// is pending with storeRecovery, so its consumers are wired to the live
+	// accessor even though the store is nil right now.
+	secretsLateInstall := false
 	if config.EnableAppHosting {
 		incusClient, err := incus.New()
 		if err != nil {
@@ -1032,85 +1037,31 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// Set up the tenant secrets store. Mirrors the
 			// app-store path: shares Postgres but holds its own
 			// pgxpool. Failure here only disables the secrets
-			// API; the rest of the daemon keeps running.
+			// API (UNAVAILABLE); the rest of the daemon keeps
+			// running. A store that did not install here is
+			// handed to the late-install helper (#3327), which
+			// runs the same open path — master key, KMS status,
+			// the REQUIRE_ENVELOPE refusal — over the shared pool
+			// once Postgres answers.
+			openSecrets := func(ctx context.Context, pool *pgxpool.Pool) (*secretsstore.Store, error) {
+				return openSecretsStore(ctx, pool, containerServer, secretsMasterKeyPath)
+			}
 			if secretsPool, secretsErr := pgGate.connect(postgresConnString, 5, 3*time.Second); secretsErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for secrets store: %v", secretsErr)
-			} else {
-				key, created, kerr := corecryptosecrets.LoadOrCreateMasterKey("/etc/containarium/secrets.key")
-				if kerr != nil {
-					log.Printf("Warning: Failed to load secrets master key: %v. Secrets disabled.", kerr)
-					secretsPool.Close()
+				storeRecovery.Register(secretsStoreFamily(containerServer, openSecrets))
+				secretsLateInstall = true
+			} else if store, serr := openSecrets(context.Background(), secretsPool); serr != nil {
+				if errors.Is(serr, errSecretsEnvelopeWithoutKMS) {
+					log.Printf("FATAL: %v.", serr)
 				} else {
-					if created {
-						log.Printf("[secrets] NEW MASTER KEY generated at /etc/containarium/secrets.key — back this up off-host, losing it means every stored secret is unrecoverable ciphertext")
-					}
-					cipher, cerr := corecryptosecrets.NewCipher(key)
-					if cerr != nil {
-						log.Printf("Warning: Failed to construct secrets cipher: %v. Secrets disabled.", cerr)
-						secretsPool.Close()
-					} else {
-						// Phase 4.1 — KMS backend selection via env
-						// CONTAINARIUM_KMS_BACKEND=none|inproc|vault.
-						// On err the store still opens in legacy mode
-						// (no envelope) — operators see the WARNING
-						// rather than the daemon refusing to start.
-						kms, kdesc, kerr := secretsstore.LoadKMSClient(key)
-						if kerr != nil {
-							log.Printf("Warning: KMS backend config error: %v. Secrets store falling back to legacy mode.", kerr)
-							kms = nil
-							kdesc = "disabled (config error)"
-						}
-						// #1630 — per-tenant KEK factory, only non-nil
-						// when CONTAINARIUM_KMS_BACKEND=gcp. A config
-						// error here degrades the SAME way the shared
-						// client does: log and disable, don't fail the
-						// whole secrets store over it.
-						tenantKMSFactory, tkerr := secretsstore.LoadTenantKMSFactory()
-						if tkerr != nil {
-							log.Printf("Warning: per-tenant KMS factory config error: %v. SetTenantKMSKey will be unavailable.", tkerr)
-							tenantKMSFactory = nil
-						}
-						// Phase 4.1 Phase-E — master-key retirement
-						// gate. CONTAINARIUM_REQUIRE_ENVELOPE=true
-						// means every decrypt must go through KMS;
-						// legacy rows are rejected. Refuse to wire
-						// the Store if the gate is on but no KMS
-						// backend is configured — fail-closed at
-						// startup is the only safe shape.
-						requireEnvelope := envBool("CONTAINARIUM_REQUIRE_ENVELOPE")
-						// Snapshot KMS status for the KmsService
-						// GetKMSStatus RPC, regardless of whether the
-						// store ends up wired (the status is about
-						// config, not store health).
-						containerServer.SetKMSStatus(os.Getenv("CONTAINARIUM_KMS_BACKEND"), kdesc, kms != nil, requireEnvelope)
-						if requireEnvelope && kms == nil {
-							log.Printf("FATAL: CONTAINARIUM_REQUIRE_ENVELOPE=true but no KMS backend is configured. Set CONTAINARIUM_KMS_BACKEND=vault (or inproc for dev) before enabling retirement mode. Secrets disabled.")
-							secretsPool.Close()
-						} else {
-							var opts []secretsstore.Option
-							if kms != nil {
-								opts = append(opts, secretsstore.WithKMS(kms))
-							}
-							if requireEnvelope {
-								opts = append(opts, secretsstore.WithRequireEnvelope(true))
-							}
-							if tenantKMSFactory != nil {
-								opts = append(opts, secretsstore.WithTenantKMSFactory(tenantKMSFactory))
-							}
-							if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
-								log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
-								secretsPool.Close()
-							} else {
-								containerServer.SetSecretsStore(store)
-								retirement := ""
-								if requireEnvelope {
-									retirement = " [legacy-rejected]"
-								}
-								log.Printf("Secrets store ready (file-keyed AES-256-GCM, envelope: %s%s)", kdesc, retirement)
-							}
-						}
-					}
+					log.Printf("Warning: %v. Secrets disabled.", serr)
 				}
+				secretsPool.Close()
+				storeRecovery.Register(secretsStoreFamily(containerServer, openSecrets))
+				secretsLateInstall = true
+			} else {
+				containerServer.SetSecretsStore(store)
+				storeRecovery.RegisterInstalled(secretsStoreFamily(containerServer, openSecrets))
 			}
 
 			// Set up the tracker-connections store (#1921 step 2) — where
@@ -1145,12 +1096,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				log.Printf("Warning: Failed to init notify store: %v. Notifications disabled.", nerr)
 				notifyPool.Close()
 			} else {
-				// A nil *secrets.Store must stay a nil interface: the
-				// service then refuses tokens instead of dereferencing it.
-				var notifySecrets notifySecretStore
-				if containerServer.secretsStore != nil {
-					notifySecrets = containerServer.secretsStore
-				}
 				// Private networks a self-hosted ntfy may be on; a bad value
 				// fails closed (public servers only).
 				allowed, aerr := notify.ParseAllowedCIDRs(os.Getenv(notify.AllowedCIDRsEnv))
@@ -1158,7 +1103,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					log.Printf("Warning: %v; notifications reach public ntfy servers only", aerr)
 					allowed = nil
 				}
-				notifyServer = NewNotifyServer(ntfStore, notifySecrets, containerServer.boxRunExecFn, containerServer.boxRunDir(), allowed)
+				notifyServer = NewNotifyServer(ntfStore, nil, containerServer.boxRunExecFn, containerServer.boxRunDir(), allowed)
+				// Read the secrets store on every call, so one installed
+				// after a degraded start (#3327) reaches the service.
+				notifyServer.secretsSource = containerServer.notifySecrets
 				pb.RegisterNotifyServiceServer(grpcServer, notifyServer)
 				log.Printf("Notify channel store ready")
 			}
@@ -2567,6 +2515,9 @@ skipAppHosting:
 		NewContainerBoxAttribution(containerServer),
 		nil, nil, "", 0,
 	)
+	// Key custody is read on every call, so a secrets store installed after
+	// a degraded start (#3327) reaches the key verbs.
+	modelGatewayServer.keysSource = func() GatewayKeyStore { return GatewayKeyStoreOf(containerServer) }
 	pb.RegisterModelGatewayServiceServer(grpcServer, modelGatewayServer)
 
 	// Setup alert store and manager
@@ -2718,9 +2669,19 @@ skipAppHosting:
 			// Same explicit nil check as gwRevocations above, and for the same
 			// reason: a nil *secrets.Store in an interface field is a non-nil
 			// interface holding a nil pointer.
+			//
+			// The resolver reads the store on every call, so one installed
+			// after a degraded start (#3327) is used; until then it has no
+			// key, which falls back exactly as no resolver does.
 			var gwKeyResolver modelgateway.KeyResolver
-			if containerServer != nil && containerServer.secretsStore != nil {
-				gwKeyResolver = containerServer.secretsStore
+			if containerServer != nil && (containerServer.loadSecretsStore() != nil || secretsLateInstall) {
+				gwKeyResolver = modelgateway.KeyResolverFunc(func(ctx context.Context, keyOwner, provider string) (string, bool) {
+					store := containerServer.loadSecretsStore()
+					if store == nil {
+						return "", false
+					}
+					return store.KeyFor(ctx, keyOwner, provider)
+				})
 			} else if len(gwRegistered) > 0 {
 				log.Printf("Warning: model-gateway has no secrets store (no Postgres) — per-owner provider keys cannot be resolved; every call falls back to the daemon-global key")
 			}
@@ -3093,6 +3054,7 @@ skipAppHosting:
 		retentionChainSource:   retentionChainSource,
 		credentialWatcher:      credentialWatcher,
 		postgresRecovery:       postgresRecovery,
+		secretsLateInstall:     secretsLateInstall,
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -3855,13 +3817,16 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// secrets from a Secret, which does survive — the kubelet repopulates
 	// the mount on its own, and a periodic re-apply would be writes to the
 	// apiserver that change nothing.
-	if ds.containerServer != nil && ds.containerServer.secretsStore != nil &&
+	//
+	// Started too while the store is pending late install (#3327): it reads
+	// the store each tick and skips until one is installed.
+	if ds.containerServer != nil && (ds.containerServer.loadSecretsStore() != nil || ds.secretsLateInstall) &&
 		ds.containerServer.boxes().Kind() != box.KindK8s {
 		if ic, err := incus.New(); err != nil {
 			log.Printf("[secrets-reconciler] incus client unavailable: %v (reconciler disabled)", err)
 		} else {
 			rec := newSecretsReconciler(
-				ds.containerServer.secretsStore,
+				ds.containerServer.loadSecretsStore,
 				ic,
 				ds.containerServer.stampSecretsOnLXC,
 				0, // default interval

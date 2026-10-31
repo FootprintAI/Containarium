@@ -55,10 +55,11 @@ func (s *ContainerServer) stampSecrets(ctx context.Context, username string) (in
 // desired state, and a deleted secret must disappear from the box. It also
 // means delivery is idempotent, so a retry after a partial failure converges.
 func (s *ContainerServer) deliverSecretsToK8s(ctx context.Context, applier tenantSecretApplier, username string) (int, error) {
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return 0, fmt.Errorf("secrets store not configured")
 	}
-	secretMap, err := s.secretsStore.LoadAllForUserWithDelivery(ctx, username)
+	secretMap, err := store.LoadAllForUserWithDelivery(ctx, username)
 	if err != nil {
 		return 0, fmt.Errorf("load secrets: %w", err)
 	}

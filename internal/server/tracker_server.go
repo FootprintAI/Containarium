@@ -308,11 +308,12 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		resp.Detail = derr.Error()
 		return resp, nil
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		resp.Detail = "secrets store not configured on this daemon"
 		return resp, nil
 	}
-	cred, cerr := s.secretsStore.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
+	cred, cerr := store.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
 	if cerr != nil {
 		resp.Detail = fmt.Sprintf("resolve broker credential: %v", cerr)
 		return resp, nil
@@ -367,7 +368,12 @@ func (s *ContainerServer) describeCredentialBestEffort(ctx context.Context, conn
 		log.Printf("[tracker] %s/%s: %v", conn.Username, conn.Name, err)
 		return
 	}
-	cred, err := s.secretsStore.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
+	store := s.loadSecretsStore()
+	if store == nil {
+		log.Printf("[tracker] %s/%s: secrets store not configured on this daemon", conn.Username, conn.Name)
+		return
+	}
+	cred, err := store.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
 	if err != nil {
 		log.Printf("[tracker] %s/%s: resolve broker credential: %v", conn.Username, conn.Name, err)
 		return
@@ -411,10 +417,11 @@ func (s *ContainerServer) requireBrokerOnlySecret(ctx context.Context, username,
 	if secretName == "" {
 		return status.Error(codes.InvalidArgument, "credential_secret is required")
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return status.Error(codes.FailedPrecondition, "secrets store not configured on this daemon; a tracker connection needs a broker-only secret to reference")
 	}
-	_, _, err := s.secretsStore.Get(ctx, username, secretName)
+	_, _, err := store.Get(ctx, username, secretName)
 	switch {
 	case errors.Is(err, secrets.ErrBrokerOnly):
 		return nil
