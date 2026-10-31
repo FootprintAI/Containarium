@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A shared late-install helper for Postgres-backed store families** (#3326; part of #2855, option C of #2824). After a degraded start, a store family registered with the helper is installed in the running daemon once Postgres answers: one shared pool and one backoff loop (5 s doubling to 60 s) serve every pending family, each family's install is retried until it succeeds and then never runs again, and its readiness entry under `grpc.health.v1` turns from `NOT_SERVING` to `SERVING` without a restart. Registered families are listed by `containarium doctor`, the cloud status probe and `/v1/health` from the registry rather than a hard-coded list, and the DEGRADED reason no longer claims every store stays off until the daemon restarts. With `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1` the self-restart is held while a registered family is still recovering in-process, so it cannot close a pool under a late install; once nothing is pending it remains the fallback for families that do not recover in-process. No store family is migrated by this change (the guardrail and coding-tool egress policy stores keep their #2483 retry); the secrets, token-revocation and tracker families follow.
+
 ## [0.123.0] - 2026-10-31
 
 ### Upgrading
