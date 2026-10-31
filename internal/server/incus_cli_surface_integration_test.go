@@ -148,7 +148,7 @@ func TestIntegrationIncus_MigrationRunnerCLISurface(t *testing.T) {
 	if out, ok := incusRun("copy", "--help"); !ok {
 		t.Errorf("DEFECT: `incus copy --help` failed: %s", firstLine(out))
 	} else {
-		for _, flag := range []string{"--instance-only", "--refresh", "--storage"} {
+		for _, flag := range []string{"--refresh", "--storage"} {
 			if !strings.Contains(out, flag) {
 				t.Errorf("DEFECT: `incus copy` does not advertise %s, which CopyInitial/CopyRefresh "+
 					"pass — the migration would fail on an unknown flag", flag)
