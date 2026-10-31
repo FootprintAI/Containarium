@@ -165,6 +165,23 @@ message StartBoxRunRequest {
   // reason is in the run's log. BoxRun.model reports the id the run was
   // started with. Capability "box_run_model" in SystemInfo.capabilities.
   string model = 7;
+  // Command mode (#3322): run this shell command (through `sh -c`) instead of
+  // an engine prompt. No engine starts and no agent credential is loaded, so
+  // the run user's agent sign-in is not required. Mutually exclusive with
+  // prompt, session_id, continue_session, structured_output and model
+  // (INVALID_ARGUMENT, before anything on the box is touched). The command
+  // runs as the box's run user with its recorded tool-access level and sudo
+  // grant, exactly as an engine run would, in that user's home directory; a
+  // caller that needs a checkout makes it part of the command. The run is
+  // listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
+  // StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
+  // in SystemInfo.capabilities.
+  string command = 8;
+  // With command: the daemon ends the command after this many seconds
+  // (`timeout -k 5`, so the run exits with code 124). 0 means the daemon's
+  // default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
+  // command.
+  int32 timeout_seconds = 9;
 }
 
 message StartBoxRunResponse {
