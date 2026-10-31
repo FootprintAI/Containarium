@@ -71,6 +71,15 @@ func (f *fakeRunner) CopyRefresh(c, s, r, pool string) error {
 	}
 	return nil
 }
+func (f *fakeRunner) CopyRefreshLive(c, s, r, pool string) error {
+	f.log("refreshlive " + copyDesc(c, s, r, pool))
+	n := f.copyRefreshN
+	f.copyRefreshN++
+	if err, ok := f.failCopyRefresh[n]; ok {
+		return err
+	}
+	return nil
+}
 func (f *fakeRunner) Stop(c string) error {
 	f.log(fmt.Sprintf("stop %s", c))
 	return f.failStop
@@ -151,6 +160,25 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 	}
 	if runner.calls[2] != "copyinit alice-container/containarium-move-sync0 -> vm2" {
 		t.Errorf("third call = %q", runner.calls[2])
+	}
+
+	// Pre-copy refreshes run while the source serves traffic, so they must not
+	// freeze it; the final refresh runs after the stop and stays consistent.
+	wantLive := "refreshlive alice-container/containarium-move-sync1 -> vm2"
+	wantFinal := "refresh alice-container/containarium-move-final -> vm2"
+	liveIdx, finalIdx, stopIdx := -1, -1, -1
+	for i, c := range runner.calls {
+		switch c {
+		case wantLive:
+			liveIdx = i
+		case wantFinal:
+			finalIdx = i
+		case "stop alice-container":
+			stopIdx = i
+		}
+	}
+	if liveIdx == -1 || finalIdx == -1 || stopIdx == -1 || !(liveIdx < stopIdx && stopIdx < finalIdx) {
+		t.Errorf("want %q before the stop and %q after it; calls: %v", wantLive, wantFinal, runner.calls)
 	}
 
 	// The sync snapshots travel to the target with each refresh, so after a

@@ -235,7 +235,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		createdSnaps = append(createdSnaps, syncName)
 
 		log.Printf("[move] phase 2 iter %d: delta refresh of %s/%s ...", i, containerName, syncName)
-		if err := s.moveRunner.CopyRefresh(containerName, syncName, targetRemote, encStoragePool); err != nil {
+		if err := s.moveRunner.CopyRefreshLive(containerName, syncName, targetRemote, encStoragePool); err != nil {
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: refresh: %w", i, err)
 		}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeIncus writes an `incus` stand-in that records its arguments and applies
@@ -213,5 +214,67 @@ func TestExecRunner_EnsureTargetACLs_NothingToDoWithoutACLs(t *testing.T) {
 		if strings.Contains(line, "acl create") {
 			t.Errorf("no ACL create expected for an instance with no ACLs, got %q", line)
 		}
+	}
+}
+
+// A pre-copy refresh runs while the container is serving traffic. Without
+// --allow-inconsistent, Incus freezes a running source for the transfer on
+// storage that cannot send a snapshot, which is an outage before the cutover
+// that the reported downtime would not count. The final refresh runs after the
+// source stops, so it stays consistent and does not carry the flag.
+func TestExecRunner_CopyRefreshLive_DoesNotFreezeTheSource(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefreshLive("box", "sync1", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefreshLive: %v", err)
+	}
+	if err := r.CopyRefreshLive("box", "sync2", "target-1", "tenants"); err != nil {
+		t.Fatalf("CopyRefreshLive with a pool: %v", err)
+	}
+
+	got := recordedArgs(t, argsFile)
+	want := []string{
+		"copy box target-1:box --refresh --allow-inconsistent",
+		"copy box target-1:box --refresh --allow-inconsistent --storage tenants",
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("incus args = %q, want %q", got, want)
+	}
+}
+
+func TestExecRunner_CopyRefresh_FinalStaysConsistent(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefresh("box", "final", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefresh: %v", err)
+	}
+	for _, line := range recordedArgs(t, argsFile) {
+		if strings.Contains(line, "--allow-inconsistent") {
+			t.Errorf("the final refresh must be consistent, got %q", line)
+		}
+	}
+}
+
+// A snapshot delete that never returns must not hold up the move's success
+// response: the cleanup is best effort and gives up after a deadline.
+func TestExecRunner_DeleteSnapshot_IsBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 20\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &ExecRunner{IncusPath: bin, SnapshotDeleteTimeout: 300 * time.Millisecond}
+
+	start := time.Now()
+	err := r.DeleteSnapshot("box", "sync0")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a delete that exceeded its deadline must report an error")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("DeleteSnapshot took %v; it must give up near the 300ms deadline", elapsed)
 	}
 }
