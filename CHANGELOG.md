@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- BUILD_TOOLS runs now return a typed `HOST_MANAGED_TOOLCHAIN_MISSING` precondition reason when the host managed toolchain release is explicitly absent.
+
+
 ## [0.123.2] - 2026-10-31
 
 ### Fixed
