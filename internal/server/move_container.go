@@ -209,6 +209,13 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	createdSnaps = append(createdSnaps, syncName)
 
+	// The copied NIC names the tenant's guard ACL, which must already exist
+	// on the target when the instance is created there.
+	if err := s.moveRunner.EnsureTargetACLs(containerName, targetRemote); err != nil {
+		cleanupSnaps()
+		return nil, fmt.Errorf("phase 1: prepare network ACLs on %s: %w", targetRemote, err)
+	}
+
 	log.Printf("[move] phase 1: initial copy of %s/%s to %s ...", containerName, syncName, targetRemote)
 	if err := s.moveRunner.CopyInitial(containerName, syncName, targetRemote, encStoragePool); err != nil {
 		cleanupSnaps()

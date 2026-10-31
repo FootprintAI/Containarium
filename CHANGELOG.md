@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`containarium move` no longer fails at the first delta refresh with `--refresh can only be used with instances`.** Each delta and the final cutover copy ran `incus copy <container>/<snapshot> <remote>:<container> --refresh`, and Incus accepts `--refresh` only for an instance source, so the move stopped right after the initial copy and left a partial copy on the target. The refresh now copies the instance itself, which carries the sync snapshots so a btrfs or zfs source can still send an increment. Those sync snapshots reach the target with the copy, so a successful move now also deletes them there; before, they would have stayed and pinned disk. The new tests run the real command line against an `incus` stand-in that applies Incus's rule.
+- **`containarium move` now creates the tenant's network ACL on the target before the first copy.** A tenant container's NIC names its guard ACL, and Incus refuses to create the copied instance when that ACL does not exist on the destination (`Network ACL "containarium-tenant-..." does not exist`), so the first copy of any tenant container failed. The move now reads the ACLs the container's NICs name and creates each on the target, empty and deny-all by default; the target daemon's guard reconciler fills in the rules for the tenant's members on that host. An ACL that already exists is left alone. If the ACLs cannot be prepared, the move stops before copying anything.
 
 ## [0.123.1] - 2026-10-31
 

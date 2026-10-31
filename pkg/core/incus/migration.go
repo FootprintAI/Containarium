@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -24,6 +25,20 @@ type MigrationRunner interface {
 	// of snapshots we left during pre-copy. No-op if the snapshot
 	// doesn't exist.
 	DeleteSnapshot(container, snapshot string) error
+
+	// EnsureTargetACLs makes sure every network ACL that `container`'s NICs
+	// name exists on `targetRemote`. A copied instance keeps its NIC's
+	// `security.acls`, and Incus refuses to create the instance on the
+	// destination when a named ACL is missing ("Network ACL ... does not
+	// exist"). A tenant's NIC names its guard ACL, so without this the first
+	// copy of any tenant container fails.
+	//
+	// The ACL is created empty, so ingress is denied until the target daemon's
+	// own guard reconciler replaces it with the rules for the tenant's members
+	// on that host; the source's rules name addresses that are meaningless
+	// there. An ACL that already exists is left alone. Equivalent to
+	// `incus network acl create <remote>:<name>` for each ACL named.
+	EnsureTargetACLs(container, targetRemote string) error
 
 	// CopyInitial does the first full transfer of `container` with
 	// snapshot `fromSnap` to `targetRemote`. `targetRemote` is the
@@ -141,6 +156,54 @@ func (e *ExecRunner) DeleteSnapshot(container, snapshot string) error {
 		return nil
 	}
 	return err
+}
+
+// incusOutput runs incus and returns its standard output.
+func (e *ExecRunner) incusOutput(args ...string) ([]byte, error) {
+	bin := e.IncusPath
+	if bin == "" {
+		bin = "incus"
+	}
+	cmd := exec.Command(bin, args...) // #nosec G204 -- args are validated by callers
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		return nil, fmt.Errorf("incus %s: %w\nOutput: %s", strings.Join(args, " "), err, stderr)
+	}
+	return out, nil
+}
+
+func (e *ExecRunner) EnsureTargetACLs(container, targetRemote string) error {
+	out, err := e.incusOutput("query", "/1.0/instances/"+container)
+	if err != nil {
+		return fmt.Errorf("read %s's devices: %w", container, err)
+	}
+	var inst struct {
+		ExpandedDevices map[string]map[string]string `json:"expanded_devices"`
+	}
+	if err := json.Unmarshal(out, &inst); err != nil {
+		return fmt.Errorf("parse %s's devices: %w", container, err)
+	}
+
+	seen := map[string]bool{}
+	for _, dev := range inst.ExpandedDevices {
+		for _, name := range strings.Split(dev["security.acls"], ",") {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			err := e.incus("network", "acl", "create", targetRemote+":"+name,
+				"--description", "created for an incoming migration; the target daemon replaces its rules")
+			if err != nil && !strings.Contains(err.Error(), "already exists") {
+				return fmt.Errorf("create network ACL %q on %s: %w", name, targetRemote, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool string) error {
