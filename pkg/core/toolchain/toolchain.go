@@ -2,6 +2,7 @@
 package toolchain
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,12 +25,20 @@ func Available(root string) bool {
 
 // CheckRelease reports whether root has a regular current release manifest.
 // It preserves lookup errors so callers can distinguish a missing release
-// from permission, I/O, and malformed filesystem failures. Lstat keeps a
-// dangling manifest symlink visible as a non-regular manifest.
+// from permission, I/O, and malformed filesystem failures. Lstat is used only
+// after Stat reports not-exist, to recognize a dangling manifest symlink.
 func CheckRelease(root string) error {
 	path := filepath.Join(root, "current", "manifest.json")
-	info, err := os.Lstat(path)
+	info, err := os.Stat(path)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat managed toolchain manifest %s: %w", path, err)
+		}
+		if _, lstatErr := os.Lstat(path); lstatErr == nil {
+			return fmt.Errorf("managed toolchain manifest %s is a dangling symlink", path)
+		} else if !errors.Is(lstatErr, os.ErrNotExist) {
+			return fmt.Errorf("lstat managed toolchain manifest %s: %w", path, lstatErr)
+		}
 		return fmt.Errorf("stat managed toolchain manifest %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {

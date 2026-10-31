@@ -95,6 +95,26 @@ func TestManagedToolchainsDanglingManifestSymlinkIsNotMissingRelease(t *testing.
 	}
 }
 
+func TestManagedToolchainsValidManifestSymlink(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current")
+	if err := os.Mkdir(current, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "release-manifest.json")
+	if err := os.WriteFile(target, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(current, "manifest.json")); err != nil {
+		t.Skipf("cannot create symlink for valid manifest case: %v", err)
+	}
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	if err := m.EnsureManagedToolchains("alice"); err != nil {
+		t.Fatalf("valid symlink to regular manifest should be accepted: %v", err)
+	}
+}
+
 func TestManagedToolchainsAttachedAtCreate(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "current"), 0755); err != nil {
