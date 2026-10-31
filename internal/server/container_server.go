@@ -2581,17 +2581,21 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 		}
 	}
 
-	// Get the new IP. The box backend's Get() reads from the substrate.
-	info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+	// Get the new IP. The box backend's Get() reads from the substrate. The
+	// container is running as soon as Start returns, but its DHCP lease can
+	// take a moment, so wait for the address instead of reading it once.
+	newIP, err := waitForContainerIP(ctx, func() (string, error) {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return "", fmt.Errorf("get adopted container info: %w", err)
+		}
+		if info == nil {
+			return "", nil
+		}
+		return info.IPAddress, nil
+	}, adoptIPWait, time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("get adopted container info: %w", err)
-	}
-	newIP := ""
-	if info != nil {
-		newIP = info.IPAddress
-	}
-	if newIP == "" {
-		return nil, fmt.Errorf("adopted container has no IP address yet (still initializing?)")
+		return nil, err
 	}
 
 	// The adopted container now lives on this VM under a new IP —
