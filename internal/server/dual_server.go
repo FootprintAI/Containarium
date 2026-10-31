@@ -862,6 +862,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var coreServices *CoreServices
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
+	// Late install of store families after a degraded start (#3326): one
+	// pool, one backoff loop, per-family readiness. A family whose startup
+	// install did not happen registers here as it is migrated (#3327
+	// onwards; none yet); Run starts below, after every registration. The
+	// DSN is read at dial time, because it is finalized further down.
+	storeRecovery := newStoreRecovery(policyStoreHealth, func() string { return postgresConnString })
 	if config.EnableAppHosting {
 		incusClient, err := incus.New()
 		if err != nil {
@@ -3063,6 +3069,20 @@ skipAppHosting:
 		}
 	}
 
+	// Every store family has registered by now (#3326): start the shared
+	// retry loop over the startup pool (nil if it could not connect), and
+	// hold the opt-in self-restart (#2824) while any family is still pending,
+	// so a restart cannot close a pool under a late install. With nothing
+	// pending the watcher stays the fallback for unmigrated families.
+	if storeRecovery.pending() {
+		log.Printf("Store families: retrying the Postgres install in-process every %s, up to every %s, until it succeeds", policyStoreRetryInitial, policyStoreRetryMax)
+		go storeRecovery.Run(context.Background(), policyStorePool)
+	}
+	postgresRecovery := newPostgresRecoveryWatcher(pgGate.failedDSN())
+	if postgresRecovery != nil {
+		postgresRecovery.holdWhile = storeRecovery.pending
+	}
+
 	ds := &DualServer{
 		notifyServer:           notifyServer,
 		modelGateway:           modelGW,
@@ -3072,7 +3092,7 @@ skipAppHosting:
 		retentionReporter:      retentionReporter,
 		retentionChainSource:   retentionChainSource,
 		credentialWatcher:      credentialWatcher,
-		postgresRecovery:       newPostgresRecoveryWatcher(pgGate.failedDSN()),
+		postgresRecovery:       postgresRecovery,
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,

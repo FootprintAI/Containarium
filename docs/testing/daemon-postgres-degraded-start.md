@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -20,7 +20,11 @@ and verify that a failed core Postgres readiness entry still reports
 degraded. The network-policy tests prove that rejected operator writes
 change nothing, reads remain available, and in-process enforcement writers
 remain active on the fallback. Recovery-watcher tests cover the opt-in
-restart's consecutive-success and minimum-uptime requirements.
+restart's consecutive-success and minimum-uptime requirements. The
+store-recovery tests (#3326) use a fake Postgres that is down and then up:
+a registered family turns from `NOT_SERVING` to `SERVING` with no restart,
+two families share one pool and one dial per attempt, and the self-restart
+watcher holds while a family is pending.
 
 ## Deployed outage drill
 

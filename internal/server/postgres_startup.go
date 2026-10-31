@@ -133,7 +133,7 @@ func (g *postgresStartupGate) check(dsn string) error {
 		result = fmt.Errorf("startup Postgres check failed within %s (%v); skipping database-backed stores", g.timeout, lastErr)
 		if g.failed == "" {
 			g.failed = dsn
-			log.Printf("DEGRADED: %v. The daemon serves without them; they stay off until it restarts", result)
+			log.Printf("DEGRADED: %v. The daemon serves without them; store families with in-process recovery (#3326) are retried in the background, the rest stay off until it restarts", result)
 		}
 	}
 	g.results[dsn] = result
@@ -194,6 +194,11 @@ type postgresRecoveryWatcher struct {
 	required  int
 	interval  time.Duration // between pings while Postgres answers; first backoff step
 	maxDelay  time.Duration // backoff cap while it does not
+	// holdWhile, when set, holds the restart while it returns true: a store
+	// family registered with the late-install helper (#3326) is still
+	// recovering in-process, and a restart now would close its pool under
+	// it. nil means never held.
+	holdWhile func() bool
 }
 
 // newPostgresRecoveryWatcher returns nil unless the startup check failed and
@@ -235,7 +240,7 @@ func (w *postgresRecoveryWatcher) run(ctx context.Context) bool {
 	log.Printf("Postgres recovery watcher: will restart the daemon once Postgres answers %d pings in a row (not before %s of uptime)", w.required, w.minUptime)
 	delay := w.interval
 	ok := 0
-	loggedUp, loggedUptime := false, false
+	loggedUp, loggedUptime, loggedHold := false, false, false
 	for {
 		if !w.sleep(ctx, delay) {
 			return false
@@ -243,7 +248,7 @@ func (w *postgresRecoveryWatcher) run(ctx context.Context) bool {
 		if err := w.ping(ctx); err != nil {
 			if ok > 0 || loggedUp {
 				log.Printf("Postgres recovery watcher: Postgres unreachable again (%v); waiting", err)
-				loggedUp, loggedUptime = false, false
+				loggedUp, loggedUptime, loggedHold = false, false, false
 			}
 			ok = 0
 			delay = min(delay*2, w.maxDelay)
@@ -262,6 +267,13 @@ func (w *postgresRecoveryWatcher) run(ctx context.Context) bool {
 			if !loggedUptime {
 				log.Printf("Postgres recovery watcher: Postgres is back; holding the restart until %s of uptime (flap guard)", w.minUptime)
 				loggedUptime = true
+			}
+			continue
+		}
+		if w.holdWhile != nil && w.holdWhile() {
+			if !loggedHold {
+				log.Printf("Postgres recovery watcher: Postgres is back; holding the restart while store families recover in-process (#3326)")
+				loggedHold = true
 			}
 			continue
 		}
