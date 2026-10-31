@@ -181,7 +181,7 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 			stopIdx = i
 		}
 	}
-	if liveIdx == -1 || finalIdx == -1 || stopIdx == -1 || !(liveIdx < stopIdx && stopIdx < finalIdx) {
+	if liveIdx == -1 || finalIdx == -1 || stopIdx == -1 || liveIdx >= stopIdx || stopIdx >= finalIdx {
 		t.Errorf("want %q before the stop and %q after it; calls: %v", wantLive, wantFinal, runner.calls)
 	}
 
