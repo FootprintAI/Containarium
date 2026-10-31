@@ -56,7 +56,7 @@ func TestTrackerRoute_NilStoreUnavailable(t *testing.T) {
 // alice acting on bob's tenant without an admin role is denied for
 // Set, List and Delete alike, not just Set.
 func TestTrackerRoute_CrossTenantDenied(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("tracker-route-rpc-alice", "member", "tracker:admin")
 	_, err := s.SetTrackerRoute(ctx, &pb.SetTrackerRouteRequest{
 		Username: "tracker-route-rpc-bob", Connection: "default", Scope: "product", SkillId: "product-define",
@@ -82,7 +82,7 @@ func TestTrackerRoute_CrossTenantDenied(t *testing.T) {
 
 func TestTrackerRoute_CRUDRoundTrip(t *testing.T) {
 	store := mustTestTrackerStore(t)
-	s := &ContainerServer{trackerStore: store}
+	s := withTrackerStore(&ContainerServer{}, store)
 	const user = "tracker-route-rpc-crud"
 	ctx := context.Background()
 	_ = store.Delete(ctx, user, "default")
@@ -140,7 +140,7 @@ func TestTrackerRoute_CRUDRoundTrip(t *testing.T) {
 
 func TestSetTrackerRoute_ValidationAndMissingConnection(t *testing.T) {
 	store := mustTestTrackerStore(t)
-	s := &ContainerServer{trackerStore: store}
+	s := withTrackerStore(&ContainerServer{}, store)
 	const user = "tracker-route-rpc-validate"
 	ctx := context.Background()
 	_ = store.Delete(ctx, user, "default")

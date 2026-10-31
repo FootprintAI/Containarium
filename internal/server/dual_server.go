@@ -825,6 +825,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// the same secrets Store; backend *config* stays in env/systemd.
 	pb.RegisterKmsServiceServer(grpcServer, NewKmsServer(containerServer))
 
+	// TrackerService is registered whether or not its store installs:
+	// the RPCs answer UNAVAILABLE until it does, and after a degraded
+	// start the late-install helper installs it in-process (#3329).
+	pb.RegisterTrackerServiceServer(grpcServer, containerServer)
+
 	// Cloud-actuation client (#354) is constructed later, once routeStore is
 	// finalized — the container actuator needs it to expose cloud routes at the
 	// host edge. Declared here so it's in scope for the DualServer assembly.
@@ -866,8 +871,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Late install of store families after a degraded start (#3326): one
 	// pool, one backoff loop, per-family readiness. A family whose startup
 	// install did not happen registers here as it is migrated (the secrets
-	// store, #3327); Run starts below, after every registration. The DSN is
-	// read at dial time, because it is finalized further down.
+	// store, #3327; the tracker store after it, #3329); Run starts below,
+	// after every registration. The DSN is read at dial time, because it is
+	// finalized further down.
 	storeRecovery := newStoreRecovery(policyStoreHealth, func() string { return postgresConnString })
 	// secretsLateInstall: the secrets store did not install at startup and
 	// is pending with storeRecovery, so its consumers are wired to the live
@@ -1068,22 +1074,29 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// a tenant's issue tracker is, and which broker-only secret
 			// holds its credential. Mirrors the secrets-store path
 			// directly above: shares Postgres but holds its own pgxpool.
-			// Failure here only disables the TrackerService API; the rest
-			// of the daemon keeps running.
-			if trackerPool, trackerErr := pgGate.connect(postgresConnString, 5, 3*time.Second); trackerErr != nil {
+			// Failure here only disables the TrackerService API
+			// (UNAVAILABLE); the rest of the daemon keeps running. A
+			// store that did not install here is handed to the
+			// late-install helper (#3329), which opens it over the
+			// shared pool once Postgres answers and wires the run
+			// starter and lineage reservations with it. Its credentials
+			// live in the secrets store, so it installs only once that
+			// one is in (fail closed).
+			trackerRunStarterFor := func() trackerstore.RunStarter { return NewTrackerRunStarter(agentSkillServer) }
+			trackerFamily := trackerStoreFamily(containerServer, agentSkillServer, trackerstore.NewStore, trackerRunStarterFor)
+			if containerServer.loadSecretsStore() == nil {
+				log.Printf("Warning: tracker store not installed: %v", errTrackerWaitingOnSecrets)
+				storeRecovery.Register(trackerFamily)
+			} else if trackerPool, trackerErr := pgGate.connect(postgresConnString, 5, 3*time.Second); trackerErr != nil {
 				log.Printf("Warning: Failed to connect to Postgres for tracker store: %v", trackerErr)
+				storeRecovery.Register(trackerFamily)
 			} else if trkStore, terr := trackerstore.NewStore(context.Background(), trackerPool); terr != nil {
 				log.Printf("Warning: Failed to init tracker store: %v. Tracker connections disabled.", terr)
 				trackerPool.Close()
+				storeRecovery.Register(trackerFamily)
 			} else {
-				containerServer.SetTrackerStore(trkStore)
-				agentSkillServer.SetTrackerConnections(trkStore)
-				// #2062: a run's leftover fan-out reservations are swept
-				// when its lease ends.
-				agentSkillServer.SetLineageReservations(trkStore)
-				// #2022: dispatched runs start through the RunAgentSkill path.
-				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
-				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
+				wireTrackerStore(containerServer, agentSkillServer, trkStore, trackerRunStarterFor())
+				storeRecovery.RegisterInstalled(trackerFamily)
 				log.Printf("Tracker connection store ready")
 			}
 
