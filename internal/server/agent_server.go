@@ -762,10 +762,9 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	opts.engineOverride = req.GetEngine()
 	// #3264: a per-run model wins over the skill's own, on a copy so the shared
 	// catalog skill is never mutated; refused before any box work.
-	if err := validateSkillRunModel(skill, req.GetEngine(), req.GetModel()); err != nil {
+	if skill, err = applyRunModel(skill, req); err != nil {
 		return nil, err
 	}
-	skill = withSkillModel(skill, req.GetModel())
 	if opts.orgID, err = authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
 		return nil, err
 	}
