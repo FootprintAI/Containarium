@@ -39,11 +39,9 @@ func TestValidateCrewModelOverrides(t *testing.T) {
 		{"no engine in the manifest but one in engine_overrides", &pb.RunCrewRequest{
 			ModelOverrides:  map[string]string{"no-engine": "m-1"},
 			EngineOverrides: map[string]pb.AgentEngine{"no-engine": pb.AgentEngine_AGENT_ENGINE_CODEX}}, codes.OK},
-		{"a graph run, which does not carry it yet", &pb.RunCrewRequest{
-			ModelOverrides: map[string]string{"named-bare": "m-1"}, Graph: &pb.TaskGraph{}}, codes.InvalidArgument},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateCrewModelOverrides(crew, tc.req, get)
+			err := validateModelOverrides(crew.GetSkillIds(), tc.req, get)
 			if status.Code(err) != tc.want {
 				t.Fatalf("code = %v (%v), want %v", status.Code(err), err, tc.want)
 			}
@@ -73,7 +71,7 @@ func TestWithModelOverride_ClonesAndNamesTheModel(t *testing.T) {
 func TestCrewMemberModels_ReportsTheEffectiveModel(t *testing.T) {
 	crew, get := modelTestSkills()
 	req := &pb.RunCrewRequest{ModelOverrides: map[string]string{"named-bare": "override-model"}}
-	got := crewMemberModels(crew, req, get)
+	got := crewMemberModels(crew.GetSkillIds(), req, get)
 	want := map[string]string{"named-pinned": "pinned-model", "named-bare": "override-model"}
 	if len(got) != len(want) {
 		t.Fatalf("member models = %v, want %v", got, want)

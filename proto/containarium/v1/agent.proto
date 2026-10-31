@@ -361,6 +361,12 @@ message RunAgentSkillRequest {
   // authorized the end user); any other caller setting it is PermissionDenied.
   // Empty = unchanged behaviour.
   string on_behalf_of_org_id = 11;
+  // Per-run model override (#3264): the model id this run is driven with, ahead
+  // of the skill's own `model`. Same rules as RunCrewRequest.model_overrides: a
+  // plain id (else INVALID_ARGUMENT), and carried to the box only with a named
+  // engine (the skill's, or `engine`), else FAILED_PRECONDITION. The catalog
+  // skill is never mutated. Empty = the skill's own model, unchanged.
+  string model = 12;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -1053,7 +1059,9 @@ message RunCrewRequest {
   // entry for a member with none is FAILED_PRECONDITION rather than ignored. A
   // key that is not a member of the crew is INVALID_ARGUMENT. An id the engine's
   // provider does not list is refused before the run starts, when the daemon can
-  // list that provider's models. Not supported with `graph` (INVALID_ARGUMENT).
+  // list that provider's models. With `graph` (#3264) a key names a skill used
+  // by a graph node (a skill node, or a member of a crew node) and each node runs
+  // on its entry.
   // CrewRun.member_models reports what each member ran with.
   map<string, string> model_overrides = 13;
 }
