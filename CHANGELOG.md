@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.123.2] - 2026-10-31
+
 ### Fixed
 
 - **`containarium move` no longer fails at the first delta refresh with `--refresh can only be used with instances`.** Each delta and the final cutover copy ran `incus copy <container>/<snapshot> <remote>:<container> --refresh`, and Incus accepts `--refresh` only for an instance source, so the move stopped right after the initial copy and left a partial copy on the target. The refresh now copies the instance itself, which carries the sync snapshots so a btrfs or zfs source can still send an increment. Those sync snapshots reach the target with the copy, so a successful move now also deletes them there; before, they would have stayed and pinned disk. The new tests run the real command line against an `incus` stand-in that applies Incus's rule.
