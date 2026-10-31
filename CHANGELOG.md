@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.123.2] - 2026-10-31
+
 ### Fixed
 
 - **`containarium move` no longer freezes a running container during its pre-copy refreshes, and a stuck snapshot delete can no longer hold up the success response.** The delta refreshes run while the container is still serving traffic, but Incus freezes a running source for the transfer on storage that cannot send a snapshot unless `--allow-inconsistent` is given, so each refresh could be an outage before the cutover that the reported downtime did not count. The pre-copy refreshes now pass the flag. The final refresh runs after the source stops, so it stays consistent and does not. The best-effort `incus snapshot delete` calls on the success path now have a two-minute deadline.
