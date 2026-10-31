@@ -27,7 +27,7 @@ const (
 	secretsStoreDisplay = "tenant secrets store"
 	// secretsMasterKeyPath is where the file-keyed master key lives; boot
 	// and the late install load (or create) it from the same path.
-	secretsMasterKeyPath = "/etc/containarium/secrets.key"
+	secretsMasterKeyPath = "/etc/containarium/secrets.key" // #nosec G101 -- the key FILE's path, not a credential value
 )
 
 // errSecretsEnvelopeWithoutKMS is the fail-closed refusal: the
