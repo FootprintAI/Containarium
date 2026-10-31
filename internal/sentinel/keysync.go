@@ -22,6 +22,8 @@ const (
 	sshpiperConfigFile  = "/etc/sshpiper/config.yaml"
 	sshpiperUsersDir    = "/etc/sshpiper/users"
 	sshpiperUpstreamKey = "/etc/sshpiper/upstream_key"
+	// Operator-provisioned backend host pins; never learned from keysync HTTP.
+	sshpiperKnownHosts = "/etc/sshpiper/known_hosts"
 
 	// sshpiperTrustedUserCAKeys is where an operator installs the SSH
 	// certificate-authority public key(s) that sshpiper should trust. When this
@@ -567,7 +569,7 @@ func renderSSHPiperConfig(routes []userRoute, caKeysPath string) []byte {
 		fmt.Fprintf(&buf, "    to:\n")
 		fmt.Fprintf(&buf, "      host: %s:%d\n", r.backendIP, sshPort)
 		fmt.Fprintf(&buf, "      username: %q\n", r.username)
-		fmt.Fprintf(&buf, "      ignore_hostkey: true\n")
+		fmt.Fprintf(&buf, "      known_hosts: %s\n", sshpiperKnownHosts)
 		fmt.Fprintf(&buf, "      private_key: %s\n", sshpiperUpstreamKey)
 	}
 	return buf.Bytes()

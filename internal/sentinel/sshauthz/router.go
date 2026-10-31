@@ -37,7 +37,7 @@ func (r *Router) Route(conn libplugin.ConnMetadata, publicKey []byte) (*libplugi
 
 // routerConfig is the subset of the yaml plugin's schema that keysync's
 // renderSSHPiperConfig writes. Decoding is strict: any other field (regex or
-// group matching, inline *_data, known_hosts, password) fails the load, so the
+// group matching, inline *_data, password) fails the load, so the
 // router refuses rather than route differently from the yaml plugin.
 type routerConfig struct {
 	Version string `yaml:"version"`
@@ -56,10 +56,10 @@ type routerFrom struct {
 type routerTo struct {
 	Host     string `yaml:"host"`
 	Username string `yaml:"username"`
-	// IgnoreHostkey is accepted because keysync writes it; the v1.6.1 yaml
-	// plugin ignores it too, and with no known_hosts it checks no host key.
+	// Accept legacy configs, but this flag never bypasses required host pins.
 	IgnoreHostkey bool   `yaml:"ignore_hostkey"`
 	PrivateKey    string `yaml:"private_key"`
+	KnownHosts    string `yaml:"known_hosts"`
 }
 
 func (r *Router) listPipes(libplugin.ConnMetadata) ([]skel.SkelPipe, error) {
@@ -145,7 +145,17 @@ type routerTarget struct {
 func (t routerTarget) Host(libplugin.ConnMetadata) string { return t.to.Host }
 func (t routerTarget) User(libplugin.ConnMetadata) string { return t.user }
 func (t routerTarget) KnownHosts(libplugin.ConnMetadata) ([]byte, error) {
-	return nil, nil
+	if t.to.KnownHosts == "" {
+		return nil, errors.New("ssh authz router: pipe has no known_hosts")
+	}
+	data, err := readFiles(t.dir, []string{t.to.KnownHosts})
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, errors.New("ssh authz router: known_hosts is empty")
+	}
+	return data, nil
 }
 
 func (t routerTarget) PrivateKey(libplugin.ConnMetadata) ([]byte, []byte, error) {
