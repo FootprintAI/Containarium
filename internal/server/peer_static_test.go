@@ -17,6 +17,9 @@ func TestParseStaticPeer(t *testing.T) {
 		{name: "id with dots and underscores", in: "be.b_1=10.0.0.2:8080", want: StaticPeer{ID: "be.b_1", Addr: "10.0.0.2:8080"}},
 		{name: "hostname address", in: "peer-b=peer-b.internal:8080", want: StaticPeer{ID: "peer-b", Addr: "peer-b.internal:8080"}},
 		{name: "surrounding space is trimmed", in: "  backend-b=10.0.0.2:8080  ", want: StaticPeer{ID: "backend-b", Addr: "10.0.0.2:8080"}},
+		{name: "ipv6 with brackets", in: "backend-b=[::1]:8080", want: StaticPeer{ID: "backend-b", Addr: "[::1]:8080"}},
+		{name: "ipv6 without brackets", in: "backend-b=::1:8080", wantErr: true},
+		{name: "id reserved for sentinel-discovered peers", in: "tunnel-gpu=10.0.0.2:8080", wantErr: true},
 		{name: "empty entry", in: "", wantErr: true},
 		{name: "blank entry", in: "   ", wantErr: true},
 		{name: "empty id", in: "=10.0.0.2:8080", wantErr: true},
@@ -50,21 +53,56 @@ func TestParseStaticPeer(t *testing.T) {
 }
 
 func TestParseStaticPeers_RejectsDuplicateIDs(t *testing.T) {
-	_, err := ParseStaticPeers([]string{"a=10.0.0.1:8080", "a=10.0.0.2:8080"})
+	_, err := ParseStaticPeers([]string{"a=10.0.0.1:8080", "a=10.0.0.2:8080"}, "local")
 	if err == nil {
 		t.Fatal("expected an error for two peers with the same id")
 	}
 }
 
-func TestParseStaticPeers_RejectsDuplicateAddressOnlyEntries(t *testing.T) {
-	_, err := ParseStaticPeers([]string{"10.0.0.1:8080", "10.0.0.1:8080"})
+// An identical entry repeated is collapsed, as the old map-keyed code did.
+func TestParseStaticPeers_CollapsesIdenticalEntries(t *testing.T) {
+	got, err := ParseStaticPeers([]string{"10.0.0.1:8080", "10.0.0.1:8080", "b=10.0.0.2:8080", "b=10.0.0.2:8080"}, "local")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d peers, want 2 after collapsing repeats: %+v", len(got), got)
+	}
+}
+
+// One daemon listed under two ids would show every container twice.
+func TestParseStaticPeers_RejectsOneAddressUnderTwoIDs(t *testing.T) {
+	_, err := ParseStaticPeers([]string{"a=10.0.0.2:8080", "b=10.0.0.2:8080"}, "local")
 	if err == nil {
-		t.Fatal("expected an error for a repeated address")
+		t.Fatal("expected an error for one address under two ids")
+	}
+	_, err = ParseStaticPeers([]string{"10.0.0.2:8080", "b=10.0.0.2:8080"}, "local")
+	if err == nil {
+		t.Fatal("expected an error for an address-only entry and an id entry for the same address")
+	}
+}
+
+func TestParseStaticPeers_RejectsTheLocalBackendID(t *testing.T) {
+	_, err := ParseStaticPeers([]string{"local=10.0.0.2:8080"}, "local")
+	if err == nil {
+		t.Fatal("expected an error for a peer whose id is this daemon's own backend id")
+	}
+}
+
+// A trailing comma on the flag yields an empty entry. Before explicit ids that
+// became a harmless junk peer and the daemon started, so it must not be fatal.
+func TestParseStaticPeers_IgnoresBlankEntries(t *testing.T) {
+	got, err := ParseStaticPeers([]string{"a=10.0.0.1:8080", "", "  "}, "local")
+	if err != nil {
+		t.Fatalf("a blank entry must not fail startup: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("got %+v, want only peer a", got)
 	}
 }
 
 func TestParseStaticPeers_ReportsTheBadEntry(t *testing.T) {
-	_, err := ParseStaticPeers([]string{"a=10.0.0.1:8080", "b=oops"})
+	_, err := ParseStaticPeers([]string{"a=10.0.0.1:8080", "b=oops"}, "local")
 	if err == nil {
 		t.Fatal("expected an error for an entry with no port")
 	}
@@ -74,7 +112,7 @@ func TestParseStaticPeers_ReportsTheBadEntry(t *testing.T) {
 }
 
 func TestParseStaticPeers_Empty(t *testing.T) {
-	got, err := ParseStaticPeers(nil)
+	got, err := ParseStaticPeers(nil, "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,5 +159,15 @@ func TestNewPeerPool_SkipsInvalidStaticPeers(t *testing.T) {
 	}
 	if pool.Get("good") == nil {
 		t.Error("the valid peer should be kept")
+	}
+}
+
+func TestNewPeerPool_SkipsAPeerWithTheLocalBackendID(t *testing.T) {
+	pool := NewPeerPool("local-vm", "", []string{"local-vm=10.0.0.2:8080", "other=10.0.0.3:8080"}, "")
+	if pool.Get("local-vm") != nil {
+		t.Error("a static peer must not take this daemon's own backend id")
+	}
+	if pool.Get("other") == nil {
+		t.Error("the other peer should be kept")
 	}
 }

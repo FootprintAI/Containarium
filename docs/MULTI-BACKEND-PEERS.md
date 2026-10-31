@@ -68,7 +68,9 @@ incus remote add backend-b https://10.0.0.12:8443 --token <trust-token>
 containarium move <user> --target backend-b
 ```
 
-An id is letters, digits, `.`, `_` or `-`, starting with a letter or digit. The daemon refuses to start on a malformed `id=` entry or two peers that share an id.
+An id is letters, digits, `.`, `_` or `-`, starting with a letter or digit, and cannot start with `tunnel-` (reserved for sentinel-discovered peers, which discovery removes when the sentinel stops listing them). That is a safe subset of what incus allows in a remote name, so a remote named outside it cannot be matched. An IPv6 address needs brackets: `backend-b=[::1]:8080`.
+
+The daemon refuses to start on a malformed `id=` entry, two peers that share an id, one address listed under two ids, or an id equal to its own backend id. A blank entry (a trailing comma) is ignored, and an entry repeated exactly is collapsed.
 
 ## Operation Routing
 
