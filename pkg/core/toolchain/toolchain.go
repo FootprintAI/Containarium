@@ -22,6 +22,21 @@ func Available(root string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// CheckRelease reports whether root has a regular current release manifest.
+// It preserves Stat errors so callers can distinguish a missing release from
+// permission, I/O, and malformed filesystem failures.
+func CheckRelease(root string) error {
+	path := filepath.Join(root, "current", "manifest.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat managed toolchain manifest %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("managed toolchain manifest %s is not a regular file", path)
+	}
+	return nil
+}
+
 // SetupScript checks the kernel mount state before exposing the tools. A plain
 // directory (or an accidentally writable mount) cannot satisfy BUILD_TOOLS.
 func SetupScript() string {
