@@ -207,7 +207,7 @@ func init() {
 	// Multi-backend peer settings
 	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers, event-driven SSH key resync and self-upgrade (e.g., http://10.128.0.5:8081). Falls back to CONTAINARIUM_SENTINEL_URL when unset.")
 	daemonCmd.Flags().StringVar(&sshHost, "ssh-host", "", "Public SSH host clients dial to reach containers (the sentinel's SSH endpoint, e.g. region-a.example.com). Surfaced on each Container.ssh_host so clients build the target username@ssh_host. Empty = direct mode: ssh_host is left empty and clients use the container IP.")
-	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses as host:port of each peer's own daemon (e.g., 10.0.0.12:8080). Tunnel backends behind a sentinel are found with --sentinel-url instead.")
+	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peers, each host:port of the peer's own daemon (e.g., 10.0.0.12:8080) or id=host:port to give it an explicit backend ID (e.g., backend-b=10.0.0.12:8080). The ID is what `move --target` takes and must match an incus remote name, so a peer you move containers to needs one; an address-only peer is keyed by its address, which cannot be a remote name. Tunnel backends behind a sentinel are found with --sentinel-url instead.")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
 	daemonCmd.Flags().StringVar(&storagePool, "storage-pool", "", "Incus STORAGE pool containers are created on (default \"default\"). Unrelated to --pool, which names a sentinel-fronted cluster. Point this at a second, per-container-volume pool to migrate tenants off a shared-filesystem `dir` pool without every newly created tenant landing back on it (#1206, #1213).")
@@ -279,6 +279,12 @@ func resolveSentinelURL(flagValue, envValue string) string {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
+	// Fail on a malformed --peers entry at boot, not when the first move
+	// or list silently finds no such peer.
+	if _, err := server.ParseStaticPeers(peerAddrs); err != nil {
+		return fmt.Errorf("invalid --peers: %w", err)
+	}
+
 	// Capability self-check (deploy-contract #69): surface the capability
 	// trap at boot — not on the first container create, hours later. Runs
 	// under this process's (the unit's) real caps. Non-fatal.

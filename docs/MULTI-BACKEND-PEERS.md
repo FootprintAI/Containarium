@@ -49,6 +49,27 @@ pool.StartDiscovery(ctx)
 
 Peer addresses follow the format: `sentinel-host:8888/peer/{backend-id}`
 
+## Static Peers
+
+A backend that is not tunnel-joined can be added by hand with `--peers`:
+
+```bash
+containarium daemon --peers 10.0.0.12:8080                  # keyed by its address
+containarium daemon --peers backend-b=10.0.0.12:8080        # keyed by an explicit id
+```
+
+An address-only peer is keyed by its address. That is enough to list and forward operations, but not to **move** containers to it: `move --target <id>` takes the peer's key and then requires an incus remote with that same name, and a remote name cannot contain a colon.
+
+To move containers to a static peer, give it an id and register the matching remote on the source host:
+
+```bash
+containarium daemon --peers backend-b=10.0.0.12:8080       # source daemon
+incus remote add backend-b https://10.0.0.12:8443 --token <trust-token>
+containarium move <user> --target backend-b
+```
+
+An id is letters, digits, `.`, `_` or `-`, starting with a letter or digit. The daemon refuses to start on a malformed `id=` entry or two peers that share an id.
+
 ## Operation Routing
 
 All container operations follow the same pattern:

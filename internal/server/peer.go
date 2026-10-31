@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -146,10 +148,19 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 
 	// Add static peers. They start on plain HTTP; BootstrapPKI
 	// upgrades them in place once the daemon fetches its cert.
-	for _, addr := range staticPeers {
-		p.peers[addr] = &PeerClient{
-			ID:   addr,
-			Addr: addr,
+	for _, entry := range staticPeers {
+		sp, err := ParseStaticPeer(entry)
+		if err != nil {
+			log.Printf("[peers] ignoring invalid static peer: %v", err)
+			continue
+		}
+		if _, dup := p.peers[sp.ID]; dup {
+			log.Printf("[peers] ignoring static peer %q: id %q is already in use", entry, sp.ID)
+			continue
+		}
+		p.peers[sp.ID] = &PeerClient{
+			ID:   sp.ID,
+			Addr: sp.Addr,
 			client: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -157,6 +168,72 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 	}
 
 	return p
+}
+
+// StaticPeer is one parsed --peers entry.
+type StaticPeer struct {
+	// ID is the peer's backend ID: its key in the peer pool, the value
+	// `move --target` takes, and the name of the incus remote that a move
+	// looks up. Without an explicit id it is the address.
+	ID string
+	// Addr is host:port of the peer's own daemon.
+	Addr string
+}
+
+// staticPeerIDPattern is the set of characters an explicit id may use. It is
+// the set incus accepts in a remote name, which a move needs to match the id
+// exactly: no colon, slash or space, and not a leading hyphen.
+var staticPeerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ParseStaticPeer parses one --peers entry. Two forms are accepted:
+//
+//	host:port        the entry is both the address and the id (the original
+//	                 form, accepted as-is so existing configs keep working)
+//	id=host:port     an explicit id, validated strictly
+//
+// An address-only peer cannot be a move target, because the address contains
+// a colon and so cannot be an incus remote name. Give a peer an explicit id
+// to move containers to it.
+func ParseStaticPeer(entry string) (StaticPeer, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return StaticPeer{}, fmt.Errorf("empty peer entry")
+	}
+
+	i := strings.Index(entry, "=")
+	if i < 0 {
+		return StaticPeer{ID: entry, Addr: entry}, nil
+	}
+
+	id, addr := entry[:i], entry[i+1:]
+	if !staticPeerIDPattern.MatchString(id) {
+		return StaticPeer{}, fmt.Errorf("peer %q: id %q must be letters, digits, '.', '_' or '-', starting with a letter or digit", entry, id)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" || strings.Contains(addr, "=") {
+		return StaticPeer{}, fmt.Errorf("peer %q: address %q must be host:port", entry, addr)
+	}
+	return StaticPeer{ID: id, Addr: addr}, nil
+}
+
+// ParseStaticPeers parses every --peers entry and rejects two peers that
+// would share an id, so a typo fails at startup instead of silently
+// replacing one peer with the other.
+func ParseStaticPeers(entries []string) ([]StaticPeer, error) {
+	peers := make([]StaticPeer, 0, len(entries))
+	seen := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		sp, err := ParseStaticPeer(entry)
+		if err != nil {
+			return nil, err
+		}
+		if prev, dup := seen[sp.ID]; dup {
+			return nil, fmt.Errorf("peers %q and %q share the id %q", prev, entry, sp.ID)
+		}
+		seen[sp.ID] = entry
+		peers = append(peers, sp)
+	}
+	return peers, nil
 }
 
 // BootstrapPKI fetches a leaf cert from the sentinel and wires it

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--peers` accepts `id=host:port`, so a static peer can be a `move` target.** A peer given as plain `host:port` is keyed by its address, which `move --target` takes as the backend ID and then looks up as an incus remote of the same name. A remote name cannot contain a colon, so an address-only peer could never be moved to. With an explicit id the peer is keyed by that id instead (for example `--peers backend-b=10.0.0.12:8080`, with `incus remote add backend-b ...` on the source). The id must be letters, digits, `.`, `_` or `-`, and the daemon now refuses to start on a malformed `id=` entry or two peers that share an id. Address-only entries behave exactly as before.
+
 ## [0.123.0] - 2026-10-31
 
 ### Upgrading
