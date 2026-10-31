@@ -37,7 +37,13 @@ type MigrationRunner interface {
 	// wrong for an encrypted one, whose data must land inside its tenant's
 	// encryptionroot (#1203).
 	//
-	// Equivalent to: `incus copy <container>/<fromSnap> <remote>:<container> --instance-only [--storage <pool>]`
+	// Equivalent to: `incus copy <container>/<fromSnap> <remote>:<container> [--storage <pool>]`
+	//
+	// The source is a snapshot, which Incus copies as a standalone
+	// instance without the container's other snapshots, so no
+	// --instance-only is passed: Incus rejects that flag when the source
+	// is a snapshot ("--instance-only can't be passed when the source is a
+	// snapshot").
 	CopyInitial(container, fromSnap, targetRemote, storagePool string) error
 
 	// CopyRefresh syncs the delta from the source's previous-state
@@ -133,7 +139,7 @@ func (e *ExecRunner) DeleteSnapshot(container, snapshot string) error {
 func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool string) error {
 	src := fmt.Sprintf("%s/%s", container, fromSnap)
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
-	args := []string{"copy", src, dst, "--instance-only"}
+	args := []string{"copy", src, dst}
 	if storagePool != "" {
 		args = append(args, "--storage", storagePool)
 	}

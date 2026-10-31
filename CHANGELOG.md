@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`containarium move` no longer fails at the first copy with `--instance-only can't be passed when the source is a snapshot`.** The move snapshots the container, then copies that snapshot to the target. It passed `--instance-only` on that copy, which Incus rejects when the source is a snapshot, so the move stopped in its first phase before anything reached the target. The flag is dropped: a snapshot source already copies as a standalone instance, without the other snapshots. A new test runs the real command line against an `incus` stand-in that applies the same rule, because every other move test substitutes a fake runner and never exercised it.
+
 ## [0.123.0] - 2026-10-31
 
 ### Upgrading

@@ -56,7 +56,7 @@ func migrationDefaults(req *pb.MoveContainerRequest) migrationParams {
 // phase orchestration:
 //
 //	Phase 1 — initial full copy (source running)
-//	  snapshot sync0 → incus copy <c>/sync0 <remote>:<c> --instance-only
+//	  snapshot sync0 → incus copy <c>/sync0 <remote>:<c>
 //
 //	Phase 2 — iterative deltas (still running)
 //	  for i in 1..max_iterations:
