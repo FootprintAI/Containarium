@@ -78,6 +78,23 @@ func TestManagedToolchainsStatErrorIsNotMissingRelease(t *testing.T) {
 	}
 }
 
+func TestManagedToolchainsDanglingManifestSymlinkIsNotMissingRelease(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current")
+	if err := os.Mkdir(current, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(current, "manifest.json")); err != nil {
+		t.Skipf("cannot create symlink for dangling manifest case: %v", err)
+	}
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	err := m.EnsureManagedToolchains("alice")
+	if err == nil || errors.Is(err, ErrManagedToolchainHostMissing) {
+		t.Fatalf("dangling manifest error = %v, want generic error", err)
+	}
+}
+
 func TestManagedToolchainsAttachedAtCreate(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "current"), 0755); err != nil {

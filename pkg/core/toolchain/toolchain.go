@@ -23,11 +23,12 @@ func Available(root string) bool {
 }
 
 // CheckRelease reports whether root has a regular current release manifest.
-// It preserves Stat errors so callers can distinguish a missing release from
-// permission, I/O, and malformed filesystem failures.
+// It preserves lookup errors so callers can distinguish a missing release
+// from permission, I/O, and malformed filesystem failures. Lstat keeps a
+// dangling manifest symlink visible as a non-regular manifest.
 func CheckRelease(root string) error {
 	path := filepath.Join(root, "current", "manifest.json")
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("stat managed toolchain manifest %s: %w", path, err)
 	}
