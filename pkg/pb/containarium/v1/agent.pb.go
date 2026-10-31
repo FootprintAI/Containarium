@@ -1724,8 +1724,14 @@ type RunAgentSkillRequest struct {
 	// authorized the end user); any other caller setting it is PermissionDenied.
 	// Empty = unchanged behaviour.
 	OnBehalfOfOrgId string `protobuf:"bytes,11,opt,name=on_behalf_of_org_id,json=onBehalfOfOrgId,proto3" json:"on_behalf_of_org_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Per-run model override (#3264): the model id this run is driven with, ahead
+	// of the skill's own `model`. Same rules as RunCrewRequest.model_overrides: a
+	// plain id (else INVALID_ARGUMENT), and carried to the box only with a named
+	// engine (the skill's, or `engine`), else FAILED_PRECONDITION. The catalog
+	// skill is never mutated. Empty = the skill's own model, unchanged.
+	Model         string `protobuf:"bytes,12,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunAgentSkillRequest) Reset() {
@@ -1831,6 +1837,13 @@ func (x *RunAgentSkillRequest) GetEngine() AgentEngine {
 func (x *RunAgentSkillRequest) GetOnBehalfOfOrgId() string {
 	if x != nil {
 		return x.OnBehalfOfOrgId
+	}
+	return ""
+}
+
+func (x *RunAgentSkillRequest) GetModel() string {
+	if x != nil {
+		return x.Model
 	}
 	return ""
 }
@@ -3686,7 +3699,9 @@ type RunCrewRequest struct {
 	// entry for a member with none is FAILED_PRECONDITION rather than ignored. A
 	// key that is not a member of the crew is INVALID_ARGUMENT. An id the engine's
 	// provider does not list is refused before the run starts, when the daemon can
-	// list that provider's models. Not supported with `graph` (INVALID_ARGUMENT).
+	// list that provider's models. With `graph` (#3264) a key names a skill used
+	// by a graph node (a skill node, or a member of a crew node) and each node runs
+	// on its entry.
 	// CrewRun.member_models reports what each member ran with.
 	ModelOverrides map[string]string `protobuf:"bytes,13,rep,name=model_overrides,json=modelOverrides,proto3" json:"model_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields  protoimpl.UnknownFields
@@ -4728,7 +4743,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x06engine\x18\x01 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12R\n" +
 	"\x11credential_source\x18\x02 \x01(\x0e2%.containarium.v1.CodeCredentialSourceR\x10credentialSource\x129\n" +
 	"\n" +
-	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\x8c\x03\n" +
+	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xa2\x03\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
@@ -4744,7 +4759,8 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\x124\n" +
 	"\x06engine\x18\n" +
 	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12,\n" +
-	"\x13on_behalf_of_org_id\x18\v \x01(\tR\x0fonBehalfOfOrgId\"\xed\x01\n" +
+	"\x13on_behalf_of_org_id\x18\v \x01(\tR\x0fonBehalfOfOrgId\x12\x14\n" +
+	"\x05model\x18\f \x01(\tR\x05model\"\xed\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +

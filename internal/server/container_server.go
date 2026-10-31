@@ -163,6 +163,20 @@ type ContainerServer struct {
 	// the default.
 	runInputJournalCap int64
 
+	// Per-run checkout sweep (#3296, box_run_checkout_sweep.go).
+	// runCheckoutMaxAge is --run-checkout-max-age (0 = off), meaningful only
+	// once SetRunCheckoutMaxAge set runCheckoutMaxAgeSet; unset means the
+	// default. The rest are test seams, nil in production: runCheckoutNow the
+	// clock, runCheckoutHomes the box users' home lookup, runCheckoutBoxes the
+	// box list (and per-box status), runCheckoutLog the logger.
+	runCheckoutMaxAge    time.Duration
+	runCheckoutMaxAgeSet bool
+	runCheckoutNow       func() time.Time
+	runCheckoutHomes     func(box string, users []string) (map[string]string, error)
+	runCheckoutBoxes     func(ctx context.Context) ([]box.BoxStatus, error)
+	runCheckoutLog       func(format string, args ...any)
+	runCheckoutLocks     sync.Map // key: box name -> *sync.Mutex
+
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
 	// owner's identity. Tests set it; production reads the Incus config.

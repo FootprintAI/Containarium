@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
 import "containarium/v1/agent.proto";
@@ -281,6 +282,78 @@ message StopBoxRunResponse {
   // sent but the process had not exited when the call returned (SIGTERM
   // ignored); call again with force.
   bool exited = 3;
+}
+
+// Per-run checkouts (#3296). A platform-started run works in a fresh clone of
+// its own, a directory directly under a box user's ~/work named
+// <repo>-run-<8 lowercase hex>. Nothing else removes them, so the daemon
+// sweeps the stale ones: hourly, after StopBoxRun ends a run, and on demand
+// through SweepBoxRunCheckouts. Only a directory whose name matches
+// ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$ is ever considered; a person's own
+// checkout (~/work/<repo>) is never touched, and never listed.
+
+// BoxRunCheckoutDisposition is what a sweep did, or would do, with one
+// matching entry.
+enum BoxRunCheckoutDisposition {
+  BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED = 0;
+  // Removed by this sweep.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVED = 1;
+  // A dry run: a real sweep at this moment would remove it.
+  BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE = 2;
+  // Its newest modification is within the daemon's maximum age (or could not
+  // be read).
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT = 3;
+  // It may be a live run's working directory: modified at or after the start
+  // of a run on the box that is still going, or named as a live run's cwd.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN = 4;
+  // A process on the box has its working directory in it.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE = 5;
+  // A symbolic link; links are never followed or removed.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK = 6;
+  // Not a directory.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY = 7;
+  // Chosen for removal, but at removal time it no longer qualified (it was
+  // replaced, modified, or a process entered it); left alone.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED = 8;
+  // Chosen for removal, but removing it failed (for example a mount inside
+  // it); whatever is left stays.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED = 9;
+}
+
+// BoxRunCheckout is one matching entry directly under a box user's ~/work.
+message BoxRunCheckout {
+  // The box OS user whose ~/work holds it: the box's owner, or the
+  // unprivileged run user platform runs execute as.
+  string user = 1;
+  // The entry's name directly under that user's ~/work.
+  string name = 2;
+  // Disk usage in bytes (du, one filesystem). 0 for a symlink or non-directory.
+  int64 size_bytes = 3;
+  // The newest modification time of the directory or anything in it. Unset
+  // when it could not be read, or for a symlink or non-directory.
+  google.protobuf.Timestamp newest_modification = 4;
+  BoxRunCheckoutDisposition disposition = 5;
+}
+
+// SweepBoxRunCheckoutsRequest runs the per-run checkout sweep once on one box.
+message SweepBoxRunCheckoutsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // List what a real sweep would remove (WOULD_REMOVE) and remove nothing.
+  bool dry_run = 2;
+}
+
+message SweepBoxRunCheckoutsResponse {
+  // Whether the box has had a platform-started run (a recorded tool-access
+  // level or a run record). A box without one is never swept, so checkouts
+  // is empty.
+  bool platform_runs = 1;
+  // The daemon's maximum age (--run-checkout-max-age).
+  google.protobuf.Duration max_age = 2;
+  // Every matching entry, with what the sweep did or would do with it. The
+  // REMOVED (or, on a dry run, WOULD_REMOVE) entries are exactly the removal
+  // set.
+  repeated BoxRunCheckout checkouts = 3;
 }
 
 // Permission requests of a box run (#2183, #2184). A run started with

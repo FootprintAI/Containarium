@@ -742,6 +742,19 @@ func (c *GRPCClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStat
 	return c.client.GetBoxRunUserStatus(ctx, &pb.GetBoxRunUserStatusRequest{Username: username})
 }
 
+// sweepBoxRunCheckoutsTimeout bounds a sweep call: removing large checkouts
+// can take far longer than a read.
+const sweepBoxRunCheckoutsTimeout = 10 * time.Minute
+
+// SweepBoxRunCheckouts runs the per-run checkout sweep once on a box (#3296);
+// dry_run lists what it would remove and removes nothing. The error is
+// returned UNWRAPPED so an older daemon surfaces as codes.Unimplemented.
+func (c *GRPCClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (*pb.SweepBoxRunCheckoutsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sweepBoxRunCheckoutsTimeout)
+	defer cancel()
+	return c.client.SweepBoxRunCheckouts(ctx, req)
+}
+
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
@@ -826,8 +839,10 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 
 	// Convert to incus.ServerInfo
 	info := &incus.ServerInfo{
-		Version:       resp.Info.IncusVersion,
-		KernelVersion: resp.Info.KernelVersion,
+		Version:              resp.Info.IncusVersion,
+		KernelVersion:        resp.Info.KernelVersion,
+		TotalMemoryBytes:     resp.Info.TotalMemoryBytes,
+		AvailableMemoryBytes: resp.Info.AvailableMemoryBytes,
 		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
 			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
 		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),

@@ -51,6 +51,7 @@ const (
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
+	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
 	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
 	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
@@ -292,6 +293,12 @@ type ContainerServiceClient interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
+	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+	// (#3296): removes directories directly under the owner's and the run
+	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+	// maximum age, not in use and not a live run's. dry_run lists the same set
+	// and removes nothing. Same access as StopBoxRun.
+	SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -779,6 +786,16 @@ func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StopBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SweepBoxRunCheckoutsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SweepBoxRunCheckouts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1402,6 +1419,12 @@ type ContainerServiceServer interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
+	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+	// (#3296): removes directories directly under the owner's and the run
+	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+	// maximum age, not in use and not a live run's. dry_run lists the same set
+	// and removes nothing. Same access as StopBoxRun.
+	SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -1670,6 +1693,9 @@ func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailB
 }
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SweepBoxRunCheckouts not implemented")
 }
 func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
@@ -2390,6 +2416,24 @@ func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SweepBoxRunCheckouts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SweepBoxRunCheckoutsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SweepBoxRunCheckouts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SweepBoxRunCheckouts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SweepBoxRunCheckouts(ctx, req.(*SweepBoxRunCheckoutsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3284,6 +3328,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopBoxRun",
 			Handler:    _ContainerService_StopBoxRun_Handler,
+		},
+		{
+			MethodName: "SweepBoxRunCheckouts",
+			Handler:    _ContainerService_SweepBoxRunCheckouts_Handler,
 		},
 		{
 			MethodName: "GetRunApprovalKey",

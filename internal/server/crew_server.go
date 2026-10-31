@@ -171,9 +171,13 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	// Before anything is provisioned (and before the graph branch, which refuses
-	// them): a model override that cannot take effect fails the RPC, not the run.
-	if err := validateCrewModelOverrides(crew, req, s.skillByID); err != nil {
+	// Before anything is provisioned: a model override that cannot take effect
+	// fails the RPC, not the run. A graph run's scope is the skills its nodes use.
+	scope := crew.GetSkillIds()
+	if req.GetGraph() != nil {
+		scope = graphModelMembers(req.GetGraph(), s.catalog)
+	}
+	if err := validateModelOverrides(scope, req, s.skillByID); err != nil {
 		return nil, err
 	}
 
@@ -324,7 +328,7 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 		GitRef:    req.GetGitRef(),
 		// What each member will run with (#3259), recorded with the run so a
 		// client can show the model that ran.
-		MemberModels: crewMemberModels(crew, req, s.skillByID),
+		MemberModels: crewMemberModels(crew.GetSkillIds(), req, s.skillByID),
 	}
 
 	// Record the run before driving it, so an in-flight run is observable.
@@ -651,32 +655,57 @@ func peersContain(peers []string, id string) bool {
 	return false
 }
 
-// validateCrewModelOverrides refuses a model_overrides entry that cannot take
-// effect, before anything is provisioned (#3259): a key that is not in the crew,
-// an id that is not a plain id, a member with no named engine (the model would be
-// dropped silently, as a skill's own pinned model is), and a graph run, which
-// does not carry the override to its nodes yet.
-func validateCrewModelOverrides(crew *pb.Crew, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) error {
+// graphModelMembers is the skills a graph run's nodes use: each skill node's
+// skill and each crew node's members, once each. A crew the catalog does not
+// know is skipped; graph validation reports it.
+func graphModelMembers(g *pb.TaskGraph, catalog *crews.Manager) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, node := range g.GetNodes() {
+		if id := node.GetCrewId(); id != "" {
+			if c, err := catalog.Get(id); err == nil {
+				for _, sid := range c.GetSkillIds() {
+					add(sid)
+				}
+			}
+			continue
+		}
+		if id := node.GetSkillId(); id != "" {
+			add(id)
+		}
+	}
+	return out
+}
+
+// validateModelOverrides refuses a model_overrides entry that cannot take
+// effect, before anything is provisioned (#3259, #3264): a key that is not among
+// the members the run starts (a crew's skills, or a graph's node skills), an id
+// that is not a plain id, and a member with no named engine (the model would be
+// dropped silently, as a skill's own pinned model is).
+func validateModelOverrides(members []string, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) error {
 	if len(req.GetModelOverrides()) == 0 {
 		return nil
 	}
-	if req.GetGraph() != nil {
-		return status.Error(codes.InvalidArgument, "model_overrides is not supported with graph yet")
-	}
-	inCrew := make(map[string]bool, len(crew.GetSkillIds()))
-	for _, id := range crew.GetSkillIds() {
-		inCrew[id] = true
+	inRun := make(map[string]bool, len(members))
+	for _, id := range members {
+		inRun[id] = true
 	}
 	for sid, model := range req.GetModelOverrides() {
-		if !inCrew[sid] {
-			return status.Errorf(codes.InvalidArgument, "model_overrides names %q, which is not a member of crew %q", sid, crew.GetId())
+		if !inRun[sid] {
+			return status.Errorf(codes.InvalidArgument, "model_overrides names %q, which is not a member of this run", sid)
 		}
 		if !validBoxRunModel(model) {
 			return status.Errorf(codes.InvalidArgument, "model_overrides[%s] must match %s", sid, boxRunModelPattern.String())
 		}
 		skill, ok := getSkill(sid)
 		if !ok {
-			continue // validateCrewTopology reports a missing member
+			continue // topology/graph validation reports a missing member
 		}
 		if agentengine.Override(skill.GetEngine(), req.GetEngineOverrides()[sid]) == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
 			return status.Errorf(codes.FailedPrecondition,
@@ -687,11 +716,25 @@ func validateCrewModelOverrides(crew *pb.Crew, req *pb.RunCrewRequest, getSkill 
 	return nil
 }
 
-// withModelOverride returns the skill the run should provision: the skill itself
-// when the request has no override for it, else a copy whose `model` is the
-// override (the catalog's own skill is shared and never mutated).
-func withModelOverride(skill *pb.AgentSkill, req *pb.RunCrewRequest) *pb.AgentSkill {
-	model := req.GetModelOverrides()[skill.GetId()]
+// validateSkillRunModel applies the same rules to a single-skill run's `model`
+// (#3264): a plain id, and a named engine (the skill's, or the request's).
+func validateSkillRunModel(skill *pb.AgentSkill, engine pb.AgentEngine, model string) error {
+	if model == "" {
+		return nil
+	}
+	if !validBoxRunModel(model) {
+		return status.Errorf(codes.InvalidArgument, "model must match %s", boxRunModelPattern.String())
+	}
+	if agentengine.Override(skill.GetEngine(), engine) == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+		return status.Errorf(codes.FailedPrecondition,
+			"model: skill %s names no engine and the request has none, and a model is carried to the box only together with a named engine", skill.GetId())
+	}
+	return nil
+}
+
+// withSkillModel returns the skill itself when model is empty, else a copy whose
+// `model` is model (the catalog's own skill is shared and never mutated).
+func withSkillModel(skill *pb.AgentSkill, model string) *pb.AgentSkill {
 	if model == "" {
 		return skill
 	}
@@ -700,12 +743,19 @@ func withModelOverride(skill *pb.AgentSkill, req *pb.RunCrewRequest) *pb.AgentSk
 	return c
 }
 
+// withModelOverride returns the skill the run should provision: the skill itself
+// when the request has no override for it, else a copy whose `model` is the
+// override (the catalog's own skill is shared and never mutated).
+func withModelOverride(skill *pb.AgentSkill, req *pb.RunCrewRequest) *pb.AgentSkill {
+	return withSkillModel(skill, req.GetModelOverrides()[skill.GetId()])
+}
+
 // crewMemberModels is the model each member will be driven with: its override,
 // else its own pinned model. A member with no named engine exports no model, so
 // it is not listed.
-func crewMemberModels(crew *pb.Crew, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) map[string]string {
+func crewMemberModels(members []string, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) map[string]string {
 	out := map[string]string{}
-	for _, sid := range crew.GetSkillIds() {
+	for _, sid := range members {
 		skill, ok := getSkill(sid)
 		if !ok {
 			continue
