@@ -10,25 +10,57 @@ import (
 )
 
 // fakeIncus writes an `incus` stand-in that records its arguments and applies
-// the one rule these tests pin: Incus refuses --instance-only when the copy
+// the rules these tests pin. When nicACLs are given, the instance's NIC names
+// them and a copy fails unless each was first created on the destination with
+// `network acl create`, which is how Incus validates a copied tenant NIC. Incus refuses --instance-only when the copy
 // source is a snapshot (a <container>/<snapshot> argument), failing with
-// "--instance-only can't be passed when the source is a snapshot".
+// "--instance-only can't be passed when the source is a snapshot". It also
+// refuses --refresh for a snapshot source, failing with
+// "--refresh can only be used with instances".
 //
 // Every move test elsewhere substitutes a fake MigrationRunner, so the real
 // command line ExecRunner builds was never run. That is how a flag Incus
 // later started rejecting shipped.
-func fakeIncus(t *testing.T) (bin, argsFile string) {
+func fakeIncus(t *testing.T, nicACLs ...string) (bin, argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "args")
 	bin = filepath.Join(dir, "incus")
+	need := filepath.Join(dir, "need")
+	created := filepath.Join(dir, "acls")
+	query := filepath.Join(dir, "query.json")
+
+	// The instance's NIC names these ACLs, as a tenant's container does.
+	devices := `{"expanded_devices":{}}`
+	if len(nicACLs) > 0 {
+		devices = `{"expanded_devices":{"root":{"type":"disk","pool":"p","path":"/"},"eth0":{"type":"nic","network":"br","security.acls":"` + strings.Join(nicACLs, ",") + `"}}}`
+		if err := os.WriteFile(need, []byte(strings.Join(nicACLs, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(query, []byte(devices), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + argsFile + `"
+if [ "$1" = query ]; then cat "` + query + `"; exit 0; fi
+if [ "$1" = network ] && [ "$2" = acl ] && [ "$3" = create ]; then
+  name="${4#*:}"
+  if grep -qx "$name" "` + created + `" 2>/dev/null; then
+    echo "Error: Network ACL \"$name\" already exists" >&2
+    exit 1
+  fi
+  echo "$name" >> "` + created + `"
+  exit 0
+fi
 instance_only=0
+refresh=0
 snapshot_source=0
 for a in "$@"; do
   case "$a" in
     --instance-only) instance_only=1 ;;
+    --refresh) refresh=1 ;;
     -*) ;;
     */*) snapshot_source=1 ;;
   esac
@@ -36,6 +68,18 @@ done
 if [ "$instance_only" = 1 ] && [ "$snapshot_source" = 1 ]; then
   echo "Error: --instance-only can't be passed when the source is a snapshot" >&2
   exit 1
+fi
+if [ "$refresh" = 1 ] && [ "$snapshot_source" = 1 ]; then
+  echo "Error: --refresh can only be used with instances" >&2
+  exit 1
+fi
+if [ "$1" = copy ] && [ -f "` + need + `" ]; then
+  while read -r n; do
+    if ! grep -qx "$n" "` + created + `" 2>/dev/null; then
+      echo "Error: Failed instance creation: Invalid devices: Device validation failed for \"eth0\": Network ACL \"$n\" does not exist" >&2
+      exit 1
+    fi
+  done < "` + need + `"
 fi
 exit 0
 `
@@ -82,16 +126,92 @@ func TestExecRunner_CopyInitial_PinsTheDestinationPool(t *testing.T) {
 	}
 }
 
-func TestExecRunner_CopyRefresh_StillRefreshes(t *testing.T) {
+// A refresh copies the instance itself: Incus accepts --refresh only for an
+// instance source. The instance carries the sync snapshots, which is what
+// lets btrfs/zfs send an increment.
+func TestExecRunner_CopyRefresh_CopiesTheInstance(t *testing.T) {
 	bin, argsFile := fakeIncus(t)
 	r := &ExecRunner{IncusPath: bin}
 
 	if err := r.CopyRefresh("box", "sync1", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefresh failed against an incus that rejects --refresh on a snapshot source: %v", err)
+	}
+
+	got := recordedArgs(t, argsFile)
+	if len(got) != 1 || got[0] != "copy box target-1:box --refresh" {
+		t.Errorf("incus args = %q, want [copy box target-1:box --refresh]", got)
+	}
+}
+
+func TestExecRunner_CopyRefresh_PinsTheDestinationPool(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefresh("box", "final", "target-1", "tenants"); err != nil {
 		t.Fatalf("CopyRefresh: %v", err)
 	}
 
 	got := recordedArgs(t, argsFile)
-	if len(got) != 1 || got[0] != "copy box/sync1 target-1:box --refresh" {
-		t.Errorf("incus args = %q, want [copy box/sync1 target-1:box --refresh]", got)
+	if len(got) != 1 || got[0] != "copy box target-1:box --refresh --storage tenants" {
+		t.Errorf("incus args = %q, want [copy box target-1:box --refresh --storage tenants]", got)
+	}
+}
+
+// A tenant's NIC names a guard ACL, and Incus requires it to exist on the
+// destination when the copy creates the instance.
+func TestExecRunner_CopyInitial_FailsWithoutTheTargetACL(t *testing.T) {
+	bin, _ := fakeIncus(t, "tenant-guard")
+	r := &ExecRunner{IncusPath: bin}
+
+	err := r.CopyInitial("box", "sync0", "target-1", "")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("want a missing-ACL error from the copy, got %v", err)
+	}
+}
+
+func TestExecRunner_EnsureTargetACLs_CreatesEachReferencedACL(t *testing.T) {
+	bin, argsFile := fakeIncus(t, "tenant-guard", "core-guard")
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.EnsureTargetACLs("box", "target-1"); err != nil {
+		t.Fatalf("EnsureTargetACLs: %v", err)
+	}
+	if err := r.CopyInitial("box", "sync0", "target-1", ""); err != nil {
+		t.Fatalf("the copy must succeed once the ACLs exist on the target: %v", err)
+	}
+
+	joined := strings.Join(recordedArgs(t, argsFile), "\n")
+	for _, name := range []string{"tenant-guard", "core-guard"} {
+		if !strings.Contains(joined, "network acl create target-1:"+name) {
+			t.Errorf("expected an ACL create for %q on the target; incus ran:\n%s", name, joined)
+		}
+	}
+}
+
+// The move can be retried, and the target's guard reconciler may already have
+// created the ACL; an existing one is not an error.
+func TestExecRunner_EnsureTargetACLs_ToleratesAnExistingACL(t *testing.T) {
+	bin, _ := fakeIncus(t, "tenant-guard")
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.EnsureTargetACLs("box", "target-1"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := r.EnsureTargetACLs("box", "target-1"); err != nil {
+		t.Fatalf("an ACL that already exists must not fail the move: %v", err)
+	}
+}
+
+func TestExecRunner_EnsureTargetACLs_NothingToDoWithoutACLs(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.EnsureTargetACLs("box", "target-1"); err != nil {
+		t.Fatalf("EnsureTargetACLs: %v", err)
+	}
+	for _, line := range recordedArgs(t, argsFile) {
+		if strings.Contains(line, "acl create") {
+			t.Errorf("no ACL create expected for an instance with no ACLs, got %q", line)
+		}
 	}
 }

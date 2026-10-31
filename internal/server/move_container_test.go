@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -20,6 +21,7 @@ type fakeRunner struct {
 	calls           []string
 	failSnapshot    error
 	failCopyInit    error
+	failEnsureACLs  error
 	failCopyRefresh map[int]error // keyed by call count: first call is 0
 	copyRefreshN    int
 	failStop        error
@@ -51,6 +53,10 @@ func (f *fakeRunner) Snapshot(c, s string) error {
 func (f *fakeRunner) DeleteSnapshot(c, s string) error {
 	f.log(fmt.Sprintf("delsnap %s/%s", c, s))
 	return nil
+}
+func (f *fakeRunner) EnsureTargetACLs(c, r string) error {
+	f.log(fmt.Sprintf("ensureacls %s -> %s", c, r))
+	return f.failEnsureACLs
 }
 func (f *fakeRunner) CopyInitial(c, s, r, pool string) error {
 	f.log("copyinit " + copyDesc(c, s, r, pool))
@@ -138,8 +144,29 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 	if runner.calls[0] != "snapshot alice-container/containarium-move-sync0" {
 		t.Errorf("first call = %q", runner.calls[0])
 	}
-	if runner.calls[1] != "copyinit alice-container/containarium-move-sync0 -> vm2" {
-		t.Errorf("second call = %q", runner.calls[1])
+	// The target must have the tenant's ACLs before the copy creates the
+	// instance, so the ACL step comes right before the copy.
+	if runner.calls[1] != "ensureacls alice-container -> vm2" {
+		t.Errorf("second call = %q, want the target ACL step", runner.calls[1])
+	}
+	if runner.calls[2] != "copyinit alice-container/containarium-move-sync0 -> vm2" {
+		t.Errorf("third call = %q", runner.calls[2])
+	}
+
+	// The sync snapshots travel to the target with each refresh, so after a
+	// successful move they are removed there as well as on the source.
+	for _, snap := range []string{"containarium-move-sync0", "containarium-move-final"} {
+		want := "delsnap vm2:alice-container/" + snap
+		found := false
+		for _, c := range runner.calls {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q (target-side cleanup); got %v", want, runner.calls)
+		}
 	}
 
 	// Cutover must include a stop on the source — search the call list.
@@ -254,5 +281,32 @@ func TestMigrationDefaults(t *testing.T) {
 				t.Errorf("deltaThresholdSeconds = %d, want %d", p.deltaThresholdSeconds, c.wantDelta)
 			}
 		})
+	}
+}
+
+// If the target's ACLs cannot be prepared, the copy would only fail later with
+// a less obvious error. The move stops before copying anything and removes the
+// snapshot it took.
+func TestMoveContainer_StopsWhenTheTargetACLsCannotBePrepared(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true, failEnsureACLs: fmt.Errorf("remote refused")}
+	cs := newTestContainerServer(t, runner, "vm2")
+
+	_, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2"})
+	if err == nil || !strings.Contains(err.Error(), "network ACL") {
+		t.Fatalf("want an error naming the network ACL step, got %v", err)
+	}
+	for _, c := range runner.calls {
+		if strings.HasPrefix(c, "copyinit") {
+			t.Errorf("nothing may be copied when the ACL step fails; calls: %v", runner.calls)
+		}
+	}
+	cleaned := false
+	for _, c := range runner.calls {
+		if c == "delsnap alice-container/containarium-move-sync0" {
+			cleaned = true
+		}
+	}
+	if !cleaned {
+		t.Errorf("the sync snapshot should be removed after the failure; calls: %v", runner.calls)
 	}
 }
