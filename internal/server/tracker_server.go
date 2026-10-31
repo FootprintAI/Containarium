@@ -60,11 +60,19 @@ func (s *ContainerServer) auditTrackerConnectionWrite(ctx context.Context, actio
 
 // SetTrackerStore wires the tracker-connections backend onto the server.
 // Called from dual_server.go after the Postgres connection has been
-// resolved. Nil store keeps the TrackerService RPCs returning
-// Unavailable (--standalone daemons), same convention as
-// SetSecretsStore.
+// resolved, or by the store's late install after a degraded start
+// (#3329); safe while RPCs are served. Nil store keeps the
+// TrackerService RPCs returning Unavailable (--standalone daemons), same
+// convention as SetSecretsStore.
 func (s *ContainerServer) SetTrackerStore(store *tracker.Store) {
-	s.trackerStore = store
+	s.trackerStoreRef.Store(store)
+}
+
+// loadTrackerStore returns the current tracker store, nil until one is
+// wired. Every read of the store goes through it. Once wired it is never
+// unset, so an RPC that checked it for nil can load it again later.
+func (s *ContainerServer) loadTrackerStore() *tracker.Store {
+	return s.trackerStoreRef.Load()
 }
 
 // SetRunRegistry wires the shared in-memory run registry (#1922) — the
@@ -125,7 +133,7 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -142,7 +150,7 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	conn, err := s.trackerStore.Set(ctx, tracker.Connection{
+	conn, err := s.loadTrackerStore().Set(ctx, tracker.Connection{
 		Username:         req.Username,
 		Name:             req.Name,
 		Provider:         req.Provider,
@@ -189,7 +197,7 @@ func (s *ContainerServer) GetTrackerConnection(ctx context.Context, req *pb.GetT
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -199,7 +207,7 @@ func (s *ContainerServer) GetTrackerConnection(ctx context.Context, req *pb.GetT
 		return nil, err
 	}
 
-	conn, err := s.trackerStore.Get(ctx, req.Username, req.Name)
+	conn, err := s.loadTrackerStore().Get(ctx, req.Username, req.Name)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -211,7 +219,7 @@ func (s *ContainerServer) ListTrackerConnections(ctx context.Context, req *pb.Li
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -221,7 +229,7 @@ func (s *ContainerServer) ListTrackerConnections(ctx context.Context, req *pb.Li
 		return nil, err
 	}
 
-	list, err := s.trackerStore.List(ctx, req.Username)
+	list, err := s.loadTrackerStore().List(ctx, req.Username)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -238,7 +246,7 @@ func (s *ContainerServer) DeleteTrackerConnection(ctx context.Context, req *pb.D
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -251,9 +259,9 @@ func (s *ContainerServer) DeleteTrackerConnection(ctx context.Context, req *pb.D
 	// Best-effort lookup purely to enrich the audit detail with which
 	// provider/project this connection pointed at — a failure here must
 	// never block the delete itself, so the error is discarded.
-	existing, _ := s.trackerStore.Get(ctx, req.Username, req.Name)
+	existing, _ := s.loadTrackerStore().Get(ctx, req.Username, req.Name)
 
-	if err := s.trackerStore.Delete(ctx, req.Username, req.Name); err != nil {
+	if err := s.loadTrackerStore().Delete(ctx, req.Username, req.Name); err != nil {
 		return nil, mapTrackerError(err)
 	}
 	log.Printf("[tracker] connection deleted %s/%s", req.Username, req.Name)
@@ -277,7 +285,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -287,7 +295,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		return nil, err
 	}
 
-	conn, err := s.trackerStore.Get(ctx, req.Username, req.Name)
+	conn, err := s.loadTrackerStore().Get(ctx, req.Username, req.Name)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -334,7 +342,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		}
 		// Keep the stored expiry in sync with what was just observed —
 		// the same best-effort persistence SetTrackerConnection does.
-		if serr := s.trackerStore.SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); serr != nil {
+		if serr := s.loadTrackerStore().SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); serr != nil {
 			log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, serr)
 		} else if resp.Connection != nil {
 			resp.Connection.CredentialExpiresAt = resp.CredentialExpiresAt
@@ -385,7 +393,7 @@ func (s *ContainerServer) describeCredentialBestEffort(ctx context.Context, conn
 		log.Printf("[tracker] %s/%s: describe credential: %v", conn.Username, conn.Name, err)
 		return
 	}
-	if err := s.trackerStore.SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); err != nil {
+	if err := s.loadTrackerStore().SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); err != nil {
 		log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, err)
 		return
 	}

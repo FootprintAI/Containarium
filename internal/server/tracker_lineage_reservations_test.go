@@ -145,7 +145,7 @@ func TestListTrackerDispatches_ShowsReservationsUntilTheLeaseEnds(t *testing.T) 
 		}
 	}
 
-	cs := &ContainerServer{trackerStore: store}
+	cs := withTrackerStore(&ContainerServer{}, store)
 	admin := kmsKeyTestCtx(user, "member", "tracker:admin")
 	list := func() map[int64]*pb.TrackerDispatch {
 		t.Helper()

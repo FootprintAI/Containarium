@@ -227,7 +227,7 @@ func TestTrackerRunLeases_PanicAndGoexitStopBeingLive(t *testing.T) {
 // never left live.
 func TestTrackerRunLeases_UnknownAndFailedStart(t *testing.T) {
 	s, skill := newSkillBoxHarness(t, newFakeRevocationStore())
-	s.trackerConnections = &fakeTrackerConnectionChecker{conn: &tracker.Connection{Username: "alice", Name: "default"}}
+	s.SetTrackerConnections(&fakeTrackerConnectionChecker{conn: &tracker.Connection{Username: "alice", Name: "default"}})
 	leases := trackerRunStarter{s}
 	leases.End(context.Background(), "run-never-seen")
 	if leases.Live("run-never-seen") {

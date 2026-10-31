@@ -58,7 +58,7 @@ func TestTrackerDispatch_RequiresTrackerAdmin(t *testing.T) {
 // — checked up front, before any issue is touched, rather than turning
 // every routed issue into a failed dispatch.
 func TestDispatchTrackerIssues_RequiresAgentsRun(t *testing.T) {
-	s := &ContainerServer{trackerRunStarter: &recordingRunStarter{}}
+	s := withTrackerRunStarter(&ContainerServer{}, &recordingRunStarter{})
 	_, err := s.DispatchTrackerIssues(kmsKeyTestCtx("alice", "member", "tracker:admin"),
 		&pb.DispatchTrackerIssuesRequest{Username: "alice", Connection: "default"})
 	if status.Code(err) != codes.PermissionDenied {
@@ -67,7 +67,7 @@ func TestDispatchTrackerIssues_RequiresAgentsRun(t *testing.T) {
 }
 
 func TestDispatchTrackerIssues_NoRunStarterUnavailable(t *testing.T) {
-	s := &ContainerServer{trackerStore: &tracker.Store{}}
+	s := withTrackerStore(&ContainerServer{}, &tracker.Store{})
 	_, err := s.DispatchTrackerIssues(kmsKeyTestCtx("alice", "member", "tracker:admin,agents:run"),
 		&pb.DispatchTrackerIssuesRequest{Username: "alice", Connection: "default"})
 	if status.Code(err) != codes.Unavailable {
@@ -76,7 +76,7 @@ func TestDispatchTrackerIssues_NoRunStarterUnavailable(t *testing.T) {
 }
 
 func TestListTrackerDispatches_CrossTenantDenied(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	_, err := s.ListTrackerDispatches(kmsKeyTestCtx("tracker-dispatch-rpc-alice", "member", "tracker:admin"),
 		&pb.ListTrackerDispatchesRequest{Username: "tracker-dispatch-rpc-bob", Connection: "default"})
 	if status.Code(err) != codes.PermissionDenied {
@@ -97,7 +97,7 @@ func TestDispatchTrackerIssues_TickThroughRPC(t *testing.T) {
 	// setUpWriterConnection only upserts.
 	_ = mustTestTrackerStore(t).Delete(ctx, user, "default")
 	s, _ := setUpWriterConnection(t, user, provider)
-	if _, err := s.trackerStore.SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+	if _, err := s.loadTrackerStore().SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}
 	starter := &recordingRunStarter{}
@@ -158,7 +158,7 @@ func TestDispatchTrackerIssues_CrossTenantRejectedBeforeAnyWrite(t *testing.T) {
 	ctx := context.Background()
 	_ = mustTestTrackerStore(t).Delete(ctx, victim, "default")
 	s, _ := setUpWriterConnection(t, victim, provider)
-	if _, err := s.trackerStore.SetRoute(ctx, tracker.Route{Username: victim, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+	if _, err := s.loadTrackerStore().SetRoute(ctx, tracker.Route{Username: victim, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}
 	starter := &recordingRunStarter{}
@@ -172,7 +172,7 @@ func TestDispatchTrackerIssues_CrossTenantRejectedBeforeAnyWrite(t *testing.T) {
 	if len(starter.calls) != 0 || len(provider.labelsAdd) != 0 || provider.commentBody != "" {
 		t.Errorf("side effects: runs=%d labels=%v comment=%q; want none", len(starter.calls), provider.labelsAdd, provider.commentBody)
 	}
-	rows, lerr := s.trackerStore.ListDispatches(ctx, victim, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	rows, lerr := s.loadTrackerStore().ListDispatches(ctx, victim, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
 	if lerr != nil || len(rows) != 0 {
 		t.Errorf("rows = %+v (err %v), want none", rows, lerr)
 	}
@@ -180,7 +180,7 @@ func TestDispatchTrackerIssues_CrossTenantRejectedBeforeAnyWrite(t *testing.T) {
 
 func TestDispatchTrackerIssues_UnknownConnectionNotFound(t *testing.T) {
 	store := mustTestTrackerStore(t)
-	s := &ContainerServer{trackerStore: store, trackerRunStarter: &recordingRunStarter{}}
+	s := withTrackerRunStarter(withTrackerStore(&ContainerServer{}, store), &recordingRunStarter{})
 	_, err := s.DispatchTrackerIssues(kmsKeyTestCtx("tracker-dispatch-rpc-noconn", "member", "tracker:admin,agents:run"),
 		&pb.DispatchTrackerIssuesRequest{Username: "tracker-dispatch-rpc-noconn", Connection: "nope"})
 	if status.Code(err) != codes.NotFound {
@@ -208,7 +208,7 @@ func TestDispatchRunRequest_BindsConnectionAndInput(t *testing.T) {
 // another tenant's connection could otherwise bind the run to a
 // same-named connection in its own tenant.
 func TestTrackerRunStarter_TenantMismatchRejected(t *testing.T) {
-	s := &AgentSkillServer{trackerConnections: &fakeTrackerConnectionChecker{conn: &tracker.Connection{}}}
+	s := withTrackerConnections(&AgentSkillServer{}, &fakeTrackerConnectionChecker{conn: &tracker.Connection{}})
 	err := trackerRunStarter{s}.StartRun(ctxAs("alice", true), tracker.StartRunRequest{
 		Username: "bob", Connection: "default", SkillID: "hello-agent", RunID: "run-x",
 	})
@@ -219,7 +219,7 @@ func TestTrackerRunStarter_TenantMismatchRejected(t *testing.T) {
 
 func TestTrackerRunStarter_BadConnectionRejectedSynchronously(t *testing.T) {
 	s, skill := newSkillBoxHarness(t, newFakeRevocationStore())
-	s.trackerConnections = &fakeTrackerConnectionChecker{err: tracker.ErrNotFound}
+	s.SetTrackerConnections(&fakeTrackerConnectionChecker{err: tracker.ErrNotFound})
 	err := trackerRunStarter{s}.StartRun(ctxAs("alice", true), tracker.StartRunRequest{
 		Username: "alice", Connection: "default", SkillID: skill.Id, RunID: "run-bad-conn",
 	})
@@ -234,7 +234,7 @@ func TestTrackerRunStarter_BadConnectionRejectedSynchronously(t *testing.T) {
 func TestTrackerRunStarter_ProvisionFailureIsSynchronous(t *testing.T) {
 	s, skill := newSkillBoxHarness(t, newFakeRevocationStore())
 	checker := &fakeTrackerConnectionChecker{conn: &tracker.Connection{Username: "alice", Name: "default"}}
-	s.trackerConnections = checker
+	s.SetTrackerConnections(checker)
 	reg := runlease.NewRegistry()
 	s.SetRunRegistry(reg)
 
@@ -293,7 +293,7 @@ func TestFinishDispatchedRun_EndsLeaseAndRevokes(t *testing.T) {
 
 func TestTrackerRunStarter_UnknownSkillFails(t *testing.T) {
 	s, _ := newSkillBoxHarness(t, newFakeRevocationStore())
-	s.trackerConnections = &fakeTrackerConnectionChecker{conn: &tracker.Connection{}}
+	s.SetTrackerConnections(&fakeTrackerConnectionChecker{conn: &tracker.Connection{}})
 	err := trackerRunStarter{s}.StartRun(ctxAs("alice", true), tracker.StartRunRequest{
 		Username: "alice", Connection: "default", SkillID: "no-such-skill", RunID: "run-noskill",
 	})
