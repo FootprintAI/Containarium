@@ -85,7 +85,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		Store:            s.trackerStore,
 		Provider:         provider,
 		Conn:             conn,
-		Credentials:      s.secretsStore,
+		Credentials:      s.loadSecretsStore(), // non-nil: writerConnFor resolved through it, and it is never unset
 		CredentialSecret: record.CredentialSecret,
 		Runs:             s.trackerRunStarter,
 		Clock:            tracker.SystemClock,

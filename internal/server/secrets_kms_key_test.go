@@ -74,7 +74,7 @@ func TestSetTenantKMSKey_AdminWithoutExplicitScopeDenied(t *testing.T) {
 }
 
 func TestSetTenantKMSKey_AdminWithExplicitScopeAllowed(t *testing.T) {
-	s := &ContainerServer{secretsStore: mustTestSecretsStore(t)}
+	s := withSecretsStore(&ContainerServer{}, mustTestSecretsStore(t))
 	ctx := kmsKeyTestCtx("cloud-daemon", "admin", "secrets:write")
 
 	// No tenant factory wired on this store (no CONTAINARIUM_KMS_BACKEND=gcp
@@ -99,7 +99,7 @@ func TestSetTenantKMSKey_StoreNotConfigured(t *testing.T) {
 }
 
 func TestSetTenantKMSKey_RequiresUsername(t *testing.T) {
-	s := &ContainerServer{secretsStore: mustTestSecretsStore(t)}
+	s := withSecretsStore(&ContainerServer{}, mustTestSecretsStore(t))
 	ctx := kmsKeyTestCtx("cloud-daemon", "admin", "secrets:write")
 	_, err := s.SetTenantKMSKey(ctx, &pb.SetTenantKMSKeyRequest{Username: "", KekResourceName: "k"})
 	if status.Code(err) != codes.InvalidArgument {
@@ -114,6 +114,13 @@ func TestSetTenantKMSKey_RequiresUsername(t *testing.T) {
 // so there's no lighter-weight fake to construct here; every test in
 // this file needs a real Store to get past the server's nil-store
 // check regardless of which code path it's actually exercising.
+// withSecretsStore installs st on cs through the live accessor (#3327)
+// and returns cs, for building a test server in one expression.
+func withSecretsStore(cs *ContainerServer, st *secrets.Store) *ContainerServer {
+	cs.SetSecretsStore(st)
+	return cs
+}
+
 func mustTestSecretsStore(t *testing.T) *secrets.Store {
 	t.Helper()
 	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")

@@ -17,10 +17,19 @@ import (
 
 // SetSecretsStore wires the tenant-secrets backend onto the server.
 // Called from dual_server.go after the Postgres connection + master
-// key have been resolved. Nil store keeps the SecretsService RPCs
-// returning Unavailable (--standalone daemons).
+// key have been resolved — at startup, or by the late install after a
+// degraded start (#3327), which is why it is an atomic swap: it may
+// land while RPCs are being served. Nil store keeps the SecretsService
+// RPCs returning Unavailable (--standalone daemons).
 func (s *ContainerServer) SetSecretsStore(store *secrets.Store) {
-	s.secretsStore = store
+	s.secretsStoreRef.Store(store)
+}
+
+// loadSecretsStore returns the current tenant-secrets backend, nil when
+// none is installed. Every reader goes through it, and a caller that
+// both checks and uses the store loads it once.
+func (s *ContainerServer) loadSecretsStore() *secrets.Store {
+	return s.secretsStoreRef.Load()
 }
 
 // SetSecret creates or updates a tenant secret. Idempotent —
@@ -30,7 +39,8 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -45,7 +55,7 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value, delivery)
+	meta, err := store.Set(ctx, req.Username, req.Name, req.Value, delivery)
 	if err != nil {
 		return nil, mapSecretError(err)
 	}
@@ -75,7 +85,8 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsRead); err != nil {
 		return nil, err
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -85,7 +96,7 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 		return nil, err
 	}
 
-	meta, value, err := s.secretsStore.Get(ctx, req.Username, req.Name)
+	meta, value, err := store.Get(ctx, req.Username, req.Name)
 	if err != nil {
 		if errors.Is(err, secrets.ErrBrokerOnly) {
 			// Write-only by design: the metadata is real, the value
@@ -110,7 +121,8 @@ func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRe
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsRead); err != nil {
 		return nil, err
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -120,7 +132,7 @@ func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRe
 		return nil, err
 	}
 
-	list, err := s.secretsStore.List(ctx, req.Username)
+	list, err := store.List(ctx, req.Username)
 	if err != nil {
 		return nil, mapSecretError(err)
 	}
@@ -140,7 +152,8 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -150,7 +163,7 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 		return nil, err
 	}
 
-	if err := s.secretsStore.Delete(ctx, req.Username, req.Name); err != nil {
+	if err := store.Delete(ctx, req.Username, req.Name); err != nil {
 		return nil, mapSecretError(err)
 	}
 
@@ -168,7 +181,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
-	if s.secretsStore == nil {
+	if s.loadSecretsStore() == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -221,14 +234,15 @@ func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenant
 				"(re-mint with `containarium token generate --scopes "+auth.ScopeSecretsWrite+" ...`)")
 	}
 
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
 
-	if err := s.secretsStore.SetTenantKMSKey(ctx, req.Username, req.KekResourceName); err != nil {
+	if err := store.SetTenantKMSKey(ctx, req.Username, req.KekResourceName); err != nil {
 		return nil, mapSecretError(err)
 	}
 
@@ -270,10 +284,11 @@ func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenant
 // which the daemon already does at CreateContainer +
 // StartContainer + RefreshSecrets call sites.
 func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string) (int, error) {
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return 0, errors.New("secrets store not configured")
 	}
-	secretMap, err := s.secretsStore.LoadAllForUserWithDelivery(ctx, username)
+	secretMap, err := store.LoadAllForUserWithDelivery(ctx, username)
 	if err != nil {
 		return 0, fmt.Errorf("load secrets: %w", err)
 	}

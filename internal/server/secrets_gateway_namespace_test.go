@@ -24,7 +24,7 @@ import (
 // anything that reached Postgres would panic. An orderly error is therefore
 // itself the proof that the guard ran before any database access.
 func TestSecretsRPCs_ReservedGatewayNamespaceIsInvisible(t *testing.T) {
-	s := &ContainerServer{secretsStore: &secrets.Store{}}
+	s := withSecretsStore(&ContainerServer{}, &secrets.Store{})
 	// An ADMIN caller with the wildcard scope — the most privileged shape the
 	// tenant API has. If even this cannot reach the namespace, no tenant can.
 	ctx := ctxWithScopes("operator", true, auth.ScopeWildcard)

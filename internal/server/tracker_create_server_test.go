@@ -51,12 +51,12 @@ func cleanTrackerLineage(t *testing.T, user string) {
 func setUpCreateConnection(t *testing.T, user string, provider *fakeWriterProvider, policy *pb.TrackerPolicy) (*ContainerServer, context.Context, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		secretsStore:      mustTestSecretsStore(t),
 		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
 		claimLocks:        tracker.NewClaimLocks(),
 		runRegistry:       runlease.NewRegistry(),
 	}
+	s.SetSecretsStore(mustTestSecretsStore(t))
 	s.runRegistry.Register(createTestRunID, runlease.Info{SkillID: "product-define", Model: "fable"})
 	cleanTrackerLineage(t, user)
 

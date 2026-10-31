@@ -15,7 +15,7 @@ import (
 // undo that by mapping the error to something that leaks the value.
 func TestGetSecretRPC_BrokerRow_EmptyValueEvenWithSecretsRead(t *testing.T) {
 	store := mustTestSecretsStore(t)
-	s := &ContainerServer{secretsStore: store}
+	s := withSecretsStore(&ContainerServer{}, store)
 	const user = "broker-rpc-test-user"
 
 	setCtx := kmsKeyTestCtx(user, "member", "secrets:write")
@@ -65,7 +65,7 @@ func TestGetSecretRPC_BrokerRow_EmptyValueEvenWithSecretsRead(t *testing.T) {
 // mapping of the store's one-way guard to FAILED_PRECONDITION.
 func TestSetSecretRPC_BrokerToDeliveringMode_Rejected(t *testing.T) {
 	store := mustTestSecretsStore(t)
-	s := &ContainerServer{secretsStore: store}
+	s := withSecretsStore(&ContainerServer{}, store)
 	const user = "broker-rpc-test-immutable"
 
 	ctx := kmsKeyTestCtx(user, "member", "secrets:write")
