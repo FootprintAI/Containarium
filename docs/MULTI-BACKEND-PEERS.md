@@ -49,6 +49,29 @@ pool.StartDiscovery(ctx)
 
 Peer addresses follow the format: `sentinel-host:8888/peer/{backend-id}`
 
+## Static Peers
+
+A backend that is not tunnel-joined can be added by hand with `--peers`:
+
+```bash
+containarium daemon --peers 10.0.0.12:8080                  # keyed by its address
+containarium daemon --peers backend-b=10.0.0.12:8080        # keyed by an explicit id
+```
+
+An address-only peer is keyed by its address. That is enough to list and forward operations, but not to **move** containers to it: `move --target <id>` takes the peer's key and then requires an incus remote with that same name, and a remote name cannot contain a colon.
+
+To move containers to a static peer, give it an id and register the matching remote on the source host:
+
+```bash
+containarium daemon --peers backend-b=10.0.0.12:8080       # source daemon
+incus remote add backend-b https://10.0.0.12:8443 --token <trust-token>
+containarium move <user> --target backend-b
+```
+
+An id is letters, digits, `.`, `_` or `-`, starting with a letter or digit, and cannot start with `tunnel-` (reserved for sentinel-discovered peers, which discovery removes when the sentinel stops listing them). That is a safe subset of what incus allows in a remote name, so a remote named outside it cannot be matched. An IPv6 address needs brackets: `backend-b=[::1]:8080`.
+
+The daemon refuses to start on a malformed `id=` entry, two peers that share an id, one address listed under two ids, or an id equal to its own backend id. A blank entry (a trailing comma) is ignored, and an entry repeated exactly is collapsed. The port of an `id=` entry must be a number from 1 to 65535. Sentinel discovery never removes a static peer or rewrites its address, even if the sentinel lists the same id.
+
 ## Operation Routing
 
 All container operations follow the same pattern:
