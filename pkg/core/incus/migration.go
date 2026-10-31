@@ -87,6 +87,15 @@ type MigrationRunner interface {
 	// rsync, which works but isn't sub-second.
 	CopyRefresh(container, fromSnap, targetRemote, storagePool string) error
 
+	// DeleteTarget force-deletes `container` on `targetRemote` (stopping it
+	// first if it is running). The move uses it to remove the copy it made
+	// there when the move fails, so the tenant is never left running on two
+	// backends. The move calls it only after its own first copy succeeded,
+	// when that instance is known to be its own. A container that is already
+	// gone is not an error. Equivalent to
+	// `incus delete --force <remote>:<container>`.
+	DeleteTarget(container, targetRemote string) error
+
 	// Stop stops a container. Used at the very start of cutover; any
 	// final state changes after this point are caught by the post-stop
 	// snapshot+refresh.
@@ -114,9 +123,9 @@ type ExecRunner struct {
 	// Path to the incus binary. Empty means look on $PATH.
 	IncusPath string
 
-	// SnapshotDeleteTimeout bounds one `incus snapshot delete`. The cleanup is
-	// best effort and sits on the move's success path, so a delete that never
-	// returns must not hold up the response. Zero means
+	// SnapshotDeleteTimeout bounds one cleanup delete: `incus snapshot delete`
+	// and the target delete after a failed move. The cleanup is best effort, so
+	// a delete that never returns must not hold up the response. Zero means
 	// defaultSnapshotDeleteTimeout.
 	SnapshotDeleteTimeout time.Duration
 }
@@ -239,6 +248,23 @@ func (e *ExecRunner) EnsureTargetACLs(container, targetRemote string) error {
 		}
 	}
 	return nil
+}
+
+func (e *ExecRunner) DeleteTarget(container, targetRemote string) error {
+	timeout := e.SnapshotDeleteTimeout
+	if timeout <= 0 {
+		timeout = defaultSnapshotDeleteTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := e.incusCtx(ctx, "delete", "--force", targetRemote+":"+container)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "doesn't exist") {
+		return nil
+	}
+	return err
 }
 
 func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool string) error {

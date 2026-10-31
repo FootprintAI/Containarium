@@ -278,3 +278,35 @@ func TestExecRunner_DeleteSnapshot_IsBounded(t *testing.T) {
 		t.Errorf("DeleteSnapshot took %v; it must give up near the 300ms deadline", elapsed)
 	}
 }
+
+// DeleteTarget removes the copy a failed move left on the target. -f stops it
+// first if it is running, so the tenant is not left running on two backends.
+func TestExecRunner_DeleteTarget_ForceDeletesOnTheRemote(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.DeleteTarget("box", "target-1"); err != nil {
+		t.Fatalf("DeleteTarget: %v", err)
+	}
+	got := recordedArgs(t, argsFile)
+	if len(got) != 1 || got[0] != "delete --force target-1:box" {
+		t.Errorf("incus args = %q, want [delete --force target-1:box]", got)
+	}
+}
+
+func TestExecRunner_DeleteTarget_IsBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 20\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &ExecRunner{IncusPath: bin, SnapshotDeleteTimeout: 300 * time.Millisecond}
+
+	start := time.Now()
+	if err := r.DeleteTarget("box", "target-1"); err == nil {
+		t.Fatal("a delete that exceeded its deadline must report an error")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("DeleteTarget took %v; it must give up near the deadline", time.Since(start))
+	}
+}
