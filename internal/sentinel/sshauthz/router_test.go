@@ -10,6 +10,7 @@ import (
 
 	"github.com/tg123/sshpiper/libplugin"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // routerFixture writes a config.yaml in the shape keysync's
@@ -19,6 +20,7 @@ type routerFixture struct {
 	dir, config    string
 	alice, bob, ca ssh.Signer
 	upstreamKey    []byte
+	knownHosts     []byte
 }
 
 func newRouterFixture(t *testing.T, extra string) routerFixture {
@@ -39,6 +41,8 @@ func newRouterFixture(t *testing.T, extra string) routerFixture {
 	bobKeys := write("users/bob/authorized_keys", ssh.MarshalAuthorizedKey(f.bob.PublicKey()))
 	caKeys := write("trusted_user_ca_keys", ssh.MarshalAuthorizedKey(f.ca.PublicKey()))
 	upstream := write("upstream_key", f.upstreamKey)
+	f.knownHosts = []byte(knownhosts.Line([]string{"192.0.2.10:2222"}, testKey(t).PublicKey()) + "\n" + knownhosts.Line([]string{"192.0.2.11:22"}, testKey(t).PublicKey()) + "\n")
+	pins := write("known_hosts", f.knownHosts)
 	f.config = write("config.yaml", fmt.Appendf(nil, `version: "1.0"
 pipes:
   - from:
@@ -51,6 +55,7 @@ pipes:
       host: 192.0.2.10:2222
       username: "alice"
       ignore_hostkey: true
+      known_hosts: %s
       private_key: %s
   - from:
       - username: "bob"
@@ -60,8 +65,9 @@ pipes:
       host: 192.0.2.11:22
       username: "bob"
       ignore_hostkey: true
+      known_hosts: %s
       private_key: %s
-`, aliceKeys, caKeys, extra, upstream, bobKeys, upstream))
+`, aliceKeys, caKeys, extra, pins, upstream, bobKeys, pins, upstream))
 	return f
 }
 
@@ -110,7 +116,7 @@ func TestRouterMirrorsYAMLPlugin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("want upstream, got %v", err)
 			}
-			if up.GetOrGenerateUri() != tt.uri || up.UserName != tt.login || len(up.KnownHostsData) != 0 {
+			if up.GetOrGenerateUri() != tt.uri || up.UserName != tt.login || !bytes.Equal(up.KnownHostsData, f.knownHosts) {
 				t.Fatalf("upstream = %+v", up)
 			}
 			if pk := up.GetPrivateKey(); pk == nil || !bytes.Equal(pk.PrivateKey, f.upstreamKey) || len(pk.CaPublicKey) != 0 {
@@ -174,6 +180,7 @@ func TestRouterPipeTarget(t *testing.T) {
 	// A file literally named $DOWNSTREAM_USER, so a router that skipped the
 	// placeholder check would read it and route instead of refusing.
 	placeholder := write("$DOWNSTREAM_USER", ssh.MarshalAuthorizedKey(alice.PublicKey()))
+	pins := write("known_hosts", []byte(knownhosts.Line([]string{"192.0.2.10:22"}, testKey(t).PublicKey())+"\n"))
 	for _, tt := range []struct {
 		name, authorizedKeys, to string
 		user                     string // "" expects a refusal
@@ -188,7 +195,7 @@ func TestRouterPipeTarget(t *testing.T) {
 		{name: "placeholder in authorized_keys", authorizedKeys: placeholder, to: "private_key: " + upstream},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			config := write("config.yaml", fmt.Appendf(nil, "version: \"1.0\"\npipes:\n  - from:\n      - username: \"alice\"\n        authorized_keys:\n          - %s\n    to:\n      host: 192.0.2.10:22\n      %s\n", tt.authorizedKeys, tt.to))
+			config := write("config.yaml", fmt.Appendf(nil, "version: \"1.0\"\npipes:\n  - from:\n      - username: \"alice\"\n        authorized_keys:\n          - %s\n    to:\n      host: 192.0.2.10:22\n      known_hosts: %s\n      %s\n", tt.authorizedKeys, pins, tt.to))
 			up, err := NewRouter(config).Route(&libplugin.ConnMeta{UserName: "alice"}, alice.PublicKey().Marshal())
 			if tt.user == "" {
 				if err == nil || up != nil {
