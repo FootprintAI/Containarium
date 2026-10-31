@@ -112,7 +112,8 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 	if crew == nil {
 		task := &pb.RunAgentSkillRequest{SkillId: ids[0], RunId: runID, InputJson: input,
 			BackendId: parent.BackendId, Pool: parent.Pool, GitSource: parent.GitSource,
-			GitRef: parent.GitRef, GitCredential: parent.GitCredential, Engine: parent.EngineOverrides[ids[0]]}
+			GitRef: parent.GitRef, GitCredential: parent.GitCredential, Engine: parent.EngineOverrides[ids[0]],
+			Model: parent.ModelOverrides[ids[0]]}
 		run, err := s.agents.beginSkillRunWith(ctx, task, provisionOptions{instanceID: peers[ids[0]].instance})
 		if err != nil {
 			return "", err
