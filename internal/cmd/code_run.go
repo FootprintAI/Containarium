@@ -28,6 +28,11 @@ var (
 	// #2193: --session resumes one SPECIFIC session id instead of --continue's
 	// "most recent" — mutually exclusive with it (validated in runCodeRun).
 	codeRunSession string
+
+	// #3322: --command runs a shell command in the engine's place, under
+	// --timeout; mutually exclusive with everything that means an engine.
+	codeRunCommand string
+	codeRunTimeout time.Duration
 )
 
 var codeRunCmd = &cobra.Command{
@@ -124,8 +129,14 @@ stays on the box, readable via 'containarium code status' or another
 
 func runCodeRun(cmd *cobra.Command, args []string) error {
 	box := args[0]
+	if strings.TrimSpace(codeRunCommand) != "" {
+		return runCodeRunCommand(cmd, box)
+	}
+	if codeRunTimeout != 0 {
+		return fmt.Errorf("--timeout applies to --command only")
+	}
 	if strings.TrimSpace(codeRunPrompt) == "" {
-		return fmt.Errorf("--prompt is required")
+		return fmt.Errorf("--prompt is required (or --command, to run a shell command instead of the agent)")
 	}
 	if codeRunSession != "" && codeRunContinue {
 		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
@@ -206,6 +217,44 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if approvals == coderun.ApprovalsAsk && approvalNote == "" && stdinIsTerminal() {
 		defer startInlineAnswers(ctx, newRunInputsClient, box, started.Name, os.Stdin, diag)()
 	}
+	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// runCodeRunCommand is `code run --command` (#3322): the box runs a shell
+// command under a timeout in the engine's place, detached and streamed exactly
+// like an agent run, with the same name, log and exit-code contract. Nothing
+// engine-related happens: code.json is not read, no gateway token is minted, no
+// session is discovered. Over SSH the command runs as the box's own user (the
+// daemon's StartBoxRun command mode is what applies the run user and its
+// tool-access level).
+func runCodeRunCommand(cmd *cobra.Command, box string) error {
+	if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
+		return fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")
+	}
+	if codeRunApprovals != string(coderun.ApprovalsDeny) {
+		return fmt.Errorf("--approvals applies to an agent run, not to --command")
+	}
+	timeoutSeconds, err := coderun.CommandTimeoutSeconds(codeRunTimeout)
+	if err != nil {
+		return fmt.Errorf("--timeout: %w", err)
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	diag := cmd.ErrOrStderr()
+	name := codeRunName()
+	sess, err := resolveCodeSession(ctx, box, diag)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.Close() }()
+	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
+	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
+	if err != nil {
+		return fmt.Errorf("start command run on %q: %w", box, err)
+	}
+	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
 }
 

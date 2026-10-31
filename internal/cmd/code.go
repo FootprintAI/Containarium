@@ -257,7 +257,11 @@ func init() {
 	codeInstallCmd.Flags().StringVar(&codeCodexVersion, "codex-version", "",
 		"pin the Codex CLI version installed with --engine codex (default: whatever npm considers current)")
 
-	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
+	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required unless --command is given)")
+	codeRunCmd.Flags().StringVar(&codeRunCommand, "command", "",
+		"run this shell command on the box instead of the agent (no engine starts, no agent credential is loaded); mutually exclusive with --prompt, --session, --continue and --approvals ask")
+	codeRunCmd.Flags().DurationVar(&codeRunTimeout, "timeout", 0,
+		"with --command, end the command after this long (exit code 124); default 15m, at most 1h")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
 	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",
