@@ -3592,7 +3592,7 @@
       },
       "post": {
         "summary": "Start a box's code run",
-        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
+        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. With `command` instead of `prompt` the box runs that shell command under a timeout in the engine's place (no engine, no agent credential), listed and tailed like any run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_StartBoxRun",
         "responses": {
           "200": {
@@ -22007,6 +22007,15 @@
         "model": {
           "type": "string",
           "description": "The model id to run the engine with (Claude Code's --model), for example\none a caller chose from a policy or a label (#3259). Empty keeps the\nengine's own default, exactly as before. Claude Code only: any other\nengine is FAILED_PRECONDITION, before anything on the box is touched. The\nid is opaque to the API (no tier names are enumerated here, ids change\nwith every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]{0,127};\nanything else is INVALID_ARGUMENT. Whether the engine accepts the id is\nthe engine's to say: an id it rejects ends the run non-zero and the\nreason is in the run's log. BoxRun.model reports the id the run was\nstarted with. Capability \"box_run_model\" in SystemInfo.capabilities."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command mode (#3322): run this shell command (through `sh -c`) instead of\nan engine prompt. No engine starts and no agent credential is loaded, so\nthe run user's agent sign-in is not required. Mutually exclusive with\nprompt, session_id, continue_session, structured_output and model\n(INVALID_ARGUMENT, before anything on the box is touched). The command\nruns as the box's run user with its recorded tool-access level and sudo\ngrant, exactly as an engine run would, in that user's home directory; a\ncaller that needs a checkout makes it part of the command. The run is\nlisted, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,\nStopBoxRun); BoxRun.session_id stays empty. Capability \"box_run_command\"\nin SystemInfo.capabilities."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "With command: the daemon ends the command after this many seconds\n(`timeout -k 5`, so the run exits with code 124). 0 means the daemon's\ndefault of 900; more than 3600 is INVALID_ARGUMENT, as is a value without\ncommand."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -22532,7 +22541,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output) and\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model) and\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",

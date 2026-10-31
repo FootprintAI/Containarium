@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The operations behind `containarium code`, shared by the CLI handlers and
@@ -58,6 +59,47 @@ func BuildClaudeRunCommand(prompt string, streamJSON bool) string {
 		cmd += " --output-format stream-json"
 	}
 	return cmd
+}
+
+// Command mode (#3322): a shell command runs in the engine's place, under a
+// timeout the box enforces. Shared by the daemon's StartBoxRun and the CLI's
+// `code run --command`, so the two surfaces run the same thing.
+const (
+	// DefaultCommandTimeoutSeconds applies when a caller gives no timeout.
+	DefaultCommandTimeoutSeconds = 900
+	// MaxCommandTimeoutSeconds caps any timeout a caller asks for.
+	MaxCommandTimeoutSeconds = 3600
+	// CommandTimeoutExitCode is what `timeout` exits with when it ended the command.
+	CommandTimeoutExitCode = 124
+)
+
+// BuildShellCommand renders the command a command-mode run executes on the box:
+// the caller's text under `sh -c`, inside `timeout -k 5 <seconds>`, so a command
+// that outlives its budget is terminated (SIGTERM, then SIGKILL five seconds
+// later) and the run exits with CommandTimeoutExitCode. The text is
+// single-quoted whole, so nothing in it is interpreted by the outer shell; its
+// own shell interprets it exactly as written. 0 (or a negative value) means the
+// default; the cap is the caller's to enforce before this.
+func BuildShellCommand(command string, timeoutSeconds int) string {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = DefaultCommandTimeoutSeconds
+	}
+	return "timeout -k 5 " + strconv.Itoa(timeoutSeconds) + " sh -c " + ShellQuoteSingle(command)
+}
+
+// CommandTimeoutSeconds turns a `--timeout` duration into the whole seconds the
+// API takes: 0 for "the default", an error for a negative value, one under a
+// second, or one over the cap.
+func CommandTimeoutSeconds(d time.Duration) (int, error) {
+	switch {
+	case d == 0:
+		return 0, nil
+	case d < time.Second:
+		return 0, fmt.Errorf("must be at least 1s, got %s", d)
+	case d > MaxCommandTimeoutSeconds*time.Second:
+		return 0, fmt.Errorf("must be at most %s, got %s", MaxCommandTimeoutSeconds*time.Second, d)
+	}
+	return int(d / time.Second), nil
 }
 
 // CaptureModeFor maps the stream-json flag to the capture_mode process_start

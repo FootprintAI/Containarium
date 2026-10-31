@@ -77,12 +77,49 @@ A run started with `continue_session` gets no id from discovery at all (it
 appends to an existing file, which is never new). A resumed run's id is the
 `session_id` it was started with.
 
+## Command mode: `command`
+
+With `command` set (and `prompt` empty) the box runs that shell command in the
+engine's place: `timeout -k 5 <timeout_seconds> sh -c '<command>'`, detached
+like an engine run, with the same record, log, listing, tailing and stop. Use it
+for work that must not involve a model: a build, the test suite, a lint, a
+verification of a pushed commit.
+
+- No engine starts and no agent credential is loaded. The box's `code.json` is
+  not consulted (a box whose engine run would be refused, say one on the gateway
+  credential, still takes a command run), and the run user's agent sign-in is
+  **not** required.
+- Identity and tool access are exactly an engine run's: on a box with a recorded
+  tool-access level the command runs as the run user with that level's sudo
+  grant and staged home; on a box with none it runs as the owner. `BUILD_TOOLS`
+  is what gives it the managed toolchains.
+- The working directory is the run user's home. A command that needs a checkout
+  makes it: for example `git clone <url> work && cd work && git checkout <sha>
+  && make test`, through the box's own credential helper.
+- `timeout_seconds` bounds it (default 900, at most 3600; `INVALID_ARGUMENT`
+  above that or without `command`). A command that outlives its budget gets
+  SIGTERM, then SIGKILL five seconds later, and the run's exit code is `124`.
+- `command` is mutually exclusive with `prompt`, `session_id`,
+  `continue_session`, `structured_output` and `model` (`INVALID_ARGUMENT`,
+  before anything on the box is touched). `BoxRun.session_id` stays empty and
+  `BoxRun.model` is empty.
+- The text is single-quoted whole, so the outer shell interprets none of it; the
+  command's own `sh -c` runs it as written. It is the caller's text and runs with
+  the box owner's code and secrets reachable, like anything a run on that box can
+  do: a control plane must only ever send text a repository manager configured or
+  the platform itself wrote, never text from an issue, a pull request or an
+  agent's output.
+
+The CLI counterpart is `containarium code run <box> --command '<text>'
+[--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
-send `run_name` or `structured_output` to a daemon that predates them.
-`GetSystemInfo` (`SystemInfo.capabilities`) lists the optional features a daemon
-supports: `box_run_name` and `box_run_structured_output`. An older daemon does
+send `run_name`, `structured_output`, `model` or `command` to a daemon that
+predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
+features a daemon supports: `box_run_name`, `box_run_structured_output`,
+`box_run_model` and `box_run_command`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

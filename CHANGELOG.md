@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`StartBoxRun` command mode, and `code run --command` (#3322).** `StartBoxRunRequest.command` runs a shell command on the box in the engine's place: `timeout -k 5 <timeout_seconds> sh -c '<command>'` (default 900 s, at most 3600; exit code 124 when the budget ends it), detached with the same record, log, listing, tailing and stop as an engine run. No engine starts, no agent credential is loaded and the run user's agent sign-in is not required; the box's `code.json` is not consulted. Identity and tool access are an engine run's (the run user with its level's sudo grant on a box with a recorded level, the owner otherwise). `command` is mutually exclusive with `prompt`, `session_id`, `continue_session`, `structured_output` and `model`; `timeout_seconds` is valid only with it. Capability `box_run_command` in `SystemInfo.capabilities`. The CLI form is `containarium code run <box> --command '<text>' [--timeout 15m]`, over SSH as the box's own user. See `docs/BOX-RUN-API.md`, "Command mode".
+
 ## [0.123.0] - 2026-10-31
 
 ### Upgrading

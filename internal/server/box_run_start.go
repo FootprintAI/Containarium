@@ -266,8 +266,20 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if err := validateBoxRunOwner(req.GetUsername()); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.GetPrompt()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "prompt is required")
+	// Command mode (#3322): a shell command instead of an engine prompt. The two
+	// are exclusive, and so is everything that only means something to an engine.
+	commandMode := strings.TrimSpace(req.GetCommand()) != ""
+	if !commandMode && strings.TrimSpace(req.GetPrompt()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "prompt is required (or command, to run a shell command instead of an engine)")
+	}
+	if commandMode && (req.GetPrompt() != "" || req.GetSessionId() != "" || req.GetContinueSession() || req.GetStructuredOutput() || req.GetModel() != "") {
+		return nil, status.Error(codes.InvalidArgument, "command is mutually exclusive with prompt, session_id, continue_session, structured_output and model")
+	}
+	if req.GetTimeoutSeconds() != 0 && !commandMode {
+		return nil, status.Error(codes.InvalidArgument, "timeout_seconds applies to command only")
+	}
+	if req.GetTimeoutSeconds() < 0 || req.GetTimeoutSeconds() > coderun.MaxCommandTimeoutSeconds {
+		return nil, status.Errorf(codes.InvalidArgument, "timeout_seconds must be between 0 and %d", coderun.MaxCommandTimeoutSeconds)
 	}
 	if req.GetSessionId() != "" && req.GetContinueSession() {
 		return nil, status.Error(codes.InvalidArgument, "session_id and continue_session are mutually exclusive")
@@ -340,6 +352,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	home, cfg, err := resolveBoxRunConfig(startExec, box, req.GetUsername())
 	if err != nil {
 		return nil, err
+	}
+	if commandMode {
+		return s.startBoxRunCommand(ctx, req, box, dir, name, home, listExec, startExec, collision, rotate)
 	}
 	if cfg.Credential == engine.KindGateway {
 		// #2193 scope boundary (documented in the PR, not a silent gap): a
@@ -524,6 +539,93 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	return &pb.StartBoxRunResponse{Run: run}, nil
 }
 
+// startBoxRunCommand is StartBoxRun's command mode (#3322): the same run
+// directory, record, rotation, identity and tool-access handling as an engine
+// run, with a shell command under a timeout in the engine's place. Nothing
+// engine-specific happens: no code.json engine is resolved, no gateway token,
+// no sign-in probe (nothing is signed in), no session discovery. The caller has
+// validated the request and holds the (box, name) lock.
+func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartBoxRunRequest, box, dir, name, home string, listExec boxScriptFunc, startExec boxRunStartFunc, collision *pb.BoxRun, rotate bool) (*pb.StartBoxRunResponse, error) {
+	level, err := s.boxRunRecordedToolAccess(ctx, req.GetUsername())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
+	}
+	if level != "" {
+		if _, err := boxRunPolicyFor(level); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
+		}
+	}
+	ensureTools := s.boxRunEnsureToolchain
+	if ensureTools == nil && s.manager != nil {
+		ensureTools = s.manager.EnsureManagedToolchains
+	}
+	if level == "build_tools" {
+		if ensureTools == nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
+		}
+		if err := ensureTools(req.GetUsername()); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "managed toolchain mount %s: %v", toolchain.HostRoot, err)
+		}
+	} else if ensureTools != nil {
+		_ = ensureTools(req.GetUsername())
+	}
+	runAs := req.GetUsername()
+	if level != "" {
+		// The run user, its sudo grant for the level and its staged home, as for an
+		// engine run; the engine sign-in is not checked, because no engine starts.
+		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
+		}
+		runAs, home = boxRunUnprivilegedUser, runHome
+	}
+	if rotate {
+		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
+		var err error
+		if level != "" {
+			_, err = listExec(box, rotateScript)
+		} else {
+			_, err = startExec(box, req.GetUsername(), rotateScript)
+		}
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
+		}
+	}
+
+	command := coderun.BuildShellCommand(req.GetCommand(), int(req.GetTimeoutSeconds()))
+	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home}))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
+	}
+	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
+	if !found {
+		return nil, status.Errorf(codes.Internal, "unexpected spawn output %q", out)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(pidStr))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unexpected spawn pid %q", pidStr)
+	}
+	record := agentbox.RunRecord{
+		Version:     agentbox.RunRecordVersion,
+		Name:        name,
+		PID:         pid,
+		BootID:      strings.TrimSpace(boot),
+		Command:     command,
+		Cwd:         home,
+		CaptureMode: agentbox.CaptureCombined,
+		LogPath:     dir + "/" + name + ".log",
+		StartedAt:   time.Now().UTC(),
+	}
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "marshal run record: %v", err)
+	}
+	if _, err := startExec(box, runAs, boxRunWriteRecordScript(dir, name, recordJSON)); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "persist run record for %q on %q: %v", name, req.GetUsername(), err)
+	}
+	return &pb.StartBoxRunResponse{Run: boxRunProto(name, dir, record, agentbox.RunOutcomeRunning)}, nil
+}
+
 // Daemon capability names advertised in SystemInfo.capabilities. A client
 // checks for a name before sending the request field it gates (the REST mux
 // rejects unknown JSON fields, so an older daemon would fail the whole call).
@@ -535,11 +637,13 @@ const (
 	DaemonCapBoxRunStructuredOutput = "box_run_structured_output"
 	// DaemonCapBoxRunModel: StartBoxRunRequest.model and BoxRun.model (#3259).
 	DaemonCapBoxRunModel = "box_run_model"
+	// DaemonCapBoxRunCommand: StartBoxRunRequest.command and timeout_seconds (#3322).
+	DaemonCapBoxRunCommand = "box_run_command"
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
