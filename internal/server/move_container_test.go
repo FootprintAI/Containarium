@@ -142,6 +142,22 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 		t.Errorf("second call = %q", runner.calls[1])
 	}
 
+	// The sync snapshots travel to the target with each refresh, so after a
+	// successful move they are removed there as well as on the source.
+	for _, snap := range []string{"containarium-move-sync0", "containarium-move-final"} {
+		want := "delsnap vm2:alice-container/" + snap
+		found := false
+		for _, c := range runner.calls {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q (target-side cleanup); got %v", want, runner.calls)
+		}
+	}
+
 	// Cutover must include a stop on the source — search the call list.
 	foundStop := false
 	for _, c := range runner.calls {

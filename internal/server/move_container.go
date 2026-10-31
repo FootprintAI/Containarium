@@ -340,6 +340,15 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	s.cascadeContainerCleanup(ctx, containerName, req.Username)
 	cleanupSnaps() // remove the sync trail on the source
 
+	// Each refresh copies the instance with its snapshots, so the sync trail
+	// also exists on the target and would pin disk there for good. Best
+	// effort, like the source cleanup: the move has already succeeded.
+	for _, snap := range createdSnaps {
+		if err := s.moveRunner.DeleteSnapshot(targetRemote+":"+containerName, snap); err != nil {
+			log.Printf("[move] cleanup snapshot %s:%s/%s: %v (ignored)", targetRemote, containerName, snap, err)
+		}
+	}
+
 	return &pb.MoveContainerResponse{
 		Message:         fmt.Sprintf("Container %s migrated to %s (downtime %ds)", req.Username, req.TargetBackendId, downtime),
 		NewIpAddress:    newIP,

@@ -10,9 +10,11 @@ import (
 )
 
 // fakeIncus writes an `incus` stand-in that records its arguments and applies
-// the one rule these tests pin: Incus refuses --instance-only when the copy
+// the two rules these tests pin. Incus refuses --instance-only when the copy
 // source is a snapshot (a <container>/<snapshot> argument), failing with
-// "--instance-only can't be passed when the source is a snapshot".
+// "--instance-only can't be passed when the source is a snapshot". It also
+// refuses --refresh for a snapshot source, failing with
+// "--refresh can only be used with instances".
 //
 // Every move test elsewhere substitutes a fake MigrationRunner, so the real
 // command line ExecRunner builds was never run. That is how a flag Incus
@@ -25,16 +27,22 @@ func fakeIncus(t *testing.T) (bin, argsFile string) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + argsFile + `"
 instance_only=0
+refresh=0
 snapshot_source=0
 for a in "$@"; do
   case "$a" in
     --instance-only) instance_only=1 ;;
+    --refresh) refresh=1 ;;
     -*) ;;
     */*) snapshot_source=1 ;;
   esac
 done
 if [ "$instance_only" = 1 ] && [ "$snapshot_source" = 1 ]; then
   echo "Error: --instance-only can't be passed when the source is a snapshot" >&2
+  exit 1
+fi
+if [ "$refresh" = 1 ] && [ "$snapshot_source" = 1 ]; then
+  echo "Error: --refresh can only be used with instances" >&2
   exit 1
 fi
 exit 0
@@ -82,16 +90,33 @@ func TestExecRunner_CopyInitial_PinsTheDestinationPool(t *testing.T) {
 	}
 }
 
-func TestExecRunner_CopyRefresh_StillRefreshes(t *testing.T) {
+// A refresh copies the instance itself: Incus accepts --refresh only for an
+// instance source. The instance carries the sync snapshots, which is what
+// lets btrfs/zfs send an increment.
+func TestExecRunner_CopyRefresh_CopiesTheInstance(t *testing.T) {
 	bin, argsFile := fakeIncus(t)
 	r := &ExecRunner{IncusPath: bin}
 
 	if err := r.CopyRefresh("box", "sync1", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefresh failed against an incus that rejects --refresh on a snapshot source: %v", err)
+	}
+
+	got := recordedArgs(t, argsFile)
+	if len(got) != 1 || got[0] != "copy box target-1:box --refresh" {
+		t.Errorf("incus args = %q, want [copy box target-1:box --refresh]", got)
+	}
+}
+
+func TestExecRunner_CopyRefresh_PinsTheDestinationPool(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefresh("box", "final", "target-1", "tenants"); err != nil {
 		t.Fatalf("CopyRefresh: %v", err)
 	}
 
 	got := recordedArgs(t, argsFile)
-	if len(got) != 1 || got[0] != "copy box/sync1 target-1:box --refresh" {
-		t.Errorf("incus args = %q, want [copy box/sync1 target-1:box --refresh]", got)
+	if len(got) != 1 || got[0] != "copy box target-1:box --refresh --storage tenants" {
+		t.Errorf("incus args = %q, want [copy box target-1:box --refresh --storage tenants]", got)
 	}
 }

@@ -46,9 +46,16 @@ type MigrationRunner interface {
 	// snapshot").
 	CopyInitial(container, fromSnap, targetRemote, storagePool string) error
 
-	// CopyRefresh syncs the delta from the source's previous-state
-	// snapshot to `targetRemote`. Equivalent to:
-	//   `incus copy <container>/<fromSnap> <remote>:<container> --refresh`
+	// CopyRefresh syncs the delta from the source to `targetRemote`.
+	// Equivalent to:
+	//   `incus copy <container> <remote>:<container> --refresh [--storage <pool>]`
+	//
+	// The source is the instance, not `fromSnap`: Incus accepts --refresh only
+	// for an instance ("--refresh can only be used with instances"). The
+	// snapshot taken just before each refresh is part of the instance, so it
+	// travels with the copy, and a btrfs/zfs source can send the increment
+	// between snapshots. `fromSnap` is kept in the signature to name that
+	// snapshot for callers and logs.
 	// With ZFS/btrfs storage on both ends, this is a fast incremental
 	// (zfs-send-style); with dir-pool storage it falls back to file
 	// rsync, which works but isn't sub-second.
@@ -147,9 +154,9 @@ func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool 
 }
 
 func (e *ExecRunner) CopyRefresh(container, fromSnap, targetRemote, storagePool string) error {
-	src := fmt.Sprintf("%s/%s", container, fromSnap)
+	_ = fromSnap // the refresh copies the instance; see MigrationRunner.CopyRefresh
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
-	args := []string{"copy", src, dst, "--refresh"}
+	args := []string{"copy", container, dst, "--refresh"}
 	if storagePool != "" {
 		args = append(args, "--storage", storagePool)
 	}
