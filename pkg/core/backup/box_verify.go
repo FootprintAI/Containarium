@@ -207,7 +207,7 @@ func (m *Manager) compareRestoredBox(name string, mf *BoxManifest, limit time.Du
 		switch hdr.Typeflag {
 		case tar.TypeReg:
 			h := sha256.New()
-			n, err := io.Copy(h, tr)
+			n, err := io.CopyN(h, tr, hdr.Size) // bounded by the header and the BOX cap reader
 			if err != nil {
 				return checked, total, fmt.Errorf("read %s from the restored box: %w", path, err)
 			}
