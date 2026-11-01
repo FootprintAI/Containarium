@@ -322,7 +322,7 @@ type DualServer struct {
 	auditEventSubscriber     *audit.EventSubscriber
 	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
 	sshCollector             *audit.SSHCollector
-	revocationStore          *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
+	revocationCleanup        *revocationCleanup // Phase 1.2 expired-row pruning; starts once the store and Start's context are both in (#3365)
 	alertStore               *alert.Store
 	alertManager             *alert.Manager
 	alertDeliveryStore       *alert.DeliveryStore
@@ -1930,7 +1930,17 @@ skipAppHosting:
 	// start the late-install helper installs it in-process (#3328).
 	revocationTokens := newRevocationTokensService()
 	pb.RegisterTokensServiceServer(grpcServer, revocationTokens)
-	revocation := revocationConsumers{tokens: tokenManager, service: revocationTokens, skillRuns: agentSkillServer}
+	// The model gateway's revocation reads and the expired-row cleanup loop
+	// follow a late install too (#3365): the gateway is wired to these live
+	// adapters when the store is pending, and the cleanup loop starts once it
+	// has both the store and Start's serving context.
+	gatewayRevocationsLive := newGatewayRevocations(openOwnerRevocationStore)
+	revocationCleanupLoop := newRevocationCleanup(runRevocationCleanup)
+	revocation := revocationConsumers{
+		tokens: tokenManager, service: revocationTokens, skillRuns: agentSkillServer,
+		gateway: gatewayRevocationsLive, cleanup: revocationCleanupLoop,
+	}
+	revocationLateInstall := false // the revocation family is pending with storeRecovery
 
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
@@ -1945,6 +1955,7 @@ skipAppHosting:
 			// The audit store stays off until a restart (#3335 Q1); the
 			// revocation list that shares its pool recovers in-process.
 			registerRevocationLateInstall(storeRecovery, revocation, openRevocationStore)
+			revocationLateInstall = true
 		} else {
 			auditStore, err = audit.NewStore(context.Background(), auditPool)
 			if err != nil {
@@ -1978,10 +1989,12 @@ skipAppHosting:
 			if revErr != nil {
 				log.Printf("Warning: Failed to create JWT revocation store: %v", revErr)
 				registerRevocationLateInstall(storeRecovery, revocation, openRevocationStore)
+				revocationLateInstall = true
 			} else {
 				// Token validation and the TokensService RPC
 				// for operator revocation via CLI / MCP.
 				revocation.install(revStore)
+				revocationCleanupLoop.setStore(revStore)
 				storeRecovery.RegisterInstalled(storeFamily{Service: revocationStoreService, Display: revocationStoreDisplay})
 				revocationStoreLocal = revStore
 				log.Printf("JWT revocation list enabled")
@@ -2667,9 +2680,17 @@ skipAppHosting:
 			// nil` guard in the gateway would not fire and every model call
 			// would dereference nil. A daemon without Postgres reaches here
 			// with a nil store, so this is the common path, not a corner case.
+			//
+			// After a degraded start the store is pending: the gateway gets
+			// the live adapter, which reads the store installed in-process
+			// on every call (#3365), so a revoked token is rejected from the
+			// install on with no restart.
 			var gwRevocations modelgateway.RevocationChecker
 			if revocationStoreLocal != nil {
 				gwRevocations = revocationStoreLocal
+			} else if revocationLateInstall {
+				gwRevocations = gatewayRevocationsLive.jti
+				log.Printf("Warning: model-gateway revocation check is off until the JWT revocation list installs in-process (Postgres unavailable at startup); revoked gateway tokens are rejected from the install on, with no restart")
 			} else {
 				log.Printf("Warning: model-gateway has no revocation store (no Postgres) — issued gateway tokens cannot be killed before they expire")
 			}
@@ -2711,8 +2732,17 @@ skipAppHosting:
 			// the durable Postgres store when the daemon has one (#2111), so the
 			// cutoff survives a restart; in-memory otherwise. Chosen through
 			// gatewayOwnerRevocations for the same nil-interface reason as
-			// gwRevocations above.
-			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
+			// gwRevocations above. After a degraded start the gateway gets the
+			// live adapter instead: in memory during the window, and at the
+			// late install its cutoffs are carried into Postgres (latest per
+			// owner) and the durable store takes over (#3365).
+			var gwOwnerRevocations modelgateway.OwnerRevocationChecker
+			if ownerRevocationStoreLocal == nil && revocationLateInstall {
+				gwOwnerRevocations = gatewayRevocationsLive.owners
+				log.Printf("Warning: model-gateway owner revocations are in-memory until the JWT revocation list installs in-process (Postgres unavailable at startup); cutoffs recorded meanwhile are carried into Postgres then")
+			} else {
+				gwOwnerRevocations = gatewayOwnerRevocations(ownerRevocationStoreLocal)
+			}
 			// One typed event per proxied call, read back by TailRunLog (#2928).
 			gwCalls := modelgateway.NewCallLog()
 			agentSkillServer.SetGatewayCalls(gwCalls)
@@ -3101,7 +3131,7 @@ skipAppHosting:
 		auditStore:             auditStore,
 		auditEventSubscriber:   auditEventSubscriber,
 		sshCollector:           sshCollector,
-		revocationStore:        revocationStoreLocal,
+		revocationCleanup:      revocationCleanupLoop,
 		alertStore:             alertStore,
 		alertManager:           alertManager,
 		alertDeliveryStore:     containerServer.alertDeliveryStore,
@@ -3170,13 +3200,16 @@ func (ds *DualServer) backendsHandler() http.HandlerFunc {
 // if the daemon falls behind the worst case is some extra rows
 // on a B-tree lookup. One initial pass at startup catches
 // anything orphaned by a prior daemon lifetime.
-func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
+//
+// Started by revocationCleanup, once it has the store (the startup install
+// or the late install, #3365) and Start's serving context.
+func runRevocationCleanup(ctx context.Context, st revocationCleaner) {
 	const interval = 1 * time.Hour
 
 	prune := func() {
 		c, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		n, err := ds.revocationStore.CleanupExpired(c, time.Now())
+		n, err := st.CleanupExpired(c, time.Now())
 		if err != nil {
 			log.Printf("[revocation-cleanup] failed: %v", err)
 			return
@@ -3652,10 +3685,10 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// whose token exp has already passed can no longer
 	// authenticate anyway; keeping them around just bloats
 	// the index. One pass at startup catches anything left
-	// from a prior daemon lifetime.
-	if ds.revocationStore != nil {
-		go ds.runRevocationCleanup(ctx)
-	}
+	// from a prior daemon lifetime. A store installed late, after a
+	// degraded start, starts the loop from its install instead (#3365);
+	// either way it runs once.
+	ds.revocationCleanup.start(ctx)
 
 	// Start auto-sleep ticker. Always-on by daemon policy; per-container
 	// opt-in (AutoSleepEnabled) gates real stop behavior. Wired here so

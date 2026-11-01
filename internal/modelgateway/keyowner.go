@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -303,4 +304,24 @@ func (m *MemOwnerRevocations) RevokeOwner(_ context.Context, keyOwner string, at
 	}
 	m.cutoff[keyOwner] = at
 	return nil
+}
+
+// OwnerCutoff is one key owner's recorded revocation cutoff.
+type OwnerCutoff struct {
+	KeyOwner      string
+	RevokedBefore time.Time
+}
+
+// Cutoffs returns every recorded cutoff (the latest per owner), sorted by key
+// owner. The daemon copies them into its durable store when Postgres arrives
+// after a degraded start (#3365).
+func (m *MemOwnerRevocations) Cutoffs() []OwnerCutoff {
+	m.mu.RLock()
+	out := make([]OwnerCutoff, 0, len(m.cutoff))
+	for owner, at := range m.cutoff {
+		out = append(out, OwnerCutoff{KeyOwner: owner, RevokedBefore: at})
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].KeyOwner < out[j].KeyOwner })
+	return out
 }
