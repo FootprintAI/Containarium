@@ -15,6 +15,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/policyreadiness"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 )
 
 // doctor — the host capability self-check from the daemon deploy contract
@@ -71,6 +72,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// read as a security pass. Whether a posture miss should block is an
 	// open product decision, so nothing here changes the exit code.
 	printPosture(hostcheck.RunPosture())
+
+	// Managed toolchain (#3360), advisory: BUILD_TOOLS runs need it, the
+	// other tool-access levels do not, so it never changes the exit code.
+	printToolchainStatus(os.Stdout, toolchain.ReadStatus(toolchain.HostRoot))
 
 	// Policy-store readiness from the running daemon (#2483), advisory.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
