@@ -1247,6 +1247,18 @@ func (c *GRPCClient) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBac
 	return resp, nil
 }
 
+// RestoreBoxBackup restores a whole-box backup into a box via gRPC (#3356).
+func (c *GRPCClient) RestoreBoxBackup(req *pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // download + box import can take time
+	defer cancel()
+
+	resp, err := c.backupClient.RestoreBoxBackup(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore box backup: %w", err)
+	}
+	return resp, nil
+}
+
 // VerifyBackup restore-tests a stored dump via gRPC.
 func (c *GRPCClient) VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // a restore test is a full restore

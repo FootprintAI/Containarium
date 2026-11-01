@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Core Caddy discovery no longer matches a tenant container named like a caddy** (#3371). `containarium portforward setup/remove` auto-detected the core Caddy as the first container whose name contained `caddy`, so a tenant container with `caddy` in its name could be picked and the host's forwarding rules pointed at it. Discovery now goes through the core role label, and the fallback for pre-label core containers matches the exact core Caddy container name rather than a substring. This fallback is shared, so the daemon's own core-Caddy lookup is hardened the same way. With no core Caddy running, the error is still `no running Caddy container found`.
+### Added
+
+- **API contract for restoring a whole-box backup into a box** (#3356). New `BackupService.RestoreBoxBackup` RPC (`POST /v1/backups/{id}/restore-box`) with `target_box` (optional, defaults to `<source box>-restored`), `force` (replaces a stopped box only; a running box is always refused) and `age_identity` (used once, never stored or logged). Typed gRPC and HTTP client methods are included. The server applies the `backups:write` scope and tenant checks and then answers `Unimplemented`; the restore itself lands with #3357. `RestoreBackup` and its database restore contract are unchanged.
 
 ## [0.124.0] - 2026-11-01
 
