@@ -26,7 +26,7 @@ func (m *Manager) EnsureManagedToolchains(username string) error {
 	root := m.managedToolchainRoot()
 	if err := toolchain.CheckRelease(root); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: missing managed toolchain mount %s: install the host toolchain release first", ErrManagedToolchainHostMissing, toolchain.HostRoot)
+			return fmt.Errorf("%w: missing managed toolchain mount %s: install the host toolchain release first (see %s)", ErrManagedToolchainHostMissing, toolchain.HostRoot, toolchain.InstallDoc)
 		}
 		return err
 	}

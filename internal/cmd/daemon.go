@@ -30,6 +30,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	"github.com/spf13/cobra"
 )
 
@@ -322,6 +323,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
 			}
 		}
+		// Managed toolchain (#3360): only Incus boxes mount it, and since
+		// v0.123.0 BUILD_TOOLS runs are refused without it. A binary-only
+		// upgrade does not install it, so say so at boot. Non-fatal.
+		logStartupToolchainCheck(log.Printf, toolchain.ReadStatus(toolchain.HostRoot))
 	}
 
 	// Initialize infrastructure (storage, network, profile) unless skipped or

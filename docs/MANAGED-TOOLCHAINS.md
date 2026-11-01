@@ -74,7 +74,15 @@ NONE/FULL_SUDO. A BUILD_TOOLS run refuses the conflict until the operator
 reconciles it. This includes pnpm installed by the nodejs stack.
 
 A `BUILD_TOOLS` run without a working mount is refused with
-`FailedPrecondition` naming `/opt/containarium/toolchains`. `NONE` and
+`FailedPrecondition` naming `/opt/containarium/toolchains`; when no release
+is installed at all, the refusal carries the typed reason
+`HOST_MANAGED_TOOLCHAIN_MISSING` and points at this page. Enforcement
+started in v0.123.0. To see the state before a run is refused, look at the
+daemon's startup log (a `WARNING: managed toolchain` line when no release is
+active), the `Managed toolchain` section of `sudo containarium doctor`
+(advisory, it does not change the exit code), or
+`scripts/redeploy-workhorse.sh status`, which also warns after a `deploy`.
+`NONE` and
 `FULL_SUDO` still work without a toolchain installation. npm/pnpm caches and
 project outputs belong in the run user's writable home/workspace, outside
 the shared volume. Registries remain reachable; this is not an install or

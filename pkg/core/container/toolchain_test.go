@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/pkg/core/incus/incustest"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 )
 
 func TestManagedToolchainsLazyAttach(t *testing.T) {
@@ -50,6 +51,11 @@ func TestManagedToolchainsClassifiesManifestStatFailures(t *testing.T) {
 	m.toolchainRoot = root
 	if err := m.EnsureManagedToolchains("alice"); !errors.Is(err, ErrManagedToolchainHostMissing) {
 		t.Fatalf("missing manifest error = %v, want ErrManagedToolchainHostMissing", err)
+	}
+	// The refusal reaches API callers verbatim; it must say where the
+	// install steps are, not only that something is missing (#3360).
+	if err := m.EnsureManagedToolchains("alice"); !strings.Contains(err.Error(), toolchain.InstallDoc) {
+		t.Fatalf("missing manifest error = %v, want a pointer to %s", err, toolchain.InstallDoc)
 	}
 
 	if err := os.Mkdir(filepath.Join(root, "current"), 0755); err != nil {
