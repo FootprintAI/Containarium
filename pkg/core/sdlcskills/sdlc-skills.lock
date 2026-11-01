@@ -14,10 +14,11 @@
 #
 # Bump the default source:
 #   scripts/build-sdlc-skills-bundle.sh --update-lock sdlc <out-dir>
-set.sdlc=architect,coordinator,devops,engineer,pm,product,release,reviewer,scrum,team
+set.sdlc=architect,coordinator,devops,engineer,merge,pm,product,release,reviewer,scrum,team,writer
 set.qa=qa
+set.security=security
 
 [sdlc]
 repo=FootprintAI/open-sdlc-skills
-ref=ba64133c4125dc26d59eeec6d9ad4d6799174148
-sha256=eb4ac625b811c3e19b0fdd1ca4fcd3f5ae2cb2f7bdffda6aaaf83c09699f8a7f
+ref=c25d15e081674cd1adff8deac74de3b74eb62769
+sha256=5756b0d012e5753a171be254253d18821d362590a1a39974eb7ac4aad7522bff
