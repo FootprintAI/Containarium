@@ -41,7 +41,7 @@ func TestValidateTrackerConnection_NoStoreConfigured_FailsClosed(t *testing.T) {
 }
 
 func TestValidateTrackerConnection_NoAuthContext_Unauthenticated(t *testing.T) {
-	s := &AgentSkillServer{trackerConnections: &fakeTrackerConnectionChecker{}}
+	s := withTrackerConnections(&AgentSkillServer{}, &fakeTrackerConnectionChecker{})
 	err := s.validateTrackerConnection(context.Background(), "default")
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
@@ -50,7 +50,7 @@ func TestValidateTrackerConnection_NoAuthContext_Unauthenticated(t *testing.T) {
 
 func TestValidateTrackerConnection_NotFoundForTenant_InvalidArgument(t *testing.T) {
 	checker := &fakeTrackerConnectionChecker{err: tracker.ErrNotFound}
-	s := &AgentSkillServer{trackerConnections: checker}
+	s := withTrackerConnections(&AgentSkillServer{}, checker)
 	err := s.validateTrackerConnection(ctxAs("alice", false), "default")
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument (no such connection for this tenant)", status.Code(err))
@@ -59,7 +59,7 @@ func TestValidateTrackerConnection_NotFoundForTenant_InvalidArgument(t *testing.
 
 func TestValidateTrackerConnection_ValidatesAgainstCallerTenant(t *testing.T) {
 	checker := &fakeTrackerConnectionChecker{conn: &tracker.Connection{Username: "alice", Name: "default"}}
-	s := &AgentSkillServer{trackerConnections: checker}
+	s := withTrackerConnections(&AgentSkillServer{}, checker)
 	if err := s.validateTrackerConnection(ctxAs("alice", false), "default"); err != nil {
 		t.Fatalf("validateTrackerConnection: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestValidateTrackerConnection_ValidatesAgainstCallerTenant(t *testing.T) {
 func TestRunAgentSkill_TrackerConnection_RejectedBeforeProvisioning(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, skill := newSkillBoxHarness(t, store)
-	s.trackerConnections = &fakeTrackerConnectionChecker{err: tracker.ErrNotFound}
+	s.SetTrackerConnections(&fakeTrackerConnectionChecker{err: tracker.ErrNotFound})
 	ctx := ctxAs("admin", true)
 
 	_, err := s.RunAgentSkill(ctx, &pb.RunAgentSkillRequest{

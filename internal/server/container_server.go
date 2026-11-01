@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/alert"
@@ -349,17 +350,24 @@ type ContainerServer struct {
 	// migration (MoveContainer returns "not configured" then).
 	moveRunner incus.MigrationRunner
 
-	// secretsStore is the tenant-secrets backend. Nil on daemons
-	// that don't have Postgres wired up (--standalone); the
-	// SecretsService RPCs return Unavailable in that case.
+	// secretsStoreRef is the tenant-secrets backend, read through
+	// loadSecretsStore and written through SetSecretsStore. Nil on
+	// daemons that don't have Postgres wired up (--standalone), and
+	// after a degraded start until the late-install helper installs it
+	// (#3327) — atomic because that install lands while RPCs are
+	// served. While nil the SecretsService RPCs return Unavailable.
 	// CreateContainer / StartContainer call LoadAllForUser to
 	// stamp environment.<NAME>=<value> at LXC start time.
-	secretsStore *secrets.Store
+	secretsStoreRef atomic.Pointer[secrets.Store]
 
-	// trackerStore holds tracker connections (#1921). Nil on daemons that
-	// don't have Postgres wired up; the TrackerService RPCs return
-	// Unavailable in that case, same convention as secretsStore.
-	trackerStore *tracker.Store
+	// trackerStoreRef holds tracker connections (#1921), read through
+	// loadTrackerStore and written through SetTrackerStore. Nil on
+	// daemons that don't have Postgres wired up, and after a degraded
+	// start until the late-install helper installs it (#3329) — atomic
+	// because that install lands while RPCs are served. While nil the
+	// TrackerService RPCs return Unavailable, same convention as the
+	// secrets store.
+	trackerStoreRef atomic.Pointer[tracker.Store]
 
 	// trackerDescribers overrides provider -> ReaderProvider resolution
 	// (tests only — see SetTrackerDescribers). Nil in production;
@@ -386,10 +394,11 @@ type ContainerServer struct {
 	// the RPC returns Unavailable rather than racing unlocked.
 	claimLocks *tracker.ClaimLocks
 
-	// trackerRunStarter is how DispatchTrackerIssues (#2022) starts a
-	// run — the RunAgentSkill path, wired in dual_server.go. Nil keeps
-	// the RPC returning Unavailable.
-	trackerRunStarter tracker.RunStarter
+	// trackerRunStarterRef is how DispatchTrackerIssues (#2022) starts a
+	// run — the RunAgentSkill path, wired in dual_server.go with the
+	// tracker store, or by its late install (#3329). Read through
+	// loadTrackerRunStarter. Nil keeps the RPC returning Unavailable.
+	trackerRunStarterRef liveValue[tracker.RunStarter]
 
 	// submitBoxRunner overrides the box-exec/file-read backend
 	// SubmitTrackerChange uses to extract a bundle (#1923). Nil in
@@ -413,9 +422,11 @@ type ContainerServer struct {
 	submitFilePusher submit.FilePusher
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
-	// Set once at startup in dual_server.go alongside the secrets
-	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND
-	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved at boot.
+	// Set in dual_server.go alongside the secrets store: at startup,
+	// or by the secrets store's late install after a degraded start
+	// (#3327), so kmsMu guards it. Reflects CONTAINARIUM_KMS_BACKEND
+	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved by the last attempt.
+	kmsMu           sync.RWMutex
 	kmsBackend      string
 	kmsDescription  string
 	kmsConfigured   bool
@@ -1234,7 +1245,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// create, and RefreshSecrets is the retry). Runs after the box exists,
 	// which on K8s matters: the Secret lands in the tenant namespace, and
 	// that namespace is created with the box.
-	if s.secretsStore != nil {
+	if s.loadSecretsStore() != nil {
 		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
 		} else if n > 0 {
@@ -1980,7 +1991,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// any rotations that happened while the box was stopped; existing
 		// processes won't see the change (POSIX inherit-at-fork), but new
 		// execs and new sessions will.
-		if s.secretsStore != nil {
+		if s.loadSecretsStore() != nil {
 			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 				log.Printf("[secrets] failed to re-deliver on start of %s's box: %v (continuing)", req.Username, err)
 			} else if n > 0 {
@@ -2581,17 +2592,21 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 		}
 	}
 
-	// Get the new IP. The box backend's Get() reads from the substrate.
-	info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+	// Get the new IP. The box backend's Get() reads from the substrate. The
+	// container is running as soon as Start returns, but its DHCP lease can
+	// take a moment, so wait for the address instead of reading it once.
+	newIP, err := waitForContainerIP(ctx, func() (string, error) {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return "", fmt.Errorf("get adopted container info: %w", err)
+		}
+		if info == nil {
+			return "", nil
+		}
+		return info.IPAddress, nil
+	}, adoptIPWait, time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("get adopted container info: %w", err)
-	}
-	newIP := ""
-	if info != nil {
-		newIP = info.IPAddress
-	}
-	if newIP == "" {
-		return nil, fmt.Errorf("adopted container has no IP address yet (still initializing?)")
+		return nil, err
 	}
 
 	// The adopted container now lives on this VM under a new IP —

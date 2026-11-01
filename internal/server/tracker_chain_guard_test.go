@@ -49,7 +49,7 @@ func setUpDispatchableConnection(t *testing.T, user string, provider *fakeWriter
 	// only upserts it.
 	_ = mustTestTrackerStore(t).Delete(context.Background(), user, "default")
 	s, _, _ := setUpCreateConnection(t, user, provider, policy)
-	if _, err := s.trackerStore.SetRoute(context.Background(), tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+	if _, err := s.loadTrackerStore().SetRoute(context.Background(), tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}
 	starter := &recordingRunStarter{}
@@ -78,7 +78,7 @@ func TestChainGuards_RunFollowUpIsGatedAndNotDispatched(t *testing.T) {
 	if !containsLabel(child.Labels, tracker.LabelNeedsApproval) {
 		t.Fatalf("follow-up labels = %v, want %s forced on", child.Labels, tracker.LabelNeedsApproval)
 	}
-	if d, err := s.trackerStore.IssueDepth(context.Background(), user, "default", resp.GetIssue().GetNumber()); err != nil || d != 1 {
+	if d, err := s.loadTrackerStore().IssueDepth(context.Background(), user, "default", resp.GetIssue().GetNumber()); err != nil || d != 1 {
 		t.Fatalf("lineage depth of the follow-up = %d, %v; want 1", d, err)
 	}
 
@@ -129,7 +129,7 @@ func TestDispatchTrackerIssues_PolicyMaxDepthEnforced(t *testing.T) {
 	ctx := context.Background()
 	for _, n := range []int64{901, 902} {
 		n := n
-		if _, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{Username: user, Connection: "default", ParentNumber: n - 1, CreatedByRun: "earlier-run"},
+		if _, err := s.loadTrackerStore().RecordChild(ctx, tracker.Lineage{Username: user, Connection: "default", ParentNumber: n - 1, CreatedByRun: "earlier-run"},
 			0, 0, func(context.Context) (int64, error) { return n, nil }); err != nil {
 			t.Fatalf("seed lineage #%d: %v", n, err)
 		}
@@ -177,7 +177,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 		if status.Code(err) != codes.PermissionDenied {
 			t.Fatalf("SetTrackerConnection with a run token: code = %v (%v), want PermissionDenied", status.Code(err), err)
 		}
-		rec, err := s.trackerStore.Get(ctx, user, "default")
+		rec, err := s.loadTrackerStore().Get(ctx, user, "default")
 		if err != nil {
 			t.Fatalf("Get connection: %v", err)
 		}
@@ -193,7 +193,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 		if status.Code(err) != codes.PermissionDenied {
 			t.Fatalf("SetTrackerRoute with a run token: code = %v (%v), want PermissionDenied", status.Code(err), err)
 		}
-		routes, err := s.trackerStore.ListRoutes(ctx, user, "default")
+		routes, err := s.loadTrackerStore().ListRoutes(ctx, user, "default")
 		if err != nil {
 			t.Fatalf("ListRoutes: %v", err)
 		}
@@ -371,11 +371,11 @@ func TestCreateTrackerIssue_AgentChosenParentCannotResetDepth(t *testing.T) {
 	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: 1})
 	// #950 (human) → #951 at depth 1 == max_depth, and the dispatcher
 	// started this run for #951: its row carries depth 1.
-	if _, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{Username: user, Connection: "default", ParentNumber: 950, CreatedByRun: "earlier-run"},
+	if _, err := s.loadTrackerStore().RecordChild(ctx, tracker.Lineage{Username: user, Connection: "default", ParentNumber: 950, CreatedByRun: "earlier-run"},
 		0, 0, func(context.Context) (int64, error) { return 951, nil }); err != nil {
 		t.Fatalf("seed lineage: %v", err)
 	}
-	if _, err := s.trackerStore.InsertDispatch(ctx, tracker.Dispatch{
+	if _, err := s.loadTrackerStore().InsertDispatch(ctx, tracker.Dispatch{
 		Username: user, Connection: "default", IssueNumber: 951, Scope: "product", SkillID: "product-define",
 		RunID: createTestRunID, Depth: 1,
 	}); err != nil {
@@ -398,7 +398,7 @@ func TestCreateTrackerIssue_AgentChosenParentCannotResetDepth(t *testing.T) {
 	if n := len(provider.commentNumbers); n != 0 {
 		t.Fatalf("back-link comments = %v, want none", provider.commentNumbers)
 	}
-	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", createTestRunID); err != nil || n != 0 {
+	if n, err := s.loadTrackerStore().ChildrenCount(ctx, user, "default", createTestRunID); err != nil || n != 0 {
 		t.Fatalf("children recorded for the run = %d, %v; want 0", n, err)
 	}
 }
@@ -431,7 +431,7 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 		t.Fatalf("run 0 CreateTrackerIssue: %v", err)
 	}
 	a := resp.GetIssue().GetNumber()
-	if d, err := s.trackerStore.IssueDepth(ctx, user, "default", a); err != nil || d != 1 {
+	if d, err := s.loadTrackerStore().IssueDepth(ctx, user, "default", a); err != nil || d != 1 {
 		t.Fatalf("depth of A (#%d) = %d, %v; want 1", a, d, err)
 	}
 	if _, err := s.SetTrackerIssueLabels(kmsKeyTestCtx(user, "member", "tracker:write"), &pb.SetTrackerIssueLabelsRequest{
@@ -475,7 +475,7 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 			if i == 0 {
 				firstChild = child
 			}
-			if d, err := s.trackerStore.IssueDepth(ctx, user, "default", child); err != nil || d != tc.want {
+			if d, err := s.loadTrackerStore().IssueDepth(ctx, user, "default", child); err != nil || d != tc.want {
 				t.Errorf("depth of #%d (parent #%d) = %d, %v; want %d", child, parent, d, err, tc.want)
 			}
 			if !containsLabel(provider.createIssueReqs[len(provider.createIssueReqs)-1].Labels, tracker.LabelNeedsApproval) {
@@ -487,7 +487,7 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 			}
 		})
 	}
-	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", run1ID); err != nil || n != 3 {
+	if n, err := s.loadTrackerStore().ChildrenCount(ctx, user, "default", run1ID); err != nil || n != 3 {
 		t.Fatalf("children recorded for run 1 = %d, %v; want 3", n, err)
 	}
 }
@@ -652,7 +652,7 @@ func TestSetTrackerIssueLabels_RunTokenScopeLabelLineageRules(t *testing.T) {
 		t.Fatalf("CreateTrackerIssue (run token): %v", err)
 	}
 	child := resp.GetIssue().GetNumber()
-	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
+	if n, err := s.loadTrackerStore().ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
 		t.Fatalf("children recorded for the run = %d, %v; want 1", n, err)
 	}
 
@@ -844,7 +844,7 @@ func TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules(t *testing.T) {
 		t.Fatalf("CreateTrackerIssue (run token): %v", err)
 	}
 	child := resp.GetIssue().GetNumber()
-	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
+	if n, err := s.loadTrackerStore().ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
 		t.Fatalf("children recorded for the run = %d, %v; want 1", n, err)
 	}
 

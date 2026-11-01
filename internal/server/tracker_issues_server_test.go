@@ -52,7 +52,7 @@ func TestGetTrackerChange_NoAuthContext(t *testing.T) {
 // a nil store, the handler's nil-store check runs before the
 // connection lookup and would test the wrong thing.
 func TestGetTrackerIssue_NoSuchConnection(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	const user = "tracker-issues-rpc-no-conn"
 	ctx := kmsKeyTestCtx(user, "member", "tracker:read")
 	_, err := s.GetTrackerIssue(ctx, &pb.GetTrackerIssueRequest{Username: user, Connection: "does-not-exist", Number: 1})
