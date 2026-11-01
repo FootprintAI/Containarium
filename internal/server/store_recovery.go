@@ -220,6 +220,23 @@ func (r *storeRecovery) isRefused(f *registeredStoreFamily) bool {
 	return f.refused
 }
 
+// configRefused reports whether the family registered under service is
+// pending and its last install attempt was a config refusal. False for a
+// family not registered, installed, not yet attempted, or whose last attempt
+// failed otherwise. A family that depends on another reads it (#3387): the
+// tracker reports its wait on a config-refused secrets store as a refusal
+// too. Safe to call from an Install step; the lock is not held across one.
+func (r *storeRecovery) configRefused(service string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range r.families {
+		if f.Service == service {
+			return !f.installed && f.refused
+		}
+	}
+	return false
+}
+
 func (r *storeRecovery) pendingFamilies() []*registeredStoreFamily {
 	r.mu.Lock()
 	defer r.mu.Unlock()
