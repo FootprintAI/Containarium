@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cookie-authenticated REST mutations now require a trusted origin** (#3338). A state-changing request (POST/PUT/PATCH/DELETE) carried only by the session cookie is refused with 403 unless the browser marks it `Sec-Fetch-Site: same-origin` or its `Origin` is in the `CONTAINARIUM_ALLOWED_ORIGINS` list (the CORS list). `SameSite=Lax` alone did not stop a same-site sibling host from forging these. Bearer-header requests and read-only methods are unchanged.
 - BUILD_TOOLS runs now return a typed `HOST_MANAGED_TOOLCHAIN_MISSING` precondition reason when the host managed toolchain release is explicitly absent.
 
 - **`containarium move` no longer fails at the cutover when the container was already stopped.** The cutover stops the source before its final copy and only tolerated Incus's older "is not running" wording, so a container that idle auto-sleep or an operator had stopped failed with `The instance is already stopped` (Incus 7 wording) after its copy had already succeeded. Both wordings now count as stopped. A stopped container is still started on the target by the adopt step.
