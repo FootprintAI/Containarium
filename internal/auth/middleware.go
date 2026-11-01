@@ -17,6 +17,10 @@ type AuthMiddleware struct {
 	// source IP. nil disables (used in tests). Production wiring
 	// always provides one — see NewAuthMiddleware. Audit C-MED-3.
 	failureLimiter *AuthFailureLimiter
+
+	// cookieOrigins is the Origin allow-list for cookie-authenticated
+	// mutations (#3338). See SetCookieMutationOrigins.
+	cookieOrigins []string
 }
 
 // NewAuthMiddleware creates a new authentication middleware
@@ -75,6 +79,7 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		// MUST be set explicitly by the webui via POST /v1/auth/session
 		// — there's no implicit cookie minting.
 		token := ""
+		fromCookie := false
 		if authHeader := r.Header.Get("Authorization"); authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
@@ -84,8 +89,18 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 			token = parts[1]
 		} else if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
 			token = c.Value
+			fromCookie = true
 		} else {
 			http.Error(w, `{"error": "missing authorization header", "code": 401}`, http.StatusUnauthorized)
+			return
+		}
+
+		// #3338 — the cookie is attached by the browser on its own, so a
+		// state-changing request riding it must come from a trusted origin.
+		// Checked before validation so a forged request learns nothing and
+		// does not spend the failure limiter's budget.
+		if fromCookie && !isSafeMethod(r.Method) && !am.cookieMutationAllowed(r) {
+			http.Error(w, `{"error": "`+cookieMutationBlockedReason+`", "code": 403}`, http.StatusForbidden)
 			return
 		}
 
