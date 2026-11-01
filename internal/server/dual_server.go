@@ -1925,6 +1925,13 @@ skipAppHosting:
 		}
 	}
 
+	// TokensService is registered whether or not the JWT revocation list
+	// installs: it answers UNAVAILABLE until it does, and after a degraded
+	// start the late-install helper installs it in-process (#3328).
+	revocationTokens := newRevocationTokensService()
+	pb.RegisterTokensServiceServer(grpcServer, revocationTokens)
+	revocation := revocationConsumers{tokens: tokenManager, service: revocationTokens, skillRuns: agentSkillServer}
+
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
 	var modelGW *modelgateway.Gateway // set when the model gateway is enabled; drained on shutdown
@@ -1935,6 +1942,9 @@ skipAppHosting:
 		auditPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for audit store: %v", poolErr)
+			// The audit store stays off until a restart (#3335 Q1); the
+			// revocation list that shares its pool recovers in-process.
+			registerRevocationLateInstall(storeRecovery, revocation, openRevocationStore)
 		} else {
 			auditStore, err = audit.NewStore(context.Background(), auditPool)
 			if err != nil {
@@ -1967,16 +1977,15 @@ skipAppHosting:
 			revStore, revErr := auth.NewPgRevocationStore(context.Background(), auditPool)
 			if revErr != nil {
 				log.Printf("Warning: Failed to create JWT revocation store: %v", revErr)
+				registerRevocationLateInstall(storeRecovery, revocation, openRevocationStore)
 			} else {
-				tokenManager.SetRevocationStore(revStore)
+				// Token validation and the TokensService RPC
+				// for operator revocation via CLI / MCP.
+				revocation.install(revStore)
+				storeRecovery.RegisterInstalled(storeFamily{Service: revocationStoreService, Display: revocationStoreDisplay})
 				revocationStoreLocal = revStore
 				log.Printf("JWT revocation list enabled")
-
-				// Phase 1.2 follow-up — TokensService RPC
-				// for operator revocation via CLI / MCP.
-				tokensServer := NewTokensServer(tokenManager, revStore, 0)
-				pb.RegisterTokensServiceServer(grpcServer, tokensServer)
-				log.Printf("TokensService registered (POST /v1/tokens/revoke, /v1/tokens/delegate)")
+				log.Printf("TokensService serving (POST /v1/tokens/revoke, /v1/tokens/delegate)")
 			}
 
 			// #2111 — the model gateway's owner-level kill-switch, durable:
