@@ -18,6 +18,7 @@ import (
 	appconfig "github.com/footprintai/containarium/internal/config"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/backup"
+	"github.com/footprintai/containarium/pkg/core/container"
 	corecrypto "github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -489,10 +490,21 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	return &pb.RestoreBackupResponse{Message: "restore complete: " + rec.ID}, nil
 }
 
-// RestoreBoxBackup restores a whole-box backup into a box (#3356). The
-// contract is in place; the restore itself lands with #3357. Until then it
-// applies the same scope and tenant gates as RestoreBackup and reports
-// Unimplemented. It never logs req.AgeIdentity.
+// restoredBoxSuffix makes the default target name: "<source box>-restored"
+// (#2809, Q-A).
+const restoredBoxSuffix = "-restored"
+
+// RestoreBoxBackup restores a whole-box backup into a new box (#3356
+// contract, #3357 data path).
+//
+// Authorization fails closed (#3325, Q4, decided 2026-11-01): the caller
+// must be authorized for the backup's tenant AND for the target box, which
+// the restore creates or replaces. A non-admin token can therefore restore
+// only into a box named for its own tenant; the default
+// "<source box>-restored" is another tenant name, so it works for admins.
+//
+// req.AgeIdentity is handed to the core for this call and never logged,
+// stored, or put in an error.
 func (s *BackupServer) RestoreBoxBackup(ctx context.Context, req *pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
 		return nil, err
@@ -507,7 +519,54 @@ func (s *BackupServer) RestoreBoxBackup(ctx context.Context, req *pb.RestoreBoxB
 	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "restoring a whole-box backup is not implemented yet (#3357)")
+	box := strings.TrimSpace(req.TargetBox)
+	if box == "" {
+		box = rec.Username + restoredBoxSuffix
+	}
+	if !container.IsValidAccountName(box) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"target box %q is not a valid box name (letters, digits, '-' and '_', at most 32, not starting with a digit or '-'); pass target_box", box)
+	}
+	if err := auth.AuthorizeTenant(ctx, box); err != nil {
+		return nil, err
+	}
+
+	target := box + "-container"
+	if err := s.mgr.RestoreBox(backup.BoxRestoreOptions{
+		ID:              rec.ID,
+		TargetContainer: target,
+		Force:           req.Force,
+		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored
+	}); err != nil {
+		log.Printf("[backup] box restore FAILED id=%s user=%s target=%s force=%t: %v", rec.ID, rec.Username, target, req.Force, err)
+		return nil, boxRestoreStatus(err)
+	}
+	log.Printf("[backup] restored box id=%s user=%s target=%s force=%t", rec.ID, rec.Username, target, req.Force)
+	return &pb.RestoreBoxBackupResponse{
+		Message: "restore complete: " + rec.ID + " restored as box " + box,
+		Box:     box,
+	}, nil
+}
+
+// boxRestoreStatus maps a whole-box restore failure to a gRPC code. The core
+// never puts the age identity in an error, so the message is safe to return.
+func boxRestoreStatus(err error) error {
+	switch {
+	case errors.Is(err, backup.ErrNotBoxBackup), errors.Is(err, backup.ErrBoxBackupKey):
+		return status.Errorf(codes.InvalidArgument, "box restore failed: %v", err)
+	case errors.Is(err, backup.ErrBoxRestoreTargetExists):
+		return status.Errorf(codes.AlreadyExists, "box restore failed: %v", err)
+	case errors.Is(err, backup.ErrBoxRestoreTargetRunning), errors.Is(err, backup.ErrBoxRestoreUnavailable):
+		return status.Errorf(codes.FailedPrecondition, "box restore failed: %v", err)
+	case errors.Is(err, backup.ErrBoxRestoreInProgress):
+		return status.Errorf(codes.Aborted, "box restore failed: %v", err)
+	case errors.Is(err, backup.ErrBoxBackupCorrupt):
+		return status.Errorf(codes.DataLoss, "box restore failed: %v", err)
+	case errors.Is(err, backup.ErrDumpTooLarge):
+		return status.Errorf(codes.ResourceExhausted, "box restore failed: %v", err)
+	default:
+		return status.Errorf(codes.Internal, "box restore failed: %v", err)
+	}
 }
 
 // resolveRestoreTarget checks a RestoreBackupRequest.target_container

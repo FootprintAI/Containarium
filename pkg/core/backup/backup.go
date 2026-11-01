@@ -198,6 +198,7 @@ type Manager struct {
 	// by the free-space pre-flight); maxBoxBytes is the BOX cap, separate
 	// from maxDumpBytes; freeSpace is statDiskSpace outside tests.
 	box            BoxOps
+	boxRestore     BoxRestoreOps
 	boxStagingDirs []string
 	maxBoxBytes    int64
 	freeSpace      func(path string) (diskSpace, error)

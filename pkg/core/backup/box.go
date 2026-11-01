@@ -77,9 +77,15 @@ type BoxOps interface {
 	BoxDiskUsage(containerName string) (int64, error)
 }
 
-// WithBoxOps enables whole-box backups.
+// WithBoxOps enables whole-box backups, and whole-box restores when b can
+// also import (BoxRestoreOps, #3357).
 func WithBoxOps(b BoxOps) Option {
-	return func(m *Manager) { m.box = b }
+	return func(m *Manager) {
+		m.box = b
+		if r, ok := b.(BoxRestoreOps); ok {
+			m.boxRestore = r
+		}
+	}
 }
 
 // WithBoxStagingDirs names directories where Incus stages an export before

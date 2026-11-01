@@ -31,6 +31,10 @@ func WithMaxDumpBytes(n int64) Option {
 
 var ErrDumpTooLarge = errors.New("backup dump exceeds size limit")
 
+// ErrDumpIntegrity is a stored backup whose bytes no longer match the
+// checksum recorded when it was taken: corruption or tampering.
+var ErrDumpIntegrity = errors.New("dump integrity check failed")
+
 // boundedReader probes one extra byte at the boundary to distinguish a
 // complete stream from a truncated one. In particular, LimitReader alone
 // would turn an oversized dump into an apparently successful short dump.
@@ -185,8 +189,14 @@ func (f *fetchedDump) Close() error {
 // No bytes reach the target until the entire stored checksum is verified.
 // GCS uses a unique temporary file, removed on both success and failure.
 func (m *Manager) fetchDump(r *Record) (*fetchedDump, error) {
-	if r.SizeBytes < 0 || r.SizeBytes > m.maxDumpBytes {
-		return nil, fmt.Errorf("%w: recorded size %d (limit %d)", ErrDumpTooLarge, r.SizeBytes, m.maxDumpBytes)
+	return m.fetchDumpLimit(r, m.maxDumpBytes)
+}
+
+// fetchDumpLimit is fetchDump with an explicit size limit: the database
+// cap for a dump, the BOX cap for a whole-box archive (#3357).
+func (m *Manager) fetchDumpLimit(r *Record, limit int64) (*fetchedDump, error) {
+	if r.SizeBytes < 0 || r.SizeBytes > limit {
+		return nil, fmt.Errorf("%w: recorded size %d (limit %d)", ErrDumpTooLarge, r.SizeBytes, limit)
 	}
 	name := r.Location
 	remove := false
@@ -199,7 +209,7 @@ func (m *Manager) fetchDump(r *Record) (*fetchedDump, error) {
 			return nil, err
 		}
 		name = tmp.Name()
-		dst := &boundedWriter{w: tmp, limit: m.maxDumpBytes}
+		dst := &boundedWriter{w: tmp, limit: limit}
 		downloadErr := m.uploader.DownloadStream(r.Location, dst)
 		closeErr := tmp.Close()
 		if dst.err != nil {
@@ -235,16 +245,16 @@ func (m *Manager) fetchDump(r *Record) (*fetchedDump, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("backup dump is not a regular file")
 	}
-	if info.Size() > m.maxDumpBytes {
-		return nil, fmt.Errorf("%w (%d bytes)", ErrDumpTooLarge, m.maxDumpBytes)
+	if info.Size() > limit {
+		return nil, fmt.Errorf("%w (%d bytes)", ErrDumpTooLarge, limit)
 	}
 	h := sha256.New()
-	n, err := io.Copy(h, &boundedReader{r: f, limit: m.maxDumpBytes})
+	n, err := io.Copy(h, &boundedReader{r: f, limit: limit})
 	if err != nil {
 		return nil, fmt.Errorf("read dump: %w", err)
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != r.SHA256 {
-		return nil, fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
+		return nil, fmt.Errorf("%w: sha256 %s != recorded %s (corruption or tampering)", ErrDumpIntegrity, got, r.SHA256)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
