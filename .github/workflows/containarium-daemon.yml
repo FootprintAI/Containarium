@@ -63,6 +63,9 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          # Validate BEFORE first use (#3396): a newline would forge extra
+          # GITHUB_OUTPUT keys; metacharacters would reach image tags.
+          scripts/ci/validate-release-version.sh "${version}"
           # Minor-series moving tag: 0.53.0 -> v0.53
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium"
@@ -92,7 +95,7 @@ jobs:
             VERSION=${{ steps.tags.outputs.version }}
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM (buildx-default on push); explicit so it's
           # reviewable, matching sidecars.yml. NOTE: this is why the Trivy
@@ -108,7 +111,7 @@ jobs:
       # a signature is a permanent public Rekor entry, and a rehearsal
       # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
       - name: Sign and verify the image (cosign keyless)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: ./.github/actions/sign-image
         with:
           image: ${{ steps.tags.outputs.image }}
@@ -120,11 +123,11 @@ jobs:
       # workflow_dispatch rehearsal doesn't push, so there's nothing to pull
       # and scan.
       - name: Pull published image for scanning
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker pull ${{ steps.tags.outputs.scan_ref }}
 
       - name: Run Trivy vulnerability scanner (image)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
           image-ref: ${{ steps.tags.outputs.scan_ref }}
@@ -136,7 +139,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        if: always() && startsWith(github.ref, 'refs/tags/v')
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
         with:
           sarif_file: trivy-daemon-results.sarif
