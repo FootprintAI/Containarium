@@ -1,5 +1,7 @@
 # Sentinel backend SSH host-key pins
 
+> Status: **Implemented** (`internal/sentinel/sshauthz/router.go`, `internal/sentinel/keysync.go`).
+
 Sentinel verifies two identities separately: the offered user key/certificate
 controls who may log in, and the backend host key identifies the selected SSH
 server. User authorization does not establish the backend's identity.

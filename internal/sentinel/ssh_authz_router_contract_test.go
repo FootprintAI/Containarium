@@ -51,7 +51,7 @@ func TestSSHAuthzRouterReadsRenderedConfig(t *testing.T) {
 			dir := t.TempDir()
 			rendered := string(renderSSHPiperConfig([]userRoute{
 				{username: "alice", backendIP: "192.0.2.10", sshPort: 2222},
-				{username: "bob", backendIP: "127.0.0.1"},
+				{username: "bob", backendIP: "127.0.0.10"},
 			}, variant.caPath))
 			if !strings.Contains(rendered, sshpiperConfigDir+"/") {
 				t.Fatalf("rendered config has no %s paths:\n%s", sshpiperConfigDir, rendered)
@@ -71,7 +71,7 @@ func TestSSHAuthzRouterReadsRenderedConfig(t *testing.T) {
 			write(filepath.Join(sshpiperUsersDir, "bob", "authorized_keys"), ssh.MarshalAuthorizedKey(bob.PublicKey()))
 			write(sshpiperTrustedUserCAKeys, ssh.MarshalAuthorizedKey(ca.PublicKey()))
 			write(sshpiperUpstreamKey, []byte("upstream-private-key"))
-			pins := []byte(knownhosts.Line([]string{"192.0.2.10:2222"}, newKey().PublicKey()) + "\n" + knownhosts.Line([]string{"127.0.0.1:20022"}, newKey().PublicKey()) + "\n")
+			pins := []byte(knownhosts.Line([]string{"192.0.2.10:2222"}, newKey().PublicKey()) + "\n" + knownhosts.Line([]string{"127.0.0.10:20022"}, newKey().PublicKey()) + "\n")
 			write(sshpiperKnownHosts, pins)
 			write(sshpiperConfigFile, []byte(rendered))
 
@@ -85,7 +85,7 @@ func TestSSHAuthzRouterReadsRenderedConfig(t *testing.T) {
 				wire             []byte
 			}{
 				{name: "authorized key, advertised port", login: "alice", wire: alice.PublicKey().Marshal(), uri: "tcp://192.0.2.10:2222"},
-				{name: "authorized key, tunnel-loopback port", login: "bob", wire: bob.PublicKey().Marshal(), uri: "tcp://127.0.0.1:20022"},
+				{name: "authorized key, tunnel-loopback port", login: "bob", wire: bob.PublicKey().Marshal(), uri: "tcp://127.0.0.10:20022"},
 				{name: "certificate from the CA", login: "alice", wire: cert.Marshal(), uri: certURI},
 				{name: "another login's key", login: "bob", wire: alice.PublicKey().Marshal()},
 			} {
