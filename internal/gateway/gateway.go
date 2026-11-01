@@ -954,6 +954,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// localStorage JWT into a cookie so iframe loads (notably the
 	// /grafana/ proxy on the monitoring page) can authenticate.
 	// Issue #338.
+	gs.authMiddleware.SetCookieMutationOrigins(getAllowedOrigins())
 	registerCookieSession(httpMux, gs.authMiddleware)
 
 	// Security CSV export endpoint (with auth via token query param or Authorization header)

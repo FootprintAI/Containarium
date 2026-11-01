@@ -9,10 +9,12 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/pkg/core/incus"
+
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -414,6 +416,14 @@ func overrideAdoptForTest(f func(*PeerClient, string, *pb.AdoptMigratedContainer
 	return func() { adoptFn = prev }
 }
 
+// peerReplyJSON decodes a peer's REST reply. The peer answers through
+// grpc-gateway, which writes protobuf JSON with lowerCamelCase names;
+// encoding/json against the generated struct matches only the snake_case tags,
+// so fields such as newIpAddress and canResolve decoded to their zero values
+// without an error. protojson reads either spelling, and DiscardUnknown keeps
+// an older source working against a peer that has added a field.
+var peerReplyJSON = protojson.UnmarshalOptions{DiscardUnknown: true}
+
 // prepareFn is the seam the migration pre-flight goes through, so tests can
 // drive the orchestrator without a peer. Mirrors adoptFn.
 var prepareFn = forwardPrepareEncryptedMigration
@@ -450,7 +460,7 @@ func forwardPrepareEncryptedMigration(peer *PeerClient, authToken string, req *p
 		return nil, fmt.Errorf("peer pre-flight RPC returned %d: %s", code, string(respBody))
 	}
 	var resp pb.PrepareEncryptedMigrationResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := peerReplyJSON.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode pre-flight response: %w", err)
 	}
 	return &resp, nil
@@ -479,7 +489,7 @@ func forwardAdoptMigratedContainer(peer *PeerClient, authToken string, req *pb.A
 		return nil, fmt.Errorf("peer adopt RPC returned %d: %s", status, string(respBody))
 	}
 	var resp pb.AdoptMigratedContainerResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := peerReplyJSON.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode adopt response: %w", err)
 	}
 	return &resp, nil

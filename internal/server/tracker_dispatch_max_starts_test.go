@@ -24,7 +24,7 @@ func TestDispatchTrackerIssues_MaxStartsThroughRPC(t *testing.T) {
 	ctx := context.Background()
 	_ = mustTestTrackerStore(t).Delete(ctx, user, "default")
 	s, _ := setUpWriterConnection(t, user, provider)
-	if _, err := s.trackerStore.SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+	if _, err := s.loadTrackerStore().SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}
 	starter := &recordingRunStarter{}
@@ -39,14 +39,14 @@ func TestDispatchTrackerIssues_MaxStartsThroughRPC(t *testing.T) {
 		t.Fatalf("started = %d, calls = %d, left = %d; want 1 started and 2 left undispatched",
 			len(resp.GetStarted()), len(starter.calls), resp.GetLeftUndispatched())
 	}
-	rows, err := s.trackerStore.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	rows, err := s.loadTrackerStore().ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows = %+v (err %v), want exactly the one started", rows, err)
 	}
 }
 
 func TestDispatchTrackerIssues_NegativeMaxStartsInvalid(t *testing.T) {
-	s := &ContainerServer{trackerStore: &tracker.Store{}, trackerRunStarter: &recordingRunStarter{}}
+	s := withTrackerRunStarter(withTrackerStore(&ContainerServer{}, &tracker.Store{}), &recordingRunStarter{})
 	_, err := s.DispatchTrackerIssues(kmsKeyTestCtx("alice", "member", "tracker:admin,agents:run"),
 		&pb.DispatchTrackerIssuesRequest{Username: "alice", Connection: "default", MaxStarts: -1})
 	if status.Code(err) != codes.InvalidArgument {

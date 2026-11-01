@@ -22,7 +22,7 @@ import (
 // is a louder failure than a missed authorization.
 
 func TestSecretsAPI_CrossTenantDenied(t *testing.T) {
-	srv := &ContainerServer{secretsStore: nil} // store=nil triggers Unavailable AFTER authz; we want PermissionDenied first
+	srv := &ContainerServer{} // store=nil triggers Unavailable AFTER authz; we want PermissionDenied first
 	// Promote: enable the store presence check to pass. We don't need
 	// a real store — we expect PermissionDenied before any store call.
 	// To exercise the authz-first path, give srv a non-nil store
@@ -82,7 +82,7 @@ func TestSecretsAPI_SameTenantAllowed_StoreReachable(t *testing.T) {
 	// check; with store=nil, the handler returns Unavailable. The
 	// important assertion is that we do NOT get PermissionDenied for
 	// the same-tenant call.
-	srv := &ContainerServer{secretsStore: nil}
+	srv := &ContainerServer{}
 	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "user")
 
 	_, err := srv.GetSecret(ctx, &pb.GetSecretRequest{Username: "alice", Name: "X"})
@@ -95,7 +95,7 @@ func TestSecretsAPI_SameTenantAllowed_StoreReachable(t *testing.T) {
 }
 
 func TestSecretsAPI_AdminBypassesTenantCheck(t *testing.T) {
-	srv := &ContainerServer{secretsStore: nil}
+	srv := &ContainerServer{}
 	ctx := auth.ContextWithTestSubject(context.Background(), "_system", "admin")
 
 	_, err := srv.GetSecret(ctx, &pb.GetSecretRequest{Username: "bob", Name: "X"})

@@ -51,6 +51,10 @@ var backupRPCDecisions = map[string]backupRPCDecision{
 		_, err := s.RestoreBackup(ctx, &pb.RestoreBackupRequest{Id: bobBackupID})
 		return err
 	}},
+	"RestoreBoxBackup": {auth.ScopeBackupsWrite, func(ctx context.Context, s *BackupServer) error {
+		_, err := s.RestoreBoxBackup(ctx, &pb.RestoreBoxBackupRequest{Id: bobBackupID})
+		return err
+	}},
 	"VerifyBackup": {auth.ScopeBackupsVerify, func(ctx context.Context, s *BackupServer) error {
 		_, err := s.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: bobBackupID, TargetUsername: "alice"})
 		return err
@@ -78,6 +82,8 @@ func callBackupRPC(ctx context.Context, s *BackupServer, name string) error {
 		_, err = s.GetBackup(ctx, &pb.GetBackupRequest{Id: "alice-app-20261003T010000Z"})
 	case "RestoreBackup":
 		_, err = s.RestoreBackup(ctx, &pb.RestoreBackupRequest{Id: "alice-app-20261003T010000Z"})
+	case "RestoreBoxBackup":
+		_, err = s.RestoreBoxBackup(ctx, &pb.RestoreBoxBackupRequest{Id: "alice-app-20261003T010000Z"})
 	case "VerifyBackup":
 		_, err = s.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
 	case "DeleteBackup":
@@ -154,7 +160,7 @@ func TestBackupRPCScopeDecisions_Enforced(t *testing.T) {
 func TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs(t *testing.T) {
 	_, bs := verifierServer(t)
 	ctx := verifierCtx("alice")
-	for _, name := range []string{"CreateBackup", "CreateBackup/BOX", "RestoreBackup", "DeleteBackup", "PruneBackups"} {
+	for _, name := range []string{"CreateBackup", "CreateBackup/BOX", "RestoreBackup", "RestoreBoxBackup", "DeleteBackup", "PruneBackups"} {
 		t.Run(name+" refused", func(t *testing.T) {
 			if c := status.Code(callBackupRPC(ctx, bs, name)); c != codes.PermissionDenied {
 				t.Fatalf("verify-only token on %s: code = %v, want PermissionDenied", name, c)
