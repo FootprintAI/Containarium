@@ -521,8 +521,8 @@ sudo containarium token generate \
 - `backups:verify` is what `VerifyBackup` needs: it restores the dump into a
   scratch database in an isolated container. `backups:read` covers
   `ListBackups`. A token holding only these two is refused `CreateBackup`,
-  `RestoreBackup`, `DeleteBackup` and `PruneBackups`, which still need
-  `backups:write`.
+  `RestoreBackup`, `RestoreBoxBackup`, `DeleteBackup` and `PruneBackups`,
+  which still need `backups:write`.
 - **Re-mint legacy verifier tokens before upgrading from any of v0.120.1
   through v0.122.0.** The migration window, during which those releases
   accepted them, has ended (#3219). `VerifyBackup` and the

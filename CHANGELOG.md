@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **API contract for restoring a whole-box backup into a box** (#3356). New `BackupService.RestoreBoxBackup` RPC (`POST /v1/backups/{id}/restore-box`) with `target_box` (optional, defaults to `<source box>-restored`), `force` (replaces a stopped box only; a running box is always refused) and `age_identity` (used once, never stored or logged). Typed gRPC and HTTP client methods are included. The server applies the `backups:write` scope and tenant checks and then answers `Unimplemented`; the restore itself lands with #3357. `RestoreBackup` and its database restore contract are unchanged.
+
 ## [0.124.0] - 2026-11-01
 
 ### Upgrading

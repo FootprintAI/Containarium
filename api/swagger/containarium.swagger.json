@@ -1933,6 +1933,47 @@
         ]
       }
     },
+    "/v1/backups/{id}/restore-box": {
+      "post": {
+        "summary": "Restore a whole-box backup into a box",
+        "description": "Restores a BACKUP_SCOPE_BOX backup (an Incus instance archive) into a box. target_box is optional and defaults to \u003csource box\u003e-restored. An existing target is refused unless force is set, and a running target is refused even with force: stop it first. An encrypted backup needs age_identity, used for this call only and never stored or logged. Database backups restore through POST /v1/backups/{id}/restore.",
+        "operationId": "BackupService_RestoreBoxBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RestoreBoxBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Box backup to restore. A record whose scope is not BACKUP_SCOPE_BOX is\nrefused.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RestoreBoxBackupBody"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
     "/v1/backups/{id}/verify": {
       "post": {
         "summary": "Verify a backup",
@@ -20000,6 +20041,37 @@
       "properties": {
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "RestoreBoxBackupBody": {
+      "type": "object",
+      "properties": {
+        "targetBox": {
+          "type": "string",
+          "description": "Name of the box to restore into, as given to `containarium create`\n(the box is then \"\u003ctarget_box\u003e-container\"). Optional: empty restores\ninto \"\u003csource box\u003e-restored\", where the source box is the backup\nrecord's `username` (#2809, Q-A)."
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Replace a target box that already exists. Without it, an existing\ntarget is refused. With it, only a stopped target is replaced; a\nrunning target is still refused (#2809, Q-B)."
+        },
+        "ageIdentity": {
+          "type": "string",
+          "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that opens it — the tenant's identity for\nAGE_RECIPIENT or BOTH, or the managed identity the caller unwrapped\nwith its own KMS credentials for MANAGED. Supplied by the client from a\nfile (#2809, Q-D). Used to decrypt for this one call and never stored\nor logged, same contract as RestoreBackupRequest.age_identity. Required\nfor an encrypted record: the daemon holds no decryption key of its own."
+        }
+      },
+      "description": "RestoreBoxBackupRequest restores a whole-box backup (scope\nBACKUP_SCOPE_BOX, engine BACKUP_ENGINE_BOX, an Incus instance archive)\ninto a box (#3356, remainder of #2801). It is a separate RPC so the\ndatabase restore contract of RestoreBackupRequest stays unchanged: a box\nbackup is never restored by a database engine, and none of the pg_restore\nfields apply. A box backup taken to destination SNAPSHOT keeps restoring\nthrough RestoreBackup.\n\nNever over a running box: a target that exists and is running is refused\neven with `force`; the caller stops it first."
+    },
+    "RestoreBoxBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary, e.g. \"restore complete: \u003cid\u003e\"."
+        },
+        "box": {
+          "type": "string",
+          "description": "The box the backup was restored into: target_box, or the default name\nwhen target_box was empty."
         }
       }
     },

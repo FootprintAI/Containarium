@@ -489,6 +489,27 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	return &pb.RestoreBackupResponse{Message: "restore complete: " + rec.ID}, nil
 }
 
+// RestoreBoxBackup restores a whole-box backup into a box (#3356). The
+// contract is in place; the restore itself lands with #3357. Until then it
+// applies the same scope and tenant gates as RestoreBackup and reports
+// Unimplemented. It never logs req.AgeIdentity.
+func (s *BackupServer) RestoreBoxBackup(ctx context.Context, req *pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+		return nil, err
+	}
+	if req.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	rec, err := s.mgr.Get(req.Id)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
+		return nil, err
+	}
+	return nil, status.Error(codes.Unimplemented, "restoring a whole-box backup is not implemented yet (#3357)")
+}
+
 // resolveRestoreTarget checks a RestoreBackupRequest.target_container
 // (#2403). Empty stays empty: the core then restores in place. Otherwise
 // the name must be a tenant container ("<username>-container"), the
