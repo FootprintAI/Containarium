@@ -44,6 +44,77 @@ func TestManagedToolchainsLazyAttach(t *testing.T) {
 	}
 }
 
+func TestManagedToolchainsClassifiesManifestStatFailures(t *testing.T) {
+	root := t.TempDir()
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	if err := m.EnsureManagedToolchains("alice"); !errors.Is(err, ErrManagedToolchainHostMissing) {
+		t.Fatalf("missing manifest error = %v, want ErrManagedToolchainHostMissing", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(root, "current"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at manifest.json is present but malformed, so it must not
+	// be confused with an absent release.
+	if err := os.Mkdir(filepath.Join(root, "current", "manifest.json"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.EnsureManagedToolchains("alice"); err == nil || errors.Is(err, ErrManagedToolchainHostMissing) {
+		t.Fatalf("non-regular manifest error = %v, want generic error", err)
+	}
+}
+
+func TestManagedToolchainsStatErrorIsNotMissingRelease(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "current"), filepath.Join(root, "current")); err != nil {
+		t.Skipf("cannot create symlink for stat error case: %v", err)
+	}
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	err := m.EnsureManagedToolchains("alice")
+	if err == nil || errors.Is(err, ErrManagedToolchainHostMissing) {
+		t.Fatalf("stat error = %v, want generic error", err)
+	}
+}
+
+func TestManagedToolchainsDanglingManifestSymlinkIsNotMissingRelease(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current")
+	if err := os.Mkdir(current, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(current, "manifest.json")); err != nil {
+		t.Skipf("cannot create symlink for dangling manifest case: %v", err)
+	}
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	err := m.EnsureManagedToolchains("alice")
+	if err == nil || errors.Is(err, ErrManagedToolchainHostMissing) {
+		t.Fatalf("dangling manifest error = %v, want generic error", err)
+	}
+}
+
+func TestManagedToolchainsValidManifestSymlink(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current")
+	if err := os.Mkdir(current, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "release-manifest.json")
+	if err := os.WriteFile(target, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(current, "manifest.json")); err != nil {
+		t.Skipf("cannot create symlink for valid manifest case: %v", err)
+	}
+	m := NewWithBackend(&incustest.MockBackend{})
+	m.toolchainRoot = root
+	if err := m.EnsureManagedToolchains("alice"); err != nil {
+		t.Fatalf("valid symlink to regular manifest should be accepted: %v", err)
+	}
+}
+
 func TestManagedToolchainsAttachedAtCreate(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "current"), 0755); err != nil {

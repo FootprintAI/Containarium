@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -11,12 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	corecontainer "github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -41,6 +44,27 @@ import (
 // it directly (ignoring username — a test sandbox has no real box user to
 // drop into).
 type boxRunStartFunc func(box, username, script string) (string, error)
+
+// Stable reason for a BUILD_TOOLS refusal when the host release is absent.
+const BoxRunViolationHostManagedToolchainMissing = "HOST_MANAGED_TOOLCHAIN_MISSING"
+
+// boxRunToolchainRefusal preserves the existing FailedPrecondition behavior
+// for every ensure failure, adding a typed violation only for the explicit
+// host-release-missing condition.
+func boxRunToolchainRefusal(err error) error {
+	msg := fmt.Sprintf("managed toolchain mount %s: %v", toolchain.HostRoot, err)
+	st := status.New(codes.FailedPrecondition, msg)
+	if err == nil || !errors.Is(err, corecontainer.ErrManagedToolchainHostMissing) {
+		return st.Err()
+	}
+	detailed, detailErr := st.WithDetails(&errdetails.PreconditionFailure{
+		Violations: []*errdetails.PreconditionFailure_Violation{{Type: BoxRunViolationHostManagedToolchainMissing, Subject: toolchain.HostRoot, Description: msg}},
+	})
+	if detailErr == nil {
+		st = detailed
+	}
+	return st.Err()
+}
 
 // boxRunStartExecFn returns the exec seam: the injected fake, else the
 // container manager wrapped with `su - <username> -c`.
@@ -419,7 +443,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
 		}
 		if err := ensureTools(req.GetUsername()); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "managed toolchain mount %s: %v", toolchain.HostRoot, err)
+			return nil, boxRunToolchainRefusal(err)
 		}
 	} else if ensureTools != nil {
 		_ = ensureTools(req.GetUsername())
@@ -564,7 +588,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
 		}
 		if err := ensureTools(req.GetUsername()); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "managed toolchain mount %s: %v", toolchain.HostRoot, err)
+			return nil, boxRunToolchainRefusal(err)
 		}
 	} else if ensureTools != nil {
 		_ = ensureTools(req.GetUsername())
