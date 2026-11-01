@@ -82,7 +82,9 @@ containarium backup verify <backup-id> --target <username> --server <host>
 
 Also read the target release's **Upgrading** section in
 [CHANGELOG.md](../CHANGELOG.md). Write down the previous tag: you need it to
-roll back.
+roll back. Upgrading an Incus host from before v0.123.0 also needs the host
+toolchain installed (see
+[Managed toolchain](#managed-toolchain-v01230-and-later)).
 
 ## Upgrade
 
@@ -131,6 +133,34 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 - [ ] `containarium list --server <host>` shows the containers in the state they were in before.
 - [ ] `containarium debug <username>` is clean for a sample tenant.
 - [ ] On a BYOC backend, run the checks in [BYOC-BACKEND-BRINGUP.md](BYOC-BACKEND-BRINGUP.md#verify).
+- [ ] On each Incus host upgraded to v0.123.0 or later, a managed toolchain release is active (see [Managed toolchain](#managed-toolchain-v01230-and-later)).
+
+### Managed toolchain (v0.123.0 and later)
+
+From v0.123.0 (#3285), a run at tool-access level `BUILD_TOOLS` is refused
+with `FailedPrecondition` naming `/opt/containarium/toolchains` unless the
+Incus host has a managed toolchain release installed. From v0.124.0 the
+refusal carries the typed reason `HOST_MANAGED_TOOLCHAIN_MISSING`. Every
+upgrade path on this page is binary-only: `containarium backends upgrade`,
+sentinel auto-update, [deploy-binary.sh](../scripts/deploy-binary.sh) and
+[redeploy-workhorse.sh](../scripts/redeploy-workhorse.sh) swap the binary and
+install no toolchain. So when you first upgrade a host to v0.123.0 or later,
+also install the toolchain release on that host. Use the
+same release tag and the host's CPU architecture: download
+`toolchains-linux-<arch>.tar.gz` and its `.sigstore.json`, verify it with
+`cosign verify-blob`, extract it, then run `sudo bash install.sh` from the
+extracted directory. The exact commands are in
+[MANAGED-TOOLCHAINS.md](MANAGED-TOOLCHAINS.md#install-on-each-host). `NONE`
+and `FULL_SUDO` runs work without it. Check on the host:
+
+```bash
+readlink /opt/containarium/toolchains/current
+```
+
+It prints `releases/<release>`. No such file means no release is active,
+and `BUILD_TOOLS` runs on this host will be refused. Rolling the daemon back
+does not remove the toolchain; to roll the toolchain back, see
+[MANAGED-TOOLCHAINS.md](MANAGED-TOOLCHAINS.md#update-and-rollback).
 
 ### Sentinel sshpiperd unit
 
