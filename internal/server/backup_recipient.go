@@ -59,16 +59,18 @@ func resolveAgeRecipient(ctx context.Context, store secretsReader, username, exp
 }
 
 // backupSecretsReader adapts a ContainerServer's secrets store to
-// secretsReader for CreateBackup, with one deliberate care: cs.secretsStore
-// is a concrete *secrets.Store, nil on a standalone daemon. Returning it
+// secretsReader for CreateBackup, with one deliberate care: the store
+// (cs.loadSecretsStore, read on every call so a late install reaches it —
+// #3327) is a concrete *secrets.Store, nil on a standalone daemon. Returning it
 // directly as a secretsReader would wrap a nil pointer in a non-nil
 // interface value — resolveAgeRecipient's `store == nil` check would then
 // miss it, and Get would nil-deref-panic on every plaintext backup on a
 // standalone daemon. Compare the concrete pointer to nil BEFORE it
 // crosses the interface boundary.
 func backupSecretsReader(cs *ContainerServer) secretsReader {
-	if cs.secretsStore == nil {
+	store := cs.loadSecretsStore()
+	if store == nil {
 		return nil
 	}
-	return cs.secretsStore
+	return store
 }
