@@ -36,7 +36,8 @@ import (
 // list it. The opt-in self-restart watcher (#2824) is held while any family
 // is pending, so it cannot restart the daemon under a late install; once
 // nothing is pending it is again the fallback for families that do not
-// recover in-process.
+// recover in-process. A family whose last attempt was a config refusal
+// (storeConfigRefusal, #3378) stays pending but does not hold it.
 //
 // Migrating a family (#3327 onwards): register the servers unconditionally,
 // answer UNAVAILABLE from the stand-in, and hand the install to Register
@@ -93,9 +94,31 @@ func installInto[T any](slot *storeSlot[T], open func(context.Context, *pgxpool.
 	}
 }
 
+// storeConfigRefusal marks an Install error as a configuration refusal
+// (#3378): the family will not install under the daemon's current
+// configuration — CONTAINARIUM_REQUIRE_ENVELOPE with no KMS backend, say —
+// however long Postgres stays up. The family stays pending and NOT_SERVING
+// and the loop keeps retrying, but it does not hold the opt-in self-restart:
+// the operator's fix is a config change plus a restart, and holding would
+// keep the families not yet migrated off forever. Matched with errors.As
+// (isStoreConfigRefusal), never on the error text.
+type storeConfigRefusal struct{ Err error }
+
+func (e *storeConfigRefusal) Error() string { return e.Err.Error() }
+func (e *storeConfigRefusal) Unwrap() error { return e.Err }
+
+// isStoreConfigRefusal reports whether err is, or wraps, a storeConfigRefusal.
+func isStoreConfigRefusal(err error) bool {
+	var r *storeConfigRefusal
+	return errors.As(err, &r)
+}
+
 type registeredStoreFamily struct {
 	storeFamily
 	installed bool
+	// refused is set while the family's last install attempt was a
+	// storeConfigRefusal; such a family does not hold the restart.
+	refused bool
 }
 
 // storeRecovery is the registry and the retry loop. Register the families
@@ -173,10 +196,28 @@ func (r *storeRecovery) setHealth(service string, ready bool) {
 	r.health.SetServingStatus(service, st)
 }
 
-// pending reports whether any registered family is not installed yet. The
-// self-restart watcher holds on it.
+// pending reports whether any registered family is not installed yet; the
+// loop runs while it is true.
 func (r *storeRecovery) pending() bool {
 	return len(r.pendingFamilies()) > 0
+}
+
+// holdsRestart reports whether any pending family holds the opt-in
+// self-restart: every pending family does, except one whose last attempt was
+// a config refusal (#3378). The self-restart watcher holds on it.
+func (r *storeRecovery) holdsRestart() bool {
+	for _, f := range r.pendingFamilies() {
+		if !r.isRefused(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *storeRecovery) isRefused(f *registeredStoreFamily) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return f.refused
 }
 
 func (r *storeRecovery) pendingFamilies() []*registeredStoreFamily {
@@ -231,7 +272,17 @@ func (r *storeRecovery) Run(ctx context.Context, startupPool *pgxpool.Pool) {
 			r.logf("Store families recovered in-process: %s (every registered family is installed)", r.serviceNames(all))
 			return
 		}
-		r.logf("Warning: store families pending in-process recovery (%s): %v; next attempt in %s", r.serviceNames(still), err, next)
+		// A refused family was logged when it entered the refusal; it is
+		// not repeated on every retry.
+		var retrying []*registeredStoreFamily
+		for _, f := range still {
+			if !r.isRefused(f) {
+				retrying = append(retrying, f)
+			}
+		}
+		if len(retrying) > 0 {
+			r.logf("Warning: store families pending in-process recovery (%s): %v; next attempt in %s", r.serviceNames(retrying), err, next)
+		}
 		wait = next
 	}
 }
@@ -260,11 +311,23 @@ func (r *storeRecovery) attempt(ctx context.Context) error {
 	var errs []error
 	for _, f := range r.pendingFamilies() {
 		if err := f.Install(ctx, pool); err != nil {
+			refusal := isStoreConfigRefusal(err)
+			r.mu.Lock()
+			entered := refusal && !f.refused
+			f.refused = refusal
+			r.mu.Unlock()
+			if refusal {
+				if entered {
+					r.logf("Store family %s: install refused by configuration: %v; readiness stays NOT_SERVING, retries continue, and the self-restart is not held for it", f.Service, err)
+				}
+				continue
+			}
 			errs = append(errs, fmt.Errorf("%s: %w", f.Service, err))
 			continue
 		}
 		r.mu.Lock()
 		f.installed = true
+		f.refused = false
 		r.mu.Unlock()
 		r.setHealth(f.Service, true)
 		r.logf("Store family %s: Postgres store installed in-process (by retry)", f.Service)
