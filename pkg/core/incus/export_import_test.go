@@ -193,3 +193,35 @@ func TestImportInstance_OperationFailureSurfaces(t *testing.T) {
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// renameServer records the rename a box restore makes (#3357).
+type renameServer struct {
+	incusclient.InstanceServer
+	from string
+	post *api.InstancePost
+	err  error
+}
+
+func (s *renameServer) RenameInstance(name string, post api.InstancePost) (incusclient.Operation, error) {
+	s.from, s.post = name, &post
+	return doneOp{err: s.err}, nil
+}
+
+func TestRenameInstance(t *testing.T) {
+	srv := &renameServer{}
+	c := &Client{server: srv}
+	if err := c.RenameInstance("containarium-restore-1", "alice-restored-container"); err != nil {
+		t.Fatalf("RenameInstance: %v", err)
+	}
+	if srv.from != "containarium-restore-1" || srv.post == nil || srv.post.Name != "alice-restored-container" || srv.post.Migration {
+		t.Errorf("rename sent from=%q post=%+v", srv.from, srv.post)
+	}
+	if err := c.RenameInstance("a", ""); err == nil {
+		t.Error("rename to an empty name succeeded")
+	}
+	boom := errors.New("name in use")
+	srv.err = boom
+	if err := c.RenameInstance("a", "b"); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the operation's failure", err)
+	}
+}

@@ -240,6 +240,9 @@ type Backend interface {
 	// creates a new, stopped instance on pool from such a tarball.
 	ExportInstance(name string) (io.ReadCloser, error)
 	ImportInstance(name, pool string, r io.Reader, opts ImportOptions) error
+	// RenameInstance renames a stopped instance; a whole-box restore uses
+	// it to move a fully imported box onto its target name (#3357).
+	RenameInstance(name, newName string) error
 }
 
 // DiskDevice represents a disk device configuration

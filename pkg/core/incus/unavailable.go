@@ -95,6 +95,7 @@ func (*UnavailableBackend) ExportInstance(string) (io.ReadCloser, error) { retur
 func (*UnavailableBackend) ImportInstance(string, string, io.Reader, ImportOptions) error {
 	return ErrUnavailable
 }
+func (*UnavailableBackend) RenameInstance(string, string) error { return ErrUnavailable }
 
 // Network ACLs + NIC devices (core-infra network guard).
 func (*UnavailableBackend) GetNetworkACL(string) (*api.NetworkACL, error)     { return nil, ErrUnavailable }

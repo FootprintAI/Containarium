@@ -88,6 +88,7 @@ type MockBackend struct {
 	Archives           map[string][]byte
 	ExportInstanceFunc func(name string) (io.ReadCloser, error)
 	ImportInstanceFunc func(name, pool string, r io.Reader, opts incus.ImportOptions) error
+	RenameInstanceFunc func(name, newName string) error
 }
 
 func (m *MockBackend) EnsureToolchainVolume(name, root string) error {
@@ -129,6 +130,29 @@ func (m *MockBackend) ImportInstance(name, pool string, r io.Reader, opts incus.
 	}
 	m.Archives[name] = b
 	m.Containers[name] = &incus.ContainerInfo{Name: name, State: "Stopped"}
+	return nil
+}
+
+// RenameInstance moves an instance and its archive to a new name, refusing
+// a missing instance or a name in use, as Incus does.
+func (m *MockBackend) RenameInstance(name, newName string) error {
+	if m.RenameInstanceFunc != nil {
+		return m.RenameInstanceFunc(name, newName)
+	}
+	c, ok := m.Containers[name]
+	if !ok {
+		return api.StatusErrorf(http.StatusNotFound, "Instance not found")
+	}
+	if _, taken := m.Containers[newName]; taken {
+		return fmt.Errorf("rename %s: name %s already in use", name, newName)
+	}
+	delete(m.Containers, name)
+	c.Name = newName
+	m.Containers[newName] = c
+	if b, ok := m.Archives[name]; ok {
+		delete(m.Archives, name)
+		m.Archives[newName] = b
+	}
 	return nil
 }
 
