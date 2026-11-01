@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/config"
@@ -140,15 +141,50 @@ type TokenManager struct {
 
 	// Phase 1.2 — optional revocation list. nil = check
 	// disabled (tests, minimal deployments). Production
-	// wires a Postgres-backed PgRevocationStore here.
-	revocationStore RevocationStore
+	// wires a Postgres-backed PgRevocationStore here. Read
+	// only through revocationStore(): after a degraded start
+	// the store is swapped in while requests are validated
+	// (#3328).
+	revocation atomic.Pointer[revocationRef]
+	// revocationPending: a store is expected but not installed
+	// yet (Postgres was down at startup). Tokens are still
+	// validated (#3335 Q8); revocationSkipLogged makes the
+	// skip visible once per state change, not per request.
+	revocationPending    atomic.Bool
+	revocationSkipLogged atomic.Bool
 }
 
+type revocationRef struct{ store RevocationStore }
+
 // SetRevocationStore enables the revocation-list check on
-// ValidateToken. Pass nil to disable. Typically wired once
-// at daemon startup after the Postgres pool is ready.
+// ValidateToken. Pass nil to disable. Wired at daemon startup
+// after the Postgres pool is ready, or later by the late-install
+// helper after a degraded start; safe while serving. A non-nil
+// store ends the pending state set by SetRevocationPending.
 func (tm *TokenManager) SetRevocationStore(store RevocationStore) {
-	tm.revocationStore = store
+	tm.revocation.Store(&revocationRef{store: store})
+	if store != nil {
+		tm.revocationPending.Store(false)
+		tm.revocationSkipLogged.Store(false)
+	}
+}
+
+// SetRevocationPending marks the revocation store as expected but
+// not installed yet (the daemon's startup Postgres check failed).
+// Until SetRevocationStore installs one, ValidateToken still
+// validates tokens without the revocation check and logs that once.
+func (tm *TokenManager) SetRevocationPending() {
+	tm.revocationSkipLogged.Store(false)
+	tm.revocationPending.Store(true)
+}
+
+// revocationStore is the one read of the current store; nil when
+// none is installed.
+func (tm *TokenManager) revocationStore() RevocationStore {
+	if r := tm.revocation.Load(); r != nil {
+		return r.store
+	}
+	return nil
 }
 
 // NewTokenManager creates a new token manager. Returns an error if
@@ -429,10 +465,14 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 	// taking the daemon down. Tokens issued before this
 	// release lack a jti — IsRevoked short-circuits on
 	// empty input.
-	if tm.revocationStore != nil && claims.ID != "" {
+	store := tm.revocationStore()
+	if store == nil && tm.revocationPending.Load() && tm.revocationSkipLogged.CompareAndSwap(false, true) {
+		log.Printf("WARNING: JWT revocation list is not installed yet (Postgres unavailable at startup): tokens are validated WITHOUT the revocation check until it installs in-process; readiness reports it NOT_SERVING (logged once per state change)")
+	}
+	if store != nil && claims.ID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		revoked, rerr := tm.revocationStore.IsRevoked(ctx, claims.ID)
+		revoked, rerr := store.IsRevoked(ctx, claims.ID)
 		if rerr != nil {
 			log.Printf("WARNING: revocation lookup failed for jti=%s: %v (allowing token; revocation list is the kill-switch, not the primary gate)", claims.ID, rerr)
 		} else if revoked {
@@ -566,7 +606,8 @@ func (tm *TokenManager) ValidateRefreshTokenClaims(tokenString string) (*Claims,
 // is asking to revoke when there's no revocation list — that
 // would silently no-op, which is dangerous).
 func (tm *TokenManager) RevokeToken(ctx context.Context, claims *Claims, reason string) error {
-	if tm.revocationStore == nil {
+	store := tm.revocationStore()
+	if store == nil {
 		return fmt.Errorf("revocation store not configured")
 	}
 	if claims == nil || claims.ID == "" {
@@ -576,7 +617,7 @@ func (tm *TokenManager) RevokeToken(ctx context.Context, claims *Claims, reason 
 	if claims.ExpiresAt != nil {
 		exp = claims.ExpiresAt.Time
 	}
-	return tm.revocationStore.Revoke(ctx, claims.ID, exp, reason)
+	return store.Revoke(ctx, claims.ID, exp, reason)
 }
 
 // Context keys for storing authentication information
