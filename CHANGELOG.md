@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`containarium move` no longer freezes a running container during its pre-copy refreshes, and a stuck snapshot delete can no longer hold up the success response.** The delta refreshes run while the container is still serving traffic, but Incus freezes a running source for the transfer on storage that cannot send a snapshot unless `--allow-inconsistent` is given, so each refresh could be an outage before the cutover that the reported downtime did not count. The pre-copy refreshes now pass the flag. The final refresh runs after the source stops, so it stays consistent and does not. The best-effort `incus snapshot delete` calls on the success path now have a two-minute deadline.
+- **`containarium move` no longer fails at the end of a move because the adopted container has no IP address yet.** The adopting daemon starts the container and used to read its address once, right away; a container is running before its DHCP lease exists, so a move that had copied everything correctly still failed at the last step. It now waits up to a minute for the address and reports a timeout clearly.
+- **A failed `containarium move` now removes the copy it made on the target.** After the cutover stopped the source, a failure rolled the source back by restarting it but left the target's copy in place, so the tenant could end up running on both backends at once and a retry hit an existing name. The move now deletes its own copy (stopping it first) before it restarts the source. It does this only after its first copy succeeded, because until then it cannot tell its own instance from an existing container of the same name, so a move that fails at the first copy deletes nothing on the target.
+
 ## [0.123.2] - 2026-10-31
 
 ### Fixed

@@ -1,10 +1,12 @@
 package incus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // MigrationRunner is the small surface the migration orchestrator
@@ -61,6 +63,15 @@ type MigrationRunner interface {
 	// snapshot").
 	CopyInitial(container, fromSnap, targetRemote, storagePool string) error
 
+	// CopyRefreshLive is a CopyRefresh for the pre-copy iterations, which run
+	// while the container is still serving traffic. It adds
+	// --allow-inconsistent so Incus does not freeze a running source for the
+	// transfer (it does on storage that cannot send a snapshot, which is an
+	// outage before the cutover that the reported downtime would not count).
+	// The copy may therefore be slightly inconsistent; that is fine because
+	// the final CopyRefresh runs after the source stops and corrects it.
+	CopyRefreshLive(container, fromSnap, targetRemote, storagePool string) error
+
 	// CopyRefresh syncs the delta from the source to `targetRemote`.
 	// Equivalent to:
 	//   `incus copy <container> <remote>:<container> --refresh [--storage <pool>]`
@@ -75,6 +86,15 @@ type MigrationRunner interface {
 	// (zfs-send-style); with dir-pool storage it falls back to file
 	// rsync, which works but isn't sub-second.
 	CopyRefresh(container, fromSnap, targetRemote, storagePool string) error
+
+	// DeleteTarget force-deletes `container` on `targetRemote` (stopping it
+	// first if it is running). The move uses it to remove the copy it made
+	// there when the move fails, so the tenant is never left running on two
+	// backends. The move calls it only after its own first copy succeeded,
+	// when that instance is known to be its own. A container that is already
+	// gone is not an error. Equivalent to
+	// `incus delete --force <remote>:<container>`.
+	DeleteTarget(container, targetRemote string) error
 
 	// Stop stops a container. Used at the very start of cutover; any
 	// final state changes after this point are caught by the post-stop
@@ -102,16 +122,34 @@ type MigrationRunner interface {
 type ExecRunner struct {
 	// Path to the incus binary. Empty means look on $PATH.
 	IncusPath string
+
+	// SnapshotDeleteTimeout bounds one cleanup delete: `incus snapshot delete`
+	// and the target delete after a failed move. The cleanup is best effort, so
+	// a delete that never returns must not hold up the response. Zero means
+	// defaultSnapshotDeleteTimeout.
+	SnapshotDeleteTimeout time.Duration
 }
 
+// defaultSnapshotDeleteTimeout is generous for deleting a snapshot, which
+// takes seconds even on a large btrfs or zfs volume.
+const defaultSnapshotDeleteTimeout = 2 * time.Minute
+
 func (e *ExecRunner) incus(args ...string) error {
+	return e.incusCtx(context.Background(), args...)
+}
+
+// incusCtx runs incus and kills it when ctx ends.
+func (e *ExecRunner) incusCtx(ctx context.Context, args ...string) error {
 	bin := e.IncusPath
 	if bin == "" {
 		bin = "incus"
 	}
-	cmd := exec.Command(bin, args...) // #nosec G204 -- args are validated by callers
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- args are validated by callers
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("incus %s: timed out: %w\nOutput: %s", strings.Join(args, " "), ctx.Err(), string(out))
+		}
 		return fmt.Errorf("incus %s: %w\nOutput: %s", strings.Join(args, " "), err, string(out))
 	}
 	return nil
@@ -148,7 +186,13 @@ func (e *ExecRunner) Snapshot(container, snapshot string) error {
 // rather than being swallowed — and every migration left its sync snapshots
 // behind, pinning disk on both hosts.
 func (e *ExecRunner) DeleteSnapshot(container, snapshot string) error {
-	err := e.incus("snapshot", "delete", container, snapshot)
+	timeout := e.SnapshotDeleteTimeout
+	if timeout <= 0 {
+		timeout = defaultSnapshotDeleteTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := e.incusCtx(ctx, "snapshot", "delete", container, snapshot)
 	if err == nil {
 		return nil
 	}
@@ -206,6 +250,23 @@ func (e *ExecRunner) EnsureTargetACLs(container, targetRemote string) error {
 	return nil
 }
 
+func (e *ExecRunner) DeleteTarget(container, targetRemote string) error {
+	timeout := e.SnapshotDeleteTimeout
+	if timeout <= 0 {
+		timeout = defaultSnapshotDeleteTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := e.incusCtx(ctx, "delete", "--force", targetRemote+":"+container)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "doesn't exist") {
+		return nil
+	}
+	return err
+}
+
 func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool string) error {
 	src := fmt.Sprintf("%s/%s", container, fromSnap)
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
@@ -220,6 +281,16 @@ func (e *ExecRunner) CopyRefresh(container, fromSnap, targetRemote, storagePool 
 	_ = fromSnap // the refresh copies the instance; see MigrationRunner.CopyRefresh
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
 	args := []string{"copy", container, dst, "--refresh"}
+	if storagePool != "" {
+		args = append(args, "--storage", storagePool)
+	}
+	return e.incus(args...)
+}
+
+func (e *ExecRunner) CopyRefreshLive(container, fromSnap, targetRemote, storagePool string) error {
+	_ = fromSnap // the refresh copies the instance; see MigrationRunner.CopyRefresh
+	dst := fmt.Sprintf("%s:%s", targetRemote, container)
+	args := []string{"copy", container, dst, "--refresh", "--allow-inconsistent"}
 	if storagePool != "" {
 		args = append(args, "--storage", storagePool)
 	}
