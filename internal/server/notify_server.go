@@ -57,7 +57,11 @@ type NotifyServer struct {
 
 	store   notify.ChannelStore
 	secrets notifySecretStore
-	sender  notifySender
+	// secretsSource, when set, is read on every call in place of secrets
+	// (see secretStore). The daemon sets it before serving, so a secrets
+	// store installed after a degraded start (#3327) reaches the service.
+	secretsSource func() notifySecretStore
+	sender        notifySender
 	// exec runs a script in a box (ContainerServer.boxRunExecFn); dir is
 	// agent-box's log dir.
 	exec func() boxScriptFunc
@@ -82,6 +86,15 @@ type NotifyServer struct {
 	inflight map[string]bool
 	sem      chan struct{}
 	wg       sync.WaitGroup
+}
+
+// secretStore is the secrets store for this call: secretsSource when set,
+// otherwise the one the service was built with. Nil means none.
+func (s *NotifyServer) secretStore() notifySecretStore {
+	if s.secretsSource != nil {
+		return s.secretsSource()
+	}
+	return s.secrets
 }
 
 // NewNotifyServer wires the service. secretStore may be nil on a daemon
@@ -141,7 +154,8 @@ func notifyChannelProto(ch notify.Channel) *pb.NotifyChannel {
 // storeNotifyToken writes token into a new broker-only secret and returns
 // its name. Nothing points at it yet.
 func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token string) (string, error) {
-	if s.secrets == nil {
+	secretStore := s.secretStore()
+	if secretStore == nil {
 		return "", status.Error(codes.FailedPrecondition, "secrets store not configured on this daemon; a channel cannot hold a token")
 	}
 	name, err := notify.NewTokenSecretName()
@@ -149,13 +163,13 @@ func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token str
 		return "", status.Errorf(codes.Internal, "%v", err)
 	}
 	// A fresh random name: anything already there is not ours to overwrite.
-	if _, _, err := s.secrets.Get(ctx, username, name); !errors.Is(err, secrets.ErrNotFound) {
+	if _, _, err := secretStore.Get(ctx, username, name); !errors.Is(err, secrets.ErrNotFound) {
 		if err == nil || errors.Is(err, secrets.ErrBrokerOnly) {
 			return "", status.Errorf(codes.Aborted, "token secret name %s is taken; retry", name)
 		}
 		return "", status.Errorf(codes.Internal, "check token secret: %v", err)
 	}
-	if _, err := s.secrets.Set(ctx, username, name, token, secrets.DeliveryBroker); err != nil {
+	if _, err := secretStore.Set(ctx, username, name, token, secrets.DeliveryBroker); err != nil {
 		return "", status.Errorf(codes.Internal, "store token: %v", err)
 	}
 	return name, nil
@@ -166,10 +180,11 @@ func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token str
 // ever passed here, never a name merely sharing the prefix. A secret that is
 // already gone is fine.
 func (s *NotifyServer) removeTokenSecret(ctx context.Context, username, name string) error {
-	if s.secrets == nil || name == "" {
+	secretStore := s.secretStore()
+	if secretStore == nil || name == "" {
 		return nil
 	}
-	if err := s.secrets.Delete(ctx, username, name); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+	if err := secretStore.Delete(ctx, username, name); err != nil && !errors.Is(err, secrets.ErrNotFound) {
 		return fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil
@@ -330,10 +345,11 @@ func (s *NotifyServer) channelAndToken(ctx context.Context, username string) (no
 	if !ch.HasToken() {
 		return ch, "", nil
 	}
-	if s.secrets == nil {
+	secretStore := s.secretStore()
+	if secretStore == nil {
 		return notify.Channel{}, "", errors.New("read token: secrets store not configured on this daemon")
 	}
-	token, err := s.secrets.BrokerCredential(ctx, username, ch.TokenSecret)
+	token, err := secretStore.BrokerCredential(ctx, username, ch.TokenSecret)
 	if err != nil {
 		return notify.Channel{}, "", fmt.Errorf("read token: %w", err)
 	}

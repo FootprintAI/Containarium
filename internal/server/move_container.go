@@ -9,10 +9,12 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/pkg/core/incus"
+
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -202,6 +204,21 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		}
 	}
 
+	// The instance on the target becomes the move's own once the first copy has
+	// succeeded; before that it is not known to be (an existing container of
+	// that name makes the copy fail), so a failure then deletes nothing there.
+	// After that, a failed move removes it, so a rollback never leaves the
+	// tenant running on both backends.
+	targetOwned := false
+	abortTarget := func() {
+		if !targetOwned {
+			return
+		}
+		if err := s.moveRunner.DeleteTarget(containerName, targetRemote); err != nil {
+			log.Printf("[move] remove failed copy %s:%s: %v (ignored)", targetRemote, containerName, err)
+		}
+	}
+
 	// PHASE 1 — initial copy.
 	syncName := "containarium-move-sync0"
 	if err := s.moveRunner.Snapshot(containerName, syncName); err != nil {
@@ -221,6 +238,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 1: initial copy: %w", err)
 	}
+	targetOwned = true
 	iterations++
 
 	// PHASE 2 — iterative deltas, source still running.
@@ -229,13 +247,15 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		start := time.Now()
 
 		if err := s.moveRunner.Snapshot(containerName, syncName); err != nil {
+			abortTarget()
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: snapshot: %w", i, err)
 		}
 		createdSnaps = append(createdSnaps, syncName)
 
 		log.Printf("[move] phase 2 iter %d: delta refresh of %s/%s ...", i, containerName, syncName)
-		if err := s.moveRunner.CopyRefresh(containerName, syncName, targetRemote, encStoragePool); err != nil {
+		if err := s.moveRunner.CopyRefreshLive(containerName, syncName, targetRemote, encStoragePool); err != nil {
+			abortTarget()
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: refresh: %w", i, err)
 		}
@@ -256,6 +276,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 
 	log.Printf("[move] phase 3: stopping source container %s", containerName)
 	if err := s.moveRunner.Stop(containerName); err != nil {
+		abortTarget()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: stop source: %w", err)
 	}
@@ -273,6 +294,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 
 	finalSnap := "containarium-move-final"
 	if err := s.moveRunner.Snapshot(containerName, finalSnap); err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: final snapshot: %w", err)
@@ -280,6 +302,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	createdSnaps = append(createdSnaps, finalSnap)
 
 	if err := s.moveRunner.CopyRefresh(containerName, finalSnap, targetRemote, encStoragePool); err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: final delta copy: %w", err)
@@ -314,12 +337,14 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	adoptResp, err := adoptFn(targetPeer, authToken, adoptReq)
 	if err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: adopt on target: %w", err)
 	}
 	newIP := adoptResp.NewIpAddress
 	if newIP == "" {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: target returned empty new IP")
@@ -391,6 +416,14 @@ func overrideAdoptForTest(f func(*PeerClient, string, *pb.AdoptMigratedContainer
 	return func() { adoptFn = prev }
 }
 
+// peerReplyJSON decodes a peer's REST reply. The peer answers through
+// grpc-gateway, which writes protobuf JSON with lowerCamelCase names;
+// encoding/json against the generated struct matches only the snake_case tags,
+// so fields such as newIpAddress and canResolve decoded to their zero values
+// without an error. protojson reads either spelling, and DiscardUnknown keeps
+// an older source working against a peer that has added a field.
+var peerReplyJSON = protojson.UnmarshalOptions{DiscardUnknown: true}
+
 // prepareFn is the seam the migration pre-flight goes through, so tests can
 // drive the orchestrator without a peer. Mirrors adoptFn.
 var prepareFn = forwardPrepareEncryptedMigration
@@ -427,7 +460,7 @@ func forwardPrepareEncryptedMigration(peer *PeerClient, authToken string, req *p
 		return nil, fmt.Errorf("peer pre-flight RPC returned %d: %s", code, string(respBody))
 	}
 	var resp pb.PrepareEncryptedMigrationResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := peerReplyJSON.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode pre-flight response: %w", err)
 	}
 	return &resp, nil
@@ -456,7 +489,7 @@ func forwardAdoptMigratedContainer(peer *PeerClient, authToken string, req *pb.A
 		return nil, fmt.Errorf("peer adopt RPC returned %d: %s", status, string(respBody))
 	}
 	var resp pb.AdoptMigratedContainerResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := peerReplyJSON.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode adopt response: %w", err)
 	}
 	return &resp, nil

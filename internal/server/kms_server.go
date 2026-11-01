@@ -20,8 +20,9 @@ import (
 // CONTAINARIUM_KMS_BACKEND + per-backend env, an operator concern).
 //
 // It holds the ContainerServer rather than the Store directly so it
-// reads the live `secretsStore` field (wired after Postgres + the
-// master key resolve) and the startup KMS-status snapshot.
+// reads the live secrets store (loadSecretsStore, wired after Postgres
+// + the master key resolve, possibly late — #3327) and the KMS-status
+// snapshot.
 type KmsServer struct {
 	pb.UnimplementedKmsServiceServer
 	containers *ContainerServer
@@ -32,15 +33,19 @@ func NewKmsServer(containers *ContainerServer) *KmsServer {
 	return &KmsServer{containers: containers}
 }
 
-// SetKMSStatus records the boot-time KMS configuration for the
-// GetKMSStatus RPC. backend is the raw CONTAINARIUM_KMS_BACKEND value
-// (normalized here); configured is true when a real KMS client was
-// built (backend != none and no config error).
+// SetKMSStatus records the KMS configuration for the GetKMSStatus RPC,
+// at boot or from the secrets store's late install (#3327), so it may
+// run while the RPC is served. backend is the raw
+// CONTAINARIUM_KMS_BACKEND value (normalized here); configured is true
+// when a real KMS client was built (backend != none and no config
+// error).
 func (s *ContainerServer) SetKMSStatus(backend, description string, configured, requireEnvelope bool) {
 	b := strings.ToLower(strings.TrimSpace(backend))
 	if b == "" {
 		b = "none"
 	}
+	s.kmsMu.Lock()
+	defer s.kmsMu.Unlock()
 	s.kmsBackend = b
 	s.kmsDescription = description
 	s.kmsConfigured = configured
@@ -73,6 +78,8 @@ func (s *KmsServer) GetKMSStatus(ctx context.Context, _ *pb.GetKMSStatusRequest)
 		return nil, err
 	}
 	c := s.containers
+	c.kmsMu.RLock()
+	defer c.kmsMu.RUnlock()
 	backend := c.kmsBackend
 	if backend == "" {
 		backend = "none"
@@ -90,10 +97,11 @@ func (s *KmsServer) GetEnvelopeCoverage(ctx context.Context, _ *pb.GetEnvelopeCo
 	if err := requireKMSAdmin(ctx); err != nil {
 		return nil, err
 	}
-	if s.containers.secretsStore == nil {
+	store := s.containers.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	cov, err := s.containers.secretsStore.VerifyEnvelopeCoverage(ctx)
+	cov, err := store.VerifyEnvelopeCoverage(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "coverage: %v", err)
 	}
@@ -111,10 +119,11 @@ func (s *KmsServer) MigrateToEnvelope(ctx context.Context, req *pb.MigrateToEnve
 	if err := requireKMSAdmin(ctx); err != nil {
 		return nil, err
 	}
-	if s.containers.secretsStore == nil {
+	store := s.containers.loadSecretsStore()
+	if store == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	res, err := s.containers.secretsStore.MigrateLegacyToEnvelope(ctx, secrets.MigrateOptions{
+	res, err := store.MigrateLegacyToEnvelope(ctx, secrets.MigrateOptions{
 		BatchSize: int(req.BatchSize),
 		MaxRows:   int(req.MaxRows),
 		DryRun:    req.DryRun,

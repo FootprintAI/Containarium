@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeIncus writes an `incus` stand-in that records its arguments and applies
@@ -213,5 +214,141 @@ func TestExecRunner_EnsureTargetACLs_NothingToDoWithoutACLs(t *testing.T) {
 		if strings.Contains(line, "acl create") {
 			t.Errorf("no ACL create expected for an instance with no ACLs, got %q", line)
 		}
+	}
+}
+
+// A pre-copy refresh runs while the container is serving traffic. Without
+// --allow-inconsistent, Incus freezes a running source for the transfer on
+// storage that cannot send a snapshot, which is an outage before the cutover
+// that the reported downtime would not count. The final refresh runs after the
+// source stops, so it stays consistent and does not carry the flag.
+func TestExecRunner_CopyRefreshLive_DoesNotFreezeTheSource(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefreshLive("box", "sync1", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefreshLive: %v", err)
+	}
+	if err := r.CopyRefreshLive("box", "sync2", "target-1", "tenants"); err != nil {
+		t.Fatalf("CopyRefreshLive with a pool: %v", err)
+	}
+
+	got := recordedArgs(t, argsFile)
+	want := []string{
+		"copy box target-1:box --refresh --allow-inconsistent",
+		"copy box target-1:box --refresh --allow-inconsistent --storage tenants",
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("incus args = %q, want %q", got, want)
+	}
+}
+
+func TestExecRunner_CopyRefresh_FinalStaysConsistent(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.CopyRefresh("box", "final", "target-1", ""); err != nil {
+		t.Fatalf("CopyRefresh: %v", err)
+	}
+	for _, line := range recordedArgs(t, argsFile) {
+		if strings.Contains(line, "--allow-inconsistent") {
+			t.Errorf("the final refresh must be consistent, got %q", line)
+		}
+	}
+}
+
+// A snapshot delete that never returns must not hold up the move's success
+// response: the cleanup is best effort and gives up after a deadline.
+func TestExecRunner_DeleteSnapshot_IsBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 20\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &ExecRunner{IncusPath: bin, SnapshotDeleteTimeout: 300 * time.Millisecond}
+
+	start := time.Now()
+	err := r.DeleteSnapshot("box", "sync0")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a delete that exceeded its deadline must report an error")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("DeleteSnapshot took %v; it must give up near the 300ms deadline", elapsed)
+	}
+}
+
+// DeleteTarget removes the copy a failed move left on the target. -f stops it
+// first if it is running, so the tenant is not left running on two backends.
+func TestExecRunner_DeleteTarget_ForceDeletesOnTheRemote(t *testing.T) {
+	bin, argsFile := fakeIncus(t)
+	r := &ExecRunner{IncusPath: bin}
+
+	if err := r.DeleteTarget("box", "target-1"); err != nil {
+		t.Fatalf("DeleteTarget: %v", err)
+	}
+	got := recordedArgs(t, argsFile)
+	if len(got) != 1 || got[0] != "delete --force target-1:box" {
+		t.Errorf("incus args = %q, want [delete --force target-1:box]", got)
+	}
+}
+
+func TestExecRunner_DeleteTarget_IsBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 20\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &ExecRunner{IncusPath: bin, SnapshotDeleteTimeout: 300 * time.Millisecond}
+
+	start := time.Now()
+	if err := r.DeleteTarget("box", "target-1"); err == nil {
+		t.Fatal("a delete that exceeded its deadline must report an error")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("DeleteTarget took %v; it must give up near the deadline", time.Since(start))
+	}
+}
+
+// incusSaying writes an `incus` stand-in that exits 1 and prints msg for the
+// given subcommand, as the real CLI does when a stop or start is a no-op.
+func incusSaying(t *testing.T, subcommand, msg string) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	script := "#!/bin/sh\nif [ \"$1\" = " + subcommand + " ]; then echo \"" + msg + "\" >&2; exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// A container that auto-sleep or an operator already stopped is not a failure
+// of the cutover's stop. Incus 7 words it "The instance is already stopped";
+// older releases said "is not running". Both are success.
+func TestExecRunner_Stop_AlreadyStoppedIsSuccess(t *testing.T) {
+	for _, msg := range []string{
+		"Error: The instance is already stopped",
+		"Error: The instance is not running",
+	} {
+		r := &ExecRunner{IncusPath: incusSaying(t, "stop", msg)}
+		if err := r.Stop("box"); err != nil {
+			t.Errorf("Stop with %q must succeed, got %v", msg, err)
+		}
+	}
+}
+
+func TestExecRunner_Stop_OtherFailuresStillFail(t *testing.T) {
+	r := &ExecRunner{IncusPath: incusSaying(t, "stop", "Error: permission denied")}
+	if err := r.Stop("box"); err == nil {
+		t.Fatal("an unrelated stop failure must not be swallowed")
+	}
+}
+
+func TestExecRunner_Start_AlreadyRunningIsSuccess(t *testing.T) {
+	r := &ExecRunner{IncusPath: incusSaying(t, "start", "Error: The instance is already running")}
+	if err := r.Start("box"); err != nil {
+		t.Errorf("Start of a running container must succeed, got %v", err)
 	}
 }
