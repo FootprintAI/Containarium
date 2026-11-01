@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.124.0] - 2026-11-01
 
+### Upgrading
+
+- **Cookie-authenticated REST mutations need a trusted origin** (#3338). A POST/PUT/PATCH/DELETE carried only by the session cookie is now refused with 403 unless the browser sends `Sec-Fetch-Site: same-origin` or its `Origin` is in `CONTAINARIUM_ALLOWED_ORIGINS`. A web console served from a different origin than the API (a separate hostname, a dev server) must have that origin in `CONTAINARIUM_ALLOWED_ORIGINS` before upgrading, or its state-changing requests will start failing with 403. Bearer-token clients (CLI, MCP, scripts) and read-only requests are unchanged. The full entry is under Fixed.
+- **`HOST_MANAGED_TOOLCHAIN_MISSING`** (#3363). A `BUILD_TOOLS` run on a host with no managed toolchain installed is refused with this typed precondition reason. v0.123.0 added the toolchain requirement (a binary-only upgrade does not install it: see `docs/MANAGED-TOOLCHAINS.md`); install it on each host as part of the upgrade.
+
 ### Added
 
 - **The JWT revocation list recovers in-process after a degraded start** (#3328, #3366; on the #3326 late-install helper). A daemon that started while Postgres was down used to accept revoked tokens until it was restarted. The revocation store is now a late-install family with the readiness entry `containarium.revocation`: once Postgres answers it installs, and `TokenManager` and `AgentSkillServer` read it through atomic accessors. `TokensService` is registered unconditionally through a stand-in whose RPCs answer `UNAVAILABLE` until the store installs (with no Postgres at all it used to answer `Unimplemented`). While the store is absent, tokens are validated without the revocation check and readiness shows `NOT_SERVING`. The model gateway's jti check and owner cutoffs still take the store only at startup (#3365).
