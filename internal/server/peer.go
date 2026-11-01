@@ -11,9 +11,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +39,15 @@ type PeerClient struct {
 	Healthy    bool
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
-	scheme     string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
+
+	// static marks a peer added from --peers rather than found through the
+	// sentinel. Discovery neither removes a static peer nor rewrites its
+	// address, whatever its key looks like.
+	static bool
+	// shadowWarned limits the "sentinel lists a static peer's id" log line to
+	// once per peer instead of once per discovery tick.
+	shadowWarned bool
+	scheme       string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
 
 	// Cached system info from last discovery poll
 	CachedHostname       string
@@ -146,10 +157,24 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 
 	// Add static peers. They start on plain HTTP; BootstrapPKI
 	// upgrades them in place once the daemon fetches its cert.
-	for _, addr := range staticPeers {
-		p.peers[addr] = &PeerClient{
-			ID:   addr,
-			Addr: addr,
+	for _, entry := range staticPeers {
+		sp, err := ParseStaticPeer(entry)
+		if err != nil {
+			log.Printf("[peers] ignoring invalid static peer: %v", err)
+			continue
+		}
+		if sp.ID == localBackendID {
+			log.Printf("[peers] ignoring static peer %q: id %q is this daemon's own backend id", entry, sp.ID)
+			continue
+		}
+		if _, dup := p.peers[sp.ID]; dup {
+			log.Printf("[peers] ignoring static peer %q: id %q is already in use", entry, sp.ID)
+			continue
+		}
+		p.peers[sp.ID] = &PeerClient{
+			ID:     sp.ID,
+			Addr:   sp.Addr,
+			static: true,
 			client: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -157,6 +182,99 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 	}
 
 	return p
+}
+
+// StaticPeer is one parsed --peers entry.
+type StaticPeer struct {
+	// ID is the peer's backend ID: its key in the peer pool, the value
+	// `move --target` takes, and the name of the incus remote that a move
+	// looks up. Without an explicit id it is the address.
+	ID string
+	// Addr is host:port of the peer's own daemon.
+	Addr string
+}
+
+// staticPeerIDPattern is the set of characters an explicit id may use. A move
+// needs the id to match an incus remote name exactly, and incus rejects only
+// ':' and '=' in a remote name, so this is a safe subset of what incus accepts:
+// no colon, slash or space, and not a leading hyphen. An existing remote named
+// outside this set cannot be matched by a static peer.
+var staticPeerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ParseStaticPeer parses one --peers entry. Two forms are accepted:
+//
+//	host:port        the entry is both the address and the id (the original
+//	                 form, accepted as-is so existing configs keep working)
+//	id=host:port     an explicit id, validated strictly
+//
+// An address-only peer cannot be a move target, because the address contains
+// a colon and so cannot be an incus remote name. Give a peer an explicit id
+// to move containers to it.
+func ParseStaticPeer(entry string) (StaticPeer, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return StaticPeer{}, fmt.Errorf("empty peer entry")
+	}
+
+	// The form is chosen by the first '=': an entry without one is an
+	// address-only peer (accepted as-is for back-compat), and one with it is
+	// id=addr, so an address-only entry can never itself contain '='.
+	i := strings.Index(entry, "=")
+	if i < 0 {
+		return StaticPeer{ID: entry, Addr: entry}, nil
+	}
+
+	id, addr := entry[:i], entry[i+1:]
+	if !staticPeerIDPattern.MatchString(id) {
+		return StaticPeer{}, fmt.Errorf("peer %q: id %q must be letters, digits, '.', '_' or '-', starting with a letter or digit", entry, id)
+	}
+	if strings.HasPrefix(id, discoveredPeerIDPrefix) {
+		return StaticPeer{}, fmt.Errorf("peer %q: id %q uses the %q prefix reserved for sentinel-discovered peers", entry, id, discoveredPeerIDPrefix)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" || strings.Contains(addr, "=") {
+		return StaticPeer{}, fmt.Errorf("peer %q: address %q must be host:port (an IPv6 host needs brackets: [::1]:8080)", entry, addr)
+	}
+	if n, perr := strconv.ParseUint(port, 10, 16); perr != nil || n == 0 {
+		return StaticPeer{}, fmt.Errorf("peer %q: port %q must be a number from 1 to 65535", entry, port)
+	}
+	return StaticPeer{ID: id, Addr: addr}, nil
+}
+
+// ParseStaticPeers parses every --peers entry. A blank entry (a trailing
+// comma on the flag) is ignored, and an entry repeated exactly is collapsed,
+// as the old map-keyed code did. It rejects what would be ambiguous: two
+// peers sharing an id, one address listed under two ids (every container would
+// appear twice), and an id equal to this daemon's own backend id.
+func ParseStaticPeers(entries []string, localBackendID string) ([]StaticPeer, error) {
+	peers := make([]StaticPeer, 0, len(entries))
+	byID := make(map[string]StaticPeer, len(entries))
+	byAddr := make(map[string]StaticPeer, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		sp, err := ParseStaticPeer(entry)
+		if err != nil {
+			return nil, err
+		}
+		if sp.ID == localBackendID {
+			return nil, fmt.Errorf("peer %q: id %q is this daemon's own backend id", entry, sp.ID)
+		}
+		if prev, ok := byID[sp.ID]; ok {
+			if prev == sp {
+				continue
+			}
+			return nil, fmt.Errorf("peers %q and %q share the id %q", prev.ID+"="+prev.Addr, entry, sp.ID)
+		}
+		if prev, ok := byAddr[sp.Addr]; ok {
+			return nil, fmt.Errorf("address %q is listed under two ids: %q and %q", sp.Addr, prev.ID, sp.ID)
+		}
+		byID[sp.ID] = sp
+		byAddr[sp.Addr] = sp
+		peers = append(peers, sp)
+	}
+	return peers, nil
 }
 
 // BootstrapPKI fetches a leaf cert from the sentinel and wires it
@@ -536,6 +654,13 @@ func (p *PeerPool) discover() {
 		peerAddr := fmt.Sprintf("%s:%s%s", sentinelHost, sentinelPort, peer.ProxyPath)
 
 		if existing, ok := p.peers[peer.ID]; ok {
+			if existing.static {
+				if !existing.shadowWarned {
+					log.Printf("[peers] sentinel lists %q, which is also a static peer; keeping the static address", peer.ID)
+					existing.shadowWarned = true
+				}
+				continue
+			}
 			existing.Addr = peerAddr
 			existing.Pool = peer.Pool
 			existing.Healthy = peer.Healthy
@@ -564,7 +689,7 @@ func (p *PeerPool) discover() {
 	// Remove peers that are no longer in the sentinel's list
 	// (but don't remove static peers)
 	for id := range p.peers {
-		if !discovered[id] && isDiscoveredPeer(id) {
+		if !discovered[id] && !p.peers[id].static && isDiscoveredPeer(id) {
 			log.Printf("[peers] peer removed: %s", id)
 			delete(p.peers, id)
 		}
@@ -1315,9 +1440,14 @@ func extractPort(rawURL string) string {
 	return "8888" // default
 }
 
+// discoveredPeerIDPrefix marks a peer found through the sentinel. Discovery
+// drops any pool key with this prefix that the sentinel stops listing, so a
+// static peer must not use it.
+const discoveredPeerIDPrefix = "tunnel-"
+
 // isDiscoveredPeer returns true if the peer ID looks like a tunnel-discovered peer.
 func isDiscoveredPeer(id string) bool {
-	return len(id) > 7 && id[:7] == "tunnel-"
+	return len(id) > len(discoveredPeerIDPrefix) && strings.HasPrefix(id, discoveredPeerIDPrefix)
 }
 
 // PeerTerminalURL implements gateway.PeerTerminalProxy.

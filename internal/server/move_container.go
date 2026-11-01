@@ -56,7 +56,7 @@ func migrationDefaults(req *pb.MoveContainerRequest) migrationParams {
 // phase orchestration:
 //
 //	Phase 1 — initial full copy (source running)
-//	  snapshot sync0 → incus copy <c>/sync0 <remote>:<c> --instance-only
+//	  snapshot sync0 → incus copy <c>/sync0 <remote>:<c>
 //
 //	Phase 2 — iterative deltas (still running)
 //	  for i in 1..max_iterations:
@@ -202,6 +202,21 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		}
 	}
 
+	// The instance on the target becomes the move's own once the first copy has
+	// succeeded; before that it is not known to be (an existing container of
+	// that name makes the copy fail), so a failure then deletes nothing there.
+	// After that, a failed move removes it, so a rollback never leaves the
+	// tenant running on both backends.
+	targetOwned := false
+	abortTarget := func() {
+		if !targetOwned {
+			return
+		}
+		if err := s.moveRunner.DeleteTarget(containerName, targetRemote); err != nil {
+			log.Printf("[move] remove failed copy %s:%s: %v (ignored)", targetRemote, containerName, err)
+		}
+	}
+
 	// PHASE 1 — initial copy.
 	syncName := "containarium-move-sync0"
 	if err := s.moveRunner.Snapshot(containerName, syncName); err != nil {
@@ -209,11 +224,19 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	createdSnaps = append(createdSnaps, syncName)
 
+	// The copied NIC names the tenant's guard ACL, which must already exist
+	// on the target when the instance is created there.
+	if err := s.moveRunner.EnsureTargetACLs(containerName, targetRemote); err != nil {
+		cleanupSnaps()
+		return nil, fmt.Errorf("phase 1: prepare network ACLs on %s: %w", targetRemote, err)
+	}
+
 	log.Printf("[move] phase 1: initial copy of %s/%s to %s ...", containerName, syncName, targetRemote)
 	if err := s.moveRunner.CopyInitial(containerName, syncName, targetRemote, encStoragePool); err != nil {
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 1: initial copy: %w", err)
 	}
+	targetOwned = true
 	iterations++
 
 	// PHASE 2 — iterative deltas, source still running.
@@ -222,13 +245,15 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		start := time.Now()
 
 		if err := s.moveRunner.Snapshot(containerName, syncName); err != nil {
+			abortTarget()
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: snapshot: %w", i, err)
 		}
 		createdSnaps = append(createdSnaps, syncName)
 
 		log.Printf("[move] phase 2 iter %d: delta refresh of %s/%s ...", i, containerName, syncName)
-		if err := s.moveRunner.CopyRefresh(containerName, syncName, targetRemote, encStoragePool); err != nil {
+		if err := s.moveRunner.CopyRefreshLive(containerName, syncName, targetRemote, encStoragePool); err != nil {
+			abortTarget()
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: refresh: %w", i, err)
 		}
@@ -249,6 +274,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 
 	log.Printf("[move] phase 3: stopping source container %s", containerName)
 	if err := s.moveRunner.Stop(containerName); err != nil {
+		abortTarget()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: stop source: %w", err)
 	}
@@ -266,6 +292,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 
 	finalSnap := "containarium-move-final"
 	if err := s.moveRunner.Snapshot(containerName, finalSnap); err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: final snapshot: %w", err)
@@ -273,6 +300,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	createdSnaps = append(createdSnaps, finalSnap)
 
 	if err := s.moveRunner.CopyRefresh(containerName, finalSnap, targetRemote, encStoragePool); err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: final delta copy: %w", err)
@@ -307,12 +335,14 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	adoptResp, err := adoptFn(targetPeer, authToken, adoptReq)
 	if err != nil {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: adopt on target: %w", err)
 	}
 	newIP := adoptResp.NewIpAddress
 	if newIP == "" {
+		abortTarget()
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: target returned empty new IP")
@@ -339,6 +369,15 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	// operator action and shouldn't fail the response.
 	s.cascadeContainerCleanup(ctx, containerName, req.Username)
 	cleanupSnaps() // remove the sync trail on the source
+
+	// Each refresh copies the instance with its snapshots, so the sync trail
+	// also exists on the target and would pin disk there for good. Best
+	// effort, like the source cleanup: the move has already succeeded.
+	for _, snap := range createdSnaps {
+		if err := s.moveRunner.DeleteSnapshot(targetRemote+":"+containerName, snap); err != nil {
+			log.Printf("[move] cleanup snapshot %s:%s/%s: %v (ignored)", targetRemote, containerName, snap, err)
+		}
+	}
 
 	return &pb.MoveContainerResponse{
 		Message:         fmt.Sprintf("Container %s migrated to %s (downtime %ds)", req.Username, req.TargetBackendId, downtime),

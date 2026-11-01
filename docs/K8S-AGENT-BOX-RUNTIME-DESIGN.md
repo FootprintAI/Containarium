@@ -762,10 +762,11 @@ operating mode ends the wait.
 If that wait fails or the caller cancels, the Sandbox can remain suspended
 with the requested mounts already in its template. Repeating attach or
 detach can then return success because the template already matches, while
-the box remains stopped. Automatic recovery is still awaiting a decision in
-[#3297](https://github.com/FootprintAI/Containarium/issues/3297). An operator
-with access to the cluster can recover a box that was running before the
-failed change as follows:
+the box remains stopped. There is no automatic recovery by design
+([#3297](https://github.com/FootprintAI/Containarium/issues/3297)): resuming
+early can keep the old Pod and its old mounts, so the daemon never resumes a
+box whose suspension it could not confirm. An operator with access to the
+cluster recovers a box that was running before the failed change as follows:
 
 1. Inspect the affected Sandbox and its requested mounts:
 

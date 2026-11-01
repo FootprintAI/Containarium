@@ -838,9 +838,26 @@ type StartBoxRunRequest struct {
 	// the engine's to say: an id it rejects ends the run non-zero and the
 	// reason is in the run's log. BoxRun.model reports the id the run was
 	// started with. Capability "box_run_model" in SystemInfo.capabilities.
-	Model         string `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Model string `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
+	// Command mode (#3322): run this shell command (through `sh -c`) instead of
+	// an engine prompt. No engine starts and no agent credential is loaded, so
+	// the run user's agent sign-in is not required. Mutually exclusive with
+	// prompt, session_id, continue_session, structured_output and model
+	// (INVALID_ARGUMENT, before anything on the box is touched). The command
+	// runs as the box's run user with its recorded tool-access level and sudo
+	// grant, exactly as an engine run would, in that user's home directory; a
+	// caller that needs a checkout makes it part of the command. The run is
+	// listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
+	// StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
+	// in SystemInfo.capabilities.
+	Command string `protobuf:"bytes,8,opt,name=command,proto3" json:"command,omitempty"`
+	// With command: the daemon ends the command after this many seconds
+	// (`timeout -k 5`, so the run exits with code 124). 0 means the daemon's
+	// default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
+	// command.
+	TimeoutSeconds int32 `protobuf:"varint,9,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *StartBoxRunRequest) Reset() {
@@ -920,6 +937,20 @@ func (x *StartBoxRunRequest) GetModel() string {
 		return x.Model
 	}
 	return ""
+}
+
+func (x *StartBoxRunRequest) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetTimeoutSeconds() int32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
 }
 
 type StartBoxRunResponse struct {
@@ -2225,7 +2256,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xf0\x01\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xb3\x02\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -2234,7 +2265,9 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\x12\x19\n" +
 	"\brun_name\x18\x05 \x01(\tR\arunName\x12+\n" +
 	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\x12\x14\n" +
-	"\x05model\x18\a \x01(\tR\x05model\"@\n" +
+	"\x05model\x18\a \x01(\tR\x05model\x12\x18\n" +
+	"\acommand\x18\b \x01(\tR\acommand\x12'\n" +
+	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"8\n" +
 	"\x1aGetBoxRunUserStatusRequest\x12\x1a\n" +

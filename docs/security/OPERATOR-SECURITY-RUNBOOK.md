@@ -1365,6 +1365,13 @@ have it restart itself, set `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`:
 - Flap guard: it never exits before `CONTAINARIUM_POSTGRES_RECOVERY_MIN_UPTIME`
   (default `2m`), and any failed ping resets the count.
 - A daemon whose startup check passed never exits for this.
+- Store families that recover in-process (#3326) are installed in the
+  running daemon as soon as Postgres answers, each with its own
+  `/v1/health?service=<family>` entry that turns `SERVING`; the daemon
+  holds the self-restart while any such family is still pending, then
+  restarts as above for the families that still need it. The log line
+  `holding the restart while store families recover in-process` marks the
+  hold.
 
 **Supervisor requirement.** The self-restart needs a supervisor that
 restarts the daemon after a non-zero exit. Every unit this repository ships

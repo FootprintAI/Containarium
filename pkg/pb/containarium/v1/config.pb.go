@@ -1452,9 +1452,10 @@ type SystemInfo struct {
 	// reject (the REST mux rejects unknown JSON fields). Absent from an older
 	// daemon: an empty list means "none of the optional features", so a
 	// client must treat a missing name as unsupported. Names are only ever
-	// added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
-	// "box_run_structured_output" (StartBoxRunRequest.structured_output) and
-	// "box_run_model" (StartBoxRunRequest.model, BoxRun.model).
+	// added. Currently: "box_run_name" (StartBoxRunRequest.run_name),
+	// "box_run_structured_output" (StartBoxRunRequest.structured_output),
+	// "box_run_model" (StartBoxRunRequest.model, BoxRun.model) and
+	// "box_run_command" (StartBoxRunRequest.command, timeout_seconds).
 	// An open string set rather than an enum so a newer daemon's extra names
 	// never fail to decode in an older client.
 	Capabilities []string `protobuf:"bytes,30,rep,name=capabilities,proto3" json:"capabilities,omitempty"`

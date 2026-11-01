@@ -3,6 +3,7 @@ package policyreadiness
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,21 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// resetRegistryForTest snapshots the package registry and returns the
+// restore, so a test's registrations do not leak into the others.
+func resetRegistryForTest() func() {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	savedRegistered := append([]string(nil), registered...)
+	savedNames := maps.Clone(displayNames)
+	return func() {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		registered = savedRegistered
+		displayNames = savedNames
+	}
+}
 
 func TestServices_OnePerPolicyServicePlusCorePostgres(t *testing.T) {
 	got := Services()
@@ -28,6 +44,49 @@ func TestServices_OnePerPolicyServicePlusCorePostgres(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("Services()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// #3326: a store family registered with the daemon's late-install helper
+// gets its own readiness entry, listed after the policy stores and before
+// the core Postgres entry, with its operator-facing name. Registering the
+// same service again only updates the name.
+func TestRegister_DrivesServicesAndNames(t *testing.T) {
+	t.Cleanup(resetRegistryForTest())
+	Register("containarium.fake_family", "fake family store")
+	Register("containarium.other_family", "other store")
+	Register("containarium.fake_family", "fake family store (renamed)")
+
+	got := Services()
+	want := []string{
+		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
+		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
+		"containarium.fake_family",
+		"containarium.other_family",
+		CorePostgresService,
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Services() = %v, want %v", got, want)
+	}
+	if n := (Result{Service: "containarium.fake_family"}).Name(); n != "fake family store (renamed)" {
+		t.Errorf("Name() = %q, want the registered display name", n)
+	}
+	r := Result{Service: "containarium.fake_family", Status: healthpb.HealthCheckResponse_NOT_SERVING}
+	if d := r.Detail(); !strings.Contains(d, "unavailable") || !strings.Contains(d, "in-process") {
+		t.Errorf("Detail() = %q, want it to say the store is unavailable and retried in-process", d)
+	}
+}
+
+// The DEGRADED reason no longer claims every store stays off until the
+// daemon restarts: registered families recover in-process.
+func TestDetail_CorePostgresDegradedNamesInProcessRecovery(t *testing.T) {
+	r := Result{Service: CorePostgresService, Status: healthpb.HealthCheckResponse_NOT_SERVING}
+	d := r.Detail()
+	if !strings.Contains(d, "DEGRADED") || !strings.Contains(d, "in-process") {
+		t.Errorf("Detail() = %q, want DEGRADED with in-process recovery named", d)
+	}
+	if strings.Contains(d, "they stay off until the daemon restarts") {
+		t.Errorf("Detail() = %q, still claims every store stays off until restart", d)
 	}
 }
 

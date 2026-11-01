@@ -533,8 +533,12 @@ exercised for real only in the e2e.
   that is not a plain id is `INVALID_ARGUMENT`; an id the engine's provider does
   not list is refused before the run starts when the provider can be listed. The
   API takes the id as a string and enumerates no tiers. The model that ran is
-  reported in `CrewRun.member_models` and `BoxRun.model`. `graph` runs do not
-  carry the override yet.
+  reported in `CrewRun.member_models` and `BoxRun.model`. `graph` runs carry
+  it too (#3264): a `model_overrides` key names a skill used by a graph node (a
+  skill node, or a member of a crew node), the node runs on its entry, and
+  `member_models` reports it. The single-skill request a skill node starts
+  through, `RunAgentSkillRequest`, has the same optional `model` field with the
+  same rules, so it can also be set directly.
 - **Policy routing** (labels → engine): a function that produces `want`
   before `Resolve`; `Resolve` itself does not change.
 - **Many owners, many keys**: `Statuses` makes one `HasProviderKey` call

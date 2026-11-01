@@ -78,7 +78,7 @@ This is the same rule #1335 found for Incus instance volumes: **a clone inherits
 
 A raw `zfs clone` produces a **dataset Incus does not know about**: not an instance, no config, no devices, absent from `incus list` and from the daemon's own container listing, outside quota accounting, and with no encryption placement record. It is storage nobody can boot. Making it bootable means reconstructing everything Incus stores about an instance — which is a re-implementation of `incus copy` with a worse failure surface.
 
-The daemon **already does this correctly elsewhere**: `MoveContainer` runs `incus snapshot <c> <snap>` then `incus copy <c>/<snap> <remote>:<c> --instance-only --storage <pool>` (`pkg/core/incus/migration.go`), and #1203 already threads the tenant pool through `--storage`. Clone is that same call with a local destination and a new instance name.
+The daemon **already does this correctly elsewhere**: `MoveContainer` runs `incus snapshot <c> <snap>` then `incus copy <c>/<snap> <remote>:<c> --storage <pool>` (no `--instance-only`: Incus rejects it when the source is a snapshot, and a snapshot source already copies without the other snapshots) (`pkg/core/incus/migration.go`), and #1203 already threads the tenant pool through `--storage`. Clone is that same call with a local destination and a new instance name.
 
 The four established facts land as follows:
 

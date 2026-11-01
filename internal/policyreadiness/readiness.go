@@ -12,7 +12,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -28,25 +30,54 @@ const HTTPPath = "/v1/health"
 // CorePostgresService is the readiness entry for the daemon's startup
 // Postgres check (#2824). NOT_SERVING means the check failed within its
 // deadline, so the daemon is serving DEGRADED: every database-backed store
-// was skipped at startup and stays off until the daemon restarts. A daemon
-// with no Postgres configured does not report it.
+// was skipped at startup. Store families registered with the daemon's
+// late-install helper (#3326) are retried in-process and report their own
+// entry (see Register); the rest stay off until the daemon restarts. A
+// daemon with no Postgres configured does not report it.
 const CorePostgresService = "containarium.core_postgres"
 
-// Services returns the health service name of each policy store, in report
-// order.
-func Services() []string {
-	return []string{
-		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
-		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
-		CorePostgresService,
+var (
+	registryMu sync.RWMutex
+	// registered is the service of each store family the daemon's
+	// late-install helper registered (#3326), in registration order.
+	registered []string
+	// displayNames are the operator-facing names doctor prints.
+	displayNames = map[string]string{
+		pb.GuardrailPolicyService_ServiceDesc.ServiceName:        "guardrail policy store",
+		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName: "coding-tool egress policy store",
+		CorePostgresService: "core Postgres (database-backed stores)",
+	}
+)
+
+// Register adds a store family's readiness entry (#3326). The daemon's
+// late-install helper calls it for every family it tracks, so Services()
+// lists the family without this package naming it; the in-process readers
+// (the status probe, the gateway) see it at once. Re-registering a service
+// only updates its display name; an empty displayName keeps the service
+// name. A doctor reading the daemon from another process lists the families
+// compiled into its own binary.
+func Register(service, displayName string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if displayName != "" {
+		displayNames[service] = displayName
+	}
+	if !slices.Contains(registered, service) {
+		registered = append(registered, service)
 	}
 }
 
-// displayNames are the operator-facing names doctor prints.
-var displayNames = map[string]string{
-	pb.GuardrailPolicyService_ServiceDesc.ServiceName:        "guardrail policy store",
-	pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName: "coding-tool egress policy store",
-	CorePostgresService: "core Postgres (database-backed stores)",
+// Services returns the health service name of each policy store, then each
+// registered store family, then the core Postgres entry, in report order.
+func Services() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]string, 0, 3+len(registered))
+	out = append(out,
+		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
+		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName)
+	out = append(out, registered...)
+	return append(out, CorePostgresService)
 }
 
 // CheckFunc asks for one service's serving status. An error means the
@@ -63,6 +94,8 @@ type Result struct {
 
 // Name is the store's operator-facing name.
 func (r Result) Name() string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	if n, ok := displayNames[r.Service]; ok {
 		return n
 	}
@@ -82,9 +115,9 @@ func (r Result) Detail() string {
 	case r.Status == healthpb.HealthCheckResponse_SERVING:
 		return "ready"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == CorePostgresService:
-		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; they stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers)"
+		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; store families with their own readiness entry are retried in-process, the rest stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers and no in-process retry is pending)"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
-		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed until the daemon's retry reaches the database"
+		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed (or answer UNAVAILABLE) until the daemon's in-process retry reaches the database"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:
 		return "unknown (this daemon does not report this store; it may predate readiness reporting)"
 	default:

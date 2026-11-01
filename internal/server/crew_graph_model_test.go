@@ -47,7 +47,7 @@ func TestValidateModelOverrides_Graph(t *testing.T) {
 		{"a node with no named engine", &pb.RunCrewRequest{ModelOverrides: map[string]string{"no-engine": "m-1"}}, codes.FailedPrecondition},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateModelOverrides(members, tc.req, get); status.Code(err) != tc.want {
+			if err := validateModelOverrides("this graph", members, tc.req, get); status.Code(err) != tc.want {
 				t.Fatalf("code = %v (%v), want %v", status.Code(err), err, tc.want)
 			}
 		})
@@ -100,7 +100,7 @@ func TestRunCrewGraph_ModelOverrides(t *testing.T) {
 		return &pb.RunCrewRequest{CrewId: "freeform-crew", Graph: modelGraph("hello-agent-claude", "hello-agent-codex"), ModelOverrides: ov}
 	}
 
-	t.Run("override reaches the node and is reported", func(t *testing.T) {
+	t.Run("override is reported in member_models", func(t *testing.T) {
 		var got map[string]string
 		resp, err := NewCrewServer(nil).runCrewGraph(ctxAs("admin", true),
 			newReq(map[string]string{"hello-agent-claude": "m-override"}), graphCrew(), "graph-model-ok",

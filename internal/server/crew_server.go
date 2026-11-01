@@ -173,11 +173,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 
 	// Before anything is provisioned: a model override that cannot take effect
 	// fails the RPC, not the run. A graph run's scope is the skills its nodes use.
-	scope := crew.GetSkillIds()
+	members, scope := crew.GetSkillIds(), fmt.Sprintf("crew %q", crew.GetId())
 	if req.GetGraph() != nil {
-		scope = graphModelMembers(req.GetGraph(), s.catalog)
+		members, scope = graphModelMembers(req.GetGraph(), s.catalog), "this graph"
 	}
-	if err := validateModelOverrides(scope, req, s.skillByID); err != nil {
+	if err := validateModelOverrides(scope, members, req, s.skillByID); err != nil {
 		return nil, err
 	}
 
@@ -688,7 +688,7 @@ func graphModelMembers(g *pb.TaskGraph, catalog *crews.Manager) []string {
 // the members the run starts (a crew's skills, or a graph's node skills), an id
 // that is not a plain id, and a member with no named engine (the model would be
 // dropped silently, as a skill's own pinned model is).
-func validateModelOverrides(members []string, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) error {
+func validateModelOverrides(scope string, members []string, req *pb.RunCrewRequest, getSkill func(string) (*pb.AgentSkill, bool)) error {
 	if len(req.GetModelOverrides()) == 0 {
 		return nil
 	}
@@ -698,7 +698,7 @@ func validateModelOverrides(members []string, req *pb.RunCrewRequest, getSkill f
 	}
 	for sid, model := range req.GetModelOverrides() {
 		if !inRun[sid] {
-			return status.Errorf(codes.InvalidArgument, "model_overrides names %q, which is not a member of this run", sid)
+			return status.Errorf(codes.InvalidArgument, "model_overrides names %q, which is not a member of %s", sid, scope)
 		}
 		if !validBoxRunModel(model) {
 			return status.Errorf(codes.InvalidArgument, "model_overrides[%s] must match %s", sid, boxRunModelPattern.String())
@@ -730,6 +730,15 @@ func validateSkillRunModel(skill *pb.AgentSkill, engine pb.AgentEngine, model st
 			"model: skill %s names no engine and the request has none, and a model is carried to the box only together with a named engine", skill.GetId())
 	}
 	return nil
+}
+
+// applyRunModel validates a single-skill request's `model` and returns the skill
+// the run provisions: the skill itself, or a copy carrying the model.
+func applyRunModel(skill *pb.AgentSkill, req *pb.RunAgentSkillRequest) (*pb.AgentSkill, error) {
+	if err := validateSkillRunModel(skill, req.GetEngine(), req.GetModel()); err != nil {
+		return nil, err
+	}
+	return withSkillModel(skill, req.GetModel()), nil
 }
 
 // withSkillModel returns the skill itself when model is empty, else a copy whose

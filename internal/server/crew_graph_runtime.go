@@ -57,6 +57,26 @@ func (s *AgentSkillServer) graphPeerTarget(runID, caller, target string) (string
 	return to.instance, true, nil
 }
 
+// graphSkillNodeRequest is the single-skill request a graph skill node starts
+// with: the parent's placement and git fields, plus this skill's engine and
+// model overrides (#3264).
+func graphSkillNodeRequest(parent *pb.RunCrewRequest, skillID, runID, input string) *pb.RunAgentSkillRequest {
+	return &pb.RunAgentSkillRequest{SkillId: skillID, RunId: runID, InputJson: input,
+		BackendId: parent.BackendId, Pool: parent.Pool, GitSource: parent.GitSource,
+		GitRef: parent.GitRef, GitCredential: parent.GitCredential,
+		Engine: parent.EngineOverrides[skillID], Model: parent.ModelOverrides[skillID]}
+}
+
+// graphCrewNodeRequest is the crew request a graph crew node runs: the parent
+// without its graph, so engine_overrides and model_overrides still reach the
+// node's members through runCrew (#3264).
+func graphCrewNodeRequest(parent *pb.RunCrewRequest, crew *pb.Crew, runID, input string) *pb.RunCrewRequest {
+	req := proto.Clone(parent).(*pb.RunCrewRequest)
+	req.Graph, req.Concurrency = nil, 0
+	req.CrewId, req.RunId, req.InputJson = crew.Id, runID, input
+	return req
+}
+
 // executeGraphNode gives every skill/member a fresh physical box while
 // retaining catalog ids in journals and logical A2A requests.
 func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, runID, input string, parent *pb.RunCrewRequest) (output string, err error) {
@@ -110,10 +130,7 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 		}
 	}()
 	if crew == nil {
-		task := &pb.RunAgentSkillRequest{SkillId: ids[0], RunId: runID, InputJson: input,
-			BackendId: parent.BackendId, Pool: parent.Pool, GitSource: parent.GitSource,
-			GitRef: parent.GitRef, GitCredential: parent.GitCredential, Engine: parent.EngineOverrides[ids[0]],
-			Model: parent.ModelOverrides[ids[0]]}
+		task := graphSkillNodeRequest(parent, ids[0], runID, input)
 		run, err := s.agents.beginSkillRunWith(ctx, task, provisionOptions{instanceID: peers[ids[0]].instance})
 		if err != nil {
 			return "", err
@@ -121,9 +138,7 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 		defer s.agents.endRunLease(ctx, run.lease, s.agents.boxWiper(), runExitReason)
 		return s.agents.runInBoxAgentResult(run.containerName, run.lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
 	}
-	req := proto.Clone(parent).(*pb.RunCrewRequest)
-	req.Graph, req.Concurrency = nil, 0
-	req.CrewId, req.RunId, req.InputJson = crew.Id, runID, input
+	req := graphCrewNodeRequest(parent, crew, runID, input)
 	deps := crewRunDeps{send: func(ctx context.Context, task *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
 		// Only the daemon's topology driver translates logical senders. An
 		// authenticated box must already carry this node's physical identity.

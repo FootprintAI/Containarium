@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -20,6 +21,7 @@ type fakeRunner struct {
 	calls           []string
 	failSnapshot    error
 	failCopyInit    error
+	failEnsureACLs  error
 	failCopyRefresh map[int]error // keyed by call count: first call is 0
 	copyRefreshN    int
 	failStop        error
@@ -52,6 +54,10 @@ func (f *fakeRunner) DeleteSnapshot(c, s string) error {
 	f.log(fmt.Sprintf("delsnap %s/%s", c, s))
 	return nil
 }
+func (f *fakeRunner) EnsureTargetACLs(c, r string) error {
+	f.log(fmt.Sprintf("ensureacls %s -> %s", c, r))
+	return f.failEnsureACLs
+}
 func (f *fakeRunner) CopyInitial(c, s, r, pool string) error {
 	f.log("copyinit " + copyDesc(c, s, r, pool))
 	return f.failCopyInit
@@ -63,6 +69,19 @@ func (f *fakeRunner) CopyRefresh(c, s, r, pool string) error {
 	if err, ok := f.failCopyRefresh[n]; ok {
 		return err
 	}
+	return nil
+}
+func (f *fakeRunner) CopyRefreshLive(c, s, r, pool string) error {
+	f.log("refreshlive " + copyDesc(c, s, r, pool))
+	n := f.copyRefreshN
+	f.copyRefreshN++
+	if err, ok := f.failCopyRefresh[n]; ok {
+		return err
+	}
+	return nil
+}
+func (f *fakeRunner) DeleteTarget(c, r string) error {
+	f.log(fmt.Sprintf("deltarget %s -> %s", c, r))
 	return nil
 }
 func (f *fakeRunner) Stop(c string) error {
@@ -138,8 +157,48 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 	if runner.calls[0] != "snapshot alice-container/containarium-move-sync0" {
 		t.Errorf("first call = %q", runner.calls[0])
 	}
-	if runner.calls[1] != "copyinit alice-container/containarium-move-sync0 -> vm2" {
-		t.Errorf("second call = %q", runner.calls[1])
+	// The target must have the tenant's ACLs before the copy creates the
+	// instance, so the ACL step comes right before the copy.
+	if runner.calls[1] != "ensureacls alice-container -> vm2" {
+		t.Errorf("second call = %q, want the target ACL step", runner.calls[1])
+	}
+	if runner.calls[2] != "copyinit alice-container/containarium-move-sync0 -> vm2" {
+		t.Errorf("third call = %q", runner.calls[2])
+	}
+
+	// Pre-copy refreshes run while the source serves traffic, so they must not
+	// freeze it; the final refresh runs after the stop and stays consistent.
+	wantLive := "refreshlive alice-container/containarium-move-sync1 -> vm2"
+	wantFinal := "refresh alice-container/containarium-move-final -> vm2"
+	liveIdx, finalIdx, stopIdx := -1, -1, -1
+	for i, c := range runner.calls {
+		switch c {
+		case wantLive:
+			liveIdx = i
+		case wantFinal:
+			finalIdx = i
+		case "stop alice-container":
+			stopIdx = i
+		}
+	}
+	if liveIdx == -1 || finalIdx == -1 || stopIdx == -1 || liveIdx >= stopIdx || stopIdx >= finalIdx {
+		t.Errorf("want %q before the stop and %q after it; calls: %v", wantLive, wantFinal, runner.calls)
+	}
+
+	// The sync snapshots travel to the target with each refresh, so after a
+	// successful move they are removed there as well as on the source.
+	for _, snap := range []string{"containarium-move-sync0", "containarium-move-final"} {
+		want := "delsnap vm2:alice-container/" + snap
+		found := false
+		for _, c := range runner.calls {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q (target-side cleanup); got %v", want, runner.calls)
+		}
 	}
 
 	// Cutover must include a stop on the source — search the call list.
@@ -254,5 +313,108 @@ func TestMigrationDefaults(t *testing.T) {
 				t.Errorf("deltaThresholdSeconds = %d, want %d", p.deltaThresholdSeconds, c.wantDelta)
 			}
 		})
+	}
+}
+
+// If the target's ACLs cannot be prepared, the copy would only fail later with
+// a less obvious error. The move stops before copying anything and removes the
+// snapshot it took.
+func TestMoveContainer_StopsWhenTheTargetACLsCannotBePrepared(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true, failEnsureACLs: fmt.Errorf("remote refused")}
+	cs := newTestContainerServer(t, runner, "vm2")
+
+	_, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2"})
+	if err == nil || !strings.Contains(err.Error(), "network ACL") {
+		t.Fatalf("want an error naming the network ACL step, got %v", err)
+	}
+	for _, c := range runner.calls {
+		if strings.HasPrefix(c, "copyinit") {
+			t.Errorf("nothing may be copied when the ACL step fails; calls: %v", runner.calls)
+		}
+	}
+	cleaned := false
+	for _, c := range runner.calls {
+		if c == "delsnap alice-container/containarium-move-sync0" {
+			cleaned = true
+		}
+	}
+	if !cleaned {
+		t.Errorf("the sync snapshot should be removed after the failure; calls: %v", runner.calls)
+	}
+}
+
+func callIndex(calls []string, want string) int {
+	for i, c := range calls {
+		if c == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// When adopt fails after the source was stopped, the move rolls back by
+// restarting the source. The copy it made on the target must go too, and
+// before the source restarts, so the tenant never runs on two backends.
+func TestMoveContainer_RemovesTheTargetCopyWhenAdoptFails(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true}
+	cs := newTestContainerServer(t, runner, "vm2")
+	prev := overrideAdoptForTest(func(_ *PeerClient, _ string, _ *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
+		return nil, errors.New("adopt refused")
+	})
+	defer prev()
+
+	if _, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2", MaxIterations: 1}); err == nil {
+		t.Fatal("expected the adopt failure to fail the move")
+	}
+
+	del := callIndex(runner.calls, "deltarget alice-container -> vm2")
+	start := callIndex(runner.calls, "start alice-container")
+	if del == -1 {
+		t.Fatalf("the target copy must be removed after a failed adopt; calls: %v", runner.calls)
+	}
+	if start == -1 || del > start {
+		t.Errorf("the target copy must be removed before the source restarts (delete=%d start=%d); calls: %v", del, start, runner.calls)
+	}
+}
+
+func TestMoveContainer_RemovesTheTargetCopyWhenARefreshFails(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true, failCopyRefresh: map[int]error{0: errors.New("refresh failed")}}
+	cs := newTestContainerServer(t, runner, "vm2")
+
+	if _, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2", MaxIterations: 1}); err == nil {
+		t.Fatal("expected the refresh failure to fail the move")
+	}
+	if callIndex(runner.calls, "deltarget alice-container -> vm2") == -1 {
+		t.Errorf("the target copy must be removed after a failed refresh; calls: %v", runner.calls)
+	}
+}
+
+// If the first copy itself fails, the move does not know whether anything on
+// the target is its own, so it must not delete anything there.
+func TestMoveContainer_LeavesTheTargetAloneWhenTheFirstCopyFails(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true, failCopyInit: errors.New("already exists")}
+	cs := newTestContainerServer(t, runner, "vm2")
+
+	if _, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2"}); err == nil {
+		t.Fatal("expected the first copy failure to fail the move")
+	}
+	if callIndex(runner.calls, "deltarget alice-container -> vm2") != -1 {
+		t.Errorf("nothing may be deleted on the target when the first copy failed; calls: %v", runner.calls)
+	}
+}
+
+func TestMoveContainer_KeepsTheTargetCopyOnSuccess(t *testing.T) {
+	runner := &fakeRunner{hasRemote: true}
+	cs := newTestContainerServer(t, runner, "vm2")
+	prev := overrideAdoptForTest(func(_ *PeerClient, _ string, _ *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
+		return &pb.AdoptMigratedContainerResponse{NewIpAddress: "10.0.7.42"}, nil
+	})
+	defer prev()
+
+	if _, err := cs.MoveContainer(testCtx(), &pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2"}); err != nil {
+		t.Fatalf("MoveContainer: %v", err)
+	}
+	if callIndex(runner.calls, "deltarget alice-container -> vm2") != -1 {
+		t.Errorf("a successful move must keep the target copy; calls: %v", runner.calls)
 	}
 }

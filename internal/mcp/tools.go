@@ -1776,6 +1776,14 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Crew input as a JSON string (defaults to {}).",
 					},
+					"model_overrides": map[string]interface{}{
+						"type": "object",
+						"description": "Optional per-member model override, an object of skill id to model id " +
+							"(same as `containarium crew run --model <skill-id>=<model-id>`). The id is passed " +
+							"through as is; a member with no entry keeps its skill's own model. The member needs " +
+							"a named engine. The daemon refuses unusable entries.",
+						"additionalProperties": map[string]interface{}{"type": "string"},
+					},
 				},
 				"required": []string{"crew_id"},
 			},
@@ -3426,10 +3434,46 @@ func handleListCrews(client API, _ map[string]interface{}) (string, error) {
 	return b.String(), nil
 }
 
+// getModelOverridesArg reads the optional model_overrides object (skill id ->
+// model id) off the JSON-RPC arguments, the same shape `crew run --model
+// <skill-id>=<model-id>` builds. Absent or empty yields nil (nothing sent); a
+// non-object, a non-string value, or an empty skill or model id is an error
+// naming the argument. The ids are otherwise passed through as is.
+func getModelOverridesArg(args map[string]interface{}) (map[string]string, error) {
+	raw, ok := args["model_overrides"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("model_overrides must be an object of skill id to model id, got %T", raw)
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(obj))
+	for skillID, v := range obj {
+		model, isStr := v.(string)
+		if !isStr {
+			return nil, fmt.Errorf("model_overrides[%q] must be a string model id, got %T", skillID, v)
+		}
+		if skillID == "" || model == "" {
+			return nil, fmt.Errorf("model_overrides needs a non-empty skill id and model id (got %q=%q)", skillID, model)
+		}
+		out[skillID] = model
+	}
+	return out, nil
+}
+
 func handleRunCrew(client API, args map[string]interface{}) (string, error) {
+	modelOverrides, err := getModelOverridesArg(args)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.RunCrew(RunCrewRequest{
-		CrewID:    getStringArg(args, "crew_id", ""),
-		InputJSON: getStringArg(args, "input_json", ""),
+		CrewID:         getStringArg(args, "crew_id", ""),
+		InputJSON:      getStringArg(args, "input_json", ""),
+		ModelOverrides: modelOverrides,
 	})
 	if err != nil {
 		return "", err

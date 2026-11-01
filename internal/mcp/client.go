@@ -497,6 +497,9 @@ type RunCrewRequest struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Pool      string `json:"pool,omitempty"`
 	InputJSON string `json:"input_json,omitempty"`
+	// ModelOverrides maps skill_id -> model id (#3259), passed through as is;
+	// the daemon refuses the unusable ones.
+	ModelOverrides map[string]string `json:"model_overrides,omitempty"`
 }
 
 // RunCrewResponse is the result of a crew run.
