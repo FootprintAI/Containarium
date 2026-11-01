@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.124.0] - 2026-11-01
+
+### Added
+
+- **The JWT revocation list recovers in-process after a degraded start** (#3328, #3366; on the #3326 late-install helper). A daemon that started while Postgres was down used to accept revoked tokens until it was restarted. The revocation store is now a late-install family with the readiness entry `containarium.revocation`: once Postgres answers it installs, and `TokenManager` and `AgentSkillServer` read it through atomic accessors. `TokensService` is registered unconditionally through a stand-in whose RPCs answer `UNAVAILABLE` until the store installs (with no Postgres at all it used to answer `Unimplemented`). While the store is absent, tokens are validated without the revocation check and readiness shows `NOT_SERVING`. The model gateway's jti check and owner cutoffs still take the store only at startup (#3365).
+
 ### Fixed
 
 - **Cookie-authenticated REST mutations now require a trusted origin** (#3338). A state-changing request (POST/PUT/PATCH/DELETE) carried only by the session cookie is refused with 403 unless the browser marks it `Sec-Fetch-Site: same-origin` or its `Origin` is in the `CONTAINARIUM_ALLOWED_ORIGINS` list (the CORS list). `SameSite=Lax` alone did not stop a same-site sibling host from forging these. Bearer-header requests and read-only methods are unchanged.
