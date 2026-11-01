@@ -19,6 +19,8 @@ on:
       - '.github/CODEOWNERS'
       - 'scripts/ci/check-codeowners.sh'
       - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/validate-release-version.sh'
+      - 'scripts/ci/test-validate-release-version.sh'
       - 'scripts/ci/fake-gh-repo-settings.sh'
       - 'scripts/ci/testdata/repo-settings/**'
       - 'scripts/admin/apply-repo-settings.sh'
@@ -37,6 +39,8 @@ on:
       - '.github/CODEOWNERS'
       - 'scripts/ci/check-codeowners.sh'
       - 'scripts/ci/test-apply-repo-settings.sh'
+      - 'scripts/ci/validate-release-version.sh'
+      - 'scripts/ci/test-validate-release-version.sh'
       - 'scripts/ci/fake-gh-repo-settings.sh'
       - 'scripts/ci/testdata/repo-settings/**'
       - 'scripts/admin/apply-repo-settings.sh'
@@ -75,6 +79,9 @@ jobs:
 
       - name: CODEOWNERS covers the decided paths
         run: scripts/ci/check-codeowners.sh
+
+      - name: Release version validator rejects injection payloads (#3344)
+        run: scripts/ci/test-validate-release-version.sh
 
       - name: Repo-settings script tests (dry run writes nothing, protection preserved)
         run: scripts/ci/test-apply-repo-settings.sh
