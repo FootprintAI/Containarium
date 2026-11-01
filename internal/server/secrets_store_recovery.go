@@ -101,7 +101,9 @@ func openSecretsStore(ctx context.Context, pool *pgxpool.Pool, cs *ContainerServ
 	// store health).
 	cs.SetKMSStatus(os.Getenv("CONTAINARIUM_KMS_BACKEND"), kdesc, kms != nil, requireEnvelope)
 	if requireEnvelope && kms == nil {
-		return nil, errSecretsEnvelopeWithoutKMS
+		// A config refusal (#3378): the family stays pending but does not
+		// hold the self-restart. errors.Is still matches the sentinel.
+		return nil, &storeConfigRefusal{Err: errSecretsEnvelopeWithoutKMS}
 	}
 	var opts []secrets.Option
 	if kms != nil {
