@@ -102,6 +102,13 @@ type revocationConsumers struct {
 	// skillRuns is handed the store on a late install only: at startup
 	// NewDualServer wires it directly, as it did before #3328.
 	skillRuns *AgentSkillServer
+	// gateway is the model gateway's live revocation reads (#3365): the jti
+	// checker and the owner cutoffs. Installed on a late install only, like
+	// skillRuns; nil when not wired.
+	gateway *gatewayRevocations
+	// cleanup starts the expired-row cleanup loop once it has both the
+	// store and the serving context (#3365); nil when not wired.
+	cleanup *revocationCleanup
 }
 
 // install wires st into token validation and the TokensService.
@@ -125,9 +132,23 @@ func registerRevocationLateInstall(r *storeRecovery, c revocationConsumers, open
 			if err != nil {
 				return err
 			}
+			// The gateway first: it can fail (the owner store), and on
+			// failure nothing has been installed, so the retry starts clean.
+			if c.gateway != nil {
+				n, err := c.gateway.install(ctx, pool, st)
+				if err != nil {
+					return err
+				}
+				r.logf("Model gateway revocation checks installed in-process: revoked gateway tokens are rejected again; %d owner cutoff(s) recorded in memory during the window carried into Postgres", n)
+			}
 			c.install(st)
 			if c.skillRuns != nil {
 				c.skillRuns.SetRevocationStore(st)
+			}
+			if cl, ok := st.(revocationCleaner); ok {
+				c.cleanup.setStore(cl)
+			} else if c.cleanup != nil {
+				r.logf("Warning: the installed revocation store cannot prune expired rows (%T); the cleanup loop is not started", st)
 			}
 			r.logf("JWT revocation list enabled (installed in-process): revoked tokens are rejected again and TokensService is serving")
 			return nil
