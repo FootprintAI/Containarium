@@ -241,12 +241,15 @@ type AgentSkillServer struct {
 	// note decision D3). Nil on a daemon without the tracker store wired
 	// (--standalone, or Postgres unavailable): a request naming a
 	// tracker_connection then fails closed rather than minting an
-	// unvalidated claim — see RunAgentSkill.
-	trackerConnections trackerConnectionChecker
-	// lineageReservations sweeps a run's leftover fan-out reservations
+	// unvalidated claim — see RunAgentSkill. Read through
+	// loadTrackerConnections: the tracker store's late install (#3329)
+	// sets it while RPCs are served.
+	trackerConnectionsRef liveValue[trackerConnectionChecker]
+	// lineageReservationsRef sweeps a run's leftover fan-out reservations
 	// when its lease ends (#2062). Nil on a daemon without the tracker
-	// store wired: there is nothing to sweep.
-	lineageReservations lineageReservationReleaser
+	// store wired: there is nothing to sweep. Read through
+	// loadLineageReservations, for the same reason.
+	lineageReservationsRef liveValue[lineageReservationReleaser]
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -341,7 +344,13 @@ func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
 // Nil (the default) makes any request naming a tracker_connection fail
 // closed with FailedPrecondition.
 func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
-	s.trackerConnections = c
+	s.trackerConnectionsRef.store(c)
+}
+
+// loadTrackerConnections returns the current connection checker, nil
+// until one is wired.
+func (s *AgentSkillServer) loadTrackerConnections() trackerConnectionChecker {
+	return s.trackerConnectionsRef.load()
 }
 
 // lineageReservationReleaser is the one method of *tracker.Store
@@ -355,7 +364,13 @@ type lineageReservationReleaser interface {
 // default) leaves them in place. As with SetRevocationStore, the caller
 // must pass a true nil, not a nil *tracker.Store.
 func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
-	s.lineageReservations = r
+	s.lineageReservationsRef.store(r)
+}
+
+// loadLineageReservations returns the current reservation releaser, nil
+// until one is wired.
+func (s *AgentSkillServer) loadLineageReservations() lineageReservationReleaser {
+	return s.lineageReservationsRef.load()
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -911,7 +926,8 @@ const lineageReleaseBudget = 3 * time.Second
 // swept: over-counting is the fail-closed side. Best-effort: a failure is
 // logged and leaves the rows, which ListTrackerDispatches still shows.
 func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
-	if s.lineageReservations == nil || runID == "" {
+	reservations := s.loadLineageReservations()
+	if reservations == nil || runID == "" {
 		return
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
@@ -920,7 +936,7 @@ func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID
 	}
 	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
 	defer cancel()
-	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	n, err := reservations.ReleaseRunReservations(rctx, username, runID)
 	if err != nil {
 		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
 		return
@@ -979,14 +995,15 @@ func (s *AgentSkillServer) validateTrackerConnection(ctx context.Context, connNa
 	if connName == "" {
 		return nil
 	}
-	if s.trackerConnections == nil {
+	connections := s.loadTrackerConnections()
+	if connections == nil {
 		return status.Error(codes.FailedPrecondition, "tracker connections not configured on this daemon")
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || username == "" {
 		return status.Error(codes.Unauthenticated, "no authenticated subject")
 	}
-	if _, err := s.trackerConnections.Get(ctx, username, connName); err != nil {
+	if _, err := connections.Get(ctx, username, connName); err != nil {
 		if errors.Is(err, tracker.ErrNotFound) {
 			return status.Errorf(codes.InvalidArgument, "tracker_connection %q not found for tenant %q", connName, username)
 		}

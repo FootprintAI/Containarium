@@ -72,8 +72,12 @@ type BoxAttributionLookup interface {
 type ModelGatewayServer struct {
 	pb.UnimplementedModelGatewayServiceServer
 
-	keys  GatewayKeyStore
-	boxes BoxAttributionLookup
+	keys GatewayKeyStore
+	// keysSource, when set, is read on every call in place of keys (see
+	// keyStore). The daemon sets it before serving, so a secrets store
+	// installed after a degraded start (#3327) reaches the key verbs.
+	keysSource func() GatewayKeyStore
+	boxes      BoxAttributionLookup
 
 	// gw is the running model gateway. Nil when this daemon does not serve one
 	// (no provider key and no operator-registered upstream), in which case the
@@ -157,10 +161,24 @@ func (s *ModelGatewayServer) SetGateway(gw *modelgateway.Gateway, secret []byte,
 // this is the common path, not a corner case. (Same hazard dual_server.go
 // documents for the gateway's revocation and key-resolver fields.)
 func GatewayKeyStoreOf(cs *ContainerServer) GatewayKeyStore {
-	if cs == nil || cs.secretsStore == nil {
+	if cs == nil {
 		return nil
 	}
-	return cs.secretsStore
+	store := cs.loadSecretsStore()
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
+// keyStore is the key custody for this call: keysSource when set, so a
+// secrets store installed after construction (#3327) reaches the key
+// verbs, otherwise the store the service was built with.
+func (s *ModelGatewayServer) keyStore() GatewayKeyStore {
+	if s.keysSource != nil {
+		return s.keysSource()
+	}
+	return s.keys
 }
 
 // validateKeyOwnerArg turns a malformed key_owner into InvalidArgument. The rule
@@ -178,7 +196,8 @@ func (s *ModelGatewayServer) SetTenantProviderKey(ctx context.Context, req *pb.S
 	if err := auth.RequireScope(ctx, auth.ScopeGatewayAdmin); err != nil {
 		return nil, err
 	}
-	if s.keys == nil {
+	keys := s.keyStore()
+	if keys == nil {
 		return nil, status.Error(codes.Unavailable, "this daemon holds no secrets store, so it cannot store per-owner provider keys")
 	}
 	if err := validateKeyOwnerArg(req.GetKeyOwner()); err != nil {
@@ -191,12 +210,12 @@ func (s *ModelGatewayServer) SetTenantProviderKey(ctx context.Context, req *pb.S
 	if strings.TrimSpace(req.GetApiKey()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "api_key is required")
 	}
-	if err := s.keys.SetGatewayProviderKey(ctx, req.GetKeyOwner(), provider, req.GetApiKey()); err != nil {
+	if err := keys.SetGatewayProviderKey(ctx, req.GetKeyOwner(), provider, req.GetApiKey()); err != nil {
 		return nil, status.Errorf(codes.Internal, "storing the provider key failed: %v", err)
 	}
 	// Read the status back rather than fingerprinting the request: the response
 	// then describes what is STORED, not what the caller sent.
-	st, err := s.keys.GatewayProviderKeyStatus(ctx, req.GetKeyOwner(), provider)
+	st, err := keys.GatewayProviderKeyStatus(ctx, req.GetKeyOwner(), provider)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "reading the stored key's status failed: %v", err)
 	}
@@ -217,7 +236,8 @@ func (s *ModelGatewayServer) DeleteTenantProviderKey(ctx context.Context, req *p
 	if err := auth.RequireScope(ctx, auth.ScopeGatewayAdmin); err != nil {
 		return nil, err
 	}
-	if s.keys == nil {
+	keys := s.keyStore()
+	if keys == nil {
 		return nil, status.Error(codes.Unavailable, "this daemon holds no secrets store, so it cannot store per-owner provider keys")
 	}
 	if err := validateKeyOwnerArg(req.GetKeyOwner()); err != nil {
@@ -227,7 +247,7 @@ func (s *ModelGatewayServer) DeleteTenantProviderKey(ctx context.Context, req *p
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.keys.DeleteGatewayProviderKey(ctx, req.GetKeyOwner(), provider); err != nil {
+	if err := keys.DeleteGatewayProviderKey(ctx, req.GetKeyOwner(), provider); err != nil {
 		if errors.Is(err, secrets.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "no %s key registered for %s", provider, req.GetKeyOwner())
 		}
@@ -252,7 +272,8 @@ func (s *ModelGatewayServer) GetTenantProviderKeyStatus(ctx context.Context, req
 	if err := auth.RequireScope(ctx, auth.ScopeGatewayAdmin); err != nil {
 		return nil, err
 	}
-	if s.keys == nil {
+	keys := s.keyStore()
+	if keys == nil {
 		return nil, status.Error(codes.Unavailable, "this daemon holds no secrets store, so it cannot store per-owner provider keys")
 	}
 	if err := validateKeyOwnerArg(req.GetKeyOwner()); err != nil {
@@ -262,7 +283,7 @@ func (s *ModelGatewayServer) GetTenantProviderKeyStatus(ctx context.Context, req
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	st, err := s.keys.GatewayProviderKeyStatus(ctx, req.GetKeyOwner(), provider)
+	st, err := keys.GatewayProviderKeyStatus(ctx, req.GetKeyOwner(), provider)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "reading the key's status failed: %v", err)
 	}
@@ -304,14 +325,15 @@ func (s *ModelGatewayServer) MintGatewayToken(ctx context.Context, req *pb.MintG
 	if err != nil {
 		return nil, err
 	}
-	if s.keys == nil {
+	keys := s.keyStore()
+	if keys == nil {
 		return nil, status.Error(codes.Unavailable, "this daemon holds no secrets store, so it cannot resolve per-owner provider keys")
 	}
 	// Refuse rather than let the gateway fall back to the daemon-global key at
 	// call time (#1725's resolveKey case 3): a token issued now that is KNOWN to
 	// bill the operator instead of the owner is a billing bug we can decline to
 	// create. The fallback stays for tokens issued before the key was removed.
-	if key, ok := s.keys.KeyFor(ctx, keyOwner, provider); !ok || key == "" {
+	if key, ok := keys.KeyFor(ctx, keyOwner, provider); !ok || key == "" {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"no %s key registered for %s; register one before minting a token that would spend it", provider, keyOwner)
 	}
