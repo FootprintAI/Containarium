@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`containarium move` no longer fails at the cutover when the container was already stopped.** The cutover stops the source before its final copy and only tolerated Incus's older "is not running" wording, so a container that idle auto-sleep or an operator had stopped failed with `The instance is already stopped` (Incus 7 wording) after its copy had already succeeded. Both wordings now count as stopped. A stopped container is still started on the target by the adopt step.
+- **`containarium move` now reads the adopt reply correctly, so a finished move is no longer rolled back with `target returned empty new IP`.** The source asks the target to adopt the copied container and reads its new address from the reply. It decoded the reply with `encoding/json` into the generated struct, whose tags are snake_case, but the target answers through grpc-gateway in protobuf JSON (`newIpAddress`), so the address silently decoded to empty, and the move rolled back after the copy, the refreshes and the adopt had all worked. The pre-flight reply for encrypted containers had the same decode and read `canResolve` as false. Both now use `protojson`, which reads either spelling and ignores fields a newer peer has added.
 
 ## [0.123.3] - 2026-11-01
 
