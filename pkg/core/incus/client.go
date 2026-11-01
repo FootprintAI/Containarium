@@ -1761,23 +1761,18 @@ func (c *Client) GetContainerIP(containerName string) (string, error) {
 	return info.IPAddress, nil
 }
 
-// FindCaddyContainerIP looks for a Caddy container and returns its IP address
-// It searches for containers with "caddy" in the name (case-insensitive)
+// FindCaddyContainerIP returns the IP address of the running core Caddy
+// container. The core Caddy is identified by its role label, or for a
+// pre-label core container by its exact core name (see FindContainerByRole),
+// never by a "caddy" substring: a tenant can name their own container
+// anything, and a substring match would let it stand in for the core Caddy
+// (#3371).
 func (c *Client) FindCaddyContainerIP() (string, error) {
-	containers, err := c.ListContainers()
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %w", err)
+	info, err := c.FindContainerByRole(RoleCaddy)
+	if err != nil || info.IPAddress == "" {
+		return "", fmt.Errorf("no running Caddy container found")
 	}
-
-	// Look for containers with "caddy" in the name
-	for _, container := range containers {
-		nameLower := strings.ToLower(container.Name)
-		if strings.Contains(nameLower, "caddy") && container.IPAddress != "" {
-			return container.IPAddress, nil
-		}
-	}
-
-	return "", fmt.Errorf("no running Caddy container found")
+	return info.IPAddress, nil
 }
 
 // FindContainerByRole finds a running container with the given role label.
@@ -1814,7 +1809,9 @@ func (c *Client) FindContainerByRole(role Role) (*ContainerInfo, error) {
 				return &containers[i], nil
 			}
 		case RoleCaddy:
-			if ct.Name == "containarium-core-caddy" || strings.Contains(strings.ToLower(ct.Name), "caddy") {
+			// Exact name only: a substring match would accept a tenant
+			// container whose name merely contains "caddy" (#3371).
+			if ct.Name == "containarium-core-caddy" {
 				return &containers[i], nil
 			}
 		case RoleVictoriaMetrics:
