@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **API contract for restoring a whole-box backup into a box** (#3356). New `BackupService.RestoreBoxBackup` RPC (`POST /v1/backups/{id}/restore-box`) with `target_box` (optional, defaults to `<source box>-restored`), `force` (replaces a stopped box only; a running box is always refused) and `age_identity` (used once, never stored or logged). Typed gRPC and HTTP client methods are included. The server applies the `backups:write` scope and tenant checks and then answers `Unimplemented`; the restore itself lands with #3357. `RestoreBackup` and its database restore contract are unchanged.
 
+### Documentation
+
+- **The upgrade notes now include the managed toolchain install** (#3361). v0.123.0 started refusing `BUILD_TOOLS` runs on Incus hosts with no managed toolchain release, but its notes listed the feature only under Added. Its **Upgrading** section now names the install step, `docs/UPGRADE-AND-ROLLBACK.md` has a "Managed toolchain" section and a post-upgrade check, and the release PR checklist in `docs/RELEASE-PROCESS.md` now asks whether a release needs a host-side step.
+
 ## [0.124.0] - 2026-11-01
 
 ### Upgrading
@@ -65,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrading
 
 - **Legacy `backups:write` verifier tokens stop working** (#3219). Releases v0.120.1 through v0.122.0 still accepted them and logged a deprecation line; that window has ended: `VerifyBackup` and the `verify_backup` MCP tool now require `backups:verify`. Before upgrading, re-mint each verifier token on the daemon host with `containarium token generate --username <tenant> --roles user --scopes backups:read,backups:verify --expiry 720h --secret-file <jwt-secret-file> --raw`, switch the job to the replacement and revoke the old token. A legacy scoped token receives `PermissionDenied` (HTTP 403); the RPC error includes re-mint instructions. Create, restore, delete and prune still require `backups:write`. The legacy authorization and deprecation-log branches, including the unused matched-scope and MCP alternate-scope helpers, have been removed.
+- **`BUILD_TOOLS` runs need a managed toolchain release on each Incus host** (#3285, #3164; this note was added after release, #3361). From this release, a `StartBoxRun` at tool-access level `build_tools` is refused with `FailedPrecondition: managed toolchain mount /opt/containarium/toolchains: ...` unless the host has a toolchain release installed. A binary-only upgrade (`containarium backends upgrade`, sentinel auto-update, `scripts/deploy-binary.sh`, `scripts/redeploy-workhorse.sh`) does not install one. On each Incus host, download `toolchains-linux-<arch>.tar.gz` and its `.sigstore.json` from the same GitHub release, verify it with `cosign verify-blob`, extract it and run `sudo bash install.sh` from the extracted directory; the exact commands are in `docs/MANAGED-TOOLCHAINS.md` ("Install on each host"). Check with `readlink /opt/containarium/toolchains/current`. Runs at `none` and `full_sudo` are unaffected.
 
 ### Added
 

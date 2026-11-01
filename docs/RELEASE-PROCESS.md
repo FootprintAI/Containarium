@@ -170,7 +170,11 @@ Before merging the release PR, check each:
   "Upgrading" heading in the changelog that names the flag and what an operator
   must do first. v0.101.0 and v0.101.1 made `--sentinel-pin` mandatory on tunnel
   clients without saying so, and a tunnel host upgraded on release day could not
-  reconnect.
+  reconnect. The same applies to a new host-side prerequisite that a binary-only
+  upgrade does not install: ask "does this release need a host-side step?" and,
+  if it does, name the step under "Upgrading". v0.123.0 started refusing
+  `BUILD_TOOLS` runs on hosts with no managed toolchain release and listed the
+  feature only under "Added" (#3361).
 - **Paired changes.** If a change to a client needs a counterpart on the server
   (or the reverse), both halves are in this release. If the second half is not
   merged yet, the first half does not ship: revert it from the release branch or
