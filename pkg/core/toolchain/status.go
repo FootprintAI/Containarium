@@ -47,7 +47,7 @@ func ReadStatus(root string) Status {
 		return Status{Err: err}
 	}
 	path := filepath.Join(root, "current", "manifest.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed manifest name under the platform toolchain root (HostRoot; a temp dir in tests)
 	if err != nil {
 		return Status{Err: fmt.Errorf("read managed toolchain manifest %s: %w", path, err)}
 	}
