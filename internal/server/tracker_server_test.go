@@ -83,6 +83,25 @@ func mustTestTrackerStore(t *testing.T) *tracker.Store {
 	return store
 }
 
+// withTrackerStore wires st through SetTrackerStore, for tests that build a
+// server as a struct literal (the field is atomic since #3329).
+func withTrackerStore(cs *ContainerServer, st *tracker.Store) *ContainerServer {
+	cs.SetTrackerStore(st)
+	return cs
+}
+
+// withTrackerRunStarter wires r through SetTrackerRunStarter.
+func withTrackerRunStarter(cs *ContainerServer, r tracker.RunStarter) *ContainerServer {
+	cs.SetTrackerRunStarter(r)
+	return cs
+}
+
+// withTrackerConnections wires c through SetTrackerConnections.
+func withTrackerConnections(s *AgentSkillServer, c trackerConnectionChecker) *AgentSkillServer {
+	s.SetTrackerConnections(c)
+	return s
+}
+
 func TestSetTrackerConnection_NoAuthContext(t *testing.T) {
 	s := &ContainerServer{}
 	_, err := s.SetTrackerConnection(context.Background(), &pb.SetTrackerConnectionRequest{
@@ -115,7 +134,7 @@ func TestSetTrackerConnection_TrackerWriteScopeInsufficient(t *testing.T) {
 // return Unavailable before authz is ever reached, testing the wrong
 // thing.
 func TestSetTrackerConnection_CrossTenantDenied(t *testing.T) {
-	s := withSecretsStore(&ContainerServer{trackerStore: mustTestTrackerStore(t)}, mustTestSecretsStore(t))
+	s := withSecretsStore(withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t)), mustTestSecretsStore(t))
 	ctx := kmsKeyTestCtx("tracker-rpc-cross-tenant-alice", "member", "tracker:admin")
 	_, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
 		Username: "tracker-rpc-cross-tenant-bob", Name: "default",
@@ -128,7 +147,7 @@ func TestSetTrackerConnection_CrossTenantDenied(t *testing.T) {
 func TestSetTrackerConnection_RejectsMissingSecret(t *testing.T) {
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
-	s := withSecretsStore(&ContainerServer{trackerStore: trackerStore}, secretsStore)
+	s := withSecretsStore(withTrackerStore(&ContainerServer{}, trackerStore), secretsStore)
 	const user = "tracker-rpc-missing-secret"
 
 	ctx := kmsKeyTestCtx(user, "member", "tracker:admin")
@@ -147,7 +166,7 @@ func TestSetTrackerConnection_RejectsMissingSecret(t *testing.T) {
 func TestSetTrackerConnection_RejectsNonBrokerSecret(t *testing.T) {
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
-	s := withSecretsStore(&ContainerServer{trackerStore: trackerStore}, secretsStore)
+	s := withSecretsStore(withTrackerStore(&ContainerServer{}, trackerStore), secretsStore)
 	const user = "tracker-rpc-non-broker-secret"
 
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
@@ -192,7 +211,7 @@ func TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs(t *testing.T) {
 	}
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
-	s := withSecretsStore(&ContainerServer{trackerStore: trackerStore}, secretsStore)
+	s := withSecretsStore(withTrackerStore(&ContainerServer{}, trackerStore), secretsStore)
 
 	seeded := map[string]bool{}
 	for _, tc := range cases {
@@ -227,7 +246,7 @@ func TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs(t *testing.T) {
 func TestTrackerConnection_CRUDRoundTrip(t *testing.T) {
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
-	s := withSecretsStore(&ContainerServer{trackerStore: trackerStore}, secretsStore)
+	s := withSecretsStore(withTrackerStore(&ContainerServer{}, trackerStore), secretsStore)
 	const user = "tracker-rpc-crud"
 
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
@@ -285,7 +304,7 @@ func TestTrackerConnection_CRUDRoundTrip(t *testing.T) {
 func TestSetTrackerConnection_AuditsCreateUpdateAndDelete(t *testing.T) {
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
-	s := withSecretsStore(&ContainerServer{trackerStore: trackerStore, auditStore: mustTestAuditStore(t)}, secretsStore)
+	s := withSecretsStore(withTrackerStore(&ContainerServer{auditStore: mustTestAuditStore(t)}, trackerStore), secretsStore)
 	// Unique per invocation: fixed usernames accumulate audit rows when
 	// the same Postgres database is reused, inflating the exact-one counts.
 	user := "tracker-rpc-connection-audit-" + uuid.NewString()
@@ -368,9 +387,9 @@ func TestSetTrackerConnection_AuditsCreateUpdateAndDelete(t *testing.T) {
 func setUpBrokerConnection(t *testing.T, user string, describer tracker.ReaderProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(describer),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
 	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
@@ -397,9 +416,9 @@ func TestSetTrackerConnection_DescribeCredentialBestEffort_PopulatesExpiry(t *te
 	}}
 	const user = "tracker-rpc-describe-success"
 	s := &ContainerServer{
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(describer),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
 	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
@@ -440,9 +459,9 @@ func TestSetTrackerConnection_DescribeCredentialFailure_StillSucceeds(t *testing
 	describer := &fakeReaderProvider{credErr: tracker.ErrUnreachable}
 	const user = "tracker-rpc-describe-failure"
 	s := &ContainerServer{
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(describer),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
 	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{

@@ -51,11 +51,11 @@ func cleanTrackerLineage(t *testing.T, user string) {
 func setUpCreateConnection(t *testing.T, user string, provider *fakeWriterProvider, policy *pb.TrackerPolicy) (*ContainerServer, context.Context, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
 		claimLocks:        tracker.NewClaimLocks(),
 		runRegistry:       runlease.NewRegistry(),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
 	s.SetSecretsStore(mustTestSecretsStore(t))
 	s.runRegistry.Register(createTestRunID, runlease.Info{SkillID: "product-define", Model: "fable"})
 	cleanTrackerLineage(t, user)
@@ -107,7 +107,7 @@ func TestCreateTrackerIssue_TrackerReadScopeInsufficient(t *testing.T) {
 }
 
 func TestCreateTrackerIssue_RejectsEmptyTitle(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.CreateTrackerIssue(ctx, &pb.CreateTrackerIssueRequest{Username: "alice", Connection: "default", Body: "b", ParentNumber: 1})
 	if status.Code(err) != codes.InvalidArgument {
@@ -440,7 +440,7 @@ func TestSetTrackerIssueLabels_RejectsOutsideAllowList(t *testing.T) {
 
 	// Scope labels are also lineage-bound for a run token (#2060): #3 is
 	// a follow-up this run filed, so re-routing it is allowed.
-	if _, err := s.trackerStore.RecordChild(context.Background(), tracker.Lineage{Username: user, Connection: "default", ParentNumber: 2, CreatedByRun: createTestRunID},
+	if _, err := s.loadTrackerStore().RecordChild(context.Background(), tracker.Lineage{Username: user, Connection: "default", ParentNumber: 2, CreatedByRun: createTestRunID},
 		0, 0, func(context.Context) (int64, error) { return 3, nil }); err != nil {
 		t.Fatalf("seed lineage (#3 filed by the run): %v", err)
 	}
@@ -525,7 +525,7 @@ func TestCreateTrackerIssue_CancelledAfterUpstreamCreate(t *testing.T) {
 	if child == 0 {
 		t.Fatal("response carries no created issue")
 	}
-	if n, _ := s.trackerStore.ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
+	if n, _ := s.loadTrackerStore().ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
 		t.Errorf("lineage rows for the run = %d, want 1 — the created child must be counted", n)
 	}
 	if len(provider.commentNumbers) != 1 || provider.commentNumbers[0] != 42 {
@@ -575,7 +575,7 @@ func TestCreateTrackerIssue_RepeatedCancellationsCannotExceedFanout(t *testing.T
 	if n := len(provider.createIssueReqs); n != 1 {
 		t.Errorf("upstream issues created = %d, want 1 (the cap is 1)", n)
 	}
-	if n, _ := s.trackerStore.ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
+	if n, _ := s.loadTrackerStore().ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
 		t.Errorf("lineage rows = %d, want 1", n)
 	}
 	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", Limit: 10})

@@ -28,7 +28,7 @@ func (s *ContainerServer) resolveReaderConn(ctx context.Context, username, conne
 	if err := enforceConnectionBinding(ctx, connectionName); err != nil {
 		return nil, tracker.Conn{}, err
 	}
-	trackerConn, err := s.trackerStore.Get(ctx, username, connectionName)
+	trackerConn, err := s.loadTrackerStore().Get(ctx, username, connectionName)
 	if err != nil {
 		return nil, tracker.Conn{}, mapTrackerError(err)
 	}
@@ -56,7 +56,7 @@ func (s *ContainerServer) GetTrackerIssue(ctx context.Context, req *pb.GetTracke
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerRead); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -83,7 +83,7 @@ func (s *ContainerServer) ListTrackerIssues(ctx context.Context, req *pb.ListTra
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerRead); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -119,7 +119,7 @@ func (s *ContainerServer) GetTrackerChange(ctx context.Context, req *pb.GetTrack
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerRead); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {

@@ -360,10 +360,14 @@ type ContainerServer struct {
 	// stamp environment.<NAME>=<value> at LXC start time.
 	secretsStoreRef atomic.Pointer[secrets.Store]
 
-	// trackerStore holds tracker connections (#1921). Nil on daemons that
-	// don't have Postgres wired up; the TrackerService RPCs return
-	// Unavailable in that case, same convention as secretsStore.
-	trackerStore *tracker.Store
+	// trackerStoreRef holds tracker connections (#1921), read through
+	// loadTrackerStore and written through SetTrackerStore. Nil on
+	// daemons that don't have Postgres wired up, and after a degraded
+	// start until the late-install helper installs it (#3329) — atomic
+	// because that install lands while RPCs are served. While nil the
+	// TrackerService RPCs return Unavailable, same convention as the
+	// secrets store.
+	trackerStoreRef atomic.Pointer[tracker.Store]
 
 	// trackerDescribers overrides provider -> ReaderProvider resolution
 	// (tests only — see SetTrackerDescribers). Nil in production;
@@ -390,10 +394,11 @@ type ContainerServer struct {
 	// the RPC returns Unavailable rather than racing unlocked.
 	claimLocks *tracker.ClaimLocks
 
-	// trackerRunStarter is how DispatchTrackerIssues (#2022) starts a
-	// run — the RunAgentSkill path, wired in dual_server.go. Nil keeps
-	// the RPC returning Unavailable.
-	trackerRunStarter tracker.RunStarter
+	// trackerRunStarterRef is how DispatchTrackerIssues (#2022) starts a
+	// run — the RunAgentSkill path, wired in dual_server.go with the
+	// tracker store, or by its late install (#3329). Read through
+	// loadTrackerRunStarter. Nil keeps the RPC returning Unavailable.
+	trackerRunStarterRef liveValue[tracker.RunStarter]
 
 	// submitBoxRunner overrides the box-exec/file-read backend
 	// SubmitTrackerChange uses to extract a bundle (#1923). Nil in

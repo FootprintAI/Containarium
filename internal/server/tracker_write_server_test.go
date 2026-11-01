@@ -178,10 +178,10 @@ func (f *fakeWriterProvider) DefaultBranch(context.Context, tracker.Conn) (strin
 func setUpWriterConnection(t *testing.T, user string, provider *fakeWriterProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
 		claimLocks:        tracker.NewClaimLocks(),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
 	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
@@ -226,7 +226,7 @@ func TestCommentOnTrackerIssue_TrackerReadScopeInsufficient(t *testing.T) {
 }
 
 func TestCommentOnTrackerIssue_RejectsEmptyBody(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.CommentOnTrackerIssue(ctx, &pb.CommentOnTrackerIssueRequest{
 		Username: "alice", Connection: "default", Number: 1,
@@ -314,7 +314,7 @@ func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
 // ---- ClaimTrackerIssue ---------------------------------------------------
 
 func TestClaimTrackerIssue_NoClaimLocksConfigured(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.ClaimTrackerIssue(ctx, &pb.ClaimTrackerIssueRequest{
 		Username: "alice", Connection: "default", Number: 1,
@@ -414,7 +414,7 @@ func TestClaimTrackerIssue_AlreadyClaimedByForeignRun(t *testing.T) {
 // ---- SetTrackerIssueLabels ------------------------------------------------
 
 func TestSetTrackerIssueLabels_RejectsEmptyRequest(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
 		Username: "alice", Connection: "default", Number: 1,
