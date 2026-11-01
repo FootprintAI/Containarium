@@ -28,6 +28,7 @@ import (
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -103,7 +104,11 @@ func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain 
 		t.Fatal(err)
 	}
 	configFile := filepath.Join(dir, "config.yaml")
-	config := fmt.Sprintf("version: \"1.0\"\npipes:\n  - from:\n      - username: alice\n        authorized_keys:\n          - %s\n        trusted_user_ca_keys:\n          - %s\n    to:\n      username: alice\n      host: %s\n      private_key: %s\n      ignore_hostkey: true\n", keysFile, caFile, upstream, upstreamKey)
+	pins := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(pins, []byte(knownhosts.Line([]string{upstream}, hostSigner.PublicKey())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf("version: \"1.0\"\npipes:\n  - from:\n      - username: alice\n        authorized_keys:\n          - %s\n        trusted_user_ca_keys:\n          - %s\n    to:\n      username: alice\n      host: %s\n      private_key: %s\n      known_hosts: %s\n", keysFile, caFile, upstream, upstreamKey, pins)
 	if err := os.WriteFile(configFile, []byte(config), 0400); err != nil {
 		t.Fatal(err)
 	}
