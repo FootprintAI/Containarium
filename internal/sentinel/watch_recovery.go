@@ -17,6 +17,10 @@ import (
 // StartInstance, back off exponentially on repeated failure" treatment
 // (#514) instead of silently sitting stopped until a human notices.
 //
+// watchOnlyStatusPollInterval is how often an up target's cloud status is read when no event has
+// arrived. The GCE API call is cheap; a minute bounds how long a missed event can go unnoticed.
+const watchOnlyStatusPollInterval = time.Minute
+
 // AddWatchOnlyBackend registers such a target. It is deliberately kept
 // out of the Backend/BackendPool machinery used for HTTP forwarding: a
 // watch-only target never becomes m.primary and is never considered by
@@ -35,7 +39,8 @@ type watchedBackend struct {
 	id       string
 	provider CloudProvider
 
-	down                bool // true once observed stopped/terminated; cleared on running
+	down                bool      // true once observed stopped/terminated; cleared on running
+	lastStatusCheck     time.Time // last time the cloud status was read (event-driven or polled)
 	recoveryBackoff     time.Duration
 	nextRecoveryAttempt time.Time
 	lastPreemption      time.Time
@@ -115,6 +120,20 @@ func (m *Manager) handleWatchOnlyEvent(ctx context.Context, wb *watchedBackend, 
 // into StateMaintenance).
 func (m *Manager) maybeRetryWatchOnlyRecovery(ctx context.Context, wb *watchedBackend) {
 	if !wb.down {
+		// Safety net (cloud#3377): events are the fast path, but a preemption can arrive as an
+		// operation type the watcher does not list, or while this sentinel was restarting. Read
+		// the status now and then so a down target is still found and started.
+		if time.Since(wb.lastStatusCheck) < watchOnlyStatusPollInterval {
+			return
+		}
+		m.diagnoseAndRecoverWatchOnly(ctx, wb)
+		if wb.down {
+			// No event announced this outage, so count and report it here.
+			wb.lastPreemption = time.Now()
+			wb.preemptCount++
+			log.Printf("[sentinel] watch-only(%s): found down by the status poll (no event was delivered)", wb.id)
+			m.fireWatchOnlyAlert("preempted", wb, 0)
+		}
 		return
 	}
 	if !wb.nextRecoveryAttempt.IsZero() && time.Now().Before(wb.nextRecoveryAttempt) {
@@ -128,6 +147,7 @@ func (m *Manager) maybeRetryWatchOnlyRecovery(ctx context.Context, wb *watchedBa
 // schedule based on the outcome. Mirrors diagnoseAndRecover's logic for
 // the primary backend, against wb's own independent timeline.
 func (m *Manager) diagnoseAndRecoverWatchOnly(ctx context.Context, wb *watchedBackend) {
+	wb.lastStatusCheck = time.Now()
 	status, err := wb.provider.GetInstanceStatus(ctx)
 	if err != nil {
 		log.Printf("[sentinel] watch-only(%s): failed to get status: %v", wb.id, err)

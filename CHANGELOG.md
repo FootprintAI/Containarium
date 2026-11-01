@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A sentinel's `--watch-spot-vm` now restarts a Spot VM that was preempted** (#3377). The watcher listed only `compute.instances.stop`, `.start` and `.delete` zone operations, but GCE records a Spot preemption as its own operation, `compute.instances.preempted`, so no event was ever raised and a preempted watched VM stayed down until someone started it. The watcher now lists and maps that operation, and the recovery loop also reads the VM's status about once a minute when no event has arrived, so any other missed event still ends in a restart; an outage found that way is counted and reported through the alert webhook like an event-driven one.
+
 - **Core Caddy discovery no longer matches a tenant container named like a caddy** (#3371). `containarium portforward setup/remove` auto-detected the core Caddy as the first container whose name contained `caddy`, so a tenant container with `caddy` in its name could be picked and the host's forwarding rules pointed at it. Discovery now goes through the core role label, and the fallback for pre-label core containers matches the exact core Caddy container name rather than a substring. This fallback is shared, so the daemon's own core-Caddy lookup is hardened the same way. With no core Caddy running, the error is still `no running Caddy container found`.
 ### Added
 
