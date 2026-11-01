@@ -415,3 +415,40 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// #3365: the daemon copies an in-memory store's cutoffs into Postgres when
+// the durable store installs after a degraded start, so Cutoffs must return
+// every owner's latest cutoff, in a stable order.
+func TestMemOwnerRevocations_Cutoffs(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	m := NewMemOwnerRevocations()
+	if got := m.Cutoffs(); len(got) != 0 {
+		t.Fatalf("empty store Cutoffs() = %v, want none", got)
+	}
+	for _, r := range []struct {
+		owner string
+		at    time.Time
+	}{
+		{"user:bob", t0},
+		{"user:alice", t0.Add(2 * time.Minute)},
+		{"user:alice", t0.Add(time.Minute)}, // earlier: must not narrow
+	} {
+		if err := m.RevokeOwner(ctx, r.owner, r.at, "test"); err != nil {
+			t.Fatalf("RevokeOwner(%s): %v", r.owner, err)
+		}
+	}
+	want := []OwnerCutoff{
+		{KeyOwner: "user:alice", RevokedBefore: t0.Add(2 * time.Minute)},
+		{KeyOwner: "user:bob", RevokedBefore: t0},
+	}
+	got := m.Cutoffs()
+	if len(got) != len(want) {
+		t.Fatalf("Cutoffs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].KeyOwner != want[i].KeyOwner || !got[i].RevokedBefore.Equal(want[i].RevokedBefore) {
+			t.Errorf("Cutoffs()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
