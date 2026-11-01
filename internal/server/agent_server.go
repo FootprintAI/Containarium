@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -217,8 +218,9 @@ type AgentSkillServer struct {
 	// revocations kills a run's credentials when the run ends (#1817). nil on a
 	// daemon without Postgres: runs still complete and seed files are still
 	// wiped, but the credentials live to their expiry and each run says so in
-	// the log.
-	revocations runlease.Revoker
+	// the log. Read only through loadRevocations: after a degraded start the
+	// store is swapped in while runs end (#3328).
+	revocations atomic.Pointer[revokerRef]
 	// runs is the in-memory registry of currently-live runs (#1922) —
 	// nil until dual_server.go wires the same instance into both this
 	// server and ContainerServer via SetRunRegistry. Registration is
@@ -409,7 +411,18 @@ func (s *AgentSkillServer) SetAuditStore(store *audit.Store) {
 // dual_server.go does that nil check at the one place the concrete pointer
 // exists.
 func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
-	s.revocations = store
+	s.revocations.Store(&revokerRef{r: store})
+}
+
+type revokerRef struct{ r runlease.Revoker }
+
+// loadRevocations is the one read of the run-lease revocation store; a true
+// nil when none is set.
+func (s *AgentSkillServer) loadRevocations() runlease.Revoker {
+	if ref := s.revocations.Load(); ref != nil {
+		return ref.r
+	}
+	return nil
 }
 
 // SetGatewayProvisioning enables model-gateway provisioning for skill boxes:
@@ -891,7 +904,7 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 
 	detached := context.WithoutCancel(ctx)
 	lctx, cancel := context.WithTimeout(detached, endRunLeaseCeiling)
-	out := runlease.End(lctx, lease, s.revocations, w, reason)
+	out := runlease.End(lctx, lease, s.loadRevocations(), w, reason)
 	cancel()
 
 	if len(out.Unrevoked) > 0 {

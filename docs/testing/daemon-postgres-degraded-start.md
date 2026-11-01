@@ -36,6 +36,19 @@ are in, the run starter and lineage reservations are wired with it. The
 set/get round trip and the tracker connection-and-dispatch round trip run
 only with `CONTAINARIUM_TEST_DSN` set (the store-integration lane).
 
+The JWT revocation list is another such family (#3328):
+
+```bash
+go test -race -count=1 ./internal/auth ./internal/server \
+  -run 'TestTokenManager_Revocation|TestTokenManager_NoRevocationExpected|TestRevocationRecovery_|TestAgentSkillServer_RevocationStoreSwapIsRaceSafe'
+```
+
+While Postgres is down, `containarium.revocation` is `NOT_SERVING`, every
+TokensService RPC answers `UNAVAILABLE`, and tokens are still validated
+without the revocation check; the daemon logs that once, not per request.
+Once Postgres answers, the store installs with no restart, the entry turns
+`SERVING`, and a token revoked before the outage is rejected again.
+
 ## Deployed outage drill
 
 1. Confirm the disposable host is not in use by another verification pass.
