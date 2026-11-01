@@ -67,14 +67,25 @@ containarium backup delete <tenant>-app-<timestamp> --server <host>
 
 # Prune: keep only the newest N backups per database (#1839; see below).
 containarium backup prune <tenant> --database app --keep 7 --server <host>
+
+# Restore a whole-box backup into a new, stopped box (#3358). --as defaults
+# to <box>-restored; --force replaces a STOPPED box of that name only. The
+# identity is read from the file, never argv.
+containarium backup restore --box <box> --backup <box>-box-<timestamp> \
+  --as <new-box> --age-identity-file box.key --server <host>
 ```
+
+A whole-box restore is authorized against both the backup's tenant and the
+target box. A non-admin token can therefore restore only into a box named
+for its own tenant, and the default `<box>-restored` needs an admin token.
 
 Connection defaults target a per-container local Postgres: user
 `postgres`, host `127.0.0.1`, port `5432`. Override with
 `--db-user/--db-host/--db-port` as needed.
 
 The same operations are available as MCP tools (`create_backup`,
-`list_backups`, `restore_backup`, `verify_backup`) and over REST
+`list_backups`, `restore_backup`, `verify_backup`, and `restore_box_backup`
+for a whole-box backup) and over REST
 (`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface. `delete` and `prune` are deliberately CLI/REST-only,
@@ -805,7 +816,7 @@ rather than loading corrupt data.
 
 - **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
-- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
+- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `restore_box_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
 - **Auth scopes**: `backups:read` (list/get), `backups:verify` (verify only), `backups:write` (create/restore/delete/prune)
 - **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)

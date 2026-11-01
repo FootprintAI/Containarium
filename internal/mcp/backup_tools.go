@@ -183,6 +183,7 @@ func backupTools() []Tool {
 			Handler: handleVerifyBackup,
 		},
 	}
+	tools = append(tools, restoreBoxBackupTool())
 	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
 	for _, t := range tools {
 		if t.Name == "restore_backup" || t.Name == "verify_backup" {
