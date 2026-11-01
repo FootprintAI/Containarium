@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.123.3] - 2026-11-01
+
 ### Added
 
 - **The tenant secrets store recovers in-process after a degraded start** (#3327; part of #2855, on the #3326 helper). With Postgres down at startup the secret RPCs answer `UNAVAILABLE` and the new readiness entry `containarium.secrets` (`/v1/health?service=containarium.secrets`) is `NOT_SERVING`; once Postgres answers, the store is installed in the running daemon, the entry turns `SERVING` and the secret RPCs work, with no restart. The late install runs the same open path as boot: the master key is loaded or created at the same path, the KMS status reported by `GetKMSStatus` is set (it was blank while degraded), and with `CONTAINARIUM_REQUIRE_ENVELOPE=true` and no KMS backend the install refuses, so the store stays off and the RPCs keep answering `UNAVAILABLE`; the helper keeps retrying and the entry stays `NOT_SERVING`. A store that failed to open at a healthy startup is retried the same way. Components wired before the store existed — notification channels, the model gateway's per-owner key verbs and key resolver, backup recipient lookup, and the file-mode secrets reconciler — read the store on every call, so they pick up a late install too.
