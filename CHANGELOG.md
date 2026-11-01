@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **API contract for restoring a whole-box backup into a box** (#3356). New `BackupService.RestoreBoxBackup` RPC (`POST /v1/backups/{id}/restore-box`) with `target_box` (optional, defaults to `<source box>-restored`), `force` (replaces a stopped box only; a running box is always refused) and `age_identity` (used once, never stored or logged). Typed gRPC and HTTP client methods are included. The server applies the `backups:write` scope and tenant checks and then answers `Unimplemented`; the restore itself lands with #3357. `RestoreBackup` and its database restore contract are unchanged.
+- **A host with no managed toolchain release now says so before a `BUILD_TOOLS` run is refused** (#3360). Since v0.123.0 those runs need a host toolchain release, and a binary-only upgrade does not install one. The daemon logs a `WARNING: managed toolchain` line at startup on an Incus host with no active release (and the active release and arch when there is one); `containarium doctor` prints a `Managed toolchain` section (advisory, the exit code is unchanged and the cloud's `self_check_ok` is not affected); `scripts/redeploy-workhorse.sh` prints the release in `status` and warns after a successful `deploy` (the deploy still succeeds). The `HOST_MANAGED_TOOLCHAIN_MISSING` refusal now names `docs/MANAGED-TOOLCHAINS.md`.
 
 ## [0.124.0] - 2026-11-01
 
