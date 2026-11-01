@@ -302,8 +302,10 @@ func (e *ExecRunner) Stop(container string) error {
 	if err == nil {
 		return nil
 	}
-	// Already stopped → still success.
-	if strings.Contains(err.Error(), "is not running") {
+	// Already stopped → still success. Incus 7 says "The instance is already
+	// stopped"; older releases said "is not running". A container that idle
+	// auto-sleep or an operator stopped before the move is in this state.
+	if strings.Contains(err.Error(), "is already stopped") || strings.Contains(err.Error(), "is not running") {
 		return nil
 	}
 	return err

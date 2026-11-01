@@ -310,3 +310,45 @@ func TestExecRunner_DeleteTarget_IsBounded(t *testing.T) {
 		t.Errorf("DeleteTarget took %v; it must give up near the deadline", time.Since(start))
 	}
 }
+
+// incusSaying writes an `incus` stand-in that exits 1 and prints msg for the
+// given subcommand, as the real CLI does when a stop or start is a no-op.
+func incusSaying(t *testing.T, subcommand, msg string) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "incus")
+	script := "#!/bin/sh\nif [ \"$1\" = " + subcommand + " ]; then echo \"" + msg + "\" >&2; exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// A container that auto-sleep or an operator already stopped is not a failure
+// of the cutover's stop. Incus 7 words it "The instance is already stopped";
+// older releases said "is not running". Both are success.
+func TestExecRunner_Stop_AlreadyStoppedIsSuccess(t *testing.T) {
+	for _, msg := range []string{
+		"Error: The instance is already stopped",
+		"Error: The instance is not running",
+	} {
+		r := &ExecRunner{IncusPath: incusSaying(t, "stop", msg)}
+		if err := r.Stop("box"); err != nil {
+			t.Errorf("Stop with %q must succeed, got %v", msg, err)
+		}
+	}
+}
+
+func TestExecRunner_Stop_OtherFailuresStillFail(t *testing.T) {
+	r := &ExecRunner{IncusPath: incusSaying(t, "stop", "Error: permission denied")}
+	if err := r.Stop("box"); err == nil {
+		t.Fatal("an unrelated stop failure must not be swallowed")
+	}
+}
+
+func TestExecRunner_Start_AlreadyRunningIsSuccess(t *testing.T) {
+	r := &ExecRunner{IncusPath: incusSaying(t, "start", "Error: The instance is already running")}
+	if err := r.Start("box"); err != nil {
+		t.Errorf("Start of a running container must succeed, got %v", err)
+	}
+}
