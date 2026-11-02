@@ -301,23 +301,29 @@ func runAuditQuery(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Printf("\n%d row(s) shown of %d total matching\n\n", len(rows), total)
-	fmt.Printf("%-22s  %-14s  %-22s  %-32s  %4s  %s\n",
+	printAuditTable(os.Stdout, rows)
+	return nil
+}
+
+// printAuditTable renders the `audit query` table. Username and the
+// resource id are tenant-supplied (#3453).
+func printAuditTable(w io.Writer, rows []audit.AuditEntry) {
+	fmt.Fprintf(w, "%-22s  %-14s  %-22s  %-32s  %4s  %s\n",
 		"TIMESTAMP", "USERNAME", "ACTION", "RESOURCE", "CODE", "DETAIL")
 	for _, r := range rows {
 		resource := r.ResourceType
 		if r.ResourceID != "" {
 			resource = r.ResourceType + ":" + r.ResourceID
 		}
-		fmt.Printf("%-22s  %-14s  %-22s  %-32s  %4d  %s\n",
+		fmt.Fprintf(w, "%-22s  %-14s  %-22s  %-32s  %4d  %s\n",
 			r.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-			truncateAudit(r.Username, 14),
+			truncateAudit(escapeControl(r.Username), 14),
 			truncateAudit(r.Action, 22),
-			truncateAudit(resource, 32),
+			truncateAudit(escapeControl(resource), 32),
 			r.StatusCode,
 			truncateAudit(sanitizeDetailForCLI(r.Detail), 80),
 		)
 	}
-	return nil
 }
 
 func runAuditVerify(cmd *cobra.Command, args []string) error {
