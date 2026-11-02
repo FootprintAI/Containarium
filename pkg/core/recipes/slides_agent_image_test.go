@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,8 @@ func TestSlidesAgentDockerfile(t *testing.T) {
 		"images/slides-agent/Caddyfile",
 		"images/slides-agent/entrypoint.sh",
 		"images/slides-agent/open-slide.config.ts",
+		"images/slides-agent/slides-print-pdf",
+		"node --check /usr/local/bin/slides-print-pdf", // the printer is syntax-checked at build
 		"USER ",
 	} {
 		if !strings.Contains(df, want) {
@@ -144,6 +147,84 @@ func TestSlidesAgentEntrypointBindsLoopback(t *testing.T) {
 	if strings.Contains(ep, "--host 0.0.0.0") || strings.Contains(ep, "--host true") {
 		t.Error("entrypoint must not expose the dev server beyond loopback")
 	}
+}
+
+// slides-print-pdf (#3434, maintainer decision 2): prints a built site to a
+// PDF with the framework's own export driven over the DevTools protocol. These
+// are the invariants the recipe documents; the offline smoke test on the PR
+// proves the output.
+func TestSlidesAgentPrintPDFScript(t *testing.T) {
+	src := readImageFile(t, "slides-print-pdf")
+	if !strings.HasPrefix(src, "#!/usr/bin/env node\n") {
+		t.Error("slides-print-pdf must be a node script")
+	}
+	for _, want := range []string{
+		"usage: slides-print-pdf <site dir | http(s) url> <out.pdf> [deck-id]",
+		"server.listen(0, '127.0.0.1'", // the built site is served on loopback only
+		"--headless=new",               // headless Chromium
+		"--remote-debugging-port=0",    // DevTools on an ephemeral loopback port
+		"new WebSocket(",               // Node's built-in client: no dependency
+		"window.print = () =>",         // the export never blocks in a print dialog
+		"'Page.printToPDF'",            // the capture
+		"preferCSSPageSize: true",      // the framework's @page 1920x1080 wins
+		"printBackground: true",
+		"#os-print-root .os-print-frame", // page count from the export's print root
+		"afterprint",                     // the export's own cleanup is allowed to run
+		"export as pdf",                  // the toolbar item, matched case-insensitively
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("slides-print-pdf missing %q", want)
+		}
+	}
+	if strings.Contains(src, "require('ws')") || strings.Contains(src, "puppeteer") || strings.Contains(src, "playwright") {
+		t.Error("slides-print-pdf must not depend on a package outside Node")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available for a syntax check")
+	}
+	out, err := exec.Command("node", "--check", filepath.Join(slidesAgentImageDir, "slides-print-pdf")).CombinedOutput() //nolint:gosec // fixed path
+	if err != nil {
+		t.Errorf("node --check: %v\n%s", err, out)
+	}
+	// Usage errors exit 2 before anything is served or launched.
+	cmd := exec.Command("node", filepath.Join(slidesAgentImageDir, "slides-print-pdf")) //nolint:gosec // fixed path
+	cmd.Env = []string{"PATH=/usr/bin:/bin:" + filepath.Dir(mustLookPath(t, "node"))}
+	out, err = cmd.CombinedOutput()
+	if code := exitCode(err); code != 2 || !strings.Contains(string(out), "usage:") {
+		t.Errorf("no arguments: exit %d, want 2 with usage\n%s", code, out)
+	}
+	cmd = exec.Command("node", filepath.Join(slidesAgentImageDir, "slides-print-pdf"), t.TempDir(), "out.txt") //nolint:gosec // fixed path
+	cmd.Env = []string{"PATH=/usr/bin:/bin:" + filepath.Dir(mustLookPath(t, "node"))}
+	out, err = cmd.CombinedOutput()
+	if code := exitCode(err); code != 2 || !strings.Contains(string(out), ".pdf") {
+		t.Errorf("non-pdf output: exit %d, want 2 naming .pdf\n%s", code, out)
+	}
+	cmd = exec.Command("node", filepath.Join(slidesAgentImageDir, "slides-print-pdf"), t.TempDir(), "out.pdf") //nolint:gosec // fixed path
+	cmd.Env = []string{"PATH=/usr/bin:/bin:" + filepath.Dir(mustLookPath(t, "node"))}
+	out, err = cmd.CombinedOutput()
+	if code := exitCode(err); code != 2 || !strings.Contains(string(out), "index.html") {
+		t.Errorf("unbuilt site: exit %d, want 2 naming index.html\n%s", code, out)
+	}
+}
+
+func mustLookPath(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }
 
 func TestSlidesAgentScriptsShellcheck(t *testing.T) {

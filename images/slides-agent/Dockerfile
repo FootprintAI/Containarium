@@ -3,7 +3,8 @@
 # The prebaked image the `slides-agent` recipe (pkg/core/recipes/recipes.yaml,
 # #3434) runs inside a box via podman: Node, the open-slide slide framework
 # (MIT) built from a pinned commit with its dependencies installed, a headless
-# Chromium for PDF export, and the Caddy auth proxy that fronts the dev server.
+# Chromium with the `slides-print-pdf <site> <out.pdf>` entrypoint that prints
+# a built site to PDF, and the Caddy auth proxy that fronts the dev server.
 # Everything a box needs at start is in here, so starting a box fetches
 # nothing from a package registry; the image pull is the only fetch.
 #
@@ -122,7 +123,9 @@ COPY images/slides-agent/Caddyfile /etc/caddy/Caddyfile
 COPY images/slides-agent/entrypoint.sh /usr/local/bin/slides-agent-entrypoint
 COPY images/slides-agent/slides-render /usr/local/bin/slides-render
 COPY images/slides-agent/open-slide /usr/local/bin/open-slide
-RUN chmod 0755 /usr/local/bin/slides-agent-entrypoint /usr/local/bin/slides-render /usr/local/bin/open-slide \
+COPY images/slides-agent/slides-print-pdf /usr/local/bin/slides-print-pdf
+RUN chmod 0755 /usr/local/bin/slides-agent-entrypoint /usr/local/bin/slides-render /usr/local/bin/open-slide /usr/local/bin/slides-print-pdf \
+    && node --check /usr/local/bin/slides-print-pdf \
     && chmod 0644 /etc/caddy/Caddyfile \
     # The proxy config must parse with the placeholders filled: a Caddyfile
     # that fails here would otherwise fail on every box start.

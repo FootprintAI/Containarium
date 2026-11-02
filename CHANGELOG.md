@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
-  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium and a Caddy auth proxy, so
+  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium with a
+  `slides-print-pdf <site> <out.pdf>` entrypoint (one 1920x1080 page per slide page of a built site) and a Caddy auth proxy, so
   a box start installs nothing from a package registry. The proxy fronts every path of the dev server, forwards
   `X-Forwarded-Proto: https`, and refuses unauthenticated requests (the deploy checks this); decks persist under the box
   user's `~/slides`. The recipe shares coding-agent's `post_start` steps through YAML anchors. Publishing the image from the

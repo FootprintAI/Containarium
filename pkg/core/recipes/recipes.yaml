@@ -264,8 +264,9 @@ recipes:
   #
   # Builds and exports run inside the container; the box user reaches it
   # through the box's NOPASSWD sudo:
-  #   sudo podman exec slides-agent open-slide build          # dist on the box disk at ~/slides/dist
-  #   sudo podman exec slides-agent slides-render pdf http://127.0.0.1:5173/s/<id> /workspace/<id>.pdf
+  #   sudo podman exec slides-agent open-slide build                              # dist on the box disk at ~/slides/dist
+  #   sudo podman exec slides-agent slides-print-pdf /workspace/dist /workspace/<id>.pdf   # one 1920x1080 page per slide page
+  #   sudo podman exec slides-agent slides-render png http://127.0.0.1:5173/s/<id> /workspace/<id>.png
   # Publishing the image is the image pipeline's job (images/slides-agent/);
   # slides_image overrides the reference for mirrors and rehearsals.
   - id: slides-agent
