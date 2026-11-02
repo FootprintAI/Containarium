@@ -58,7 +58,7 @@ func printBackupList(out io.Writer, records []*pb.BackupRecord) error {
 	_, _ = fmt.Fprintln(w, "ID\tUSER\tDATABASE\tCREATED\tSIZE\tDEST\tENCRYPTED\tVERIFIED\tLOCATION")
 	for _, r := range records {
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Id, r.Username, r.Database, r.CreatedAt, humanBytes(r.SizeBytes),
+			r.Id, escapeControl(r.Username), escapeControl(r.Database), r.CreatedAt, humanBytes(r.SizeBytes),
 			destLabel(r.Destination), encryptedLabel(r), verifiedLabel(r.LastVerification), r.Location)
 	}
 	return w.Flush()
