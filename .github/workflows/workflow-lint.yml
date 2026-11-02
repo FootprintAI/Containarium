@@ -16,6 +16,7 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - 'scripts/changelog-assemble.sh'
       - '.github/CODEOWNERS'
       - 'scripts/ci/check-codeowners.sh'
       - 'scripts/ci/test-apply-repo-settings.sh'
@@ -37,6 +38,7 @@ on:
       - 'scripts/ci/check-workflow-security.sh'
       - 'scripts/ci/testdata/zizmor/**'
       - 'scripts/ci/release-only-diff.sh'
+      - 'scripts/changelog-assemble.sh'
       - '.github/CODEOWNERS'
       - 'scripts/ci/check-codeowners.sh'
       - 'scripts/ci/test-apply-repo-settings.sh'
@@ -100,6 +102,11 @@ jobs:
 
       - name: Require SHA-pinned actions
         run: scripts/ci/check-action-pins.sh .github
+
+      - name: Changelog fragments self-test and validation
+        run: |
+          scripts/changelog-assemble.sh --self-test
+          scripts/changelog-assemble.sh --check
 
       - name: Release-only diff detector self-test
         # Decides which PRs may skip the heavy jobs
