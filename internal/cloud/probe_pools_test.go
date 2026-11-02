@@ -39,9 +39,9 @@ func TestProbeDisk_FallsBackToStatfs(t *testing.T) {
 		t.Skip("statfs unavailable on this platform")
 	}
 	for name, f := range map[string]*fakePools{
-		"pool error": {err: errors.New("incus unreachable")},
-		"zero pools": {total: 0, used: 0, pools: 0},
-		"zero total": {total: 0, pools: 1},
+		"pool error":                 {err: errors.New("incus unreachable")},
+		"zero pools":                 {total: 0, used: 0, pools: 0},
+		"zero total":                 {total: 0, pools: 1},
 		"no pools but nonzero total": {total: 5 * gib, pools: 0},
 	} {
 		t.Run(name, func(t *testing.T) {
