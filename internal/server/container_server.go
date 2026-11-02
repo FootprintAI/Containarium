@@ -119,11 +119,18 @@ type ContainerServer struct {
 	// snapshots is the container-snapshot surface (#1160). nil when the
 	// storage backend is not ZFS, which the handlers report rather than
 	// panic on.
-	snapshots           *snapshotOps
-	collaboratorManager *container.CollaboratorManager
+	snapshots *snapshotOps
+	// collaboratorManager is installed at startup or, after a degraded
+	// start, by the late-install helper (#3330), so it is read through
+	// loadCollaboratorManager. collaboratorsPending is set while that
+	// install is pending: the collaborator RPCs answer UNAVAILABLE.
+	collaboratorManager  atomic.Pointer[container.CollaboratorManager]
+	collaboratorsPending atomic.Bool
 	// sshKeys is the ssh_keys registry the key write paths record into
-	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
-	sshKeys sshauthz.KeyRegistry
+	// (#2517, ssh_key_registry.go), read through loadSSHKeyRegistry. Nil
+	// when the daemon has no Postgres; installed late after a degraded
+	// start (#3330).
+	sshKeys atomic.Pointer[sshKeyRegistryRef]
 	// collabAccess and hostSessionKill are test seams for
 	// TerminateUserSessions (terminate_user_sessions.go); nil means the
 	// collaborator store and container.TerminateJumpAccountSessions.
@@ -5095,7 +5102,35 @@ func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStor
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations
 func (s *ContainerServer) SetCollaboratorManager(cm *container.CollaboratorManager) {
-	s.collaboratorManager = cm
+	s.collaboratorManager.Store(cm)
+}
+
+// loadCollaboratorManager returns the installed collaborator manager, or nil.
+func (s *ContainerServer) loadCollaboratorManager() *container.CollaboratorManager {
+	return s.collaboratorManager.Load()
+}
+
+// collaboratorStoreService is the collaborator family's grpc.health.v1
+// readiness entry (#3330, collaborator_store_recovery.go).
+const collaboratorStoreService = "containarium.collaborators"
+
+// errCollaboratorsNotInstalled is the collaborator RPCs' answer while the
+// late install is pending.
+var errCollaboratorsNotInstalled = status.Error(codes.Unavailable,
+	"collaborator store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+collaboratorStoreService)
+
+// errCollaboratorsNotEnabled is the answer with no collaborator store
+// configured (and no peer that has the box).
+var errCollaboratorsNotEnabled = errors.New("collaborator management not enabled")
+
+// collaboratorsMissing is the answer when no collaborator manager is
+// installed: UNAVAILABLE while the late install is pending (#3330), else
+// "not enabled".
+func (s *ContainerServer) collaboratorsMissing() error {
+	if s.collaboratorsPending.Load() {
+		return errCollaboratorsNotInstalled
+	}
+	return errCollaboratorsNotEnabled
 }
 
 // AddCollaborator adds a collaborator to a container
@@ -5130,7 +5165,8 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5175,10 +5211,10 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collab, err := s.collaboratorManager.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
+	collab, err := collabMgr.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add collaborator: %w", err)
 	}
@@ -5187,7 +5223,7 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	return &pb.AddCollaboratorResponse{
 		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
 		Collaborator: collaboratorToProto(collab),
-		SshCommand:   s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
+		SshCommand:   collabMgr.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
 	}, nil
 }
 
@@ -5203,7 +5239,8 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5227,10 +5264,10 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	if err := s.collaboratorManager.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
+	if err := collabMgr.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
 		return nil, fmt.Errorf("failed to remove collaborator: %w", err)
 	}
 
@@ -5248,7 +5285,8 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5274,10 +5312,10 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 				return &pb.ListCollaboratorsResponse{}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collaborators, err := s.collaboratorManager.ListCollaborators(req.OwnerUsername)
+	collaborators, err := collabMgr.ListCollaborators(req.OwnerUsername)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collaborators: %w", err)
 	}
