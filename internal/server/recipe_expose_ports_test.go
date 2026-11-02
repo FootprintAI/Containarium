@@ -105,9 +105,11 @@ func newExposePortsTestServer(ip string) (*RecipeServer, *fakePassthroughStore) 
 		info: &incus.ContainerInfo{Name: "alice-container", IPAddress: ip},
 	})
 	store := newFakePassthroughStore()
+	ns := &NetworkServer{baseDomain: "example.com"}
+	ns.SetPassthroughStore(store)
 	return &RecipeServer{
 		containers: &ContainerServer{manager: manager},
-		network:    &NetworkServer{baseDomain: "example.com", passthroughStore: store},
+		network:    ns,
 	}, store
 }
 

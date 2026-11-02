@@ -28,7 +28,8 @@ func TestCascadeContainerCleanup_RemovesOwnedPassthroughRoutes(t *testing.T) {
 		t.Fatalf("seed bob route: %v", err)
 	}
 
-	s := &ContainerServer{passthroughStore: store}
+	s := &ContainerServer{}
+	s.SetPassthroughCleanupDep(store)
 	s.cascadeContainerCleanup(ctx, "alice-container", "alice")
 
 	if _, err := store.GetByPortProtocol(ctx, 4566, "tcp"); err != network.ErrPassthroughNotFound {
