@@ -1082,7 +1082,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// live in the secrets store, so it installs only once that
 			// one is in (fail closed).
 			trackerRunStarterFor := func() trackerstore.RunStarter { return NewTrackerRunStarter(agentSkillServer) }
-			trackerFamily := trackerStoreFamily(containerServer, agentSkillServer, trackerstore.NewStore, trackerRunStarterFor)
+			// While the secrets family is refused by configuration
+			// (REQUIRE_ENVELOPE with no KMS), the tracker's wait on it
+			// is a config refusal too and does not hold the
+			// self-restart (#3387).
+			secretsRefused := func() bool { return storeRecovery.configRefused(secretsStoreService) }
+			trackerFamily := trackerStoreFamily(containerServer, agentSkillServer, trackerstore.NewStore, trackerRunStarterFor, secretsRefused)
 			if containerServer.loadSecretsStore() == nil {
 				log.Printf("Warning: tracker store not installed: %v", errTrackerWaitingOnSecrets)
 				storeRecovery.Register(trackerFamily)

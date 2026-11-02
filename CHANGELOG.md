@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tracker store no longer holds the opt-in self-restart while it waits on a secrets store refused by configuration** (#3387, follow-up to #3378). The tracker store installs only after the secrets store, so with `CONTAINARIUM_REQUIRE_ENVELOPE=true` and no KMS backend the tracker stayed pending on an ordinary error and still held the restart, and the daemon never restarted. While the secrets store's last attempt was a configuration refusal, the tracker now reports its wait as a configuration refusal too. It stays pending and `NOT_SERVING` and is still retried, but it no longer holds the restart. When the secrets store is only waiting on Postgres, has not been attempted yet, or failed to open, the tracker still holds the restart. Once the secrets store installs, the tracker installs in the same attempt.
 - **Container label routes were served without authentication** (175a1dfd). See Upgrading.
 - **The ClamAV report CSV export returned every tenant's reports to any valid token** (7d5aca91). See Upgrading. Cells that begin
   with `=`, `+`, `-` or `@` are now prefixed so spreadsheets do not treat them as formulas.
