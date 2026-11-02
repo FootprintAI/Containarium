@@ -813,16 +813,18 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				return
 			}
 			// Check if this is a labels request
-			if strings.Contains(r.URL.Path, "/labels") && gs.labelHandler != nil {
+			if isLabelRoute(r.URL.Path) && gs.labelHandler != nil {
+				// Labels carry tenant attribution, so every method is
+				// authenticated and tenant/scope-authorized before dispatch.
 				switch r.Method {
 				case http.MethodGet:
-					gs.labelHandler.HandleGetLabels(w, r)
+					guardLabelRoute(gs.authMiddleware.HTTPMiddleware, auth.ScopeContainersRead, http.HandlerFunc(gs.labelHandler.HandleGetLabels)).ServeHTTP(w, r)
 					return
 				case http.MethodPut, http.MethodPost:
-					gs.labelHandler.HandleSetLabels(w, r)
+					guardLabelRoute(gs.authMiddleware.HTTPMiddleware, auth.ScopeContainersWrite, http.HandlerFunc(gs.labelHandler.HandleSetLabels)).ServeHTTP(w, r)
 					return
 				case http.MethodDelete:
-					gs.labelHandler.HandleRemoveLabel(w, r)
+					guardLabelRoute(gs.authMiddleware.HTTPMiddleware, auth.ScopeContainersWrite, http.HandlerFunc(gs.labelHandler.HandleRemoveLabel)).ServeHTTP(w, r)
 					return
 				}
 			}
