@@ -121,7 +121,8 @@ jobs:
     needs: changes
     # !cancelled(): a failed detector leaves the output empty and this job
     # RUNS. Without it the job would skip, and a skipped required check passes.
-    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
+    # Long tier: not run on PR pushes; runs in the merge queue and on push to main.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
