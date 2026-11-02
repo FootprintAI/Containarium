@@ -148,24 +148,24 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 			enumLabel(f.GetRule().String(), "THREAT_RULE_ID_"),
 			enumLabel(f.GetSeverity().String(), "THREAT_SEVERITY_"),
 			enumLabel(f.GetState().String(), "FINDING_STATE_"),
-			f.GetTenantId(),
+			escapeControl(f.GetTenantId()),
 			f.GetCount(),
 			timestampText(f.GetLastSeen()),
-			f.GetSubject(),
+			escapeControl(f.GetSubject()),
 		)
 		ev := f.GetEvidence()
 		for _, c := range ev.GetConfigs() {
-			detail := fmt.Sprintf("%s=%s in %s", c.GetDirective(), c.GetValue(), c.GetPath())
+			detail := fmt.Sprintf("%s=%s in %s", escapeControl(c.GetDirective()), escapeControl(c.GetValue()), escapeControl(c.GetPath()))
 			if c.GetRemediated() {
 				detail += " (re-asserted)"
 			}
 			if c.GetNote() != "" {
-				detail += " — " + c.GetNote()
+				detail += " — " + escapeControl(c.GetNote())
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}
 		for _, x := range ev.GetExecs() {
-			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.GetPid(), x.GetFilename(), x.GetComm(), x.GetArgv())
+			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.GetPid(), escapeControl(x.GetFilename()), escapeControl(x.GetComm()), x.GetArgv())
 			if x.GetSha256() != "" {
 				detail += " sha256 " + x.GetSha256()
 			}
@@ -178,9 +178,9 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(w, "       %s\n", describeResponse(r))
 		}
 		for _, l := range ev.GetListeners() {
-			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.GetBindAddress(), l.GetPort(), l.GetPid(), l.GetBinary())
+			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.GetBindAddress(), l.GetPort(), l.GetPid(), escapeControl(l.GetBinary()))
 			if l.GetNote() != "" {
-				detail += " — " + l.GetNote()
+				detail += " — " + escapeControl(l.GetNote())
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}

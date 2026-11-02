@@ -545,6 +545,9 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 // ListPassthroughRoutes lists all TCP/UDP passthrough routes.
 // Admin-only — passthrough routes are cluster-wide infrastructure.
 func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListPassthroughRoutesRequest) (*pb.ListPassthroughRoutesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -640,6 +643,9 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 // Admin-only — passthrough binds a host-wide port (iptables/nftables),
 // outside any tenant's scope.
 func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPassthroughRouteRequest) (*pb.AddPassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -710,6 +716,9 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 // DeletePassthroughRoute removes a TCP/UDP passthrough route.
 // Admin-only.
 func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.DeletePassthroughRouteRequest) (*pb.DeletePassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -750,6 +759,9 @@ func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.Dele
 // UpdatePassthroughRoute updates an existing TCP/UDP passthrough route.
 // Admin-only.
 func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.UpdatePassthroughRouteRequest) (*pb.UpdatePassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -860,6 +872,9 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 // (from existing routes). Admin-only — the full list of domains
 // across all tenants is operator-scope.
 func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecordsRequest) (*pb.ListDNSRecordsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -889,6 +904,9 @@ func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecor
 
 // GetContainerACL gets firewall rules for a DevBox container
 func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContainerACLRequest) (*pb.GetContainerACLResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -959,6 +977,9 @@ func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContaine
 
 // UpdateContainerACL updates firewall rules for a DevBox container
 func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateContainerACLRequest) (*pb.UpdateContainerACLResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -1015,6 +1036,9 @@ func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateCo
 // GetNetworkTopology returns network visualization data.
 // Admin-only — the full topology lists every tenant container.
 func (s *NetworkServer) GetNetworkTopology(ctx context.Context, req *pb.GetNetworkTopologyRequest) (*pb.GetNetworkTopologyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

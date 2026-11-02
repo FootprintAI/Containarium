@@ -119,11 +119,11 @@ func printAppTableFormat(apps []*pb.App, totalCount int32) {
 		}
 
 		fmt.Printf("%-20s %-12s %-35s %-8d %-12s\n",
-			truncate(app.Name, 20),
+			truncate(escapeControl(app.Name), 20),
 			state,
-			truncate(app.FullDomain, 35),
+			truncate(escapeControl(app.FullDomain), 35),
 			app.Port,
-			truncate(app.Username, 12))
+			truncate(escapeControl(app.Username), 12))
 	}
 
 	fmt.Println()

@@ -10,7 +10,8 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server ./internal/pentest ./internal/zap \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestAppRouteRecovery_|TestCollaboratorRecovery_|TestScanRecovery_|TestTargetCollector_|TestCollectTargets_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestAppRouteRecovery_|TestCollaboratorRecovery_|TestTrafficRecovery_|TestLiveTrafficSource_|TestScanRecovery_|TestTargetCollector_|TestCollectTargets_'
+go test -race -count=1 ./internal/traffic -run 'TestCollectorSetStore_|TestCollectorStart_|TestCollectorStop_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -40,7 +41,12 @@ configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
 backend: it stays pending and `NOT_SERVING` and is still retried, but it
 does not hold the self-restart, while a family whose last attempt failed on
 a connection or open error still does. The refusal is logged once each time
-the family enters it, not on every retry. The passthrough-recovery tests
+the family enters it, not on every retry. The tracker family's wait on a
+config-refused secrets store is a config refusal too (#3387), so that
+degraded start lets the watcher restart; a wait on a secrets store that is
+pending for any other reason still holds it.
+
+The passthrough-recovery tests
 (#3333) cover the passthrough route store: while Postgres is down,
 `containarium.passthrough` is `NOT_SERVING` and every passthrough RPC
 (list, add, update, enable, disable, delete) answers `UNAVAILABLE` without
@@ -49,7 +55,12 @@ store installs with no restart, writes go to the store, the container
 delete cascade gets it, and the sync job is built once and started exactly
 once on the daemon's serving context, in whichever order the install and
 the daemon start arrive. A daemon with no Postgres configured still writes
-the host rules directly. The delete-cascade and recipe expose-ports tests
+the host rules directly. A box deleted while the store is absent is
+remembered, and the install removes its passthrough routes before the sync
+job is built, so its first pass neither keeps nor re-adds a forwarding rule
+for that box; a box that still exists keeps its routes (#3407). The list is
+held in memory, so a daemon restarted before the store installs loses it.
+The delete-cascade and recipe expose-ports tests
 run in the same set because they now set the store through the same
 accessor.
 The app-hosting and route tests (#3331) cover the app-hosting store
@@ -66,6 +77,16 @@ that used to hold the store by value (the network server, the container
 server's route cleanup, the wake proxy, the cloud actuator) read the
 installed store on their next call. A route store open error is not a
 configuration refusal and holds the self-restart.
+The traffic persistence tests (#3401) cover `containarium.traffic`: while
+Postgres is down the collector runs without a store, the traffic API
+answers live connections from its in-memory window, history answers
+`FAILED_PRECONDITION`, and the entry is `NOT_SERVING`. Once Postgres
+answers, the store is installed into the same running collector with no
+restart: no second collector is built, the collector is not started again,
+its live window is kept, the retention cleanup loop starts once, and the
+entry turns `SERVING`. Flows that closed before the store arrived are not
+persisted; a flow still live at install is persisted, with its full
+counters, when it closes.
 The scan tests (#3332) cover the security, pentest and ZAP scan stores and
 their managers, one family each (`containarium.security`,
 `containarium.pentest`, `containarium.zap`): while Postgres is down the
@@ -146,10 +167,10 @@ has no self-host decider. Once Postgres answers, the store and the
 collaborator manager install with no restart. On the LXC runtime the
 registry is then created, backfilled from `/home` and reconciled: a key
 removed from an `authorized_keys` file while the registry was absent kept
-an active row, and the decider only checks that the login's account holds
-some key, not the offered one, so rows no account holds are revoked
-(decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
-pins why). The registry is read before `/home` is scanned, so a key added
+an active row. The decider refuses such a key at decision time (it must be
+one the login's account holds), and rows no account holds are also revoked
+so the registry stops listing them (decision Q14 on #3335;
+`TestReconcile_DeciderRefusesAStaleRow`). The registry is read before `/home` is scanned, so a key added
 through the API while the reconcile runs is not revoked. Rows are left
 active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
 a daemon with no cloud enrollment. A failed backfill or reconcile leaves

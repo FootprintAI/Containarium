@@ -427,13 +427,17 @@ func runGatewayModels(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if len(resp.GetModels()) == 0 {
-		fmt.Printf("no models reported for %s\n", resp.GetKeyOwner())
-		return nil
-	}
-	fmt.Printf("models for %s:\n", resp.GetKeyOwner())
-	for _, m := range resp.GetModels() {
-		fmt.Printf("  %s\n", m.GetId())
-	}
+	printGatewayModels(resp)
 	return nil
+}
+
+func printGatewayModels(resp *pb.ListGatewayModelsResponse) {
+	if len(resp.GetModels()) == 0 {
+		fmt.Printf("no models reported for %s\n", escapeControl(resp.GetKeyOwner()))
+		return
+	}
+	fmt.Printf("models for %s:\n", escapeControl(resp.GetKeyOwner()))
+	for _, m := range resp.GetModels() {
+		fmt.Printf("  %s\n", escapeControl(m.GetId()))
+	}
 }

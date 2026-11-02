@@ -8,6 +8,10 @@ on:
   # matters most here: gosec, govulncheck and Trivy are the checks least
   # likely to be missed by eye when they are silently absent.
   pull_request:
+  # Merge queue: the queue tests the PR merged onto main (plus PRs ahead of it)
+  # and needs this required check to report on that ref. Release-only fast path
+  # does NOT apply there (release-only-diff decides false for any other event).
+  merge_group:
   schedule:
     # Run weekly on Monday at 06:00 UTC
     - cron: '0 6 * * 1'
@@ -81,7 +85,7 @@ jobs:
 
       - name: Run gosec
         if: steps.reuse.outputs.reused != 'true'
-        uses: securego/gosec@14ef84f6feccf40be7f5092fd2db119bf3f5f836 # master
+        uses: securego/gosec@a7abd50b2947e53b26a7e200223e635ce36fac9b # master
         with:
           # -exclude-generated: generated protobuf/grpc-gateway stubs
           # (pkg/pb/**) are never hand-edited (CLAUDE.md) and carry ~130

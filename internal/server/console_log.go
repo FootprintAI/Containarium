@@ -14,6 +14,9 @@ import (
 // unreachable via SSH or its own tunnel agent, since none of those paths
 // require the instance's own network stack to be up.
 func (s *ContainerServer) GetConsoleLog(ctx context.Context, req *pb.GetConsoleLogRequest) (*pb.GetConsoleLogResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
