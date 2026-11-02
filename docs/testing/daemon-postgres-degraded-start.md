@@ -40,7 +40,12 @@ configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
 backend: it stays pending and `NOT_SERVING` and is still retried, but it
 does not hold the self-restart, while a family whose last attempt failed on
 a connection or open error still does. The refusal is logged once each time
-the family enters it, not on every retry. The passthrough-recovery tests
+the family enters it, not on every retry. The tracker family's wait on a
+config-refused secrets store is a config refusal too (#3387), so that
+degraded start lets the watcher restart; a wait on a secrets store that is
+pending for any other reason still holds it.
+
+The passthrough-recovery tests
 (#3333) cover the passthrough route store: while Postgres is down,
 `containarium.passthrough` is `NOT_SERVING` and every passthrough RPC
 (list, add, update, enable, disable, delete) answers `UNAVAILABLE` without
@@ -49,7 +54,12 @@ store installs with no restart, writes go to the store, the container
 delete cascade gets it, and the sync job is built once and started exactly
 once on the daemon's serving context, in whichever order the install and
 the daemon start arrive. A daemon with no Postgres configured still writes
-the host rules directly. The delete-cascade and recipe expose-ports tests
+the host rules directly. A box deleted while the store is absent is
+remembered, and the install removes its passthrough routes before the sync
+job is built, so its first pass neither keeps nor re-adds a forwarding rule
+for that box; a box that still exists keeps its routes (#3407). The list is
+held in memory, so a daemon restarted before the store installs loses it.
+The delete-cascade and recipe expose-ports tests
 run in the same set because they now set the store through the same
 accessor.
 
@@ -112,10 +122,10 @@ has no self-host decider. Once Postgres answers, the store and the
 collaborator manager install with no restart. On the LXC runtime the
 registry is then created, backfilled from `/home` and reconciled: a key
 removed from an `authorized_keys` file while the registry was absent kept
-an active row, and the decider only checks that the login's account holds
-some key, not the offered one, so rows no account holds are revoked
-(decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
-pins why). The registry is read before `/home` is scanned, so a key added
+an active row. The decider refuses such a key at decision time (it must be
+one the login's account holds), and rows no account holds are also revoked
+so the registry stops listing them (decision Q14 on #3335;
+`TestReconcile_DeciderRefusesAStaleRow`). The registry is read before `/home` is scanned, so a key added
 through the API while the reconcile runs is not revoked. Rows are left
 active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
 a daemon with no cloud enrollment. A failed backfill or reconcile leaves

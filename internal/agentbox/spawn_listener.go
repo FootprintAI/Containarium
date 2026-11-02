@@ -10,6 +10,8 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
+
+	"github.com/footprintai/containarium/internal/grpcrecover"
 )
 
 // SpawnSocketEnv names the environment variable that enables agent-box's
@@ -41,7 +43,7 @@ func StartSpawnListener(socketPath string) (*grpc.Server, error) {
 		return nil, fmt.Errorf("failed to listen on %s: %w", socketPath, err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(grpcrecover.Unary()), grpc.ChainStreamInterceptor(grpcrecover.Stream()))
 	pb.RegisterSpawnServiceServer(grpcServer, NewSpawnServer())
 
 	go func() {
