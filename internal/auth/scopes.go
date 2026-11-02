@@ -187,6 +187,13 @@ const (
 	// must name it.
 	ScopeAuditIngest = "audit:ingest"
 
+	// retention:write changes the data-retention policy and mode and sets or
+	// releases legal holds (RetentionService writes). Deliberately separate
+	// from audit:read: a compliance/evidence token that can READ the audit log
+	// and retention state must not be able to shorten a retention window or
+	// release a legal hold. Admin role is still required on the server side.
+	ScopeRetentionWrite = "retention:write"
+
 	// code-egress:read lets a tenant read its own coding-tool egress policy
 	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
 	ScopeCodeEgressRead = "code-egress:read"
@@ -253,6 +260,7 @@ var AllScopes = []string{
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeNetworkPolicyWrite, ScopeTokensRead,
 	ScopeAuditIngest,
+	ScopeRetentionWrite,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
