@@ -84,6 +84,56 @@ func boxRunGitDenyRules() []string {
 	return bashRules(prefixes...)
 }
 
+// boxRunGitCommandHeads are the ways an allowed git command can begin: bare, or
+// after one of the leading global options.
+func boxRunGitCommandHeads() []string {
+	heads := []string{"git"}
+	for _, opt := range boxRunGitLeadOptions {
+		heads = append(heads, "git "+opt+"*")
+	}
+	return heads
+}
+
+// boxRunCloneNoArgShorts are the short options of `git clone` that take no value.
+// Git lets them bundle in front of an option that does (`-qu <cmd>`), so each is
+// also listed in front of `u` and `c` below.
+var boxRunCloneNoArgShorts = []string{"l", "s", "q", "v", "n", "4", "6"}
+
+// boxRunGitTransportDenied are, per allowed subcommand, the option words that make
+// git run a program or load configuration chosen by the command line (#3397).
+// Git accepts any unambiguous prefix of a long option, so `--upload-pack` is also
+// reachable as `--upl` (fetch) or `--u` (clone); the shortest forms are listed.
+// Fail-closed: a harmless argument that matches is refused too (a clone URL or
+// directory argument starting with `-u` or `-c`, for example).
+func boxRunGitTransportDenied() map[string][]string {
+	clone := []string{"--u*", "-u*", "--receive-pack*", "--con*", "-c*", "--te*"}
+	for _, l := range boxRunCloneNoArgShorts {
+		clone = append(clone, "-"+l+"u*", "-"+l+"c*")
+	}
+	return map[string][]string{
+		"fetch": {"--upload-pack*", "--upl*", "--receive-pack*", "--config*"},
+		"clone": clone,
+	}
+}
+
+// boxRunGitTransportDenyRules spells those words as deny rules. The CLI's `*`
+// also matches spaces, so each word is matched right after the subcommand and
+// anywhere later in the arguments (git accepts options after the positionals).
+func boxRunGitTransportDenyRules() []string {
+	var rules []string
+	denied := boxRunGitTransportDenied()
+	for _, head := range boxRunGitCommandHeads() {
+		for _, sub := range []string{"fetch", "clone"} {
+			for _, w := range denied[sub] {
+				rules = append(rules,
+					"Bash("+head+" "+sub+" "+w+")",
+					"Bash("+head+" "+sub+" * "+w+")")
+			}
+		}
+	}
+	return rules
+}
+
 // The base every level gets: the file tools, git (by subcommand), a few
 // read-only shell words, and the skills fetch tool. This is the same set the box
 // bootstrap writes for today's runs, plus the option-led git forms.
@@ -131,7 +181,7 @@ func boxRunPolicyFor(level string) (boxRunPolicy, error) {
 	default:
 		return boxRunPolicy{}, fmt.Errorf("no policy for tool-access level %q", level)
 	}
-	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed, Denied: boxRunGitDenyRules()}, nil
+	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed, Denied: append(boxRunGitDenyRules(), boxRunGitTransportDenyRules()...)}, nil
 }
 
 // commandFlags renders the policy as flags to append to the run command. Every
