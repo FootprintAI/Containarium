@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
+
 ## [0.125.0] - 2026-11-02
 
 ### Upgrading
