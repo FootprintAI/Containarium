@@ -13,7 +13,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/app"
-	"github.com/footprintai/containarium/internal/wake"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -45,8 +44,8 @@ const (
 	// appHostingStoreService is the family's grpc.health.v1 readiness entry.
 	appHostingStoreService = "containarium.app_hosting"
 	appHostingStoreDisplay = "app-hosting store"
-	// routeStoreService is the route family's readiness entry.
-	routeStoreService = "containarium.routes"
+	// routeStoreService, the route family's readiness entry, is declared in
+	// live_route_store.go with the refusal that names it.
 	routeStoreDisplay = "route store and Caddy route sync"
 
 	defaultRouteSyncInterval = 5 * time.Second
@@ -56,12 +55,6 @@ const (
 // installs.
 var errAppHostingNotInstalled = status.Error(codes.Unavailable,
 	"app hosting store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+appHostingStoreService)
-
-// errRouteStoreNotInstalled is every route RPC answer, and every consumer
-// read or write, until the route store installs. No route is applied in
-// Caddy meanwhile.
-var errRouteStoreNotInstalled = status.Error(codes.Unavailable,
-	"route store is not available yet (Postgres unavailable at startup); route writes are refused and nothing is applied in Caddy until it installs in-process — readiness "+routeStoreService)
 
 // appHostingService is the AppService registration, made before the store
 // exists. Each call goes to the AppServer swapped in by install, or answers
@@ -213,63 +206,9 @@ func (a *appHosting) family(open func(context.Context, *pgxpool.Pool) (*app.Stor
 	}
 }
 
-// liveRouteStore is the route store as its consumers read it: the installed
-// store on every call, UNAVAILABLE while there is none. It is the container
-// server's routeLister, the wake proxy's RouteStore and lookup, and the
-// cloud actuator's store.
-type liveRouteStore struct {
-	slot *storeSlot[*app.RouteStore]
-}
-
-var (
-	_ routeLister       = (*liveRouteStore)(nil)
-	_ wake.RouteStore   = (*liveRouteStore)(nil)
-	_ routeDomainLookup = (*liveRouteStore)(nil)
-)
-
-func newLiveRouteStore() *liveRouteStore {
-	return &liveRouteStore{slot: newStoreSlot[*app.RouteStore](nil)}
-}
-
-// current returns the installed store, or errRouteStoreNotInstalled.
-func (l *liveRouteStore) current() (*app.RouteStore, error) {
-	if st := l.slot.Load(); st != nil {
-		return st, nil
-	}
-	return nil, errRouteStoreNotInstalled
-}
-
-func (l *liveRouteStore) ListByContainer(ctx context.Context, containerName string) ([]*app.RouteRecord, error) {
-	st, err := l.current()
-	if err != nil {
-		return nil, err
-	}
-	return st.ListByContainer(ctx, containerName)
-}
-
-func (l *liveRouteStore) Save(ctx context.Context, route *app.RouteRecord) error {
-	st, err := l.current()
-	if err != nil {
-		return err
-	}
-	return st.Save(ctx, route)
-}
-
-func (l *liveRouteStore) Delete(ctx context.Context, fullDomain string) error {
-	st, err := l.current()
-	if err != nil {
-		return err
-	}
-	return st.Delete(ctx, fullDomain)
-}
-
-func (l *liveRouteStore) GetByDomain(ctx context.Context, fullDomain string) (*app.RouteRecord, error) {
-	st, err := l.current()
-	if err != nil {
-		return nil, err
-	}
-	return st.GetByDomain(ctx, fullDomain)
-}
+// liveRouteStore, the accessor the route family installs into, is in
+// live_route_store.go (no build tag: the network server reads it in the
+// client build too).
 
 // routeSyncJob is the part of *app.RouteSyncJob the route family drives.
 type routeSyncJob interface {
@@ -484,7 +423,7 @@ func (h *routeHosting) install(ctx context.Context, pool *pgxpool.Pool, open fun
 		return err
 	}
 	h.setUpOnce.Do(h.edge.setUp)
-	h.live.slot.Store(st)
+	h.live.install(st)
 	h.mu.Lock()
 	if h.job == nil {
 		h.job = h.edge.newSyncJob(st)
