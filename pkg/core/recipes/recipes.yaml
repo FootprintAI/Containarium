@@ -354,15 +354,24 @@ recipes:
           -v "$SLIDES_HOME:/workspace" \
           "$IMAGE" >/dev/null
       - |
-        # Readiness gate, then the access-control check the recipe promises:
-        # the proxy is up and an unauthenticated request is refused (401).
-        # A dev server that is reachable without credentials fails the deploy.
+        # Readiness gate, then the two checks the recipe promises. First the
+        # proxy: an unauthenticated request is refused (401); anything else
+        # fails the deploy. Then the dev server behind it: the proxy answers
+        # 401 as soon as Caddy is up, before the dev server listens, so a
+        # request carrying the staged session cookie must get 200 within the
+        # budget, or the box would be marked provisioned while unusable.
         for _ in $(seq 1 90); do
           CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)
           [ "$CODE" = "000" ] || break
           sleep 1
         done
         [ "$CODE" = "401" ] || { echo "slides-agent: expected 401 from the proxy without credentials, got '$CODE'" >&2; exit 1; }
+        for _ in $(seq 1 120); do
+          AUTHED=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: ws_auth=$WS_TOKEN" http://127.0.0.1:8080/ || true)
+          [ "$AUTHED" = "200" ] && break
+          sleep 1
+        done
+        [ "$AUTHED" = "200" ] || { echo "slides-agent: the dev server did not answer through the proxy (last status '$AUTHED'); see podman logs slides-agent" >&2; exit 1; }
         echo "slides-agent: dev server up behind the auth proxy on box port 8080; decks under $SLIDES_HOME"
 
   # agent-runtime-browser is agent-runtime plus a headless Chromium (via

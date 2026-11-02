@@ -822,14 +822,17 @@ func TestSlidesAgentRecipe(t *testing.T) {
 		"ghcr.io/footprintai/containarium-slides-agent", // the prebaked image, tag = the release
 		"CONTAINARIUM_PARAM_SLIDES_IMAGE",               // mirror / override hook
 		"CONTAINARIUM_PARAM_RELEASE",
-		"--network host",    // proxy on the box's address, dev server on loopback
-		"--restart=always",  // survives box reboot and idle-stop/start
-		"--env-file",        // auth material never on the command line
-		"hash-password",     // password bcrypt-hashed at deploy
-		"/opt/wsauth/token", // token the daemon vends for zero-click access
-		":/workspace",       // the deck tree stays on the box disk
-		"--user",            // container runs as the box user so files stay editable
-		"exit 1",            // fail closed on empty auth material
+		"--network host",            // proxy on the box's address, dev server on loopback
+		"--restart=always",          // survives box reboot and idle-stop/start
+		"--env-file",                // auth material never on the command line
+		"hash-password",             // password bcrypt-hashed at deploy
+		"/opt/wsauth/token",         // token the daemon vends for zero-click access
+		":/workspace",               // the deck tree stays on the box disk
+		"--user",                    // container runs as the box user so files stay editable
+		"exit 1",                    // fail closed on empty auth material
+		`[ "$CODE" = "401" ]`,       // unauthenticated request refused, or the deploy fails
+		`Cookie: ws_auth=$WS_TOKEN`, // the dev server must answer through the proxy (200)
+		`[ "$AUTHED" = "200" ]`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("slides-agent post_start missing %q", want)
