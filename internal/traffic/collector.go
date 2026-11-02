@@ -2,9 +2,11 @@ package traffic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -44,14 +46,39 @@ func DefaultCollectorConfig() CollectorConfig {
 	}
 }
 
+// ErrCollectorStarted is returned by a second Start: the collector's loops
+// run once per collector, so its in-memory window is never reset (#3401).
+var ErrCollectorStarted = errors.New("traffic collector already started")
+
+// errCollectorStopped is returned by Start after Stop.
+var errCollectorStopped = errors.New("traffic collector stopped")
+
+// historyWriter is what the collector persists through; *Store implements it.
+type historyWriter interface {
+	SaveConnection(ctx context.Context, conn *pb.Connection) error
+	Cleanup(ctx context.Context, retentionDays int) error
+}
+
+var _ historyWriter = (*Store)(nil)
+
+// history is the installed store: store is what GetStore hands to readers
+// (the traffic API, auto-sleep), w is what the collector writes through.
+type history struct {
+	store *Store
+	w     historyWriter
+}
+
 // Collector coordinates traffic monitoring
 type Collector struct {
 	config      CollectorConfig
 	incusClient *incus.Client
-	store       *Store
-	cache       *ContainerCache
-	monitor     ConntrackMonitor
-	emitter     *events.Emitter
+	// hist is the persistence store, nil until one is installed. It is set
+	// at most once — by NewCollector, or by SetStore after a degraded start
+	// (#3401) — and read without a lock on every persist and history query.
+	hist    atomic.Pointer[history]
+	cache   *ContainerCache
+	monitor ConntrackMonitor
+	emitter *events.Emitter
 
 	mu          sync.RWMutex
 	connections map[string]*pb.Connection // conntrack ID -> connection
@@ -69,6 +96,15 @@ type Collector struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// life guards the loops' lifecycle: Start launches them once, the
+	// cleanup loop starts once the collector runs AND has a store (in either
+	// order), and nothing starts after Stop.
+	life struct {
+		sync.Mutex
+		started, stopped bool
+		loops, cleanups  int // launch counts; at most one each
+	}
 }
 
 // NewCollector creates a new traffic collector
@@ -87,10 +123,9 @@ func NewCollector(config CollectorConfig, incusClient *incus.Client, store *Stor
 		monitor = nil
 	}
 
-	return &Collector{
+	c := &Collector{
 		config:        config,
 		incusClient:   incusClient,
-		store:         store,
 		cache:         cache,
 		monitor:       monitor,
 		emitter:       emitter,
@@ -99,11 +134,86 @@ func NewCollector(config CollectorConfig, incusClient *incus.Client, store *Stor
 		conntrackSeen: make(map[string]bool),
 		ctx:           ctx,
 		cancel:        cancel,
-	}, nil
+	}
+	c.SetStore(store)
+	return c, nil
 }
 
-// Start begins traffic collection
+// SetStore installs the persistence store into the collector, which keeps
+// running: its live window, its conntrack subscription and its loops are
+// untouched, and the retention cleanup starts if the collector is already
+// running. Flows that close from here on are persisted; flows that closed
+// before are not (no buffering). The first store wins: SetStore reports
+// false, and changes nothing, for a nil store or when one is installed.
+func (c *Collector) SetStore(st *Store) bool {
+	if st == nil {
+		return false
+	}
+	return c.installHistory(st, st)
+}
+
+// installHistory is SetStore with the writer separate from the store the
+// readers get, so tests can record what is persisted.
+func (c *Collector) installHistory(st *Store, w historyWriter) bool {
+	if !c.hist.CompareAndSwap(nil, &history{store: st, w: w}) {
+		return false
+	}
+	c.storeInstalled()
+	return true
+}
+
+// storeInstalled starts the cleanup loop for a store just swapped in, if the
+// collector runs. A Start racing the swap may already have started it.
+func (c *Collector) storeInstalled() {
+	c.life.Lock()
+	defer c.life.Unlock()
+	if c.life.started && !c.life.stopped {
+		c.startCleanupLocked()
+	}
+}
+
+// writer is the installed history writer, or nil.
+func (c *Collector) writer() historyWriter {
+	if h := c.hist.Load(); h != nil {
+		return h.w
+	}
+	return nil
+}
+
+// startCleanupLocked starts the retention cleanup loop once; c.life is held.
+func (c *Collector) startCleanupLocked() {
+	if c.life.cleanups > 0 {
+		return
+	}
+	c.life.cleanups++
+	go c.periodicCleanup()
+}
+
+func (c *Collector) loopStarts() int {
+	c.life.Lock()
+	defer c.life.Unlock()
+	return c.life.loops
+}
+
+func (c *Collector) cleanupStarts() int {
+	c.life.Lock()
+	defer c.life.Unlock()
+	return c.life.cleanups
+}
+
+// Start begins traffic collection. It runs once: a second call returns
+// ErrCollectorStarted, and a call after Stop fails.
 func (c *Collector) Start() error {
+	c.life.Lock()
+	defer c.life.Unlock()
+	if c.life.stopped {
+		return errCollectorStopped
+	}
+	if c.life.started {
+		return ErrCollectorStarted
+	}
+	c.life.started = true
+	c.life.loops++
 	log.Printf("Starting traffic collector for network %s", c.config.NetworkCIDR)
 
 	// Enable conntrack accounting for byte counters (Linux only)
@@ -124,9 +234,9 @@ func (c *Collector) Start() error {
 	// Start periodic snapshot
 	go c.periodicSnapshot()
 
-	// Start periodic cleanup
-	if c.store != nil {
-		go c.periodicCleanup()
+	// Start periodic cleanup; a store installed later starts it from SetStore.
+	if c.hist.Load() != nil {
+		c.startCleanupLocked()
 	}
 
 	return nil
@@ -190,9 +300,9 @@ func (c *Collector) processConntrackEvent(event *ConntrackEvent) {
 	c.emitTrafficEvent(event.Type, conn)
 
 	// Persist to database on connection close
-	if event.Type == ConntrackEventDestroy && c.store != nil {
+	if w := c.writer(); event.Type == ConntrackEventDestroy && w != nil {
 		go func() {
-			if err := c.store.SaveConnection(c.ctx, conn); err != nil {
+			if err := w.SaveConnection(c.ctx, conn); err != nil {
 				log.Printf("Warning: failed to persist connection: %v", err)
 			}
 		}()
@@ -312,7 +422,8 @@ func (c *Collector) PersistEBPFFlows(flows []EBPFFlow) {
 // at this shared chokepoint covers both the closedFlows (eviction) path and the
 // idle reaper (#632), so neither double-counts against conntrack.
 func (c *Collector) persistClosedFlows(conns []*pb.Connection) {
-	if c.store == nil {
+	w := c.writer()
+	if w == nil {
 		return
 	}
 	for _, conn := range conns {
@@ -321,7 +432,7 @@ func (c *Collector) persistClosedFlows(conns []*pb.Connection) {
 		}
 		conn := conn
 		go func() {
-			if err := c.store.SaveConnection(c.ctx, conn); err != nil {
+			if err := w.SaveConnection(c.ctx, conn); err != nil {
 				log.Printf("Warning: failed to persist closed eBPF flow: %v", err)
 			}
 		}()
@@ -485,7 +596,7 @@ func (c *Collector) periodicCleanup() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.store.Cleanup(c.ctx, c.config.RetentionDays); err != nil {
+			if err := c.writer().Cleanup(c.ctx, c.config.RetentionDays); err != nil {
 				log.Printf("Warning: traffic cleanup failed: %v", err)
 			}
 		}
@@ -570,13 +681,24 @@ func (c *Collector) GetConnectionSummary(containerName string) *pb.ConnectionSum
 	return summary
 }
 
-// GetStore returns the traffic store
+// GetStore returns the traffic store, or nil while none is installed. Read
+// it per call: a store can arrive after a degraded start (#3401).
 func (c *Collector) GetStore() *Store {
-	return c.store
+	if h := c.hist.Load(); h != nil {
+		return h.store
+	}
+	return nil
 }
 
-// Stop stops the collector
+// Stop stops the collector; later calls do nothing.
 func (c *Collector) Stop() {
+	c.life.Lock()
+	if c.life.stopped {
+		c.life.Unlock()
+		return
+	}
+	c.life.stopped = true
+	c.life.Unlock()
 	c.cancel()
 	if c.monitor != nil {
 		if err := c.monitor.Close(); err != nil {
