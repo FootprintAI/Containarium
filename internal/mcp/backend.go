@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/credentials"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -61,6 +62,8 @@ type API interface {
 	ListBackups(username string) (*ListBackupsResponse, error)
 	RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse, error)
 	VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error)
+	// Whole-box restore (#3358), through the CLI's shared function.
+	RestoreBoxBackup(p client.BoxRestoreParams) (*pb.RestoreBoxBackupResponse, error)
 
 	// Secrets / KMS.
 	SetSecret(username, name, value string) (*SecretResponse, error)

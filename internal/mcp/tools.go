@@ -2036,6 +2036,8 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
+		// whole-box restore (#3358): creates or replaces a box from a backup.
+		"restore_box_backup": auth.ScopeBackupsWrite,
 		// A restore test creates and drops a scratch database in an isolated
 		// target container. Only backups:verify authorizes it after the
 		// v0.120.1 deprecation window; backups:write grants no verify access

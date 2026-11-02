@@ -120,8 +120,8 @@ func (s *ContainerServer) collaboratorAccessor() collaboratorAccess {
 	if s.collabAccess != nil {
 		return s.collabAccess
 	}
-	if s.collaboratorManager != nil {
-		return s.collaboratorManager
+	if cm := s.loadCollaboratorManager(); cm != nil {
+		return cm
 	}
 	return nil
 }

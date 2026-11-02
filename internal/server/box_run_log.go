@@ -409,9 +409,9 @@ func (s *ContainerServer) authorizeBoxRuns(ctx context.Context, owner string) er
 	}
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	check := s.boxRunCollaborator
-	if check == nil && s.collaboratorManager != nil {
+	if cm := s.loadCollaboratorManager(); check == nil && cm != nil {
 		check = func(owner, subject string) (bool, error) {
-			_, err := s.collaboratorManager.GetCollaborator(owner, subject)
+			_, err := cm.GetCollaborator(owner, subject)
 			if errors.Is(err, collaborator.ErrNotFound) {
 				return false, nil
 			}
