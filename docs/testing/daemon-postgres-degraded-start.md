@@ -40,7 +40,12 @@ configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
 backend: it stays pending and `NOT_SERVING` and is still retried, but it
 does not hold the self-restart, while a family whose last attempt failed on
 a connection or open error still does. The refusal is logged once each time
-the family enters it, not on every retry. The passthrough-recovery tests
+the family enters it, not on every retry. The tracker family's wait on a
+config-refused secrets store is a config refusal too (#3387), so that
+degraded start lets the watcher restart; a wait on a secrets store that is
+pending for any other reason still holds it.
+
+The passthrough-recovery tests
 (#3333) cover the passthrough route store: while Postgres is down,
 `containarium.passthrough` is `NOT_SERVING` and every passthrough RPC
 (list, add, update, enable, disable, delete) answers `UNAVAILABLE` without
