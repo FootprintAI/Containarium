@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.125.0] - 2026-11-02
+
+### Upgrading
+
+- **The sentinel now verifies each backend's SSH host key, and refuses new SSH logins without a pin file** (#3362, refs #3348). Keysync-generated routes reference `/etc/sshpiper/known_hosts`, which an operator must install through a trusted channel BEFORE upgrading the sentinel: the enforce-mode router rejects an absent, empty or unreadable file, and the legacy `ignore_hostkey` can no longer bypass the pins. A sentinel upgraded without the file refuses new connections through it, even for authorized users. Provisioning and the maintenance sequence (stop ingress, install pins, upgrade and regenerate, verify, resume) are in `docs/architecture/sentinel-backend-host-keys.md`. Daemon-only hosts are not affected. Manually maintained unpinned YAML routes outside keysync need the same migration.
+- **Install the managed toolchain on each Incus host** if it is not already there (still needed since v0.123.0; a binary-only upgrade does not install it). See `docs/MANAGED-TOOLCHAINS.md`; this release logs a startup warning and `containarium doctor` reports it when none is active.
+
 ### Fixed
 
 - **Headless runs can no longer run a program through `git fetch` or `git clone` arguments** (#3397, follow-up to #3385). The allow rules for `git fetch *` and `git clone *` also matched `--upload-pack=<cmd>`, which makes git run the given program, and `-c`/`--config` on clone, which sets configuration such as `core.sshCommand`. The run command now also refuses, for `fetch` and `clone` and also after a leading `-C`, `--git-dir=` or `--work-tree=`: `--upload-pack` and `--receive-pack`, `--config` and `--config-env`, and for `clone` also `-u`, `-c` and `--template`. The words are refused anywhere in the arguments, and in the abbreviated spellings git accepts (`--upl`, `--conf`) and in short options bundled in front of `-u` or `-c` (`-qu`). Plain `git fetch origin` and `git clone <url> <dir>` still run. The check is conservative: a clone argument that begins with `-u` or `-c` is refused even when it is not an option.
@@ -28,10 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The sentinel authenticates the backend as well as the user** (#3362). Generated routes require the pin file described under Upgrading and the enforce-mode router passes its pins to the existing upstream verifier; host matching is exact on endpoint and port (including tunnel-loopback ports), and keys rotate by publishing the old and new key together and replacing the file atomically.
 - **`containarium login` opens the browser on Windows without going through cmd.exe** (#3349). The login URL, which comes from the login server's response, was launched with `cmd /c start`, so cmd.exe parsed it and an `&` in the URL was treated as a command separator. Windows now uses `rundll32 url.dll,FileProtocolHandler`. On every platform the URL is also checked before launch: it must be https (http only for a loopback host), have a host, and contain no whitespace, control characters or `& | ^ " < > ; `` ` ``. A URL that fails the check is not launched; the CLI prints it and asks you to open it manually, as it already does when the launch fails. Exploiting this needed a malicious or compromised login endpoint.
 
 ### Documentation
 
+- **Release-engineering notes** (#3384, #3402, #3307). The changelog and architecture notes for the gateway revocation recovery were corrected; `aquasecurity/trivy-action` is pinned to a release commit; and a verification harness, `managed-key-verify.yml`, checks managed-key detection against published releases (not a required check).
 - **The upgrade notes now include the managed toolchain install** (#3361). v0.123.0 started refusing `BUILD_TOOLS` runs on Incus hosts with no managed toolchain release, but its notes listed the feature only under Added. Its **Upgrading** section now names the install step, `docs/UPGRADE-AND-ROLLBACK.md` has a "Managed toolchain" section and a post-upgrade check, and the release PR checklist in `docs/RELEASE-PROCESS.md` now asks whether a release needs a host-side step.
 
 ## [0.124.0] - 2026-11-01
