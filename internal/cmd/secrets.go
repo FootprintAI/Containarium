@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
@@ -275,12 +277,18 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 	// surfaced here, so an operator had no way to see which of their
 	// secrets are still in the env (Incus-config-visible) mode short of
 	// reading the daemon's own database.
-	fmt.Printf("%-32s %-8s %-9s %s\n", "NAME", "VERSION", "DELIVERY", "UPDATED")
+	printSecretList(os.Stdout, list)
+	return nil
+}
+
+// printSecretList renders the `secrets list` table. Secret names are
+// tenant-chosen, so they go through escapeControl (#3453).
+func printSecretList(w io.Writer, list []*pb.SecretMetadata) {
+	fmt.Fprintf(w, "%-32s %-8s %-9s %s\n", "NAME", "VERSION", "DELIVERY", "UPDATED")
 	for _, row := range list {
-		fmt.Printf("%-32s %-8d %-9s %s\n", row.GetName(), row.GetVersion(),
+		fmt.Fprintf(w, "%-32s %-8d %-9s %s\n", escapeControl(row.GetName()), row.GetVersion(),
 			secretDeliveryLabel(row.GetDeliveryMode()), strings.TrimSuffix(row.GetUpdatedAt(), "Z"))
 	}
-	return nil
 }
 
 func runSecretsDelete(cmd *cobra.Command, args []string) error {
