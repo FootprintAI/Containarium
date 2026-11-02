@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -56,10 +55,11 @@ var dropbearTimestampPattern = regexp.MustCompile(
 
 // parseDropbearLine extracts a successful login from one dropbear log line.
 //
-// fallback is used when the line carries no timestamp — the pod log API can
-// supply one per line, and a record with the wrong time is worse than one
+// now is when the log was read; it supplies the year dropbear's stamp leaves
+// out. fallback is used when the line carries no timestamp — the pod log API
+// can supply one per line, and a record with the wrong time is worse than one
 // with an approximate time clearly derived from the reader.
-func parseDropbearLine(line string, year int, fallback time.Time) (ts time.Time, user, source, method string, ok bool) {
+func parseDropbearLine(line string, now, fallback time.Time) (ts time.Time, user, source, method string, ok bool) {
 	switch {
 	case dropbearPubkeyPattern.MatchString(line):
 		m := dropbearPubkeyPattern.FindStringSubmatch(line)
@@ -79,23 +79,18 @@ func parseDropbearLine(line string, year int, fallback time.Time) (ts time.Time,
 	// break every query that groups by source.
 	source = trimSourcePort(source)
 
-	return parseDropbearTimestamp(line, year, fallback), user, source, method, true
+	return parseDropbearTimestamp(line, now, fallback), user, source, method, true
 }
 
 // parseDropbearTimestamp reads the line's own timestamp, falling back to the
 // supplied one.
-func parseDropbearTimestamp(line string, year int, fallback time.Time) time.Time {
+func parseDropbearTimestamp(line string, now, fallback time.Time) time.Time {
 	m := dropbearTimestampPattern.FindStringSubmatch(line)
 	if m == nil {
 		return fallback
 	}
-	tsStr := fmt.Sprintf("%d %s", year, m[1])
-	// Two layouts because the day is space-padded for single digits in some
-	// runtimes and not others.
-	for _, layout := range []string{"2006 Jan  2 15:04:05", "2006 Jan 2 15:04:05"} {
-		if ts, err := time.Parse(layout, tsStr); err == nil {
-			return ts
-		}
+	if ts, ok := parseSyslogStamp(m[1], now); ok {
+		return ts
 	}
 	return fallback
 }
