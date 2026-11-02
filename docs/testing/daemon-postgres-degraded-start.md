@@ -112,10 +112,10 @@ has no self-host decider. Once Postgres answers, the store and the
 collaborator manager install with no restart. On the LXC runtime the
 registry is then created, backfilled from `/home` and reconciled: a key
 removed from an `authorized_keys` file while the registry was absent kept
-an active row, and the decider only checks that the login's account holds
-some key, not the offered one, so rows no account holds are revoked
-(decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
-pins why). The registry is read before `/home` is scanned, so a key added
+an active row. The decider refuses such a key at decision time (it must be
+one the login's account holds), and rows no account holds are also revoked
+so the registry stops listing them (decision Q14 on #3335;
+`TestReconcile_DeciderRefusesAStaleRow`). The registry is read before `/home` is scanned, so a key added
 through the API while the reconcile runs is not revoked. Rows are left
 active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
 a daemon with no cloud enrollment. A failed backfill or reconcile leaves
