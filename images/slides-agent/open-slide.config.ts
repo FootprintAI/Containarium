@@ -1,6 +1,6 @@
 // open-slide configuration baked into the slides-agent image
 // (images/slides-agent/Dockerfile). The dev server's cwd is the image's
-// workspace (package.json + node_modules); the deck tree it serves is the
+// copy of upstream's demo app (package.json + node_modules); the deck tree it serves is the
 // bind-mounted /workspace on the box disk, so decks survive container and box
 // restarts.
 import type { OpenSlideConfig } from '@open-slide/core';

@@ -9,7 +9,7 @@ set -euo pipefail
 
 WORKSPACE="${SLIDES_WORKSPACE:-/workspace}"
 TEMPLATE="${SLIDES_TEMPLATE:-/opt/open-slide/template}"
-APP="${SLIDES_APP:-/opt/open-slide/workspace}"
+APP="${SLIDES_APP:-/opt/open-slide/app}"
 
 # Fail closed: the proxy must never come up with a degenerate auth config, and
 # the dev server must never come up without the proxy.

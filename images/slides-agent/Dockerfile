@@ -8,9 +8,10 @@
 # nothing from a package registry; the image pull is the only fetch.
 #
 # Layout inside the image:
-#   /opt/open-slide/workspace   package.json, node_modules, open-slide.config.ts
-#                               (the dev server's cwd; not writable by the box user
-#                               except the two cache dirs below)
+#   /opt/open-slide/app         upstream's `demo` workspace package deployed with
+#                               its production dependencies from the monorepo
+#                               lockfile (core built from the pinned commit); the
+#                               dev server's cwd, open-slide.config.ts replaced
 #   /opt/open-slide/template    the scaffold's deck tree + agent files, seeded
 #                               into the bind-mounted /workspace on first start
 #   /workspace                  bind mount: the deck tree on the box disk
@@ -46,56 +47,60 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g "pnpm@${PNPM_VERSION}"
 
-WORKDIR /src
+WORKDIR /opt/open-slide/src
 # Fetch exactly the pinned commit and verify the checkout is that commit.
 RUN git init -q . \
     && git remote add origin "${OPEN_SLIDE_REPO}" \
     && git fetch -q --depth 1 origin "${OPEN_SLIDE_COMMIT}" \
     && git checkout -q --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = "${OPEN_SLIDE_COMMIT}"
+    && test "$(git rev-parse HEAD)" = "${OPEN_SLIDE_COMMIT}" \
+    && git rev-parse HEAD > /opt/open-slide/COMMIT \
+    && rm -rf .git
 
-# The core package only, from the monorepo's lockfile. --ignore-scripts: no
-# dependency lifecycle scripts (pnpm 10 already blocks them by default).
-RUN pnpm install --frozen-lockfile --ignore-scripts --filter @open-slide/core \
+# Two workspace packages from the monorepo's lockfile: the core package and
+# the `demo` app, whose only runtime dependencies are core (a workspace link)
+# and react/react-dom. The install carries the dev dependencies the core build
+# needs; `pnpm deploy --prod` then materialises the demo app with only its
+# production dependencies, resolved from the same lockfile, at
+# /opt/open-slide/app, which becomes the dev server's cwd (its example decks
+# are not served: open-slide.config.ts points at /workspace). --ignore-scripts:
+# no dependency lifecycle scripts (pnpm 10 already blocks them by default).
+# CI=1: pnpm refuses some node_modules operations without a TTY otherwise.
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @open-slide/core --filter demo \
     && pnpm --filter @open-slide/core run build \
-    && mkdir -p /out \
-    && (cd packages/core && npm pack --ignore-scripts --pack-destination /out >/dev/null)
+    && CI=1 pnpm --filter demo deploy --prod --legacy --ignore-scripts /opt/open-slide/app \
+    && test -f /opt/open-slide/app/node_modules/@open-slide/core/bin.js \
+    && test -f /opt/open-slide/app/node_modules/@open-slide/core/dist/cli/bin.js \
+    && test ! -e /opt/open-slide/app/node_modules/@anthropic-ai \
+    && test ! -e /opt/open-slide/app/node_modules/@openai
 
-# The workspace the dev server runs in: the scaffold template with its core
-# dependency pointed at the tarball built above. The template's own dependency
-# ranges (react, react-dom) resolve at image build time; the image digest pins
-# the result.
-WORKDIR /opt/open-slide/workspace
-RUN cp -a /src/packages/cli/template/. . \
-    && rm -f netlify.toml vercel.json \
-    && TGZ="$(ls /out/open-slide-core-*.tgz)" \
-    && sed -i "s|\"@open-slide/core\": \"[^\"]*\"|\"@open-slide/core\": \"file:${TGZ}\"|" package.json \
-    && grep -q "\"@open-slide/core\": \"file:/out/" package.json \
-    && pnpm install --ignore-scripts \
-    && test -f node_modules/@open-slide/core/bin.js
-COPY images/slides-agent/open-slide.config.ts ./open-slide.config.ts
-
-# Split the deck tree and agent files out into the seed template; the
-# workspace keeps only what the dev server needs as its cwd. The template's
-# .claude/skills are relative symlinks into .agents/skills, which upstream
-# generates from the core package's skills directory.
+# The seed template: the scaffold's deck tree and agent files, which the
+# entrypoint copies into the bind-mounted /workspace on first start. The
+# template's .claude/skills are relative symlinks into .agents/skills, which
+# upstream generates from the core package's skills directory. Nothing else of
+# the checkout is kept.
 RUN mkdir -p /opt/open-slide/template/.agents \
+    && cd /opt/open-slide/src/packages/cli/template \
     && for e in slides themes assets AGENTS.md CLAUDE.md README.md .claude; do \
-         [ -e "$e" ] || [ -L "$e" ] || continue; mv "$e" /opt/open-slide/template/; \
+         [ -e "$e" ] || [ -L "$e" ] || continue; cp -a "$e" /opt/open-slide/template/; \
        done \
-    && cp -a /src/packages/core/skills /opt/open-slide/template/.agents/skills \
+    && cp -a /opt/open-slide/src/packages/core/skills /opt/open-slide/template/.agents/skills \
     && test -f /opt/open-slide/template/.claude/skills/create-slide/SKILL.md \
     && printf 'node_modules\ndist\n.DS_Store\n' > /opt/open-slide/template/.gitignore \
-    # The container runs as the box user (arbitrary uid). The dev server writes
-    # current.json under node_modules/.open-slide, Vite bundles
-    # open-slide.config.ts into a temporary .mjs beside it, and Vite's
-    # dependency pre-bundle cache sits under the core package's own
-    # node_modules (its app directory is Vite's root). Those directories are
-    # world-writable with the sticky bit; the files in them (package.json, the
-    # config, the installed packages) stay root-owned.
-    && mkdir -p node_modules/.open-slide node_modules/@open-slide/core/node_modules/.vite \
-    && chmod 1777 . node_modules/.open-slide node_modules/@open-slide/core/node_modules/.vite \
-    && test -w node_modules/@open-slide/core/node_modules/.vite
+    && rm -rf /opt/open-slide/src
+
+WORKDIR /opt/open-slide/app
+RUN rm -rf slides themes netlify.toml vercel.json README.md
+COPY images/slides-agent/open-slide.config.ts ./open-slide.config.ts
+# The container runs as the box user (arbitrary uid). The dev server writes
+# current.json under its cwd's node_modules/.open-slide, Vite bundles
+# open-slide.config.ts into a temporary .mjs beside it, and Vite's dependency
+# pre-bundle cache sits under the core package's own node_modules (its app
+# directory is Vite's root). Those directories are world-writable with the
+# sticky bit; the files in them (package.json, the config, the installed
+# packages) stay root-owned.
+RUN mkdir -p node_modules/.open-slide node_modules/@open-slide/core/node_modules/.vite \
+    && chmod 1777 . node_modules/.open-slide node_modules/@open-slide/core/node_modules/.vite
 
 # --- runtime ----------------------------------------------------------------
 FROM ${NODE_IMAGE}

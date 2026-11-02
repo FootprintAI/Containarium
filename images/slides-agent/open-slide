@@ -6,7 +6,7 @@
 # image's own workspace is not writable by the box user.
 set -euo pipefail
 
-cd /opt/open-slide/workspace
+cd /opt/open-slide/app
 args=("$@")
 if [ "${1:-}" = "build" ]; then
   case " $* " in

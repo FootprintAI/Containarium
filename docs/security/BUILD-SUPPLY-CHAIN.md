@@ -102,6 +102,8 @@ check with a checksum for each download.
 | File | Tool | What | Pinned how |
 | --- | --- | --- | --- |
 | `web-ui/Dockerfile` | npm ci | web UI dependencies | lockfile |
+| `images/slides-agent/Dockerfile` | npm install | `npm install -g pnpm@10.17.0`, the exact pnpm version upstream's `packageManager` field names | exact version from the npm registry; npm checks the tarball against the registry's integrity hash (same-origin) |
+| `images/slides-agent/Dockerfile` | pnpm install | open-slide core and demo workspace dependencies (then `pnpm deploy --prod` materialises the demo app with production dependencies only, from the same lockfile), after the pinned commit `1ce6bd5268efeaf4cc3bed28112ac770fc5f3b34` is fetched with `git fetch --depth 1 origin <sha>` and verified with `git rev-parse HEAD` | lockfile (`--frozen-lockfile --ignore-scripts`, upstream's `pnpm-lock.yaml` at the pinned commit; integrity hashes). The commit fetch is a `git fetch`, not a `git clone`, so the gate does not see it; the pin is the full SHA checked in the Dockerfile |
 | `scripts/build-webui.sh` | npm ci | web UI dependencies | lockfile (was `npm install`) |
 | `Makefile` | npm ci | agent-runtime dependencies | lockfile |
 | `.github/workflows/agent-runtime.yml` | npm ci | agent-runtime dependencies | lockfile |
@@ -133,6 +135,7 @@ check with a checksum for each download.
 | `scripts/install-lab-phase-b.sh` | curl | Incus apt repository signing key | unpinned key fetch |
 | `scripts/setup-gpu-host.sh` | curl | NVIDIA and Incus apt signing keys and source list | unpinned |
 | `scripts/setup-gpu-host.sh` | wget | `wget` in an apt package list | not a build fetch |
+| `images/slides-agent/Dockerfile` | curl | `curl` in the runtime stage's apt package list (with chromium and fonts) | not a build fetch; apt resolves it against the Debian archive (see the apt category above) |
 | `scripts/setup-caddy.sh` | curl | `curl https://test.$DOMAIN` in a usage hint printed to the operator | not a build fetch |
 | `Makefile` | xcaddy build | `make build-caddy` builds Caddy `$(CADDY_VERSION)` with `--with` plugin modules (caddy-l4 and the DNS providers) | Caddy core version pinned; plugin modules float to the newest version the Go module proxy serves (the Go checksum database still verifies each download). Pinning each module would also change the list `TestCaddyModulesInSyncWithMakefile` reads, so it is a follow-up |
 | `scripts/setup-caddy.sh` | xcaddy build | Builds Caddy with one DNS plugin on a host | Caddy core and plugin float |
