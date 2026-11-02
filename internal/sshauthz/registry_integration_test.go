@@ -431,3 +431,69 @@ func TestPGKeyStore_RevokeFailsClosedOnUnreadableAccount(t *testing.T) {
 		t.Fatalf("row revoked: %+v", got)
 	}
 }
+
+// #3330 (Q14): ActiveRecords lists every row that is not revoked, and
+// Reconcile over the real store revokes the row of a key removed while the
+// registry was absent, while a row another account still holds stays active
+// and an already revoked row keeps its revocation time.
+func TestPGKeyStore_ActiveRecordsAndReconcile(t *testing.T) {
+	home := t.TempDir()
+	s := pgKeysHeld(t, home)
+	ctx := context.Background()
+
+	kept, removed, sharedPub, revokedPub := testKey(t), testKey(t), testKey(t), testKey(t)
+	keptRec := mustRecord(t, kept, "alice", SourceAPI, caseNow)
+	stale := mustRecord(t, removed, "alice", SourceAPI, caseNow)
+	shared := mustRecord(t, sharedPub, "alice", SourceAPI, caseNow)
+	gone := mustRecord(t, revokedPub, "alice", SourceAPI, caseNow)
+	for _, rec := range []KeyRecord{keptRec, stale, shared, gone} {
+		if err := s.Register(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Revoke(ctx, gone, caseNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := s.ActiveRecords(ctx)
+	if err != nil {
+		t.Fatalf("ActiveRecords: %v", err)
+	}
+	got := map[string]KeyRecord{}
+	for _, r := range active {
+		got[r.Fingerprint] = r
+	}
+	if len(got) != 3 {
+		t.Fatalf("ActiveRecords = %v, want the three unrevoked rows", active)
+	}
+	if _, ok := got[gone.Fingerprint]; ok {
+		t.Errorf("ActiveRecords lists the revoked row %s", gone.Fingerprint)
+	}
+	if r := got[stale.Fingerprint]; r.Username != "alice" || r.PublicKey != stale.PublicKey || r.KeyType != stale.KeyType || !r.CreatedAt.Equal(caseNow) {
+		t.Errorf("ActiveRecords row = %+v, want the registered fields", r)
+	}
+
+	// alice dropped `removed` while the registry was absent, and `shared`
+	// now lives only in bob's account.
+	writeHome(t, home, "alice", kept)
+	writeHome(t, home, "bob", sharedPub)
+
+	res, err := Reconcile(ctx, s, home, caseNow.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.Revoked != 1 || res.Unresolved != 0 {
+		t.Errorf("Reconcile = %+v, want 1 revoked", res)
+	}
+	if r := lookup(t, s, stale.Fingerprint); r.RevokedAt.IsZero() {
+		t.Error("stale row still active after Reconcile")
+	}
+	for _, rec := range []KeyRecord{keptRec, shared} {
+		if r := lookup(t, s, rec.Fingerprint); !r.RevokedAt.IsZero() {
+			t.Errorf("%s revoked although an account holds it", rec.Fingerprint)
+		}
+	}
+	if r := lookup(t, s, gone.Fingerprint); !r.RevokedAt.Equal(caseNow.Add(time.Minute)) {
+		t.Errorf("already revoked row's revoked_at = %v, want it unchanged", r.RevokedAt)
+	}
+}
