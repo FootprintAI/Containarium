@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
 
+### Documentation
+
+- **Command mode's tool-access guarantee is stated precisely** (#3424, clarifies the v0.123.0 command-mode entry, #3322). A command-mode run (`StartBoxRunRequest.command`, `containarium code run --command`) takes from the box's recorded tool-access level the run user and that level's sudo grant. The engine's allow/deny tool policy applies to engine runs only, so a caller holding the command-mode scope can run any program the run user can, also on a box recorded at a restrictive level. Behaviour is unchanged; the `command` proto comment, the generated API docs and `docs/BOX-RUN-API.md` now say so, and a test pins it.
+
 ### Fixed
 
 - **The tracker store no longer holds the opt-in self-restart while it waits on a secrets store refused by configuration** (#3387, follow-up to #3378). The tracker store installs only after the secrets store, so with `CONTAINARIUM_REQUIRE_ENVELOPE=true` and no KMS backend the tracker stayed pending on an ordinary error and still held the restart, and the daemon never restarted. While the secrets store's last attempt was a configuration refusal, the tracker now reports its wait as a configuration refusal too. It stays pending and `NOT_SERVING` and is still retried, but it no longer holds the restart. When the secrets store is only waiting on Postgres, has not been attempted yet, or failed to open, the tracker still holds the restart. Once the secrets store installs, the tracker installs in the same attempt.

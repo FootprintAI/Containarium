@@ -170,9 +170,12 @@ message StartBoxRunRequest {
   // the run user's agent sign-in is not required. Mutually exclusive with
   // prompt, session_id, continue_session, structured_output and model
   // (INVALID_ARGUMENT, before anything on the box is touched). The command
-  // runs as the box's run user with its recorded tool-access level and sudo
-  // grant, exactly as an engine run would, in that user's home directory; a
-  // caller that needs a checkout makes it part of the command. The run is
+  // runs as the box's run user with the sudo grant of its recorded
+  // tool-access level, in that user's home directory: the level selects the
+  // run user and its sudo grant, nothing more. The engine's allow/deny tool
+  // policy applies to engine runs only, so a caller holding the command-mode
+  // scope can run any program the run user can. A caller that needs a
+  // checkout makes it part of the command. The run is
   // listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
   // StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
   // in SystemInfo.capabilities.
