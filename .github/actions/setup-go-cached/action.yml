@@ -19,6 +19,12 @@ description: >
 #
 # What this does instead:
 #
+#   * The module cache is its own entry, keyed by go.sum alone and shared by
+#     every job, so modules are stored once instead of once per `cache-name`.
+#     It does not depend on the Go version (module sources are extracted
+#     files). Main completes it with `go mod download` before saving, so no
+#     job's partial download becomes the entry; all other events restore it
+#     read-only. Only the build cache (GOCACHE) is scoped by `cache-name`.
 #   * `cache-name` scopes the cache to one job's work. Jobs that compile the
 #     same set may share a name (the PR-time release-artifact gate and the
 #     release build both use `build-all`).
@@ -90,28 +96,51 @@ runs:
           echo "modcache=$(go env GOMODCACHE)"
           echo "buildcache=$(go env GOCACHE)"
           echo "prefix=${prefix}"
+          echo "modprefix=gomod-${RUNNER_OS}-${RUNNER_ARCH}-"
           echo "date=$(date -u +%Y%m%d)"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Restore and save the Go cache (main)
+    - name: Restore and save the module cache (main)
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        path: |
-          ${{ steps.go-cache.outputs.modcache }}
-          ${{ steps.go-cache.outputs.buildcache }}
+        path: ${{ steps.go-cache.outputs.modcache }}
+        key: ${{ steps.go-cache.outputs.modprefix }}${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ steps.go-cache.outputs.modprefix }}
+
+    - name: Complete the module cache before it is saved (main)
+      # The first main job to finish saves the one entry for this go.sum, and a
+      # job that compiles little would otherwise save a partial one. A no-op
+      # when the exact key was restored.
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: go mod download
+
+    - name: Restore the module cache (read-only)
+      if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ steps.go-cache.outputs.modcache }}
+        key: ${{ steps.go-cache.outputs.modprefix }}${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ steps.go-cache.outputs.modprefix }}
+
+    - name: Restore and save the build cache (main)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ steps.go-cache.outputs.buildcache }}
         key: ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-${{ steps.go-cache.outputs.date }}
         restore-keys: |
           ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-
           ${{ steps.go-cache.outputs.prefix }}
 
-    - name: Restore the Go cache (read-only)
+    - name: Restore the build cache (read-only)
       if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        path: |
-          ${{ steps.go-cache.outputs.modcache }}
-          ${{ steps.go-cache.outputs.buildcache }}
+        path: ${{ steps.go-cache.outputs.buildcache }}
         key: ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-${{ steps.go-cache.outputs.date }}
         restore-keys: |
           ${{ steps.go-cache.outputs.prefix }}${{ hashFiles('**/go.sum') }}-
