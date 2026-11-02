@@ -32,6 +32,7 @@
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/ssh-approval-spike.yml	git clone	ef6dbf43ff6c	git clone --depth 1 --branch v1.6.1 https://github.com/tg123/sshpiper 
 .github/workflows/tenant-guard-e2e.yml	curl	d4caf07f25aa	curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /us
 .github/workflows/workflow-lint.yml	curl	afe7011db51b	curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" "https://github.com/rhysd/
