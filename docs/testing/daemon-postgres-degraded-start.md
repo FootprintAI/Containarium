@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestCollaboratorRecovery_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -96,6 +96,35 @@ line and counted, and the install line reports the count. The watcher
 starts exactly once, with the daemon's serving context, and reads each
 box's last-seen state from Postgres first, so a box alerted before the
 outage is not alerted again.
+
+The collaborator store, the `ssh_keys` registry and the self-host SSH
+authorization decider are one family (#3330):
+
+```bash
+go test -race -count=1 ./internal/server ./internal/sshauthz \
+  -run 'TestCollaboratorRecovery_|TestReconcile_|TestSSHAuthzServer_'
+```
+
+While Postgres is down, `containarium.collaborators` is `NOT_SERVING`,
+`AddCollaborator`, `RemoveCollaborator` and `ListCollaborators` answer
+`UNAVAILABLE` for a box on this backend, and `SSHAuthzService.Authorize`
+has no self-host decider. Once Postgres answers, the store and the
+collaborator manager install with no restart. On the LXC runtime the
+registry is then created, backfilled from `/home` and reconciled: a key
+removed from an `authorized_keys` file while the registry was absent kept
+an active row, and the decider only checks that the login's account holds
+some key, not the offered one, so rows no account holds are revoked
+(decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
+pins why). The registry is read before `/home` is scanned, so a key added
+through the API while the reconcile runs is not revoked. Rows are left
+active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
+a daemon with no cloud enrollment. A failed backfill or reconcile leaves
+the decider off and the family pending, and the next attempt resumes
+without reopening the store. The K8s runtime and an enrolled daemon skip
+the registry or the decider and still report `SERVING`. The real-Postgres
+halves, `TestPGKeyStore_ActiveRecordsAndReconcile` and
+`TestCollaboratorStore_OnSharedPool`, run only with `CONTAINARIUM_TEST_DSN`
+set (the store-integration lane).
 
 ## Deployed outage drill
 

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
 
+### Fixed
+
+- **Collaborators and self-host SSH authorization recover in-process after a degraded start** (#3330; part of #2855, on the #3326 helper). The collaborator store, the `ssh_keys` registry and the self-host SSH decider used to install only if Postgres answered at boot, after a 5 x 3 s retry that also delayed startup, and stayed off until a restart. They are now one late-install family with the readiness entry `containarium.collaborators`. While Postgres is down, `AddCollaborator`, `RemoveCollaborator` and `ListCollaborators` answer `UNAVAILABLE` for a box on this backend (before, a plain "collaborator management not enabled" error). Once Postgres answers, the store and collaborator manager install with no restart. On the LXC runtime the registry is then created and backfilled from `/home`, and the self-host decider is set once the backfill succeeds, only on a daemon with no cloud enrollment. A failed backfill at startup is now retried in-process instead of leaving the decider off until a restart. On a late install the registry is also reconciled (decision Q14 on #3335): key removals during the window did not reach the absent registry, and the decider checks only that the login's account holds some key, not the offered one, so a removed key could still be allowed. Rows for keys that no account holds are now revoked. Rows stay active while any account's `authorized_keys` cannot be read. The startup collaborator retry is gone and the helper's backoff owns retries.
+
 ## [0.125.0] - 2026-11-02
 
 ### Upgrading

@@ -38,6 +38,9 @@ type Collaborator struct {
 // Store handles persistent storage of collaborators using PostgreSQL
 type Store struct {
 	pool *pgxpool.Pool
+	// ownsPool: Close closes pool (NewStore), not a shared one
+	// (NewStoreOnPool).
+	ownsPool bool
 }
 
 // NewStore creates a new collaborator store connected to PostgreSQL
@@ -58,7 +61,7 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	store := &Store{pool: pool}
+	store := &Store{pool: pool, ownsPool: true}
 
 	// Initialize schema
 	if err := store.initSchema(ctx); err != nil {
@@ -69,13 +72,28 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 	return store, nil
 }
 
+// NewStoreOnPool opens the store over a pool it does not own: the daemon's
+// shared late-install pool after a degraded start (#3330). It creates the
+// schema if needed; Close leaves the pool open.
+func NewStoreOnPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
+	if pool == nil {
+		return nil, errors.New("nil pool")
+	}
+	store := &Store{pool: pool}
+	if err := store.initSchema(ctx); err != nil {
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+	return store, nil
+}
+
 // Pool returns the store's connection pool, so other daemon tables (the
 // ssh_keys registry, #2517) share it.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Close closes the database connection pool
+// Close closes the database connection pool when the store owns it
+// (NewStore); a store opened with NewStoreOnPool leaves the pool open.
 func (s *Store) Close() {
-	if s.pool != nil {
+	if s.pool != nil && s.ownsPool {
 		s.pool.Close()
 	}
 }
