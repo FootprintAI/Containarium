@@ -210,11 +210,15 @@ func runTrackerIssueList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("(no issues match)\n")
 		return nil
 	}
+	printTrackerIssueList(issues)
+	return nil
+}
+
+func printTrackerIssueList(issues []*pb.TrackerIssue) {
 	fmt.Printf("%-8s %-8s %-24s %s\n", "NUMBER", "STATE", "LABELS", "TITLE")
 	for _, i := range issues {
-		fmt.Printf("%-8d %-8s %-24s %s\n", i.GetNumber(), trackerIssueStateLabel(i.GetState()), strings.Join(i.GetLabels(), ","), i.GetTitle())
+		fmt.Printf("%-8d %-8s %-24s %s\n", i.GetNumber(), trackerIssueStateLabel(i.GetState()), escapeControl(strings.Join(i.GetLabels(), ",")), escapeControl(i.GetTitle()))
 	}
-	return nil
 }
 
 func runTrackerChangeView(cmd *cobra.Command, args []string) error {

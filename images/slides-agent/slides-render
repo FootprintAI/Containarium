@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# slides-render pdf|png <url> <out>: render a page of the running dev server
+# (http://127.0.0.1:5173/s/<deck-id>) with the image's headless Chromium at the
+# framework's 1920x1080 canvas. Runs inside the container:
+#   sudo podman exec slides-agent slides-render pdf http://127.0.0.1:5173/s/<id> /workspace/<id>.pdf
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: slides-render pdf|png <url> <out>" >&2
+  exit 2
+fi
+mode="$1" url="$2" out="$3"
+
+profile="$(mktemp -d)"
+trap 'rm -rf "$profile"' EXIT
+
+# --no-sandbox: the container already runs unprivileged as the box user and
+# Chromium's own namespace sandbox is unavailable there.
+common=(
+  --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage
+  --hide-scrollbars --user-data-dir="$profile"
+  "--window-size=1920,1080" --virtual-time-budget=10000
+)
+case "$mode" in
+  pdf) exec chromium "${common[@]}" --no-pdf-header-footer --print-to-pdf="$out" "$url" ;;
+  png) exec chromium "${common[@]}" --screenshot="$out" "$url" ;;
+  *) echo "slides-render: unknown mode '$mode' (want pdf | png)" >&2; exit 2 ;;
+esac
