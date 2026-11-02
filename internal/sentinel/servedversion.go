@@ -60,7 +60,7 @@ func (c *servedVersionCache) get(ctx context.Context, binaryPath string) (served
 	return servedVersionResponse{Version: c.version, Checksum: c.checksum}, nil
 }
 
-func (c *servedVersionCache) handler(binaryPath string) http.HandlerFunc {
+func (c *servedVersionCache) handler(binaryPath string, sign func(http.ResponseWriter, []byte)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		out, err := c.get(r.Context(), binaryPath)
 		if err != nil {
@@ -68,8 +68,17 @@ func (c *servedVersionCache) handler(binaryPath string) http.HandlerFunc {
 			http.Error(w, "version unavailable", http.StatusInternalServerError)
 			return
 		}
+		// Marshal first so the signature covers the exact bytes the daemon sees.
+		body, err := json.Marshal(out)
+		if err != nil {
+			http.Error(w, "version unavailable", http.StatusInternalServerError)
+			return
+		}
+		if sign != nil {
+			sign(w, body)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
+		_, _ = w.Write(body)
 	}
 }
 

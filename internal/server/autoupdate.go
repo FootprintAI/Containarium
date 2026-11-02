@@ -12,10 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/footprintai/containarium/internal/auth"
 )
 
 // AutoUpdater periodically checks the sentinel for a newer binary and
@@ -32,6 +36,17 @@ type AutoUpdater struct {
 	servedMu      sync.Mutex
 	servedVersion string
 	servedAt      time.Time
+
+	// Trust in the sentinel's answers. The checksum decides which binary the
+	// daemon downloads and executes, so it must be authenticated, not merely
+	// fetched. verifier checks the sentinel's signature on /containarium/checksum
+	// and /containarium/version. requireSigned (CONTAINARIUM_AUTO_UPDATE_REQUIRE_SIGNED=1)
+	// refuses an unsigned answer; by default (warn-only, first release) an unsigned
+	// answer is allowed with a loud log so a fleet can roll sentinels first. A
+	// signature that is present but invalid is always refused.
+	verifier       auth.SentinelVerifier
+	requireSigned  bool
+	warnedUnsigned atomic.Bool
 }
 
 // servedVersionTTL bounds how stale ServedVersion may be. A fetch-release on
@@ -41,9 +56,56 @@ const servedVersionTTL = time.Minute
 // NewAutoUpdater creates a new auto-updater.
 func NewAutoUpdater(sentinelURL, binaryPath string, interval time.Duration) *AutoUpdater {
 	return &AutoUpdater{
-		sentinelURL: sentinelURL,
-		binaryPath:  binaryPath,
-		interval:    interval,
+		sentinelURL:   sentinelURL,
+		binaryPath:    binaryPath,
+		interval:      interval,
+		verifier:      auth.NewSentinelVerifier(loadSentinelPublicKey(), loadSentinelHMACSecret()),
+		requireSigned: os.Getenv("CONTAINARIUM_AUTO_UPDATE_REQUIRE_SIGNED") == "1",
+	}
+}
+
+// SetVerifier overrides how the sentinel's responses are authenticated.
+func (u *AutoUpdater) SetVerifier(v auth.SentinelVerifier, requireSigned bool) {
+	u.verifier, u.requireSigned = v, requireSigned
+}
+
+// noRedirect stops a plaintext sentinel hop from bouncing the daemon elsewhere.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+var sha256HexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// authenticate decides whether a sentinel response body may be trusted.
+//   - signature present and verifiable: must be valid, else refused
+//   - signature present but this host holds no key for its algorithm:
+//     "unverifiable" - refused when requireSigned, else warned and allowed
+//   - no signature: refused when requireSigned OR when this host has a key
+//     (an attacker can strip headers, so a host that can verify must insist);
+//     only a host with no key at all is warned and allowed
+func (u *AutoUpdater) authenticate(resp *http.Response, body []byte) error {
+	sig := resp.Header.Get(auth.SentinelHeaderSignature)
+	if sig != "" {
+		if !u.verifier.CanVerify(sig) {
+			if u.requireSigned {
+				return fmt.Errorf("sentinel response is signed but this host has no key to verify it")
+			}
+			u.warnUnsigned("response is signed with an algorithm this host has no key for; cannot verify")
+			return nil
+		}
+		if err := u.verifier.VerifyResponse(resp, body, time.Now()); err != nil {
+			return fmt.Errorf("sentinel response signature invalid: %w", err)
+		}
+		return nil
+	}
+	if u.requireSigned || u.verifier.Configured() {
+		return fmt.Errorf("sentinel response is unsigned but this host can verify signatures; refusing")
+	}
+	u.warnUnsigned("response is unsigned and this host has no sentinel key configured")
+	return nil
+}
+
+func (u *AutoUpdater) warnUnsigned(why string) {
+	if u.warnedUnsigned.CompareAndSwap(false, true) {
+		log.Printf("[auto-update] WARNING: sentinel %s — the update checksum is not authenticated. Upgrade the sentinel to sign it, then set CONTAINARIUM_AUTO_UPDATE_REQUIRE_SIGNED=1", why)
 	}
 }
 
@@ -214,10 +276,17 @@ func (u *AutoUpdater) ServedVersion(ctx context.Context) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return "", err
+	}
+	if err := u.authenticate(resp, raw); err != nil {
+		return "", err
+	}
 	var body struct {
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return "", fmt.Errorf("decode: %w", err)
 	}
 	if body.Version == "" {
@@ -232,7 +301,7 @@ func (u *AutoUpdater) getRemoteChecksum(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: noRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -241,11 +310,18 @@ func (u *AutoUpdater) getRemoteChecksum(ctx context.Context) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if err != nil {
 		return "", err
 	}
-	return string(body), nil
+	if err := u.authenticate(resp, body); err != nil {
+		return "", err
+	}
+	sum := strings.TrimSpace(string(body))
+	if !sha256HexRE.MatchString(sum) {
+		return "", fmt.Errorf("sentinel returned a malformed checksum")
+	}
+	return sum, nil
 }
 
 func (u *AutoUpdater) getLocalChecksum() (string, error) {
