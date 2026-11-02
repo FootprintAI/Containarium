@@ -34,6 +34,9 @@ const SourceRepo = "https://github.com/FootprintAI/Containarium"
 //
 // All inspections are read-only.
 func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugContainerRequest) (*pb.DebugContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}

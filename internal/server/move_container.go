@@ -82,6 +82,9 @@ func migrationDefaults(req *pb.MoveContainerRequest) migrationParams {
 //     migration is considered complete; the cascade cleanup runs and any
 //     residual error is logged but doesn't fail the response.
 func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContainerRequest) (*pb.MoveContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
