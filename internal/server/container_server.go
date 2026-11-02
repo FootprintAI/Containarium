@@ -5111,6 +5111,15 @@ func (s *ContainerServer) loadCollaboratorManager() *container.CollaboratorManag
 	return s.collaboratorManager.Load()
 }
 
+// collaboratorStoreService is the collaborator family's grpc.health.v1
+// readiness entry (#3330, collaborator_store_recovery.go).
+const collaboratorStoreService = "containarium.collaborators"
+
+// errCollaboratorsNotInstalled is the collaborator RPCs' answer while the
+// late install is pending.
+var errCollaboratorsNotInstalled = status.Error(codes.Unavailable,
+	"collaborator store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+collaboratorStoreService)
+
 // errCollaboratorsNotEnabled is the answer with no collaborator store
 // configured (and no peer that has the box).
 var errCollaboratorsNotEnabled = errors.New("collaborator management not enabled")

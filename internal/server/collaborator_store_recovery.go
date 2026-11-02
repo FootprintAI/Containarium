@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/internal/sshauthz"
@@ -44,18 +42,13 @@ import (
 // restart.
 
 const (
-	// collaboratorStoreService is the family's grpc.health.v1 readiness entry.
-	collaboratorStoreService = "containarium.collaborators"
+	// collaboratorStoreService (container_server.go) is the family's
+	// grpc.health.v1 readiness entry.
 	collaboratorStoreDisplay = "collaborator store and SSH key registry"
 	// sshKeysHomeRoot holds the jump accounts the registry backfills from and
 	// the decider checks.
 	sshKeysHomeRoot = "/home"
 )
-
-// errCollaboratorsNotInstalled is the collaborator RPCs' answer while the
-// family is pending.
-var errCollaboratorsNotInstalled = status.Error(codes.Unavailable,
-	"collaborator store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+collaboratorStoreService)
 
 // sshKeyRegistryStore is what the family needs from the ssh_keys registry:
 // the key write paths, the decider's lookup, the backfill and the
