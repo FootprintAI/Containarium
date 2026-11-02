@@ -105,14 +105,9 @@ cat "$HOME/.containarium/code.json" 2>/dev/null || true
 // back to the same default `code run` does: Claude Code + a tenant secret —
 // see readBoxCodeConfig's identical contract in internal/cmd/code_run_engine.go.
 func resolveBoxRunConfig(exec boxRunStartFunc, box, username string) (home string, cfg *engine.CodeConfig, err error) {
-	out, err := exec(box, username, boxRunHomeAndConfigScript())
+	home, rest, err := readBoxRunHomeAndConfig(exec, box, username)
 	if err != nil {
-		return "", nil, status.Errorf(codes.Unavailable, "read %s's $HOME/code.json on %q: %v", username, box, err)
-	}
-	home, rest, _ := strings.Cut(out, "\n")
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return "", nil, status.Errorf(codes.Unavailable, "could not resolve $HOME for %q on %q", username, box)
+		return "", nil, err
 	}
 	blob := strings.TrimSpace(rest)
 	if blob == "" {
@@ -127,6 +122,28 @@ func resolveBoxRunConfig(exec boxRunStartFunc, box, username string) (home strin
 		return "", nil, status.Errorf(codes.FailedPrecondition, "%s on %q: %v", engine.CodeConfigPath, box, perr)
 	}
 	return home, cfg, nil
+}
+
+// resolveBoxRunHome is resolveBoxRunConfig for command mode (#3422): it runs the
+// same script but keeps only the $HOME line and never parses code.json.
+func resolveBoxRunHome(exec boxRunStartFunc, box, username string) (string, error) {
+	home, _, err := readBoxRunHomeAndConfig(exec, box, username)
+	return home, err
+}
+
+// readBoxRunHomeAndConfig runs boxRunHomeAndConfigScript and splits its output
+// into the trimmed $HOME line and the raw remainder (code.json's content).
+func readBoxRunHomeAndConfig(exec boxRunStartFunc, box, username string) (home, rest string, err error) {
+	out, err := exec(box, username, boxRunHomeAndConfigScript())
+	if err != nil {
+		return "", "", status.Errorf(codes.Unavailable, "read %s's $HOME/code.json on %q: %v", username, box, err)
+	}
+	home, rest, _ = strings.Cut(out, "\n")
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", "", status.Errorf(codes.Unavailable, "could not resolve $HOME for %q on %q", username, box)
+	}
+	return home, rest, nil
 }
 
 // boxRunSpawn is everything boxRunSpawnScript needs to render one run's
@@ -292,18 +309,23 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 	// Command mode (#3322): a shell command instead of an engine prompt. The two
 	// are exclusive, and so is everything that only means something to an engine.
-	commandMode := strings.TrimSpace(req.GetCommand()) != ""
+	// A non-empty but blank command is refused outright (#3423): treating it as
+	// "no command" would silently start an engine run, or blame the wrong field.
+	commandMode := req.GetCommand() != ""
+	if commandMode && strings.TrimSpace(req.GetCommand()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "command must not be blank")
+	}
 	if !commandMode && strings.TrimSpace(req.GetPrompt()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "prompt is required (or command, to run a shell command instead of an engine)")
 	}
 	if commandMode && (req.GetPrompt() != "" || req.GetSessionId() != "" || req.GetContinueSession() || req.GetStructuredOutput() || req.GetModel() != "") {
 		return nil, status.Error(codes.InvalidArgument, "command is mutually exclusive with prompt, session_id, continue_session, structured_output and model")
 	}
-	if req.GetTimeoutSeconds() != 0 && !commandMode {
-		return nil, status.Error(codes.InvalidArgument, "timeout_seconds applies to command only")
-	}
 	if req.GetTimeoutSeconds() < 0 || req.GetTimeoutSeconds() > coderun.MaxCommandTimeoutSeconds {
 		return nil, status.Errorf(codes.InvalidArgument, "timeout_seconds must be between 0 and %d", coderun.MaxCommandTimeoutSeconds)
+	}
+	if req.GetTimeoutSeconds() != 0 && !commandMode {
+		return nil, status.Error(codes.InvalidArgument, "timeout_seconds applies to command only")
 	}
 	if req.GetSessionId() != "" && req.GetContinueSession() {
 		return nil, status.Error(codes.InvalidArgument, "session_id and continue_session are mutually exclusive")
@@ -373,7 +395,17 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	// so moving it ahead of the rotate costs nothing and means a refusal
 	// from here on leaves a colliding finished run's files exactly where
 	// they were, still discoverable under their original name.
-	home, cfg, err := resolveBoxRunConfig(startExec, box, req.GetUsername())
+	//
+	// Command mode (#3422) needs only $HOME: it does not consult code.json, so a
+	// corrupt or unknown-version file must not stop a plain command. The engine
+	// path keeps the full resolve.
+	var home string
+	var cfg *engine.CodeConfig
+	if commandMode {
+		home, err = resolveBoxRunHome(startExec, box, req.GetUsername())
+	} else {
+		home, cfg, err = resolveBoxRunConfig(startExec, box, req.GetUsername())
+	}
 	if err != nil {
 		return nil, err
 	}

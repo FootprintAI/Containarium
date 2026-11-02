@@ -176,3 +176,77 @@ func TestStartBoxRun_CommandMode_IgnoresTheEngineConfiguration(t *testing.T) {
 		t.Errorf("an engine run on a gateway box = %v, want FailedPrecondition", err)
 	}
 }
+
+// #3422: command mode is documented as not consulting the box's code.json, so a
+// corrupt or unknown-version file must not stop a plain command, while an engine
+// run on the same box still reports it.
+func TestStartBoxRun_CommandMode_IgnoresMalformedCodeJSON(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 0)
+	s, _, _ := boxRunStartServer(t, u)
+	mustWriteFile(t, filepath.Join(u.home, ".containarium"), "", true)
+	mustWriteFile(t, filepath.Join(u.home, ".containarium", "code.json"), `{not valid json`, false)
+
+	if _, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{
+		Username: "alice", Command: "echo ok", RunName: "cmd-bad-cfg",
+	}); err != nil {
+		t.Fatalf("command-only StartBoxRun on a box with a malformed code.json: %v", err)
+	}
+	waitForOutcome(t, s, "alice", "cmd-bad-cfg", pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 10*time.Second)
+
+	_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{
+		Username: "alice", Prompt: "hi", RunName: "engine-bad-cfg",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "code.json") {
+		t.Fatalf("engine run on the same box: err = %v, want FailedPrecondition mentioning code.json", err)
+	}
+}
+
+// A command run still needs $HOME: an unresolvable one is refused as before.
+func TestStartBoxRun_CommandMode_StillRequiresHome(t *testing.T) {
+	s := &ContainerServer{
+		boxRunLogDir:       t.TempDir(),
+		boxRunExec:         (&shBox{}).exec,
+		boxRunCollaborator: func(owner, subject string) (bool, error) { return false, nil },
+		boxRunStartExec:    func(box, username, script string) (string, error) { return "\n", nil },
+	}
+	_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Command: "true"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable", err)
+	}
+}
+
+// #3423: a non-empty but blank command is its own error, mutual exclusion is
+// decided on the raw command, and the timeout range is checked before the
+// "applies to command only" rule.
+func TestStartBoxRun_CommandValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		req     *pb.StartBoxRunRequest
+		wantSub string
+	}{
+		{"blank command alone", &pb.StartBoxRunRequest{Command: "  "}, "command must not be blank"},
+		{"blank command + prompt", &pb.StartBoxRunRequest{Command: "\t\n", Prompt: "hi"}, "command must not be blank"},
+		{"blank command + timeout", &pb.StartBoxRunRequest{Command: "  ", TimeoutSeconds: 5}, "command must not be blank"},
+		{"negative timeout without command", &pb.StartBoxRunRequest{Prompt: "hi", TimeoutSeconds: -1}, "timeout_seconds must be between"},
+		{"too-large timeout without command", &pb.StartBoxRunRequest{Prompt: "hi", TimeoutSeconds: 1 << 30}, "timeout_seconds must be between"},
+		{"timeout without command", &pb.StartBoxRunRequest{Prompt: "hi", TimeoutSeconds: 5}, "timeout_seconds applies to command only"},
+		{"command + prompt", &pb.StartBoxRunRequest{Command: "true", Prompt: "hi"}, "mutually exclusive"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFakeBoxUser(t, 0, 0)
+			s, dir, _ := boxRunStartServer(t, u)
+			tc.req.Username = "alice"
+			_, err := s.StartBoxRun(tenantCtx("alice"), tc.req)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("err = %v, want InvalidArgument", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantSub)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Errorf("a refused request left files in the run dir: %v", entries)
+			}
+		})
+	}
+}
