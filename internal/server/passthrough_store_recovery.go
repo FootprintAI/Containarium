@@ -117,17 +117,20 @@ type passthroughConsumers struct {
 	sync       *passthroughSync
 }
 
-// install wires st into the RPCs, the delete cascade and the sync job. The
-// RPCs get it first, so a write accepted from here on is persisted before
-// the sync job's first pass reads the table. The cascade gets it before the
-// sync job is built, so the routes of a box deleted while the store was
-// absent are gone before the first pass (#3407).
+// install wires st into the delete cascade, the RPCs and the sync job, in
+// that order. The cascade goes first because installing it replays the
+// deletes remembered while the store was absent: a route added through a live
+// RPC for a remembered name while that replay ran would be deleted with the
+// old ones (#3441), so the RPCs stay UNAVAILABLE until it finishes. The sync
+// job is built last, so its first pass sees neither the replayed rows nor a
+// write the RPCs accepted before the store was readable (#3407).
 func (c passthroughConsumers) install(ctx context.Context, st network.PassthroughStore) {
-	c.network.SetPassthroughStore(st)
 	// DeleteContainer cascade-cleans a recipe-deployed box's passthrough
 	// routes (#1462), mirroring SetRouteCleanupDeps for HTTP routes.
-	c.containers.installPassthroughStore(ctx, st)
+	replayed, failed := c.containers.installPassthroughStore(ctx, st)
+	c.network.SetPassthroughStore(st)
 	c.sync.install(st)
+	log.Printf("Passthrough store installed: replayed %d remembered delete(s), %d failed", replayed, failed)
 }
 
 // passthroughStoreFamily is the helper registration: open the store over

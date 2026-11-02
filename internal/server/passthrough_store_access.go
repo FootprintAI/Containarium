@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 
@@ -122,8 +124,12 @@ func (s *ContainerServer) passthroughStoreForCascade(containerName string) netwo
 
 // installPassthroughStore installs st for the delete cascade, then removes
 // the routes of every box deleted while it was absent. It returns once they
-// are removed, so a sync job built after it never sees them.
-func (s *ContainerServer) installPassthroughStore(ctx context.Context, st network.PassthroughStore) {
+// are removed, so the RPCs and the sync job installed after it never see
+// them (#3441). It returns how many boxes it replayed and how many of those
+// failed; a failed box keeps its rows in Postgres, and the sync job
+// reconciles them back into host rules. Every failure logs a warning that
+// names the box. Retrying a failed replay is not done.
+func (s *ContainerServer) installPassthroughStore(ctx context.Context, st network.PassthroughStore) (replayed, failed int) {
 	s.passthroughSkipped.mu.Lock()
 	s.passthroughStore.Store(st)
 	var skipped []string
@@ -132,24 +138,39 @@ func (s *ContainerServer) installPassthroughStore(ctx context.Context, st networ
 	}
 	s.passthroughSkipped.mu.Unlock()
 	for _, name := range skipped {
-		cascadePassthroughRoutes(ctx, st, name)
+		replayed++
+		if err := removePassthroughRoutes(ctx, st, name); err != nil {
+			failed++
+			log.Printf("Warning: passthrough replay for deleted box %s failed: %v; its passthrough rows remain in Postgres and will be reconciled back into host rules by the sync job", name, err)
+		}
 	}
+	return replayed, failed
 }
 
 // cascadePassthroughRoutes deletes every passthrough route containerName
 // owns; the sync job reaps the host rules. Best-effort, like the rest of the
 // delete cascade.
 func cascadePassthroughRoutes(ctx context.Context, pt network.PassthroughStore, containerName string) {
+	if err := removePassthroughRoutes(ctx, pt, containerName); err != nil {
+		log.Printf("[delete-cascade] passthrough routes for %s: %v", containerName, err)
+	}
+}
+
+// removePassthroughRoutes deletes every route containerName owns, carrying on
+// past a failed delete, and returns the failures joined (nil when all gone).
+func removePassthroughRoutes(ctx context.Context, pt network.PassthroughStore, containerName string) error {
 	routes, err := pt.ListByContainer(ctx, containerName)
 	if err != nil {
-		log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
+		return fmt.Errorf("list passthrough routes: %w", err)
 	}
+	var errs []error
 	for _, r := range routes {
 		if err := pt.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
-			log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
+			errs = append(errs, fmt.Errorf("delete passthrough route %d/%s: %w", r.ExternalPort, r.Protocol, err))
 			continue
 		}
 		log.Printf("[delete-cascade] removed passthrough route %d/%s (sync job will reap the iptables rule)",
 			r.ExternalPort, r.Protocol)
 	}
+	return errors.Join(errs...)
 }
