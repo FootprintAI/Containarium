@@ -138,7 +138,7 @@ func TestTrackerRecovery_DegradedStartThenInstalledInProcess(t *testing.T) {
 	}))
 	durable := &fakeTrackerOpen{store: &tracker.Store{}}
 	starter := &recordingRunStarter{}
-	f.r.Register(trackerStoreFamily(cs, agents, durable.open, func() tracker.RunStarter { return starter }))
+	f.r.Register(trackerStoreFamily(cs, agents, durable.open, func() tracker.RunStarter { return starter }, secretsNeverRefused))
 
 	if got := f.status(t, trackerStoreService); got != healthpb.HealthCheckResponse_NOT_SERVING {
 		t.Fatalf("tracker readiness before recovery = %v, want NOT_SERVING", got)
@@ -209,7 +209,7 @@ func TestTrackerRecovery_WaitsForSecretsStore(t *testing.T) {
 	cs := &ContainerServer{}
 	agents := &AgentSkillServer{}
 	durable := &fakeTrackerOpen{store: &tracker.Store{}}
-	fam := trackerStoreFamily(cs, agents, durable.open, func() tracker.RunStarter { return &recordingRunStarter{} })
+	fam := trackerStoreFamily(cs, agents, durable.open, func() tracker.RunStarter { return &recordingRunStarter{} }, secretsNeverRefused)
 	f.r.Register(fam)
 
 	f.r.Run(f.ctx, nil)
@@ -245,7 +245,7 @@ func TestTrackerRecovery_FailedOpenKeepsStoreNil(t *testing.T) {
 	agents := &AgentSkillServer{}
 	fam := trackerStoreFamily(cs, agents, func(context.Context, *pgxpool.Pool) (*tracker.Store, error) {
 		return nil, errors.New("create table: boom")
-	}, func() tracker.RunStarter { return &recordingRunStarter{} })
+	}, func() tracker.RunStarter { return &recordingRunStarter{} }, secretsNeverRefused)
 	if fam.Service != trackerStoreService || fam.Display == "" {
 		t.Fatalf("family = %q / %q, want service %q with a display name", fam.Service, fam.Display, trackerStoreService)
 	}
@@ -298,7 +298,7 @@ func TestTrackerRecovery_LateInstallConnectionAndRun(t *testing.T) {
 	f.r.Register(secretsStoreFamily(cs, func(ctx context.Context, pool *pgxpool.Pool) (*secrets.Store, error) {
 		return openSecretsStore(ctx, pool, cs, keyPath)
 	}))
-	f.r.Register(trackerStoreFamily(cs, agents, tracker.NewStore, func() tracker.RunStarter { return starter }))
+	f.r.Register(trackerStoreFamily(cs, agents, tracker.NewStore, func() tracker.RunStarter { return starter }, secretsNeverRefused))
 	assertTrackerRPCsUnavailable(t, cs)
 
 	f.runToCompletion(t, nil)
@@ -350,5 +350,162 @@ func TestTrackerRecovery_LateInstallConnectionAndRun(t *testing.T) {
 	}
 	if err := agents.validateTrackerConnection(kmsKeyTestCtx(user, "member", "agents:run"), "missing"); status.Code(err) != codes.InvalidArgument {
 		t.Errorf("validateTrackerConnection(missing) = %v, want InvalidArgument", err)
+	}
+}
+
+// #3387: the tracker family waits on the secrets store. When the secrets
+// family's last attempt was a config refusal, the tracker reports its wait
+// as a config refusal too, so it does not hold the opt-in self-restart; a
+// wait on a secrets family that failed on a connection or open error, or
+// that has not been attempted yet, still holds it.
+
+// secretsNeverRefused is the secrets-refusal view for a tracker family
+// tested without a recovery registry behind it.
+func secretsNeverRefused() bool { return false }
+
+// trackerFamilyOver builds (does not register) the tracker family wired to
+// the fixture's view of the secrets family's refusal state, as
+// NewDualServer wires it.
+func (f *storeRecoveryFixture) trackerFamilyOver(cs *ContainerServer, agents *AgentSkillServer, open func(context.Context, *pgxpool.Pool) (*tracker.Store, error)) storeFamily {
+	return trackerStoreFamily(cs, agents, open, func() tracker.RunStarter { return &recordingRunStarter{} },
+		func() bool { return f.r.configRefused(secretsStoreService) })
+}
+
+// requireEnvelopeWithoutKMS configures the secrets family's refusal
+// (CONTAINARIUM_REQUIRE_ENVELOPE with no KMS) and returns the real open path.
+func requireEnvelopeWithoutKMS(t *testing.T, cs *ContainerServer) func(context.Context, *pgxpool.Pool) (*secrets.Store, error) {
+	t.Helper()
+	t.Setenv("CONTAINARIUM_REQUIRE_ENVELOPE", "true")
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "none")
+	keyPath := filepath.Join(t.TempDir(), "secrets.key")
+	return func(ctx context.Context, pool *pgxpool.Pool) (*secrets.Store, error) {
+		return openSecretsStore(ctx, pool, cs, keyPath)
+	}
+}
+
+// Secrets config-refused (REQUIRE_ENVELOPE, no KMS): the tracker's install
+// returns a config refusal that still unwraps to errTrackerWaitingOnSecrets,
+// neither family holds the restart, both stay pending and NOT_SERVING, and
+// the tracker store is never opened.
+func TestTrackerRecovery_WaitOnConfigRefusedSecretsIsConfigRefusal(t *testing.T) {
+	f := newStoreRecoveryFixture(t, &fakePostgres{})
+	cs := &ContainerServer{}
+	agents := &AgentSkillServer{}
+	f.r.Register(secretsStoreFamily(cs, requireEnvelopeWithoutKMS(t, cs)))
+	durable := &fakeTrackerOpen{store: &tracker.Store{}}
+	fam := f.trackerFamilyOver(cs, agents, durable.open)
+	f.r.Register(fam)
+
+	f.attemptOnce(t)
+
+	if !f.r.configRefused(secretsStoreService) || !f.r.configRefused(trackerStoreService) {
+		t.Fatalf("refused secrets=%v tracker=%v, want both refused by configuration",
+			f.r.configRefused(secretsStoreService), f.r.configRefused(trackerStoreService))
+	}
+	if !f.r.pending() || f.r.holdsRestart() {
+		t.Errorf("pending=%v holdsRestart=%v, want pending and not holding", f.r.pending(), f.r.holdsRestart())
+	}
+	err := fam.Install(context.Background(), new(pgxpool.Pool))
+	if !isStoreConfigRefusal(err) {
+		t.Errorf("tracker install with secrets config-refused = %v, want a config refusal", err)
+	}
+	if !errors.Is(err, errTrackerWaitingOnSecrets) {
+		t.Errorf("tracker refusal %v does not unwrap to errTrackerWaitingOnSecrets", err)
+	}
+	for _, svc := range []string{secretsStoreService, trackerStoreService} {
+		if got := f.status(t, svc); got != healthpb.HealthCheckResponse_NOT_SERVING {
+			t.Errorf("%s readiness = %v, want NOT_SERVING", svc, got)
+		}
+	}
+	if n := durable.count(); n != 0 {
+		t.Errorf("tracker store opened %d times while secrets is refused, want never", n)
+	}
+	assertTrackerRPCsUnavailable(t, cs)
+}
+
+// A tracker waiting on a secrets family that is not config-refused holds
+// the restart: before any attempt, after a connection failure (the installs
+// never run), and after the secrets open failed on an ordinary error.
+func TestTrackerRecovery_WaitOnUnrefusedSecretsHoldsRestart(t *testing.T) {
+	cases := []struct {
+		name    string
+		pg      *fakePostgres
+		attempt func(*testing.T, *storeRecoveryFixture)
+	}{
+		{"not yet attempted", &fakePostgres{}, func(*testing.T, *storeRecoveryFixture) {}},
+		{"connection error", &fakePostgres{downFor: 1}, func(_ *testing.T, f *storeRecoveryFixture) { _ = f.r.attempt(f.ctx) }},
+		{"open error", &fakePostgres{}, func(t *testing.T, f *storeRecoveryFixture) { f.attemptOnce(t) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStoreRecoveryFixture(t, tc.pg)
+			cs := &ContainerServer{}
+			f.r.Register(secretsStoreFamily(cs, func(context.Context, *pgxpool.Pool) (*secrets.Store, error) {
+				return nil, errFakeOpen
+			}))
+			fam := f.trackerFamilyOver(cs, &AgentSkillServer{}, (&fakeTrackerOpen{store: &tracker.Store{}}).open)
+			f.r.Register(fam)
+
+			tc.attempt(t, f)
+
+			if !f.r.holdsRestart() {
+				t.Error("holdsRestart() = false while the tracker waits on a secrets family that is not config-refused")
+			}
+			if f.r.configRefused(trackerStoreService) {
+				t.Error("tracker family marked config-refused while secrets is not")
+			}
+			err := fam.Install(context.Background(), new(pgxpool.Pool))
+			if !errors.Is(err, errTrackerWaitingOnSecrets) || isStoreConfigRefusal(err) {
+				t.Errorf("tracker install = %v, want the plain errTrackerWaitingOnSecrets", err)
+			}
+		})
+	}
+}
+
+// Once the config-refused secrets family installs (the operator fixed the
+// configuration), the tracker installs normally in the same attempt and both
+// refusal states clear.
+func TestTrackerRecovery_InstallsOnceRefusedSecretsInstalls(t *testing.T) {
+	f := newStoreRecoveryFixture(t, &fakePostgres{})
+	cs := &ContainerServer{}
+	agents := &AgentSkillServer{}
+	var mu sync.Mutex
+	refuse := true
+	f.r.Register(secretsStoreFamily(cs, func(context.Context, *pgxpool.Pool) (*secrets.Store, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if refuse {
+			return nil, &storeConfigRefusal{Err: errSecretsEnvelopeWithoutKMS}
+		}
+		return &secrets.Store{}, nil
+	}))
+	durable := &fakeTrackerOpen{store: &tracker.Store{}}
+	f.r.Register(f.trackerFamilyOver(cs, agents, durable.open))
+
+	f.attemptOnce(t)
+	if f.r.holdsRestart() || !f.r.configRefused(trackerStoreService) {
+		t.Fatalf("after the refusal holdsRestart=%v trackerRefused=%v, want not holding and refused",
+			f.r.holdsRestart(), f.r.configRefused(trackerStoreService))
+	}
+
+	mu.Lock()
+	refuse = false
+	mu.Unlock()
+	f.attemptOnce(t)
+
+	if f.r.pending() || f.r.holdsRestart() {
+		t.Errorf("after secrets installed pending=%v holdsRestart=%v, want neither", f.r.pending(), f.r.holdsRestart())
+	}
+	if f.r.configRefused(secretsStoreService) || f.r.configRefused(trackerStoreService) {
+		t.Error("refusal state not cleared once both families installed")
+	}
+	if got := cs.loadTrackerStore(); got != durable.store {
+		t.Errorf("tracker store = %p, want the installed store %p", got, durable.store)
+	}
+	if n := durable.count(); n != 1 {
+		t.Errorf("tracker store opened %d times, want once", n)
+	}
+	if got := f.status(t, trackerStoreService); got != healthpb.HealthCheckResponse_SERVING {
+		t.Errorf("tracker readiness = %v, want SERVING", got)
 	}
 }
