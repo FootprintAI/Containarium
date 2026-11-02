@@ -36,6 +36,8 @@ type fakeRestoreBox struct {
 	// importFn replaces the default import (read everything, then add the
 	// box stopped). It runs with the lock released.
 	importFn func(name string, r io.Reader) error
+	// deleteErr fails every DeleteBox, leaving the box in place.
+	deleteErr error
 }
 
 func newFakeRestoreBox(archive []byte) *fakeRestoreBox {
@@ -97,6 +99,9 @@ func (f *fakeRestoreBox) DeleteBox(name string) error {
 	f.log("delete " + name)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	delete(f.states, name)
 	delete(f.imported, name)
 	return nil

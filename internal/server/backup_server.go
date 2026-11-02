@@ -628,6 +628,9 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	if err := auth.AuthorizeTenant(ctx, req.TargetUsername); err != nil {
 		return nil, err
 	}
+	if rec.Engine == backup.EngineBox {
+		return s.verifyBoxBackup(ctx, rec, req)
+	}
 
 	var targetName string
 	conn := connFromProto(req.Connection)
@@ -681,8 +684,38 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "verification could not run: %v", err)
 	}
+	return s.verifyResponse(rec, v), nil
+}
 
-	updated, err := s.mgr.Get(req.Id)
+// verifyBoxBackup restore-tests a whole-box backup in a daemon-managed
+// scratch box (#2802). Like the managed database verifier, the scratch box
+// is the daemon's, so the target must be the backup's own tenant and the
+// verifier token stays bound to that one tenant (#2401).
+func (s *BackupServer) verifyBoxBackup(ctx context.Context, rec *backup.Record, req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
+	if req.TargetUsername != rec.Username {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"backup %s is a whole-box backup, verified in a daemon-managed scratch box: target_username must be its own tenant %q", rec.ID, rec.Username)
+	}
+	release, ok := s.acquireVerifier(rec.Username)
+	if !ok {
+		return nil, status.Error(codes.ResourceExhausted, "a managed backup verification is already running for this tenant")
+	}
+	defer release()
+	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
+	v, err := s.mgr.VerifyBox(backup.BoxVerifyOptions{
+		ID:          rec.ID,
+		VerifiedBy:  subject,
+		AgeIdentity: req.AgeIdentity, // per-call; never logged or stored
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "verification could not run: %v", err)
+	}
+	return s.verifyResponse(rec, v), nil
+}
+
+// verifyResponse logs a finished restore test and builds its response.
+func (s *BackupServer) verifyResponse(rec *backup.Record, v *backup.Verification) *pb.VerifyBackupResponse {
+	updated, err := s.mgr.Get(rec.ID)
 	if err != nil {
 		updated = rec
 	}
@@ -690,14 +723,18 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		rec.ID, rec.Username, rec.Database, v.TargetContainer, v.Result, v.DurationMS)
 
 	msg := "verification passed: " + rec.ID
-	if v.Result != backup.VerificationPassed {
+	switch v.Result {
+	case backup.VerificationPassed:
+	case backup.VerificationIncomplete:
+		msg = "verification INCOMPLETE: " + rec.ID + ": " + v.Error
+	default:
 		msg = "verification FAILED: " + rec.ID + ": " + v.Error
 	}
 	return &pb.VerifyBackupResponse{
 		Message:      msg,
 		Verification: verificationToProto(v),
 		Record:       recordToProto(updated),
-	}, nil
+	}
 }
 
 // PruneBackups deletes older backups for a tenant, keeping only the newest
@@ -963,6 +1000,8 @@ func verificationResultToProto(r backup.VerificationResult) pb.VerificationResul
 		return pb.VerificationResult_VERIFICATION_RESULT_PASSED
 	case backup.VerificationFailed:
 		return pb.VerificationResult_VERIFICATION_RESULT_FAILED
+	case backup.VerificationIncomplete:
+		return pb.VerificationResult_VERIFICATION_RESULT_INCOMPLETE
 	default:
 		return pb.VerificationResult_VERIFICATION_RESULT_UNSPECIFIED
 	}

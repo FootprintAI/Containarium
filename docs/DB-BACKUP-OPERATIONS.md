@@ -785,6 +785,31 @@ verification only needs the engine, never the target's own data.
 > request receives `ResourceExhausted` until verification and cleanup finish.
 > See #1159 for the source-isolation rationale.
 
+### Verifying a whole-box backup (#2802)
+
+A whole-box backup (`backup create --box`) is verified with the same
+command and the same verifier token. `--target` is the backup's own
+tenant, and the identity file is required because a box backup is always
+encrypted:
+
+```bash
+containarium backup verify <tenant>-box-<timestamp> --target <tenant> \
+    --age-identity-file backup.key --server <host>
+```
+
+The daemon restores the backup into a scratch box named
+`containarium-verify-…`, never into the tenant's box. It then compares
+every regular file of the restored box with the manifest of SHA-256
+digests written when the backup was created, and deletes the scratch box,
+on a failure too. The checks are `integrity`, `decrypt`, `restore`,
+`manifest` and `cleanup`. A tampered backup fails at the first check it
+breaks and names the cause: the checksum, the identity, or the file that
+differs. The comparison stops after 15 minutes. A run cut short is
+recorded as `INCOMPLETE` with the number of files it covered. It is never
+a pass, and the command exits non-zero. A scratch box that could not be
+deleted fails the verification and is named, so it can be removed by
+hand.
+
 Restore (`backup restore`) shares the same integrity gate: the SHA-256 is
 checked before the dump touches the database, and a mismatch aborts
 rather than loading corrupt data.

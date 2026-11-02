@@ -190,7 +190,7 @@ func (m *Manager) RestoreBox(opts BoxRestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := m.importBoxStream(staging, decryptReader{plain}); err != nil {
+	if _, err := m.importBoxStream(staging, decryptReader{plain}); err != nil {
 		return fmt.Errorf("restore %s into %s: %w", r.ID, target, err)
 	}
 
@@ -233,14 +233,17 @@ func refuseTarget(target string, state BoxState, force bool) error {
 	}
 }
 
-// importBoxStream runs the restore filter into ImportBox through a pipe.
+// importBoxStream runs the restore filter into ImportBox through a pipe and
+// returns the manifest the archive carried.
 // On any failure the staging instance is removed, whatever state Incus left
 // it in.
-func (m *Manager) importBoxStream(staging string, src io.Reader) error {
+func (m *Manager) importBoxStream(staging string, src io.Reader) (*BoxManifest, error) {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
+	var mf *BoxManifest
 	go func() {
-		err := restoreBoxArchive(src, pw, m.maxBoxBytes)
+		var err error
+		mf, err = restoreBoxArchive(src, pw, m.maxBoxBytes)
 		pw.CloseWithError(err)
 		done <- err
 	}()
@@ -249,15 +252,15 @@ func (m *Manager) importBoxStream(staging string, src io.Reader) error {
 	_ = pr.CloseWithError(errors.New("import stopped"))
 	filterErr := <-done
 	if filterErr == nil && importErr == nil {
-		return nil
+		return mf, nil
 	}
 	m.removeStaging(staging)
 	// The archive's own failure is the cause unless the filter only saw the
 	// pipe close under it.
 	if filterErr != nil && (importErr == nil || isArchiveFailure(filterErr)) {
-		return filterErr
+		return nil, filterErr
 	}
-	return fmt.Errorf("import: %w", importErr)
+	return nil, fmt.Errorf("import: %w", importErr)
 }
 
 func isArchiveFailure(err error) bool {
@@ -312,28 +315,28 @@ func corrupt(format string, args ...any) error {
 // digests every regular file as create did and, at the manifest, compares
 // the lot. dst receives the end of the archive only after that comparison
 // has passed, so a reader importing dst never sees a complete archive whose
-// content differs from its manifest.
+// content differs from its manifest. It returns that manifest.
 //
 // Memory is independent of the archive's size, as for the create filter:
 // the digests kept for the comparison grow with the number of files.
-func restoreBoxArchive(src io.Reader, dst io.Writer, limit int64) error {
+func restoreBoxArchive(src io.Reader, dst io.Writer, limit int64) (*BoxManifest, error) {
 	br := bufio.NewReader(src)
 	magic, err := br.Peek(2)
 	if err != nil {
-		return archiveReadErr(err)
+		return nil, archiveReadErr(err)
 	}
 	if !bytes.Equal(magic, []byte{0x1f, 0x8b}) {
-		return corrupt("archive is not gzip-compressed")
+		return nil, corrupt("archive is not gzip-compressed")
 	}
 	gzr, err := gzip.NewReader(br)
 	if err != nil {
-		return archiveReadErr(err)
+		return nil, archiveReadErr(err)
 	}
 	plain := &boundedReader{r: gzr, limit: limit}
 	tr := tar.NewReader(plain)
 	gzw, err := gzip.NewWriterLevel(dst, gzip.BestSpeed)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tw := tar.NewWriter(gzw)
 
@@ -346,19 +349,19 @@ func restoreBoxArchive(src io.Reader, dst io.Writer, limit int64) error {
 			break
 		}
 		if err != nil {
-			return archiveReadErr(err)
+			return nil, archiveReadErr(err)
 		}
 		name := strings.TrimPrefix(hdr.Name, "./")
 		if want != nil {
-			return corrupt("entry %s follows the manifest, which must be last", name)
+			return nil, corrupt("entry %s follows the manifest, which must be last", name)
 		}
 		if name == BoxManifestPath {
 			if hdr.Typeflag != tar.TypeReg || hdr.Size > maxBoxManifestBytes {
-				return corrupt("manifest entry is not a regular file of at most %d bytes", maxBoxManifestBytes)
+				return nil, corrupt("manifest entry is not a regular file of at most %d bytes", maxBoxManifestBytes)
 			}
 			want = &BoxManifest{}
 			if err := json.NewDecoder(io.LimitReader(tr, hdr.Size)).Decode(want); err != nil {
-				return corrupt("manifest: %v", err)
+				return nil, corrupt("manifest: %v", err)
 			}
 			continue
 		}
@@ -371,16 +374,16 @@ func restoreBoxArchive(src io.Reader, dst io.Writer, limit int64) error {
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			if err := tw.WriteHeader(hdr); err != nil {
-				return fmt.Errorf("write %s: %w", name, err)
+				return nil, fmt.Errorf("write %s: %w", name, err)
 			}
 			continue
 		}
 		entry, err := copyEntry(tw, h, hdr, tr)
 		if err != nil {
 			if isArchiveFailure(err) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return corrupt("%v", err)
+				return nil, corrupt("%v", err)
 			}
-			return err
+			return nil, err
 		}
 		if inRootfs {
 			entry.Path = "/" + rel
@@ -393,20 +396,20 @@ func restoreBoxArchive(src io.Reader, dst io.Writer, limit int64) error {
 	trailing, err := io.CopyN(zeroOnly{}, plain, maxBoxTrailingBytes+1)
 	switch {
 	case errors.Is(err, errNonZeroTrailing) || trailing > maxBoxTrailingBytes:
-		return corrupt("trailing data after the end of the archive")
+		return nil, corrupt("trailing data after the end of the archive")
 	case err != nil && !errors.Is(err, io.EOF):
-		return archiveReadErr(err)
+		return nil, archiveReadErr(err)
 	}
 	if want == nil {
-		return corrupt("the archive has no manifest (%s)", BoxManifestPath)
+		return nil, corrupt("the archive has no manifest (%s)", BoxManifestPath)
 	}
 	if err := matchManifest(want, &got); err != nil {
-		return err
+		return nil, err
 	}
 	if err := tw.Close(); err != nil {
-		return err
+		return nil, err
 	}
-	return gzw.Close()
+	return want, gzw.Close()
 }
 
 // archiveReadErr classifies a failure reading the decrypted archive: a

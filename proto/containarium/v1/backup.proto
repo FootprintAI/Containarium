@@ -245,6 +245,11 @@ enum VerificationResult {
   // The dump could not be restored, or restored but failed a sanity
   // check. `error` carries the engine's own message.
   VERIFICATION_RESULT_FAILED = 2;
+
+  // A whole-box restore test whose comparison with the manifest hit the
+  // time cap before it covered every file (#2802, #2809 Q-C). The checks
+  // report the coverage reached. Never a pass.
+  VERIFICATION_RESULT_INCOMPLETE = 3;
 }
 
 // VerificationCheck is one engine-appropriate assertion made during a
@@ -539,6 +544,12 @@ message RestoreBoxBackupResponse {
 // from — verification must never touch the source database. Supply a
 // different tenant's disposable container as the target (admin only), or
 // the backup's own tenant for a daemon-managed isolated verification container.
+//
+// A whole-box backup (BACKUP_SCOPE_BOX, #2802) is restored into a
+// daemon-managed scratch box instead, every regular file of the restored box
+// is compared with the manifest of file digests written at create time, and
+// the scratch box is deleted on every path. Its target_username must be the
+// backup's own tenant, and connection is ignored.
 message VerifyBackupRequest {
   // Backup to verify.
   string id = 1;
@@ -697,7 +708,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Verify a backup";
-      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.";
+      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. A whole-box backup is instead restored into a scratch box, compared file by file with its manifest of digests (capped at 15 minutes; a capped run is INCOMPLETE, never PASSED), and the scratch box is deleted; its target_username must be the backup's own tenant. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.";
       tags: "Backups";
     };
   }
