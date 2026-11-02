@@ -56,7 +56,7 @@ jobs:
       # limit-severities-for-sarif: without it trivy-action ignores the
       # severity filter entirely for SARIF output).
       - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'containarium-sshpiper:ci'
           format: 'sarif'

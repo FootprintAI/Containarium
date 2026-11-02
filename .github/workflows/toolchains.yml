@@ -47,7 +47,7 @@ jobs:
           sudo su -s /bin/sh nobody -c 'env -i PATH=/opt/containarium/toolchains/current/bin:/usr/bin:/bin sh -c "go env GOTOOLCHAIN"' | tee gotoolchain.txt
           test "$(cat gotoolchain.txt)" = local
       - name: Scan managed tools
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           # rootfs inspects deployed Go binaries and installed npm packages;
           # fs inspects the Go SDK's source manifests instead of its binaries.
