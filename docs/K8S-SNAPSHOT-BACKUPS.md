@@ -69,6 +69,22 @@ of the CSI driver's point-in-time snapshot, not an application-coordinated
 transaction-consistent database backup. Stop application writes when stronger
 consistency is required, or use the existing logical backup path.
 
+## Retention, prune and legal hold
+
+Decision (#3305): `backup prune` never selects snapshot records. They are not
+grouped, counted toward `--keep`, or deleted by prune, because deleting one
+destroys the underlying storage snapshot and no snapshot retention window is
+defined yet. Remove a snapshot explicitly with `backup delete`.
+
+Snapshot records follow the same rules as every other backup record for
+retention class and legal hold, enforced on delete. The backup manager routes
+every delete (explicit delete and prune alike, snapshot or dump) through one
+delete guard that runs before any storage is touched; a refusal wraps
+`ErrDeleteRefused`, leaves the CSI snapshot and index entry intact, and is
+reported as a failure by prune. The guard is a seam: the retention-class and
+legal-hold policy itself is not yet connected to backup records, so with no
+guard installed all deletes are allowed, as before.
+
 ## Verification
 
 Fake-client tests cover creation/listing/deletion, restored PVC dataSource,

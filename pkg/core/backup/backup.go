@@ -190,6 +190,7 @@ func (c PgConn) withDefaults() PgConn {
 // Manager orchestrates backups. One per daemon.
 type Manager struct {
 	snapshots    SnapshotOps
+	deleteGuard  DeleteGuard
 	ops          ContainerOps
 	uploader     Uploader // may be nil → GCS destinations are rejected
 	dir          string   // host backup directory (dumps for LOCAL + sidecar index for all)
@@ -743,6 +744,12 @@ func (m *Manager) DeleteContext(ctx context.Context, id string) error {
 	r, err := m.Get(id)
 	if err != nil {
 		return err
+	}
+	// The guard runs before any storage is touched, for every record kind.
+	if m.deleteGuard != nil {
+		if err := m.deleteGuard(ctx, r); err != nil {
+			return err
+		}
 	}
 	var sidecarErr error
 	switch r.Destination {

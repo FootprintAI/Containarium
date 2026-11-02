@@ -28,6 +28,20 @@ type SnapshotOps interface {
 	DeleteVolumeSnapshot(context.Context, string, SnapshotReference) error
 }
 
+// ErrDeleteRefused is the sentinel a DeleteGuard wraps when a retention
+// class or legal hold forbids deleting a record.
+var ErrDeleteRefused = errors.New("backup delete refused by retention policy")
+
+// DeleteGuard decides whether a backup record may be deleted. It is
+// consulted by DeleteContext (and so by Delete and Prune) for every
+// record kind, snapshot or dump, before any storage is touched; a
+// non-nil error aborts the delete and should wrap ErrDeleteRefused.
+// A Manager without a guard allows all deletes (#3305).
+type DeleteGuard func(context.Context, *Record) error
+
+// WithDeleteGuard installs the retention / legal-hold seam.
+func WithDeleteGuard(g DeleteGuard) Option { return func(m *Manager) { m.deleteGuard = g } }
+
 func WithSnapshots(ops SnapshotOps) Option { return func(m *Manager) { m.snapshots = ops } }
 
 func (m *Manager) CreateSnapshot(ctx context.Context, tenant string) (*Record, error) {

@@ -34,6 +34,9 @@ type PruneResult struct {
 	Failures []string
 }
 
+// Prune never selects CSI snapshot records (Destination snapshot), and
+// each delete goes through the Manager's delete guard (WithDeleteGuard).
+//
 // Prune deletes older backups for opts.Username, keeping only the newest
 // opts.Keep per (username, database) group. Nothing is touched for any
 // other tenant, and — when opts.Database is empty — every database this
@@ -57,6 +60,14 @@ func (m *Manager) Prune(opts PruneOptions) (*PruneResult, error) {
 	// group is exactly "everything older than the newest Keep".
 	groups := map[string][]*Record{}
 	for _, r := range all {
+		// CSI snapshot records carry Database == tenant, so they would
+		// otherwise group (and count toward Keep) like a database named
+		// after the tenant. Prune never selects them (#3305): retention
+		// for snapshots is not defined here, and deleting one destroys
+		// the underlying storage snapshot. `backup delete` removes one.
+		if r.Destination == DestSnapshot {
+			continue
+		}
 		if opts.Database != "" && r.Database != opts.Database {
 			continue
 		}
