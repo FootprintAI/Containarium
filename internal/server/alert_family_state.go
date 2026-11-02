@@ -24,8 +24,8 @@ const (
 	alertStoreDisplay = "alert rule and webhook delivery store"
 
 	// credentialWatchService is the credential-expiry watch's readiness entry.
-	credentialWatchService = "containarium.credential_watch"
-	credentialWatchDisplay = "credential-expiry watch state"
+	credentialWatchService = "containarium.credential_watch" // #nosec G101 -- a readiness service NAME, not a credential value
+	credentialWatchDisplay = "credential-expiry watch state" // #nosec G101 -- a display label, not a credential value
 )
 
 // errAlertsNotConfigured is the answer when alerting is not configured at
