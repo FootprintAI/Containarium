@@ -36,6 +36,10 @@
 .github/workflows/tenant-guard-e2e.yml	curl	d4caf07f25aa	curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /us
 .github/workflows/workflow-lint.yml	curl	afe7011db51b	curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" "https://github.com/rhysd/
 .github/workflows/workflow-lint.yml	curl	f2fe9668674b	curl -fsSL -o "$RUNNER_TEMP/zizmor.tgz" "https://github.com/zizmorcore
+images/slides-agent/Dockerfile	xcaddy build	bf1a6a061190	xcaddy build "${CADDY_VERSION}" --replace golang.org/x/net=golang.org/
+images/slides-agent/Dockerfile	npm install	40c10a38c595	npm install -g "pnpm@${PNPM_VERSION}"
+images/slides-agent/Dockerfile	npm install	449e79fe8ad7	pnpm install --frozen-lockfile --ignore-scripts --filter @open-slide/c
+images/slides-agent/Dockerfile	curl	b291dd43fbea	curl chromium fonts-liberation fonts-noto-core fonts-noto-color-emoji 
 images/sshpiper/Dockerfile	git clone	9fc3df4fdd85	git clone --depth 1 --branch "${SSHPIPER_VERSION}" https://github.com/
 internal/runner/install_script_payload.sh	curl	28f0e70f78b3	curl jq git build-essential libicu-dev sudo
 internal/runner/install_script_payload.sh	curl	7cfda140d680	curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | ta

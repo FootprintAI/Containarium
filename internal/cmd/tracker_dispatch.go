@@ -256,10 +256,10 @@ func printTrackerDispatches(username, connection string, rows []*pb.TrackerDispa
 			detail = d.GetCreatedAt().AsTime().Format(time.RFC3339)
 		}
 		if r := d.GetFailureReason(); r != "" {
-			detail += "  " + r
+			detail += "  " + escapeControl(r)
 		}
 		detail += lineageReservationsDetail(d)
 		fmt.Printf("%-8s %-8s %-24s %-24s %-38s %s\n", fmt.Sprintf("#%d", d.GetIssueNumber()), dispatchStateName(d.GetState()),
-			scopeLabelPrefix+d.GetScope(), d.GetSkillId(), d.GetRunId(), strings.TrimSpace(detail))
+			scopeLabelPrefix+escapeControl(d.GetScope()), escapeControl(d.GetSkillId()), d.GetRunId(), strings.TrimSpace(detail))
 	}
 }

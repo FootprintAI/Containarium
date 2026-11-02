@@ -446,7 +446,7 @@ func runTrafficFind(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(tw, "BOX\tSTARTED\tPROTO\tSOURCE\tDESTINATION\tSENT\tRECV")
 	for _, c := range resp.Connections {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			c.ContainerName, c.StartedAt, shortEnum(c.Protocol),
+			escapeControl(c.ContainerName), c.StartedAt, shortEnum(c.Protocol),
 			hostPort(c.SourceIP, c.SourcePort), hostPort(c.DestIP, c.DestPort),
 			humanBytes(int64(c.BytesSent)), humanBytes(int64(c.BytesReceived)))
 	}
