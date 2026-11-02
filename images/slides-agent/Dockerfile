@@ -29,10 +29,29 @@
 #   docker build -f images/slides-agent/Dockerfile -t containarium-slides-agent .
 
 ARG NODE_IMAGE=docker.io/library/node:22.23.4-bookworm-slim
-ARG CADDY_IMAGE=docker.io/library/caddy:2.11.7
+ARG GO_IMAGE=docker.io/library/golang:1.26.10-bookworm
 
 # --- the proxy binary -------------------------------------------------------
-FROM ${CADDY_IMAGE} AS caddy
+# Caddy is built from source rather than copied from the upstream image: the
+# upstream binary is compiled with a Go toolchain and module set that carry
+# fixed HIGH findings (stdlib, x/net, go-jose), which the image's blocking
+# Trivy gate refuses. Same approach as `make build-caddy`: the checksum-pinned
+# xcaddy installer the repo already uses, the Go version the other images
+# build with, the Caddy release pinned here, and the two dependency bumps the
+# findings name. Bump CADDY_VERSION and drop a --replace when upstream catches up.
+FROM ${GO_IMAGE} AS caddy
+ARG CADDY_VERSION=v2.11.7
+WORKDIR /src
+COPY scripts/install-xcaddy.sh scripts/xcaddy-version.env scripts/
+RUN scripts/install-xcaddy.sh /usr/local/bin/xcaddy \
+    && CGO_ENABLED=0 xcaddy build "${CADDY_VERSION}" \
+         --replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+         --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@v4.1.6 \
+         --output /out/caddy \
+    && /out/caddy version \
+    # Only /out/caddy leaves this stage; drop the module and build caches so
+    # the layer stays small.
+    && rm -rf /root/.cache /go/pkg/mod /tmp/*
 
 # --- build open-slide from the pinned commit ---------------------------------
 FROM ${NODE_IMAGE} AS build
@@ -75,6 +94,21 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --filter @open-slide/core --
     && test ! -e /opt/open-slide/app/node_modules/@anthropic-ai \
     && test ! -e /opt/open-slide/app/node_modules/@openai
 
+# Core depends on `shadcn` (the component scaffolding CLI) only for its
+# stylesheet (`@import 'shadcn/tailwind.css'` in src/app/styles.css, the
+# package's dist/tailwind.css); the
+# CLI's own server-side dependency tree (express, undici, dotenvx,
+# systeminformation) is never imported by dev, build, preview or the printer,
+# and carries fixed HIGH findings the image's blocking Trivy gate refuses. That
+# tree is removed from the deployed app; the package and its stylesheet stay.
+# The offline smoke test on the PR exercises dev, build and print afterwards.
+RUN cd /opt/open-slide/app/node_modules \
+    && rm -rf .pnpm/express@* .pnpm/express-rate-limit@* .pnpm/body-parser@* \
+         .pnpm/undici@* .pnpm/@dotenvx+dotenvx@* .pnpm/systeminformation@* \
+    && ! ls .pnpm | grep -E '^(undici|express|body-parser|systeminformation)@' \
+    && test -n "$(find .pnpm -path '*/node_modules/shadcn/dist/tailwind.css' -print -quit)" \
+    && node -e "require.resolve('/opt/open-slide/app/node_modules/@open-slide/core/package.json')"
+
 # The seed template: the scaffold's deck tree and agent files, which the
 # entrypoint copies into the bind-mounted /workspace on first start. The
 # template's .claude/skills are relative symlinks into .agents/skills, which
@@ -113,9 +147,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates curl \
          chromium fonts-liberation fonts-noto-core fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # The runtime needs node only. The base image's bundled npm, npx, corepack
+    # and yarn are package managers with their own dependency trees (and the
+    # fixed HIGH findings that come with them); nothing in the image runs them.
+    && rm -rf /usr/local/lib/node_modules /usr/local/bin/np[mx] \
+         /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v* \
+    && test ! -e /usr/local/bin/npm \
+    && node --version
 
-COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
+COPY --from=caddy /out/caddy /usr/bin/caddy
 COPY --from=build /opt/open-slide /opt/open-slide
 COPY images/slides-agent/Caddyfile /etc/caddy/Caddyfile
 # Plain COPY + chmod (not COPY --chmod) so the image also builds with the

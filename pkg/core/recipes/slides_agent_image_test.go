@@ -35,10 +35,15 @@ func TestSlidesAgentDockerfile(t *testing.T) {
 	df := readImageFile(t, "Dockerfile")
 	for _, want := range []string{
 		"OPEN_SLIDE_COMMIT=" + openSlideCommit,
-		`git rev-parse HEAD`, // the checkout is verified against the pin, not trusted
-		"--frozen-lockfile",  // the framework's own lockfile decides its dependency set
-		"chromium",           // headless Chromium for PDF export
-		"/usr/bin/caddy",     // the auth proxy ships in the image: no pull at box start
+		`git rev-parse HEAD`,                 // the checkout is verified against the pin, not trusted
+		"--frozen-lockfile",                  // the framework's own lockfile decides its dependency set
+		"chromium",                           // headless Chromium for PDF export
+		"/usr/bin/caddy",                     // the auth proxy ships in the image: no pull at box start
+		"scripts/install-xcaddy.sh",          // Caddy is built with the repo's checksum-pinned xcaddy
+		"xcaddy build \"${CADDY_VERSION}\"",  // from a pinned release, on the pinned Go image
+		"rm -rf /usr/local/lib/node_modules", // no package manager in the runtime stage
+		".pnpm/undici@*",
+		"shadcn/tailwind.css", // the scaffolding CLI's never-imported server tree is pruned
 		"images/slides-agent/Caddyfile",
 		"images/slides-agent/entrypoint.sh",
 		"images/slides-agent/open-slide.config.ts",
