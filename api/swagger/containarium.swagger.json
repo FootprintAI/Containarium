@@ -1977,7 +1977,7 @@
     "/v1/backups/{id}/verify": {
       "post": {
         "summary": "Verify a backup",
-        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
+        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. A whole-box backup is instead restored into a scratch box, compared file by file with its manifest of digests (capped at 15 minutes; a capped run is INCOMPLETE, never PASSED), and the scratch box is deleted; its target_username must be the backup's own tenant. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
         "operationId": "BackupService_VerifyBackup",
         "responses": {
           "200": {
@@ -23948,10 +23948,11 @@
       "enum": [
         "VERIFICATION_RESULT_UNSPECIFIED",
         "VERIFICATION_RESULT_PASSED",
-        "VERIFICATION_RESULT_FAILED"
+        "VERIFICATION_RESULT_FAILED",
+        "VERIFICATION_RESULT_INCOMPLETE"
       ],
       "default": "VERIFICATION_RESULT_UNSPECIFIED",
-      "description": "VerificationResult is the outcome of a restore test. A backup whose\nbytes are intact but which cannot be loaded by the engine is FAILED —\nthat distinction is the whole point of verification (see #1159).\n\n - VERIFICATION_RESULT_UNSPECIFIED: Never verified, or the outcome could not be determined.\n - VERIFICATION_RESULT_PASSED: The dump restored into a scratch database and passed every\nengine-appropriate sanity check.\n - VERIFICATION_RESULT_FAILED: The dump could not be restored, or restored but failed a sanity\ncheck. `error` carries the engine's own message."
+      "description": "VerificationResult is the outcome of a restore test. A backup whose\nbytes are intact but which cannot be loaded by the engine is FAILED —\nthat distinction is the whole point of verification (see #1159).\n\n - VERIFICATION_RESULT_UNSPECIFIED: Never verified, or the outcome could not be determined.\n - VERIFICATION_RESULT_PASSED: The dump restored into a scratch database and passed every\nengine-appropriate sanity check.\n - VERIFICATION_RESULT_FAILED: The dump could not be restored, or restored but failed a sanity\ncheck. `error` carries the engine's own message.\n - VERIFICATION_RESULT_INCOMPLETE: A whole-box restore test whose comparison with the manifest hit the\ntime cap before it covered every file (#2802, #2809 Q-C). The checks\nreport the coverage reached. Never a pass."
     },
     "VerifyBackupBody": {
       "type": "object",
@@ -23969,7 +23970,7 @@
           "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient\n(#1831). Used to decrypt for this one call and never stored or\nlogged, same contract as RestoreBackupRequest.age_identity.\nRequired for an encrypted record — the daemon refuses to even\nattempt the test without it, because it holds no decryption key of\nits own. A wrong identity comes back as a FAILED verification\nresult, not an RPC error (#2295)."
         }
       },
-      "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndifferent tenant's disposable container as the target (admin only), or\nthe backup's own tenant for a daemon-managed isolated verification container."
+      "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndifferent tenant's disposable container as the target (admin only), or\nthe backup's own tenant for a daemon-managed isolated verification container.\n\nA whole-box backup (BACKUP_SCOPE_BOX, #2802) is restored into a\ndaemon-managed scratch box instead, every regular file of the restored box\nis compared with the manifest of file digests written at create time, and\nthe scratch box is deleted on every path. Its target_username must be the\nbackup's own tenant, and connection is ignored."
     },
     "VerifyBackupResponse": {
       "type": "object",

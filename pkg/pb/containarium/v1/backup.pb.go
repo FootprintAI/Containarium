@@ -373,6 +373,10 @@ const (
 	// The dump could not be restored, or restored but failed a sanity
 	// check. `error` carries the engine's own message.
 	VerificationResult_VERIFICATION_RESULT_FAILED VerificationResult = 2
+	// A whole-box restore test whose comparison with the manifest hit the
+	// time cap before it covered every file (#2802, #2809 Q-C). The checks
+	// report the coverage reached. Never a pass.
+	VerificationResult_VERIFICATION_RESULT_INCOMPLETE VerificationResult = 3
 )
 
 // Enum value maps for VerificationResult.
@@ -381,11 +385,13 @@ var (
 		0: "VERIFICATION_RESULT_UNSPECIFIED",
 		1: "VERIFICATION_RESULT_PASSED",
 		2: "VERIFICATION_RESULT_FAILED",
+		3: "VERIFICATION_RESULT_INCOMPLETE",
 	}
 	VerificationResult_value = map[string]int32{
 		"VERIFICATION_RESULT_UNSPECIFIED": 0,
 		"VERIFICATION_RESULT_PASSED":      1,
 		"VERIFICATION_RESULT_FAILED":      2,
+		"VERIFICATION_RESULT_INCOMPLETE":  3,
 	}
 )
 
@@ -1678,6 +1684,12 @@ func (x *RestoreBoxBackupResponse) GetBox() string {
 // from — verification must never touch the source database. Supply a
 // different tenant's disposable container as the target (admin only), or
 // the backup's own tenant for a daemon-managed isolated verification container.
+//
+// A whole-box backup (BACKUP_SCOPE_BOX, #2802) is restored into a
+// daemon-managed scratch box instead, every regular file of the restored box
+// is compared with the manifest of file digests written at create time, and
+// the scratch box is deleted on every path. Its target_username must be the
+// backup's own tenant, and connection is ignored.
 type VerifyBackupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Backup to verify.
@@ -2203,11 +2215,12 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\vBackupScope\x12\x1c\n" +
 	"\x18BACKUP_SCOPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15BACKUP_SCOPE_DATABASE\x10\x01\x12\x14\n" +
-	"\x10BACKUP_SCOPE_BOX\x10\x02*y\n" +
+	"\x10BACKUP_SCOPE_BOX\x10\x02*\x9d\x01\n" +
 	"\x12VerificationResult\x12#\n" +
 	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +
-	"\x1aVERIFICATION_RESULT_FAILED\x10\x022\xbe\x17\n" +
+	"\x1aVERIFICATION_RESULT_FAILED\x10\x02\x12\"\n" +
+	"\x1eVERIFICATION_RESULT_INCOMPLETE\x10\x032\xc3\x19\n" +
 	"\rBackupService\x12\xfa\x03\n" +
 	"\fCreateBackup\x12$.containarium.v1.CreateBackupRequest\x1a%.containarium.v1.CreateBackupResponse\"\x9c\x03\x92A\x82\x03\n" +
 	"\aBackups\x12\x0fCreate a backup\x1a\xe5\x02Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one. scope=BACKUP_SCOPE_BOX backs up the whole box instead: no connection or hook, and an explicit encryption key_mode is required.\x82\xd3\xe4\x93\x02\x10:\x01*\"\v/v1/backups\x12\xd3\x01\n" +
@@ -2218,9 +2231,9 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\rRestoreBackup\x12%.containarium.v1.RestoreBackupRequest\x1a&.containarium.v1.RestoreBackupResponse\"\xa7\x01\x92A\x80\x01\n" +
 	"\aBackups\x12\x10Restore a backup\x1acStreams a stored dump back into a container's database via pg_restore. Destructive when clean=true.\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/backups/{id}/restore\x12\xdf\x04\n" +
 	"\x10RestoreBoxBackup\x12(.containarium.v1.RestoreBoxBackupRequest\x1a).containarium.v1.RestoreBoxBackupResponse\"\xf5\x03\x92A\xca\x03\n" +
-	"\aBackups\x12%Restore a whole-box backup into a box\x1a\x97\x03Restores a BACKUP_SCOPE_BOX backup (an Incus instance archive) into a box. target_box is optional and defaults to <source box>-restored. An existing target is refused unless force is set, and a running target is refused even with force: stop it first. An encrypted backup needs age_identity, used for this call only and never stored or logged. Database backups restore through POST /v1/backups/{id}/restore.\x82\xd3\xe4\x93\x02!:\x01*\"\x1c/v1/backups/{id}/restore-box\x12\x90\x04\n" +
-	"\fVerifyBackup\x12$.containarium.v1.VerifyBackupRequest\x1a%.containarium.v1.VerifyBackupResponse\"\xb2\x03\x92A\x8c\x03\n" +
-	"\aBackups\x12\x0fVerify a backup\x1a\xef\x02Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/backups/{id}/verify\x12\x95\x02\n" +
+	"\aBackups\x12%Restore a whole-box backup into a box\x1a\x97\x03Restores a BACKUP_SCOPE_BOX backup (an Incus instance archive) into a box. target_box is optional and defaults to <source box>-restored. An existing target is refused unless force is set, and a running target is refused even with force: stop it first. An encrypted backup needs age_identity, used for this call only and never stored or logged. Database backups restore through POST /v1/backups/{id}/restore.\x82\xd3\xe4\x93\x02!:\x01*\"\x1c/v1/backups/{id}/restore-box\x12\x95\x06\n" +
+	"\fVerifyBackup\x12$.containarium.v1.VerifyBackupRequest\x1a%.containarium.v1.VerifyBackupResponse\"\xb7\x05\x92A\x91\x05\n" +
+	"\aBackups\x12\x0fVerify a backup\x1a\xf4\x04Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. A whole-box backup is instead restored into a scratch box, compared file by file with its manifest of digests (capped at 15 minutes; a capped run is INCOMPLETE, never PASSED), and the scratch box is deleted; its target_username must be the backup's own tenant. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/backups/{id}/verify\x12\x95\x02\n" +
 	"\fDeleteBackup\x12$.containarium.v1.DeleteBackupRequest\x1a%.containarium.v1.DeleteBackupResponse\"\xb7\x01\x92A\x9b\x01\n" +
 	"\aBackups\x12\x0fDelete a backup\x1a\x7fDeletes a stored dump and its metadata by id. See PruneBackups for keep-newest-N retention instead of naming ids one at a time.\x82\xd3\xe4\x93\x02\x12*\x10/v1/backups/{id}\x12\x86\x03\n" +
 	"\fPruneBackups\x12$.containarium.v1.PruneBackupsRequest\x1a%.containarium.v1.PruneBackupsResponse\"\xa8\x02\x92A\x88\x02\n" +

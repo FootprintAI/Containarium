@@ -62,6 +62,15 @@ itself recorded as a FAILED verification (#2295) — this is exactly the
 check that catches a backup that looks healthy ("Encrypted: yes") but is
 actually unrecoverable because nobody holds the matching private key.
 
+A whole-box backup (created with 'backup create --box') is verified by
+restoring it into a daemon-managed scratch box, comparing every regular
+file of the restored box with the manifest of SHA-256 digests written when
+the backup was created, and deleting the scratch box, on failure too. Set
+--target to the backup's own tenant; --db-* flags do not apply. A tampered
+backup fails and the failing check names the cause (checksum, decryption,
+or the file that differs). The comparison stops after 15 minutes; a run cut
+short is INCOMPLETE, reports how many files it covered, and exits non-zero.
+
 Name the backup by id, or pass --latest with --user and --database to
 verify the newest backup of that tenant's database.
 
@@ -170,7 +179,7 @@ func runBackupVerify(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("  %s %-18s %s\n", mark, check.Name, check.Detail)
 	}
-	fmt.Printf("\n  target:  %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	fmt.Printf("\n  target:  %s\n", verifyTargetLabel(v))
 	fmt.Printf("  when:    %s", v.VerifiedAt)
 	if v.VerifiedBy != "" {
 		fmt.Printf("  by %s", v.VerifiedBy)
@@ -186,6 +195,15 @@ func runBackupVerify(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("✓ %s\n", resp.Message)
 	return nil
+}
+
+// verifyTargetLabel says what the restore test used and that it is gone: a
+// scratch database for a dump, a scratch box for a whole-box backup.
+func verifyTargetLabel(v *pb.BackupVerification) string {
+	if v.ScratchDatabase == "" {
+		return v.TargetContainer + " (scratch box, deleted)"
+	}
+	return fmt.Sprintf("%s (scratch db %s, dropped)", v.TargetContainer, v.ScratchDatabase)
 }
 
 // errBackupVerificationFailed marks a completed-but-failed restore test.

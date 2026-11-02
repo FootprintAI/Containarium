@@ -3086,14 +3086,15 @@ skipAppHosting:
 	// retry loop over the startup pool (nil if it could not connect), and
 	// hold the opt-in self-restart (#2824) while any family is still pending,
 	// so a restart cannot close a pool under a late install. With nothing
-	// pending the watcher stays the fallback for unmigrated families.
+	// pending, or only families refused by configuration (#3378), the
+	// watcher stays the fallback for unmigrated families.
 	if storeRecovery.pending() {
 		log.Printf("Store families: retrying the Postgres install in-process every %s, up to every %s, until it succeeds", policyStoreRetryInitial, policyStoreRetryMax)
 		go storeRecovery.Run(context.Background(), policyStorePool)
 	}
 	postgresRecovery := newPostgresRecoveryWatcher(pgGate.failedDSN())
 	if postgresRecovery != nil {
-		postgresRecovery.holdWhile = storeRecovery.pending
+		postgresRecovery.holdWhile = storeRecovery.holdsRestart
 	}
 
 	ds := &DualServer{

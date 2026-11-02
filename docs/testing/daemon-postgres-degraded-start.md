@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -34,13 +34,19 @@ and `containarium.tracker` is `NOT_SERVING` while Postgres is down, the
 store does not install while the secrets store is absent, and once both
 are in, the run starter and lineage reservations are wired with it. The
 set/get round trip and the tracker connection-and-dispatch round trip run
-only with `CONTAINARIUM_TEST_DSN` set (the store-integration lane).
+only with `CONTAINARIUM_TEST_DSN` set (the store-integration lane). The
+config-refusal tests (#3378) cover a family whose install is refused by
+configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
+backend: it stays pending and `NOT_SERVING` and is still retried, but it
+does not hold the self-restart, while a family whose last attempt failed on
+a connection or open error still does. The refusal is logged once each time
+the family enters it, not on every retry.
 
 The JWT revocation list is another such family (#3328):
 
 ```bash
 go test -race -count=1 ./internal/auth ./internal/server \
-  -run 'TestTokenManager_Revocation|TestTokenManager_NoRevocationExpected|TestRevocationRecovery_|TestAgentSkillServer_RevocationStoreSwapIsRaceSafe'
+  -run 'TestTokenManager_Revocation|TestTokenManager_NoRevocationExpected|TestRevocationRecovery_|TestAgentSkillServer_RevocationStoreSwapIsRaceSafe|TestGatewayOwnerRevocations_|TestGatewayRevocationRecovery_|TestRevocationCleanup_'
 ```
 
 While Postgres is down, `containarium.revocation` is `NOT_SERVING`, every
@@ -48,6 +54,12 @@ TokensService RPC answers `UNAVAILABLE`, and tokens are still validated
 without the revocation check; the daemon logs that once, not per request.
 Once Postgres answers, the store installs with no restart, the entry turns
 `SERVING`, and a token revoked before the outage is rejected again.
+The gateway tests (#3365) cover the model gateway's checks: a revoked
+gateway token is accepted during the window (accepted fail-open, Q11 on
+#3335) and rejected after the install with no restart, owner cutoffs
+recorded in memory are carried into Postgres keeping the latest per owner,
+a failed copy is retried with nothing half-installed, and the cleanup loop
+starts exactly once from the install.
 
 ## Deployed outage drill
 
