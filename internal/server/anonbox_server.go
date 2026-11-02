@@ -77,7 +77,7 @@ func NewAnonymousBoxServer(ensurer AnonEnsurer, lister AnonLister, limits anonbo
 // in place of a JWT and mapped to the anon:door scope (see
 // gateway.anonDoorHandler), so this guard sees the same identity either way.
 func (s *AnonymousBoxServer) EnsureAnonymousBox(ctx context.Context, req *pb.EnsureAnonymousBoxRequest) (*pb.EnsureAnonymousBoxResponse, error) {
-	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonDoor); err != nil {
+	if err := auth.RequireRoleOrScopeNarrowed(ctx, auth.RoleAdmin, auth.ScopeAnonDoor); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.GetPublicKey()) == "" {
@@ -109,7 +109,7 @@ func (s *AnonymousBoxServer) EnsureAnonymousBox(ctx context.Context, req *pb.Ens
 // signup, or an operator via `containarium anon claim`). Redeems the
 // single-use token and binds the box to the tenant (#2199).
 func (s *AnonymousBoxServer) ClaimAnonymousBox(ctx context.Context, req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
-	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
+	if err := auth.RequireRoleOrScopeNarrowed(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
 		return nil, err
 	}
 	if s.claimer == nil {
@@ -163,7 +163,7 @@ func (s *AnonymousBoxServer) GetAnonymousDoorConfig(ctx context.Context, _ *pb.G
 // disabled_message / banned_fingerprints; limits are read-only (daemon
 // flags) and ignored on input.
 func (s *AnonymousBoxServer) SetAnonymousDoorConfig(ctx context.Context, req *pb.SetAnonymousDoorConfigRequest) (*pb.AnonymousDoorConfig, error) {
-	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
+	if err := auth.RequireRoleOrScopeNarrowed(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
 		return nil, err
 	}
 	if s.door == nil {
