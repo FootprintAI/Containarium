@@ -1933,6 +1933,58 @@ type SystemResources struct {
 	GPUs []GPUInfo
 }
 
+// StoragePoolSource is the slice of the Incus API the pool sum needs;
+// incus.InstanceServer satisfies it and tests fake it.
+type StoragePoolSource interface {
+	GetStoragePools() ([]api.StoragePool, error)
+	GetStoragePoolResources(name string) (*api.ResourcesStoragePool, error)
+}
+
+// PoolTotals is the summed capacity of the Incus storage pools that hold
+// container workloads. Pools is how many pools contributed to the sums.
+type PoolTotals struct {
+	TotalBytes int64
+	UsedBytes  int64
+	Pools      int
+}
+
+// SumStoragePools sums Space.Total and Space.Used over every storage pool.
+// A pool whose resources cannot be read is skipped; an error is returned
+// only when the pool list itself cannot be read. It is the single source for
+// both the capability profile (`backends profile`) and the cloud host status
+// probe, so the two cannot disagree (#3449).
+func SumStoragePools(src StoragePoolSource) (PoolTotals, error) {
+	var t PoolTotals
+	pools, err := src.GetStoragePools()
+	if err != nil {
+		return t, fmt.Errorf("failed to list storage pools: %w", err)
+	}
+	for _, pool := range pools {
+		pr, err := src.GetStoragePoolResources(pool.Name)
+		if err != nil {
+			continue
+		}
+		t.TotalBytes += safecast.I64FromU64(pr.Space.Total)
+		t.UsedBytes += safecast.I64FromU64(pr.Space.Used)
+		t.Pools++
+	}
+	return t, nil
+}
+
+// StoragePoolTotals sums this daemon's storage pools (see SumStoragePools).
+func (c *Client) StoragePoolTotals() (PoolTotals, error) {
+	return SumStoragePools(c.server)
+}
+
+// applyPoolTotals records the pool sum on res; on a list error the disk
+// figures stay zero, as before.
+func applyPoolTotals(res *SystemResources, src StoragePoolSource) {
+	if t, err := SumStoragePools(src); err == nil {
+		res.TotalDiskBytes = t.TotalBytes
+		res.UsedDiskBytes = t.UsedBytes
+	}
+}
+
 // GetSystemResources gets system resource information from Incus
 func (c *Client) GetSystemResources() (*SystemResources, error) {
 	if c.socketPath == "" {
@@ -1965,17 +2017,8 @@ func (c *Client) fetchSystemResources() (*SystemResources, error) {
 		}
 	}
 
-	// Get storage pool info for disk usage
-	pools, err := c.server.GetStoragePools()
-	if err == nil {
-		for _, pool := range pools {
-			poolResources, err := c.server.GetStoragePoolResources(pool.Name)
-			if err == nil {
-				res.TotalDiskBytes += safecast.I64FromU64(poolResources.Space.Total)
-				res.UsedDiskBytes += safecast.I64FromU64(poolResources.Space.Used)
-			}
-		}
-	}
+	// Storage pool capacity (the same sum the host status probe reports).
+	applyPoolTotals(res, c.server)
 
 	// Get CPU load averages from /proc/loadavg
 	load1, load5, load15, err := getCPULoadAvg()
