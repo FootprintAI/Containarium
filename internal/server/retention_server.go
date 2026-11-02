@@ -351,6 +351,9 @@ func (s *RetentionServer) writeAudit(ctx context.Context, subject, action, resou
 }
 
 func (s *RetentionServer) GetRetentionPolicy(ctx context.Context, _ *pb.GetRetentionPolicyRequest) (*pb.GetRetentionPolicyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAuditRead); err != nil {
+		return nil, err
+	}
 	if _, err := s.requireRetentionAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -362,6 +365,9 @@ func (s *RetentionServer) GetRetentionPolicy(ctx context.Context, _ *pb.GetReten
 }
 
 func (s *RetentionServer) SetRetentionPolicy(ctx context.Context, req *pb.SetRetentionPolicyRequest) (*pb.SetRetentionPolicyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRetentionWrite); err != nil {
+		return nil, err
+	}
 	subject, err := s.requireRetentionAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -380,6 +386,9 @@ func (s *RetentionServer) SetRetentionPolicy(ctx context.Context, req *pb.SetRet
 }
 
 func (s *RetentionServer) GetRetentionMode(ctx context.Context, _ *pb.GetRetentionModeRequest) (*pb.GetRetentionModeResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAuditRead); err != nil {
+		return nil, err
+	}
 	if _, err := s.requireRetentionAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -391,6 +400,9 @@ func (s *RetentionServer) GetRetentionMode(ctx context.Context, _ *pb.GetRetenti
 }
 
 func (s *RetentionServer) SetRetentionMode(ctx context.Context, req *pb.SetRetentionModeRequest) (*pb.SetRetentionModeResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRetentionWrite); err != nil {
+		return nil, err
+	}
 	subject, err := s.requireRetentionAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -412,6 +424,9 @@ func (s *RetentionServer) SetRetentionMode(ctx context.Context, req *pb.SetReten
 }
 
 func (s *RetentionServer) ListLegalHolds(ctx context.Context, _ *pb.ListLegalHoldsRequest) (*pb.ListLegalHoldsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAuditRead); err != nil {
+		return nil, err
+	}
 	if _, err := s.requireRetentionAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -430,6 +445,9 @@ func (s *RetentionServer) holdAudit(ctx context.Context, subject, action string)
 }
 
 func (s *RetentionServer) SetLegalHold(ctx context.Context, req *pb.SetLegalHoldRequest) (*pb.SetLegalHoldResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRetentionWrite); err != nil {
+		return nil, err
+	}
 	subject, err := s.requireRetentionAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -442,6 +460,9 @@ func (s *RetentionServer) SetLegalHold(ctx context.Context, req *pb.SetLegalHold
 }
 
 func (s *RetentionServer) ReleaseLegalHold(ctx context.Context, req *pb.ReleaseLegalHoldRequest) (*pb.ReleaseLegalHoldResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRetentionWrite); err != nil {
+		return nil, err
+	}
 	subject, err := s.requireRetentionAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -454,6 +475,9 @@ func (s *RetentionServer) ReleaseLegalHold(ctx context.Context, req *pb.ReleaseL
 }
 
 func (s *RetentionServer) GetRetentionReport(ctx context.Context, req *pb.GetRetentionReportRequest) (*pb.GetRetentionReportResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAuditRead); err != nil {
+		return nil, err
+	}
 	if _, err := s.requireRetentionAdmin(ctx); err != nil {
 		return nil, err
 	}
