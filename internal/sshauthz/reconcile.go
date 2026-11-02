@@ -46,6 +46,15 @@ type ReconcileResult struct {
 // revoke failing for another reason is returned, and the caller retries.
 func Reconcile(ctx context.Context, store ReconcileStore, homeRoot string, now time.Time) (ReconcileResult, error) {
 	var out ReconcileResult
+	// Rows first, /home second. A key write path writes the file before it
+	// registers the row, so every row read here already has its file, and
+	// the scan below sees it. In the other order a key added between the
+	// scan and the read would look unheld and be revoked, and Revoke's own
+	// holder check would not stop it: it excludes the row's own account.
+	rows, err := store.ActiveRecords(ctx)
+	if err != nil {
+		return out, fmt.Errorf("reconcile ssh keys: %w", err)
+	}
 	scan, err := ScanAuthorizedKeys(homeRoot, now)
 	if err != nil {
 		return out, fmt.Errorf("reconcile ssh keys: %w", err)
@@ -53,10 +62,6 @@ func Reconcile(ctx context.Context, store ReconcileStore, homeRoot string, now t
 	held := make(map[string]bool, len(scan.Records))
 	for _, r := range scan.Records {
 		held[r.Fingerprint] = true
-	}
-	rows, err := store.ActiveRecords(ctx)
-	if err != nil {
-		return out, fmt.Errorf("reconcile ssh keys: %w", err)
 	}
 	for _, row := range rows {
 		if held[row.Fingerprint] {

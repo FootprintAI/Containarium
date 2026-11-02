@@ -28,6 +28,9 @@ type reconcileKeys struct {
 	listErr   error
 	revokeErr map[string]error
 	revoked   []string
+	// onList runs once inside ActiveRecords, before the rows are read: a
+	// concurrent API write that lands while Reconcile is running.
+	onList func()
 }
 
 func newReconcileKeys() *reconcileKeys {
@@ -45,6 +48,10 @@ func (m *reconcileKeys) Lookup(_ context.Context, fingerprint string) (KeyRecord
 func (m *reconcileKeys) ActiveRecords(context.Context) ([]KeyRecord, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
+	}
+	if m.onList != nil {
+		m.onList()
+		m.onList = nil
 	}
 	var out []KeyRecord
 	for _, r := range m.rows {
@@ -175,6 +182,38 @@ func TestReconcile_RevokesRowsNoAccountHolds(t *testing.T) {
 	again, err := Reconcile(context.Background(), keys, home, caseNow)
 	if err != nil || again.Revoked != 0 {
 		t.Errorf("second Reconcile = %+v, %v; want nothing revoked", again, err)
+	}
+}
+
+// A key added through the API while Reconcile runs (file written, then
+// registered) must not be revoked. The API writes the file before it
+// registers the row, so Reconcile reads the rows first and scans /home
+// after: any row it sees already has its file. Scanning first would miss
+// the file, see the row, and revoke a key its account holds. The revoke-time
+// holder check would not save it, because it excludes the row's own account.
+func TestReconcile_KeyAddedDuringReconcileIsNotRevoked(t *testing.T) {
+	home := t.TempDir()
+	keys := newReconcileKeys()
+	kept := testKey(t)
+	keys.seed(t, kept, "alice")
+	writeHome(t, home, "alice", kept)
+
+	added := testKey(t)
+	var addedRec KeyRecord
+	keys.onList = func() {
+		writeHome(t, home, "alice", kept+added) // AddSSHKey writes the file...
+		addedRec = keys.seed(t, added, "alice") // ...then registers the key
+	}
+
+	got, err := Reconcile(context.Background(), keys, home, caseNow)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !keys.rows[addedRec.Fingerprint].RevokedAt.IsZero() {
+		t.Fatalf("key added during Reconcile was revoked although alice holds it (Reconcile = %+v)", got)
+	}
+	if got.Revoked != 0 {
+		t.Errorf("Reconcile = %+v, want nothing revoked", got)
 	}
 }
 
