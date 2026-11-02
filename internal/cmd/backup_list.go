@@ -86,6 +86,8 @@ func verifiedLabel(v *pb.BackupVerification) string {
 		return "pass " + v.VerifiedAt
 	case pb.VerificationResult_VERIFICATION_RESULT_FAILED:
 		return "FAIL " + v.VerifiedAt
+	case pb.VerificationResult_VERIFICATION_RESULT_INCOMPLETE:
+		return "INCOMPLETE " + v.VerifiedAt
 	default:
 		return "unknown"
 	}
