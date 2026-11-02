@@ -655,6 +655,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// the cloud status probe reads it in-process.
 	policyStoreHealth := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
+	reportOTelCollectorReadiness(policyStoreHealth, nil) // SERVING until the collector is refused (#3443)
 
 	// One bounded Postgres check gates every database-backed store below
 	// (#2824): if it fails, they are skipped rather than each retried.
@@ -1028,7 +1029,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					}
 				}
 				if vmIP != "" {
-					if _, err := coreServices.EnsureOTelCollector(context.Background(), vmIP, config.OTelDropLabels); err != nil {
+					_, otelErr := coreServices.EnsureOTelCollector(context.Background(), vmIP, config.OTelDropLabels)
+					reportOTelCollectorReadiness(policyStoreHealth, otelErr)
+					if errors.Is(otelErr, errOTelAuthBearerUnavailable) {
+						log.Printf("DEGRADED: OTel collector NOT started: %v. App-emitted telemetry is off until the bearer is available and the daemon restarts (containarium doctor reports it)", otelErr)
+					} else if err := otelErr; err != nil {
 						log.Printf("Warning: Failed to setup OTel collector: %v. App-emitted telemetry disabled.", err)
 					} else {
 						endpoint := coreServices.GetOTelCollectorEndpoint()
