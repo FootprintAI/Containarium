@@ -299,7 +299,7 @@ type DualServer struct {
 	retentionReporter        *retention.Reporter      // dry-run retention sweep (#2876)
 	notifyServer             *NotifyServer            // pushes waiting permission requests (#2185); nil without Postgres
 	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
-	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
+	credentialWatch          *credentialWatch         // credential-expiry alert (#2371); starts once installed and serving (#3334)
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
 	appServer                *AppServer
 	networkServer            *NetworkServer
@@ -310,8 +310,7 @@ type DualServer struct {
 	authMiddleware           *auth.AuthMiddleware
 	routeStore               *app.RouteStore
 	routeSyncJob             *app.RouteSyncJob
-	passthroughStore         network.PassthroughStore
-	passthroughSyncJob       *network.PassthroughSyncJob
+	passthroughSync          *passthroughSync // nil without a NetworkServer and Postgres; built and started once the store installs (#3333)
 	collaboratorStore        *collaborator.Store
 	daemonConfigStore        *app.DaemonConfigStore
 	metricsCollector         *metrics.Collector
@@ -323,9 +322,7 @@ type DualServer struct {
 	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
 	sshCollector             *audit.SSHCollector
 	revocationCleanup        *revocationCleanup // Phase 1.2 expired-row pruning; starts once the store and Start's context are both in (#3365)
-	alertStore               *alert.Store
-	alertManager             *alert.Manager
-	alertDeliveryStore       *alert.DeliveryStore
+	alertPool                *pgxpool.Pool      // the alert family's startup pool; nil when it installed late (#3334)
 	pentestManager           *pentest.Manager
 	pentestStore             *pentest.Store
 	zapManager               *zapscanner.Manager
@@ -1502,34 +1499,19 @@ skipAppHosting:
 		log.Printf("SSH authorization: self-host decider enabled (max key age %v, 0 = no limit)", config.SSHAuthzMaxKeyAge)
 	}
 
-	// Setup passthrough route persistence and iptables sync.
-	// This mirrors the route store pattern but for TCP/UDP passthrough routes.
-	var passthroughStore network.PassthroughStore
-	var passthroughSyncJob *network.PassthroughSyncJob
+	// Setup passthrough route persistence and iptables sync: a late-install
+	// family (#3333), see passthrough_store_recovery.go.
+	var passthroughSyncLoop *passthroughSync
 	if postgresConnString != "" && networkServer != nil {
-		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for passthrough store: %v", poolErr)
-		} else {
-			passthroughStore, err = network.NewPassthroughStore(context.Background(), pool)
-			if err != nil {
-				log.Printf("Warning: Failed to create passthrough store: %v", err)
-				pool.Close()
-			} else {
-				syncInterval := config.RouteSyncInterval
-				if syncInterval == 0 {
-					syncInterval = 5 * time.Second
-				}
-				passthroughSyncJob = network.NewPassthroughSyncJob(passthroughStore, networkServer.passthroughManager, syncInterval)
-				networkServer.passthroughStore = passthroughStore
-				// ContainerServer also needs the passthrough store so
-				// DeleteContainer can cascade-clean a recipe-deployed box's
-				// TCP/UDP passthrough routes (#1462), mirroring
-				// SetRouteCleanupDeps above for HTTP routes.
-				containerServer.SetPassthroughCleanupDep(passthroughStore)
-				log.Printf("Passthrough route persistence enabled with %v sync interval", syncInterval)
-			}
+		syncInterval := config.RouteSyncInterval
+		if syncInterval == 0 {
+			syncInterval = 5 * time.Second
 		}
+		passthroughSyncLoop = newPassthroughSync(passthroughSyncJobBuilder(networkServer.passthroughManager, syncInterval))
+		setupPassthroughStore(storeRecovery,
+			passthroughConsumers{network: networkServer, containers: containerServer, sync: passthroughSyncLoop},
+			func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 5, 3*time.Second) },
+			network.NewPassthroughStore)
 	}
 
 	// Upgrade the NetworkPolicy service from its initial in-memory store to a
@@ -2555,45 +2537,20 @@ skipAppHosting:
 	modelGatewayServer.keysSource = func() GatewayKeyStore { return GatewayKeyStoreOf(containerServer) }
 	pb.RegisterModelGatewayServiceServer(grpcServer, modelGatewayServer)
 
-	// Setup alert store and manager
-	var alertStore *alert.Store
-	var alertManager *alert.Manager
-	if postgresConnString != "" && config.VictoriaMetricsURL != "" {
-		alertPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for alert store: %v", poolErr)
-		} else {
-			alertStore, err = alert.NewStore(context.Background(), alertPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create alert store: %v", err)
-				alertPool.Close()
-			} else {
-				// Create incus client for alert manager
-				alertIncusClient, incusErr := incus.New()
-				if incusErr != nil {
-					log.Printf("Warning: Failed to create incus client for alert manager: %v", incusErr)
-				} else {
-					alertManager = alert.NewManager(alertStore, alertIncusClient, CoreVictoriaMetricsContainer)
-					containerServer.SetAlertManager(alertStore, alertManager, config.AlertWebhookURL, config.AlertWebhookSecret, coreServices, config.DaemonConfigStore)
-
-					// Create delivery store on the same pool
-					alertDeliveryStore, delivErr := alert.NewDeliveryStore(context.Background(), alertPool)
-					if delivErr != nil {
-						log.Printf("Warning: Failed to create delivery store: %v", delivErr)
-					} else {
-						containerServer.SetAlertDeliveryStore(alertDeliveryStore)
-					}
-
-					log.Printf("Alert management service enabled")
-
-					// Initial sync of custom rules
-					if err := alertManager.SyncRules(context.Background()); err != nil {
-						log.Printf("Warning: Initial alert rules sync failed: %v", err)
-					}
-				}
-			}
-		}
-	}
+	// Alert store, rules manager and delivery store (#3334): installed now
+	// if Postgres answers, otherwise registered with storeRecovery and
+	// installed in-process later. Only when Postgres and VictoriaMetrics are
+	// both configured; otherwise the family does not exist.
+	alertBootPool := setupAlertFamily(storeRecovery, containerServer, alertFamilySetup{
+		PostgresDSN:        postgresConnString,
+		VictoriaMetricsURL: config.VictoriaMetricsURL,
+		WebhookURL:         config.AlertWebhookURL,
+		WebhookSecret:      config.AlertWebhookSecret,
+		CoreServices:       coreServices,
+		DaemonConfig:       config.DaemonConfigStore,
+		Connect:            func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 5, 3*time.Second) },
+		Open:               openAlertBackends(incus.New),
+	})
 
 	// Credential-expiry watch (#2371): every CredentialWatchInterval, probe
 	// each running skill box's coding-engine sign-in (names and the expiry
@@ -2602,25 +2559,15 @@ skipAppHosting:
 	// URL/secret and HMAC signing as the threat-detection notifier, and
 	// independent of VictoriaMetrics for the same reason. Needs Postgres:
 	// the last-seen state lives there so a restart does not re-fire.
-	var credentialWatcher *alert.CredentialWatcher
-	if postgresConnString != "" && config.DaemonConfigStore != nil {
-		if cwPool, poolErr := pgGate.connect(postgresConnString, 2, 3*time.Second); poolErr != nil {
-			log.Printf("Warning: credential-expiry watch Postgres connect failed (%v); watch disabled", poolErr)
-		} else if stateStore, stErr := alert.NewPGCredentialStateStore(context.Background(), cwPool); stErr != nil {
-			log.Printf("Warning: credential-expiry watch state store init failed (%v); watch disabled", stErr)
-			cwPool.Close()
-		} else {
-			var cwDelivery *alert.DeliveryStore
-			if d, dErr := alert.NewDeliveryStore(context.Background(), cwPool); dErr != nil {
-				log.Printf("Warning: credential-expiry watch delivery store init failed (%v); deliveries will be attempted but not recorded", dErr)
-			} else {
-				cwDelivery = d
-			}
-			credentialWatcher = alert.NewCredentialWatcher(agentSkillServer, stateStore,
-				alert.NewCredentialWebhookNotifier(config.DaemonConfigStore, cwDelivery))
-			log.Printf("Credential-expiry watch enabled (every %s)", alert.CredentialWatchInterval)
-		}
-	}
+	// Installed now or late (#3334) like the alert store; started once, from
+	// Start, with the daemon's serving context.
+	credentialWatchLoop := &credentialWatch{}
+	setupCredentialWatchFamily(storeRecovery, credentialWatchLoop, credentialWatchSetup{
+		PostgresDSN:  postgresConnString,
+		DaemonConfig: config.DaemonConfigStore,
+		Connect:      func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 2, 3*time.Second) },
+		Open:         openCredentialWatch(agentSkillServer, config.DaemonConfigStore),
+	})
 
 	// Create gateway server if REST is enabled
 	var gatewayServer *gateway.GatewayServer
@@ -2996,25 +2943,10 @@ skipAppHosting:
 			gatewayServer.SetAlertRelayConfig(config.AlertWebhookURL, config.AlertWebhookSecret)
 		}
 
-		// Wire delivery recording callback into gateway for relay deliveries
-		if containerServer.alertDeliveryStore != nil {
-			ds := containerServer.alertDeliveryStore
-			gatewayServer.SetRecordDeliveryFn(func(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int) {
-				d := &alert.WebhookDelivery{
-					AlertName:    alertName,
-					Source:       source,
-					WebhookURL:   webhookURL,
-					Success:      success,
-					HTTPStatus:   httpStatus,
-					ErrorMessage: errMsg,
-					PayloadSize:  payloadSize,
-					DurationMs:   durationMs,
-				}
-				if err := ds.Record(ctx, d); err != nil {
-					log.Printf("Warning: failed to record relay delivery: %v", err)
-				}
-			})
-		}
+		// Wire delivery recording callback into gateway for relay deliveries.
+		// It reads the alert family on every call, so a store installed late
+		// (#3334) is recorded into; before that it is logged and counted.
+		gatewayServer.SetRecordDeliveryFn(containerServer.recordRelayDelivery)
 
 		log.Printf("HTTP/REST gateway enabled on port %d", config.HTTPPort)
 	}
@@ -3105,7 +3037,7 @@ skipAppHosting:
 		agentSkillServer:       agentSkillServer,
 		retentionReporter:      retentionReporter,
 		retentionChainSource:   retentionChainSource,
-		credentialWatcher:      credentialWatcher,
+		credentialWatch:        credentialWatchLoop,
 		postgresRecovery:       postgresRecovery,
 		secretsLateInstall:     secretsLateInstall,
 		grpcServer:             grpcServer,
@@ -3120,8 +3052,7 @@ skipAppHosting:
 		authMiddleware:         authMiddleware,
 		routeStore:             routeStore,
 		routeSyncJob:           routeSyncJob,
-		passthroughStore:       passthroughStore,
-		passthroughSyncJob:     passthroughSyncJob,
+		passthroughSync:        passthroughSyncLoop,
 		collaboratorStore:      collabStore,
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
@@ -3133,9 +3064,7 @@ skipAppHosting:
 		auditEventSubscriber:   auditEventSubscriber,
 		sshCollector:           sshCollector,
 		revocationCleanup:      revocationCleanupLoop,
-		alertStore:             alertStore,
-		alertManager:           alertManager,
-		alertDeliveryStore:     containerServer.alertDeliveryStore,
+		alertPool:              alertBootPool,
 		pentestManager:         pentestManager,
 		pentestStore:           pentestStore,
 		zapManager:             zapManager,
@@ -3494,9 +3423,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	if ds.notifyServer != nil {
 		go ds.notifyServer.RunNotifyWatcher(ctx)
 	}
-	if ds.credentialWatcher != nil {
-		ds.credentialWatcher.Start(ctx)
-	}
+	ds.credentialWatch.start(ctx)
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
 		SentinelURL:       ds.config.SentinelURL,
@@ -3995,11 +3922,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		log.Printf("Route sync job started")
 	}
 
-	// Start passthrough sync job if available (syncs PostgreSQL -> iptables)
-	if ds.passthroughSyncJob != nil {
-		ds.passthroughSyncJob.Start(ctx)
-		log.Printf("Passthrough sync job started")
-	}
+	// Passthrough sync job (syncs PostgreSQL -> iptables): starts now if the
+	// store is installed, or when it installs in-process (#3333).
+	ds.passthroughSync.start(ctx)
 
 	// Core-infra network guard (#2084): reconcile at start, on container
 	// events, and every minute. Run returns immediately when the mode is
@@ -4216,15 +4141,11 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		return err
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
-		if ds.credentialWatcher != nil {
-			ds.credentialWatcher.Stop()
-		}
+		ds.credentialWatch.stop()
 		if ds.routeSyncJob != nil {
 			ds.routeSyncJob.Stop()
 		}
-		if ds.passthroughSyncJob != nil {
-			ds.passthroughSyncJob.Stop()
-		}
+		ds.passthroughSync.stop()
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
 		}
@@ -4299,8 +4220,8 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		if ds.collaboratorStore != nil {
 			ds.collaboratorStore.Close()
 		}
-		if ds.alertStore != nil {
-			ds.alertStore.Close()
+		if ds.alertPool != nil {
+			ds.alertPool.Close()
 		}
 		ds.grpcServer.GracefulStop()
 		return nil

@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -40,7 +40,18 @@ configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
 backend: it stays pending and `NOT_SERVING` and is still retried, but it
 does not hold the self-restart, while a family whose last attempt failed on
 a connection or open error still does. The refusal is logged once each time
-the family enters it, not on every retry.
+the family enters it, not on every retry. The passthrough-recovery tests
+(#3333) cover the passthrough route store: while Postgres is down,
+`containarium.passthrough` is `NOT_SERVING` and every passthrough RPC
+(list, add, update, enable, disable, delete) answers `UNAVAILABLE` without
+writing a host forwarding rule (Q13 on #3335). Once Postgres answers, the
+store installs with no restart, writes go to the store, the container
+delete cascade gets it, and the sync job is built once and started exactly
+once on the daemon's serving context, in whichever order the install and
+the daemon start arrive. A daemon with no Postgres configured still writes
+the host rules directly. The delete-cascade and recipe expose-ports tests
+run in the same set because they now set the store through the same
+accessor.
 
 The JWT revocation list is another such family (#3328):
 
@@ -60,6 +71,31 @@ gateway token is accepted during the window (accepted fail-open, Q11 on
 recorded in memory are carried into Postgres keeping the latest per owner,
 a failed copy is retried with nothing half-installed, and the cleanup loop
 starts exactly once from the install.
+
+Alerting is two more families (#3334):
+
+```bash
+go test -race -count=1 ./internal/policyreadiness ./internal/server \
+  -run 'TestDetail_|TestAlertRecovery_|TestCredentialWatchRecovery_|TestCredentialWatch_|TestNewDualServer_WiresAlertFamilies'
+```
+
+`containarium.alerts` (alert rules, the rules manager and the webhook
+delivery store) exists only when Postgres and VictoriaMetrics are both
+configured, and `containarium.credential_watch` (the credential-expiry
+watch) only when Postgres and the daemon config store are; an unconfigured
+family has no entry and is not pending. While Postgres is down, the entry
+is `NOT_SERVING` and every alert-rule, alerting-config and delivery-list
+RPC answers `UNAVAILABLE`; `GetAlertingInfo` reports `enabled: false`.
+Once Postgres answers, the store installs over the shared pool with no
+restart, the entry turns `SERVING`, and the rules are synced once, as at
+boot. Without an Incus client the alert install is refused by
+configuration: the family stays `NOT_SERVING` but does not hold the
+self-restart. A delivery raised before the store installs is not buffered
+(decision Q15 on #3335): it is logged as an `alert_delivery_unrecorded`
+line and counted, and the install line reports the count. The watcher
+starts exactly once, with the daemon's serving context, and reads each
+box's last-seen state from Postgres first, so a box alerted before the
+outage is not alerted again.
 
 ## Deployed outage drill
 
