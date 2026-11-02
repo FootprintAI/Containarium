@@ -77,13 +77,18 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 			http.Error(w, "checksum error", http.StatusInternalServerError)
 			return
 		}
+		// Sign the checksum so a daemon can tell it came from this sentinel and
+		// not from someone on the path: the checksum is the trust anchor for the
+		// binary the daemon will download and execute.
+		body := []byte(hex.EncodeToString(h.Sum(nil)))
+		manager.signServedResponse(w, body)
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, hex.EncodeToString(h.Sum(nil)))
+		_, _ = w.Write(body)
 	})
 	// Served-binary version (#2171) — what a daemon's sentinel-path upgrade
 	// would install. Unauthenticated like /containarium/checksum: the binary
 	// itself is public at /containarium, so its version string is too.
-	mux.HandleFunc("/containarium/version", newServedVersionCache().handler(binaryPath))
+	mux.HandleFunc("/containarium/version", newServedVersionCache().handler(binaryPath, manager.signServedResponse))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
