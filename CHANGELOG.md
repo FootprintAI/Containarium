@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Tokens that carry a scopes claim now need the matching scope on RPCs that previously checked only role or tenant** (#3419).
+  Writes need `containers:write`, reads `containers:read`; network/passthrough/ACL RPCs use `routes:read` / `routes:write`
+  (`GetNetworkGuardStatus` uses `security:read`); setting or deleting a coding-tool egress policy needs `network-policy:write`;
+  retention reads need `audit:read` and retention writes need the **new** `retention:write` scope. Tokens with no scopes claim keep
+  working unless `CONTAINARIUM_STRICT_SCOPES` is on. Check any scoped service token before upgrading; `retention:write` is
+  accepted by token minting and skill manifests.
+- **Claiming anonymous boxes, ensuring them and setting door config now hold a scoped token to its scope even as admin** (#3419).
+  The cloud control plane's token needs `anon:admin` (claim, set door config) and `anon:door` (ensure), or must be unscoped.
+  A scoped admin token without them is now refused. Read paths (get door config, list boxes) are unchanged.
+- **The container labels REST routes now require a bearer token** (175a1dfd). `GET`/`PUT`/`POST`/`DELETE /v1/containers/{user}/labels`
+  need a valid token, the caller must own `{user}` or be admin, scoped tokens need `containers:read` (GET) or `containers:write`
+  (other methods), and **only an admin may write or remove the `cloud_org_id` label**. The bundled CLI and client already send the
+  token; scripts that called these routes without one now get 401.
+- **ClamAV report CSV export is tenant-scoped** (7d5aca91). `GET /v1/security/clamav-reports/export` requires `security:read` for
+  scoped tokens; `container_name` is required unless the caller is admin, and a non-admin may only export their own box. Passing
+  the token as `?token=` still works but logs a deprecation warning: use the `Authorization` header.
+- **Backends need the sentinel's key for signed auto-update** (#3420). The sentinel now signs `/containarium/checksum` and
+  `/containarium/version`. A backend verifies them with `CONTAINARIUM_SENTINEL_PUBLIC_KEY` (ed25519) or
+  `CONTAINARIUM_SENTINEL_AUTH_SECRET` (HMAC), the same keys peer discovery uses. A host that holds a key refuses an unsigned
+  answer; a host with no key logs one warning and continues. **Upgrade sentinels first**, then backends, so a backend never sees
+  an unsigned answer. Set `CONTAINARIUM_AUTO_UPDATE_REQUIRE_SIGNED=1` to refuse unsigned answers on every host.
+- **Sentinel request signatures now cover the query and body (v2), in two steps** (4cbd9e8c). This release: senders emit both the
+  old and the new signature and receivers accept either, so a mixed fleet keeps working. It does **not** close the replay hole
+  yet. Once every sentinel, backend and CLI is on this release, set `CONTAINARIUM_SENTINEL_REQUIRE_V2=1` (a boolean) on
+  receivers to refuse v1-only requests. There is no exported counter: check the logs for
+  `[sentinel-sig] accepted v1-only signature` lines (logged on the first and every 100th) and require v2 only after they stop.
+- **Self-host SSH authorization requires the offered key to be one the login holds** (ca3db394). A key removed from an account's
+  `authorized_keys` is refused for that login even while its registry row is still active. This changes the premise of decision
+  Q14 on #3335 (a stale row used to be allowed while the account kept another key); the reconcile step is unchanged.
+
 ### Changed
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
@@ -16,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Command mode's tool-access guarantee is stated precisely** (#3424, clarifies the v0.123.0 command-mode entry, #3322). A command-mode run (`StartBoxRunRequest.command`, `containarium code run --command`) takes from the box's recorded tool-access level the run user and that level's sudo grant. The engine's allow/deny tool policy applies to engine runs only, so a caller holding the command-mode scope can run any program the run user can, also on a box recorded at a restrictive level. Behaviour is unchanged; the `command` proto comment, the generated API docs and `docs/BOX-RUN-API.md` now say so, and a test pins it.
 
 ### Fixed
+
+- **Container label routes were served without authentication** (175a1dfd). See Upgrading.
+- **The ClamAV report CSV export returned every tenant's reports to any valid token** (7d5aca91). See Upgrading. Cells that begin
+  with `=`, `+`, `-` or `@` are now prefixed so spreadsheets do not treat them as formulas.
+- **Self-host SSH authorization accepted any registered key for any live account** (ca3db394). See Upgrading.
+- **Sentinel request signatures did not cover the query or body** (4cbd9e8c). See Upgrading.
+- **A negative `limit` in `GetConnections` crashed the daemon, and a panic in any gRPC handler terminated the process** (fb5aae13).
+  `limit < 0` is now `InvalidArgument`, and recovery interceptors turn a handler panic into an `Internal` error (logged with a
+  stack) on the main gRPC server, the cluster CA listener, the sentinel ssh-ban and ssh-upstream sockets and the agent-box spawn
+  socket.
 
 - **`--peers` rules now live in one place** (#3426, follow-up to #3324). `NewPeerPool` builds its static peers from `ParseStaticPeers`, so a pool built outside the daemon's boot path also rejects one address listed under two ids (before, every container on that peer was listed twice). A trailing blank entry or an exact repeated entry on `--peers` no longer logs a warning at every start. Ids that differ only by case (`Backend-B`, `backend-b`) are now rejected, since `move --target` resolves an id against one incus remote name. An invalid `--peers` still stops the daemon at boot; for any other `NewPeerPool` caller an invalid list now yields no static peers (with one warning) instead of a partial set.
 - **`containarium code run --command` no longer mis-frames, shortens or silently fails** (#3425, follow-up to #3322). `--output-format-stream-json` is now refused together with `--command`: it selected framed capture for a stream-json consumer although a shell command's output is not JSON. `--timeout` rounds a fractional value up to whole seconds (`1500ms` runs for 2 s, before it was cut at 1 s), and the 1 h cap is checked after rounding. A box without a `timeout` command now fails the run at once with a message in the log naming the missing GNU coreutils `timeout`, exit code 127, instead of a bare "not found"; the command is never started without its time budget. This is detected when the run starts on the box, not as a start-time API error, because the run is spawned detached.
