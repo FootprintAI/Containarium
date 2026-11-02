@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `slides-agent` recipe image is published on release tags as `ghcr.io/footprintai/containarium-slides-agent:v<version>`
+  (plus `:v<minor>` and `:latest-stable`, keyless cosign signature, Trivy scan) by `sidecars.yml`, and built and scanned on
+  every change to `images/slides-agent/**` by `slides-agent-image.yml` (#3434).
 - `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
   bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium with a
   `slides-print-pdf <site> <out.pdf>` entrypoint (one 1920x1080 page per slide page of a built site) and a Caddy auth proxy, so
