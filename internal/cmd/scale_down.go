@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -129,14 +131,20 @@ func runScaleDownStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-25s %-8s %-12s %s\n", "USERNAME", "ENABLED", "THRESHOLD", "STATE")
-	fmt.Printf("%-25s %-8s %-12s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 8), strings.Repeat("-", 12), strings.Repeat("-", 12))
+	printScaleDownStatus(os.Stdout, containers)
+	return nil
+}
+
+// printScaleDownStatus renders the `scale-down status` table; the box name
+// is tenant-chosen (#3453).
+func printScaleDownStatus(w io.Writer, containers []incus.ContainerInfo) {
+	fmt.Fprintf(w, "%-25s %-8s %-12s %s\n", "USERNAME", "ENABLED", "THRESHOLD", "STATE")
+	fmt.Fprintf(w, "%-25s %-8s %-12s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 8), strings.Repeat("-", 12), strings.Repeat("-", 12))
 	for _, c := range containers {
 		username := strings.TrimSuffix(c.Name, "-container")
 		threshold := fmt.Sprintf("%dm", c.IdleThresholdMinutes)
-		fmt.Printf("%-25s %-8v %-12s %s\n", username, c.AutoSleepEnabled, threshold, c.State)
+		fmt.Fprintf(w, "%-25s %-8v %-12s %s\n", escapeControl(username), c.AutoSleepEnabled, threshold, c.State)
 	}
-	return nil
 }
 
 func runSleep(cmd *cobra.Command, args []string) error {
