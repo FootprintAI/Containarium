@@ -551,11 +551,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		// unauthenticated noise never pollutes the platform.api.* series
 		// (#1082) — those series reflect application-level API health.
 		grpc.ChainUnaryInterceptor(
+			recoveryUnaryInterceptor(),
 			auth.TransportIdentityUnaryInterceptor(),
 			platformstats.UnaryInterceptor(containerServer.platformStats),
 			auditGRPCInterceptor.Unary(),
 		),
 		grpc.ChainStreamInterceptor(
+			recoveryStreamInterceptor(),
 			auth.TransportIdentityStreamInterceptor(),
 			auditGRPCInterceptor.Stream(),
 		),

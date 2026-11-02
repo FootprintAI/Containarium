@@ -157,20 +157,14 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 
 	// Add static peers. They start on plain HTTP; BootstrapPKI
 	// upgrades them in place once the daemon fetches its cert.
-	for _, entry := range staticPeers {
-		sp, err := ParseStaticPeer(entry)
-		if err != nil {
-			log.Printf("[peers] ignoring invalid static peer: %v", err)
-			continue
-		}
-		if sp.ID == localBackendID {
-			log.Printf("[peers] ignoring static peer %q: id %q is this daemon's own backend id", entry, sp.ID)
-			continue
-		}
-		if _, dup := p.peers[sp.ID]; dup {
-			log.Printf("[peers] ignoring static peer %q: id %q is already in use", entry, sp.ID)
-			continue
-		}
+	// The rules live in ParseStaticPeers. The daemon rejects a bad --peers
+	// at boot, so an error here only reaches other callers; they get no static
+	// peers (never a half-validated set) and a warning.
+	parsed, err := ParseStaticPeers(staticPeers, localBackendID)
+	if err != nil {
+		log.Printf("[peers] ignoring all static peers: %v", err)
+	}
+	for _, sp := range parsed {
 		p.peers[sp.ID] = &PeerClient{
 			ID:     sp.ID,
 			Addr:   sp.Addr,
@@ -249,6 +243,7 @@ func ParseStaticPeer(entry string) (StaticPeer, error) {
 func ParseStaticPeers(entries []string, localBackendID string) ([]StaticPeer, error) {
 	peers := make([]StaticPeer, 0, len(entries))
 	byID := make(map[string]StaticPeer, len(entries))
+	byFolded := make(map[string]StaticPeer, len(entries))
 	byAddr := make(map[string]StaticPeer, len(entries))
 	for _, entry := range entries {
 		if strings.TrimSpace(entry) == "" {
@@ -267,10 +262,15 @@ func ParseStaticPeers(entries []string, localBackendID string) ([]StaticPeer, er
 			}
 			return nil, fmt.Errorf("peers %q and %q share the id %q", prev.ID+"="+prev.Addr, entry, sp.ID)
 		}
+		// Ids that differ only by case would name one incus remote twice.
+		if prev, ok := byFolded[strings.ToLower(sp.ID)]; ok {
+			return nil, fmt.Errorf("peers %q and %q have ids that differ only by case", prev.ID+"="+prev.Addr, entry)
+		}
 		if prev, ok := byAddr[sp.Addr]; ok {
 			return nil, fmt.Errorf("address %q is listed under two ids: %q and %q", sp.Addr, prev.ID, sp.ID)
 		}
 		byID[sp.ID] = sp
+		byFolded[strings.ToLower(sp.ID)] = sp
 		byAddr[sp.Addr] = sp
 		peers = append(peers, sp)
 	}
