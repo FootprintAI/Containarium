@@ -117,7 +117,7 @@ func (r Result) Detail() string {
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == CorePostgresService:
 		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; store families with their own readiness entry are retried in-process, the rest stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers and no in-process retry is pending)"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
-		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed (or answer UNAVAILABLE) until the daemon's in-process retry reaches the database"
+		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed (or answer UNAVAILABLE) and its background work (such as the credential-expiry watch) does not run until the daemon's in-process retry reaches the database; a family refused by configuration (the daemon log names it) needs a config fix and a restart instead"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:
 		return "unknown (this daemon does not report this store; it may predate readiness reporting)"
 	default:

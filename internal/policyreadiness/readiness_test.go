@@ -77,6 +77,19 @@ func TestRegister_DrivesServicesAndNames(t *testing.T) {
 	}
 }
 
+// A pending family may be background work with no API (the credential-expiry
+// watch, #3334), and may be refused by configuration rather than by Postgres
+// (#3378): the NOT_SERVING detail says both, so an operator does not wait on
+// Postgres for a family that needs a config fix.
+func TestDetail_PendingFamilyNamesBackgroundWorkAndConfigRefusal(t *testing.T) {
+	d := Result{Service: "containarium.fake_family", Status: healthpb.HealthCheckResponse_NOT_SERVING}.Detail()
+	for _, want := range []string{"background work", "does not run", "refused by configuration"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("Detail() = %q, want it to mention %q", d, want)
+		}
+	}
+}
+
 // The DEGRADED reason no longer claims every store stays off until the
 // daemon restarts: registered families recover in-process.
 func TestDetail_CorePostgresDegradedNamesInProcessRecovery(t *testing.T) {

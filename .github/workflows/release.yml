@@ -297,7 +297,7 @@ jobs:
           done
 
       - name: Scan managed tools (amd64)
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: rootfs
           scan-ref: dist/toolchains-amd64
@@ -309,7 +309,7 @@ jobs:
           exit-code: '1'
 
       - name: Scan managed tools (arm64)
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: rootfs
           scan-ref: dist/toolchains-arm64
@@ -986,7 +986,7 @@ jobs:
 
       - name: Run Trivy vulnerability scanner (image)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
