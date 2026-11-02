@@ -66,7 +66,7 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	// container. The shared helper classifies "no extractable key" (benign —
 	// infra/CP/workspace boxes) separately from real create failures, so the
 	// command no longer fails-closed on the former. See #1010.
-	res, err := mgr.SyncOwnerAccounts(container.OwnerSyncOptions{
+	res, err := syncOwnerAccountsFiltered(mgr, getPostgresConnString(), container.OwnerSyncOptions{
 		Force:    syncForce,
 		DryRun:   syncDryRun,
 		Verbose:  verbose,
@@ -99,6 +99,15 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	}
 	for _, u := range res.Partial {
 		fmt.Printf("  ! Partial restore for %s — the account works, but at least one additional key could not be authorized\n", u)
+	}
+	for _, u := range res.AllRevoked {
+		fmt.Printf("  ! Every key in container %s-container is revoked; account not restored\n", u)
+	}
+	for u, n := range res.RevokedDropped {
+		fmt.Printf("  %s: skipped %d revoked key(s)\n", u, n)
+	}
+	if res.FilterErr != nil {
+		fmt.Printf("  ! Key registry unavailable (%v); owner accounts were NOT restored, because the box's keys cannot be checked for revocation. Fix the database and re-run.\n", res.FilterErr)
 	}
 	for _, u := range res.NoKey {
 		fmt.Printf("  – No SSH key in container %s-container (infra/CP/workspace box?) — skipped\n", u)
