@@ -103,12 +103,14 @@ func decideKey(t *testing.T, d *SelfHostDecider, login string, rec KeyRecord) *p
 	return resp
 }
 
-// Q14, first half: the decider's /home check is that the login's account
-// HAS a non-empty authorized_keys, not that it holds the offered key. So a
-// key removed during the window, whose row is still active, is still
-// allowed while the account keeps any other key. The check does not make
-// the stale row harmless; that is why the late install reconciles.
-func TestReconcile_DeciderAllowsAStaleRowWithoutIt(t *testing.T) {
+// Q14, first half (revisited by the key-to-login binding): the decider's
+// /home check used to be only that the login's account HAS a non-empty
+// authorized_keys, so a key removed during the window, whose row is still
+// active, was still allowed while the account kept any other key. The
+// decider now also requires the OFFERED key to be one the login holds, so
+// that stale row is refused at decision time. Reconcile (below) still cleans
+// the registry itself: it revokes rows no account holds.
+func TestReconcile_DeciderRefusesAStaleRow(t *testing.T) {
 	home := t.TempDir()
 	keys := newReconcileKeys()
 	kept, removed := testKey(t), testKey(t)
@@ -117,8 +119,8 @@ func TestReconcile_DeciderAllowsAStaleRowWithoutIt(t *testing.T) {
 	writeHome(t, home, "alice", kept) // `removed` was dropped while the registry was absent
 
 	resp := decideKey(t, aliceDecider(home, keys), "alice", stale)
-	if resp.GetDecision() != allow {
-		t.Fatalf("stale row decision = %v (%v); this test pins that the /home check alone does NOT refuse it — if the decider now checks the offered key, revisit Q14",
+	if resp.GetDecision() != deny || resp.GetDenyReason() != unknownKey {
+		t.Fatalf("stale row decision = %v (%v); want DENY/UNKNOWN_KEY: the login no longer holds the offered key",
 			resp.GetDecision(), resp.GetDenyReason())
 	}
 }
