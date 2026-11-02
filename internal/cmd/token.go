@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -594,11 +595,17 @@ func runTokenListRevoked(cmd *cobra.Command, args []string) error {
 		fmt.Println("(no revocations match)")
 		return nil
 	}
-	fmt.Printf("%-24s  %-25s  %-25s  %s\n", "JTI", "REVOKED AT", "EXPIRES AT", "REASON")
-	for _, r := range revs {
-		fmt.Printf("%-24s  %-25s  %-25s  %s\n", r.JTI, r.RevokedAt, r.ExpiresAt, r.Reason)
-	}
+	printRevokedTokens(os.Stdout, revs)
 	return nil
+}
+
+// printRevokedTokens renders the `token list-revoked` table. The reason is
+// free text typed by whoever revoked the token (#3453).
+func printRevokedTokens(w io.Writer, revs []client.Revocation) {
+	fmt.Fprintf(w, "%-24s  %-25s  %-25s  %s\n", "JTI", "REVOKED AT", "EXPIRES AT", "REASON")
+	for _, r := range revs {
+		fmt.Fprintf(w, "%-24s  %-25s  %-25s  %s\n", r.JTI, r.RevokedAt, r.ExpiresAt, escapeControl(r.Reason))
+	}
 }
 
 // runTokenUnscopedReport GETs /v1/tokens/unscoped-report and

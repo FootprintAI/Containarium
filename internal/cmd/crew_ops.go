@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -165,12 +166,18 @@ func runCrewList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No crews available.")
 		return nil
 	}
-	fmt.Printf("%-16s %-14s %-28s %s\n", "ID", "TOPOLOGY", "SKILLS", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 90))
-	for _, c := range list {
-		fmt.Printf("%-16s %-14s %-28s %s\n", c.Id, crewTopologyName(c.Topology), strings.Join(c.SkillIds, ","), c.Description)
-	}
+	printCrewList(os.Stdout, list)
 	return nil
+}
+
+// printCrewList renders the `crew list` table; crew ids, skills and
+// descriptions are tenant-supplied (#3453).
+func printCrewList(w io.Writer, list []*pb.Crew) {
+	fmt.Fprintf(w, "%-16s %-14s %-28s %s\n", "ID", "TOPOLOGY", "SKILLS", "DESCRIPTION")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
+	for _, c := range list {
+		fmt.Fprintf(w, "%-16s %-14s %-28s %s\n", escapeControl(c.Id), crewTopologyName(c.Topology), escapeControl(strings.Join(c.SkillIds, ",")), escapeControl(c.Description))
+	}
 }
 
 func runCrewGet(cmd *cobra.Command, args []string) error {

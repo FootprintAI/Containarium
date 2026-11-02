@@ -36,6 +36,7 @@ func TestServices_OnePerPolicyServicePlusCorePostgres(t *testing.T) {
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
 		CorePostgresService,
+		OTelCollectorAuthService,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
@@ -64,6 +65,7 @@ func TestRegister_DrivesServicesAndNames(t *testing.T) {
 		"containarium.fake_family",
 		"containarium.other_family",
 		CorePostgresService,
+		OTelCollectorAuthService,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("Services() = %v, want %v", got, want)

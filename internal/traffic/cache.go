@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -38,14 +39,22 @@ func NewContainerCache(incusClient *incus.Client, networkCIDR string) *Container
 	} else {
 		log.Printf("Container cache network: %s (parsed from %s)", network.String(), networkCIDR)
 	}
-	return &ContainerCache{
-		incusClient: incusClient,
-		network:     network,
-		ipToName:    make(map[string]string),
-		nameToIP:    make(map[string]string),
-		nameToID:    make(map[string]string),
+	cache := &ContainerCache{
+		network:  network,
+		ipToName: make(map[string]string),
+		nameToIP: make(map[string]string),
+		nameToID: make(map[string]string),
 	}
+	// A nil client stays a nil interface, so Refresh reports it instead of
+	// calling through a nil pointer.
+	if incusClient != nil {
+		cache.incusClient = incusClient
+	}
+	return cache
 }
+
+// errNoIncusClient is Refresh's error on a cache built without a client.
+var errNoIncusClient = errors.New("container cache has no incus client")
 
 // LookupIP returns the container name for an IP address
 func (c *ContainerCache) LookupIP(ip string) string {
@@ -111,6 +120,9 @@ func (c *ContainerCache) GetAllContainers() map[string]string {
 // fanout.go) — a stale mapping briefly misattributes a metric, not a
 // security decision.
 func (c *ContainerCache) Refresh() error {
+	if c.incusClient == nil {
+		return errNoIncusClient
+	}
 	names, err := c.incusClient.GetInstanceNames()
 	if err != nil {
 		return err

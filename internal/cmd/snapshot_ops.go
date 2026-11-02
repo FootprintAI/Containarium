@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -99,19 +100,25 @@ func runSnapshotList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	return printSnapshotList(os.Stdout, resp.GetSnapshots())
+}
+
+// printSnapshotList renders the `snapshot list` table; snapshot names are
+// tenant-chosen (#3453).
+func printSnapshotList(out io.Writer, snaps []*pb.ContainerSnapshot) error {
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tUSED\tREFERENCED")
 	var total int64
-	for _, s := range resp.GetSnapshots() {
+	for _, s := range snaps {
 		total += s.GetUsedBytes()
-		fmt.Fprintf(w, "%s\t%s\t%s\n", s.GetName(),
+		fmt.Fprintf(w, "%s\t%s\t%s\n", escapeControl(s.GetName()),
 			humanBytes(s.GetUsedBytes()), humanBytes(s.GetReferencedBytes()))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	fmt.Printf("\n%d snapshot(s), holding %s that deleting them would free\n",
-		len(resp.GetSnapshots()), humanBytes(total))
+	fmt.Fprintf(out, "\n%d snapshot(s), holding %s that deleting them would free\n",
+		len(snaps), humanBytes(total))
 	return nil
 }
 

@@ -45,14 +45,22 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	store := &Store{pool: pool}
-
-	// Initialize schema
-	if err := store.initSchema(ctx); err != nil {
+	store, err := NewStoreWithPool(ctx, pool)
+	if err != nil {
 		pool.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// NewStoreWithPool creates an app store over an existing connection pool and
+// initializes its schema. The pool is shared, so it is never closed here: on
+// error the caller decides.
+func NewStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
+	store := &Store{pool: pool}
+	if err := store.initSchema(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
-
 	return store, nil
 }
 

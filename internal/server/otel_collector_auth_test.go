@@ -56,7 +56,7 @@ func TestBuildOTelCollectorConfig_BearerWiredOnBothProtocols(t *testing.T) {
 func TestCollectorBearerForConfig_OffByDefault(t *testing.T) {
 	resetBearerCache(t)
 	t.Setenv("CONTAINARIUM_OTEL_REQUIRE_AUTH", "")
-	if got := collectorBearerForConfig(); got != "" {
+	if got, _ := collectorBearerForConfig(); got != "" {
 		t.Fatalf("default should be empty (enforcement off); got %q", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestCollectorBearerForConfig_EnabledReturnsBearer(t *testing.T) {
 	clearOTelEnv(t)
 	t.Setenv(otelBearerEnvOverride, "test-bearer-value")
 	t.Setenv("CONTAINARIUM_OTEL_REQUIRE_AUTH", "true")
-	if got := collectorBearerForConfig(); got != "test-bearer-value" {
+	if got, _ := collectorBearerForConfig(); got != "test-bearer-value" {
 		t.Fatalf("enforcement on should return bearer; got %q", got)
 	}
 }
@@ -84,7 +84,7 @@ func TestCollectorBearerForConfig_UnrecognizedValueStaysOff(t *testing.T) {
 	// flag missing) just leaves the collector open, same as
 	// pre-2.5; the alternative (fail-on with typo) would
 	// silently drop every monitoring container.
-	if got := collectorBearerForConfig(); got != "" {
+	if got, _ := collectorBearerForConfig(); got != "" {
 		t.Fatalf("typo on flag should leave enforcement off; got %q", got)
 	}
 }
