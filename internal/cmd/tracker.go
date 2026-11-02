@@ -260,11 +260,15 @@ func runTrackerList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("(no tracker connections for %s)\n", username)
 		return nil
 	}
+	printTrackerConnections(list)
+	return nil
+}
+
+func printTrackerConnections(list []*pb.TrackerConnection) {
 	fmt.Printf("%-16s %-8s %-24s %s\n", "NAME", "PROVIDER", "PROJECT", "CREDENTIAL SECRET")
 	for _, c := range list {
-		fmt.Printf("%-16s %-8s %-24s %s\n", c.GetName(), trackerProviderLabel(c.GetProvider()), c.GetProject(), c.GetCredentialSecret())
+		fmt.Printf("%-16s %-8s %-24s %s\n", escapeControl(c.GetName()), trackerProviderLabel(c.GetProvider()), escapeControl(c.GetProject()), escapeControl(c.GetCredentialSecret()))
 	}
-	return nil
 }
 
 func runTrackerDisconnect(cmd *cobra.Command, args []string) error {

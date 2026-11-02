@@ -1,0 +1,303 @@
+#!/usr/bin/env node
+// slides-print-pdf <site> <out.pdf> [deck-id]
+//
+// Print a deck of a BUILT open-slide site (the `open-slide build` output
+// directory, or an http(s) URL where it is served) to a PDF with one
+// 1920x1080 page per slide page, using the image's headless Chromium.
+//
+// The framework's own PDF export already does the hard part in the browser:
+// it mounts every page of the deck into a print root with @page 1920x1080
+// print CSS, waits for fonts and intro animations, then calls window.print().
+// This script drives exactly that export over the DevTools protocol (Node's
+// built-in WebSocket, no dependency): it serves the site on loopback, opens
+// the deck, replaces window.print with a flag, triggers "Export as PDF" from
+// the toolbar menu, and when the export reaches window.print it captures the
+// document with Page.printToPDF (CSS page size), then lets the export finish.
+//
+// Runs inside the container, e.g.
+//   sudo podman exec slides-agent open-slide build
+//   sudo podman exec slides-agent slides-print-pdf /workspace/dist /workspace/deck.pdf
+// With several decks in the site, name one as the third argument (or
+// SLIDES_DECK). Nothing leaves the box: the site is served on 127.0.0.1 and
+// Chromium talks to it and to this script only.
+'use strict';
+// CommonJS on purpose: an extensionless script runs through the shebang as
+// CommonJS, and nothing here needs ESM.
+const { spawn } = require('node:child_process');
+const { createReadStream } = require('node:fs');
+const { mkdtemp, rm, stat, writeFile } = require('node:fs/promises');
+const { createServer } = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+
+const CHROMIUM = process.env.CHROME_BIN || 'chromium';
+const LOAD_TIMEOUT_MS = 20_000;
+// The export waits up to 15s for animations plus fonts; give it headroom.
+const EXPORT_TIMEOUT_MS = 45_000;
+const EXPORT_LABEL = /export as pdf/i;
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+function usage(message) {
+  if (message) process.stderr.write(`slides-print-pdf: ${message}\n`);
+  process.stderr.write('usage: slides-print-pdf <site dir | http(s) url> <out.pdf> [deck-id]\n');
+  process.exit(2);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Static server for the built site: files under the directory, anything else
+// (the SPA's /s/<id> routes) gets index.html. Loopback only.
+async function serveSite(dir) {
+  const root = path.resolve(dir);
+  const index = path.join(root, 'index.html');
+  await stat(index).catch(() => usage(`${dir} has no index.html; build the site first (open-slide build)`));
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    const rel = path.normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+    let file = path.join(root, rel);
+    if (!file.startsWith(root + path.sep) && file !== root) file = index;
+    let info = await stat(file).catch(() => null);
+    if (!info || info.isDirectory()) {
+      file = index;
+      info = await stat(file).catch(() => null);
+    }
+    if (!info) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': info.size,
+      'cache-control': 'no-store',
+    });
+    createReadStream(file).pipe(res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { origin: `http://127.0.0.1:${port}`, close: () => server.close() };
+}
+
+function launchChromium(profile) {
+  const args = [
+    '--headless=new',
+    // The container already runs unprivileged as the box user; Chromium's
+    // own namespace sandbox is unavailable there.
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--hide-scrollbars',
+    '--no-first-run',
+    '--disable-extensions',
+    '--disable-background-networking',
+    `--user-data-dir=${profile}`,
+    '--window-size=1920,1080',
+    '--remote-debugging-port=0',
+    'about:blank',
+  ];
+  const proc = spawn(CHROMIUM, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  const wsUrl = new Promise((resolve, reject) => {
+    let buf = '';
+    proc.stderr.on('data', (chunk) => {
+      buf += chunk.toString();
+      const m = buf.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (m) resolve(m[1]);
+    });
+    proc.on('exit', (code) => reject(new Error(`chromium exited early (code ${code})\n${buf}`)));
+    setTimeout(() => reject(new Error('chromium did not expose DevTools within 20s')), 20_000);
+  });
+  return { proc, wsUrl };
+}
+
+// Minimal DevTools protocol client over the browser WebSocket; flat sessions.
+class CDP {
+  constructor(ws) {
+    this.ws = ws;
+    this.id = 0;
+    this.pending = new Map();
+    this.listeners = [];
+    ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString());
+      if (msg.id && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`));
+        else resolve(msg.result);
+      } else if (msg.method) {
+        for (const l of this.listeners) l(msg);
+      }
+    });
+  }
+  static connect(url) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      ws.addEventListener('open', () => resolve(new CDP(ws)));
+      ws.addEventListener('error', () => reject(new Error(`cannot connect to ${url}`)));
+    });
+  }
+  send(method, params = {}, sessionId) {
+    const id = ++this.id;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.ws.send(JSON.stringify({ id, method, params, sessionId }));
+    });
+  }
+  on(listener) {
+    this.listeners.push(listener);
+  }
+}
+
+class Page {
+  constructor(cdp, sessionId) {
+    this.cdp = cdp;
+    this.sessionId = sessionId;
+  }
+  // Evaluates an expression in the page and returns its JSON value.
+  async eval(expression) {
+    const { result, exceptionDetails } = await this.cdp.send(
+      'Runtime.evaluate',
+      { expression, returnByValue: true, awaitPromise: true },
+      this.sessionId,
+    );
+    if (exceptionDetails) throw new Error(`page script failed: ${exceptionDetails.text} ${result?.description ?? ''}`);
+    return result.value;
+  }
+  async navigate(url) {
+    const loaded = new Promise((resolve) => {
+      this.cdp.on((msg) => {
+        if (msg.sessionId === this.sessionId && msg.method === 'Page.loadEventFired') resolve();
+      });
+    });
+    const { errorText } = await this.cdp.send('Page.navigate', { url }, this.sessionId);
+    if (errorText) throw new Error(`navigate ${url}: ${errorText}`);
+    await Promise.race([loaded, sleep(LOAD_TIMEOUT_MS).then(() => { throw new Error(`load timed out: ${url}`); })]);
+  }
+  async waitFor(expression, timeoutMs, what) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const value = await this.eval(expression);
+      if (value) return value;
+      await sleep(150);
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+  // A real click (pointer + mouse events at the element's centre), which the
+  // UI's menus need; element.click() alone does not open them.
+  async click(selectorExpression) {
+    const box = await this.eval(
+      `(() => { const el = ${selectorExpression}; if (!el) return null; el.scrollIntoView({block: 'center'}); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+    );
+    if (!box) throw new Error(`element not found: ${selectorExpression}`);
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await this.cdp.send(
+        'Input.dispatchMouseEvent',
+        { type, x: box.x, y: box.y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 },
+        this.sessionId,
+      );
+    }
+  }
+}
+
+async function main() {
+  const [site, out, deckArg] = process.argv.slice(2);
+  if (!site || !out) usage();
+  if (!out.toLowerCase().endsWith('.pdf')) usage('output must end in .pdf');
+  const wantDeck = deckArg || process.env.SLIDES_DECK || '';
+
+  let server = null;
+  let origin;
+  if (/^https?:\/\//i.test(site)) origin = site.replace(/\/+$/, '');
+  else {
+    server = await serveSite(site);
+    origin = server.origin;
+  }
+
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'slides-print-'));
+  const { proc, wsUrl } = launchChromium(profile);
+  let cdp;
+  try {
+    cdp = await CDP.connect(await wsUrl);
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    const page = new Page(cdp, sessionId);
+    await cdp.send('Page.enable', {}, sessionId);
+    await cdp.send('Runtime.enable', {}, sessionId);
+
+    // Which deck: the one named, or the only one the site's home page lists.
+    let deck = wantDeck;
+    if (!deck) {
+      await page.navigate(`${origin}/`);
+      const decks = await page.waitFor(
+        `(() => { const ids = [...new Set([...document.querySelectorAll('a[href^="/s/"]')].map((a) => a.getAttribute('href').split('/')[2]).filter(Boolean))]; return ids.length ? ids : null; })()`,
+        LOAD_TIMEOUT_MS,
+        'the site to list its decks',
+      );
+      if (decks.length !== 1) {
+        throw new Error(`the site has ${decks.length} decks (${decks.join(', ')}); name one as the third argument`);
+      }
+      deck = decks[0];
+    }
+
+    await page.navigate(`${origin}/s/${encodeURIComponent(deck)}`);
+    const trigger = `document.querySelector('button[aria-label="Download"]') || document.querySelector('button[aria-label="More actions"]')`;
+    await page.waitFor(`Boolean(${trigger})`, LOAD_TIMEOUT_MS, `the deck "${deck}" toolbar`);
+
+    // The export ends in window.print(); replace it with a flag so the page
+    // never blocks in a print dialog, and capture the document at that point.
+    await page.eval(
+      `(() => { window.__slidesPrint = { requested: false }; window.print = () => { window.__slidesPrint.requested = true; }; return true; })()`,
+    );
+    await page.click(trigger);
+    const item = `[...document.querySelectorAll('[data-slot="dropdown-menu-item"], [role="menuitem"]')].find((el) => ${EXPORT_LABEL.toString()}.test(el.textContent || ''))`;
+    await page.waitFor(`Boolean(${item})`, 5_000, 'the "Export as PDF" menu item');
+    await page.click(item);
+    await page.waitFor(`window.__slidesPrint && window.__slidesPrint.requested`, EXPORT_TIMEOUT_MS, 'the export to reach window.print');
+
+    const pages = await page.eval(`document.querySelectorAll('#os-print-root .os-print-frame').length`);
+    const { data } = await cdp.send(
+      'Page.printToPDF',
+      {
+        printBackground: true,
+        preferCSSPageSize: true,
+        displayHeaderFooter: false,
+        marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+        scale: 1,
+      },
+      sessionId,
+    );
+    await writeFile(out, Buffer.from(data, 'base64'));
+    // Let the export's own cleanup run (it awaits afterprint).
+    await page.eval(`(window.dispatchEvent(new Event('afterprint')), true)`).catch(() => {});
+    process.stdout.write(`slides-print-pdf: ${deck}: ${pages} page(s) -> ${out}\n`);
+    await cdp.send('Browser.close').catch(() => {});
+  } finally {
+    proc.kill('SIGKILL');
+    server?.close();
+    await rm(profile, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`slides-print-pdf: ${err.message}\n`);
+  process.exit(1);
+});

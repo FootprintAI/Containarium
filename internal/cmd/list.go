@@ -200,9 +200,9 @@ func printTableFormat(containers []incus.ContainerInfo, running, stopped int, wi
 
 		if withLabels {
 			labelStr := formatLabels(c.Labels)
-			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, mon, ip, resources, labelStr)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", escapeControl(c.Name), c.State, iso, mon, ip, resources, labelStr)
 		} else {
-			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", c.Name, c.State, iso, mon, ip, resources)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", escapeControl(c.Name), c.State, iso, mon, ip, resources)
 		}
 	}
 
@@ -217,7 +217,7 @@ func formatLabels(labels map[string]string) string {
 	}
 	var parts []string
 	for k, v := range labels {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+		parts = append(parts, escapeControl(k)+"="+escapeControl(v))
 	}
 	return strings.Join(parts, ",")
 }
@@ -327,7 +327,7 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 		groupContainers := groups[groupValue]
 
 		// Print group header
-		fmt.Printf("\n=== %s: %s (%d containers) ===\n", labelKey, groupValue, len(groupContainers))
+		fmt.Printf("\n=== %s: %s (%d containers) ===\n", escapeControl(labelKey), escapeControl(groupValue), len(groupContainers))
 
 		// Print table header
 		if withLabels {
@@ -352,9 +352,9 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 
 			if withLabels {
 				labelStr := formatLabels(c.Labels)
-				fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, ip, resources, labelStr)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", escapeControl(c.Name), c.State, iso, ip, resources, labelStr)
 			} else {
-				fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", c.Name, c.State, iso, ip, resources)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", escapeControl(c.Name), c.State, iso, ip, resources)
 			}
 
 			totalCount++

@@ -88,7 +88,7 @@ func printRouteTableFormat(routes []*pb.ProxyRoute, totalCount int32) {
 		}
 
 		fmt.Printf("%-35s %-25s %-8d %-12s\n",
-			truncateRoute(domain, 35),
+			truncateRoute(escapeControl(domain), 35),
 			truncateRoute(route.ContainerIp, 25),
 			route.Port,
 			status)
