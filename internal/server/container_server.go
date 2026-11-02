@@ -352,6 +352,10 @@ type ContainerServer struct {
 	// Read through loadPassthroughStore: it can be installed while serving
 	// (#3333).
 	passthroughStore storeSlot[network.PassthroughStore]
+	// passthroughSkipped remembers the boxes deleted while the store was
+	// required but absent, so their routes are removed when it installs
+	// (#3407).
+	passthroughSkipped passthroughSkippedDeletes
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
@@ -1859,19 +1863,10 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	//     forever — a later recipe deploy wanting that same port fails with
 	//     a stale "already claimed" conflict against a container that no
 	//     longer exists.
-	if pt := s.loadPassthroughStore(); pt != nil {
-		routes, err := pt.ListByContainer(ctx, containerName)
-		if err != nil {
-			log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
-		}
-		for _, r := range routes {
-			if err := pt.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
-				log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
-				continue
-			}
-			log.Printf("[delete-cascade] removed passthrough route %d/%s (sync job will reap the iptables rule)",
-				r.ExternalPort, r.Protocol)
-		}
+	//     While the store is required but absent (degraded start, #3333)
+	//     the box is remembered and this step runs when it installs (#3407).
+	if pt := s.passthroughStoreForCascade(containerName); pt != nil {
+		cascadePassthroughRoutes(ctx, pt, containerName)
 	}
 
 	// 3. Host user. DeleteJumpServerAccount is idempotent (no-op if the
@@ -5136,7 +5131,7 @@ func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyM
 // Postgres-backed passthrough store configured; the cascade skips gracefully.
 // Safe while serving: a late install (#3333) calls it after startup.
 func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStore) {
-	s.passthroughStore.Store(store)
+	s.installPassthroughStore(context.Background(), store)
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations
