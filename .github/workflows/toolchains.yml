@@ -49,6 +49,7 @@ jobs:
       - name: Scan managed tools
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           # rootfs inspects deployed Go binaries and installed npm packages;
           # fs inspects the Go SDK's source manifests instead of its binaries.
           scan-type: rootfs

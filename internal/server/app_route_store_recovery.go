@@ -490,19 +490,29 @@ func (h *routeHosting) start(ctx context.Context) {
 
 // maybeServe runs once both the store (so the job) and the serving context
 // are in: ensure the management routes, then start the sync job, which
-// pushes them to Caddy on its first pass.
+// pushes them to Caddy on its first pass. The lock is not held across the
+// management-route writes (Postgres); a stop that lands meanwhile wins, and
+// the job is not started after it.
 func (h *routeHosting) maybeServe() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.started || h.stopped || h.job == nil || h.serving == nil {
+		h.mu.Unlock()
 		return
 	}
 	h.started = true
-	st, err := h.live.current()
-	if err == nil {
-		h.edge.ensureManagementRoutes(h.serving, st)
+	job, serving := h.job, h.serving
+	h.mu.Unlock()
+
+	if st, err := h.live.current(); err == nil {
+		h.edge.ensureManagementRoutes(serving, st)
 	}
-	h.job.Start(h.serving)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped {
+		return
+	}
+	job.Start(serving)
 	h.logf("Route sync job started")
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
@@ -28,7 +29,17 @@ var (
 	backupRestoreLatest  bool
 	backupRestoreUser    string
 	backupRestoreTarget  string
+
+	// #3358: whole-box restore.
+	backupRestoreBox    string
+	backupRestoreBackup string
+	backupRestoreAs     string
+	backupRestoreForce  bool
 )
+
+// restoreBoxFn is the box restore the platform MCP tool restore_box_backup
+// also calls (CLI-first, CLAUDE.md).
+var restoreBoxFn = client.RestoreBoxBackupFromFile
 
 var backupRestoreCmd = &cobra.Command{
 	Use:   "restore [<id>]",
@@ -57,6 +68,18 @@ read from the file (never argv), used for this one call, and not stored.
 
 ` + managedHelp + `
 
+Whole-box backups (#3358): --box <box> --backup <id> restores a backup
+taken with 'backup create <box> --box' into a new box, named with --as
+(default: <box>-restored). The backup must be a whole-box backup of <box>.
+A box of that name that already exists is refused unless --force is given,
+and --force replaces only a stopped box: a running box is always refused,
+so stop it first. A whole-box backup is always encrypted, so
+--age-identity-file is required. The identity is read from the file, never
+from argv. The database flags (--clean, --database, --db-*, --target,
+--latest, --user, --managed) do not apply. A non-admin token can restore
+only into a box named for its own tenant, so the default <box>-restored
+needs an admin token.
+
 A hook backup (engine "hook") with the default opaque format is a stream
 the platform never understood and cannot restore: fetch the object and
 apply it with the tenant's tooling. A hook declared --hook-format
@@ -68,7 +91,9 @@ Examples:
   containarium backup restore alice-app-20260605T130405Z --database app_staging --server <host>
   containarium backup restore alice-app-20260605T130405Z --age-identity-file backup.key --clean --server <host>
   containarium backup restore --managed --latest --user alice --database app \
-      --target scratch-container --server <host>`,
+      --target scratch-container --server <host>
+  containarium backup restore --box alice --backup alice-box-20261101T000000Z \
+      --as alice-copy --age-identity-file box.key --server <host>`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runBackupRestore,
 }
@@ -87,6 +112,10 @@ func init() {
 	f.BoolVar(&backupRestoreLatest, "latest", false, "restore the newest backup for --user and --database instead of a named id")
 	f.StringVar(&backupRestoreUser, "user", "", "tenant whose newest backup --latest selects")
 	f.StringVar(&backupRestoreTarget, "target", "", "container to restore into, <username>-container (default: the backup's own container)")
+	f.StringVar(&backupRestoreBox, "box", "", "restore a whole-box backup of this box into a new box (with --backup and --age-identity-file)")
+	f.StringVar(&backupRestoreBackup, "backup", "", "with --box: id of the whole-box backup to restore")
+	f.StringVar(&backupRestoreAs, "as", "", "with --box: name of the box to restore into (default: <box>-restored)")
+	f.BoolVar(&backupRestoreForce, "force", false, "with --box: replace an existing stopped box of that name; a running box is always refused")
 }
 
 // parseAgeIdentity extracts the single AGE-SECRET-KEY-1… line from an
@@ -114,6 +143,9 @@ func parseAgeIdentity(content []byte) (string, error) {
 }
 
 func runBackupRestore(cmd *cobra.Command, args []string) error {
+	if backupRestoreBox != "" || backupRestoreBackup != "" || backupRestoreAs != "" || backupRestoreForce {
+		return runBackupRestoreBox(args)
+	}
 	sel := backupSelection{
 		args: args, latest: backupRestoreLatest, user: backupRestoreUser, database: backupRestoreDatabase,
 		managed: backupRestoreManaged, ageIdentityFile: backupRestoreAgeIdentityFile,
@@ -180,5 +212,62 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("\n✓ %s\n", resp.Message)
+	return nil
+}
+
+// runBackupRestoreBox is `backup restore --box` (#3358). Every usage error
+// comes before the identity file is read or anything is sent.
+func runBackupRestoreBox(args []string) error {
+	if backupRestoreBox == "" {
+		return fmt.Errorf("--backup, --as and --force restore a whole-box backup: name the box with --box")
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("with --box, name the backup with --backup, not as an argument")
+	}
+	if backupRestoreBackup == "" {
+		return fmt.Errorf("--box needs --backup <id>")
+	}
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{
+		{"--clean", backupRestoreClean},
+		{"--database", backupRestoreDatabase != ""},
+		{"--db-user", backupRestoreDBUser != ""},
+		{"--db-password", backupRestoreDBPass != ""},
+		{"--db-host", backupRestoreDBHost != ""},
+		{"--db-port", backupRestoreDBPort != 0},
+		{"--target", backupRestoreTarget != ""},
+		{"--latest", backupRestoreLatest},
+		{"--user", backupRestoreUser != ""},
+		{"--managed", backupRestoreManaged},
+	} {
+		if f.set {
+			return fmt.Errorf("%s does not apply to a whole-box restore (--box)", f.name)
+		}
+	}
+	if backupRestoreAgeIdentityFile == "" {
+		return fmt.Errorf("--box needs --age-identity-file: a whole-box backup is always encrypted")
+	}
+	if err := requireSecureTransportForIdentity(serverAddr, httpMode, insecure); err != nil {
+		return err
+	}
+
+	target := backupRestoreAs
+	if target == "" {
+		target = backupRestoreBox + "-restored"
+	}
+	fmt.Printf("Restoring whole-box backup %q into box %q (force=%t)...\n", backupRestoreBackup, target, backupRestoreForce)
+	resp, err := restoreBoxFn(func() (client.BoxRestoreAPI, error) { return newBackupClientFn() }, client.BoxRestoreParams{
+		Box:             backupRestoreBox,
+		BackupID:        backupRestoreBackup,
+		As:              backupRestoreAs,
+		Force:           backupRestoreForce,
+		AgeIdentityFile: backupRestoreAgeIdentityFile,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n✓ %s\n  box: %s (stopped)\n", resp.Message, resp.Box)
 	return nil
 }

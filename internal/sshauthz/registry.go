@@ -339,14 +339,35 @@ func (s *PGKeyStore) Lookup(ctx context.Context, fingerprint string) (KeyRecord,
 	return lookupRow(ctx, s.pool, fingerprint, false)
 }
 
-// rowQuerier is what lookupRow reads through: the pool or a transaction.
-type rowQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+// ActiveRecords returns every row that is not revoked, released rows
+// included, ordered by fingerprint. Used by Reconcile (#3330).
+func (s *PGKeyStore) ActiveRecords(ctx context.Context) ([]KeyRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+keyRowColumns+`
+		FROM ssh_keys WHERE revoked_at IS NULL ORDER BY fingerprint`)
+	if err != nil {
+		return nil, fmt.Errorf("list active ssh keys: %w", err)
+	}
+	defer rows.Close()
+	var out []KeyRecord
+	for rows.Next() {
+		rec, err := scanKeyRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list active ssh keys: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list active ssh keys: %w", err)
+	}
+	return out, nil
 }
 
-// lookupRow reads the row for fingerprint, locking it for the rest of the
-// transaction when forUpdate is set.
-func lookupRow(ctx context.Context, q rowQuerier, fingerprint string, forUpdate bool) (KeyRecord, error) {
+// keyRowColumns is the column list scanKeyRow reads, in order.
+const keyRowColumns = `fingerprint, username, user_id, public_key, key_type, created_at, revoked_at, released_at, source`
+
+// scanKeyRow reads one row selected with keyRowColumns.
+func scanKeyRow(row pgx.Row) (KeyRecord, error) {
 	var (
 		rec        KeyRecord
 		keyType    string
@@ -354,19 +375,8 @@ func lookupRow(ctx context.Context, q rowQuerier, fingerprint string, forUpdate 
 		revokedAt  *time.Time
 		releasedAt *time.Time
 	)
-	query := `
-		SELECT fingerprint, username, user_id, public_key, key_type, created_at, revoked_at, released_at, source
-		FROM ssh_keys WHERE fingerprint = $1`
-	if forUpdate {
-		query += ` FOR UPDATE`
-	}
-	err := q.QueryRow(ctx, query, fingerprint).
-		Scan(&rec.Fingerprint, &rec.Username, &rec.UserID, &rec.PublicKey, &keyType, &rec.CreatedAt, &revokedAt, &releasedAt, &source)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return KeyRecord{}, ErrKeyNotFound
-	}
-	if err != nil {
-		return KeyRecord{}, fmt.Errorf("lookup ssh key: %w", err)
+	if err := row.Scan(&rec.Fingerprint, &rec.Username, &rec.UserID, &rec.PublicKey, &keyType, &rec.CreatedAt, &revokedAt, &releasedAt, &source); err != nil {
+		return KeyRecord{}, err
 	}
 	rec.KeyType = pb.SSHKeyType(pb.SSHKeyType_value[keyType]) // unknown name → UNSPECIFIED
 	rec.Source = KeySource(source)
@@ -376,6 +386,30 @@ func lookupRow(ctx context.Context, q rowQuerier, fingerprint string, forUpdate 
 	}
 	if releasedAt != nil {
 		rec.ReleasedAt = releasedAt.UTC()
+	}
+	return rec, nil
+}
+
+// rowQuerier is what lookupRow reads through: the pool or a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// lookupRow reads the row for fingerprint, locking it for the rest of the
+// transaction when forUpdate is set.
+func lookupRow(ctx context.Context, q rowQuerier, fingerprint string, forUpdate bool) (KeyRecord, error) {
+	query := `
+		SELECT ` + keyRowColumns + `
+		FROM ssh_keys WHERE fingerprint = $1`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	rec, err := scanKeyRow(q.QueryRow(ctx, query, fingerprint))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return KeyRecord{}, ErrKeyNotFound
+	}
+	if err != nil {
+		return KeyRecord{}, fmt.Errorf("lookup ssh key: %w", err)
 	}
 	return rec, nil
 }
