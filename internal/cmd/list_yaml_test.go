@@ -36,6 +36,10 @@ func hasRawControl(b []byte) (byte, bool) {
 type yamlList struct {
 	Containers []struct {
 		Name   string            `yaml:"name"`
+		State  string            `yaml:"state"`
+		IP     string            `yaml:"ip_address"`
+		CPU    string            `yaml:"cpu"`
+		Memory string            `yaml:"memory"`
 		Labels map[string]string `yaml:"labels"`
 	} `yaml:"containers"`
 	TotalCount int `yaml:"total_count"`
@@ -75,7 +79,9 @@ func TestListYAMLHostileNameAndGroup(t *testing.T) {
 		t.Errorf("flat: raw 0x%02x in %q", b, buf.Bytes())
 	}
 	var flat yamlList
-	if err := yaml.Unmarshal(buf.Bytes(), &flat); err != nil || flat.Containers[0].Name != name {
+	if err := yaml.Unmarshal(buf.Bytes(), &flat); err != nil || len(flat.Containers) != 1 || flat.Containers[0].Name != name ||
+		flat.Containers[0].State != c.State || flat.Containers[0].IP != c.IPAddress ||
+		flat.Containers[0].CPU != c.CPU || flat.Containers[0].Memory != c.Memory {
 		t.Errorf("flat name round trip: err=%v got=%+v", err, flat)
 	}
 
