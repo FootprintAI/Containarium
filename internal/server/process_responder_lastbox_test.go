@@ -379,8 +379,8 @@ func TestRecordKill_OldRecordWithNoActionKeepsTheWritersBox(t *testing.T) {
 
 // TestSharedFinding_LastBoxEndingWaitsForOtherHolders: an ending box resolves
 // the finding only when it was the last thing holding it. Another box's
-// never-confirmed apply or its queued response still holds it, as in Release
-// and settle.
+// never-confirmed persisted apply still holds it. A newly scoped finding
+// queued on another box is independent and must not hold the legacy row.
 func TestSharedFinding_LastBoxEndingWaitsForOtherHolders(t *testing.T) {
 	ctx := context.Background()
 	t.Run("a never-confirmed apply on box-c", func(t *testing.T) {
@@ -398,16 +398,19 @@ func TestSharedFinding_LastBoxEndingWaitsForOtherHolders(t *testing.T) {
 			t.Fatalf("finding after box-c's orphan = %s, want resolved", f.State)
 		}
 	})
-	t.Run("a queued response for box-c", func(t *testing.T) {
+	t.Run("a new per-container response queued for box-c", func(t *testing.T) {
 		fx, sink := queuedThrottle(t)
 		fx.r.runJob(ctx, queueFor(t, fx, sink, "box-a"))
 		jobB := queueFor(t, fx, sink, "box-b")
 		fx.r.runJob(ctx, jobB)
 		releaseKeptOpen(t, fx, "box-a")
-		jobC := queueFor(t, fx, sink, "box-c")
+		jobC := queueMiner(t, fx, minerEngine(t, fx, sink), "box-c")
 		deleteBox(fx, "box-b")
-		if f := mustGet(t, fx, jobB.f.ID); f.State != threatdetect.FindingStateOpen {
-			t.Fatalf("finding = %s, want open: box-c's response is still queued", f.State)
+		if f := mustGet(t, fx, jobB.f.ID); f.State != threatdetect.FindingStateResolved {
+			t.Fatalf("legacy finding = %s, want resolved: its last stored action ended", f.State)
+		}
+		if jobC.f.ID == jobB.f.ID {
+			t.Fatal("new box shared a historical finding")
 		}
 		fx.r.runJob(ctx, jobC)
 		if _, err := openAction(fx, "box-c"); err != nil {

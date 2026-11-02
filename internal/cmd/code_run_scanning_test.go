@@ -44,7 +44,7 @@ func TestReportModelTrafficScanning(t *testing.T) {
 	gw := engine.GatewayCredential{Provider: "anthropic"}
 	setPolicy := func(t *testing.T, fake *fakeGuardrailPolicyAPI, rules ...*pb.GuardrailRule) {
 		t.Helper()
-		if _, err := fake.store.Set(context.Background(), &pb.GuardrailPolicy{Rules: rules}, nil, "ops"); err != nil {
+		if _, err := fake.store.Set(context.Background(), &pb.SetGuardrailPolicyRequest{Policy: &pb.GuardrailPolicy{Rules: rules}}, "ops"); err != nil {
 			t.Fatal(err)
 		}
 	}

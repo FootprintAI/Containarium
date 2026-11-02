@@ -47,7 +47,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -73,7 +73,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
 		return nil, err
 	}
-	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	record, err := s.loadTrackerStore().Get(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -106,7 +106,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	lineageRecorded := false
 	if isRun {
 		var upstreamErr error
-		rec, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{
+		rec, err := s.loadTrackerStore().RecordChild(ctx, tracker.Lineage{
 			Username: req.Username, Connection: req.Connection,
 			ParentNumber: req.ParentNumber, CreatedByRun: runID,
 		}, policy.MaxDepth, policy.MaxChildrenPerRun, func(ctx context.Context) (int64, error) {

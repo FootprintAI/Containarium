@@ -77,13 +77,121 @@ A run started with `continue_session` gets no id from discovery at all (it
 appends to an existing file, which is never new). A resumed run's id is the
 `session_id` it was started with.
 
+## Command mode: `command`
+
+With `command` set (and `prompt` empty) the box runs that shell command in the
+engine's place: `timeout -k 5 <timeout_seconds> sh -c '<command>'`, detached
+like an engine run, with the same record, log, listing, tailing and stop. Use it
+for work that must not involve a model: a build, the test suite, a lint, a
+verification of a pushed commit.
+
+- No engine starts and no agent credential is loaded. The box's `code.json` is
+  not consulted (a box whose engine run would be refused, say one on the gateway
+  credential, still takes a command run), and the run user's agent sign-in is
+  **not** required.
+- Identity and tool access are exactly an engine run's: on a box with a recorded
+  tool-access level the command runs as the run user with that level's sudo
+  grant and staged home; on a box with none it runs as the owner. `BUILD_TOOLS`
+  is what gives it the managed toolchains.
+- The working directory is the run user's home. A command that needs a checkout
+  makes it: for example `git clone <url> work && cd work && git checkout <sha>
+  && make test`, through the box's own credential helper.
+- `timeout_seconds` bounds it (default 900, at most 3600; `INVALID_ARGUMENT`
+  above that or without `command`). A command that outlives its budget gets
+  SIGTERM, then SIGKILL five seconds later, and the run's exit code is `124`.
+- `command` is mutually exclusive with `prompt`, `session_id`,
+  `continue_session`, `structured_output` and `model` (`INVALID_ARGUMENT`,
+  before anything on the box is touched). `BoxRun.session_id` stays empty and
+  `BoxRun.model` is empty.
+- The text is single-quoted whole, so the outer shell interprets none of it; the
+  command's own `sh -c` runs it as written. It is the caller's text and runs with
+  the box owner's code and secrets reachable, like anything a run on that box can
+  do: a control plane must only ever send text a repository manager configured or
+  the platform itself wrote, never text from an issue, a pull request or an
+  agent's output.
+
+The CLI counterpart is `containarium code run <box> --command '<text>'
+[--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
-send `run_name` or `structured_output` to a daemon that predates them.
-`GetSystemInfo` (`SystemInfo.capabilities`) lists the optional features a daemon
-supports: `box_run_name` and `box_run_structured_output`. An older daemon does
+send `run_name`, `structured_output`, `model` or `command` to a daemon that
+predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
+features a daemon supports: `box_run_name`, `box_run_structured_output`,
+`box_run_model` and `box_run_command`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these
 fields (see the changelog entry).
+
+## Answering permission requests: the `code:answer` scope
+
+`AnswerRunInput` (`containarium code answer`, `code attach`'s inline answers,
+the MCP `code_answer` tool) needs the box-run access rule (`ssh:write`, box owner
+or collaborator) **and** the `code:answer` scope. `code:answer` is matched
+literally: the wildcard scope `*` does not carry it, and neither does a token
+with no scopes claim. An allow lets the agent run the tool call it asked for,
+so the token that answers must be one the agent on the box cannot hold.
+
+No credential the platform puts on a box carries `code:answer`: a skill or crew
+run token has it stripped at mint, whatever the dispatching caller or the skill
+manifest grants. The delegation exchange (`ExchangeDelegatedToken`,
+`containarium token delegate`) grants `code:answer` only to a caller that holds
+it literally, so a `*` token cannot be exchanged for one. Mint the answering
+token where the agent cannot read it, for example on the daemon host:
+
+```bash
+TOKEN=$(containarium token generate --secret-file <jwt-secret-file> --username <you> \
+  --scopes ssh:write,code:answer --expiry 24h --raw)
+containarium --token "$TOKEN" --server <daemon> --http code answer <box> <request_id> allow
+```
+
+**Do not run `containarium login` inside a box an agent runs in.** It writes your
+token to `~/.containarium/credentials.json` in the box, where the agent can read
+it and call the API as you. A login token does not carry `code:answer`, so it
+cannot answer permission requests, but it can still do everything else your
+account can.
+
+## Per-run checkouts: the sweep and `--run-checkout-max-age`
+
+A platform-started run clones into a directory of its own directly under a box
+user's `~/work`, named `<repo>-run-<8 hex>`. The run cannot remove it (`rm` is not
+among the commands an unattended run may use), so the daemon removes stale ones
+(#3296). It sweeps every running box that has had a platform-started run (a
+recorded tool-access level or a run record) every hour, sweeps a box after
+`StopBoxRun` ends a run on it, and skips stopped boxes.
+
+In the box owner's and the run user's `~/work`, it removes an entry only when all
+of these hold:
+
+- its name matches `^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$`. Nothing else is touched or
+  listed. Your own checkout, `~/work/<repo>`, is never considered;
+- it is a real directory. A symlink is never followed or removed, and neither is
+  a `~/work` that is a symlink or lies under one;
+- its newest modification (the directory or anything in it) is older than the
+  daemon's `--run-checkout-max-age`;
+- no process on the box has its working directory in it;
+- it is not a live run's: not named by a running run's record as its working
+  directory, and not modified at or after the start of a run that is still going.
+
+Every one of these is checked again in the box right before the directory is
+removed, and the removal (`rm -rf --one-file-system`) never follows a symlink or
+crosses into another filesystem. Each removal is logged at info level with the
+directory's name and size.
+
+| Daemon flag | Default | Meaning |
+|---|---|---|
+| `--run-checkout-max-age` | `168h` (7 days) | How old a per-run checkout's newest modification must be before it is removed. `0` turns the sweep off, including `SweepBoxRunCheckouts`. |
+
+Run the sweep once on one box, or see what it would remove:
+
+```bash
+containarium code sweep-checkouts <box> --dry-run --server <daemon>   # list exactly what would be removed
+containarium code sweep-checkouts <box> --server <daemon>             # remove it
+containarium code sweep-checkouts <box> --dry-run --all --server <daemon>  # also list what is kept, and why
+```
+
+The API is `SweepBoxRunCheckouts` (`POST /v1/containers/{username}/code-run-checkouts:sweep`,
+body `{"dry_run": true}`), with the same access as `StopBoxRun` (`ssh:write`, box
+owner or collaborator).

@@ -22,7 +22,7 @@
 #
 #   sudo ./redeploy-workhorse.sh deploy v0.26.3   # download, verify, swap, restart, health-gate, auto-rollback
 #   sudo ./redeploy-workhorse.sh rollback         # undo to the previous binary
-#   sudo ./redeploy-workhorse.sh status           # version + unit + eBPF + listener
+#   sudo ./redeploy-workhorse.sh status           # version + unit + eBPF + listener + toolchain
 #
 # It is deliberately conservative: every state-changing step has a health gate
 # and restores the prior binary (and, on cutover failure, the prior bare
@@ -102,6 +102,9 @@ GH_REPO="${CTN_GH_REPO:-FootprintAI/Containarium}"
 RELEASE_ASSET="${CTN_ASSET:-$(basename "$BIN")-linux-amd64}"
 HEALTH_TIMEOUT="${CTN_HEALTH_TIMEOUT:-60}"   # seconds to wait for a healthy daemon
 LOCK_FILE="${CTN_LOCK_FILE:-/run/lock/containarium-redeploy-workhorse.lock}"
+# Host managed toolchain root (pkg/core/toolchain.HostRoot). This script
+# swaps the binary only; it never installs a toolchain release (#3360).
+TOOLCHAIN_ROOT="${CTN_TOOLCHAIN_ROOT:-/opt/containarium/toolchains}"
 
 log() { printf '== %s\n' "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -122,6 +125,19 @@ acquire_lock() {
   actually running (e.g. the lock file is stale from a killed process), check
   \`fuser ${LOCK_FILE}\` before removing it by hand."
   fi
+}
+
+# Report the host's managed toolchain release (#3360). Since v0.123.0 a
+# BUILD_TOOLS run is refused without one, and a binary swap installs nothing,
+# so an upgrade that leaves none must say so. Advisory: never fails a deploy.
+toolchain_report() {
+  if [ -f "${TOOLCHAIN_ROOT}/current/manifest.json" ]; then
+    echo "toolchain: $(readlink "${TOOLCHAIN_ROOT}/current" 2>/dev/null || echo current) under ${TOOLCHAIN_ROOT}"
+    return 0
+  fi
+  echo "WARNING: no managed toolchain release under ${TOOLCHAIN_ROOT}."
+  echo "         BUILD_TOOLS runs are refused until one is installed (NONE and FULL_SUDO"
+  echo "         runs are unaffected). Install it on this host: see docs/MANAGED-TOOLCHAINS.md."
 }
 
 # Find the running daemon PID whether it's the bare process or systemd-managed.
@@ -386,6 +402,7 @@ cmd_deploy() {
   systemctl restart "$UNIT_NAME"
   if health_gate; then
     log "deploy OK — now on $(current_version)"
+    toolchain_report >&2
     return 0
   fi
 
@@ -429,6 +446,7 @@ cmd_status() {
   systemctl status "${sowner:-$UNIT_NAME}" --no-pager -l 2>/dev/null | head -6 || echo "unit: not installed"
   command -v bpftool >/dev/null 2>&1 && echo "ebpf progs: $(bpftool prog show 2>/dev/null | grep -icE 'sched_cls|sched_act|tc|cgroup_skb')"
   echo "backups: $(ls -1 "${BIN}".bak-* 2>/dev/null | wc -l | tr -d ' ')"
+  toolchain_report
 }
 
 case "${1:-}" in
@@ -445,7 +463,7 @@ usage: $0 <command>
   cutover          switch the running daemon from bare process to systemd (one restart; auto-rollback)
   deploy <ver|bin> upgrade the binary + systemctl restart, health-gated, auto-rollback on failure
   rollback         restore the most recent ${BIN}.bak-* and restart
-  status           current version, unit state, listener, eBPF prog count, backups
+  status           current version, unit state, listener, eBPF prog count, backups, toolchain
 USAGE
      exit 2 ;;
 esac

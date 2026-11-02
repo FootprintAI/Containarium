@@ -266,3 +266,23 @@ func TestParseScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestBackupsVerifyScopeIsKnownAndDistinct(t *testing.T) {
+	if ScopeBackupsVerify != "backups:verify" || !IsKnownScope(ScopeBackupsVerify) {
+		t.Fatalf("backups:verify must be a known scope, got %q", ScopeBackupsVerify)
+	}
+	if HasExplicitScope([]string{ScopeBackupsVerify}, ScopeBackupsWrite) {
+		t.Fatal("backups:verify must not imply backups:write")
+	}
+}
+
+// retention:write must be a known scope, or token minting and skill manifests
+// silently reject it (the #1926 class of bug).
+func TestIsKnownScope_RetentionWrite(t *testing.T) {
+	if !IsKnownScope(ScopeRetentionWrite) {
+		t.Errorf("IsKnownScope(%q) = false, want true (missing from AllScopes?)", ScopeRetentionWrite)
+	}
+	if HasScope([]string{ScopeAuditRead}, ScopeRetentionWrite) {
+		t.Error("audit:read must not imply retention:write")
+	}
+}

@@ -142,7 +142,7 @@ func TestSubmitTrackerChange_NoTrackerStoreConfigured(t *testing.T) {
 }
 
 func TestSubmitTrackerChange_RejectsMissingIssue(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: "alice", Connection: "default", Title: "t",
@@ -153,7 +153,7 @@ func TestSubmitTrackerChange_RejectsMissingIssue(t *testing.T) {
 }
 
 func TestSubmitTrackerChange_RejectsMissingTitle(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: "alice", Connection: "default", Issue: 1,
@@ -164,7 +164,7 @@ func TestSubmitTrackerChange_RejectsMissingTitle(t *testing.T) {
 }
 
 func TestSubmitTrackerChange_CrossTenantDenied(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("mallory", "member", "tracker:write")
 	_, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
 		Username: "alice", Connection: "default", Issue: 1, Title: "t",
@@ -388,7 +388,7 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
 	s.auditStore = mustTestAuditStore(t)
 	// #3001: the dispatcher's row for this run, which the submit annotates.
-	dispatch, err := s.trackerStore.InsertDispatch(ctx, tracker.Dispatch{
+	dispatch, err := s.loadTrackerStore().InsertDispatch(ctx, tracker.Dispatch{
 		Username: user, Connection: "default", IssueNumber: 1, Scope: "product", SkillID: "code-review", RunID: "run-abc123",
 	})
 	if err != nil {
@@ -410,7 +410,7 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 
 	// #3001: the dispatch row now names the change, and the listing a
 	// control plane mirrors carries it.
-	row, err := s.trackerStore.GetDispatch(ctx, dispatch.ID)
+	row, err := s.loadTrackerStore().GetDispatch(ctx, dispatch.ID)
 	if err != nil {
 		t.Fatalf("GetDispatch: %v", err)
 	}

@@ -94,11 +94,11 @@ func (o *scopedVerifierOps) ReadFileStream(string, string) (io.ReadCloser, error
 	return nil, os.ErrNotExist
 }
 
-// verifierCtx is the documented per-set verifier token (#2401): a non-admin
-// token bound to ONE tenant, scopes exactly backups:read + backups:write.
+// verifierCtx is the documented per-set verifier token (#2401, #3219): a
+// non-admin token bound to ONE tenant, scopes backups:read + backups:verify.
 func verifierCtx(tenant string) context.Context {
 	return auth.ContextWithTestSubjectScopes(context.Background(), tenant, []string{"user"},
-		[]string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite})
+		[]string{auth.ScopeBackupsRead, auth.ScopeBackupsVerify})
 }
 
 // TestBackupScopedToken_AllowsOwnBackupsOnly is the scope contract for the

@@ -25,7 +25,14 @@ const (
 	// additions to that default allow-list: the model gateway and the control
 	// plane, which are deployment-specific.
 	EnvDefaultEgressDomains = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_DOMAINS"
-	EnvDefaultEgressCIDRs   = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRS"
+	EnvDefaultEgressCIDRs   = "CONTAINARIUM_NETWORK_DEFAULT_EGRESS_CIDRs"
+	// EnvNativeAccountTenancy arms automatic per-user account network
+	// namespaces: with it set, a non-admin local-LXC create that names no
+	// network Tenant is tenanted under "account:<username>". Unset (the
+	// default) keeps omitted-field creates on the legacy un-tenanted path,
+	// so the tenancy precondition can never block an operator who did not
+	// ask for it. The shared-Tenant admin surface is unaffected either way.
+	EnvNativeAccountTenancy = "CONTAINARIUM_NATIVE_ACCOUNT_TENANCY"
 )
 
 // Network is the typed view of the CONTAINARIUM_NETWORK_* namespace — the eBPF
@@ -60,6 +67,10 @@ type Network struct {
 	DefaultEgress        string
 	DefaultEgressDomains string
 	DefaultEgressCIDRs   string
+
+	// NativeAccountTenancy arms automatic per-user account network namespaces
+	// (EnvNativeAccountTenancy). Off by default.
+	NativeAccountTenancy bool
 }
 
 // LoadNetwork reads the CONTAINARIUM_NETWORK_* namespace once. The two arming
@@ -76,5 +87,7 @@ func LoadNetwork() Network {
 		DefaultEgress:        getString(EnvDefaultEgress, ""),
 		DefaultEgressDomains: getString(EnvDefaultEgressDomains, ""),
 		DefaultEgressCIDRs:   getString(EnvDefaultEgressCIDRs, ""),
+
+		NativeAccountTenancy: getBool(EnvNativeAccountTenancy),
 	}
 }

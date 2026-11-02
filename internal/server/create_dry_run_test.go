@@ -131,6 +131,9 @@ func TestCreateContainer_DryRun_IsNotForwardedToAPeer(t *testing.T) {
 // create) but the cores it reserves are released before returning.
 func TestCreateContainer_DryRun_ChecksCPUAdmissionAndLeavesNoReservation(t *testing.T) {
 	s := seedServer(t, 8, []incus.ContainerInfo{tenant("a", "8"), tenant("b", "4")}) // 12 of 16 committed
+	// Non-admin local creates now require the enforced native account namespace.
+	// This fixture isolates CPU admission after that readiness gate.
+	s.nativeTenantReady = func() bool { return true }
 	s.SetCPUOvercommitPolicy(2, true)
 
 	if _, err := dryRunNoPanic(t, s, &pb.CreateContainerRequest{

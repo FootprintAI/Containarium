@@ -221,6 +221,8 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/lib/wait-daemon-ready.sh"
 
 # ========================================================================
 # Configuration
@@ -499,7 +501,7 @@ DAEMON_WAIT_TRIES="${CONTAINARIUM_E2E_CREW_DAEMON_WAIT_TRIES:-300}"
 log "waiting for the daemon's HTTP gateway (up to $((DAEMON_WAIT_TRIES * 2))s)"
 for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   sudo kill -0 "$DAEMON_PID" 2>/dev/null || fail "daemon exited during startup"
-  if curl -s -o /dev/null "http://127.0.0.1:$HTTP_PORT/v1/crews"; then
+  if daemon_is_ready "$HTTP_PORT" /v1/crews; then
     break
   fi
   [ "$i" = "$DAEMON_WAIT_TRIES" ] && fail "daemon HTTP gateway not answering after $((DAEMON_WAIT_TRIES * 2))s"

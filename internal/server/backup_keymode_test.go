@@ -213,3 +213,45 @@ func TestCreateBackup_KeyModeRefusedBeforeContainerLookup(t *testing.T) {
 		})
 	}
 }
+
+// --- #3263: daemon wiring of SystemInfo.managed_backup_key_configured ---
+//
+// `backup status` reads this field to decide whether tenants are encrypted.
+// If NewBackupServer stops recording the managed key on the ContainerServer,
+// or withBackupKeyInfo stops copying it into the response, the CLI reports
+// every tenant UNENCRYPTED and nothing else fails. These go through the real
+// constructor so both halves of the wiring are exercised together.
+// GetSystemInfo itself needs a live Incus connection, so the stamping step
+// it performs (withBackupKeyInfo) is driven directly.
+
+func TestSystemInfo_ManagedBackupKeyConfigured_WhenKeyConfigured(t *testing.T) {
+	clearBackupKMSEnv(t)
+	t.Setenv("CONTAINARIUM_BACKUP_KMS_KEY_NAME", testBackupKMSKey)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", "projects/test-proj/locations/us-west1/keyRings/r/cryptoKeys/secrets")
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "tok")
+
+	containers := &ContainerServer{}
+	if _, err := NewBackupServer(containers); err != nil {
+		t.Fatalf("NewBackupServer: %v", err)
+	}
+	info := &pb.SystemInfo{}
+	containers.withBackupKeyInfo(info)
+	if !info.GetManagedBackupKeyConfigured() {
+		t.Error("managed_backup_key_configured = false, want true when the managed backup key is configured")
+	}
+}
+
+func TestSystemInfo_ManagedBackupKeyConfigured_WhenNoKey(t *testing.T) {
+	clearBackupKMSEnv(t)
+
+	containers := &ContainerServer{}
+	if _, err := NewBackupServer(containers); err != nil {
+		t.Fatalf("NewBackupServer: %v", err)
+	}
+	info := &pb.SystemInfo{}
+	containers.withBackupKeyInfo(info)
+	if info.GetManagedBackupKeyConfigured() {
+		t.Error("managed_backup_key_configured = true, want false when no managed backup key is configured")
+	}
+}

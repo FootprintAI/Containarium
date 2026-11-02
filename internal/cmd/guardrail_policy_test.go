@@ -44,7 +44,7 @@ func (f *fakeGuardrailPolicyAPI) GetGuardrailPolicy() (*pb.GetGuardrailPolicyRes
 
 func (f *fakeGuardrailPolicyAPI) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
 	f.sets = append(f.sets, proto.Clone(req).(*pb.SetGuardrailPolicyRequest))
-	res, err := f.store.Set(context.Background(), req.GetPolicy(), req.GetTrustedSigners(), "ops")
+	res, err := f.store.Set(context.Background(), req, "ops")
 	if err != nil {
 		return nil, err
 	}

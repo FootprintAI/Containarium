@@ -203,11 +203,15 @@ type Manager struct {
 	// by the free-space pre-flight); maxBoxBytes is the BOX cap, separate
 	// from maxDumpBytes; freeSpace is statDiskSpace outside tests.
 	box            BoxOps
+	boxRestore     BoxRestoreOps
 	boxStagingDirs []string
 	maxBoxBytes    int64
 	freeSpace      func(path string) (diskSpace, error)
 	// boxClaims serializes backups per box and reserves their space (#3116).
 	boxClaims boxClaims
+	// boxVerifyLimit caps the restored-box comparison of VerifyBox (#2802);
+	// zero means DefaultBoxVerifyTimeLimit.
+	boxVerifyLimit time.Duration
 	// wrapper, when set, wraps a per-backup age identity with a KMS
 	// (#2402): backups default to KeyModeManaged (or KeyModeBoth when a
 	// legacy recipient is also given). Nil keeps today's behaviour byte

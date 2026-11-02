@@ -17,6 +17,16 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 // BPF loader (a later increment) consumes the stored policies and programs the
 // kernel. Admin-only — policies are fleet-shaping config, not tenant-editable.
 service NetworkPolicyService {
+  // Atomically edits destination ingress sources; all revisions must match.
+  rpc PatchTenantAccess(PatchTenantAccessRequest) returns (PatchTenantAccessResponse) {
+    option (google.api.http) = {post: "/v1/network-policies/tenant-access" body: "*"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Patch cross-Tenant ingress access"
+      description: "Administrator and network-policy:write required. Updates only ingress sources in one transaction; full-policy revision conflicts abort the batch. Does not test TCP."
+      tags: "NetworkPolicy"
+    };
+  }
+
   // SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
   // The policy is validated + normalized; the stored form is echoed back.
   rpc SetNetworkPolicy(SetNetworkPolicyRequest) returns (SetNetworkPolicyResponse) {
@@ -315,4 +325,35 @@ message NetworkPolicyStatus {
   // Which policy the loaded state comes from: the host default or a stored
   // policy. Only meaningful when state is LOADED or PARTIALLY_LOADED.
   NetworkPolicySource policy_source = 10;
+}
+
+message TenantAccessChange {
+  // Destination policy: listed sources may initiate connections into it.
+  string destination = 1;
+  repeated string add_sources = 2;
+  repeated string remove_sources = 3;
+  // SHA256 of the entire observed policy, or "absent". Required to prevent lost previews.
+  string expected_revision = 4;
+}
+message PatchTenantAccessRequest {
+  repeated TenantAccessChange changes = 1;
+}
+message TenantAccessPolicy {
+  NetworkPolicy policy = 1;
+  string revision = 2;
+}
+message PatchTenantAccessResponse {
+  repeated TenantAccessPolicy policies = 1;
+  // A committed store write is separate from guard convergence and TCP testing.
+  TenantAccessApplicationState application_state = 2;
+  bool connectivity_tested = 3;
+}
+
+
+// TenantAccessApplicationState describes enforcement evidence after a commit.
+enum TenantAccessApplicationState {
+  TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED = 0;
+  TENANT_ACCESS_APPLICATION_STATE_PENDING = 1;
+  TENANT_ACCESS_APPLICATION_STATE_GUARD_VERIFIED = 2;
+  TENANT_ACCESS_APPLICATION_STATE_DEGRADED = 3;
 }

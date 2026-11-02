@@ -32,8 +32,11 @@ var errDenyRuleNotFound = errors.New("deny rule not found")
 // (a later increment) consumes the stored policies.
 type NetworkPolicyServer struct {
 	pb.UnimplementedNetworkPolicyServiceServer
-	store    NetworkPolicyStore
-	sigStore NetworkPolicySignatureStore // #661 PR-B: operator exploit signatures (global)
+	tenantGuardRead      func() *pb.GuardStatus
+	tenantGuardReconcile func(context.Context) error
+	tenantStoreDurable   func() bool
+	store                NetworkPolicyStore
+	sigStore             NetworkPolicySignatureStore // #661 PR-B: operator exploit signatures (global)
 
 	// degraded is true while store is the in-memory fallback standing in for
 	// a configured Postgres that was unreachable at startup (#3131). Stored
@@ -144,6 +147,9 @@ func (s *NetworkPolicyServer) SetNetworkPolicy(ctx context.Context, req *pb.SetN
 	if err := s.requireDurable(); err != nil {
 		return nil, err
 	}
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
+		return nil, err
+	}
 	// Validate + normalize (parse/dedup CIDRs, normalize domains, resolve mode).
 	compiled, err := netpolicy.Compile(req.GetPolicy())
 	if err != nil {
@@ -170,7 +176,7 @@ func (s *NetworkPolicyServer) GetNetworkPolicy(ctx context.Context, req *pb.GetN
 		}
 		return nil, status.Errorf(codes.Internal, "get network policy: %v", err)
 	}
-	return &pb.GetNetworkPolicyResponse{Policy: p}, nil
+	return &pb.GetNetworkPolicyResponse{Policy: p, Revision: PolicyRevision(p)}, nil
 }
 
 func (s *NetworkPolicyServer) ListNetworkPolicies(ctx context.Context, _ *pb.ListNetworkPoliciesRequest) (*pb.ListNetworkPoliciesResponse, error) {
@@ -194,6 +200,9 @@ func (s *NetworkPolicyServer) PatchNetworkPolicyDenyRules(ctx context.Context, r
 		return nil, err
 	}
 	if err := s.requireDurable(); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
 		return nil, err
 	}
 	tenant := strings.TrimSpace(req.GetTenant())
@@ -279,6 +288,9 @@ func (s *NetworkPolicyServer) DeleteNetworkPolicy(ctx context.Context, req *pb.D
 	if err := s.requireDurable(); err != nil {
 		return nil, err
 	}
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
+		return nil, err
+	}
 	if req.GetTenant() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant is required")
 	}
@@ -295,6 +307,9 @@ func (s *NetworkPolicyServer) SetNetworkPolicySignature(ctx context.Context, req
 		return nil, err
 	}
 	if err := s.requireDurable(); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
 		return nil, err
 	}
 	if s.sigStore == nil {
@@ -333,6 +348,9 @@ func (s *NetworkPolicyServer) DeleteNetworkPolicySignature(ctx context.Context, 
 		return nil, err
 	}
 	if err := s.requireDurable(); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
 		return nil, err
 	}
 	if s.sigStore == nil {

@@ -755,6 +755,23 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 	}
 }
 
+var unsignedServedOnce sync.Once
+
+// signServedResponse signs a response body the way /sentinel/peers does:
+// ed25519 when a signing key is configured, else the shared-secret HMAC, else
+// nothing (the verifier then treats the response as unsigned).
+func (m *Manager) signServedResponse(w http.ResponseWriter, body []byte) {
+	if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
+		auth.SignSentinelResponseEd25519(w, priv, body)
+	} else if len(m.hmacSecret) >= auth.SentinelMinSecretLen {
+		auth.SignSentinelResponse(w, m.hmacSecret, body)
+	} else {
+		unsignedServedOnce.Do(func() {
+			log.Printf("[sentinel] WARNING: no signing key or HMAC secret configured; /containarium/checksum and /version are served UNSIGNED, so daemons cannot authenticate updates")
+		})
+	}
+}
+
 // PrimariesHandler returns an HTTP handler that serves the primary registry.
 //
 // Methods:
@@ -1568,6 +1585,15 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		sni, peekedConn, peekErr := peekSNI(conn)
 		_ = conn.SetReadDeadline(time.Time{})
+
+		// The watchdog measures our mux/dispatch/router, independently of
+		// backend health (#1139). An unmatched SNI normally uses the fallback,
+		// so .invalid alone did not keep this probe local: a blackholed backend
+		// made a healthy sentinel exit. Closing here proves the entire local
+		// path serviced the ClientHello, before any tenant route or dial.
+		if peekErr == nil && sni == selfCheckSNI {
+			return
+		}
 
 		var (
 			dst net.Conn

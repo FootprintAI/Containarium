@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -67,13 +68,15 @@ func TestBoxRunSignInRefusal_CarriesATypedViolation(t *testing.T) {
 	}
 }
 
-// The typed reason survives the REST gateway's own error encoding, which is the
-// form the hosted control plane receives.
+// The typed reason survives the error handler the daemon actually serves
+// (gateway.ErrorHandler), which is the form the hosted control plane receives.
+// The default grpc-gateway handler is not what is registered, so it is not used
+// here (#3277).
 func TestBoxRunSignInRefusal_SurvivesTheRESTGateway(t *testing.T) {
 	err := boxRunSignInRefusal("alice-container", engine.CredentialStatusExpired, "/srv/ctn-run")
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/containers/alice/code-runs", nil)
-	runtime.DefaultHTTPErrorHandler(context.Background(), runtime.NewServeMux(), &runtime.JSONPb{}, w, req, err)
+	gateway.ErrorHandler(context.Background(), runtime.NewServeMux(), &runtime.JSONPb{}, w, req, err)
 
 	var body struct {
 		Code    int    `json:"code"`
@@ -89,7 +92,7 @@ func TestBoxRunSignInRefusal_SurvivesTheRESTGateway(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("gateway body is not JSON: %v\n%s", err, w.Body.String())
 	}
-	if body.Code != int(codes.FailedPrecondition) || !strings.Contains(body.Message, "claude auth login") {
+	if body.Code != http.StatusBadRequest || !strings.Contains(body.Message, "claude auth login") {
 		t.Errorf("code=%d message=%q", body.Code, body.Message)
 	}
 	if len(body.Details) != 1 || !strings.HasSuffix(body.Details[0].Type, "google.rpc.PreconditionFailure") ||

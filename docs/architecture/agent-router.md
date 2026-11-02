@@ -524,6 +524,21 @@ exercised for real only in the e2e.
 - **Per-invocation override** (`agent run --engine`): one field on
   `RunAgentSkillRequest`, resolved by the same `Resolve` with `want` taken
   from the request when set. The design already has the seam.
+- **Per-run model** (#3259): `RunCrewRequest.model_overrides` (skill id → model id,
+  CLI `crew run --model <skill-id>=<model-id>`) and `StartBoxRunRequest.model`
+  (capability `box_run_model`). Precedence for a crew member: the per-run
+  override, then the skill's own `model`, then `CONTAINARIUM_AGENT_MODEL`, then
+  the engine default. A model travels to the box only with a named engine, so an
+  override for a member with none is refused up front rather than dropped; an id
+  that is not a plain id is `INVALID_ARGUMENT`; an id the engine's provider does
+  not list is refused before the run starts when the provider can be listed. The
+  API takes the id as a string and enumerates no tiers. The model that ran is
+  reported in `CrewRun.member_models` and `BoxRun.model`. `graph` runs carry
+  it too (#3264): a `model_overrides` key names a skill used by a graph node (a
+  skill node, or a member of a crew node), the node runs on its entry, and
+  `member_models` reports it. The single-skill request a skill node starts
+  through, `RunAgentSkillRequest`, has the same optional `model` field with the
+  same rules, so it can also be set directly.
 - **Policy routing** (labels → engine): a function that produces `want`
   before `Resolve`; `Resolve` itself does not change.
 - **Many owners, many keys**: `Statuses` makes one `HasProviderKey` call

@@ -160,7 +160,7 @@ flowchart LR
    decode stamp (the kill's check), caches hashes by (device, inode, size,
    mtime, ctime), and counts queue-full drops (`exec_hashes_dropped`). It feeds a second
    `OnExec` with `ev.SHA256` filled. A hit is a HIGH finding, subject
-   `<matcher kind>:<entry>`, evidence one `ExecEvidence{pid, ppid, uid,
+   `container:<container>:<matcher kind>:<entry>` (#2778), evidence one `ExecEvidence{pid, ppid, uid,
    comm, filename, argv, sha256, matched}`.
 
 6. **SentryHealth** — `internal/server/sentry_health.go`. A 60 s loop
@@ -203,15 +203,14 @@ flowchart LR
    `EVENT_TYPE_SECURITY_FINDING` with the updated finding, and updates the
    finding's `response` field. `ReleaseProcessAction` reverses it, marks
    `released_by`, and resolves the finding with `remediated=true` (a
-   miner-signature finding shared with another box that still has an
-   action open or a response queued stays open until the last box is
-   released, or until that last queued response ends without an action;
-   the response reports `finding_kept_open`, #2766; an action already
-   applied on another box holds it open too, #2779). Each box's apply and
-   release is its own webhook delivery naming the box in
-   `FindingResponse.container`, and while any box holds an applied action
-   the finding's `response` is that box's `APPLIED` record, never another
-   box's release (#2820). A TTL
+   new miner-signature finding belongs to one container, #2778). Repeats
+   on that box still dedupe; another box matching the same signature has
+   its own finding and response. Each apply and release is a webhook
+   delivery naming its box in `FindingResponse.container`. Existing shared
+   findings from before #2778 keep the holder checks for persisted actions:
+   release stays open while another action stands, preserving that box's
+   APPLIED record; the final release resolves the legacy finding (#2820).
+   There is no cross-box queue/pending map for new findings. A TTL
    sweep (60 s) releases expired actions and upserts a MEDIUM
    `PROCESS_ACTION_EXPIRED` finding so an unattended throttle does not
    silently become permanent (the `auto_quarantine.go` backstop, same

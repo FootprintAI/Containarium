@@ -2,8 +2,10 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
+import "containarium/v1/agent.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -53,6 +55,10 @@ message BoxRun {
   // whatever the engine's exit status), never reported by the agent. Empty for a
   // run with no readable sidecar (an older run, or a box without the probe).
   repeated BoxRunTool tools = 9;
+  // The model id the run was started with (StartBoxRunRequest.model, #3259).
+  // Empty when none was requested: the engine's own default ran, and the
+  // daemon does not claim to know which. Empty for a run from before the field.
+  string model = 10;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -148,10 +154,66 @@ message StartBoxRunRequest {
   // continue_session run gets no discovered id at all. Capability
   // "box_run_structured_output" in SystemInfo.capabilities.
   bool structured_output = 6;
+  // The model id to run the engine with (Claude Code's --model), for example
+  // one a caller chose from a policy or a label (#3259). Empty keeps the
+  // engine's own default, exactly as before. Claude Code only: any other
+  // engine is FAILED_PRECONDITION, before anything on the box is touched. The
+  // id is opaque to the API (no tier names are enumerated here, ids change
+  // with every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127};
+  // anything else is INVALID_ARGUMENT. Whether the engine accepts the id is
+  // the engine's to say: an id it rejects ends the run non-zero and the
+  // reason is in the run's log. BoxRun.model reports the id the run was
+  // started with. Capability "box_run_model" in SystemInfo.capabilities.
+  string model = 7;
+  // Command mode (#3322): run this shell command (through `sh -c`) instead of
+  // an engine prompt. No engine starts and no agent credential is loaded, so
+  // the run user's agent sign-in is not required. Mutually exclusive with
+  // prompt, session_id, continue_session, structured_output and model
+  // (INVALID_ARGUMENT, before anything on the box is touched). The command
+  // runs as the box's run user with its recorded tool-access level and sudo
+  // grant, exactly as an engine run would, in that user's home directory; a
+  // caller that needs a checkout makes it part of the command. The run is
+  // listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
+  // StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
+  // in SystemInfo.capabilities.
+  string command = 8;
+  // With command: the daemon ends the command after this many seconds
+  // (`timeout -k 5`, so the run exits with code 124). 0 means the daemon's
+  // default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
+  // command.
+  int32 timeout_seconds = 9;
 }
 
 message StartBoxRunResponse {
   BoxRun run = 1;
+}
+
+// GetBoxRunUserStatusRequest names the box whose run-user sign-in to report.
+message GetBoxRunUserStatusRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+// GetBoxRunUserStatusResponse is the read-only answer to "would StartBoxRun
+// refuse a platform run on this box for want of a run-user sign-in?" (#3274).
+// It is the same probe StartBoxRun applies, run without queueing anything and
+// without provisioning the run user. It names the credential's SOURCE only:
+// nothing here reads, copies, prints or refreshes a credential value.
+message GetBoxRunUserStatusResponse {
+  // The OS user platform runs execute as on a box with a recorded tool-access
+  // level. Reported even when tool_access_recorded is false.
+  string run_user = 1;
+  // Whether the box has a tool-access level recorded. When false, platform
+  // runs use the owner's identity and none of the run-user fields below apply.
+  bool tool_access_recorded = 2;
+  // Whether the run user already exists on the box. It is created by the box's
+  // first platform run, so false on a recorded box means no run has happened.
+  bool run_user_exists = 3;
+  // The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.
+  // NONE when the run user does not exist yet or has never signed in (the same
+  // answer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,
+  // INTERACTIVE or API_KEY when a run would proceed.
+  CodeCredentialSource state = 4;
 }
 
 message ListBoxRunsRequest {
@@ -237,6 +299,78 @@ message StopBoxRunResponse {
   // sent but the process had not exited when the call returned (SIGTERM
   // ignored); call again with force.
   bool exited = 3;
+}
+
+// Per-run checkouts (#3296). A platform-started run works in a fresh clone of
+// its own, a directory directly under a box user's ~/work named
+// <repo>-run-<8 lowercase hex>. Nothing else removes them, so the daemon
+// sweeps the stale ones: hourly, after StopBoxRun ends a run, and on demand
+// through SweepBoxRunCheckouts. Only a directory whose name matches
+// ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$ is ever considered; a person's own
+// checkout (~/work/<repo>) is never touched, and never listed.
+
+// BoxRunCheckoutDisposition is what a sweep did, or would do, with one
+// matching entry.
+enum BoxRunCheckoutDisposition {
+  BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED = 0;
+  // Removed by this sweep.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVED = 1;
+  // A dry run: a real sweep at this moment would remove it.
+  BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE = 2;
+  // Its newest modification is within the daemon's maximum age (or could not
+  // be read).
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT = 3;
+  // It may be a live run's working directory: modified at or after the start
+  // of a run on the box that is still going, or named as a live run's cwd.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN = 4;
+  // A process on the box has its working directory in it.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE = 5;
+  // A symbolic link; links are never followed or removed.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK = 6;
+  // Not a directory.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY = 7;
+  // Chosen for removal, but at removal time it no longer qualified (it was
+  // replaced, modified, or a process entered it); left alone.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED = 8;
+  // Chosen for removal, but removing it failed (for example a mount inside
+  // it); whatever is left stays.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED = 9;
+}
+
+// BoxRunCheckout is one matching entry directly under a box user's ~/work.
+message BoxRunCheckout {
+  // The box OS user whose ~/work holds it: the box's owner, or the
+  // unprivileged run user platform runs execute as.
+  string user = 1;
+  // The entry's name directly under that user's ~/work.
+  string name = 2;
+  // Disk usage in bytes (du, one filesystem). 0 for a symlink or non-directory.
+  int64 size_bytes = 3;
+  // The newest modification time of the directory or anything in it. Unset
+  // when it could not be read, or for a symlink or non-directory.
+  google.protobuf.Timestamp newest_modification = 4;
+  BoxRunCheckoutDisposition disposition = 5;
+}
+
+// SweepBoxRunCheckoutsRequest runs the per-run checkout sweep once on one box.
+message SweepBoxRunCheckoutsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // List what a real sweep would remove (WOULD_REMOVE) and remove nothing.
+  bool dry_run = 2;
+}
+
+message SweepBoxRunCheckoutsResponse {
+  // Whether the box has had a platform-started run (a recorded tool-access
+  // level or a run record). A box without one is never swept, so checkouts
+  // is empty.
+  bool platform_runs = 1;
+  // The daemon's maximum age (--run-checkout-max-age).
+  google.protobuf.Duration max_age = 2;
+  // Every matching entry, with what the sweep did or would do with it. The
+  // REMOVED (or, on a dry run, WOULD_REMOVE) entries are exactly the removal
+  // set.
+  repeated BoxRunCheckout checkouts = 3;
 }
 
 // Permission requests of a box run (#2183, #2184). A run started with

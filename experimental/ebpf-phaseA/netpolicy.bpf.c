@@ -335,8 +335,10 @@ struct icmp_echo_hdr {
 // the packet is a fragment (MF set or a non-zero offset), or the header is not
 // in the packet. Such a packet never counts as a reply and never seeds a flow
 // (its bytes at the port offsets are whatever the sender put there); ports stay
-// 0 and it falls through to the ordinary checks. The accounting and virtual-
-// patch paths keep their historical ihl=5 read (a follow-up issue tracks that).
+// 0 and it falls through to the ordinary checks. The virtual-patch deny and the
+// flow accounting share the same guard (#3166): a port-scoped deny treats an
+// unknown TCP/UDP port as matching (fails closed), and the accounting skips
+// fragments and tallies an options-bearing packet under ports 0.
 struct l4_info {
     __u16 sport;     // host byte order (TCP/UDP), else 0
     __u16 dport;
@@ -351,8 +353,12 @@ struct l4_info {
 // IP_FRAG_MASK covers the MF flag and the 13-bit fragment offset (DF is fine).
 #define IP_FRAG_MASK 0x3FFF
 
+static __always_inline int ip_is_fragment(const struct iphdr *ip) {
+    return (bpf_ntohs(ip->frag_off) & IP_FRAG_MASK) != 0;
+}
+
 static __always_inline void parse_l4(struct iphdr *ip, void *data_end, struct l4_info *l4) {
-    if (ip->ihl != 5 || (bpf_ntohs(ip->frag_off) & IP_FRAG_MASK))
+    if (ip->ihl != 5 || ip_is_fragment(ip))
         return; // options or a fragment: not parsed, fails closed
     if (ip->protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (void *)ip + sizeof(*ip);
@@ -755,17 +761,21 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     // Parse L4 once (ports in host byte order, TCP flags, ICMP echo id),
     // bounds-checked for the verifier. Used for per-flow accounting (#627), the
-    // reply check (#2618) and the deny audit event below. ICMP and other L4
-    // protocols carry 0 ports; so does a packet with IP options or a fragment
-    // (parse_l4 leaves it unparsed, which the accounting and virtual-patch paths
-    // historically also did by assuming ihl=5).
+    // reply check (#2618), the virtual-patch port match (#3166) and the deny
+    // audit event below. ICMP and other L4 protocols carry 0 ports; so does a
+    // packet with IP options or a fragment (parse_l4 leaves it unparsed rather
+    // than read sender-chosen bytes as ports).
     struct l4_info l4 = {};
     parse_l4(ip, data_end, &l4);
     __u16 sport = l4.sport, dport = l4.dport;
 
-    // Usage accounting for the traffic view (#627): tally EVERY flow, allowed or
+    // Usage accounting for the traffic view (#627): tally every flow, allowed or
     // not. Done before the policy decision so a would-deny flow is still counted.
-    account_flow(skb, ifindex, saddr, daddr, sport, dport, ip->protocol);
+    // Fragments are skipped (#3166): a later fragment has no L4 header, and
+    // tallying fragments under ports 0 would split one flow's bytes across two
+    // entries. An options-bearing non-fragment is tallied under ports 0.
+    if (!ip_is_fragment(ip))
+        account_flow(skb, ifindex, saddr, daddr, sport, dport, ip->protocol);
 
     // A managed box may only send with its own address. A forged source is never
     // allowed by anything below — not the allow-list, not a reply — because a
@@ -780,8 +790,16 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     // matches a tenant's deny rule (optionally scoped to dport/proto) is blocked
     // regardless of the allow-list or metadata opt-in. Checked first so neither
     // an allow CIDR nor allow_metadata can win against an explicit virtual patch.
+    //
+    // The port match shares parse_l4's guard (#3166): a TCP/UDP packet whose
+    // ports cannot be read (IP options, a fragment, a truncated header) matches
+    // a port-scoped rule on its address and proto alone — it fails closed, so
+    // an IP option or fragmentation cannot evade the rule. The proto scope is
+    // the IP header's own field and always applies.
     __u8 deny_reason = DENY_REASON_POLICY;
     int vpatch_deny = 0;
+    int port_unknown = !l4.ok &&
+        (ip->protocol == IPPROTO_TCP || ip->protocol == IPPROTO_UDP);
     {
         struct egress_key dk = {};
         dk.prefixlen = 32 + 32; // full tenant match + /32 dst (LPM shortens to the rule's prefix)
@@ -789,7 +807,7 @@ int netpolicy_ingress(struct __sk_buff *skb) {
         dk.addr = daddr;
         struct deny_val *dv = bpf_map_lookup_elem(&deny_cidr, &dk);
         if (dv &&
-            (dv->port == 0 || dv->port == dport) &&
+            (dv->port == 0 || port_unknown || dv->port == dport) &&
             (dv->proto == 0 || dv->proto == ip->protocol)) {
             vpatch_deny = 1;
             deny_reason = DENY_REASON_VIRTUAL_PATCH;
@@ -905,12 +923,14 @@ int netpolicy_egress(struct __sk_buff *skb) {
     __u16 sport = l4.sport, dport = l4.dport;
 
     // Swap to request orientation: container is the reply's destination.
-    account_reply(skb, ifindex,
-                  ip->daddr,  // saddr (request) = reply dst = container
-                  ip->saddr,  // daddr (request) = reply src = peer
-                  dport,      // sport (request) = reply dport = container port
-                  sport,      // dport (request) = reply sport = peer port
-                  ip->protocol);
+    // Fragments are skipped, as on the sender hook (#3166).
+    if (!ip_is_fragment(ip))
+        account_reply(skb, ifindex,
+                      ip->daddr,  // saddr (request) = reply dst = container
+                      ip->saddr,  // daddr (request) = reply src = peer
+                      dport,      // sport (request) = reply dport = container port
+                      sport,      // dport (request) = reply sport = peer port
+                      ip->protocol);
 
     // Tier 2 (#661): scan the INBOUND payload (peer→container) for cleartext
     // exploit signatures and virtually-patch the container's service. TCP only,

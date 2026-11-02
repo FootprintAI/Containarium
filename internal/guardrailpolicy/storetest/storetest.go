@@ -8,8 +8,10 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
@@ -36,6 +38,11 @@ func Policy(maxResidual int32) *pb.GuardrailPolicy {
 	}}
 }
 
+// Req is a SetGuardrailPolicyRequest with the given rules and signers.
+func Req(policy *pb.GuardrailPolicy, signers ...*pb.GuardrailTrustedSigner) *pb.SetGuardrailPolicyRequest {
+	return &pb.SetGuardrailPolicyRequest{Policy: policy, TrustedSigners: signers}
+}
+
 // RunStoreContract runs the shared behaviour against stores built by newStore
 // (each subtest gets a fresh, empty store).
 func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.Store) {
@@ -52,7 +59,7 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 	t.Run("set then get round-trips", func(t *testing.T) {
 		s := newStore(t)
 		signer := Signer(t, 1, "release key")
-		res, err := s.Set(ctx, Policy(2), []*pb.GuardrailTrustedSigner{signer}, "admin-a")
+		res, err := s.Set(ctx, Req(Policy(2), signer), "admin-a")
 		if err != nil {
 			t.Fatalf("Set: %v", err)
 		}
@@ -85,7 +92,7 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 		s := newStore(t)
 		var prev *pb.ServerGuardrailPolicy
 		for want := int64(1); want <= 3; want++ {
-			res, err := s.Set(ctx, Policy(int32(want)), nil, "admin-a")
+			res, err := s.Set(ctx, Req(Policy(int32(want))), "admin-a")
 			if err != nil {
 				t.Fatalf("Set #%d: %v", want, err)
 			}
@@ -101,7 +108,7 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 
 	t.Run("an empty rule list is stored as configured", func(t *testing.T) {
 		s := newStore(t)
-		if _, err := s.Set(ctx, &pb.GuardrailPolicy{}, nil, "admin-a"); err != nil {
+		if _, err := s.Set(ctx, Req(&pb.GuardrailPolicy{}), "admin-a"); err != nil {
 			t.Fatalf("Set empty: %v", err)
 		}
 		got, err := s.Get(ctx)
@@ -115,7 +122,7 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 
 	t.Run("returned values do not alias the store", func(t *testing.T) {
 		s := newStore(t)
-		res, err := s.Set(ctx, Policy(0), nil, "admin-a")
+		res, err := s.Set(ctx, Req(Policy(0)), "admin-a")
 		if err != nil {
 			t.Fatalf("Set: %v", err)
 		}
@@ -129,7 +136,76 @@ func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.
 		}
 	})
 
+	runRevocationContract(t, newStore)
 	runBaselineModeContract(t, newStore)
+}
+
+// runRevocationContract is the read-edit-write and revocation part of the
+// contract (#2729): expected_revision is checked under the store's lock, a
+// revoked key's revoked_at is stamped by the store, and no Set can drop or
+// change a stored revoked key.
+func runRevocationContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.Store) {
+	ctx := context.Background()
+	rev := func(r int64) *int64 { return &r }
+
+	t.Run("expected_revision must equal the stored revision", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(0), ExpectedRevision: rev(1)}, "admin-a"); !errors.Is(err, guardrailpolicy.ErrRevisionConflict) {
+			t.Fatalf("Set expecting revision 1 on an empty store = %v, want ErrRevisionConflict", err)
+		}
+		if _, err := s.Get(ctx); !errors.Is(err, guardrailpolicy.ErrNotConfigured) {
+			t.Fatalf("a refused Set stored something: %v", err)
+		}
+		if _, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(0), ExpectedRevision: rev(0)}, "admin-a"); err != nil {
+			t.Fatalf("Set expecting revision 0 on an empty store: %v", err)
+		}
+		if _, err := s.Set(ctx, Req(Policy(1)), "admin-b"); err != nil { // no precondition: applies
+			t.Fatalf("Set without expected_revision: %v", err)
+		}
+		if _, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(3), ExpectedRevision: rev(1)}, "admin-a"); !errors.Is(err, guardrailpolicy.ErrRevisionConflict) {
+			t.Fatalf("stale expected_revision = %v, want ErrRevisionConflict", err)
+		}
+		got, err := s.Get(ctx)
+		if err != nil || got.GetRevision() != 2 || !proto.Equal(got.GetPolicy(), Policy(1)) {
+			t.Fatalf("after a stale Set = (%v, %v), want admin-b's revision 2", got, err)
+		}
+	})
+
+	t.Run("a revoked key is stamped by the store and permanent", func(t *testing.T) {
+		s := newStore(t)
+		gone := Signer(t, 9, "old key")
+		clientTime := timestamppb.New(time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC))
+		revoked := []*pb.GuardrailRevokedKey{{KeyId: gone.GetKeyId(), Reason: "leaked", RevokedAt: clientTime}}
+		res, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(0), RevokedSigners: revoked}, "admin-a")
+		if err != nil {
+			t.Fatalf("Set with a revoked key: %v", err)
+		}
+		stored := res.Current.GetRevokedSigners()
+		if len(stored) != 1 || stored[0].GetKeyId() != gone.GetKeyId() || stored[0].GetReason() != "leaked" {
+			t.Fatalf("stored revoked = %v", stored)
+		}
+		if at := stored[0].GetRevokedAt(); at == nil || at.AsTime().Year() == 2001 {
+			t.Fatalf("revoked_at = %v, want the store's time, not the request's", at)
+		}
+		for name, keep := range map[string][]*pb.GuardrailRevokedKey{
+			"dropped":        nil,
+			"reason changed": {{KeyId: gone.GetKeyId(), Reason: "never mind"}},
+		} {
+			if _, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(0), RevokedSigners: keep}, "admin-b"); !errors.Is(err, guardrailpolicy.ErrRevocationPermanent) {
+				t.Fatalf("Set with the revoked key %s = %v, want ErrRevocationPermanent", name, err)
+			}
+		}
+		res2, err := s.Set(ctx, &pb.SetGuardrailPolicyRequest{Policy: Policy(1), RevokedSigners: []*pb.GuardrailRevokedKey{{KeyId: gone.GetKeyId(), Reason: "leaked"}}}, "admin-b")
+		if err != nil {
+			t.Fatalf("Set keeping the revoked key: %v", err)
+		}
+		if !proto.Equal(res2.Current.GetRevokedSigners()[0], stored[0]) {
+			t.Fatalf("revoked entry changed across a Set: %v -> %v", stored[0], res2.Current.GetRevokedSigners()[0])
+		}
+		if got, err := s.Get(ctx); err != nil || got.GetRevision() != 2 {
+			t.Fatalf("Get = (%v, %v), want revision 2", got, err)
+		}
+	})
 }
 
 // runBaselineModeContract is the baseline mode's part of the contract
@@ -216,7 +292,7 @@ func runBaselineModeContract(t *testing.T, newStore func(t *testing.T) guardrail
 		if got, err := s.Get(ctx); !errors.Is(err, guardrailpolicy.ErrNotConfigured) {
 			t.Fatalf("Get after setting the baseline mode = (%v, %v), want ErrNotConfigured", got, err)
 		}
-		if _, err := s.Set(ctx, Policy(0), nil, "admin-b"); err != nil {
+		if _, err := s.Set(ctx, Req(Policy(0)), "admin-b"); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 		if got, err := s.GetBaselineMode(ctx); err != nil || got.GetMode() != blockMode || got.GetRevision() != 1 {

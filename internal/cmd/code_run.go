@@ -28,6 +28,11 @@ var (
 	// #2193: --session resumes one SPECIFIC session id instead of --continue's
 	// "most recent" — mutually exclusive with it (validated in runCodeRun).
 	codeRunSession string
+
+	// #3322: --command runs a shell command in the engine's place, under
+	// --timeout; mutually exclusive with everything that means an engine.
+	codeRunCommand string
+	codeRunTimeout time.Duration
 )
 
 var codeRunCmd = &cobra.Command{
@@ -124,8 +129,14 @@ stays on the box, readable via 'containarium code status' or another
 
 func runCodeRun(cmd *cobra.Command, args []string) error {
 	box := args[0]
+	if strings.TrimSpace(codeRunCommand) != "" {
+		return runCodeRunCommand(cmd, box)
+	}
+	if codeRunTimeout != 0 {
+		return fmt.Errorf("--timeout applies to --command only")
+	}
 	if strings.TrimSpace(codeRunPrompt) == "" {
-		return fmt.Errorf("--prompt is required")
+		return fmt.Errorf("--prompt is required (or --command, to run a shell command instead of the agent)")
 	}
 	if codeRunSession != "" && codeRunContinue {
 		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
@@ -207,6 +218,59 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		defer startInlineAnswers(ctx, newRunInputsClient, box, started.Name, os.Stdin, diag)()
 	}
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// runCodeRunCommand is `code run --command` (#3322): the box runs a shell
+// command under a timeout in the engine's place, detached and streamed exactly
+// like an agent run, with the same name, log and exit-code contract. Nothing
+// engine-related happens: code.json is not read, no gateway token is minted, no
+// session is discovered. Over SSH the command runs as the box's own user (the
+// daemon's StartBoxRun command mode is what applies the run user and its
+// tool-access level).
+func runCodeRunCommand(cmd *cobra.Command, box string) error {
+	timeoutSeconds, err := validateCommandModeFlags()
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	diag := cmd.ErrOrStderr()
+	name := codeRunName()
+	sess, err := resolveCodeSession(ctx, box, diag)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.Close() }()
+	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
+	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(false))
+	if err != nil {
+		return fmt.Errorf("start command run on %q: %w", box, err)
+	}
+	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
+	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)
+}
+
+// validateCommandModeFlags checks the flags of `code run --command` and returns
+// the timeout in whole seconds (0 for the default). --output-format-stream-json
+// is refused (#3425): it selects framed capture for a stream-json consumer, and
+// a shell command's output is not JSON.
+func validateCommandModeFlags() (int, error) {
+	if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
+		return 0, fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")
+	}
+	if codeRunApprovals != string(coderun.ApprovalsDeny) {
+		return 0, fmt.Errorf("--approvals applies to an agent run, not to --command")
+	}
+	if codeRunStreamJSON {
+		return 0, fmt.Errorf("--output-format-stream-json applies to an agent run, not to --command (a shell command's output is not stream-json)")
+	}
+	secs, err := coderun.CommandTimeoutSeconds(codeRunTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("--timeout: %w", err)
+	}
+	return secs, nil
 }
 
 // sessionSidecarFor is where the run called name keeps its session sidecar:

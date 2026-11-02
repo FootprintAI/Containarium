@@ -250,6 +250,7 @@ func boxRunProto(name, dir string, r agentbox.RunRecord, outcome agentbox.RunOut
 	default:
 		run.Outcome = pb.BoxRunOutcome_BOX_RUN_OUTCOME_UNKNOWN
 	}
+	run.Model = r.Model
 	if r.ExitCode != nil {
 		code := int32(*r.ExitCode) // #nosec G115 -- a process exit status fits in int32
 		run.ExitCode = &code
@@ -408,9 +409,9 @@ func (s *ContainerServer) authorizeBoxRuns(ctx context.Context, owner string) er
 	}
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	check := s.boxRunCollaborator
-	if check == nil && s.collaboratorManager != nil {
+	if cm := s.loadCollaboratorManager(); check == nil && cm != nil {
 		check = func(owner, subject string) (bool, error) {
-			_, err := s.collaboratorManager.GetCollaborator(owner, subject)
+			_, err := cm.GetCollaborator(owner, subject)
 			if errors.Is(err, collaborator.ErrNotFound) {
 				return false, nil
 			}

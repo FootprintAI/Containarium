@@ -51,6 +51,13 @@ const (
 	// (destructively) over it — both warrant their own grant.
 	ScopeBackupsRead  = "backups:read"
 	ScopeBackupsWrite = "backups:write"
+	// backups:verify (#3186) is the narrow scope for a restore-test
+	// (verifier) token: VerifyBackup accepts it, and it grants none of
+	// create/restore/delete/prune. The v0.120.1 migration window has ended
+	// (#3219): backups:write does not authorize VerifyBackup or the
+	// verify_backup MCP tool. Re-mint verifier tokens with
+	// backups:read,backups:verify.
+	ScopeBackupsVerify = "backups:verify"
 
 	// shared volumes (VolumeServer). A write can create/attach/delete
 	// CephFS volumes mounted RW across tenants — cross-tenant data
@@ -86,6 +93,17 @@ const (
 	// developer-loop tools (push, sync, sync_ssh_config)
 	ScopeCodeWrite = "code:write"
 	ScopeSSHWrite  = "ssh:write"
+
+	// code:answer answers a box code run's permission requests
+	// (AnswerRunInput, #3191). An allow lets the agent run the tool call it
+	// asked for, so the credential that answers must be one the agent on the
+	// box cannot hold: AnswerRunInput needs this scope in addition to the
+	// box-run rule (ssh:write, owner or collaborator). It is matched
+	// literally: neither the wildcard nor an unscoped token carries it,
+	// because a skill run's in-box token can be "*" and a login token can be
+	// unscoped. No in-box mint path grants it (runForbiddenScopes), and
+	// ExchangeDelegatedToken passes it on only from a caller that names it.
+	ScopeCodeAnswer = "code:answer"
 
 	// JWT lifecycle (revoke). Admin role still required on
 	// the server side — this scope just narrows what an
@@ -156,9 +174,10 @@ const (
 
 	// read-only scopes for surfaces that were admin-only, so a least-privilege
 	// (e.g. compliance/evidence) token can read one without full admin (#621).
-	ScopeAuditRead         = "audit:read"          // audit-log query
-	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
-	ScopeTokensRead        = "tokens:read"         // token listing
+	ScopeAuditRead          = "audit:read"          // audit-log query
+	ScopeNetworkPolicyRead  = "network-policy:read" // NetworkPolicyService Get/List
+	ScopeNetworkPolicyWrite = "network-policy:write"
+	ScopeTokensRead         = "tokens:read" // token listing
 
 	// audit:ingest (#2415) is the ONLY scope that may append externally
 	// sourced rows to the tamper-evident audit chain — today, the
@@ -167,6 +186,13 @@ const (
 	// unscoped token: the handler gates on RequireExplicitScope, so a token
 	// must name it.
 	ScopeAuditIngest = "audit:ingest"
+
+	// retention:write changes the data-retention policy and mode and sets or
+	// releases legal holds (RetentionService writes). Deliberately separate
+	// from audit:read: a compliance/evidence token that can READ the audit log
+	// and retention state must not be able to shorten a retention window or
+	// release a legal hold. Admin role is still required on the server side.
+	ScopeRetentionWrite = "retention:write"
 
 	// code-egress:read lets a tenant read its own coding-tool egress policy
 	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
@@ -219,21 +245,22 @@ var AllScopes = []string{
 	ScopeContainersRead, ScopeContainersWrite,
 	ScopeSecretsRead, ScopeSecretsWrite,
 	ScopeKMSAdmin,
-	ScopeBackupsRead, ScopeBackupsWrite,
+	ScopeBackupsRead, ScopeBackupsWrite, ScopeBackupsVerify,
 	ScopeVolumesRead, ScopeVolumesWrite,
 	ScopeRoutesRead, ScopeRoutesWrite,
 	ScopeSecurityRead, ScopeSecurityWrite, ScopeSecurityTriggerForOwner,
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
-	ScopeCodeWrite, ScopeSSHWrite,
+	ScopeCodeWrite, ScopeSSHWrite, ScopeCodeAnswer,
 	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsRunForOrg, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeSSHAuthorize,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
-	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeNetworkPolicyWrite, ScopeTokensRead,
 	ScopeAuditIngest,
+	ScopeRetentionWrite,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,

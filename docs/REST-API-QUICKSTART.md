@@ -133,6 +133,46 @@ curl -X POST \
   http://localhost:8080/v1/containers/alice/ssh-keys
 ```
 
+#### Set SSH Keys (replace all)
+Makes the box user's `authorized_keys` hold exactly the given keys. Keys not in
+the list are removed; the platform's own key is always kept. Idempotent. An empty
+list needs `"allow_empty": true`, so an omitted field cannot wipe a box.
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ssh_public_keys": [
+      "ssh-ed25519 AAAAC3NzaC1... laptop",
+      "ssh-ed25519 AAAAC3NzaC1... ci"
+    ]
+  }' \
+  http://localhost:8080/v1/containers/alice/ssh-keys
+```
+
+A dropped key is always removed from the box. The daemon's key registry has
+one entry per key, owned by the first account that registered it (a revoked entry is replaced by the next registration). Ownership
+compares the user id, so a box user also owns an entry that their own
+collaborator account (`<owner>-container-<user>`, on someone else's box)
+registered. The entry is revoked when this box user owns it, or it has no
+owner, and no other account still holds the same public key in its own
+`authorized_keys`. For that holder check, collaborator accounts are separate
+accounts: each counts as another holder.
+
+- `PUT` (this call) and `DELETE /v1/containers/{username}/ssh-keys/{key}`: a
+  key another account still holds is dropped from this box only; its entry
+  stays active and the call succeeds without saying who holds it. If this box
+  user owned the entry, it loses its owner: the next account to add the key
+  takes it over, and the last holder's own removal revokes it. Example: alice
+  registered bob's public key first, then bob added it to his own box; alice's
+  removal drops it from alice's box and leaves bob's access working, and bob's
+  later removal revokes the entry.
+- When another account owns the entry, it stays active and the call succeeds.
+- An unreadable host home directory makes the call fail rather than revoke.
+
+Removing a key is therefore not a guaranteed way to revoke a compromised key
+everywhere.
+
 #### Get Metrics
 ```bash
 # All containers
@@ -359,6 +399,7 @@ curl -v http://localhost:8080/v1/containers
 | `POST` | `/v1/containers/{username}/start` | Start container |
 | `POST` | `/v1/containers/{username}/stop` | Stop container |
 | `POST` | `/v1/containers/{username}/ssh-keys` | Add SSH key |
+| `PUT` | `/v1/containers/{username}/ssh-keys` | Set SSH keys (replace all) |
 | `DELETE` | `/v1/containers/{username}/ssh-keys/{key}` | Remove SSH key |
 | `GET` | `/v1/metrics` | Get all metrics |
 | `GET` | `/v1/metrics/{username}` | Get container metrics |

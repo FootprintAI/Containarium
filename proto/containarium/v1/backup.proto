@@ -192,7 +192,8 @@ message BackupRecord {
   // user-held key (#1831). size_bytes and sha256 then describe the
   // ciphertext — what is actually stored — so integrity is verified
   // before decryption. Restoring requires the matching identity, which
-  // the platform never holds.
+  // the platform never holds. False means the stored bytes are plaintext
+  // (#3169): readable by anyone with read access to the destination.
   bool encrypted = 12;
 
   // The age X25519 recipient ("age1…") the dump was encrypted to. A
@@ -244,6 +245,11 @@ enum VerificationResult {
   // The dump could not be restored, or restored but failed a sanity
   // check. `error` carries the engine's own message.
   VERIFICATION_RESULT_FAILED = 2;
+
+  // A whole-box restore test whose comparison with the manifest hit the
+  // time cap before it covered every file (#2802, #2809 Q-C). The checks
+  // report the coverage reached. Never a pass.
+  VERIFICATION_RESULT_INCOMPLETE = 3;
 }
 
 // VerificationCheck is one engine-appropriate assertion made during a
@@ -393,6 +399,14 @@ message CreateBackupRequest {
   // `gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a
   // database backup.
   BackupScope scope = 10;
+
+  // Refuse to store plaintext (#3169). When true and the dump would be
+  // stored with no key at all — no age_recipient given, none registered
+  // for the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key
+  // on this daemon — the request fails with FAILED_PRECONDITION before any
+  // container is touched, so no object is written. False keeps today's
+  // behaviour: such a dump is stored unencrypted (and logged as a WARNING).
+  bool require_encryption = 11;
 }
 
 message CreateBackupResponse {
@@ -477,6 +491,51 @@ message RestoreBackupResponse {
   string message = 1;
 }
 
+// RestoreBoxBackupRequest restores a whole-box backup (scope
+// BACKUP_SCOPE_BOX, engine BACKUP_ENGINE_BOX, an Incus instance archive)
+// into a box (#3356, remainder of #2801). It is a separate RPC so the
+// database restore contract of RestoreBackupRequest stays unchanged: a box
+// backup is never restored by a database engine, and none of the pg_restore
+// fields apply. A box backup taken to destination SNAPSHOT keeps restoring
+// through RestoreBackup.
+//
+// Never over a running box: a target that exists and is running is refused
+// even with `force`; the caller stops it first.
+message RestoreBoxBackupRequest {
+  // Box backup to restore. A record whose scope is not BACKUP_SCOPE_BOX is
+  // refused.
+  string id = 1;
+
+  // Name of the box to restore into, as given to `containarium create`
+  // (the box is then "<target_box>-container"). Optional: empty restores
+  // into "<source box>-restored", where the source box is the backup
+  // record's `username` (#2809, Q-A).
+  string target_box = 2;
+
+  // Replace a target box that already exists. Without it, an existing
+  // target is refused. With it, only a stopped target is replaced; a
+  // running target is still refused (#2809, Q-B).
+  bool force = 3;
+
+  // For a record with encrypted=true: the age X25519 identity
+  // ("AGE-SECRET-KEY-1…") that opens it — the tenant's identity for
+  // AGE_RECIPIENT or BOTH, or the managed identity the caller unwrapped
+  // with its own KMS credentials for MANAGED. Supplied by the client from a
+  // file (#2809, Q-D). Used to decrypt for this one call and never stored
+  // or logged, same contract as RestoreBackupRequest.age_identity. Required
+  // for an encrypted record: the daemon holds no decryption key of its own.
+  string age_identity = 4;
+}
+
+message RestoreBoxBackupResponse {
+  // Operator-facing summary, e.g. "restore complete: <id>".
+  string message = 1;
+
+  // The box the backup was restored into: target_box, or the default name
+  // when target_box was empty.
+  string box = 2;
+}
+
 // VerifyBackupRequest restore-tests a stored dump: it loads the dump into
 // a throwaway database inside a *target* container and runs
 // engine-appropriate sanity checks, then drops the scratch database.
@@ -485,6 +544,12 @@ message RestoreBackupResponse {
 // from — verification must never touch the source database. Supply a
 // different tenant's disposable container as the target (admin only), or
 // the backup's own tenant for a daemon-managed isolated verification container.
+//
+// A whole-box backup (BACKUP_SCOPE_BOX, #2802) is restored into a
+// daemon-managed scratch box instead, every regular file of the restored box
+// is compared with the manifest of file digests written at create time, and
+// the scratch box is deleted on every path. Its target_username must be the
+// backup's own tenant, and connection is ignored.
 message VerifyBackupRequest {
   // Backup to verify.
   string id = 1;
@@ -622,6 +687,19 @@ service BackupService {
     };
   }
 
+  // RestoreBoxBackup restores a whole-box backup into a box (#3356).
+  rpc RestoreBoxBackup(RestoreBoxBackupRequest) returns (RestoreBoxBackupResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups/{id}/restore-box"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Restore a whole-box backup into a box";
+      description: "Restores a BACKUP_SCOPE_BOX backup (an Incus instance archive) into a box. target_box is optional and defaults to <source box>-restored. An existing target is refused unless force is set, and a running target is refused even with force: stop it first. An encrypted backup needs age_identity, used for this call only and never stored or logged. Database backups restore through POST /v1/backups/{id}/restore.";
+      tags: "Backups";
+    };
+  }
+
   // VerifyBackup restore-tests a stored dump against a throwaway target.
   rpc VerifyBackup(VerifyBackupRequest) returns (VerifyBackupResponse) {
     option (google.api.http) = {
@@ -630,7 +708,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Verify a backup";
-      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.";
+      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. A whole-box backup is instead restored into a scratch box, compared file by file with its manifest of digests (capped at 15 minutes; a capped run is INCOMPLETE, never PASSED), and the scratch box is deleted; its target_username must be the backup's own tenant. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.";
       tags: "Backups";
     };
   }

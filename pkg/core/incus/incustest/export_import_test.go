@@ -108,3 +108,24 @@ func TestExportImportMockHooksOverrideDefaults(t *testing.T) {
 		t.Error("a hooked import still ran the default and created the instance")
 	}
 }
+
+// The mock renames like Incus (#3357): the instance and its archive move,
+// and an existing or missing name is refused.
+func TestRenameInstanceMock(t *testing.T) {
+	m := incustest.NewMockBackend()
+	m.Containers["a"] = &incus.ContainerInfo{Name: "a", State: "Stopped"}
+	m.Containers["b"] = &incus.ContainerInfo{Name: "b", State: "Stopped"}
+	m.Archives = map[string][]byte{"a": []byte("x")}
+	if err := m.RenameInstance("a", "b"); err == nil {
+		t.Error("rename onto an existing name succeeded")
+	}
+	if err := m.RenameInstance("ghost", "c"); err == nil {
+		t.Error("rename of a missing instance succeeded")
+	}
+	if err := m.RenameInstance("a", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Containers["a"]; ok || m.Containers["c"] == nil || m.Containers["c"].Name != "c" || string(m.Archives["c"]) != "x" {
+		t.Errorf("after rename: containers %v archives %v", m.Containers, m.Archives)
+	}
+}

@@ -166,7 +166,7 @@ func TestFinishDispatchedRun_AgentPanicMarksDispatchFailed(t *testing.T) {
 	ctx := context.Background()
 	_ = mustTestTrackerStore(t).Delete(ctx, user, "default")
 	cs, _ := setUpWriterConnection(t, user, provider)
-	if _, err := cs.trackerStore.SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+	if _, err := cs.loadTrackerStore().SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}
 	const runID = "run-dispatch-panic"
@@ -184,7 +184,7 @@ func TestFinishDispatchedRun_AgentPanicMarksDispatchFailed(t *testing.T) {
 	agents.launchDispatchedRun(admin, &startedSkillRun{runID: runID, lease: testLease(runID)}, lc, panickingAgent)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		rows, err := cs.trackerStore.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED)
+		rows, err := cs.loadTrackerStore().ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED)
 		if err != nil {
 			t.Fatalf("ListDispatches: %v", err)
 		}
@@ -195,7 +195,7 @@ func TestFinishDispatchedRun_AgentPanicMarksDispatchFailed(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			all, _ := cs.trackerStore.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+			all, _ := cs.loadTrackerStore().ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
 			t.Fatalf("dispatch rows = %+v, want the panicking run's row FAILED", all)
 		}
 		time.Sleep(20 * time.Millisecond)

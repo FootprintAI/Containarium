@@ -488,7 +488,7 @@ service ContainerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set SSH keys (replace all)";
-      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. Revocation is registry-wide: a dropped key is revoked in the ssh_keys registry for every account holding it (as RemoveSSHKey does), so it is also revoked for the same user's other boxes where it remains in the file. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
+      description: "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. A dropped key is always removed from this container user's file. Its ssh_keys registry entry is handled as RemoveSSHKey does: one entry per key, owned by the first account to register it, until that entry is revoked, after which the next registration replaces it (an owner account also owns an entry its own collaborator account <owner>-container-<user> registered, since ownership compares user id); it is revoked when this container user owns it or it has no owner, and no other account (a collaborator account is a separate account) still holds the same public key in its own authorized_keys. A key another account holds is dropped from this file but its entry stays active, and the call still succeeds; if this container user owned the entry, the entry loses its owner, so the next account to register the key takes it over and the last holder's own drop revokes it. When another account owns the entry it stays active, so dropping a key is not a guaranteed revocation of a compromised key. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.";
       tags: "SSH Management";
     };
   }
@@ -500,7 +500,7 @@ service ContainerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Remove SSH key";
-      description: "Removes an SSH public key from a container's authorized_keys file, revoking SSH access for that key. The ssh_public_key should be URL-encoded.";
+      description: "Removes an SSH public key from a container's authorized_keys file, revoking that key's SSH access to this container. The key's ssh_keys registry entry (one per key, owned by the first account to register it; a revoked entry is replaced by the next registration) is revoked when this container user owns it or it has no owner. Ownership compares user id, so an owner account also owns an entry its own collaborator account <owner>-container-<user> registered on another box. If this call would revoke the entry but any other account (a collaborator account <owner>-container-<collab> is a separate account here) still holds the same public key in its own authorized_keys, the key is removed from this container user's file only and the entry stays active; the call still succeeds and does not say which account holds the key. If this container user owned that entry, the entry loses its owner: the next account to register the key takes it over, and the last holder's own removal revokes it. A key whose entry another account owns is likewise removed from the file with the entry left active, so removing a key is not a guaranteed revocation of a compromised key. The revocation happens before the file changes, so a registry failure leaves the key in place and a retry repeats it. The ssh_public_key should be URL-encoded.";
       tags: "SSH Management";
     };
   }
@@ -517,7 +517,23 @@ service ContainerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Start a box's code run";
-      description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. With `command` instead of `prompt` the box runs that shell command under a timeout in the engine's place (no engine, no agent credential), listed and tailed like any run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+  // usable agent sign-in: the same probe StartBoxRun applies before refusing a
+  // platform run, without queueing one (#3274). Names the credential source
+  // only; never reads, copies or prints a credential value. Same access as
+  // StartBoxRun.
+  rpc GetBoxRunUserStatus(GetBoxRunUserStatusRequest) returns (GetBoxRunUserStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/run-user/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Report whether a box's run user is signed in";
+      description: "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.";
       tags: "Code Runs";
     };
   }
@@ -566,6 +582,23 @@ service ContainerService {
     };
   }
 
+  // SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+  // (#3296): removes directories directly under the owner's and the run
+  // user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+  // maximum age, not in use and not a live run's. dry_run lists the same set
+  // and removes nothing. Same access as StopBoxRun.
+  rpc SweepBoxRunCheckouts(SweepBoxRunCheckoutsRequest) returns (SweepBoxRunCheckoutsResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-run-checkouts:sweep"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Sweep a box's stale per-run checkouts";
+      description: "Removes stale per-run checkout directories of platform-started runs: entries directly under the box owner's and the run user's ~/work whose name matches ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$, that are directories (symlinks are never followed or removed), whose newest modification is older than the daemon's --run-checkout-max-age, that no process has as its working directory, and that are not a live run's. Nothing else is touched. dry_run=true lists exactly the set a real sweep would remove and removes nothing. Only a box that has had a platform-started run (a recorded tool-access level or a run record) is swept. A stopped box is FAILED_PRECONDITION, as is a daemon with the sweep turned off (max age 0). Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // GetRunApprovalKey returns the public key a box's permission-request
   // answers are signed with (#2184). `code run --approvals ask` hands it to
   // the box. Same access as StartBoxRun.
@@ -595,7 +628,9 @@ service ContainerService {
 
   // AnswerRunInput answers one permission request of a box run (#2184).
   // Answering a request that is already closed or expired changes nothing
-  // and reports the existing outcome. Same access as StartBoxRun.
+  // and reports the existing outcome. StartBoxRun's access rule plus the
+  // code:answer scope, matched literally (#3191): no credential on a box
+  // carries it, so the agent cannot answer its own requests.
   rpc AnswerRunInput(AnswerRunInputRequest) returns (AnswerRunInputResponse) {
     option (google.api.http) = {
       post: "/v1/containers/{username}/code-runs/{run_name}/inputs/{request_id}:answer"
@@ -603,7 +638,7 @@ service ContainerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Answer a box code run's permission request";
-      description: "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write scope.";
+      description: "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write and code:answer scopes; the wildcard scope and an unscoped token do not carry code:answer.";
       tags: "Code Runs";
     };
   }

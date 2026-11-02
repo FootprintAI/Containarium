@@ -29,6 +29,10 @@ ALLOWLIST=(
   # The client-only installer (laptops, CI runners): containarium-* is
   # exactly the artifact it should fetch.
   "hacks/install-cli.sh"
+  # The #3213 verification harness runs the published CLI of one release
+  # against the published daemon of another; it needs the client artifact
+  # on purpose and never installs it where the daemon belongs.
+  "scripts/ci/managed-key-verify.sh"
 )
 
 is_allowlisted() {

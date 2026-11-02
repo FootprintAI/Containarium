@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -103,7 +104,13 @@ The login flow is the standard OAuth-style device flow:
 
 Multi-server: you can be logged into the hosted cloud AND a
 self-hosted instance simultaneously. The first server you log into
-becomes the default; --server picks a non-default one.`,
+becomes the default; --server picks a non-default one.
+
+Logging in from inside a box hands your token to every process in that box,
+including a coding agent running there: it can read credentials.json and call
+the API as you. Log in from your own machine instead. Answering a run's
+permission requests ('code answer') needs the code:answer scope, which no
+login token carries, so an agent cannot approve its own requests with it.`,
 	Example: `  # Log in to the hosted cloud
   containarium login
 
@@ -434,35 +441,76 @@ func shortDeviceSuffix() string {
 	return strconv.FormatInt(time.Now().UnixNano()&0xffffff, 16)
 }
 
-// openBrowser fires-and-forgets the platform-native URL opener. We
-// intentionally don't block on the child process — the user may
-// not return for minutes, and the polling loop is what actually
-// drives login. Returns the error from exec.Start so callers can
-// fall back to printing the URL.
-//
-// Cross-platform handling per the task brief: linux→xdg-open,
-// darwin→open, windows→cmd /c start. Unknown OSes get an error
-// and we print the URL.
-func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux":
-		// #nosec G204 -- url comes from the cloud's session
-		// response; the user already trusts that endpoint.
-		cmd = exec.Command("xdg-open", url)
-	case "darwin":
-		// #nosec G204
-		cmd = exec.Command("open", url)
-	case "windows":
-		// "start" is a cmd builtin, hence the cmd /c wrapper.
-		// "" placeholder is start's window-title argument; without
-		// it URLs containing & get truncated.
-		// #nosec G204
-		cmd = exec.Command("cmd", "/c", "start", "", url)
-	default:
-		return fmt.Errorf("unsupported OS for auto-launch: %s", runtime.GOOS)
+// validateBrowserURL gates a server-supplied URL before it is handed to
+// a platform opener. It must parse, carry a host, use https (http only
+// for a loopback host, for local development), and contain no
+// whitespace, control characters or shell/cmd.exe metacharacters. The
+// Windows launcher no longer goes through cmd.exe, but the check stays
+// as defence in depth on every platform.
+func validateBrowserURL(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("empty URL")
 	}
-	return cmd.Start()
+	for _, r := range raw {
+		if r <= 0x20 || r == 0x7f || strings.ContainsRune("&|^\"<>`;", r) {
+			return fmt.Errorf("URL contains a disallowed character (%q)", r)
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("URL has no host")
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		h := u.Hostname()
+		if h != "localhost" && h != "127.0.0.1" && h != "::1" {
+			return fmt.Errorf("http URLs are only allowed for a loopback host")
+		}
+	default:
+		return fmt.Errorf("unsupported URL scheme %q", u.Scheme)
+	}
+	return nil
+}
+
+// browserCommand returns the opener command for goos. On Windows it
+// uses rundll32's URL handler rather than `cmd /c start`, so the URL
+// is never parsed by cmd.exe.
+func browserCommand(goos, target string) (string, []string, error) {
+	switch goos {
+	case "linux":
+		return "xdg-open", []string{target}, nil
+	case "darwin":
+		return "open", []string{target}, nil
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", target}, nil
+	}
+	return "", nil, fmt.Errorf("unsupported OS for auto-launch: %s", goos)
+}
+
+// startBrowserCmd is the process-launch seam; tests replace it.
+var startBrowserCmd = func(name string, args ...string) error {
+	// #nosec G204 -- target is validated by validateBrowserURL and the
+	// command name comes from browserCommand's fixed set.
+	return exec.Command(name, args...).Start()
+}
+
+// openBrowser fires-and-forgets the platform-native URL opener. We
+// intentionally don't block on the child process: the user may not
+// return for minutes, and the polling loop is what drives login.
+// Returns an error so callers can fall back to printing the URL.
+func openBrowser(target string) error {
+	if err := validateBrowserURL(target); err != nil {
+		return err
+	}
+	name, args, err := browserCommand(runtime.GOOS, target)
+	if err != nil {
+		return err
+	}
+	return startBrowserCmd(name, args...)
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {

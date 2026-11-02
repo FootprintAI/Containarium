@@ -54,8 +54,10 @@ func resetBackupCreateFlags(t *testing.T) {
 	backupCreateKeyMode = ""
 	backupCreateHookFormat = ""
 	backupCreateBox = false
+	backupCreateRequireEncryption = false
 	backupCreateDBUser, backupCreateDBPass, backupCreateDBHost, backupCreateDBPort = "", "", "", 0
 	t.Cleanup(func() {
+		backupCreateRequireEncryption = false
 		backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 		backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
 		backupCreateKeyMode = ""

@@ -183,6 +183,16 @@ func (v SentinelVerifier) hasEd25519() bool { return len(v.pub) == ed25519.Publi
 // hasHMAC reports whether a usable legacy HMAC secret is configured.
 func (v SentinelVerifier) hasHMAC() bool { return len(v.secret) >= SentinelMinSecretLen }
 
+// CanVerify reports whether this verifier holds the key needed to check a
+// signature of the given header value: ed25519-tagged needs the public key,
+// anything else needs the HMAC secret.
+func (v SentinelVerifier) CanVerify(sig string) bool {
+	if strings.HasPrefix(sig, sentinelEd25519SigPrefix) {
+		return v.hasEd25519()
+	}
+	return v.hasHMAC()
+}
+
 // Configured reports whether the verifier can accept any signature at all. When
 // false the middleware fails closed.
 func (v SentinelVerifier) Configured() bool { return v.hasEd25519() || v.hasHMAC() }

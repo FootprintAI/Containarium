@@ -187,6 +187,7 @@ type Backend interface {
 	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
+	EnsureToolchainVolume(containerName, root string) error
 	UpdateContainerConfig(name, key, value string) error
 	GetRawInstance(name string) (map[string]string, string, error)
 	ResolveGPUInputToPCI(input string) (string, error)
@@ -239,6 +240,9 @@ type Backend interface {
 	// creates a new, stopped instance on pool from such a tarball.
 	ExportInstance(name string) (io.ReadCloser, error)
 	ImportInstance(name, pool string, r io.Reader, opts ImportOptions) error
+	// RenameInstance renames a stopped instance; a whole-box restore uses
+	// it to move a fully imported box onto its target name (#3357).
+	RenameInstance(name, newName string) error
 }
 
 // DiskDevice represents a disk device configuration
@@ -433,6 +437,9 @@ func resolveGPUByIndex(input string, idx int, gpus []GPUInfo) (string, error) {
 
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
+	// ManagedToolchainRoot is the installed host toolchain directory, if any.
+	ManagedToolchainRoot string
+
 	Name                   string
 	Image                  string
 	CPU                    string
@@ -490,7 +497,7 @@ const ContainerNameSuffix = "-container"
 // the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
 // attribution label; then the <tenant>-container naming convention. ""
 // when none yields a tenant — the container is then left unmanaged and
-// reported, never guessed.
+// reported, never guessed. Account and shared-domain identities stay distinct.
 func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
 		return t
@@ -547,16 +554,17 @@ type ContainerInfo struct {
 	// container IP in direct mode, the sentinel's public host when routed
 	// through one. Empty when the daemon doesn't report it (local Incus,
 	// older daemons) — callers then fall back to IPAddress.
-	SSHHost      string
-	CPU          string
-	Memory       string
-	Disk         string
-	GPU          string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
-	GPUs         []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
-	InstanceType string   // "container" or "virtual-machine"
-	Labels       map[string]string
-	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
-	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
+	SSHHost             string
+	CPU                 string
+	Memory              string
+	Disk                string
+	GPU                 string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
+	GPUs                []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
+	InstanceType        string   // "container" or "virtual-machine"
+	Labels              map[string]string
+	Role                Role                // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
+	NetworkTenantSource NetworkTenantSource // Populated by remote API clients.
+	Tenant              string              // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
 	// Managed is true when the instance carries any user.containarium.* config
 	// key, i.e. Containarium created or adopted it. An instance made directly
 	// with `incus launch` has none.
@@ -831,6 +839,10 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// Memory totals reported by the daemon. A zero total means unreported
+	// (local mode or an older daemon), so the CLI omits the memory block.
+	TotalMemoryBytes     int64
+	AvailableMemoryBytes int64
 	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
 	// admission-gate posture (#2284). Nil when the source did not report
 	// one — local Incus mode, or a daemon that predates the field.
@@ -1066,6 +1078,9 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	}
 
 	// Create the container
+	if config.ManagedToolchainRoot != "" {
+		req.Devices["toolchains"] = toolchainDevice(config.ManagedToolchainRoot)
+	}
 	op, err := c.server.CreateInstance(req)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)
@@ -1383,6 +1398,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 
 	info := &ContainerInfo{
 		Name:                 inst.Name,
+		InstanceType:         inst.Type,
 		State:                inst.Status,
 		CreatedAt:            inst.CreatedAt,
 		Labels:               extractLabelsFromConfig(inst.Config),
@@ -1748,23 +1764,18 @@ func (c *Client) GetContainerIP(containerName string) (string, error) {
 	return info.IPAddress, nil
 }
 
-// FindCaddyContainerIP looks for a Caddy container and returns its IP address
-// It searches for containers with "caddy" in the name (case-insensitive)
+// FindCaddyContainerIP returns the IP address of the running core Caddy
+// container. The core Caddy is identified by its role label, or for a
+// pre-label core container by its exact core name (see FindContainerByRole),
+// never by a "caddy" substring: a tenant can name their own container
+// anything, and a substring match would let it stand in for the core Caddy
+// (#3371).
 func (c *Client) FindCaddyContainerIP() (string, error) {
-	containers, err := c.ListContainers()
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %w", err)
+	info, err := c.FindContainerByRole(RoleCaddy)
+	if err != nil || info.IPAddress == "" {
+		return "", fmt.Errorf("no running Caddy container found")
 	}
-
-	// Look for containers with "caddy" in the name
-	for _, container := range containers {
-		nameLower := strings.ToLower(container.Name)
-		if strings.Contains(nameLower, "caddy") && container.IPAddress != "" {
-			return container.IPAddress, nil
-		}
-	}
-
-	return "", fmt.Errorf("no running Caddy container found")
+	return info.IPAddress, nil
 }
 
 // FindContainerByRole finds a running container with the given role label.
@@ -1801,7 +1812,9 @@ func (c *Client) FindContainerByRole(role Role) (*ContainerInfo, error) {
 				return &containers[i], nil
 			}
 		case RoleCaddy:
-			if ct.Name == "containarium-core-caddy" || strings.Contains(strings.ToLower(ct.Name), "caddy") {
+			// Exact name only: a substring match would accept a tenant
+			// container whose name merely contains "caddy" (#3371).
+			if ct.Name == "containarium-core-caddy" {
 				return &containers[i], nil
 			}
 		case RoleVictoriaMetrics:

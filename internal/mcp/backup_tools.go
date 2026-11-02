@@ -34,7 +34,8 @@ func backupTools() []Tool {
 				"age public key before storage, so the platform only holds " +
 				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
 				"with a backup KMS key configured ('managed': a per-backup key " +
-				"wrapped by the KMS; 'both': managed plus the age recipient). " +
+				"wrapped by the KMS; 'both': managed plus the age recipient). 'require_encryption' refuses " +
+				"a backup that would be stored unencrypted. " +
 				"Mirrors `containarium backup create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -85,6 +86,10 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Who holds the key (#2402). 'managed': encrypt to a fresh per-backup identity whose secret the daemon wraps with its KMS key and stores on the record; 'both': managed plus the age recipient, so either opens the file; 'age_recipient': the recipient only, no wrapping. Omit for the daemon default (managed/both when a backup KMS key is configured, otherwise the recipient/plaintext behaviour). A mode the daemon cannot provide is refused, not downgraded. The daemon never unwraps: restore/verify still take the identity, unwrapped under your own KMS credentials.",
 						"enum":        []string{"age_recipient", "managed", "both"},
+					},
+					"require_encryption": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Refuse the backup (FAILED_PRECONDITION, before any container is touched, so nothing is stored) if it would be stored unencrypted: no age_recipient given or registered for the tenant and no managed backup key on the daemon. Default false. Mirrors `containarium backup create --require-encryption`.",
 					},
 				},
 				"required": []string{"username"},
@@ -151,7 +156,11 @@ func backupTools() []Tool {
 				"came from is never touched, and a target that resolves to it is " +
 				"refused. A dump that fails to load is reported as a failed " +
 				"verification with the engine's own error, not as a tool error. The " +
-				"outcome is recorded on the backup as audit evidence. Mirrors " +
+				"outcome is recorded on the backup as audit evidence. A whole-box " +
+				"backup is restored into a scratch box instead, its files compared " +
+				"with the manifest of digests and the scratch box deleted; set " +
+				"target_username to the backup's own tenant. A comparison cut short " +
+				"by the 15-minute cap is INCOMPLETE, never a pass. Mirrors " +
 				"`containarium backup verify`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -178,6 +187,7 @@ func backupTools() []Tool {
 			Handler: handleVerifyBackup,
 		},
 	}
+	tools = append(tools, restoreBoxBackupTool())
 	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
 	for _, t := range tools {
 		if t.Name == "restore_backup" || t.Name == "verify_backup" {
@@ -226,6 +236,8 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		HookFormat:   hookFormat,
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
 		KeyMode:      keyMode,
+
+		RequireEncryption: getBoolArg(args, "require_encryption", false),
 		Connection: &PgConnectionBody{
 			Database: database,
 			User:     getStringArg(args, "db_user", ""),
@@ -399,10 +411,12 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 	if v == nil {
 		return "", fmt.Errorf("daemon returned no verification result")
 	}
-	passed := v.Result == "VERIFICATION_RESULT_PASSED"
-	if passed {
+	switch v.Result {
+	case "VERIFICATION_RESULT_PASSED":
 		fmt.Fprintf(&b, "✅ %s\n\n", resp.Message)
-	} else {
+	case "VERIFICATION_RESULT_INCOMPLETE":
+		fmt.Fprintf(&b, "⚠️ %s\n\n", resp.Message)
+	default:
 		fmt.Fprintf(&b, "❌ %s\n\n", resp.Message)
 	}
 	for _, c := range v.Checks {
@@ -412,7 +426,11 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 		}
 		fmt.Fprintf(&b, "  %s %-18s %s\n", mark, c.Name, c.Detail)
 	}
-	fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	if v.ScratchDatabase == "" {
+		fmt.Fprintf(&b, "\n  target: %s (scratch box, deleted)\n", v.TargetContainer)
+	} else {
+		fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	}
 	fmt.Fprintf(&b, "  when:   %s", v.VerifiedAt)
 	if v.VerifiedBy != "" {
 		fmt.Fprintf(&b, " by %s", v.VerifiedBy)

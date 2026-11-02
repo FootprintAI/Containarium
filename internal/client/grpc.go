@@ -20,18 +20,19 @@ import (
 
 // GRPCClient wraps a gRPC connection to the containarium daemon
 type GRPCClient struct {
-	conn          *grpc.ClientConn
-	client        pb.ContainerServiceClient
-	appClient     pb.AppServiceClient
-	networkClient pb.NetworkServiceClient
-	recipeClient  pb.RecipeServiceClient
-	backupClient  pb.BackupServiceClient
-	volumeClient  pb.VolumeServiceClient
-	kmsClient     pb.KmsServiceClient
-	agentClient   pb.AgentSkillServiceClient
-	crewClient    pb.CrewServiceClient
-	clusterClient pb.ClusterServiceClient
-	auditClient   pb.AuditServiceClient // #2415
+	conn                *grpc.ClientConn
+	client              pb.ContainerServiceClient
+	appClient           pb.AppServiceClient
+	networkClient       pb.NetworkServiceClient
+	networkPolicyClient pb.NetworkPolicyServiceClient
+	recipeClient        pb.RecipeServiceClient
+	backupClient        pb.BackupServiceClient
+	volumeClient        pb.VolumeServiceClient
+	kmsClient           pb.KmsServiceClient
+	agentClient         pb.AgentSkillServiceClient
+	crewClient          pb.CrewServiceClient
+	clusterClient       pb.ClusterServiceClient
+	auditClient         pb.AuditServiceClient // #2415
 	// proofPackClient verifies a sealed Proof Pack (#3064).
 	proofPackClient pb.ProofPackServiceClient
 	sandboxClient   pb.SandboxServiceClient
@@ -98,6 +99,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	client := pb.NewContainerServiceClient(conn)
 	appClient := pb.NewAppServiceClient(conn)
 	networkClient := pb.NewNetworkServiceClient(conn)
+	networkPolicyClient := pb.NewNetworkPolicyServiceClient(conn)
 	recipeClient := pb.NewRecipeServiceClient(conn)
 	backupClient := pb.NewBackupServiceClient(conn)
 	volumeClient := pb.NewVolumeServiceClient(conn)
@@ -111,23 +113,24 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
 	return &GRPCClient{
-		conn:               conn,
-		client:             client,
-		appClient:          appClient,
-		networkClient:      networkClient,
-		recipeClient:       recipeClient,
-		backupClient:       backupClient,
-		volumeClient:       volumeClient,
-		kmsClient:          kmsClient,
-		agentClient:        agentClient,
-		crewClient:         crewClient,
-		clusterClient:      clusterClient,
-		auditClient:        pb.NewAuditServiceClient(conn),
-		proofPackClient:    pb.NewProofPackServiceClient(conn),
-		sandboxClient:      sandboxClient,
-		anonClient:         anonClient,
-		trackerClient:      trackerClient,
-		modelGatewayClient: modelGatewayClient,
+		conn:                conn,
+		client:              client,
+		appClient:           appClient,
+		networkClient:       networkClient,
+		networkPolicyClient: networkPolicyClient,
+		recipeClient:        recipeClient,
+		backupClient:        backupClient,
+		volumeClient:        volumeClient,
+		kmsClient:           kmsClient,
+		agentClient:         agentClient,
+		crewClient:          crewClient,
+		clusterClient:       clusterClient,
+		auditClient:         pb.NewAuditServiceClient(conn),
+		proofPackClient:     pb.NewProofPackServiceClient(conn),
+		sandboxClient:       sandboxClient,
+		anonClient:          anonClient,
+		trackerClient:       trackerClient,
+		modelGatewayClient:  modelGatewayClient,
 
 		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
 		retentionClient:       pb.NewRetentionServiceClient(conn),
@@ -164,12 +167,14 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:         container.Name,
-			Username:     container.Username,
-			SSHHost:      container.SshHost,
-			State:        container.State.String(),
-			Labels:       container.Labels,
-			InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+			Name:                container.Name,
+			Username:            container.Username,
+			SSHHost:             container.SshHost,
+			State:               container.State.String(),
+			Tenant:              container.NetworkTenant,
+			NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
+			Labels:              container.Labels,
+			InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
 		}
 		applyProtoLifecycle(&info, container)
 
@@ -196,10 +201,20 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) (*incus.ContainerInfo, error) {
+	if len(networkTenant) > 0 && networkTenant[0] != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
-	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	req := NewCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, disableAutoSleep, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels, networkTenant...)
 	resp, err := c.client.CreateContainer(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -208,12 +223,14 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:         container.Name,
-		Username:     container.Username,
-		SSHHost:      container.SshHost,
-		State:        container.State.String(),
-		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
-		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
+		Name:                container.Name,
+		Username:            container.Username,
+		SSHHost:             container.SshHost,
+		State:               container.State.String(),
+		InstanceType:        ostype.InstanceTypeFromIsolation(container.Isolation),
+		Tenant:              container.NetworkTenant,
+		NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
+		Labels:              container.Labels, // what the daemon stored, incl. --labels (#2358)
 	}
 
 	if container.Network != nil {
@@ -244,6 +261,16 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 // so only a response that echoes dry_run counts. Anything else is an error:
 // treating it as "validated" would delete the box on an unchecked request.
 func (c *GRPCClient) ValidateCreate(req *pb.CreateContainerRequest) error {
+	if req.GetNetworkTenant() != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if err := requireNativeTenantCapability(caps); err != nil {
+			return err
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	dry, ok := proto.Clone(req).(*pb.CreateContainerRequest)
@@ -268,7 +295,7 @@ var errDryRunNotHonoured = errors.New("the daemon did not honour the dry run (it
 // NewCreateContainerRequest builds the wire request for CreateContainer;
 // pure, so what the CLI flags turn into is unit-testable (#2358 — labels
 // used to be dropped between the CLI and this request).
-func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
+func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string, networkTenant ...string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -302,6 +329,9 @@ func NewCreateContainerRequest(username, image, cpu, memory, disk string, sshKey
 		Region:                    region,
 	}
 
+	if len(networkTenant) > 0 {
+		req.NetworkTenant = networkTenant[0]
+	}
 	if len(labels) > 0 {
 		req.Labels = labels
 	}
@@ -616,10 +646,12 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:     container.Name,
-		Username: container.Username,
-		State:    container.State.String(),
-		Labels:   container.Labels,
+		Name:                container.Name,
+		Username:            container.Username,
+		State:               container.State.String(),
+		Tenant:              container.NetworkTenant,
+		NetworkTenantSource: networkTenantSourceFromProto(container.NetworkTenantSource),
+		Labels:              container.Labels,
 	}
 	applyProtoLifecycle(info, container)
 
@@ -698,6 +730,29 @@ func (c *GRPCClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, err
 	}
 	return resp.GetRuns(), nil
+}
+
+// GetBoxRunUserStatus reports, read-only, whether the unprivileged run user on a
+// box has a usable agent sign-in: the probe StartBoxRun refuses on, without
+// queueing a run (#3274). The error is returned UNWRAPPED so a daemon too old to
+// implement the RPC surfaces as gRPC codes.Unimplemented.
+func (c *GRPCClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.GetBoxRunUserStatus(ctx, &pb.GetBoxRunUserStatusRequest{Username: username})
+}
+
+// sweepBoxRunCheckoutsTimeout bounds a sweep call: removing large checkouts
+// can take far longer than a read.
+const sweepBoxRunCheckoutsTimeout = 10 * time.Minute
+
+// SweepBoxRunCheckouts runs the per-run checkout sweep once on a box (#3296);
+// dry_run lists what it would remove and removes nothing. The error is
+// returned UNWRAPPED so an older daemon surfaces as codes.Unimplemented.
+func (c *GRPCClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (*pb.SweepBoxRunCheckoutsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sweepBoxRunCheckoutsTimeout)
+	defer cancel()
+	return c.client.SweepBoxRunCheckouts(ctx, req)
 }
 
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
@@ -784,14 +839,29 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 
 	// Convert to incus.ServerInfo
 	info := &incus.ServerInfo{
-		Version:       resp.Info.IncusVersion,
-		KernelVersion: resp.Info.KernelVersion,
+		Version:              resp.Info.IncusVersion,
+		KernelVersion:        resp.Info.KernelVersion,
+		TotalMemoryBytes:     resp.Info.TotalMemoryBytes,
+		AvailableMemoryBytes: resp.Info.AvailableMemoryBytes,
 		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
 			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
 		StoragePools: storagePoolsFromWire(resp.Info.StoragePools),
 	}
 
 	return info, nil
+}
+
+// ManagedBackupKeyConfigured reports whether the daemon has a managed backup
+// key, from SystemInfo.managed_backup_key_configured (#3213).
+func (c *GRPCClient) ManagedBackupKeyConfigured() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to get system info: %w", err)
+	}
+	return resp.GetInfo().GetManagedBackupKeyConfigured(), nil
 }
 
 // ============================================
@@ -1056,7 +1126,7 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 // engineOverrides (#2228), keyed by skill_id, wins over that member's own
 // manifest engine; a member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps
 // its manifest's own choice, unchanged pre-#2228 behavior.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine, modelOverrides map[string]string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
@@ -1068,6 +1138,7 @@ func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		GitRef:          gitRef,
 		GitCredential:   gitCredential,
 		EngineOverrides: engineOverrides,
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)
@@ -1172,6 +1243,18 @@ func (c *GRPCClient) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBac
 	resp, err := c.backupClient.RestoreBackup(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to restore backup: %w", err)
+	}
+	return resp, nil
+}
+
+// RestoreBoxBackup restores a whole-box backup into a box via gRPC (#3356).
+func (c *GRPCClient) RestoreBoxBackup(req *pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // download + box import can take time
+	defer cancel()
+
+	resp, err := c.backupClient.RestoreBoxBackup(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore box backup: %w", err)
 	}
 	return resp, nil
 }

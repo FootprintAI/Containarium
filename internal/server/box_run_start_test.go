@@ -387,6 +387,15 @@ func TestStartBoxRun_Validation(t *testing.T) {
 		{"session_id is dot-dot", &pb.StartBoxRunRequest{
 			Username: "alice", Prompt: "hi", SessionId: "..",
 		}},
+		// Command mode (#3322) is exclusive with everything that means an engine.
+		{"command and prompt", &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", Command: "make test"}},
+		{"command and session_id", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", SessionId: "s"}},
+		{"command and continue_session", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", ContinueSession: true}},
+		{"command and structured_output", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", StructuredOutput: true}},
+		{"command and model", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", Model: "m"}},
+		{"timeout without command", &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", TimeoutSeconds: 60}},
+		{"timeout over the cap", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", TimeoutSeconds: 3601}},
+		{"negative timeout", &pb.StartBoxRunRequest{Username: "alice", Command: "make test", TimeoutSeconds: -1}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -847,7 +856,7 @@ func TestBoxRunSpawnScript_FreshRunSnapshotsBeforeLaunch(t *testing.T) {
 
 func TestDaemonCapabilities(t *testing.T) {
 	got := daemonCapabilities()
-	want := map[string]bool{"box_run_name": true, "box_run_structured_output": true}
+	want := map[string]bool{"box_run_name": true, "box_run_structured_output": true, "box_run_model": true, "box_run_command": true}
 	for _, c := range got {
 		delete(want, c)
 	}

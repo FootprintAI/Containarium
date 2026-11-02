@@ -157,6 +157,23 @@ func (c *Client) ImportInstance(name, pool string, r io.Reader, opts ImportOptio
 	return nil
 }
 
+// RenameInstance renames a stopped instance. A whole-box restore imports
+// under a staging name and takes the target's name only once the import is
+// complete (#3357). Incus refuses a name already in use.
+func (c *Client) RenameInstance(name, newName string) error {
+	if name == "" || newName == "" {
+		return errors.New("rename: instance name and new name are required")
+	}
+	op, err := c.server.RenameInstance(name, api.InstancePost{Name: newName})
+	if err != nil {
+		return fmt.Errorf("rename %s to %s: %w", name, newName, err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("rename %s to %s (operation failed): %w", name, newName, err)
+	}
+	return nil
+}
+
 func wrapErr(what string, err error) error {
 	if err == nil {
 		return nil

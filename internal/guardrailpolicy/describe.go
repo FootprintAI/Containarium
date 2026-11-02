@@ -35,5 +35,11 @@ func Describe(resp *pb.GetGuardrailPolicyResponse) string {
 	for _, s := range signers {
 		fmt.Fprintf(&b, "  %s  %s\n", s.GetKeyId(), s.GetLabel())
 	}
+	if revoked := p.GetRevokedSigners(); len(revoked) > 0 {
+		fmt.Fprintf(&b, "Revoked keys (%d):\n", len(revoked))
+		for _, r := range revoked {
+			fmt.Fprintf(&b, "  %s  revoked %s: %s\n", r.GetKeyId(), r.GetRevokedAt().AsTime().UTC().Format(time.RFC3339), r.GetReason())
+		}
+	}
 	return b.String()
 }

@@ -114,6 +114,13 @@ func showSystemInfo() error {
 	fmt.Printf("  Kernel:          %s\n", serverInfo.KernelVersion)
 	fmt.Println()
 
+	if serverInfo.TotalMemoryBytes > 0 {
+		fmt.Println("Memory:")
+		fmt.Printf("  Total:           %.1f GiB\n", float64(serverInfo.TotalMemoryBytes)/(1<<30))
+		fmt.Printf("  Available:       %.1f GiB\n", float64(serverInfo.AvailableMemoryBytes)/(1<<30))
+		fmt.Println()
+	}
+
 	// Count by state
 	running := 0
 	stopped := 0

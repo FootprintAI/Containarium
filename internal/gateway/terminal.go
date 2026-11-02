@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/toolaccess"
+	coreincus "github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/gorilla/websocket"
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
@@ -30,6 +34,86 @@ type TerminalHandler struct {
 	upgrader    websocket.Upgrader
 	incusClient incus.InstanceServer
 	peerProxy   PeerTerminalProxy
+
+	// Seams for the as_run_user guard (#3275). nil = read the Incus instance
+	// directly; tests replace them.
+	recordedToolAccess func(containerName string) (string, error)
+	runUserExists      func(containerName string) (bool, error)
+}
+
+// asRunUserParam is the query parameter that opens the terminal as the box's
+// unprivileged run user instead of its login user (#3275).
+const asRunUserParam = "as_run_user"
+
+// terminalRefusal is a pre-upgrade refusal of an as_run_user request.
+type terminalRefusal struct {
+	status int
+	msg    string
+}
+
+// resolveTerminalUser decides which OS user the terminal logs in as. Without
+// asRunUser it is the box's login user, exactly as before. With it, the box must
+// have a tool-access level recorded and the run user must already exist: the
+// platform provisions that user on the first run, and a terminal that created
+// it would be a second provisioning path. A read failure refuses rather than
+// falling back to the login user, so a sign-in is never silently done as the
+// wrong user.
+func (th *TerminalHandler) resolveTerminalUser(containerName, username string, asRunUser bool) (string, *terminalRefusal) {
+	if !asRunUser {
+		return username, nil
+	}
+	levelFn, existsFn := th.recordedToolAccess, th.runUserExists
+	if levelFn == nil {
+		levelFn = th.readToolAccess
+	}
+	if existsFn == nil {
+		existsFn = th.checkRunUserExists
+	}
+	level, err := levelFn(containerName)
+	if err != nil {
+		log.Printf("terminal %s: read tool-access level: %v", containerName, err)
+		return "", &terminalRefusal{http.StatusServiceUnavailable, "could not read the box's tool-access level; try again"}
+	}
+	if toolaccess.FromConfig(level) == pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED {
+		return "", &terminalRefusal{http.StatusConflict, "as_run_user: this box has no tool-access level recorded, so platform runs do not use a run user"}
+	}
+	exists, err := existsFn(containerName)
+	if err != nil {
+		log.Printf("terminal %s: check run user: %v", containerName, err)
+		return "", &terminalRefusal{http.StatusServiceUnavailable, "could not check for the run user; try again"}
+	}
+	if !exists {
+		return "", &terminalRefusal{http.StatusConflict, "as_run_user: the run user does not exist yet; it is created by the box's first platform run"}
+	}
+	return toolaccess.RunUser, nil
+}
+
+func (th *TerminalHandler) readToolAccess(containerName string) (string, error) {
+	inst, _, err := th.incusClient.GetInstance(containerName)
+	if err != nil {
+		return "", err
+	}
+	return inst.Config[coreincus.ToolAccessKey], nil
+}
+
+// checkRunUserExists asks the box, with a non-interactive `id -u`, whether the
+// run user is there. A non-zero exit is "no"; any failure to run it is an error.
+func (th *TerminalHandler) checkRunUserExists(containerName string) (bool, error) {
+	op, err := th.incusClient.ExecInstance(containerName, api.InstanceExecPost{
+		Command:   []string{"id", "-u", toolaccess.RunUser},
+		WaitForWS: true,
+	}, &incus.InstanceExecArgs{Stdin: nil, Stdout: io.Discard, Stderr: io.Discard, DataDone: make(chan bool)})
+	if err != nil {
+		return false, err
+	}
+	if err := op.Wait(); err != nil {
+		return false, err
+	}
+	ret, ok := op.Get().Metadata["return"].(float64)
+	if !ok {
+		return false, fmt.Errorf("exec reported no exit status")
+	}
+	return ret == 0, nil
 }
 
 // NewTerminalHandler creates a new terminal handler
@@ -191,6 +275,16 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 
 	containerName := username + "-container"
 
+	asRunUser := false
+	if v := r.URL.Query().Get(asRunUserParam); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			http.Error(w, asRunUserParam+" must be a boolean", http.StatusBadRequest)
+			return
+		}
+		asRunUser = b
+	}
+
 	// Check if container is on a peer backend
 	if th.peerProxy != nil {
 		// Phase 1.5 — read the token from whichever form the
@@ -199,6 +293,10 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 		// it; we just need to forward the bytes upstream.
 		authToken, _ := auth.ExtractBearerForUpgrade(r)
 		if peerURL, err := th.peerProxy.PeerTerminalURL(username, authToken); err == nil && peerURL != "" {
+			if asRunUser {
+				// The peer applies the guard against its own box.
+				peerURL += "?" + asRunUserParam + "=true"
+			}
 			// Proxy WebSocket to peer
 			log.Printf("Proxying terminal for %s to peer: %s", containerName, peerURL)
 			th.proxyWebSocket(w, r, peerURL, authToken)
@@ -218,6 +316,13 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Decided before the upgrade so a refusal is a plain HTTP status.
+	loginUser, refusal := th.resolveTerminalUser(containerName, username, asRunUser)
+	if refusal != nil {
+		http.Error(w, refusal.msg, refusal.status)
+		return
+	}
+
 	// Upgrade HTTP connection to WebSocket
 	conn, err := th.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -226,10 +331,10 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 	}
 	defer func() { _ = conn.Close() }()
 
-	log.Printf("Terminal WebSocket connected for container %s", containerName)
+	log.Printf("Terminal WebSocket connected for container %s (login user %s)", containerName, loginUser)
 
 	// Start terminal session
-	th.startTerminalSession(conn, containerName, username)
+	th.startTerminalSession(conn, containerName, loginUser)
 }
 
 // proxyWebSocket proxies a WebSocket connection to a peer backend's terminal endpoint.

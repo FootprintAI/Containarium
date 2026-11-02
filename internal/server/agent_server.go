@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -217,8 +218,9 @@ type AgentSkillServer struct {
 	// revocations kills a run's credentials when the run ends (#1817). nil on a
 	// daemon without Postgres: runs still complete and seed files are still
 	// wiped, but the credentials live to their expiry and each run says so in
-	// the log.
-	revocations runlease.Revoker
+	// the log. Read only through loadRevocations: after a degraded start the
+	// store is swapped in while runs end (#3328).
+	revocations atomic.Pointer[revokerRef]
 	// runs is the in-memory registry of currently-live runs (#1922) —
 	// nil until dual_server.go wires the same instance into both this
 	// server and ContainerServer via SetRunRegistry. Registration is
@@ -241,12 +243,15 @@ type AgentSkillServer struct {
 	// note decision D3). Nil on a daemon without the tracker store wired
 	// (--standalone, or Postgres unavailable): a request naming a
 	// tracker_connection then fails closed rather than minting an
-	// unvalidated claim — see RunAgentSkill.
-	trackerConnections trackerConnectionChecker
-	// lineageReservations sweeps a run's leftover fan-out reservations
+	// unvalidated claim — see RunAgentSkill. Read through
+	// loadTrackerConnections: the tracker store's late install (#3329)
+	// sets it while RPCs are served.
+	trackerConnectionsRef liveValue[trackerConnectionChecker]
+	// lineageReservationsRef sweeps a run's leftover fan-out reservations
 	// when its lease ends (#2062). Nil on a daemon without the tracker
-	// store wired: there is nothing to sweep.
-	lineageReservations lineageReservationReleaser
+	// store wired: there is nothing to sweep. Read through
+	// loadLineageReservations, for the same reason.
+	lineageReservationsRef liveValue[lineageReservationReleaser]
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -341,7 +346,13 @@ func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
 // Nil (the default) makes any request naming a tracker_connection fail
 // closed with FailedPrecondition.
 func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
-	s.trackerConnections = c
+	s.trackerConnectionsRef.store(c)
+}
+
+// loadTrackerConnections returns the current connection checker, nil
+// until one is wired.
+func (s *AgentSkillServer) loadTrackerConnections() trackerConnectionChecker {
+	return s.trackerConnectionsRef.load()
 }
 
 // lineageReservationReleaser is the one method of *tracker.Store
@@ -355,7 +366,13 @@ type lineageReservationReleaser interface {
 // default) leaves them in place. As with SetRevocationStore, the caller
 // must pass a true nil, not a nil *tracker.Store.
 func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
-	s.lineageReservations = r
+	s.lineageReservationsRef.store(r)
+}
+
+// loadLineageReservations returns the current reservation releaser, nil
+// until one is wired.
+func (s *AgentSkillServer) loadLineageReservations() lineageReservationReleaser {
+	return s.lineageReservationsRef.load()
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -394,7 +411,18 @@ func (s *AgentSkillServer) SetAuditStore(store *audit.Store) {
 // dual_server.go does that nil check at the one place the concrete pointer
 // exists.
 func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
-	s.revocations = store
+	s.revocations.Store(&revokerRef{r: store})
+}
+
+type revokerRef struct{ r runlease.Revoker }
+
+// loadRevocations is the one read of the run-lease revocation store; a true
+// nil when none is set.
+func (s *AgentSkillServer) loadRevocations() runlease.Revoker {
+	if ref := s.revocations.Load(); ref != nil {
+		return ref.r
+	}
+	return nil
 }
 
 // SetGatewayProvisioning enables model-gateway provisioning for skill boxes:
@@ -760,6 +788,11 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	// by value), so this only affects this call — a caller's own
 	// gitSourceBestEffort (set above us) is preserved alongside it.
 	opts.engineOverride = req.GetEngine()
+	// #3264: a per-run model wins over the skill's own, on a copy so the shared
+	// catalog skill is never mutated; refused before any box work.
+	if skill, err = applyRunModel(skill, req); err != nil {
+		return nil, err
+	}
 	if opts.orgID, err = authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
 		return nil, err
 	}
@@ -871,7 +904,7 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 
 	detached := context.WithoutCancel(ctx)
 	lctx, cancel := context.WithTimeout(detached, endRunLeaseCeiling)
-	out := runlease.End(lctx, lease, s.revocations, w, reason)
+	out := runlease.End(lctx, lease, s.loadRevocations(), w, reason)
 	cancel()
 
 	if len(out.Unrevoked) > 0 {
@@ -906,7 +939,8 @@ const lineageReleaseBudget = 3 * time.Second
 // swept: over-counting is the fail-closed side. Best-effort: a failure is
 // logged and leaves the rows, which ListTrackerDispatches still shows.
 func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
-	if s.lineageReservations == nil || runID == "" {
+	reservations := s.loadLineageReservations()
+	if reservations == nil || runID == "" {
 		return
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
@@ -915,7 +949,7 @@ func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID
 	}
 	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
 	defer cancel()
-	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	n, err := reservations.ReleaseRunReservations(rctx, username, runID)
 	if err != nil {
 		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
 		return
@@ -974,14 +1008,15 @@ func (s *AgentSkillServer) validateTrackerConnection(ctx context.Context, connNa
 	if connName == "" {
 		return nil
 	}
-	if s.trackerConnections == nil {
+	connections := s.loadTrackerConnections()
+	if connections == nil {
 		return status.Error(codes.FailedPrecondition, "tracker connections not configured on this daemon")
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || username == "" {
 		return status.Error(codes.Unauthenticated, "no authenticated subject")
 	}
-	if _, err := s.trackerConnections.Get(ctx, username, connName); err != nil {
+	if _, err := connections.Get(ctx, username, connName); err != nil {
 		if errors.Is(err, tracker.ErrNotFound) {
 			return status.Errorf(codes.InvalidArgument, "tracker_connection %q not found for tenant %q", connName, username)
 		}
@@ -1052,7 +1087,10 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 //     it; a custom skill via CONTAINARIUM_SKILLS_DIR could. The handler
 //     also refuses any run-bound caller outright, so a run token minted
 //     before this entry existed is covered too.
-var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate}
+//   - code:answer (#3191) — answers a box run's permission requests. The
+//     run token lives on the box with the agent, so holding it would let
+//     the agent approve its own tool calls.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate, auth.ScopeCodeAnswer}
 
 // mintRunToken mints the run's platform JWT — the one credential every
 // in-box call back to the daemon presents — and returns it with the lease

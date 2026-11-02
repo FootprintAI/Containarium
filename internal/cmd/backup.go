@@ -38,6 +38,7 @@ type backupAPI interface {
 	ListBackups(username string) ([]*pb.BackupRecord, error)
 	GetBackup(id string) (*pb.BackupRecord, error)
 	RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error)
+	RestoreBoxBackup(req *pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error)
 	VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error)
 	DeleteBackup(id string) (*pb.DeleteBackupResponse, error)
 	PruneBackups(req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error)

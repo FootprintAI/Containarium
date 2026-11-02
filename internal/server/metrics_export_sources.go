@@ -102,6 +102,12 @@ type serverPlatformSources struct {
 	// pointer so the value-receiver copies the collector holds share one
 	// counter; nil (tests, harnesses) counts nothing.
 	backupReadFailures *atomic.Int64
+	// liveContainers returns the names of the containers present on this
+	// host (#3234). A backup-index tenant whose "<username>-container" is
+	// not in the set has moved or been deleted, and BackupHealth skips it
+	// so the old host stops exporting a growing-age ghost series. nil, or
+	// an error, means liveness is unknown and nothing is skipped.
+	liveContainers func() (map[string]struct{}, error)
 }
 
 // APIStats returns the current cumulative API counters. Nil-safe: a
@@ -143,6 +149,10 @@ func (s serverPlatformSources) Peers() []cloudexport.PeerState {
 // or in principle a build with BackupService disabled) degrades to no
 // tenants reporting backup health, never a panic.
 //
+// Tenants with no container on this host (moved or deleted, #3234) are
+// omitted: absence from the series means no backup exists OR the tenant is
+// not expected here.
+//
 // A read failure (e.g. the backup directory briefly unreadable) is
 // logged and degrades to an empty snapshot rather than erroring the
 // whole export tick — losing one tick of backup-health data is a far
@@ -162,11 +172,46 @@ func (s serverPlatformSources) BackupHealth() []cloudexport.BackupHealthState {
 		}
 		return nil
 	}
+	// A tenant is live when its container exists on this host in any
+	// state (running or stopped). Backup configuration is deliberately not
+	// consulted: a configured-but-broken tenant keeps its container and so
+	// keeps a growing age (#2294). When the container list cannot be read
+	// we fail open and skip nothing; this is not an index read failure and
+	// does not touch the read-failure counter.
+	var live map[string]struct{}
+	if s.liveContainers != nil {
+		var lerr error
+		if live, lerr = s.liveContainers(); lerr != nil {
+			log.Printf("[metrics-export] container list for backup liveness failed, keeping all tenants this tick: %v", lerr)
+			live = nil
+		}
+	}
 	out := make([]cloudexport.BackupHealthState, 0, len(last))
 	for username, at := range last {
+		if live != nil {
+			if _, ok := live[username+"-container"]; !ok {
+				continue
+			}
+		}
 		out = append(out, cloudexport.BackupHealthState{Username: username, LastSuccessAt: at})
 	}
 	return out
+}
+
+// liveContainerNames adapts the container manager to the liveContainers
+// seam: the set of container names present on this host.
+func liveContainerNames(m *container.Manager) func() (map[string]struct{}, error) {
+	return func() (map[string]struct{}, error) {
+		cs, err := m.List()
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string]struct{}, len(cs))
+		for _, c := range cs {
+			out[c.Name] = struct{}{}
+		}
+		return out, nil
+	}
 }
 
 // BackupHealthReadFailures returns the cumulative count of failed backup

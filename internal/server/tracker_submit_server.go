@@ -66,7 +66,7 @@ func (s *ContainerServer) resolveSubmitConn(ctx context.Context, username, conne
 	if err := enforceConnectionBinding(ctx, connectionName); err != nil {
 		return nil, tracker.Conn{}, "", err
 	}
-	trackerConn, err := s.trackerStore.Get(ctx, username, connectionName)
+	trackerConn, err := s.loadTrackerStore().Get(ctx, username, connectionName)
 	if err != nil {
 		return nil, tracker.Conn{}, "", mapTrackerError(err)
 	}
@@ -74,10 +74,11 @@ func (s *ContainerServer) resolveSubmitConn(ctx context.Context, username, conne
 	if err != nil {
 		return nil, tracker.Conn{}, "", status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, tracker.Conn{}, "", status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	cred, err := s.secretsStore.BrokerCredential(ctx, username, trackerConn.CredentialSecret)
+	cred, err := store.BrokerCredential(ctx, username, trackerConn.CredentialSecret)
 	if err != nil {
 		return nil, tracker.Conn{}, "", status.Errorf(codes.FailedPrecondition, "resolve broker credential: %v", err)
 	}
@@ -150,6 +151,9 @@ type submitChangeAuditDetail struct {
 	Branch      string `json:"branch"`
 	ChangeURL   string `json:"change_url,omitempty"`
 	ChangeState string `json:"change_state,omitempty"`
+	// ReusedChange: SubmitTrackerChangeFiles pushed onto a head branch
+	// that already had an open change and returned it (#3288).
+	ReusedChange bool `json:"reused_change,omitempty"`
 }
 
 // SubmitTrackerChange bundles the calling run's committed workspace out
@@ -162,7 +166,7 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -267,7 +271,7 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	// ListTrackerDispatches can link it. Best-effort — the change is open
 	// on the provider whatever happens here, and a run the dispatcher did
 	// not start has no row to annotate.
-	if recorded, err := s.trackerStore.RecordDispatchChange(ctx, runID, change.URL, change.Number); err != nil {
+	if recorded, err := s.loadTrackerStore().RecordDispatchChange(ctx, runID, change.URL, change.Number); err != nil {
 		log.Printf("[tracker] record change on dispatch for run %s: %v", runID, err)
 	} else if !recorded {
 		log.Printf("[tracker] run %s has no dispatch row to record change %s on", runID, change.URL)

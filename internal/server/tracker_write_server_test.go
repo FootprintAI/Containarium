@@ -76,6 +76,20 @@ type fakeWriterProvider struct {
 
 	defaultBranchOut string
 	defaultBranchErr error
+
+	// #3288: FindOpenChange's canned answer; the zero value is "no open
+	// change", so existing callers still reach OpenChange.
+	findOpenBranch string
+	findOpenOut    tracker.Change
+	findOpenFound  bool
+	findOpenErr    error
+}
+
+// FindOpenChange records the branch asked about and returns the canned
+// answer.
+func (f *fakeWriterProvider) FindOpenChange(_ context.Context, _ tracker.Conn, headBranch string) (tracker.Change, bool, error) {
+	f.findOpenBranch = headBranch
+	return f.findOpenOut, f.findOpenFound, f.findOpenErr
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, number int64, body string) (tracker.Comment, error) {
@@ -164,11 +178,11 @@ func (f *fakeWriterProvider) DefaultBranch(context.Context, tracker.Conn) (strin
 func setUpWriterConnection(t *testing.T, user string, provider *fakeWriterProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
-		secretsStore:      mustTestSecretsStore(t),
-		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
 		claimLocks:        tracker.NewClaimLocks(),
 	}
+	s.SetTrackerStore(mustTestTrackerStore(t))
+	s.SetSecretsStore(mustTestSecretsStore(t))
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
 		Username: user, Name: "GH_TOKEN", Value: "ghp_x",
@@ -212,7 +226,7 @@ func TestCommentOnTrackerIssue_TrackerReadScopeInsufficient(t *testing.T) {
 }
 
 func TestCommentOnTrackerIssue_RejectsEmptyBody(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.CommentOnTrackerIssue(ctx, &pb.CommentOnTrackerIssueRequest{
 		Username: "alice", Connection: "default", Number: 1,
@@ -300,7 +314,7 @@ func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
 // ---- ClaimTrackerIssue ---------------------------------------------------
 
 func TestClaimTrackerIssue_NoClaimLocksConfigured(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.ClaimTrackerIssue(ctx, &pb.ClaimTrackerIssueRequest{
 		Username: "alice", Connection: "default", Number: 1,
@@ -400,7 +414,7 @@ func TestClaimTrackerIssue_AlreadyClaimedByForeignRun(t *testing.T) {
 // ---- SetTrackerIssueLabels ------------------------------------------------
 
 func TestSetTrackerIssueLabels_RejectsEmptyRequest(t *testing.T) {
-	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	s := withTrackerStore(&ContainerServer{}, mustTestTrackerStore(t))
 	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
 	_, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
 		Username: "alice", Connection: "default", Number: 1,

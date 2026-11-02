@@ -159,6 +159,9 @@ func (s *ContainerServer) saveMetricsExportConfig(ctx context.Context, cfg cloud
 // persisted flag immediately, which is what a not-yet-built collector
 // would poll.
 func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetricsExportRequest) (*pb.SetMetricsExportResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	// Mirrors GetSystemInfo: this exposes/controls host-level
 	// configuration, not anything tenant-scoped. A user token has no
 	// legitimate reason to flip a host's cloud-billing-relevant export
@@ -292,7 +295,7 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 
 	return cloudexport.NewCollector(cloudexport.CollectorOptions{
 		Sources:         sources,
-		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool, backupMgr: s.backupMgr, backupReadFailures: new(atomic.Int64)},
+		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool, backupMgr: s.backupMgr, backupReadFailures: new(atomic.Int64), liveContainers: liveContainerNames(s.manager)},
 		Exporter:        exporter,
 		Resource:        res,
 		Labels:          s.currentExportLabels(sources.Hostname()),
@@ -369,6 +372,9 @@ func (s *ContainerServer) StartMetricsExportIfEnabled(ctx context.Context) {
 // export_failures come from the running collector (#1070); when export
 // is disabled (no collector) they are zero-valued.
 func (s *ContainerServer) GetMetricsExport(ctx context.Context, req *pb.GetMetricsExportRequest) (*pb.GetMetricsExportResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

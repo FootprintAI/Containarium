@@ -243,6 +243,14 @@ gcloud compute ssh spot-vm -- 'sudo journalctl -u containarium | grep peer-pki |
 #         [peer-pki] bootstrap complete; N peer client(s) upgraded to HTTPS
 #         [peer-pki] renewal watcher started; next cert expires ...
 
+# With peer mTLS off (or no peer CA on the sentinel) the daemon logs one notice instead:
+#         [peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP (...)
+# This is a supported setup, not a fault. The state is also visible as the
+# `peer_transport` field of the system-info response (`PEER_TRANSPORT_HTTP` or
+# `PEER_TRANSPORT_MTLS`; unset on a daemon with no sentinel URL and no peers) and as the
+# `containarium.peer.mtls.enabled` gauge (1 = peer mTLS, 0 = plain HTTP).
+# These describe the daemon-to-peer calls only, not any other transport.
+
 # Confirm cert files exist on the daemon (if PersistPeerPKI is in use):
 gcloud compute ssh spot-vm -- 'sudo ls -la /etc/containarium/'
 # Expect: ca.crt, peer.crt (rw-r--r--), peer.key (rw-------) — or in /tmp depending on config.

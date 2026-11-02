@@ -1,10 +1,7 @@
 package client
 
 import (
-	"encoding/json"
 	"strings"
-
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -27,20 +24,6 @@ func storagePoolsFromWire(pools []*pb.StoragePoolCapacity) []incus.StoragePoolCa
 		})
 	}
 	return out
-}
-
-// storagePoolsFromJSON decodes grpc-gateway JSON pool entries (int64 as
-// strings, enums by name) through protojson; an entry that does not decode is
-// skipped.
-func storagePoolsFromJSON(raw []json.RawMessage) []incus.StoragePoolCapacity {
-	pools := make([]*pb.StoragePoolCapacity, 0, len(raw))
-	for _, r := range raw {
-		p := &pb.StoragePoolCapacity{}
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(r, p); err == nil {
-			pools = append(pools, p)
-		}
-	}
-	return storagePoolsFromWire(pools)
 }
 
 // storageDriverName is the lower-case driver name for a StorageDriver enum

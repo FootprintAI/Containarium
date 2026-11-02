@@ -1933,10 +1933,51 @@
         ]
       }
     },
+    "/v1/backups/{id}/restore-box": {
+      "post": {
+        "summary": "Restore a whole-box backup into a box",
+        "description": "Restores a BACKUP_SCOPE_BOX backup (an Incus instance archive) into a box. target_box is optional and defaults to \u003csource box\u003e-restored. An existing target is refused unless force is set, and a running target is refused even with force: stop it first. An encrypted backup needs age_identity, used for this call only and never stored or logged. Database backups restore through POST /v1/backups/{id}/restore.",
+        "operationId": "BackupService_RestoreBoxBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RestoreBoxBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Box backup to restore. A record whose scope is not BACKUP_SCOPE_BOX is\nrefused.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RestoreBoxBackupBody"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
     "/v1/backups/{id}/verify": {
       "post": {
         "summary": "Verify a backup",
-        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
+        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. A whole-box backup is instead restored into a scratch box, compared file by file with its manifest of digests (capped at 15 minutes; a capped run is INCOMPLETE, never PASSED), and the scratch box is deleted; its target_username must be the backup's own tenant. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
         "operationId": "BackupService_VerifyBackup",
         "responses": {
           "200": {
@@ -3517,6 +3558,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-run-checkouts:sweep": {
+      "post": {
+        "summary": "Sweep a box's stale per-run checkouts",
+        "description": "Removes stale per-run checkout directories of platform-started runs: entries directly under the box owner's and the run user's ~/work whose name matches ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$, that are directories (symlinks are never followed or removed), whose newest modification is older than the daemon's --run-checkout-max-age, that no process has as its working directory, and that are not a live run's. Nothing else is touched. dry_run=true lists exactly the set a real sweep would remove and removes nothing. Only a box that has had a platform-started run (a recorded tool-access level or a run record) is swept. A stopped box is FAILED_PRECONDITION, as is a daemon with the sweep turned off (max age 0). Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_SweepBoxRunCheckouts",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SweepBoxRunCheckoutsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SweepBoxRunCheckoutsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/code-runs": {
       "get": {
         "summary": "List a box's code runs",
@@ -3551,7 +3633,7 @@
       },
       "post": {
         "summary": "Start a box's code run",
-        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
+        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. With `command` instead of `prompt` the box runs that shell command under a timeout in the engine's place (no engine, no agent credential), listed and tailed like any run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_StartBoxRun",
         "responses": {
           "200": {
@@ -3632,7 +3714,7 @@
     "/v1/containers/{username}/code-runs/{runName}/inputs/{requestId}:answer": {
       "post": {
         "summary": "Answer a box code run's permission request",
-        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write scope.",
+        "description": "Signs allow or deny for one request and the tool call the caller showed (request_sha256), writes it to the box, and waits briefly for the run's journal to show a response. Already closed or expired requests are reported, not changed. The box ignores an answer signed for a tool call other than the one it asked. Box owner or collaborator, ssh:write and code:answer scopes; the wildcard scope and an unscoped token do not carry code:answer.",
         "operationId": "ContainerService_AnswerRunInput",
         "responses": {
           "200": {
@@ -4141,6 +4223,39 @@
         ]
       }
     },
+    "/v1/containers/{username}/run-user/status": {
+      "get": {
+        "summary": "Report whether a box's run user is signed in",
+        "description": "Read-only pre-check for StartBoxRun on a box with a recorded tool-access level: whether the unprivileged run user has a usable agent sign-in. Reports the credential source name only, never a value, and does not create the run user. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_GetBoxRunUserStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBoxRunUserStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/snapshots": {
       "get": {
         "summary": "List a container's snapshots",
@@ -4339,7 +4454,7 @@
       },
       "put": {
         "summary": "Set SSH keys (replace all)",
-        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed and revoked in the ssh_keys registry, as RemoveSSHKey does; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. Revocation is registry-wide: a dropped key is revoked in the ssh_keys registry for every account holding it (as RemoveSSHKey does), so it is also revoked for the same user's other boxes where it remains in the file. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
+        "description": "Makes the container user's authorized_keys contain exactly the given public keys. Keys not in the list are removed; keys the platform manages itself (the sentinel's upstream key) are never removed. Idempotent. The file is rewritten, not edited: each kept key is written as a regenerated canonical line (comment reduced to a safe charset), and comment lines, unparseable lines and any other line not in the list are dropped. At most 100 keys of 8 KB each. A dropped key is always removed from this container user's file. Its ssh_keys registry entry is handled as RemoveSSHKey does: one entry per key, owned by the first account to register it, until that entry is revoked, after which the next registration replaces it (an owner account also owns an entry its own collaborator account \u003cowner\u003e-container-\u003cuser\u003e registered, since ownership compares user id); it is revoked when this container user owns it or it has no owner, and no other account (a collaborator account is a separate account) still holds the same public key in its own authorized_keys. A key another account holds is dropped from this file but its entry stays active, and the call still succeeds; if this container user owned the entry, the entry loses its owner, so the next account to register the key takes it over and the last holder's own drop revokes it. When another account owns the entry it stays active, so dropping a key is not a guaranteed revocation of a compromised key. Dropped keys are revoked before the file changes, so a registry failure leaves the file untouched and a retry repeats the revocation. An empty list removes every caller-managed key and must be requested with allow_empty=true. Every key must be a single-line public key with no authorized_keys options; one invalid key fails the whole call with no change. Requires the same access as AddSSHKey.",
         "operationId": "ContainerService_SetSSHKeys",
         "responses": {
           "200": {
@@ -4380,7 +4495,7 @@
     "/v1/containers/{username}/ssh-keys/{sshPublicKey}": {
       "delete": {
         "summary": "Remove SSH key",
-        "description": "Removes an SSH public key from a container's authorized_keys file, revoking SSH access for that key. The ssh_public_key should be URL-encoded.",
+        "description": "Removes an SSH public key from a container's authorized_keys file, revoking that key's SSH access to this container. The key's ssh_keys registry entry (one per key, owned by the first account to register it; a revoked entry is replaced by the next registration) is revoked when this container user owns it or it has no owner. Ownership compares user id, so an owner account also owns an entry its own collaborator account \u003cowner\u003e-container-\u003cuser\u003e registered on another box. If this call would revoke the entry but any other account (a collaborator account \u003cowner\u003e-container-\u003ccollab\u003e is a separate account here) still holds the same public key in its own authorized_keys, the key is removed from this container user's file only and the entry stays active; the call still succeeds and does not say which account holds the key. If this container user owned that entry, the entry loses its owner: the next account to register the key takes it over, and the last holder's own removal revokes it. A key whose entry another account owns is likewise removed from the file with the entry left active, so removing a key is not a guaranteed revocation of a compromised key. The revocation happens before the file changes, so a registry failure leaves the key in place and a retry repeats it. The ssh_public_key should be URL-encoded.",
         "operationId": "ContainerService_RemoveSSHKey",
         "responses": {
           "200": {
@@ -4757,7 +4872,7 @@
       },
       "put": {
         "summary": "Set the server guardrail policy",
-        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.",
+        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.",
         "operationId": "GuardrailPolicyService_SetGuardrailPolicy",
         "responses": {
           "200": {
@@ -5308,6 +5423,40 @@
         ]
       }
     },
+    "/v1/network-policies/tenant-access": {
+      "post": {
+        "summary": "Patch cross-Tenant ingress access",
+        "description": "Administrator and network-policy:write required. Updates only ingress sources in one transaction; full-policy revision conflicts abort the batch. Does not test TCP.",
+        "operationId": "NetworkPolicyService_PatchTenantAccess",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PatchTenantAccessResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PatchTenantAccessRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policies/{tenant}": {
       "get": {
         "summary": "Get network policy",
@@ -5529,6 +5678,30 @@
         ],
         "tags": [
           "NetworkPolicy"
+        ]
+      }
+    },
+    "/v1/network-tenants/capabilities": {
+      "get": {
+        "summary": "Get native network Tenant capabilities",
+        "description": "Authenticated admin capability query; policy writes are not implied by shared creation.",
+        "operationId": "NetworkService_GetNetworkTenantCapabilities",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNetworkTenantCapabilitiesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Network"
         ]
       }
     },
@@ -8969,7 +9142,7 @@
     "/v1/tracker/connections/{username}/{connection}/changes:files": {
       "post": {
         "summary": "Submit a tracker change request from files",
-        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
+        "description": "Fetches base_ref (empty: the project's default branch) from the connection's remote into a fresh temporary repository on the host using the broker credential, commits the given whole files on top of it with the platform identity, pushes head_branch (empty: a daemon-chosen branch stable for the same username, connection, issue and title) without force, and opens a change request referencing issue. When head_branch already exists, the commit is built on its tip and pushed as a fast-forward (ABORTED if the tip moved meanwhile; never forced); when head_branch already has an open change request, that change is returned instead of opening another. Needs no run-scoped token or run box. Paths must be clean and repo-relative; the total content is size-capped. Requires tracker:write. Opened as a draft when draft is true.",
         "operationId": "TrackerService_SubmitTrackerChangeFiles",
         "responses": {
           "200": {
@@ -11641,7 +11814,7 @@
         },
         "encrypted": {
           "type": "boolean",
-          "description": "True when the stored bytes are an age ciphertext encrypted to a\nuser-held key (#1831). size_bytes and sha256 then describe the\nciphertext — what is actually stored — so integrity is verified\nbefore decryption. Restoring requires the matching identity, which\nthe platform never holds."
+          "description": "True when the stored bytes are an age ciphertext encrypted to a\nuser-held key (#1831). size_bytes and sha256 then describe the\nciphertext — what is actually stored — so integrity is verified\nbefore decryption. Restoring requires the matching identity, which\nthe platform never holds. False means the stored bytes are plaintext\n(#3169): readable by anyone with read access to the destination."
         },
         "ageRecipient": {
           "type": "string",
@@ -11787,9 +11960,57 @@
             "$ref": "#/definitions/BoxRunTool"
           },
           "description": "The tools available to this run, measured on the box by the run's own wrapper\n(a probe before the engine starts and one after it ends, written to a sidecar\nwhatever the engine's exit status), never reported by the agent. Empty for a\nrun with no readable sidecar (an older run, or a box without the probe)."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id the run was started with (StartBoxRunRequest.model, #3259).\nEmpty when none was requested: the engine's own default ran, and the\ndaemon does not claim to know which. Empty for a run from before the field."
         }
       },
       "description": "BoxRun is one current run record on a box."
+    },
+    "BoxRunCheckout": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "The box OS user whose ~/work holds it: the box's owner, or the\nunprivileged run user platform runs execute as."
+        },
+        "name": {
+          "type": "string",
+          "description": "The entry's name directly under that user's ~/work."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Disk usage in bytes (du, one filesystem). 0 for a symlink or non-directory."
+        },
+        "newestModification": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The newest modification time of the directory or anything in it. Unset\nwhen it could not be read, or for a symlink or non-directory."
+        },
+        "disposition": {
+          "$ref": "#/definitions/BoxRunCheckoutDisposition"
+        }
+      },
+      "description": "BoxRunCheckout is one matching entry directly under a box user's ~/work."
+    },
+    "BoxRunCheckoutDisposition": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_REMOVED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY",
+        "BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED",
+        "BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED"
+      ],
+      "default": "BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED",
+      "description": "BoxRunCheckoutDisposition is what a sweep did, or would do, with one\nmatching entry.\n\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVED: Removed by this sweep.\n - BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE: A dry run: a real sweep at this moment would remove it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT: Its newest modification is within the daemon's maximum age (or could not\nbe read).\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN: It may be a live run's working directory: modified at or after the start\nof a run on the box that is still going, or named as a live run's cwd.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE: A process on the box has its working directory in it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK: A symbolic link; links are never followed or removed.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY: Not a directory.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED: Chosen for removal, but at removal time it no longer qualified (it was\nreplaced, modified, or a process entered it); left alone.\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED: Chosen for removal, but removing it failed (for example a mount inside\nit); whatever is left stays."
     },
     "BoxRunOutcome": {
       "type": "string",
@@ -12949,6 +13170,14 @@
         "toolAccess": {
           "$ref": "#/definitions/BoxToolAccess",
           "description": "The tool-access level recorded for platform-started runs (#2944), read\nback from the instance config. UNSPECIFIED when none is recorded."
+        },
+        "networkTenant": {
+          "type": "string",
+          "description": "Resolved from current local Provider config, not the create request."
+        },
+        "networkTenantSource": {
+          "$ref": "#/definitions/NetworkTenantSource",
+          "description": "Which current Provider identity input selected network_tenant."
         }
       }
     },
@@ -13148,6 +13377,10 @@
         "scope": {
           "$ref": "#/definitions/BackupScope",
           "description": "What to back up (#2800). UNSPECIFIED and DATABASE are today's database\nbackup, unchanged. BOX backs up the whole box named by `username`; it\nis rejected with INVALID_ARGUMENT when `connection`, `hook` or\n`hook_format` is set, or when key_mode is UNSPECIFIED (a BOX backup is\nnever plaintext, so the mode is named, not defaulted). `destination`,\n`gcs_bucket`, `age_recipient` and `key_mode` mean what they mean for a\ndatabase backup."
+        },
+        "requireEncryption": {
+          "type": "boolean",
+          "description": "Refuse to store plaintext (#3169). When true and the dump would be\nstored with no key at all — no age_recipient given, none registered\nfor the tenant (CONTAINARIUM_BACKUP_AGE_RECIPIENT), and no managed key\non this daemon — the request fails with FAILED_PRECONDITION before any\ncontainer is touched, so no object is written. False keeps today's\nbehaviour: such a dump is stored unencrypted (and logged as a WARNING)."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -13350,6 +13583,10 @@
         "dryRun": {
           "type": "boolean",
           "description": "Validate only (#2925). Runs every pre-flight check the create would run\n(bounds, stack id, TTL and idle-stop ranges, encryption wiring, pool\nplacement, ssh keys, image policy, CPU admission) and returns before\nanything is provisioned: no storage, no Box CR, no instance, no async\njob, and no CPU reservation is left behind. A rejection comes back as\nthe same error the real create would return; success comes back with\n`dry_run` set on the response. Its purpose is `create --force`, which\ndeletes the existing box first and must not do so for a request the\ndaemon would reject. It does not check whether the box already exists\n(a --force caller expects it to).\n\nA create bound for a peer backend is NOT forwarded: a peer that predates\nthis field would ignore it and really create the box. The stack is checked\nagainst that peer's own catalog (#2952), read with an ordinary\nGET /v1/stacks; the response says the peer's other checks were not run."
+        },
+        "networkTenant": {
+          "type": "string",
+          "description": "Administrator-authorized native NIC security domain, independent of the\nencryption tenant_id. Local Linux LXC only; required Guard before Start.\nEmpty retains the default identity resolution (subject to authorization)."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -13606,6 +13843,13 @@
         "proofPack": {
           "$ref": "#/definitions/CrewProofPack",
           "description": "The Proof Pack outcome of a crew with a PACK_PRODUCER member (#2799).\nUnset when the crew has no producer, or the run failed before its last\nA2A member returned the final files. The pack's status is the platform's\nrecord of the tests run on those files, and is what should gate opening a\npull request; an agent's own `tests_run` claim should not. A failed or\nmissing pack does not fail the run: whoever acts on the run reads this."
+        },
+        "memberModels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The model id each member was driven with (#3259), keyed by skill_id: the\nrun's model_overrides entry, else the skill's own pinned `model`. A member\nthat exports no model (none requested or pinned, or no named engine) is\nabsent: its engine's default ran, and the daemon does not claim to know which."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -15142,6 +15386,28 @@
         }
       }
     },
+    "GetBoxRunUserStatusResponse": {
+      "type": "object",
+      "properties": {
+        "runUser": {
+          "type": "string",
+          "description": "The OS user platform runs execute as on a box with a recorded tool-access\nlevel. Reported even when tool_access_recorded is false."
+        },
+        "toolAccessRecorded": {
+          "type": "boolean",
+          "description": "Whether the box has a tool-access level recorded. When false, platform\nruns use the owner's identity and none of the run-user fields below apply."
+        },
+        "runUserExists": {
+          "type": "boolean",
+          "description": "Whether the run user already exists on the box. It is created by the box's\nfirst platform run, so false on a recorded box means no run has happened."
+        },
+        "state": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.\nNONE when the run user does not exist yet or has never signed in (the same\nanswer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,\nINTERACTIVE or API_KEY when a run would proceed."
+        }
+      },
+      "description": "GetBoxRunUserStatusResponse is the read-only answer to \"would StartBoxRun\nrefuse a platform run on this box for want of a run-user sign-in?\" (#3274).\nIt is the same probe StartBoxRun applies, run without queueing anything and\nwithout provisioning the run user. It names the credential's SOURCE only:\nnothing here reads, copies, prints or refreshes a credential value."
+    },
     "GetCapabilityProfileResponse": {
       "type": "object",
       "properties": {
@@ -15529,6 +15795,10 @@
       "properties": {
         "policy": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicy"
+        },
+        "revision": {
+          "type": "string",
+          "description": "SHA256 of the complete observed policy for optimistic ingress edits."
         }
       }
     },
@@ -15540,6 +15810,40 @@
         }
       },
       "description": "GetNetworkPolicyStatusResponse carries the tenant's applied state."
+    },
+    "GetNetworkTenantCapabilitiesResponse": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "type": "string",
+          "description": "Stable contract identifier; never infer capabilities from a version string."
+        },
+        "nativeMembershipRead": {
+          "type": "boolean",
+          "description": "Provider list/get exposes resolved native membership and source."
+        },
+        "sharedTenantCreate": {
+          "type": "boolean",
+          "description": "Current local enforced Guard and create path are ready for shared creation."
+        },
+        "atomicTenantAccess": {
+          "type": "boolean",
+          "description": "Atomic ingress-only cross-Tenant editing support, independent of creation."
+        },
+        "networkPolicyWrite": {
+          "type": "boolean",
+          "description": "Current credential authorization for the atomic policy contract."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Explanation when local shared creation is unavailable."
+        },
+        "backendScope": {
+          "type": "string",
+          "description": "Scope of verified creation and membership evidence: local-lxc\n(incus.NativeTenantBackendScope) — this daemon's own local Linux LXC\nbackend only."
+        }
+      },
+      "description": "GetNetworkTenantCapabilitiesResponse is the capability handshake between a\ndaemon and its clients (CLI, Host MCP, external gRPC consumers). Clients\nmust match contract against the daemon-published constant\n(incus.NativeTenantContractID, \"native-network-tenant/v1\") before relying\non the additive create-time network_tenant field."
     },
     "GetNetworkTopologyResponse": {
       "type": "object",
@@ -16334,6 +16638,25 @@
         }
       },
       "description": "GuardrailPolicy is the whole policy for one run. Its canonical encoding\nis hashed into the attestation so a verifier knows which policy a PASS\nwas measured against."
+    },
+    "GuardrailRevokedKey": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "SHA-256 of the revoked Ed25519 public key, hex (as GuardrailTrustedSigner.key_id)."
+        },
+        "revokedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-assigned by the Set that adds the entry; a value in the request is\nignored."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Required. Reviewer-readable, no personal data. Named by every refused verify."
+        }
+      },
+      "description": "GuardrailRevokedKey is a signing key an admin revoked (#2729;\ndocs/architecture/guardrail-inbound-and-server-policy.md, \"Signer rotation\nand revocation\"). Every attestation the key signed fails verification,\nwhatever its attested_at: the signer sets that timestamp, so whoever stole\nthe key could backdate it. Revocation is permanent: a Set that drops or\nchanges a stored entry is refused."
     },
     "GuardrailRule": {
       "type": "object",
@@ -17971,6 +18294,17 @@
       "default": "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
       "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel is known to be too old for egress enforcement (TCX attach\nneeds 6.6 or newer), so the egress program cannot be attached here whatever\nthe other fields say. Reported in every state, including when no enforcer\nis running. A kernel release that cannot be read or parsed is unknown and\nis not reported as unsupported (#2972).\n - NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: The tenant's egress allow-list in the kernel is not what its policy says:\nthe last reconcile pass failed to add or remove at least one entry. In\nenforce mode a missing entry denies traffic the policy allows, and an entry\nthat could not be removed keeps allowing traffic the policy no longer does.\nThe failed entries are retried on the next pass."
     },
+    "NetworkTenantSource": {
+      "type": "string",
+      "enum": [
+        "NETWORK_TENANT_SOURCE_UNSPECIFIED",
+        "NETWORK_TENANT_SOURCE_NATIVE",
+        "NETWORK_TENANT_SOURCE_CLOUD_ORG_ID",
+        "NETWORK_TENANT_SOURCE_NAME"
+      ],
+      "default": "NETWORK_TENANT_SOURCE_UNSPECIFIED",
+      "description": "NetworkTenantSource identifies the authoritative Provider resolution input."
+    },
     "NetworkTopology": {
       "type": "object",
       "properties": {
@@ -18159,6 +18493,47 @@
         }
       },
       "description": "PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch\ndeny rules (#660): the server reads the current rules, removes any whose CIDR\nis in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by\nCIDR — an add for an existing CIDR replaces it), re-normalizes, and writes\nback under a lock, so concurrent edits don't lose updates. The allow-policy\n(egress, mode, intra, metadata) is untouched. The normalized stored policy is\nechoed back."
+    },
+    "PatchTenantAccessRequest": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TenantAccessChange"
+          }
+        }
+      }
+    },
+    "PatchTenantAccessResponse": {
+      "type": "object",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TenantAccessPolicy"
+          }
+        },
+        "applicationState": {
+          "$ref": "#/definitions/TenantAccessApplicationState",
+          "description": "A committed store write is separate from guard convergence and TCP testing."
+        },
+        "connectivityTested": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PeerTransport": {
+      "type": "string",
+      "enum": [
+        "PEER_TRANSPORT_UNSPECIFIED",
+        "PEER_TRANSPORT_HTTP",
+        "PEER_TRANSPORT_MTLS"
+      ],
+      "default": "PEER_TRANSPORT_UNSPECIFIED",
+      "description": "PeerTransport is the transport this daemon uses for its calls to peer\nbackends.\n\n - PEER_TRANSPORT_UNSPECIFIED: No sentinel and no peers (no peer calls), or the daemon predates the field.\n - PEER_TRANSPORT_HTTP: Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was\nobtained from the sentinel).\n - PEER_TRANSPORT_MTLS: Peer calls use HTTPS with the sentinel-issued leaf cert and the pinned\npeer CA."
     },
     "PentestConfig": {
       "type": "object",
@@ -19669,6 +20044,37 @@
         }
       }
     },
+    "RestoreBoxBackupBody": {
+      "type": "object",
+      "properties": {
+        "targetBox": {
+          "type": "string",
+          "description": "Name of the box to restore into, as given to `containarium create`\n(the box is then \"\u003ctarget_box\u003e-container\"). Optional: empty restores\ninto \"\u003csource box\u003e-restored\", where the source box is the backup\nrecord's `username` (#2809, Q-A)."
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Replace a target box that already exists. Without it, an existing\ntarget is refused. With it, only a stopped target is replaced; a\nrunning target is still refused (#2809, Q-B)."
+        },
+        "ageIdentity": {
+          "type": "string",
+          "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that opens it — the tenant's identity for\nAGE_RECIPIENT or BOTH, or the managed identity the caller unwrapped\nwith its own KMS credentials for MANAGED. Supplied by the client from a\nfile (#2809, Q-D). Used to decrypt for this one call and never stored\nor logged, same contract as RestoreBackupRequest.age_identity. Required\nfor an encrypted record: the daemon holds no decryption key of its own."
+        }
+      },
+      "description": "RestoreBoxBackupRequest restores a whole-box backup (scope\nBACKUP_SCOPE_BOX, engine BACKUP_ENGINE_BOX, an Incus instance archive)\ninto a box (#3356, remainder of #2801). It is a separate RPC so the\ndatabase restore contract of RestoreBackupRequest stays unchanged: a box\nbackup is never restored by a database engine, and none of the pg_restore\nfields apply. A box backup taken to destination SNAPSHOT keeps restoring\nthrough RestoreBackup.\n\nNever over a running box: a target that exists and is running is refused\neven with `force`; the caller stops it first."
+    },
+    "RestoreBoxBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary, e.g. \"restore complete: \u003cid\u003e\"."
+        },
+        "box": {
+          "type": "string",
+          "description": "The box the backup was restored into: target_box, or the default name\nwhen target_box was empty."
+        }
+      }
+    },
     "RetentionChainBase": {
       "type": "object",
       "properties": {
@@ -20079,6 +20485,10 @@
         "onBehalfOfOrgId": {
           "type": "string",
           "description": "The organization this run is attributed to for MODEL KEY RESOLUTION:\nwhen set, the run's gateway token carries key_owner \"org:\u003cid\u003e\"\nand spends that org's registered provider key, instead of the owner\nderived from the shared skill box's cloud_org_id label or the calling\nidentity. The skill box is shared across runs, so the org has to travel\nwith the request. Honoured ONLY for a service credential carrying the\nliteral agents:run-for-org scope (a managed control plane that has already\nauthorized the end user); any other caller setting it is PermissionDenied.\nEmpty = unchanged behaviour."
+        },
+        "model": {
+          "type": "string",
+          "description": "Per-run model override (#3264): the model id this run is driven with, ahead\nof the skill's own `model`. Same rules as RunCrewRequest.model_overrides: a\nplain id (else INVALID_ARGUMENT), and carried to the box only with a named\nengine (the skill's, or `engine`), else FAILED_PRECONDITION. The catalog\nskill is never mutated. Empty = the skill's own model, unchanged."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -20160,6 +20570,13 @@
           "type": "integer",
           "format": "int64",
           "description": "Zero defaults to 5; must not exceed the platform node cap."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-member model override (#3259), keyed by skill_id: when a member's id has\nan entry here, THAT model id is the one its run is driven with, ahead of the\nskill's own `model`. Precedence: this override, then the skill's `model`,\nthen CONTAINARIUM_AGENT_MODEL, then the engine default. The id is opaque (no\ntiers are enumerated; ids change with every release) but must be a plain\nid, else INVALID_ARGUMENT. Like the skill's own `model`, it is carried to the\nbox only with a named engine (the skill's, or engine_overrides'), so an\nentry for a member with none is FAILED_PRECONDITION rather than ignored. A\nkey that is not a member of the crew is INVALID_ARGUMENT. An id the engine's\nprovider does not list is refused before the run starts, when the daemon can\nlist that provider's models. With `graph` (#3264) a key names a skill used\nby a graph node (a skill node, or a member of a crew node) and each node runs\non its entry; the provider-list check then runs when each node starts, so a\nlater node can be refused after earlier nodes have already run.\nCrewRun.member_models reports what each member ran with."
         }
       }
     },
@@ -20900,6 +21317,14 @@
         "updatedBy": {
           "type": "string",
           "description": "Authenticated subject that made the last Set."
+        },
+        "revokedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRevokedKey"
+          },
+          "description": "Revoked signing keys (#2729). Outside `policy`, so revoking a key leaves\npolicy_hash unchanged. Never shrinks."
         }
       },
       "description": "ServerGuardrailPolicy is the stored policy plus the server's bookkeeping."
@@ -21031,6 +21456,19 @@
             "type": "object",
             "$ref": "#/definitions/GuardrailTrustedSigner"
           }
+        },
+        "revokedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRevokedKey"
+          },
+          "description": "Must keep every stored revoked key (same key_id and reason), or the Set\nis FAILED_PRECONDITION. No trusted signer may be revoked."
+        },
+        "expectedRevision": {
+          "type": "string",
+          "format": "int64",
+          "description": "When set, the Set applies only if the stored revision equals it (0 = not\nconfigured); otherwise ABORTED and nothing changes. A read-edit-write\nsets it so a concurrent Set cannot be overwritten silently."
         }
       }
     },
@@ -21637,6 +22075,19 @@
         "structuredOutput": {
           "type": "boolean",
           "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in /tmp/agent-box/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model id to run the engine with (Claude Code's --model), for example\none a caller chose from a policy or a label (#3259). Empty keeps the\nengine's own default, exactly as before. Claude Code only: any other\nengine is FAILED_PRECONDITION, before anything on the box is touched. The\nid is opaque to the API (no tier names are enumerated here, ids change\nwith every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]{0,127};\nanything else is INVALID_ARGUMENT. Whether the engine accepts the id is\nthe engine's to say: an id it rejects ends the run non-zero and the\nreason is in the run's log. BoxRun.model reports the id the run was\nstarted with. Capability \"box_run_model\" in SystemInfo.capabilities."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command mode (#3322): run this shell command (through `sh -c`) instead of\nan engine prompt. No engine starts and no agent credential is loaded, so\nthe run user's agent sign-in is not required. Mutually exclusive with\nprompt, session_id, continue_session, structured_output and model\n(INVALID_ARGUMENT, before anything on the box is touched). The command\nruns as the box's run user with its recorded tool-access level and sudo\ngrant, exactly as an engine run would, in that user's home directory; a\ncaller that needs a checkout makes it part of the command. The run is\nlisted, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,\nStopBoxRun); BoxRun.session_id stays empty. Capability \"box_run_command\"\nin SystemInfo.capabilities."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "With command: the daemon ends the command after this many seconds\n(`timeout -k 5`, so the run exits with code 124). 0 means the daemon's\ndefault of 900; more than 3600 is INVALID_ARGUMENT, as is a value without\ncommand."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -21925,7 +22376,7 @@
         },
         "headBranch": {
           "type": "string",
-          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Never force-pushed; must differ from base_ref."
+          "description": "head_branch is the branch the commit is pushed to. Empty lets the\ndaemon choose one that is stable for (username, connection, issue,\ntitle), so a retry of the same request lands on the same branch and\nthe same commit. Must differ from base_ref. If it already exists on\nthe remote, the commit is added on top of its tip (files identical\nto the tip's add nothing). Never force-pushed: if the tip moves\nbetween fetch and push, the call fails with ABORTED and the remote\nis left as is. If it has an open change request, that change is\nreturned and its title, description and draft state are left alone;\nif its earlier change was merged or closed, a new one is opened."
         },
         "files": {
           "type": "array",
@@ -21936,7 +22387,7 @@
           "description": "files is the change: at least one, each path distinct."
         }
       },
-      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
+      "description": "SubmitTrackerChangeFilesRequest opens a change request from a file\nset instead of a run's box (#3005): the daemon fetches base_ref from\nthe connection's remote on the host with the broker credential,\ncommits files on top of it, pushes head_branch, and opens the change.\nWhen head_branch already exists on the remote, the commit is built on\nits tip instead and pushed as a fast-forward; when head_branch already\nhas an open change request, that change is returned rather than a\nsecond one opened (#3288).\nNo run-scoped token is needed — the caller's tenant authority on the\nconnection is the authorisation, as for CommentOnTrackerIssue."
     },
     "SubmitTrackerChangeFilesResponse": {
       "type": "object",
@@ -21985,6 +22436,37 @@
       "properties": {
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "SweepBoxRunCheckoutsBody": {
+      "type": "object",
+      "properties": {
+        "dryRun": {
+          "type": "boolean",
+          "description": "List what a real sweep would remove (WOULD_REMOVE) and remove nothing."
+        }
+      },
+      "description": "SweepBoxRunCheckoutsRequest runs the per-run checkout sweep once on one box."
+    },
+    "SweepBoxRunCheckoutsResponse": {
+      "type": "object",
+      "properties": {
+        "platformRuns": {
+          "type": "boolean",
+          "description": "Whether the box has had a platform-started run (a recorded tool-access\nlevel or a run record). A box without one is never swept, so checkouts\nis empty."
+        },
+        "maxAge": {
+          "type": "string",
+          "title": "The daemon's maximum age"
+        },
+        "checkouts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxRunCheckout"
+          },
+          "description": "Every matching entry, with what the sweep did or would do with it. The\nREMOVED (or, on a dry run, WOULD_REMOVE) entries are exactly the removal\nset."
         }
       }
     },
@@ -22131,7 +22613,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name) and\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model) and\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
@@ -22140,6 +22622,14 @@
             "$ref": "#/definitions/StoragePoolCapacity"
           },
           "description": "storage_pools is every Incus storage pool's fill as the daemon's pool\ncapacity monitor last read it (#2823), so a nearly full pool is visible\nper pool rather than hidden in the summed disk fields above. Served from\nthe monitor's snapshot (no extra Incus call); empty when the monitor has\nnot read yet or the daemon predates the field."
+        },
+        "peerTransport": {
+          "$ref": "#/definitions/PeerTransport",
+          "description": "peer_transport is how this daemon's own calls to peer backends are\nsecured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a\nsupported setup (peer mTLS off, or no peer CA on the sentinel) but it\nmeans those calls go over plain HTTP, not over the pinned peer-PKI\nTLS, so an operator can see the degraded state instead of finding one\nstartup log line. UNSPECIFIED means this daemon has no sentinel URL and no\npeers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as\nthe sentinel-backend tunnel. See #3079."
+        },
+        "managedBackupKeyConfigured": {
+          "type": "boolean",
+          "description": "managed_backup_key_configured is true when this daemon has a managed\nbackup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup\nit takes is encrypted even for a tenant with no registered age\nrecipient. `containarium backup status` reads it to avoid flagging such\ntenants as unencrypted. False covers both \"no managed key\" and a daemon\nthat predates the field, so a client must treat false as \"not known to\nbe encrypted\". See #3213."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -22363,6 +22853,53 @@
       "default": "TASK_NODE_STATE_UNSPECIFIED",
       "description": "TaskNodeState distinguishes execution failures from dependencies never run."
     },
+    "TenantAccessApplicationState": {
+      "type": "string",
+      "enum": [
+        "TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED",
+        "TENANT_ACCESS_APPLICATION_STATE_PENDING",
+        "TENANT_ACCESS_APPLICATION_STATE_GUARD_VERIFIED",
+        "TENANT_ACCESS_APPLICATION_STATE_DEGRADED"
+      ],
+      "default": "TENANT_ACCESS_APPLICATION_STATE_UNSPECIFIED",
+      "description": "TenantAccessApplicationState describes enforcement evidence after a commit."
+    },
+    "TenantAccessChange": {
+      "type": "object",
+      "properties": {
+        "destination": {
+          "type": "string",
+          "description": "Destination policy: listed sources may initiate connections into it."
+        },
+        "addSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "removeSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "string",
+          "description": "SHA256 of the entire observed policy, or \"absent\". Required to prevent lost previews."
+        }
+      }
+    },
+    "TenantAccessPolicy": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicy"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
     "TerminateUserSessionsBody": {
       "type": "object",
       "description": "TerminateUserSessionsRequest names the user whose sessions to end."
@@ -22528,7 +23065,7 @@
         },
         "branch": {
           "type": "string",
-          "description": "branch is the daemon-chosen branch the change request's head points\nat (#1923). Populated by SubmitTrackerChange's response; empty on\nGetTrackerChange, which has no reason to resolve it for an\nalready-open change."
+          "description": "branch is the branch the change request's head points at: the\ndaemon-chosen or requested branch in a SubmitTrackerChange /\nSubmitTrackerChangeFiles response (#1923), and the provider's head /\nsource branch on GetTrackerChange (#3288)."
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
@@ -23411,10 +23948,11 @@
       "enum": [
         "VERIFICATION_RESULT_UNSPECIFIED",
         "VERIFICATION_RESULT_PASSED",
-        "VERIFICATION_RESULT_FAILED"
+        "VERIFICATION_RESULT_FAILED",
+        "VERIFICATION_RESULT_INCOMPLETE"
       ],
       "default": "VERIFICATION_RESULT_UNSPECIFIED",
-      "description": "VerificationResult is the outcome of a restore test. A backup whose\nbytes are intact but which cannot be loaded by the engine is FAILED —\nthat distinction is the whole point of verification (see #1159).\n\n - VERIFICATION_RESULT_UNSPECIFIED: Never verified, or the outcome could not be determined.\n - VERIFICATION_RESULT_PASSED: The dump restored into a scratch database and passed every\nengine-appropriate sanity check.\n - VERIFICATION_RESULT_FAILED: The dump could not be restored, or restored but failed a sanity\ncheck. `error` carries the engine's own message."
+      "description": "VerificationResult is the outcome of a restore test. A backup whose\nbytes are intact but which cannot be loaded by the engine is FAILED —\nthat distinction is the whole point of verification (see #1159).\n\n - VERIFICATION_RESULT_UNSPECIFIED: Never verified, or the outcome could not be determined.\n - VERIFICATION_RESULT_PASSED: The dump restored into a scratch database and passed every\nengine-appropriate sanity check.\n - VERIFICATION_RESULT_FAILED: The dump could not be restored, or restored but failed a sanity\ncheck. `error` carries the engine's own message.\n - VERIFICATION_RESULT_INCOMPLETE: A whole-box restore test whose comparison with the manifest hit the\ntime cap before it covered every file (#2802, #2809 Q-C). The checks\nreport the coverage reached. Never a pass."
     },
     "VerifyBackupBody": {
       "type": "object",
@@ -23432,7 +23970,7 @@
           "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient\n(#1831). Used to decrypt for this one call and never stored or\nlogged, same contract as RestoreBackupRequest.age_identity.\nRequired for an encrypted record — the daemon refuses to even\nattempt the test without it, because it holds no decryption key of\nits own. A wrong identity comes back as a FAILED verification\nresult, not an RPC error (#2295)."
         }
       },
-      "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndifferent tenant's disposable container as the target (admin only), or\nthe backup's own tenant for a daemon-managed isolated verification container."
+      "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndifferent tenant's disposable container as the target (admin only), or\nthe backup's own tenant for a daemon-managed isolated verification container.\n\nA whole-box backup (BACKUP_SCOPE_BOX, #2802) is restored into a\ndaemon-managed scratch box instead, every regular file of the restored box\nis compared with the manifest of file digests written at create time, and\nthe scratch box is deleted on every path. Its target_username must be the\nbackup's own tenant, and connection is ignored."
     },
     "VerifyBackupResponse": {
       "type": "object",

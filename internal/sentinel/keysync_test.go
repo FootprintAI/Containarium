@@ -135,7 +135,7 @@ func TestKeyStore_YAMLConfigGeneration(t *testing.T) {
 		lines = append(lines, "    to:")
 		lines = append(lines, "      host: "+backendIP+":22")
 		lines = append(lines, "      username: \""+u.Username+"\"")
-		lines = append(lines, "      ignore_hostkey: true")
+		lines = append(lines, "      known_hosts: /etc/sshpiper/known_hosts")
 		lines = append(lines, "      private_key: /etc/sshpiper/upstream_key")
 	}
 
@@ -154,8 +154,8 @@ func TestKeyStore_YAMLConfigGeneration(t *testing.T) {
 	if !strings.Contains(yaml, "host: 192.0.2.15:22") {
 		t.Error("YAML missing backend host")
 	}
-	if !strings.Contains(yaml, "ignore_hostkey: true") {
-		t.Error("YAML missing ignore_hostkey")
+	if !strings.Contains(yaml, "known_hosts: /etc/sshpiper/known_hosts") {
+		t.Error("YAML missing backend known_hosts")
 	}
 	if !strings.Contains(yaml, "private_key: /etc/sshpiper/upstream_key") {
 		t.Error("YAML missing upstream key path")
@@ -248,7 +248,7 @@ func TestRenderSSHPiperConfig(t *testing.T) {
 		{username: "bob", authorizedKeys: "ssh-rsa AAAA_bob", backendIP: "192.0.2.15"},
 	}
 
-	t.Run("no CA installed — byte-identical to authorized_keys-only output", func(t *testing.T) {
+	t.Run("no CA installed — authorized keys with backend host pins", func(t *testing.T) {
 		const golden = `version: "1.0"
 pipes:
   - from:
@@ -258,7 +258,7 @@ pipes:
     to:
       host: 192.0.2.15:22
       username: "alice"
-      ignore_hostkey: true
+      known_hosts: /etc/sshpiper/known_hosts
       private_key: /etc/sshpiper/upstream_key
   - from:
       - username: "bob"
@@ -267,11 +267,11 @@ pipes:
     to:
       host: 192.0.2.15:22
       username: "bob"
-      ignore_hostkey: true
+      known_hosts: /etc/sshpiper/known_hosts
       private_key: /etc/sshpiper/upstream_key
 `
 		if got := string(renderSSHPiperConfig(routes, "")); got != golden {
-			t.Errorf("no-CA output drifted from historical config.\n--- got ---\n%s\n--- want ---\n%s", got, golden)
+			t.Errorf("no-CA output drifted from pinned-host config.\n--- got ---\n%s\n--- want ---\n%s", got, golden)
 		}
 	})
 

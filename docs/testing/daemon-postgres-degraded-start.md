@@ -1,0 +1,183 @@
+# Daemon Postgres degraded-start verification
+
+This drill covers #3044 and #3130 on one deployed commit. Run it on a
+disposable backend with working control-plane enrollment and a tunnel,
+where stopping Postgres and restarting the daemon are permitted. Record
+the deployed commit, daemon version, start time, and endpoint responses.
+The tests below do not replace this deployed control-plane verification.
+
+## Automated regression coverage
+
+```bash
+go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestCollaboratorRecovery_'
+```
+
+The startup tests hold the wait for core services and use an unreachable
+Postgres connection; `/health` must answer degraded within three seconds.
+The gateway tests exercise the early listener's handover to the real mux
+and verify that a failed core Postgres readiness entry still reports
+degraded. The network-policy tests prove that rejected operator writes
+change nothing, reads remain available, and in-process enforcement writers
+remain active on the fallback. Recovery-watcher tests cover the opt-in
+restart's consecutive-success and minimum-uptime requirements. The
+store-recovery tests (#3326) use a fake Postgres that is down and then up:
+a registered family turns from `NOT_SERVING` to `SERVING` with no restart,
+two families share one pool and one dial per attempt, and the self-restart
+watcher holds while a family is pending. The secrets-recovery tests (#3327)
+apply that to the tenant secrets store: its RPCs answer `UNAVAILABLE` and
+`containarium.secrets` is `NOT_SERVING` while Postgres is down, the store
+installs once it answers, and `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
+backend refuses the late install. The tracker-recovery tests (#3329) do
+the same for the tracker connection store: its RPCs answer `UNAVAILABLE`
+and `containarium.tracker` is `NOT_SERVING` while Postgres is down, the
+store does not install while the secrets store is absent, and once both
+are in, the run starter and lineage reservations are wired with it. The
+set/get round trip and the tracker connection-and-dispatch round trip run
+only with `CONTAINARIUM_TEST_DSN` set (the store-integration lane). The
+config-refusal tests (#3378) cover a family whose install is refused by
+configuration, such as `CONTAINARIUM_REQUIRE_ENVELOPE` without a KMS
+backend: it stays pending and `NOT_SERVING` and is still retried, but it
+does not hold the self-restart, while a family whose last attempt failed on
+a connection or open error still does. The refusal is logged once each time
+the family enters it, not on every retry. The passthrough-recovery tests
+(#3333) cover the passthrough route store: while Postgres is down,
+`containarium.passthrough` is `NOT_SERVING` and every passthrough RPC
+(list, add, update, enable, disable, delete) answers `UNAVAILABLE` without
+writing a host forwarding rule (Q13 on #3335). Once Postgres answers, the
+store installs with no restart, writes go to the store, the container
+delete cascade gets it, and the sync job is built once and started exactly
+once on the daemon's serving context, in whichever order the install and
+the daemon start arrive. A daemon with no Postgres configured still writes
+the host rules directly. The delete-cascade and recipe expose-ports tests
+run in the same set because they now set the store through the same
+accessor.
+
+The JWT revocation list is another such family (#3328):
+
+```bash
+go test -race -count=1 ./internal/auth ./internal/server \
+  -run 'TestTokenManager_Revocation|TestTokenManager_NoRevocationExpected|TestRevocationRecovery_|TestAgentSkillServer_RevocationStoreSwapIsRaceSafe|TestGatewayOwnerRevocations_|TestGatewayRevocationRecovery_|TestRevocationCleanup_'
+```
+
+While Postgres is down, `containarium.revocation` is `NOT_SERVING`, every
+TokensService RPC answers `UNAVAILABLE`, and tokens are still validated
+without the revocation check; the daemon logs that once, not per request.
+Once Postgres answers, the store installs with no restart, the entry turns
+`SERVING`, and a token revoked before the outage is rejected again.
+The gateway tests (#3365) cover the model gateway's checks: a revoked
+gateway token is accepted during the window (accepted fail-open, Q11 on
+#3335) and rejected after the install with no restart, owner cutoffs
+recorded in memory are carried into Postgres keeping the latest per owner,
+a failed copy is retried with nothing half-installed, and the cleanup loop
+starts exactly once from the install.
+
+Alerting is two more families (#3334):
+
+```bash
+go test -race -count=1 ./internal/policyreadiness ./internal/server \
+  -run 'TestDetail_|TestAlertRecovery_|TestCredentialWatchRecovery_|TestCredentialWatch_|TestNewDualServer_WiresAlertFamilies'
+```
+
+`containarium.alerts` (alert rules, the rules manager and the webhook
+delivery store) exists only when Postgres and VictoriaMetrics are both
+configured, and `containarium.credential_watch` (the credential-expiry
+watch) only when Postgres and the daemon config store are; an unconfigured
+family has no entry and is not pending. While Postgres is down, the entry
+is `NOT_SERVING` and every alert-rule, alerting-config and delivery-list
+RPC answers `UNAVAILABLE`; `GetAlertingInfo` reports `enabled: false`.
+Once Postgres answers, the store installs over the shared pool with no
+restart, the entry turns `SERVING`, and the rules are synced once, as at
+boot. Without an Incus client the alert install is refused by
+configuration: the family stays `NOT_SERVING` but does not hold the
+self-restart. A delivery raised before the store installs is not buffered
+(decision Q15 on #3335): it is logged as an `alert_delivery_unrecorded`
+line and counted, and the install line reports the count. The watcher
+starts exactly once, with the daemon's serving context, and reads each
+box's last-seen state from Postgres first, so a box alerted before the
+outage is not alerted again.
+
+The collaborator store, the `ssh_keys` registry and the self-host SSH
+authorization decider are one family (#3330):
+
+```bash
+go test -race -count=1 ./internal/server ./internal/sshauthz \
+  -run 'TestCollaboratorRecovery_|TestReconcile_|TestSSHAuthzServer_'
+```
+
+While Postgres is down, `containarium.collaborators` is `NOT_SERVING`,
+`AddCollaborator`, `RemoveCollaborator` and `ListCollaborators` answer
+`UNAVAILABLE` for a box on this backend, and `SSHAuthzService.Authorize`
+has no self-host decider. Once Postgres answers, the store and the
+collaborator manager install with no restart. On the LXC runtime the
+registry is then created, backfilled from `/home` and reconciled: a key
+removed from an `authorized_keys` file while the registry was absent kept
+an active row, and the decider only checks that the login's account holds
+some key, not the offered one, so rows no account holds are revoked
+(decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
+pins why). The registry is read before `/home` is scanned, so a key added
+through the API while the reconcile runs is not revoked. Rows are left
+active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
+a daemon with no cloud enrollment. A failed backfill or reconcile leaves
+the decider off and the family pending, and the next attempt resumes
+without reopening the store. The K8s runtime and an enrolled daemon skip
+the registry or the decider and still report `SERVING`. The real-Postgres
+halves, `TestPGKeyStore_ActiveRecordsAndReconcile` and
+`TestCollaboratorStore_OnSharedPool`, run only with `CONTAINARIUM_TEST_DSN`
+set (the store-integration lane).
+
+## Deployed outage drill
+
+1. Confirm the disposable host is not in use by another verification pass.
+   Record the commit from its deployment record and the daemon version from
+   `/health`. Confirm the Postgres connection string is configured even
+   while its core container is stopped; an intentionally memory-only
+   deployment does not exercise the fallback gate.
+2. Record a baseline HTTP 200 `status: healthy` at `/health` and HTTP 200
+   `status: SERVING` at
+   `/v1/health?service=containarium.core_postgres`. Confirm the control
+   plane lists the backend as connected. Record an existing network policy
+   that can be read after the restart, and use a separate synthetic policy
+   name for the mutation probe.
+3. Stop the host's core Postgres container with
+   `incus stop <core-postgres-container>` and restart the daemon with
+   `sudo systemctl restart containarium`. Immediately poll
+   `http://localhost:<http-port>/health` once per second. Record elapsed
+   time to the first HTTP response. Within a few seconds of startup, expect
+   HTTP 200, `status: degraded` and a reason identifying the startup wait.
+   During the waits, `/v1/containers` must return HTTP 503 with `Retry-After`.
+4. Keep Postgres stopped until startup completes. After the gateway takes
+   over, `/health` must remain HTTP 200 with `status: degraded` and
+   `reason: postgres unavailable`; the core Postgres readiness endpoint
+   must return HTTP 503 `NOT_SERVING`. Capture both responses at this point,
+   not only during the early startup phase.
+5. Read network policies using the normal authenticated operator client.
+   Then attempt to create the synthetic policy. Expect `UNAVAILABLE`
+   (HTTP 503) with `network-policy store is degraded` and
+   `nothing was changed`. List policies again and confirm the synthetic
+   policy was not added. Existing persisted policies may not be loaded
+   while the fallback is active; a successful read does not prove durable
+   policies are present.
+6. Inspect the tunnel log during startup and after handover: once the
+   early listener is serving, there must be no continuing HTTP
+   `connection refused` loop. Capture the control-plane backend status and
+   its advisory `containarium.core_postgres` readiness check: the daemon is
+   connected but its database-backed stores are not ready. Control-plane
+   status is not asserted by the local HTTP tests.
+7. Start Postgres with `incus start <core-postgres-container>`, wait until
+   the database is reachable, then restart the daemon. Expect `/health`
+   HTTP 200 `status: healthy` and core readiness HTTP 200 `SERVING`. Confirm
+   the previously persisted policy returns and the synthetic policy write
+   succeeds. Remove the synthetic policy after recording the result.
+8. If validating `CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1`, repeat the
+   outage with that setting and a supervisor that restarts nonzero exits.
+   When Postgres returns, expect the daemon to exit 75 after three
+   consecutive successful pings and the minimum uptime (default two
+   minutes), then start with its normal stores. This is a supervised
+   restart; general recovery without restarting is #2855.
+
+Restore Postgres and the daemon even if a step fails. Post the results on
+#3044, #3130 and the #3132 verification queue, naming the deployed commit
+and linking evidence that outlives the host. Leave any unexecuted step
+explicitly unverified; a merged PR or a local test run is not deployed
+verification.

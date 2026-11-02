@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The operations behind `containarium code`, shared by the CLI handlers and
@@ -58,6 +59,61 @@ func BuildClaudeRunCommand(prompt string, streamJSON bool) string {
 		cmd += " --output-format stream-json"
 	}
 	return cmd
+}
+
+// Command mode (#3322): a shell command runs in the engine's place, under a
+// timeout the box enforces. Shared by the daemon's StartBoxRun and the CLI's
+// `code run --command`, so the two surfaces run the same thing.
+const (
+	// DefaultCommandTimeoutSeconds applies when a caller gives no timeout.
+	DefaultCommandTimeoutSeconds = 900
+	// MaxCommandTimeoutSeconds caps any timeout a caller asks for.
+	MaxCommandTimeoutSeconds = 3600
+	// CommandTimeoutExitCode is what `timeout` exits with when it ended the command.
+	CommandTimeoutExitCode = 124
+	// MissingTimeoutExitCode is what a command-mode run exits with when the box
+	// has no `timeout` command (#3425); it is the shell's "command not found".
+	MissingTimeoutExitCode = 127
+	// MissingTimeoutMessage is written to the run's log in that case. The run
+	// fails rather than running without its budget: an unbounded command on a
+	// shared box is the failure the timeout exists to prevent.
+	MissingTimeoutMessage = "containarium: this box has no `timeout` command (GNU coreutils is required for --command / box_run_command); install coreutils in the image and run again"
+)
+
+// BuildShellCommand renders the command a command-mode run executes on the box:
+// the caller's text under `sh -c`, inside `timeout -k 5 <seconds>`, so a command
+// that outlives its budget is terminated (SIGTERM, then SIGKILL five seconds
+// later) and the run exits with CommandTimeoutExitCode. The text is
+// single-quoted whole, so nothing in it is interpreted by the outer shell; its
+// own shell interprets it exactly as written. If the box has no `timeout`
+// the run fails at once with MissingTimeoutMessage and MissingTimeoutExitCode
+// instead of starting the command unbounded. 0 (or a negative value) means the
+// default; the cap is the caller's to enforce before this.
+func BuildShellCommand(command string, timeoutSeconds int) string {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = DefaultCommandTimeoutSeconds
+	}
+	return "command -v timeout >/dev/null 2>&1 || { echo " + ShellQuoteSingle(MissingTimeoutMessage) + " >&2; exit " + strconv.Itoa(MissingTimeoutExitCode) + "; }; " +
+		"timeout -k 5 " + strconv.Itoa(timeoutSeconds) + " sh -c " + ShellQuoteSingle(command)
+}
+
+// CommandTimeoutSeconds turns a `--timeout` duration into the whole seconds the
+// API takes: 0 for "the default", an error for a negative value, one under a
+// second, or one over the cap. A fractional value rounds UP to the next whole
+// second (1.5s runs for 2s), so the command is never cut short of what was
+// asked for.
+func CommandTimeoutSeconds(d time.Duration) (int, error) {
+	switch {
+	case d == 0:
+		return 0, nil
+	case d < time.Second:
+		return 0, fmt.Errorf("must be at least 1s, got %s", d)
+	}
+	secs := int((d + time.Second - 1) / time.Second)
+	if secs > MaxCommandTimeoutSeconds {
+		return 0, fmt.Errorf("must be at most %s, got %s", MaxCommandTimeoutSeconds*time.Second, d)
+	}
+	return secs, nil
 }
 
 // CaptureModeFor maps the stream-json flag to the capture_mode process_start
