@@ -36,9 +36,8 @@ import (
 //
 // Every consumer that captured the store by value reads it through
 // liveRouteStore: the network server, the container server's route
-// cleanup, the cloud actuator and the wake proxy. The pentest and ZAP
-// managers still take the store installed at boot; #3332 re-points them.
-// Traffic persistence stays boot-only (#3401).
+// cleanup, the cloud actuator, the wake proxy, and the pentest and ZAP
+// target collectors (#3332). Traffic persistence stays boot-only (#3401).
 
 const (
 	// appHostingStoreService is the family's grpc.health.v1 readiness entry.
@@ -387,16 +386,6 @@ func (h *routeHosting) lister() routeLister {
 		return nil
 	}
 	return h.live
-}
-
-// installedStore is the store installed so far, or nil. For consumers not
-// yet on the accessor (#3332).
-func (h *routeHosting) installedStore() *app.RouteStore {
-	if h == nil {
-		return nil
-	}
-	st, _ := h.live.current()
-	return st
 }
 
 // proxyManager is the Caddy proxy manager, present from construction.

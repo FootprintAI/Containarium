@@ -25,7 +25,7 @@ var ErrZapNotInstalled = errors.New("ZAP is not installed in the security contai
 // Manager orchestrates periodic ZAP scans using a PostgreSQL job queue
 type Manager struct {
 	store      *Store
-	routeStore *app.RouteStore
+	routeStore app.RouteLister // nil without route persistence; read on every collect (#3332)
 	scanner    *Scanner
 	config     ManagerConfig
 	cancel     context.CancelFunc
@@ -37,7 +37,7 @@ type Manager struct {
 // NewManager creates a new ZAP manager
 func NewManager(
 	store *Store,
-	routeStore *app.RouteStore,
+	routeStore app.RouteLister,
 	config ManagerConfig,
 ) *Manager {
 	if config.Interval == 0 {

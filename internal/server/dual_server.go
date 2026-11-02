@@ -47,7 +47,6 @@ import (
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/notify"
-	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/retention"
@@ -64,7 +63,6 @@ import (
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/waf"
 	"github.com/footprintai/containarium/internal/wake"
-	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	clustercore "github.com/footprintai/containarium/pkg/core/cluster"
@@ -312,19 +310,13 @@ type DualServer struct {
 	collaboratorStore        *collaborator.Store
 	daemonConfigStore        *app.DaemonConfigStore
 	metricsCollector         *metrics.Collector
-	securityScanner          *security.Scanner
-	securityStore            *security.Store
-	securityServer           *SecurityServer
+	scanStores               *scanStores // security, pentest and ZAP scan families (#3332); nil families for disabled scanners
 	auditStore               *audit.Store
 	auditEventSubscriber     *audit.EventSubscriber
 	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
 	sshCollector             *audit.SSHCollector
 	revocationCleanup        *revocationCleanup // Phase 1.2 expired-row pruning; starts once the store and Start's context are both in (#3365)
 	alertPool                *pgxpool.Pool      // the alert family's startup pool; nil when it installed late (#3334)
-	pentestManager           *pentest.Manager
-	pentestStore             *pentest.Store
-	zapManager               *zapscanner.Manager
-	zapStore                 *zapscanner.Store
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
 	ttlSweeperManager        *ttlsweeper.Manager     // ephemeral CI box auto-delete (#299)
@@ -1291,10 +1283,6 @@ skipAppHosting:
 		}
 		containerServer.SetRouteCleanupDeps(routeHostingFamily.store(), routeHostingFamily.proxyManager())
 	}
-	// The pentest and ZAP managers still take the store installed at boot
-	// (nil after a degraded start); #3332 re-points them at the accessor.
-	bootRouteStore := routeHostingFamily.installedStore()
-
 	// Cloud-actuation client (#354): if this host is enrolled with a cloud
 	// control plane, run the actuation client — heartbeat + WatchAssignments,
 	// syncing each org's egress policy into the NetworkPolicyServer store
@@ -1689,123 +1677,49 @@ skipAppHosting:
 		containerServer.SetMonitoringURLs(config.VictoriaMetricsURL, grafanaURL)
 	}
 
-	// Setup ClamAV security scanner
-	var securityScanner *security.Scanner
-	var securityStore *security.Store
-	var securityServerInstance *SecurityServer
-	if postgresConnString != "" && !config.DisableSecurityScanner {
-		securityPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
-		} else {
-			securityStore, err = security.NewStore(context.Background(), securityPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create security store: %v", err)
-				securityPool.Close()
-			} else {
-				// Register SecurityService gRPC handler
-				securityIncusClient, incusErr := incus.New()
-				if incusErr != nil {
-					log.Printf("Warning: Failed to create incus client for security: %v", incusErr)
-				} else {
-					// Create scanner first so we can pass it to the server
-					securityScanner = security.NewScanner(securityStore, securityIncusClient)
-
-					// Auto-quarantine (#659): on malware detection, block the
-					// tenant's egress via a deny rule; release on a clean scan.
-					// Opt-in — the quarantine only bites when the network-policy BPF
-					// enforcer is also armed. Uses npServer's deny-rule store directly
-					// (in-process, no RPC/auth).
-					switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
-					case "1", "true", "yes", "on":
-						aq := NewAutoQuarantine(npServer.Store())
-						securityScanner.SetScanResultHook(aq.OnScanResult)
-						log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
-					}
-
-					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
-					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
-					log.Printf("Security service enabled")
-
-					// Ensure security container exists (background, non-blocking)
-					go func() {
-						coreServices := NewCoreServices(securityIncusClient, CoreServicesConfig{
-							NetworkCIDR: networkCIDR,
-						})
-						if err := coreServices.EnsureSecurity(context.Background()); err != nil {
-							log.Printf("Warning: Failed to setup security container: %v. ClamAV scanning disabled.", err)
-						} else {
-							log.Printf("Security container ready")
-						}
-					}()
+	// Security, pentest and ZAP scan stores and their managers (#3332): each
+	// enabled scanner's service is registered now and answers UNAVAILABLE
+	// until its store installs, at boot over one shared boot pool or
+	// in-process once Postgres answers. A disabled scanner is not a family.
+	var pentestMeterProvider *sdkmetric.MeterProvider
+	if metricsCollector != nil {
+		pentestMeterProvider = metricsCollector.MeterProvider()
+	}
+	scanRoutes := scanRouteLister(routeHostingFamily)
+	scanFamilies := setupScanStores(storeRecovery, grpcServer, scanStoreSetup{
+		PostgresDSN:     postgresConnString,
+		DisableSecurity: config.DisableSecurityScanner,
+		DisablePentest:  config.DisablePentestScanner,
+		DisableZap:      config.DisableZapScanner,
+		Connect:         func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 5, 3*time.Second) },
+		OpenSecurity: openSecurityScan(securityScanDeps{
+			NewIncus: incus.New,
+			ConfigureScanner: func(scanner *security.Scanner) {
+				// Auto-quarantine (#659): on malware detection, block the
+				// tenant's egress via a deny rule; release on a clean scan.
+				// Opt-in — the quarantine only bites when the network-policy BPF
+				// enforcer is also armed. Uses npServer's deny-rule store directly
+				// (in-process, no RPC/auth).
+				switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
+				case "1", "true", "yes", "on":
+					aq := NewAutoQuarantine(npServer.Store())
+					scanner.SetScanResultHook(aq.OnScanResult)
+					log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
 				}
-			}
-		}
-	}
-
-	// Setup pentest manager
-	var pentestManager *pentest.Manager
-	var pentestServerRef *PentestServer // armed with the audit store once it exists
-
-	var pentestStore *pentest.Store
-	if postgresConnString != "" && !config.DisablePentestScanner {
-		pentestPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
-		} else {
-			pentestStore, err = pentest.NewStore(context.Background(), pentestPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create pentest store: %v", err)
-				pentestPool.Close()
-			} else {
-				pentestIncusClient, incusErr := incus.New()
-				if incusErr != nil {
-					log.Printf("Warning: Failed to create incus client for pentest: %v", incusErr)
+			},
+			// Ensure the security container exists (background, non-blocking).
+			EnsureSecurityContainer: func(ic *incus.Client) {
+				coreServices := NewCoreServices(ic, CoreServicesConfig{NetworkCIDR: networkCIDR})
+				if err := coreServices.EnsureSecurity(context.Background()); err != nil {
+					log.Printf("Warning: Failed to setup security container: %v. ClamAV scanning disabled.", err)
 				} else {
-					var meterProvider *sdkmetric.MeterProvider
-					if metricsCollector != nil {
-						meterProvider = metricsCollector.MeterProvider()
-					}
-					pentestManager = pentest.NewManager(
-						pentestStore,
-						pentestIncusClient,
-						bootRouteStore,
-						meterProvider,
-						pentest.ManagerConfig{},
-					)
-					pentestServer := NewPentestServer(pentestStore, pentestManager)
-					pentestServerRef = pentestServer
-					pb.RegisterPentestServiceServer(grpcServer, pentestServer)
-					log.Printf("Pentest service enabled")
+					log.Printf("Security container ready")
 				}
-			}
-		}
-	}
-
-	// Setup ZAP scanner manager
-	var zapManager *zapscanner.Manager
-	var zapStore *zapscanner.Store
-	if postgresConnString != "" && !config.DisableZapScanner {
-		zapPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
-		} else {
-			zapStore, err = zapscanner.NewStore(context.Background(), zapPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create ZAP store: %v", err)
-				zapPool.Close()
-			} else {
-				zapManager = zapscanner.NewManager(
-					zapStore,
-					bootRouteStore,
-					zapscanner.ManagerConfig{},
-				)
-				zapServer := NewZapServer(zapStore, zapManager)
-				pb.RegisterZapServiceServer(grpcServer, zapServer)
-				log.Printf("ZAP service enabled")
-			}
-		}
-	}
+			},
+		}),
+		OpenPentest: openPentestScan(pentestScanDeps{NewIncus: incus.New, Routes: scanRoutes, MeterProvider: pentestMeterProvider}),
+		OpenZap:     openZapScan(scanRoutes),
+	})
 
 	// TokensService is registered whether or not the JWT revocation list
 	// installs: it answers UNAVAILABLE until it does, and after a degraded
@@ -1850,9 +1764,7 @@ skipAppHosting:
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
 				codeEgressServer.SetAuditStore(auditStore)
-				if pentestServerRef != nil {
-					pentestServerRef.SetAuditStore(auditStore)
-				}
+				scanFamilies.setAuditStore(auditStore)
 				// #2415 — the sentinel ships its SSH session records here.
 				// Registered only when the store exists; without Postgres the
 				// RPC is simply absent (Unimplemented) rather than a stub.
@@ -2785,8 +2697,9 @@ skipAppHosting:
 			log.Printf("[gateway] /authorized-keys/sentinel authorizes the sentinel at the K8s in-cluster gateway")
 		}
 
-		// Wire security store for CSV export
-		if securityStore != nil {
+		// Wire security store for CSV export (the store installed at boot; the
+		// export route is registered at mux build time only).
+		if securityStore := scanFamilies.securityStore(); securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)
 		}
 
@@ -2957,19 +2870,13 @@ skipAppHosting:
 		collaboratorStore:      collabStore,
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
-		securityScanner:        securityScanner,
+		scanStores:             scanFamilies,
 		sshdPosture:            sshdPosture,
-		securityStore:          securityStore,
-		securityServer:         securityServerInstance,
 		auditStore:             auditStore,
 		auditEventSubscriber:   auditEventSubscriber,
 		sshCollector:           sshCollector,
 		revocationCleanup:      revocationCleanupLoop,
 		alertPool:              alertBootPool,
-		pentestManager:         pentestManager,
-		pentestStore:           pentestStore,
-		zapManager:             zapManager,
-		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
 		coreGuard:              coreGuard,
@@ -3462,10 +3369,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.trafficServer.SetPeerPool(ds.peerPool)
 		}
 
-		// Wire peer pool into security server so peer containers show in summaries
-		if ds.securityServer != nil {
-			ds.securityServer.SetPeerPool(ds.peerPool)
-		}
+		// Wire peer pool into security server so peer containers show in
+		// summaries, now or when the server installs in-process (#3332).
+		ds.scanStores.setPeerPool(ds.peerPool)
 
 		// Stamp the now-known local backend id onto every finding the threat
 		// sentry writes from here on (#1640) — same reason SetPeerPool itself
@@ -3780,22 +3686,10 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		ds.sshdPosture.Start(ctx)
 	}
 
-	if ds.securityScanner != nil {
-		ds.securityScanner.Start(ctx)
-		log.Printf("Security scanner started")
-	}
-
-	// Start pentest manager if available
-	if ds.pentestManager != nil {
-		ds.pentestManager.Start(ctx)
-		log.Printf("Pentest manager started")
-	}
-
-	// Start ZAP manager if available
-	if ds.zapManager != nil {
-		ds.zapManager.Start(ctx)
-		log.Printf("ZAP manager started")
-	}
+	// Security scanner, pentest manager and ZAP manager: each starts now if
+	// its store installed at boot, or when it installs in-process (#3332).
+	// Stopped at shutdown below.
+	ds.scanStores.start(ctx)
 
 	// Start audit event subscriber if available
 	if ds.auditEventSubscriber != nil {
@@ -4058,21 +3952,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		if ds.sshdPosture != nil {
 			ds.sshdPosture.Stop()
 		}
-		if ds.securityScanner != nil {
-			ds.securityScanner.Stop()
-		}
-		if ds.pentestManager != nil {
-			ds.pentestManager.Stop()
-		}
-		if ds.pentestStore != nil {
-			ds.pentestStore.Close()
-		}
-		if ds.zapManager != nil {
-			ds.zapManager.Stop()
-		}
-		if ds.zapStore != nil {
-			ds.zapStore.Close()
-		}
+		ds.scanStores.stop()
 		if ds.sshCollector != nil {
 			ds.sshCollector.Stop()
 		}

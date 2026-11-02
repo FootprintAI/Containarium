@@ -37,6 +37,7 @@ var (
 	_ routeLister       = (*liveRouteStore)(nil)
 	_ wake.RouteStore   = (*liveRouteStore)(nil)
 	_ routeDomainLookup = (*liveRouteStore)(nil)
+	_ app.RouteLister   = (*liveRouteStore)(nil)
 )
 
 func newLiveRouteStore() *liveRouteStore { return &liveRouteStore{} }
@@ -74,6 +75,16 @@ func (l *liveRouteStore) Delete(ctx context.Context, fullDomain string) error {
 		return err
 	}
 	return st.Delete(ctx, fullDomain)
+}
+
+// List implements app.RouteLister for the pentest and ZAP target collectors
+// (#3332).
+func (l *liveRouteStore) List(ctx context.Context, activeOnly bool) ([]*app.RouteRecord, error) {
+	st, err := l.current()
+	if err != nil {
+		return nil, err
+	}
+	return st.List(ctx, activeOnly)
 }
 
 func (l *liveRouteStore) GetByDomain(ctx context.Context, fullDomain string) (*app.RouteRecord, error) {
