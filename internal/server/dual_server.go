@@ -1308,33 +1308,25 @@ skipAppHosting:
 		}
 	}
 
+	// Collaborator store, ssh_keys registry (#2517; LXC runtime only, it
+	// reads the host's /home jump accounts) and the self-host SSH decider:
+	// one late-install family (#3330, collaborator_store_recovery.go). A
+	// store that did not open, or a registry that did not finish, is handed
+	// to storeRecovery, which retries it in-process (no per-store boot retry).
 	var collabStore *collaborator.Store
+	collabFamily := newCollaboratorFamily(containerServer, lxcCollaboratorConfig(config.Runtime != RuntimeK8s, containerServer.GetManager(), config.SSHAuthzMaxKeyAge))
 	if postgresConnString != "" {
-		for attempt := 1; attempt <= 5; attempt++ {
-			collabStore, err = gatedStore(pgGate, postgresConnString, collaborator.NewStore)
-			if err == nil || pgGate.check(postgresConnString) != nil { // #2824: no per-store retries after a failed startup check
-				break
-			}
-			if attempt < 5 {
-				log.Printf("Collaborator store attempt %d/5 failed: %v (retrying in 3s)", attempt, err)
-				time.Sleep(3 * time.Second)
-			}
-		}
-		if err != nil {
-			log.Printf("Warning: Failed to create collaborator store: %v. Collaborator features disabled.", err)
+		if st, cerr := gatedStore(pgGate, postgresConnString, collaborator.NewStore); cerr != nil {
+			log.Printf("Warning: Failed to create collaborator store: %v", cerr)
+			collabFamily.registerPending(storeRecovery)
+		} else if ierr := collabFamily.installAtStartup(context.Background(), st); ierr != nil {
+			collabStore = st
+			log.Printf("Warning: %v", ierr)
+			collabFamily.registerPending(storeRecovery)
 		} else {
-			collaboratorMgr := container.NewCollaboratorManager(containerServer.GetManager(), collabStore)
-			containerServer.SetCollaboratorManager(collaboratorMgr)
-			log.Printf("Collaborator management service enabled")
+			collabStore = st
+			collabFamily.registerInstalled(storeRecovery)
 		}
-	}
-
-	// ssh_keys registry (#2517): same Postgres pool as the collaborator
-	// store. LXC runtime only — the registry, its backfill and the
-	// self-host decider read the host's /home jump accounts.
-	var selfHostSSHAuthz *sshauthz.SelfHostDecider
-	if collabStore != nil && config.Runtime != RuntimeK8s && containerServer.GetManager() != nil {
-		selfHostSSHAuthz = setupSSHKeyRegistry(context.Background(), collabStore, containerServer, config.SSHAuthzMaxKeyAge)
 	}
 
 	// Setup route persistence and Caddy sync (independent of app hosting).
@@ -1496,9 +1488,10 @@ skipAppHosting:
 	// Self-host SSH authorization (#2517): only when no cloud is enrolled.
 	// An enrolled daemon's answer comes from the cloud (#2525) through the
 	// managed forwarder wired above; it never decides locally.
-	if selfHostSSHAuthz != nil && cloudClient == nil {
-		sshAuthzServer.SetDecider(selfHostSSHAuthz)
-		log.Printf("SSH authorization: self-host decider enabled (max key age %v, 0 = no limit)", config.SSHAuthzMaxKeyAge)
+	// The family sets it once its registry is complete, now or on a late
+	// install (#3330).
+	if cloudClient == nil {
+		collabFamily.enableSelfHostDecider(sshAuthzServer)
 	}
 
 	// Setup passthrough route persistence and iptables sync: a late-install

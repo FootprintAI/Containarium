@@ -43,6 +43,13 @@ func (s *SSHAuthzServer) SetDecider(d SSHAuthzDecider) {
 	s.decider = d
 }
 
+// currentDecider returns the wired decider, or nil.
+func (s *SSHAuthzServer) currentDecider() SSHAuthzDecider {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.decider
+}
+
 // Authorize requires the ssh:authorize scope, explicitly — the gateway
 // stamps it only on a request whose sentinel signature verified
 // (gateway.MountSSHAuthz); a token or mTLS peer without it is refused.
@@ -50,9 +57,7 @@ func (s *SSHAuthzServer) Authorize(ctx context.Context, req *pb.AuthorizeSSHRequ
 	if err := auth.RequireExplicitScope(ctx, auth.ScopeSSHAuthorize); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	d := s.decider
-	s.mu.RUnlock()
+	d := s.currentDecider()
 	if d == nil {
 		return nil, status.Error(codes.Unimplemented, "ssh authorization decider not configured on this daemon")
 	}

@@ -58,8 +58,22 @@ func (o authorizedKeysOps) countKeys(username string) (int32, error) {
 	return container.CountAuthorizedKeys(username)
 }
 
+// sshKeyRegistryRef boxes the registry interface for the atomic swap.
+type sshKeyRegistryRef struct{ r sshauthz.KeyRegistry }
+
 // SetSSHKeyRegistry wires the ssh_keys registry into the key write paths.
-func (s *ContainerServer) SetSSHKeyRegistry(r sshauthz.KeyRegistry) { s.sshKeys = r }
+// Safe while serving: the late install (#3330) calls it.
+func (s *ContainerServer) SetSSHKeyRegistry(r sshauthz.KeyRegistry) {
+	s.sshKeys.Store(&sshKeyRegistryRef{r: r})
+}
+
+// loadSSHKeyRegistry returns the installed registry, or nil.
+func (s *ContainerServer) loadSSHKeyRegistry() sshauthz.KeyRegistry {
+	if ref := s.sshKeys.Load(); ref != nil {
+		return ref.r
+	}
+	return nil
+}
 
 func (s *ContainerServer) sshKeyClock() time.Time {
 	if s.sshKeyNow != nil {
@@ -71,14 +85,15 @@ func (s *ContainerServer) sshKeyClock() time.Time {
 // registerSSHKey records pubKey for the jump account username. Nil
 // registry = no-op.
 func (s *ContainerServer) registerSSHKey(ctx context.Context, username, pubKey string, source sshauthz.KeySource) error {
-	if s.sshKeys == nil {
+	keys := s.loadSSHKeyRegistry()
+	if keys == nil {
 		return nil
 	}
 	rec, err := sshauthz.NewKeyRecord(pubKey, username, source, s.sshKeyClock())
 	if err != nil {
 		return err
 	}
-	return s.sshKeys.Register(ctx, rec)
+	return keys.Register(ctx, rec)
 }
 
 // revokeSSHKey revokes pubKey's registry entry if username owns it (by user
@@ -88,7 +103,8 @@ func (s *ContainerServer) registerSSHKey(ctx context.Context, username, pubKey s
 // key (#3222), leaving the entry active and, if username owned it, releasing
 // it (#3217). Nil registry = no-op.
 func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey string) error {
-	if s.sshKeys == nil {
+	keys := s.loadSSHKeyRegistry()
+	if keys == nil {
 		return nil
 	}
 	now := s.sshKeyClock()
@@ -96,7 +112,7 @@ func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey str
 	if err != nil {
 		return err
 	}
-	return s.sshKeys.Revoke(ctx, rec, now)
+	return keys.Revoke(ctx, rec, now)
 }
 
 // syncCreateRequestKeys mirrors a box create request's keys into the host
@@ -140,35 +156,4 @@ func (c collaboratorRows) CollaboratorExists(ctx context.Context, containerName,
 		return false, nil
 	}
 	return err == nil, err
-}
-
-// setupSSHKeyRegistry creates the ssh_keys table on the collaborator store's
-// pool, wires it into the key write paths, and runs the startup backfill
-// from /home. It returns the self-host decider, or nil when the registry is
-// unavailable or the backfill failed: without a complete backfill, existing
-// keys would be refused as UNKNOWN_KEY, so the decider stays off until a
-// restart backfills successfully.
-func setupSSHKeyRegistry(ctx context.Context, collabStore *collaborator.Store, cs *ContainerServer, maxKeyAge time.Duration) *sshauthz.SelfHostDecider {
-	const homeRoot = "/home"
-	keys, err := sshauthz.NewPGKeyStore(ctx, collabStore.Pool(), sshauthz.FileHolders{HomeRoot: homeRoot})
-	if err != nil {
-		log.Printf("Warning: ssh key registry unavailable: %v (SSH authorization decider disabled)", err)
-		return nil
-	}
-	cs.SetSSHKeyRegistry(keys)
-
-	added, err := sshauthz.Backfill(ctx, keys, homeRoot, time.Now())
-	if err != nil {
-		log.Printf("Warning: ssh key registry backfill from %s failed after %d rows: %v (SSH authorization decider disabled until a restart backfills)", homeRoot, added, err)
-		return nil
-	}
-	log.Printf("ssh key registry: backfill from %s added %d key(s)", homeRoot, added)
-
-	return &sshauthz.SelfHostDecider{
-		HomeRoot:      homeRoot,
-		Boxes:         cs.GetManager(),
-		Collaborators: collaboratorRows{store: collabStore},
-		Keys:          keys,
-		MaxKeyAge:     maxKeyAge,
-	}
 }
