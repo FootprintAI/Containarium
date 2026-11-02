@@ -130,6 +130,14 @@ jobs:
             failed=1
           fi
 
+          # Fragments still present were never assembled into the section
+          # above (scripts/changelog-assemble.sh), so the notes omit them.
+          leftover=$(find changelog.d -maxdepth 1 -type f -name '*.md' ! -name README.md 2>/dev/null | sort || true)
+          if [ -n "${leftover}" ]; then
+            echo "::error file=changelog.d::Unassembled changelog fragments remain: $(echo "${leftover}" | tr '\n' ' ')- run scripts/changelog-assemble.sh ${VERSION} in the release commit and re-tag."
+            failed=1
+          fi
+
           [ "${failed}" = "0" ] || exit 1
           echo "✓ CHANGELOG has a [${VERSION}] section with entries; version constant matches."
 
