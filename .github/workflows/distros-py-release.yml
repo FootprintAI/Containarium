@@ -57,6 +57,7 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          scripts/ci/validate-release-version.sh "${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Publishing containarium-telemetry==${version}"
 

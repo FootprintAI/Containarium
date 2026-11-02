@@ -216,7 +216,7 @@ func StartClusterCAListener(addr string, sanHosts []string, pki *ClusterPKI, pro
 	}
 	gs := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(tlsCfg)),
-		grpc.UnaryInterceptor(caIdentityInterceptor),
+		grpc.ChainUnaryInterceptor(recoveryUnaryInterceptor(), caIdentityInterceptor),
 	)
 	capb.RegisterCloudProviderServer(gs, provider)
 	go func() {
