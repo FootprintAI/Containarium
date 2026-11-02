@@ -228,15 +228,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 // daemon's StartBoxRun command mode is what applies the run user and its
 // tool-access level).
 func runCodeRunCommand(cmd *cobra.Command, box string) error {
-	if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
-		return fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")
-	}
-	if codeRunApprovals != string(coderun.ApprovalsDeny) {
-		return fmt.Errorf("--approvals applies to an agent run, not to --command")
-	}
-	timeoutSeconds, err := coderun.CommandTimeoutSeconds(codeRunTimeout)
+	timeoutSeconds, err := validateCommandModeFlags()
 	if err != nil {
-		return fmt.Errorf("--timeout: %w", err)
+		return err
 	}
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -250,12 +244,33 @@ func runCodeRunCommand(cmd *cobra.Command, box string) error {
 	}
 	defer func() { _ = sess.Close() }()
 	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
-	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
+	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(false))
 	if err != nil {
 		return fmt.Errorf("start command run on %q: %w", box, err)
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
-	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)
+}
+
+// validateCommandModeFlags checks the flags of `code run --command` and returns
+// the timeout in whole seconds (0 for the default). --output-format-stream-json
+// is refused (#3425): it selects framed capture for a stream-json consumer, and
+// a shell command's output is not JSON.
+func validateCommandModeFlags() (int, error) {
+	if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
+		return 0, fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")
+	}
+	if codeRunApprovals != string(coderun.ApprovalsDeny) {
+		return 0, fmt.Errorf("--approvals applies to an agent run, not to --command")
+	}
+	if codeRunStreamJSON {
+		return 0, fmt.Errorf("--output-format-stream-json applies to an agent run, not to --command (a shell command's output is not stream-json)")
+	}
+	secs, err := coderun.CommandTimeoutSeconds(codeRunTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("--timeout: %w", err)
+	}
+	return secs, nil
 }
 
 // sessionSidecarFor is where the run called name keeps its session sidecar:
