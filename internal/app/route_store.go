@@ -51,6 +51,17 @@ type RouteStore struct {
 	pool *pgxpool.Pool
 }
 
+// RouteLister is the route store as its read-only consumers see it: the
+// pentest and ZAP target collectors list active routes through it, and the
+// daemon hands them a live accessor that resolves to the store installed so
+// far (#3332), so a store that installs after a degraded start reaches them.
+// A nil RouteLister means no route persistence.
+type RouteLister interface {
+	List(ctx context.Context, activeOnly bool) ([]*RouteRecord, error)
+}
+
+var _ RouteLister = (*RouteStore)(nil)
+
 // NewRouteStore creates a new route store using an existing connection pool
 func NewRouteStore(ctx context.Context, pool *pgxpool.Pool) (*RouteStore, error) {
 	store := &RouteStore{pool: pool}

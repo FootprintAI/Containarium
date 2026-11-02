@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,9 +11,33 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
+
+// errOTelAuthBearerUnavailable means CONTAINARIUM_OTEL_REQUIRE_AUTH is on but
+// the bearer could not be loaded or minted. The collector is then not started
+// (fail closed, #3443): an operator who asked for authenticated ingest must
+// never get open ingest.
+var errOTelAuthBearerUnavailable = errors.New("CONTAINARIUM_OTEL_REQUIRE_AUTH is set but the OTel bearer is unavailable")
+
+// reportOTelCollectorReadiness publishes the collector's auth state on the
+// daemon's grpc.health.v1 readiness surface: NOT_SERVING when the collector
+// was refused for want of a bearer, SERVING otherwise.
+func reportOTelCollectorReadiness(h *health.Server, err error) {
+	if h == nil {
+		return
+	}
+	status := healthpb.HealthCheckResponse_SERVING
+	if errors.Is(err, errOTelAuthBearerUnavailable) {
+		status = healthpb.HealthCheckResponse_NOT_SERVING
+	}
+	h.SetServingStatus(policyreadiness.OTelCollectorAuthService, status)
+}
 
 const (
 	// CoreOTelCollectorContainer is the name of the core OTel collector
@@ -65,6 +90,12 @@ var DefaultOTelDropLabels = []string{
 func (cs *CoreServices) EnsureOTelCollector(ctx context.Context, victoriaMetricsIP string, dropLabels []string) (string, error) {
 	if victoriaMetricsIP == "" {
 		return "", fmt.Errorf("VictoriaMetrics IP required (cannot configure collector exporter without it)")
+	}
+
+	// Fail closed (#3443): with auth required and no bearer, do not create,
+	// start or reconfigure the collector.
+	if _, err := collectorBearerForConfig(); err != nil {
+		return "", err
 	}
 
 	// Reserve 1GB so the collector keeps draining metrics even when
@@ -243,7 +274,11 @@ WantedBy=multi-user.target
 // containers need to re-stamp the header (toggle off+on, or restart)
 // before flipping enforcement on.
 func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []string) error {
-	cfg := buildOTelCollectorConfig(vmIP, dropLabels, collectorBearerForConfig())
+	bearer, err := collectorBearerForConfig()
+	if err != nil {
+		return err
+	}
+	cfg := buildOTelCollectorConfig(vmIP, dropLabels, bearer)
 	if err := cs.incusClient.WriteFile(CoreOTelCollectorContainer, "/etc/otelcol-contrib/config.yaml", []byte(cfg), "0644"); err != nil {
 		return fmt.Errorf("failed to write otelcol config: %w", err)
 	}
@@ -252,10 +287,13 @@ func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []strin
 	return nil
 }
 
-// collectorBearerForConfig returns the bearer to bake into
-// the collector's config.yaml, or "" to skip enforcement.
-// Empty when CONTAINARIUM_OTEL_REQUIRE_AUTH is unset / not
-// recognized, or when the bearer load itself fails.
+// collectorBearerForConfig returns the bearer to bake into the collector's
+// config.yaml, or "" with a nil error when enforcement is off
+// (CONTAINARIUM_OTEL_REQUIRE_AUTH unset or not recognized).
+//
+// When enforcement is on and the bearer cannot be loaded or minted it returns
+// errOTelAuthBearerUnavailable (wrapping the cause) and never "": callers must
+// not start the collector (#3443).
 //
 // Cutover sequence for operators:
 //  1. Run the new daemon (bearer auto-created; header
@@ -266,7 +304,7 @@ func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []strin
 //     the daemon. Now the collector enforces; any
 //     container without the header drops silently (and
 //     that's the signal to find the laggard).
-func collectorBearerForConfig() string {
+func collectorBearerForConfig() (string, error) {
 	raw := strings.TrimSpace(os.Getenv(appconfig.EnvOTELRequireAuth))
 	on := false
 	switch strings.ToLower(raw) {
@@ -274,18 +312,17 @@ func collectorBearerForConfig() string {
 		on = true
 	}
 	if !on {
-		return ""
+		return "", nil
 	}
 	bearer, err := LoadOrCreateOTelBearer()
 	if err != nil || bearer == "" {
-		// Auth required but no bearer available — that's a
-		// misconfig. Log noisily and skip enforcement so the
-		// collector doesn't refuse everything.
-		log.Printf("[otel-collector] CONTAINARIUM_OTEL_REQUIRE_AUTH=true but bearer unavailable (%v); collector will NOT enforce auth", err)
-		return ""
+		if err == nil {
+			err = errors.New("no bearer source available")
+		}
+		return "", fmt.Errorf("%w: %v", errOTelAuthBearerUnavailable, err)
 	}
 	log.Printf("[otel-collector] bearer auth ENFORCED on OTLP receivers")
-	return bearer
+	return bearer, nil
 }
 
 // ContainerIPEntry is the identity attributed to a source IP in
