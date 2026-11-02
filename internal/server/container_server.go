@@ -5077,8 +5077,10 @@ func (s *ContainerServer) localBackendHealthy() bool {
 // SetRouteCleanupDeps wires the route store + proxy manager so
 // DeleteContainer can cascade-clean a container's routes + TLS
 // subjects. Both may be nil if the daemon was started without
-// --app-hosting; the cascade will skip those steps gracefully.
-func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyManager *app.ProxyManager) {
+// --app-hosting; the cascade will skip those steps gracefully. The store
+// is the live accessor (#3331): one installed after a degraded start is
+// read on the next call.
+func (s *ContainerServer) SetRouteCleanupDeps(routeStore routeLister, proxyManager *app.ProxyManager) {
 	s.routeStore = routeStore
 	s.proxyManager = proxyManager
 }

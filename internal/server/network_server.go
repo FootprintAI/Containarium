@@ -32,17 +32,20 @@ type NetworkServer struct {
 	incusClient        *incus.Client
 	proxyManager       *app.ProxyManager
 	passthroughManager *network.PassthroughManager
-	appStore           app.AppStore
-	routeStore         *app.RouteStore          // Source of truth for routes (PostgreSQL)
-	passthroughStore   network.PassthroughStore // Source of truth for passthrough routes (PostgreSQL)
-	containerNetwork   string                   // e.g., "10.100.0.0/24"
-	proxyIP            string                   // e.g., "10.100.0.1"
-	baseDomain         string                   // e.g., "example.com"
-	emitter            *events.Emitter
-	egressMgr          *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
-	anonGuard          func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
-	coreGuard          *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
-	tenantGuard        *tenantguard.Reconciler          // #2347: same
+	appStore           appLister
+	// routes is the route store (source of truth, PostgreSQL) read on every
+	// call, so one installed after a degraded start reaches the handlers
+	// (#3331); nil when route persistence is not configured at all.
+	routes           *liveRouteStore
+	passthroughStore network.PassthroughStore // Source of truth for passthrough routes (PostgreSQL)
+	containerNetwork string                   // e.g., "10.100.0.0/24"
+	proxyIP          string                   // e.g., "10.100.0.1"
+	baseDomain       string                   // e.g., "example.com"
+	emitter          *events.Emitter
+	egressMgr        *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
+	anonGuard        func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
+	coreGuard        *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
+	tenantGuard      *tenantguard.Reconciler          // #2347: same
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.
@@ -61,8 +64,26 @@ func resolveFullDomain(domain, baseDomain string) string {
 	return domain
 }
 
+// appLister is the app-store read GetRoutes needs to filter routes by
+// tenant. *app.Store and the late-install view (liveAppLister) satisfy it.
+type appLister interface {
+	List(ctx context.Context, username string, stateFilter pb.AppState) ([]*pb.App, error)
+}
+
+// routeStoreNow returns the route store, or: (nil, nil) when route
+// persistence is not configured on this daemon, so the handlers keep the
+// direct-to-Caddy fallback; UNAVAILABLE while the store is configured but
+// not installed yet (#3331, decision Q13 on #3335), so no route is applied
+// in Caddy that the sync job would remove once the store installs.
+func (s *NetworkServer) routeStoreNow() (*app.RouteStore, error) {
+	if s.routes == nil {
+		return nil, nil
+	}
+	return s.routes.current()
+}
+
 // NewNetworkServer creates a new network server
-func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager, appStore app.AppStore, containerNetwork, proxyIP string) *NetworkServer {
+func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager, appStore appLister, containerNetwork, proxyIP string) *NetworkServer {
 	return &NetworkServer{
 		incusClient:        incusClient,
 		proxyManager:       proxyManager,
@@ -92,8 +113,12 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 		req.Username = subject
 	}
 	// If RouteStore is available, use it as source of truth
-	if s.routeStore != nil {
-		routes, err := s.routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
+		routes, err := routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
 		if err != nil {
 			return nil, fmt.Errorf("failed to list routes: %w", err)
 		}
@@ -182,6 +207,9 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 	for _, route := range routes {
 		// Optionally filter by username
 		if req.Username != "" {
+			if s.appStore == nil {
+				continue // no app store to attribute the route to: not this tenant's
+			}
 			// Get app to check username
 			apps, err := s.appStore.List(ctx, req.Username, pb.AppState_APP_STATE_UNSPECIFIED)
 			if err != nil {
@@ -274,7 +302,11 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 	}
 
 	// If RouteStore is available, save to PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
 		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
@@ -287,7 +319,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 			CreatedBy:     creator,
 		}
 
-		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+		if err := routeStore.Save(ctx, routeRecord); err != nil {
 			if errors.Is(err, app.ErrRouteOwnershipConflict) {
 				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
 			}
@@ -355,14 +387,19 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 		protocol = "tls_passthrough"
 	}
 
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+
 	// Handle enable/disable toggle
 	if req.Active != nil {
 		active := *req.Active
 
-		if s.routeStore != nil {
-			if err := s.routeStore.SetActive(ctx, fullDomain, active); err != nil {
+		if routeStore != nil {
+			if err := routeStore.SetActive(ctx, fullDomain, active); err != nil {
 				// Try with original domain
-				if err := s.routeStore.SetActive(ctx, req.Domain, active); err != nil {
+				if err := routeStore.SetActive(ctx, req.Domain, active); err != nil {
 					if active {
 						return nil, fmt.Errorf("failed to enable route: %w", err)
 					}
@@ -403,7 +440,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	}
 
 	// If RouteStore is available, update in PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	if routeStore != nil {
 		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
@@ -416,7 +453,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 			CreatedBy:     creator,
 		}
 
-		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+		if err := routeStore.Save(ctx, routeRecord); err != nil {
 			if errors.Is(err, app.ErrRouteOwnershipConflict) {
 				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
 			}
@@ -464,12 +501,16 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 	fullDomain := resolveFullDomain(req.Domain, s.baseDomain)
 
 	// If RouteStore is available, delete from PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
 		// Try both the provided domain and the full domain
-		err := s.routeStore.Delete(ctx, fullDomain)
+		err := routeStore.Delete(ctx, fullDomain)
 		if err != nil && err == app.ErrRouteNotFound {
 			// Try with original domain in case it was already the full domain
-			err = s.routeStore.Delete(ctx, req.Domain)
+			err = routeStore.Delete(ctx, req.Domain)
 		}
 		if err != nil && err != app.ErrRouteNotFound {
 			return nil, fmt.Errorf("failed to delete route: %w", err)

@@ -10,7 +10,7 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestAppRouteRecovery_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -41,6 +41,20 @@ backend: it stays pending and `NOT_SERVING` and is still retried, but it
 does not hold the self-restart, while a family whose last attempt failed on
 a connection or open error still does. The refusal is logged once each time
 the family enters it, not on every retry.
+The app-hosting and route tests (#3331) cover the app-hosting store
+(`containarium.app_hosting`) and the route store with its Caddy sync
+(`containarium.routes`): while Postgres is down every AppService RPC and
+every route RPC answers `UNAVAILABLE`, both entries are `NOT_SERVING`, and
+a route write touches nothing in Caddy (decision Q13 on #3335; the
+direct-to-Caddy fallback remains only on a daemon with no route
+persistence configured). Once Postgres answers the stores install with no
+restart, the Caddy set-up boot would have run runs exactly once, the route
+sync job is created once and started with the daemon's serving context
+(not the helper's), the management routes are ensured, and the consumers
+that used to hold the store by value (the network server, the container
+server's route cleanup, the wake proxy, the cloud actuator) read the
+installed store on their next call. A route store open error is not a
+configuration refusal and holds the self-restart.
 
 The JWT revocation list is another such family (#3328):
 
