@@ -48,12 +48,13 @@ import (
 // and correctness of the check itself are what internal/auth's own tests
 // and ordinary review cover.
 var authGuardFuncs = map[string]bool{
-	"RequireScope":          true,
-	"RequireExplicitScope":  true, // #2415: RequireScope minus the unscoped fall-through
-	"RequireRole":           true,
-	"RequireRoleOrScope":    true,
-	"AuthorizeTenant":       true,
-	"AuthorizeSecretTenant": true,
+	"RequireScope":               true,
+	"RequireExplicitScope":       true, // #2415: RequireScope minus the unscoped fall-through
+	"RequireRole":                true,
+	"RequireRoleOrScope":         true,
+	"RequireRoleOrScopeNarrowed": true,
+	"AuthorizeTenant":            true,
+	"AuthorizeSecretTenant":      true,
 }
 
 // rpcSurface pairs one registered service's generated descriptor with the Go
@@ -105,14 +106,14 @@ var registeredServices = []rpcSurface{
 	// #1726 — every RPC here carries an explicit gateway:admin or gateway:mint
 	// RequireScope in its own body; none is exempt.
 	{pb.ModelGatewayService_ServiceDesc, "ModelGatewayServer"},
-	// #2378 — Set/Delete RequireRole(admin); Get RequireRoleOrScope + AuthorizeTenant.
+	// #2378 — Set/Delete RequireScope(network-policy:write) then RequireRole(admin); Get RequireRoleOrScope + AuthorizeTenant.
 	{pb.CodingToolEgressPolicyService_ServiceDesc, "CodingToolEgressPolicyServer"},
 	// #2185 — Set/Delete RequireScope(secrets:write), Get/Test RequireScope(secrets:read); all AuthorizeTenant via notifyUser.
 	{pb.NotifyService_ServiceDesc, "NotifyServer"},
 	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
-	// #2875 — every RPC is RequireRole(admin) (through requireRetentionAdmin).
+	// #2875 — every RPC is RequireRole(admin) (through requireRetentionAdmin); reads also RequireScope(audit:read), writes RequireScope(retention:write).
 	{pb.RetentionService_ServiceDesc, "RetentionServer"},
 	{pb.AuditService_ServiceDesc, "AuditServer"},         // #2415
 	{pb.ProofPackService_ServiceDesc, "ProofPackServer"}, // #3064 — RequireScope(audit:read)

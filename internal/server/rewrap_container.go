@@ -35,6 +35,9 @@ import (
 // a caller who believes they rotated one container's key will plan their
 // next maintenance window wrongly.
 func (s *ContainerServer) RewrapContainer(ctx context.Context, req *pb.RewrapContainerRequest) (*pb.RewrapContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.GetUsername() == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
