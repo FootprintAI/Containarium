@@ -22,14 +22,17 @@ import (
 // injecting secret_env. Not the richer create options the user-facing
 // ContainerService offers — cloud-assigned boxes are minimal v1 workloads.
 type cloudContainerActuator struct {
-	incus  *incus.Client
-	routes *app.RouteStore // nil when the host has no route store (no Postgres/Caddy) → routes skipped
+	incus *incus.Client
+	// routes is the daemon's route store, read on every call so one installed
+	// after a degraded start is used (#3331); nil when the host has no route
+	// store (no Postgres/Caddy) → routes skipped.
+	routes routeLister
 }
 
 // newCloudContainerActuator builds an actuator with its own Incus client and the
 // daemon's route store (may be nil — then route exposure is skipped). Returns an
 // error (→ caller runs policy-sync-only) if Incus is unavailable, e.g. non-Linux.
-func newCloudContainerActuator(routes *app.RouteStore) (*cloudContainerActuator, error) {
+func newCloudContainerActuator(routes routeLister) (*cloudContainerActuator, error) {
 	c, err := incus.New()
 	if err != nil {
 		return nil, fmt.Errorf("incus client: %w", err)

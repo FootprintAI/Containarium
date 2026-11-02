@@ -36,6 +36,12 @@ const HTTPPath = "/v1/health"
 // daemon with no Postgres configured does not report it.
 const CorePostgresService = "containarium.core_postgres"
 
+// OTelCollectorAuthService is the readiness entry for the OTel collector's
+// auth requirement (#3443). NOT_SERVING means CONTAINARIUM_OTEL_REQUIRE_AUTH
+// is on but the bearer could not be loaded or minted, so the daemon did NOT
+// start the collector (fail closed) and app-emitted telemetry is off.
+const OTelCollectorAuthService = "containarium.otel_collector_auth"
+
 var (
 	registryMu sync.RWMutex
 	// registered is the service of each store family the daemon's
@@ -45,7 +51,8 @@ var (
 	displayNames = map[string]string{
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName:        "guardrail policy store",
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName: "coding-tool egress policy store",
-		CorePostgresService: "core Postgres (database-backed stores)",
+		CorePostgresService:      "core Postgres (database-backed stores)",
+		OTelCollectorAuthService: "OTel collector auth requirement",
 	}
 )
 
@@ -77,7 +84,7 @@ func Services() []string {
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName)
 	out = append(out, registered...)
-	return append(out, CorePostgresService)
+	return append(out, CorePostgresService, OTelCollectorAuthService)
 }
 
 // CheckFunc asks for one service's serving status. An error means the
@@ -116,6 +123,8 @@ func (r Result) Detail() string {
 		return "ready"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == CorePostgresService:
 		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; store families with their own readiness entry are retried in-process, the rest stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers and no in-process retry is pending)"
+	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == OTelCollectorAuthService:
+		return "unavailable (DEGRADED): CONTAINARIUM_OTEL_REQUIRE_AUTH is set but the OTel bearer could not be loaded or minted, so the collector was NOT started (app-emitted telemetry is off); fix the bearer source (CONTAINARIUM_OTEL_BEARER, CONTAINARIUM_OTEL_BEARER_FILE or /etc/containarium/otel.bearer) and restart the daemon"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
 		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed (or answer UNAVAILABLE) and its background work (such as the credential-expiry watch) does not run until the daemon's in-process retry reaches the database; a family refused by configuration (the daemon log names it) needs a config fix and a restart instead"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:
