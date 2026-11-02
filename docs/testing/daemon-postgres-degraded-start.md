@@ -54,7 +54,12 @@ store installs with no restart, writes go to the store, the container
 delete cascade gets it, and the sync job is built once and started exactly
 once on the daemon's serving context, in whichever order the install and
 the daemon start arrive. A daemon with no Postgres configured still writes
-the host rules directly. The delete-cascade and recipe expose-ports tests
+the host rules directly. A box deleted while the store is absent is
+remembered, and the install removes its passthrough routes before the sync
+job is built, so its first pass neither keeps nor re-adds a forwarding rule
+for that box; a box that still exists keeps its routes (#3407). The list is
+held in memory, so a daemon restarted before the store installs loses it.
+The delete-cascade and recipe expose-ports tests
 run in the same set because they now set the store through the same
 accessor.
 
