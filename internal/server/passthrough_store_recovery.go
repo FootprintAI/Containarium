@@ -119,12 +119,14 @@ type passthroughConsumers struct {
 
 // install wires st into the RPCs, the delete cascade and the sync job. The
 // RPCs get it first, so a write accepted from here on is persisted before
-// the sync job's first pass reads the table.
-func (c passthroughConsumers) install(st network.PassthroughStore) {
+// the sync job's first pass reads the table. The cascade gets it before the
+// sync job is built, so the routes of a box deleted while the store was
+// absent are gone before the first pass (#3407).
+func (c passthroughConsumers) install(ctx context.Context, st network.PassthroughStore) {
 	c.network.SetPassthroughStore(st)
 	// DeleteContainer cascade-cleans a recipe-deployed box's passthrough
 	// routes (#1462), mirroring SetRouteCleanupDeps for HTTP routes.
-	c.containers.SetPassthroughCleanupDep(st)
+	c.containers.installPassthroughStore(ctx, st)
 	c.sync.install(st)
 }
 
@@ -140,7 +142,7 @@ func passthroughStoreFamily(c passthroughConsumers, open func(context.Context, *
 			if err != nil {
 				return err
 			}
-			c.install(st)
+			c.install(ctx, st)
 			return nil
 		},
 	}
@@ -150,6 +152,7 @@ func passthroughStoreFamily(c passthroughConsumers, open func(context.Context, *
 // startup install did not happen, and logs the degraded state once.
 func registerPassthroughLateInstall(r *storeRecovery, c passthroughConsumers, open func(context.Context, *pgxpool.Pool) (network.PassthroughStore, error)) {
 	c.network.requirePassthroughStore()
+	c.containers.requirePassthroughStore()
 	r.logf("Warning: passthrough route store not installed (Postgres unavailable at startup): passthrough route RPCs answer UNAVAILABLE and change nothing until it installs in-process; readiness %s is NOT_SERVING", passthroughStoreService)
 	r.Register(passthroughStoreFamily(c, open))
 }
@@ -172,7 +175,7 @@ func setupPassthroughStore(r *storeRecovery, c passthroughConsumers, connect fun
 		registerPassthroughLateInstall(r, c, open)
 		return
 	}
-	c.install(st)
+	c.install(context.Background(), st)
 	r.RegisterInstalled(passthroughStoreFamily(c, open))
 	r.logf("Passthrough route persistence enabled")
 }

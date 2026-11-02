@@ -13,6 +13,8 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
+
+	"github.com/footprintai/containarium/internal/grpcrecover"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -73,7 +75,7 @@ func ListenControl(path string, g *Guard) (func(), error) {
 	}
 	// Control reads can prune windows and emit audit records, so they share the
 	// shutdown barrier with SSH callbacks.
-	server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	server := grpc.NewServer(grpc.ChainStreamInterceptor(grpcrecover.Stream()), grpc.ChainUnaryInterceptor(grpcrecover.Unary(), func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !g.beginCallback() {
 			return nil, status.Error(codes.Unavailable, "ssh-ban control socket is shutting down")
 		}

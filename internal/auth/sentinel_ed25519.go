@@ -97,6 +97,8 @@ func SignSentinelRequestEd25519(req *http.Request, priv ed25519.PrivateKey) {
 	sig := ed25519.Sign(priv, sentinelRequestMessage(req.Method, req.URL.Path, ts))
 	req.Header.Set(SentinelHeaderTimestamp, ts)
 	req.Header.Set(SentinelHeaderSignature, sentinelEd25519SigPrefix+base64.StdEncoding.EncodeToString(sig))
+	// v2 also covers the query and body; v1-only receivers ignore this header.
+	stampSentinelV2(req, ts, signV2Ed25519(priv))
 }
 
 // SignSentinelResponseEd25519 stamps the timestamp + ed25519 signature headers
@@ -206,7 +208,18 @@ func (v SentinelVerifier) VerifyRequest(req *http.Request, now time.Time) error 
 	if tsStr == "" || sig == "" || !sentinelTimestampWithinSkew(tsStr, now) {
 		return errSentinelAuth
 	}
-	return v.verifySig(sentinelRequestMessage(req.Method, req.URL.Path, tsStr), sig, req.Method, req.URL.Path, tsStr)
+	if req.Header.Get(SentinelHeaderSignatureV2) != "" {
+		// A present v2 header must verify; never fall back to the weaker v1.
+		return verifyRequestV2(req, tsStr, v.secret, &v)
+	}
+	if sentinelRequireV2.Load() {
+		return errSentinelAuth
+	}
+	if err := v.verifySig(sentinelRequestMessage(req.Method, req.URL.Path, tsStr), sig, req.Method, req.URL.Path, tsStr); err != nil {
+		return err
+	}
+	noteSentinelV1(req)
+	return nil
 }
 
 // VerifyResponse returns nil if resp's headers form a valid, in-window

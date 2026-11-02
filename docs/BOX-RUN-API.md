@@ -89,10 +89,17 @@ verification of a pushed commit.
   not consulted (a box whose engine run would be refused, say one on the gateway
   credential, still takes a command run), and the run user's agent sign-in is
   **not** required.
-- Identity and tool access are exactly an engine run's: on a box with a recorded
-  tool-access level the command runs as the run user with that level's sudo
-  grant and staged home; on a box with none it runs as the owner. `BUILD_TOOLS`
-  is what gives it the managed toolchains.
+- Identity is an engine run's; tool access is weaker. On a box with a recorded
+  tool-access level the recorded level selects the run user and that level's
+  sudo grant and staged home; on a box with none the command runs as the owner.
+  `BUILD_TOOLS` is what gives it the managed toolchains. The engine's allow/deny
+  tool policy (the tools and shell commands an agent may call) applies to engine
+  runs only: a command is a plain `sh -c` as the run user and is not limited by
+  it. A caller holding the command-mode scope can therefore run any program the
+  run user can, including on a box recorded at a restrictive level, which an
+  engine run at that level could not be told to do by a prompt. The level
+  bounds what the run user may do as a Unix account (its sudo grant), not what
+  a command may invoke.
 - The working directory is the run user's home. A command that needs a checkout
   makes it: for example `git clone <url> work && cd work && git checkout <sha>
   && make test`, through the box's own credential helper.
