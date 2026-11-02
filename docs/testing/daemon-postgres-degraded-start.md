@@ -10,7 +10,8 @@ The tests below do not replace this deployed control-plane verification.
 
 ```bash
 go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestAppRouteRecovery_|TestCollaboratorRecovery_'
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestAppRouteRecovery_|TestCollaboratorRecovery_|TestTrafficRecovery_|TestLiveTrafficSource_'
+go test -race -count=1 ./internal/traffic -run 'TestCollectorSetStore_|TestCollectorStart_|TestCollectorStop_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -66,6 +67,16 @@ that used to hold the store by value (the network server, the container
 server's route cleanup, the wake proxy, the cloud actuator) read the
 installed store on their next call. A route store open error is not a
 configuration refusal and holds the self-restart.
+The traffic persistence tests (#3401) cover `containarium.traffic`: while
+Postgres is down the collector runs without a store, the traffic API
+answers live connections from its in-memory window, history answers
+`FAILED_PRECONDITION`, and the entry is `NOT_SERVING`. Once Postgres
+answers, the store is installed into the same running collector with no
+restart: no second collector is built, the collector is not started again,
+its live window is kept, the retention cleanup loop starts once, and the
+entry turns `SERVING`. Flows that closed before the store arrived are not
+persisted; a flow still live at install is persisted, with its full
+counters, when it closes.
 
 The JWT revocation list is another such family (#3328):
 

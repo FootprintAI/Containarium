@@ -1159,31 +1159,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				}, app.NewRouteStore)
 			}
 
-			// Traffic persistence stays boot-only (#3401): it replaces the
-			// collector, so it is attempted only when the app store installed.
-			if appPool != nil {
-				// Update TrafficCollector with store for persistence
-				if trafficCollector != nil && postgresConnString != "" {
-					trafficStore, err := gatedStore(pgGate, postgresConnString, traffic.NewStore)
-					if err != nil {
-						log.Printf("Warning: Failed to create traffic store: %v. Traffic persistence disabled.", err)
-					} else {
-						// Re-create collector with store
-						emitter := events.NewEmitter(events.GetBus())
-						collectorConfig := traffic.DefaultCollectorConfig()
-						collectorConfig.NetworkCIDR = networkCIDR
-						collectorConfig.PostgresConnString = postgresConnString
-
-						newCollector, err := traffic.NewCollector(collectorConfig, incusClient, trafficStore, emitter)
-						if err != nil {
-							log.Printf("Warning: Failed to update traffic collector with store: %v", err)
-						} else {
-							trafficCollector = newCollector
-							trafficServer = NewTrafficServer(trafficCollector)
-							log.Printf("Traffic monitoring updated with persistence")
-						}
-					}
-				}
+			// Traffic persistence (#3401): the store is installed into the
+			// running collector, at boot over the app store's pool or
+			// in-process once Postgres answers.
+			if trafficCollector != nil && postgresConnString != "" {
+				setupTrafficStore(storeRecovery, trafficCollector, appPool, traffic.NewStoreWithPool)
 			}
 		}
 	}
@@ -3534,18 +3514,15 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 
 	// Start auto-sleep ticker. Always-on by daemon policy; per-container
 	// opt-in (AutoSleepEnabled) gates real stop behavior. Wired here so
-	// the traffic collector's store, finalized during NewDualServer's
-	// app-hosting block, can feed network-activity signals if present.
+	// the traffic collector's store, installed at boot or in-process
+	// (#3401), can feed network-activity signals once present.
 	if incusClient, err := incus.New(); err != nil {
 		log.Printf("[autosleep] incus client unavailable: %v (ticker disabled)", err)
 	} else {
 		var trafficSrc autosleep.TrafficSource
 		if ds.trafficCollector != nil {
-			if store := ds.trafficCollector.GetStore(); store != nil {
-				if pool := store.Pool(); pool != nil {
-					trafficSrc = autosleep.NewTrafficStoreAdapter(pool)
-				}
-			}
+			// Read per call: the store may install after a degraded start (#3401).
+			trafficSrc = liveTrafficSource{collector: ds.trafficCollector}
 		}
 		var auditAdapter autosleep.AuditLogger
 		if ds.auditStore != nil {
