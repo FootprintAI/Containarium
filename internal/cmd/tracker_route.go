@@ -195,6 +195,6 @@ func printTrackerRoutes(username, connection string, routes []*pb.TrackerRoute) 
 	}
 	fmt.Printf("%-28s %s\n", "LABEL", "SKILL")
 	for _, r := range routes {
-		fmt.Printf("%-28s %s\n", scopeLabelPrefix+r.GetScope(), r.GetSkillId())
+		fmt.Printf("%-28s %s\n", scopeLabelPrefix+escapeControl(r.GetScope()), escapeControl(r.GetSkillId()))
 	}
 }
