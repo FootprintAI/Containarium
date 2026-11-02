@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrading
 
+- **The containarium-k8s chart no longer ships a default `daemon.jwtSecret` and refuses to render without one** (#3442).
+  `helm install` / `helm upgrade` now fail when the value is empty or still the old placeholder
+  (`change-me-please-use-a-real-secret`), which anyone could read in the public chart and use to forge API tokens. An existing
+  install that relied on the placeholder must set its own value on upgrade: `--set daemon.jwtSecret="$(openssl rand -hex 24)"`.
+  Changing the secret invalidates tokens signed with the old one, so re-mint any tokens issued by that daemon.
 - **Tokens that carry a scopes claim now need the matching scope on RPCs that previously checked only role or tenant** (#3419).
   Writes need `containers:write`, reads `containers:read`; network/passthrough/ACL RPCs use `routes:read` / `routes:write`
   (`GetNetworkGuardStatus` uses `security:read`); setting or deleting a coding-tool egress policy needs `network-policy:write`;

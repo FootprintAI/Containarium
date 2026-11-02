@@ -825,7 +825,8 @@ jobs:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           rendered="$(helm template containarium "dist-chart/containarium-k8s-${VERSION}.tgz" \
-            --set gateway.upstreamKeySecret=release-render-check)"
+            --set gateway.upstreamKeySecret=release-render-check \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)")"
           grep -q "image: ghcr.io/footprintai/containarium:v${VERSION}\$" <<<"$rendered" || {
             echo "::error::chart does not pin ghcr.io/footprintai/containarium:v${VERSION}"
             exit 1
