@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
 
+### Documentation
+
+- **Command mode's tool-access guarantee is stated precisely** (#3424, clarifies the v0.123.0 command-mode entry, #3322). A command-mode run (`StartBoxRunRequest.command`, `containarium code run --command`) takes from the box's recorded tool-access level the run user and that level's sudo grant. The engine's allow/deny tool policy applies to engine runs only, so a caller holding the command-mode scope can run any program the run user can, also on a box recorded at a restrictive level. Behaviour is unchanged; the `command` proto comment, the generated API docs and `docs/BOX-RUN-API.md` now say so, and a test pins it.
+
 ### Fixed
 
 - **`containarium code run --command` no longer mis-frames, shortens or silently fails** (#3425, follow-up to #3322). `--output-format-stream-json` is now refused together with `--command`: it selected framed capture for a stream-json consumer although a shell command's output is not JSON. `--timeout` rounds a fractional value up to whole seconds (`1500ms` runs for 2 s, before it was cut at 1 s), and the 1 h cap is checked after rounding. A box without a `timeout` command now fails the run at once with a message in the log naming the missing GNU coreutils `timeout`, exit code 127, instead of a bare "not found"; the command is never started without its time budget. This is detected when the run starts on the box, not as a start-time API error, because the run is spawned detached.
