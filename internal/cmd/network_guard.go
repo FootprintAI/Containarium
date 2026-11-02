@@ -149,7 +149,7 @@ func printGuard(w interface{ Write([]byte) (int, error) }, title, unresolvedReas
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  CONTAINER\tSUBJECT\tIP\tACL\tATTACHED\tERROR")
 		for _, e := range g.Entries {
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%v\t%s\n", e.Container, e.Subject, orDash(e.IP), e.ACLName, e.Attached, e.LastError)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%v\t%s\n", escapeControl(e.Container), e.Subject, orDash(e.IP), e.ACLName, e.Attached, e.LastError)
 		}
 		_ = tw.Flush()
 	}

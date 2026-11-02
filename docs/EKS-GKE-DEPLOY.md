@@ -101,6 +101,10 @@ helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
   --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
+`daemon.jwtSecret` is required: it signs the daemon's API tokens, so the
+chart ships no default and refuses to render with an empty value or the
+placeholder older chart versions shipped. Generate a fresh one per install
+with `openssl rand -hex 24`.
 `gateway.upstreamKeySecret` is required because gateway routing is on by
 default and the daemon refuses to start without an upstream credential, so a
 bare `helm template` / `helm install` with no values fails fast by design.
