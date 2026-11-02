@@ -1336,7 +1336,7 @@ skipAppHosting:
 			// Report this host's capability profile (hardware + headroom +
 			// version) so the BYO fleet view goes live (#528).
 			// Policy-store readiness (#2483) rides along as advisory checks.
-			Status: cloud.DefaultStatusProbe{Readiness: policyreadiness.ServerCheck(policyStoreHealth)},
+			Status: cloud.DefaultStatusProbe{Readiness: policyreadiness.ServerCheck(policyStoreHealth), Pools: &cloudPoolSource{}},
 			// TERMINATE_USER_SESSIONS assignments run the same function as
 			// `containarium sessions terminate` (#2522).
 			// The control-plane user id an assignment names is resolved
