@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -205,9 +204,9 @@ type ContainerServer struct {
 	victoriaMetricsURL string
 	grafanaURL         string
 	// Alerting (set by DualServer after setup)
-	alertStore         *alert.Store
-	alertManager       *alert.Manager
-	alertDeliveryStore *alert.DeliveryStore
+	// alerts is the alert rule, manager and delivery family; installed at
+	// startup or late (#3334), read atomically on every call.
+	alerts             alertFamilyState
 	alertWebhookURL    string
 	alertWebhookSecret string
 	hostRelayURL       string                          // e.g. "http://10.100.0.1:8080/internal/alert-relay"

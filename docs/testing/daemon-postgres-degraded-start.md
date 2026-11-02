@@ -72,6 +72,31 @@ recorded in memory are carried into Postgres keeping the latest per owner,
 a failed copy is retried with nothing half-installed, and the cleanup loop
 starts exactly once from the install.
 
+Alerting is two more families (#3334):
+
+```bash
+go test -race -count=1 ./internal/policyreadiness ./internal/server \
+  -run 'TestDetail_|TestAlertRecovery_|TestCredentialWatchRecovery_|TestCredentialWatch_|TestNewDualServer_WiresAlertFamilies'
+```
+
+`containarium.alerts` (alert rules, the rules manager and the webhook
+delivery store) exists only when Postgres and VictoriaMetrics are both
+configured, and `containarium.credential_watch` (the credential-expiry
+watch) only when Postgres and the daemon config store are; an unconfigured
+family has no entry and is not pending. While Postgres is down, the entry
+is `NOT_SERVING` and every alert-rule, alerting-config and delivery-list
+RPC answers `UNAVAILABLE`; `GetAlertingInfo` reports `enabled: false`.
+Once Postgres answers, the store installs over the shared pool with no
+restart, the entry turns `SERVING`, and the rules are synced once, as at
+boot. Without an Incus client the alert install is refused by
+configuration: the family stays `NOT_SERVING` but does not hold the
+self-restart. A delivery raised before the store installs is not buffered
+(decision Q15 on #3335): it is logged as an `alert_delivery_unrecorded`
+line and counted, and the install line reports the count. The watcher
+starts exactly once, with the daemon's serving context, and reads each
+box's last-seen state from Postgres first, so a box alerted before the
+outage is not alerted again.
+
 The collaborator store, the `ssh_keys` registry and the self-host SSH
 authorization decider are one family (#3330):
 
@@ -90,8 +115,9 @@ removed from an `authorized_keys` file while the registry was absent kept
 an active row, and the decider only checks that the login's account holds
 some key, not the offered one, so rows no account holds are revoked
 (decision Q14 on #3335; `TestReconcile_DeciderAllowsAStaleRowWithoutIt`
-pins why). Rows are left active while any account's `authorized_keys`
-cannot be read. Only after that is the self-host decider set, and only on
+pins why). The registry is read before `/home` is scanned, so a key added
+through the API while the reconcile runs is not revoked. Rows are left
+active while any account's `authorized_keys` cannot be read. Only after that is the self-host decider set, and only on
 a daemon with no cloud enrollment. A failed backfill or reconcile leaves
 the decider off and the family pending, and the next attempt resumes
 without reopening the store. The K8s runtime and an enrolled daemon skip
