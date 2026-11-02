@@ -17,10 +17,13 @@ that matters.
 
 ## Files to change when cutting a release
 
-1. **`CHANGELOG.md`** — move the `## [Unreleased]` section's contents (or
-   add new entries) under a new `## [X.Y.Z] - YYYY-MM-DD` heading, above
-   the previous release. Keep an empty `## [Unreleased]` heading at the
-   top for the next round of changes. Follow [Keep a
+1. **`CHANGELOG.md`** — run `scripts/changelog-assemble.sh X.Y.Z`. It moves
+   everything under `## [Unreleased]` and every fragment in `changelog.d/`
+   (one file per PR; see `changelog.d/README.md`) under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, above the previous release, leaves an
+   empty `## [Unreleased]` heading at the top, and deletes the fragments.
+   Review the result and edit the wording if needed. The tag build fails
+   while fragments remain. Follow [Keep a
    Changelog](https://keepachangelog.com/en/1.0.0/) categories (`Added`,
    `Fixed`, `Changed`, etc.).
 2. **`pkg/version/version.go`** — bump the `Version` constant to match
