@@ -94,7 +94,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         # signing job (no always()/failure() override, no continue-on-error),
         # and the docs must name it.
         job = self.jobs["verify-release"]
-        self.assertEqual(self.jobs["verify-release"].get("if"), "startsWith(github.ref, 'refs/tags/v')")
+        self.assertEqual(self.jobs["verify-release"].get("if"), "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
         self.assertTrue({"sign-release", "sign-bundle"} <= set(needs(job)))
         self.assertNotIn("continue-on-error", job)
         for step in job["steps"]:
@@ -109,7 +109,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_signing_runs_on_tags_only(self):
         for name in ("sign-release", "sign-bundle", "verify-release"):
             with self.subTest(job=name):
-                self.assertEqual(self.jobs[name].get("if"), "startsWith(github.ref, 'refs/tags/v')")
+                self.assertEqual(self.jobs[name].get("if"), "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
 
     def test_only_signing_jobs_get_an_oidc_token(self):
         for name in ("sign-release", "sign-bundle"):

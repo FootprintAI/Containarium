@@ -49,6 +49,11 @@ func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectio
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
+	// A negative limit would make filtered[:limit] panic below, and a handler
+	// panic terminates the daemon.
+	if req.Limit < 0 {
+		return nil, status.Error(codes.InvalidArgument, "limit must not be negative")
+	}
 	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
 		return nil, err
 	}

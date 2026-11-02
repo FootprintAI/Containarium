@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'charts/**'
+      - 'scripts/ci/helm-chart-jwt-secret.sh'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215). The
   # `paths` filter stays: scoping by what changed is intentional, scoping by
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - 'charts/**'
+      - 'scripts/ci/helm-chart-jwt-secret.sh'
 
 permissions:
   contents: read
@@ -40,11 +42,19 @@ jobs:
         # gateway.upstreamKeySecret must be set or the chart's own #1496 guard
         # (daemon-deployment.yaml) intentionally refuses to render at all —
         # unrelated to what this smoke test checks (template syntax/rendering
-        # errors in general), so satisfy it with a placeholder value.
+        # errors in general), so satisfy it with a placeholder value. The
+        # same goes for daemon.jwtSecret (#3442 guard in daemon-secret.yaml).
         run: |
           helm template containarium charts/containarium-k8s \
             --set gateway.upstreamKeySecret=smoke-test-placeholder \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
             > /dev/null
+
+      - name: Template test — daemon.jwtSecret guard (#3442)
+        # The chart must refuse to render with no daemon.jwtSecret, an empty
+        # one, or the placeholder older versions shipped, and must render a
+        # real value into the daemon Secret.
+        run: scripts/ci/helm-chart-jwt-secret.sh charts/containarium-k8s
 
       - name: Template render — gateway disabled (#1526)
         # values.yaml documents clearing gateway.namespace as how to disable
@@ -60,12 +70,14 @@ jobs:
         run: |
           if helm template containarium charts/containarium-k8s \
             --set gateway.enabled=false --set gateway.namespace="" \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
             --show-only templates/namespace.yaml > /dev/null 2>&1; then
             echo "::error::namespace.yaml still rendered something with gateway.enabled=false — expected it to render nothing, the same as every other gateway-only resource"
             exit 1
           fi
           helm template containarium charts/containarium-k8s \
             --set gateway.enabled=false --set gateway.namespace="" \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
             > /dev/null
 
       - name: Packaged chart pins its own release image (#2574)
@@ -77,7 +89,8 @@ jobs:
           helm package charts/containarium-k8s \
             --version 9.8.7 --app-version v9.8.7 --destination "$RUNNER_TEMP"
           rendered="$(helm template containarium "$RUNNER_TEMP/containarium-k8s-9.8.7.tgz" \
-            --set gateway.upstreamKeySecret=smoke-test-placeholder)"
+            --set gateway.upstreamKeySecret=smoke-test-placeholder \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)")"
           if ! grep -q 'image: ghcr.io/footprintai/containarium:v9.8.7$' <<<"$rendered"; then
             echo "::error::stamped chart does not render the daemon image ghcr.io/footprintai/containarium:v9.8.7"
             grep -n 'image:' <<<"$rendered" || true

@@ -30,6 +30,9 @@ import (
 // destroys the only key path to their data. Admin only, like every other
 // operation on tenant key custody.
 func (s *ContainerServer) DeleteTenantStorage(ctx context.Context, req *pb.DeleteTenantStorageRequest) (*pb.DeleteTenantStorageResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.GetTenant() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant is required")
 	}

@@ -86,7 +86,7 @@ func printPassthroughRouteTableFormat(routes []*pb.PassthroughRoute, totalCount 
 			route.GetProtocol().String(),
 			truncateRoute(target, 25),
 			status,
-			route.GetContainerName())
+			escapeControl(route.GetContainerName()))
 	}
 
 	fmt.Println()

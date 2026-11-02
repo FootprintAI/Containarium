@@ -40,12 +40,22 @@ var errTrackerWaitingOnSecrets = errors.New("waiting on the secrets store, which
 // once the secrets store is in, open the tracker store over the shared pool
 // and wire it with wireTrackerStore. On error nothing is wired, so the RPCs
 // keep answering UNAVAILABLE.
-func trackerStoreFamily(cs *ContainerServer, agents *AgentSkillServer, open func(context.Context, *pgxpool.Pool) (*tracker.Store, error), runStarter func() tracker.RunStarter) storeFamily {
+//
+// secretsRefused reports whether the secrets family's last attempt was a
+// config refusal (storeRecovery.configRefused). While it is, the wait on
+// the secrets store is returned as a storeConfigRefusal too (#3387), so the
+// tracker does not hold the self-restart the secrets family already
+// released; a wait on a secrets family that is merely pending stays a plain
+// error and holds it.
+func trackerStoreFamily(cs *ContainerServer, agents *AgentSkillServer, open func(context.Context, *pgxpool.Pool) (*tracker.Store, error), runStarter func() tracker.RunStarter, secretsRefused func() bool) storeFamily {
 	return storeFamily{
 		Service: trackerStoreService,
 		Display: trackerStoreDisplay,
 		Install: func(ctx context.Context, pool *pgxpool.Pool) error {
 			if cs.loadSecretsStore() == nil {
+				if secretsRefused() {
+					return &storeConfigRefusal{Err: errTrackerWaitingOnSecrets}
+				}
 				return errTrackerWaitingOnSecrets
 			}
 			st, err := open(ctx, pool)

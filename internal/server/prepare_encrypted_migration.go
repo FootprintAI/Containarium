@@ -39,6 +39,9 @@ import (
 // has no key custody configured" is a different problem from "the peer is
 // unreachable". Errors are reserved for malformed requests and authorization.
 func (s *ContainerServer) PrepareEncryptedMigration(ctx context.Context, req *pb.PrepareEncryptedMigrationRequest) (*pb.PrepareEncryptedMigrationResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.GetUsername() == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}

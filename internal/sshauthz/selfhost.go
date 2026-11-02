@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -86,6 +87,13 @@ func (d *SelfHostDecider) Decide(ctx context.Context, req *pb.AuthorizeSSHReques
 	if !rec.RevokedAt.IsZero() {
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY, userID), nil
 	}
+	// The registry says the key exists, not that it may log in as THIS
+	// account. Bind it to the login: the key must be one the account itself
+	// holds. (A key can legitimately sit in several accounts, so the row's
+	// single owner is not the test; the account's own authorized_keys is.)
+	if !d.jumpAccountHoldsKey(login, fp) {
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY, userID), nil
+	}
 	if d.MaxKeyAge > 0 && d.now().Sub(rec.CreatedAt) >= d.MaxKeyAge {
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_KEY_EXPIRED, userID), nil
 	}
@@ -139,13 +147,50 @@ func (d *SelfHostDecider) localFacts(ctx context.Context, login string) (string,
 }
 
 func (d *SelfHostDecider) jumpAccountHasKeys(login string) bool {
+	// #nosec G304 -- login is checked above to contain no path separators.
+	data, err := os.ReadFile(d.authorizedKeysPath(login))
+	return err == nil && strings.TrimSpace(string(data)) != ""
+}
+
+// authorizedKeysPath is the jump account's authorized_keys file. login must
+// already have passed the path-separator check in localFacts.
+func (d *SelfHostDecider) authorizedKeysPath(login string) string {
 	root := d.HomeRoot
 	if root == "" {
 		root = "/home"
 	}
-	// #nosec G304 -- login is checked above to contain no path separators.
-	data, err := os.ReadFile(filepath.Join(root, login, ".ssh", "authorized_keys"))
-	return err == nil && strings.TrimSpace(string(data)) != ""
+	return filepath.Join(root, login, ".ssh", "authorized_keys")
+}
+
+// jumpAccountHoldsKey reports whether login's authorized_keys contains a key
+// with the given SHA256 fingerprint. cert-authority entries are skipped: sshd
+// treats them as CAs, not as plain keys. Unparseable lines are ignored by
+// ParseAuthorizedKey; any read error fails closed.
+func (d *SelfHostDecider) jumpAccountHoldsKey(login, fingerprint string) bool {
+	// #nosec G304 -- login is checked in localFacts to contain no path separators.
+	data, err := os.ReadFile(d.authorizedKeysPath(login))
+	if err != nil {
+		return false
+	}
+	for len(data) > 0 {
+		pk, _, options, rest, err := ssh.ParseAuthorizedKey(data)
+		if err != nil {
+			// No further parseable key in the remainder.
+			return false
+		}
+		data = rest
+		isCA := false
+		for _, o := range options {
+			if o == "cert-authority" {
+				isCA = true
+				break
+			}
+		}
+		if !isCA && ssh.FingerprintSHA256(pk) == fingerprint {
+			return true
+		}
+	}
+	return false
 }
 
 func denyResponse(reason pb.SSHDenyReason, userID string) *pb.AuthorizeSSHResponse {

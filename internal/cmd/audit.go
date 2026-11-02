@@ -634,14 +634,16 @@ func findingLine(f audit.BucketAnchorFinding) string {
 
 // sanitizeDetailForCLI strips newlines from the detail
 // column so each row stays on its own line in the table
-// output. The audit redactor already scrubs secrets at
-// insert time (Phase 4.4), so we don't need to scrub
-// again — just normalize whitespace for display.
+// output, and escapes every other control character (ESC,
+// DEL, C1) so a tenant-influenced detail cannot drive the
+// operator's terminal (#3343). The audit redactor already
+// scrubs secrets at insert time (Phase 4.4), so we don't
+// need to scrub again.
 func sanitizeDetailForCLI(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
-	return s
+	return escapeControl(s)
 }
 
 func truncateAudit(s string, n int) string {
