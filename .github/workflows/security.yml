@@ -81,7 +81,7 @@ jobs:
 
       - name: Run gosec
         if: steps.reuse.outputs.reused != 'true'
-        uses: securego/gosec@14ef84f6feccf40be7f5092fd2db119bf3f5f836 # master
+        uses: securego/gosec@a7abd50b2947e53b26a7e200223e635ce36fac9b # master
         with:
           # -exclude-generated: generated protobuf/grpc-gateway stubs
           # (pkg/pb/**) are never hand-edited (CLAUDE.md) and carry ~130
