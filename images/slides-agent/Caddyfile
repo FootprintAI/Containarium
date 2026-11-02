@@ -1,0 +1,57 @@
+# In-box auth proxy for the slides-agent image (images/slides-agent/Dockerfile,
+# recipe `slides-agent` in pkg/core/recipes/recipes.yaml).
+#
+# Fronts EVERY path of the open-slide dev server on 127.0.0.1:5173. Two ways
+# in: HTTP basic auth, or the session cookie this proxy issues on a successful
+# basic-auth response. The cookie is SameSite=None so the browser sends it from
+# an iframe embedded in a console on another origin; its value is the per-box
+# token the daemon vends through /__ws_login for zero-click access.
+#
+# The dev server's own request guard compares the Origin header against the
+# scheme + host it was reached on, reading X-Forwarded-Proto first. The
+# platform edge terminates TLS and reaches this proxy over plain HTTP, so the
+# scheme is forced to https on every proxied request; the Host header passes
+# through (the dev server's allowedHosts is set in open-slide.config.ts).
+#
+# Values come from the environment the container is started with (the recipe
+# stages them in /opt/wsauth/env); nothing here is a credential.
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	# Zero-click bootstrap: the console opens /__ws_login?t=<token>; the proxy
+	# sets the cookie and redirects to the app, so no sign-in prompt is shown
+	# inside the embedded iframe.
+	@login {
+		path /__ws_login
+		query t={$SLIDES_WS_TOKEN}
+	}
+	handle @login {
+		header +Set-Cookie "ws_auth={$SLIDES_WS_TOKEN}; Path=/; HttpOnly; Secure; SameSite=None"
+		# `redir * / 302`: the explicit `*` matcher keeps Caddy from reading the
+		# leading `/` as a path matcher (which makes the redirect a no-op).
+		redir * / 302
+	}
+
+	# Cookie path. Anchored to the cookie name=value boundary so a crafted
+	# cookie cannot slip the token in as a substring of another value.
+	@authed header_regexp Cookie "(^|;\s*)ws_auth={$SLIDES_WS_TOKEN}($|;)"
+	handle @authed {
+		reverse_proxy 127.0.0.1:5173 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Everything else: HTTP basic auth, which also issues the cookie.
+	handle {
+		basic_auth {
+			{$SLIDES_AUTH_USER} {$SLIDES_AUTH_HASH}
+		}
+		reverse_proxy 127.0.0.1:5173 {
+			header_up X-Forwarded-Proto https
+			header_down +Set-Cookie "ws_auth={$SLIDES_WS_TOKEN}; Path=/; HttpOnly; Secure; SameSite=None"
+		}
+	}
+}

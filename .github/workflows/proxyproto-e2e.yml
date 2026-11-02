@@ -6,6 +6,10 @@ on:
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
   pull_request:
+  # Merge queue: the queue tests the PR merged onto main (plus PRs ahead of it)
+  # and needs this required check to report on that ref. Release-only fast path
+  # does NOT apply there (release-only-diff decides false for any other event).
+  merge_group:
 
 permissions:
   contents: read

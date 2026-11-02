@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrading
 
+- **The containarium-k8s chart no longer ships a default `daemon.jwtSecret` and refuses to render without one** (#3442).
+  `helm install` / `helm upgrade` now fail when the value is empty or still the old placeholder
+  (`change-me-please-use-a-real-secret`), which anyone could read in the public chart and use to forge API tokens. An existing
+  install that relied on the placeholder must set its own value on upgrade: `--set daemon.jwtSecret="$(openssl rand -hex 24)"`.
+  Changing the secret invalidates tokens signed with the old one, so re-mint any tokens issued by that daemon.
 - **Tokens that carry a scopes claim now need the matching scope on RPCs that previously checked only role or tenant** (#3419).
   Writes need `containers:write`, reads `containers:read`; network/passthrough/ACL RPCs use `routes:read` / `routes:write`
   (`GetNetworkGuardStatus` uses `security:read`); setting or deleting a coding-tool egress policy needs `network-policy:write`;
@@ -39,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `authorized_keys` is refused for that login even while its registry row is still active. This changes the premise of decision
   Q14 on #3335 (a stale row used to be allowed while the account kept another key); the reconcile step is unchanged.
 
+### Added
+
+- `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
+  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium with a
+  `slides-print-pdf <site> <out.pdf>` entrypoint (one 1920x1080 page per slide page of a built site) and a Caddy auth proxy, so
+  a box start installs nothing from a package registry. The proxy fronts every path of the dev server, forwards
+  `X-Forwarded-Proto: https`, and refuses unauthenticated requests (the deploy checks this); decks persist under the box
+  user's `~/slides`. The recipe shares coding-agent's `post_start` steps through YAML anchors. Publishing the image from the
+  release pipeline is a follow-up; `slides_image` points a deploy at a mirror or rehearsal build meanwhile.
+
 ### Changed
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
@@ -50,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A route added right after the passthrough store installed late could be deleted, and a failed replay of remembered deletes was silent** (#3441, follow-up to #3407). The install now replays the deletes it remembered before the passthrough RPCs go live, so a box recreated under a remembered name keeps a route added right after the install. A replay that fails for a box logs its own warning naming the box, saying its rows remain and will be reconciled, and the install log line counts the failures. The other remembered boxes are still cleaned. A failed replay is not retried.
+- **`StartBoxRun` command mode no longer reads `code.json`, and a blank command is refused** (#3422, #3423; follow-ups to #3322). A box with a corrupt or unknown-version `~/.containarium/code.json` could not run a plain command, although command mode is documented as not consulting that file; it now reads only `$HOME`, while engine runs still fail on a bad file as before. A whitespace-only `command` was treated as no command, so with a `prompt` it silently started an engine run and with `timeout_seconds` it blamed the wrong field; it now returns `InvalidArgument: command must not be blank`. The `timeout_seconds` range is checked before the "applies to command only" rule, so a negative value without a command reports the range error.
 - **The tracker store no longer holds the opt-in self-restart while it waits on a secrets store refused by configuration** (#3387, follow-up to #3378). The tracker store installs only after the secrets store, so with `CONTAINARIUM_REQUIRE_ENVELOPE=true` and no KMS backend the tracker stayed pending on an ordinary error and still held the restart, and the daemon never restarted. While the secrets store's last attempt was a configuration refusal, the tracker now reports its wait as a configuration refusal too. It stays pending and `NOT_SERVING` and is still retried, but it no longer holds the restart. When the secrets store is only waiting on Postgres, has not been attempted yet, or failed to open, the tracker still holds the restart. Once the secrets store installs, the tracker installs in the same attempt.
 - **Container label routes were served without authentication** (175a1dfd). See Upgrading.
 - **The ClamAV report CSV export returned every tenant's reports to any valid token** (7d5aca91). See Upgrading. Cells that begin
