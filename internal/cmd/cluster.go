@@ -252,12 +252,12 @@ func printCluster(c *pb.Cluster) { printClusterTo(os.Stdout, c) }
 // answerable without querying the daemon's config.
 func printClusterTo(out io.Writer, c *pb.Cluster) {
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(w, "Name:\t%s\n", c.Name)
-	fmt.Fprintf(w, "Owner:\t%s\n", c.Owner)
+	fmt.Fprintf(w, "Name:\t%s\n", escapeControl(c.Name))
+	fmt.Fprintf(w, "Owner:\t%s\n", escapeControl(c.Owner))
 	fmt.Fprintf(w, "State:\t%s\n", clusterStateString(c.State))
 	fmt.Fprintf(w, "Isolation:\t%s\n", nodeIsolationString(c.NodeIsolation))
 	if c.StateReason != "" {
-		fmt.Fprintf(w, "Reason:\t%s\n", c.StateReason)
+		fmt.Fprintf(w, "Reason:\t%s\n", escapeControl(c.StateReason))
 	}
 	if c.K3SVersion != "" {
 		fmt.Fprintf(w, "K3s:\t%s\n", c.K3SVersion)
@@ -268,7 +268,7 @@ func printClusterTo(out io.Writer, c *pb.Cluster) {
 	fmt.Fprintln(w, "Node groups:")
 	for _, g := range c.NodeGroups {
 		fmt.Fprintf(w, "  %s:\tcpu=%s memory=%s disk=%s nodes=%d..%d\n",
-			g.Name, g.Size.Cpu, g.Size.Memory, g.Size.Disk, g.MinNodes, g.MaxNodes)
+			escapeControl(g.Name), g.Size.Cpu, g.Size.Memory, g.Size.Disk, g.MinNodes, g.MaxNodes)
 	}
 	_ = w.Flush()
 }
@@ -343,7 +343,7 @@ func writeClusterList(out io.Writer, clusters []*pb.Cluster) error {
 	fmt.Fprintln(w, "NAME\tOWNER\tSTATE\tISOLATION\tGROUPS\tAPI ENDPOINT")
 	for _, cl := range clusters {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
-			cl.Name, cl.Owner, clusterStateString(cl.State), nodeIsolationString(cl.NodeIsolation),
+			escapeControl(cl.Name), escapeControl(cl.Owner), clusterStateString(cl.State), nodeIsolationString(cl.NodeIsolation),
 			len(cl.NodeGroups), cl.ApiEndpoint)
 	}
 	return w.Flush()

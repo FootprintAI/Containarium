@@ -111,11 +111,11 @@ func pbCollaboratorsToRows(collaborators []*pb.Collaborator) []collaboratorRow {
 
 func printCollaboratorTable(containerName string, rows []collaboratorRow) {
 	if len(rows) == 0 {
-		fmt.Printf("No collaborators found for %s\n", containerName)
+		fmt.Printf("No collaborators found for %s\n", escapeControl(containerName))
 		return
 	}
 
-	fmt.Printf("Collaborators for %s:\n\n", containerName)
+	fmt.Printf("Collaborators for %s:\n\n", escapeControl(containerName))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "USERNAME\tACCOUNT NAME\tADDED AT\tADDED BY")
@@ -126,7 +126,7 @@ func printCollaboratorTable(containerName string, rows []collaboratorRow) {
 		if addedBy == "" {
 			addedBy = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", row.CollaboratorUsername, row.AccountName, row.CreatedAt.Format(time.RFC3339), addedBy)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", escapeControl(row.CollaboratorUsername), escapeControl(row.AccountName), row.CreatedAt.Format(time.RFC3339), escapeControl(addedBy))
 	}
 	_ = w.Flush()
 

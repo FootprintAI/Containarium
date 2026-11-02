@@ -124,3 +124,12 @@ epic. Until each ships, do not assume the check exists:
 - Add a `CHANGELOG.md` entry under `## [Unreleased]` (never inside a
   released section).
 - Fill in the pull request template checklist.
+
+## Merging: the merge queue
+
+`main` uses a GitHub merge queue. You do not need to rebase or "update branch"
+before merging. Once your PR is approved and its required checks are green,
+choose **Merge when ready** (or `gh pr merge --auto --squash`). The queue tests
+your PR on top of the latest `main` and the PRs ahead of it, then squash-merges
+it. If that combined build fails, the PR is removed from the queue; fix it and
+re-queue.

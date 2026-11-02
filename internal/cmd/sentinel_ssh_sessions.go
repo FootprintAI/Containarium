@@ -120,9 +120,9 @@ func sshSessionRowFields(rec sshsession.Record) []string {
 		rec.OccurredAt.Format(time.RFC3339),
 		string(rec.Phase),
 		rec.SessionID,
-		rec.Login,
+		escapeControl(rec.Login),
 		rec.ClientIP,
-		dashIfEmpty(rec.Target),
+		dashIfEmpty(escapeControl(rec.Target)),
 		dashIfEmpty(string(rec.AuthMethod)),
 		dashIfEmpty(string(rec.CloseReason)),
 	}

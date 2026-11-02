@@ -9,8 +9,10 @@ daemon:
     tag: ""
     pullPolicy: IfNotPresent
   replicaCount: 1
-  # -- JWT secret for API authentication. Must be 32+ characters. CHANGE THIS.
-  jwtSecret: "change-me-please-use-a-real-secret"
+  # -- JWT secret for API authentication. Must be 32+ characters. Required:
+  # the chart refuses to render while it is empty (#3442). Generate one per
+  # install, e.g. --set daemon.jwtSecret="$(openssl rand -hex 24)".
+  jwtSecret: ""
   service:
     type: ClusterIP
     port: 8080

@@ -489,7 +489,7 @@ func printRunnerTable(runners []runner.RunnerStatus) {
 		if note == "" {
 			note = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.State, registered, note)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", escapeControl(r.Name), r.State, registered, escapeControl(note))
 	}
 	_ = w.Flush()
 }
