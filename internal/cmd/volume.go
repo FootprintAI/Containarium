@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -176,10 +177,16 @@ func runVolumeList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No volumes.")
 		return nil
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	return printVolumeList(os.Stdout, resp.Volumes)
+}
+
+// printVolumeList renders the `volume list` table; volume names are
+// tenant-chosen (#3453).
+func printVolumeList(out io.Writer, volumes []*pb.Volume) error {
+	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPOOL\tTYPE\tATTACHMENTS")
-	for _, v := range resp.Volumes {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", v.Name, v.Pool, v.ContentType, len(v.Attachments))
+	for _, v := range volumes {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", escapeControl(v.Name), escapeControl(v.Pool), v.ContentType, len(v.Attachments))
 	}
 	return w.Flush()
 }

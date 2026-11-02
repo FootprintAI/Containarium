@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/footprintai/containarium/pkg/core/skills"
@@ -44,11 +46,18 @@ func runAgentList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No agent skills available.")
 		return nil
 	}
-	fmt.Printf("%-16s %-16s %-24s %s\n", "ID", "BOX", "SCOPES", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 90))
-	for _, s := range list {
-		fmt.Printf("%-16s %-16s %-24s %s\n",
-			s.Id, s.GetRecipeId(), strings.Join(s.AllowedScopes, ","), s.Description)
-	}
+	printAgentSkillList(os.Stdout, list)
 	return nil
+}
+
+// printAgentSkillList renders the `agent list` table. Skill ids, boxes and
+// descriptions come from the daemon's catalog, which tenants can extend
+// (#3453).
+func printAgentSkillList(w io.Writer, list []*pb.AgentSkill) {
+	fmt.Fprintf(w, "%-16s %-16s %-24s %s\n", "ID", "BOX", "SCOPES", "DESCRIPTION")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
+	for _, s := range list {
+		fmt.Fprintf(w, "%-16s %-16s %-24s %s\n",
+			escapeControl(s.Id), escapeControl(s.GetRecipeId()), escapeControl(strings.Join(s.AllowedScopes, ",")), escapeControl(s.Description))
+	}
 }

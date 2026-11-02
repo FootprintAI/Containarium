@@ -597,6 +597,12 @@ func runSSHList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "No SSH keys registered. Run `containarium ssh setup` to add one.")
 		return nil
 	}
+	return printSSHKeys(out, keys)
+}
+
+// printSSHKeys renders the `ssh list` table; key names are user-chosen
+// labels (#3453).
+func printSSHKeys(out io.Writer, keys []sshkey.SSHKey) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tFINGERPRINT\tCREATED")
 	for _, k := range keys {
@@ -612,7 +618,7 @@ func runSSHList(cmd *cobra.Command, args []string) error {
 				fp = f
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", k.Name, fp, created)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", escapeControl(k.Name), fp, created)
 	}
 	return tw.Flush()
 }
