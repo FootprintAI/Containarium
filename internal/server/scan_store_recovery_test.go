@@ -234,6 +234,51 @@ func assertScanRPCsUnavailable(t *testing.T, reg *fakeRegistrar) {
 	}
 }
 
+// Every RPC of the three services, taken from the generated service
+// descriptors, answers UNAVAILABLE naming the readiness entry while the
+// store is absent. The forwarders are hand-written: one dropped later would
+// fall through to the embedded Unimplemented answer, and an RPC added to the
+// protos is not forwarded until the count here is raised.
+func TestScanRecovery_EveryStandInRPCAnswersUnavailable(t *testing.T) {
+	f := newStoreRecoveryFixture(t, &fakePostgres{})
+	reg := &fakeRegistrar{}
+	setupScanStores(f.r, reg, newFakeScanOpeners().setup(scanConnectRefused))
+	ctx := kmsKeyTestCtx("op", "admin", "security:read")
+
+	services := []struct {
+		desc    grpc.ServiceDesc
+		service string
+		methods int
+	}{
+		{pb.SecurityService_ServiceDesc, securityScanService, 5},
+		{pb.PentestService_ServiceDesc, pentestScanService, 11},
+		{pb.ZapService_ServiceDesc, zapScanService, 8},
+	}
+	for _, svc := range services {
+		if len(svc.desc.Streams) != 0 {
+			t.Errorf("%s has %d streaming RPC(s); the stand-in forwards unary RPCs only", svc.desc.ServiceName, len(svc.desc.Streams))
+		}
+		if len(svc.desc.Methods) != svc.methods {
+			t.Errorf("%s has %d RPCs, the stand-in forwards %d: forward the new RPC in scan_store_recovery.go and raise this count", svc.desc.ServiceName, len(svc.desc.Methods), svc.methods)
+		}
+		impl, ok := reg.registered(svc.desc.ServiceName)
+		if !ok {
+			t.Fatalf("%s was not registered", svc.desc.ServiceName)
+		}
+		for _, m := range svc.desc.Methods {
+			_, err := m.Handler(impl, ctx, func(any) error { return nil }, nil)
+			st := status.Convert(err)
+			if st.Code() != codes.Unavailable {
+				t.Errorf("%s/%s with no store = %v, want Unavailable", svc.desc.ServiceName, m.MethodName, err)
+				continue
+			}
+			if !strings.Contains(st.Message(), svc.service) {
+				t.Errorf("%s/%s refusal %q does not name readiness %s", svc.desc.ServiceName, m.MethodName, st.Message(), svc.service)
+			}
+		}
+	}
+}
+
 // AC1 + AC2: with Postgres down at startup the three services are
 // registered, answer UNAVAILABLE and are NOT_SERVING; once Postgres answers
 // the stores install over the shared pool with no restart, readiness turns
