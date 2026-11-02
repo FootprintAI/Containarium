@@ -12,10 +12,10 @@ import (
 // #3335). While the daemon ran without the ssh_keys registry (a degraded
 // start), every key revoke was a no-op on it, so a key removed from an
 // authorized_keys file in that window keeps an active row, and the backfill
-// only adds rows. The self-host decider's /home check does not cover it: it
-// requires the login's account to hold SOME key, not the offered one, so a
-// stale row is still allowed while the account keeps another key. Reconcile
-// closes that: it revokes every active row whose key no account holds.
+// only adds rows. The self-host decider also refuses a stale row at decision
+// time, because it requires the OFFERED key to be one the login's account
+// holds. Reconcile still matters: it revokes every active row whose key no
+// account holds, so the registry itself stops listing them.
 
 // ReconcileStore is what Reconcile needs from the registry. *PGKeyStore
 // satisfies it.

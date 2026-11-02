@@ -360,6 +360,34 @@ func RequireRoleOrScope(ctx context.Context, role, scope string) error {
 	return status.Errorf(codes.PermissionDenied, "requires role %q or scope %q", role, scope)
 }
 
+// RequireRoleOrScopeNarrowed is RequireRoleOrScope for MUTATING paths. It
+// keeps the same two ways in (the role, or an explicit scope for a
+// least-privilege caller) but holds a token that CARRIES a scopes claim to it,
+// admin or not: scopes narrow what a token can do (see RequireScope), so a
+// scoped admin token without the scope is refused. Only a token with no scopes
+// claim at all falls back to the role alone (the pre-scope compatibility path).
+// Like RequireRoleOrScope it does not consult strict-scopes mode or record the
+// unscoped call, so an unscoped admin token still passes with strict mode armed
+// (these mutations are outside the #1679 measurement). The wildcard scope "*"
+// satisfies any scope. Read paths keep RequireRoleOrScope,
+// where "an admin reaches it by role" is the documented behavior (#621).
+func RequireRoleOrScopeNarrowed(ctx context.Context, role, scope string) error {
+	_, roles, ok := SubjectFromGRPCContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	if scopes, scoped := ScopesFromGRPCContext(ctx); scoped {
+		if HasExplicitScope(scopes, scope) {
+			return nil
+		}
+		return status.Errorf(codes.PermissionDenied, "scope required: %s", scope)
+	}
+	if HasRole(roles, role) {
+		return nil
+	}
+	return status.Errorf(codes.PermissionDenied, "requires role %q or scope %q", role, scope)
+}
+
 // RequireScope returns nil if the authenticated subject's JWT
 // carries the required scope (or no scopes claim at all, which
 // is the Phase 1.7 backwards-compat "unrestricted" path — unless

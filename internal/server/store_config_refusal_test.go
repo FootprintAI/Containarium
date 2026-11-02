@@ -16,6 +16,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/internal/tracker"
 )
 
 // #3378 (Q9 on #3335): a family whose install is refused by configuration
@@ -247,5 +248,31 @@ func TestStoreConfigRefusal_SecretsRequireEnvelopeWithoutKMS(t *testing.T) {
 	}
 	if cs.loadSecretsStore() != nil {
 		t.Error("a secrets store was wired despite the refusal")
+	}
+}
+
+// #3387: the degraded-start scenario of #3378 at the watcher — secrets
+// refused by CONTAINARIUM_REQUIRE_ENVELOPE with no KMS and the tracker
+// family waiting on it — restarts the daemon; the same pair with secrets
+// failing on an open error keeps the watcher waiting.
+func TestStoreConfigRefusal_WatcherRestartsWithTrackerWaitingOnRefusedSecrets(t *testing.T) {
+	f := newStoreRecoveryFixture(t, &fakePostgres{})
+	cs := &ContainerServer{}
+	f.r.Register(secretsStoreFamily(cs, requireEnvelopeWithoutKMS(t, cs)))
+	f.r.Register(f.trackerFamilyOver(cs, &AgentSkillServer{}, (&fakeTrackerOpen{store: &tracker.Store{}}).open))
+	f.attemptOnce(t)
+	if !boundedWatcherRun(f.r.holdsRestart) {
+		t.Fatal("watcher did not restart with secrets config-refused and the tracker waiting on it")
+	}
+
+	g := newStoreRecoveryFixture(t, &fakePostgres{})
+	gcs := &ContainerServer{}
+	g.r.Register(secretsStoreFamily(gcs, func(context.Context, *pgxpool.Pool) (*secrets.Store, error) {
+		return nil, errFakeOpen
+	}))
+	g.r.Register(g.trackerFamilyOver(gcs, &AgentSkillServer{}, (&fakeTrackerOpen{store: &tracker.Store{}}).open))
+	g.attemptOnce(t)
+	if boundedWatcherRun(g.r.holdsRestart) {
+		t.Fatal("watcher restarted while the tracker waits on a secrets family that failed on an open error")
 	}
 }

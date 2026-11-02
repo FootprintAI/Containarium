@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -160,23 +163,20 @@ func TestNewPeerPool_StaticPeerMixedForms(t *testing.T) {
 	}
 }
 
-func TestNewPeerPool_SkipsInvalidStaticPeers(t *testing.T) {
+func TestNewPeerPool_InvalidStaticPeersYieldNoStaticPeers(t *testing.T) {
 	pool := NewPeerPool("local-vm", "", []string{"good=10.0.0.1:8080", "bad=oops", ""}, "")
-	if len(pool.Peers()) != 1 {
-		t.Fatalf("expected only the valid peer, got %d", len(pool.Peers()))
-	}
-	if pool.Get("good") == nil {
-		t.Error("the valid peer should be kept")
+	if len(pool.Peers()) != 0 {
+		t.Fatalf("expected no static peers when --peers is invalid, got %d", len(pool.Peers()))
 	}
 }
 
-func TestNewPeerPool_SkipsAPeerWithTheLocalBackendID(t *testing.T) {
+func TestNewPeerPool_RejectsAPeerWithTheLocalBackendID(t *testing.T) {
 	pool := NewPeerPool("local-vm", "", []string{"local-vm=10.0.0.2:8080", "other=10.0.0.3:8080"}, "")
 	if pool.Get("local-vm") != nil {
 		t.Error("a static peer must not take this daemon's own backend id")
 	}
-	if pool.Get("other") == nil {
-		t.Error("the other peer should be kept")
+	if pool.Get("other") != nil {
+		t.Error("an invalid --peers list yields no static peers")
 	}
 }
 
@@ -224,5 +224,66 @@ func TestDiscover_DoesNotOverwriteAStaticPeerAddress(t *testing.T) {
 	}
 	if peer.Addr != "10.0.0.2:8080" {
 		t.Errorf("static peer address was overwritten to %q", peer.Addr)
+	}
+}
+
+// Ids that differ only by case are ambiguous for `move --target` (one incus
+// remote name), so they are rejected.
+func TestParseStaticPeers_RejectsIDsDifferingOnlyByCase(t *testing.T) {
+	for _, in := range [][]string{
+		{"Backend-B=10.0.0.2:8080", "backend-b=10.0.0.3:8080"},
+		{"Backend-B=10.0.0.2:8080", "backend-b=10.0.0.2:8080"},
+		{"Host.example.com:8080", "host.example.com:8080"},
+	} {
+		if _, err := ParseStaticPeers(in, "local"); err == nil {
+			t.Errorf("ParseStaticPeers(%q) = nil error, want a case-collision error", in)
+		}
+	}
+}
+
+// NewPeerPool and ParseStaticPeers must agree on every input: the pool holds
+// exactly the parsed peers, or no static peers when parsing fails.
+func TestNewPeerPool_AgreesWithParseStaticPeers(t *testing.T) {
+	for _, in := range [][]string{
+		nil,
+		{"a=10.0.0.1:8080", ""},
+		{"a=10.0.0.1:8080", "  ", "b=10.0.0.2:8080"},
+		{"a=10.0.0.1:8080", "a=10.0.0.1:8080"},
+		{"10.0.0.1:8080", "10.0.0.1:8080"},
+		{"a=10.0.0.2:8080", "b=10.0.0.2:8080"},
+		{"10.0.0.2:8080", "b=10.0.0.2:8080"},
+		{"a=10.0.0.1:8080", "a=10.0.0.2:8080"},
+		{"A=10.0.0.1:8080", "a=10.0.0.2:8080"},
+		{"local=10.0.0.1:8080"},
+		{"good=10.0.0.1:8080", "bad=oops"},
+	} {
+		want, err := ParseStaticPeers(in, "local")
+		pool := NewPeerPool("local", "", in, "")
+		got := pool.Peers()
+		if err != nil {
+			want = nil
+		}
+		if len(got) != len(want) {
+			t.Errorf("%q: pool has %d peers, ParseStaticPeers gave %d (err=%v)", in, len(got), len(want), err)
+			continue
+		}
+		for _, sp := range want {
+			pc := pool.Get(sp.ID)
+			if pc == nil || pc.Addr != sp.Addr {
+				t.Errorf("%q: pool missing %+v", in, sp)
+			}
+		}
+	}
+}
+
+// A blank trailing entry and an exact repeat are not problems, so NewPeerPool
+// must not log a warning for them.
+func TestNewPeerPool_NoWarningForBlankOrRepeatedEntries(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	NewPeerPool("local", "", []string{"a=10.0.0.1:8080", "a=10.0.0.1:8080", ""}, "")
+	if buf.Len() != 0 {
+		t.Errorf("unexpected log output: %s", buf.String())
 	}
 }

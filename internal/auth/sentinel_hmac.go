@@ -87,6 +87,8 @@ func SignSentinelRequest(req *http.Request, secret []byte) {
 	sig := computeSentinelSignature(secret, req.Method, req.URL.Path, ts)
 	req.Header.Set(SentinelHeaderTimestamp, ts)
 	req.Header.Set(SentinelHeaderSignature, sig)
+	// v2 also covers the query and body; v1-only receivers ignore this header.
+	stampSentinelV2(req, ts, signV2HMAC(secret))
 }
 
 // VerifySentinelRequest returns nil if `req` carries a valid
@@ -106,6 +108,13 @@ func VerifySentinelRequest(req *http.Request, secret []byte, now time.Time) erro
 	if delta := now.Unix() - ts; delta > int64(SentinelMaxClockSkew/time.Second) || -delta > int64(SentinelMaxClockSkew/time.Second) {
 		return errSentinelAuth
 	}
+	if req.Header.Get(SentinelHeaderSignatureV2) != "" {
+		// A present v2 header must verify; never fall back to the weaker v1.
+		return verifyRequestV2(req, tsStr, secret, nil)
+	}
+	if sentinelRequireV2.Load() {
+		return errSentinelAuth
+	}
 	want := computeSentinelSignature(secret, req.Method, req.URL.Path, tsStr)
 	// hex string compare via hmac.Equal for constant-time. Decoding
 	// to bytes first would let a length mismatch leak via early
@@ -113,6 +122,7 @@ func VerifySentinelRequest(req *http.Request, secret []byte, now time.Time) erro
 	if !hmac.Equal([]byte(want), []byte(sig)) {
 		return errSentinelAuth
 	}
+	noteSentinelV1(req)
 	return nil
 }
 

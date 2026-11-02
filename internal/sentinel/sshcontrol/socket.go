@@ -12,6 +12,8 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
+
+	"github.com/footprintai/containarium/internal/grpcrecover"
 )
 
 // ListenControl exposes the generated service on an operator-private socket only.
@@ -45,7 +47,7 @@ func ListenControl(path string, c *Controller) (func(), error) {
 		_ = l.Close()
 		return nil, err
 	}
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(grpcrecover.Unary()), grpc.ChainStreamInterceptor(grpcrecover.Stream()))
 	pb.RegisterSentinelSSHUpstreamServiceServer(s, c)
 	go func() { _ = s.Serve(l) }()
 	var once sync.Once
