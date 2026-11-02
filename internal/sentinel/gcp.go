@@ -111,9 +111,16 @@ func (g *GCPProvider) WatchEvents(ctx context.Context, events chan<- VMEvent) er
 	}
 }
 
+// operationFilter selects the zone operations that matter for one instance. A Spot preemption
+// is recorded by GCE as its own operation type (compute.instances.preempted, initiated by the
+// system), not as a stop, so it must be listed explicitly (cloud#3377).
+func operationFilter(instance string) string {
+	return fmt.Sprintf("targetLink=\"*/instances/%s\" AND (operationType=\"compute.instances.stop\" OR operationType=\"compute.instances.start\" OR operationType=\"compute.instances.delete\" OR operationType=\"compute.instances.preempted\")", instance)
+}
+
 func (g *GCPProvider) pollOperations(ctx context.Context, events chan<- VMEvent, lastSeenTime *time.Time) {
 	// Filter for operations targeting our instance
-	filter := fmt.Sprintf("targetLink=\"*/instances/%s\" AND (operationType=\"compute.instances.stop\" OR operationType=\"compute.instances.start\" OR operationType=\"compute.instances.delete\")", g.instance)
+	filter := operationFilter(g.instance)
 
 	it := g.opsClient.List(ctx, &computepb.ListZoneOperationsRequest{
 		Project:    g.project,
@@ -174,6 +181,12 @@ func (g *GCPProvider) operationToEvent(op *computepb.Operation, opTime time.Time
 	isPreemption := strings.Contains(strings.ToLower(statusMsg), "preempt")
 
 	switch {
+	case strings.Contains(opType, "preempted"):
+		return &VMEvent{
+			Type:      EventPreempted,
+			Timestamp: opTime,
+			Detail:    fmt.Sprintf("spot VM preempted: %s", statusMsg),
+		}
 	case strings.Contains(opType, "stop") && isPreemption:
 		return &VMEvent{
 			Type:      EventPreempted,

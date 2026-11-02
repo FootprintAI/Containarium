@@ -307,9 +307,8 @@ type DualServer struct {
 	gatewayServer            *gateway.GatewayServer
 	tokenManager             *auth.TokenManager
 	authMiddleware           *auth.AuthMiddleware
-	routeHosting             *routeHosting // route store + Caddy sync (#3331); nil without route persistence
-	passthroughStore         network.PassthroughStore
-	passthroughSyncJob       *network.PassthroughSyncJob
+	routeHosting             *routeHosting    // route store + Caddy sync (#3331); nil without route persistence
+	passthroughSync          *passthroughSync // nil without a NetworkServer and Postgres; built and started once the store installs (#3333)
 	collaboratorStore        *collaborator.Store
 	daemonConfigStore        *app.DaemonConfigStore
 	metricsCollector         *metrics.Collector
@@ -1422,34 +1421,19 @@ skipAppHosting:
 		log.Printf("SSH authorization: self-host decider enabled (max key age %v, 0 = no limit)", config.SSHAuthzMaxKeyAge)
 	}
 
-	// Setup passthrough route persistence and iptables sync.
-	// This mirrors the route store pattern but for TCP/UDP passthrough routes.
-	var passthroughStore network.PassthroughStore
-	var passthroughSyncJob *network.PassthroughSyncJob
+	// Setup passthrough route persistence and iptables sync: a late-install
+	// family (#3333), see passthrough_store_recovery.go.
+	var passthroughSyncLoop *passthroughSync
 	if postgresConnString != "" && networkServer != nil {
-		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for passthrough store: %v", poolErr)
-		} else {
-			passthroughStore, err = network.NewPassthroughStore(context.Background(), pool)
-			if err != nil {
-				log.Printf("Warning: Failed to create passthrough store: %v", err)
-				pool.Close()
-			} else {
-				syncInterval := config.RouteSyncInterval
-				if syncInterval == 0 {
-					syncInterval = 5 * time.Second
-				}
-				passthroughSyncJob = network.NewPassthroughSyncJob(passthroughStore, networkServer.passthroughManager, syncInterval)
-				networkServer.passthroughStore = passthroughStore
-				// ContainerServer also needs the passthrough store so
-				// DeleteContainer can cascade-clean a recipe-deployed box's
-				// TCP/UDP passthrough routes (#1462), mirroring
-				// SetRouteCleanupDeps above for HTTP routes.
-				containerServer.SetPassthroughCleanupDep(passthroughStore)
-				log.Printf("Passthrough route persistence enabled with %v sync interval", syncInterval)
-			}
+		syncInterval := config.RouteSyncInterval
+		if syncInterval == 0 {
+			syncInterval = 5 * time.Second
 		}
+		passthroughSyncLoop = newPassthroughSync(passthroughSyncJobBuilder(networkServer.passthroughManager, syncInterval))
+		setupPassthroughStore(storeRecovery,
+			passthroughConsumers{network: networkServer, containers: containerServer, sync: passthroughSyncLoop},
+			func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 5, 3*time.Second) },
+			network.NewPassthroughStore)
 	}
 
 	// Upgrade the NetworkPolicy service from its initial in-memory store to a
@@ -3041,8 +3025,7 @@ skipAppHosting:
 		tokenManager:           tokenManager,
 		authMiddleware:         authMiddleware,
 		routeHosting:           routeHostingFamily,
-		passthroughStore:       passthroughStore,
-		passthroughSyncJob:     passthroughSyncJob,
+		passthroughSync:        passthroughSyncLoop,
 		collaboratorStore:      collabStore,
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
@@ -3915,11 +3898,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// once it has this serving context (#3331). Stopped at shutdown below.
 	ds.routeHosting.start(ctx)
 
-	// Start passthrough sync job if available (syncs PostgreSQL -> iptables)
-	if ds.passthroughSyncJob != nil {
-		ds.passthroughSyncJob.Start(ctx)
-		log.Printf("Passthrough sync job started")
-	}
+	// Passthrough sync job (syncs PostgreSQL -> iptables): starts now if the
+	// store is installed, or when it installs in-process (#3333).
+	ds.passthroughSync.start(ctx)
 
 	// Core-infra network guard (#2084): reconcile at start, on container
 	// events, and every minute. Run returns immediately when the mode is
@@ -4118,9 +4099,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.credentialWatcher.Stop()
 		}
 		ds.routeHosting.stop()
-		if ds.passthroughSyncJob != nil {
-			ds.passthroughSyncJob.Stop()
-		}
+		ds.passthroughSync.stop()
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
 		}
