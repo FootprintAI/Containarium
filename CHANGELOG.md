@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `authorized_keys` is refused for that login even while its registry row is still active. This changes the premise of decision
   Q14 on #3335 (a stale row used to be allowed while the account kept another key); the reconcile step is unchanged.
 
+### Added
+
+- `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
+  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium and a Caddy auth proxy, so
+  a box start installs nothing from a package registry. The proxy fronts every path of the dev server, forwards
+  `X-Forwarded-Proto: https`, and refuses unauthenticated requests (the deploy checks this); decks persist under the box
+  user's `~/slides`. The recipe shares coding-agent's `post_start` steps through YAML anchors. Publishing the image from the
+  release pipeline is a follow-up; `slides_image` points a deploy at a mirror or rehearsal build meanwhile.
+
 ### Changed
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.

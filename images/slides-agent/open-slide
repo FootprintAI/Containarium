@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#
+# open-slide: the framework CLI against the image's workspace, for
+# `podman exec slides-agent open-slide <command>`. `build` lands in
+# /workspace/dist (the box disk) unless --out-dir is given, because the
+# image's own workspace is not writable by the box user.
+set -euo pipefail
+
+cd /opt/open-slide/workspace
+args=("$@")
+if [ "${1:-}" = "build" ]; then
+  case " $* " in
+    *" --out-dir "*|*" --out-dir="*) ;;
+    *) args+=(--out-dir /workspace/dist) ;;
+  esac
+fi
+exec node node_modules/@open-slide/core/bin.js "${args[@]}"
