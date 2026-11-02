@@ -8,10 +8,20 @@ import (
 	"time"
 )
 
+// PassthroughRules is the host-rule side the sync job reconciles into.
+// *PassthroughManager (iptables) implements it; tests supply an in-memory one.
+type PassthroughRules interface {
+	ListRoutes() ([]PassthroughRoute, error)
+	AddRoute(externalPort int, targetIP string, targetPort int, protocol string) error
+	RemoveRoute(externalPort int, protocol string) error
+}
+
+var _ PassthroughRules = (*PassthroughManager)(nil)
+
 // PassthroughSyncJob synchronizes passthrough routes from PostgreSQL (source of truth) to iptables (runtime)
 type PassthroughSyncJob struct {
 	store    PassthroughStore
-	manager  *PassthroughManager
+	manager  PassthroughRules
 	interval time.Duration
 
 	mu      sync.Mutex
@@ -21,7 +31,7 @@ type PassthroughSyncJob struct {
 }
 
 // NewPassthroughSyncJob creates a new passthrough sync job
-func NewPassthroughSyncJob(store PassthroughStore, manager *PassthroughManager, interval time.Duration) *PassthroughSyncJob {
+func NewPassthroughSyncJob(store PassthroughStore, manager PassthroughRules, interval time.Duration) *PassthroughSyncJob {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
