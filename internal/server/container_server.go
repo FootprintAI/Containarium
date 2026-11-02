@@ -343,7 +343,9 @@ type ContainerServer struct {
 	// passthrough analog of routeStore above. nil on a daemon with no
 	// Postgres-backed passthrough store configured, in which case this
 	// cascade step is skipped (matching routeStore's own nil handling).
-	passthroughStore network.PassthroughStore
+	// Read through loadPassthroughStore: it can be installed while serving
+	// (#3333).
+	passthroughStore storeSlot[network.PassthroughStore]
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
@@ -1851,13 +1853,13 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	//     forever — a later recipe deploy wanting that same port fails with
 	//     a stale "already claimed" conflict against a container that no
 	//     longer exists.
-	if s.passthroughStore != nil {
-		routes, err := s.passthroughStore.ListByContainer(ctx, containerName)
+	if pt := s.loadPassthroughStore(); pt != nil {
+		routes, err := pt.ListByContainer(ctx, containerName)
 		if err != nil {
 			log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
 		}
 		for _, r := range routes {
-			if err := s.passthroughStore.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
+			if err := pt.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
 				log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
 				continue
 			}
@@ -5087,8 +5089,9 @@ func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyM
 // cascade-clean a container's TCP/UDP passthrough routes (#1462), mirroring
 // SetRouteCleanupDeps above. store may be nil if the daemon has no
 // Postgres-backed passthrough store configured; the cascade skips gracefully.
+// Safe while serving: a late install (#3333) calls it after startup.
 func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStore) {
-	s.passthroughStore = store
+	s.passthroughStore.Store(store)
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations

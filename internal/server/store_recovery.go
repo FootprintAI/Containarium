@@ -9,7 +9,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,28 +56,6 @@ type storeFamily struct {
 	// On error it must leave the stand-in in place.
 	Install func(ctx context.Context, pool *pgxpool.Pool) error
 }
-
-// storeSlot is a family's atomic-swap target: its server reads the current
-// store through Load on every call, so a durable store stored later reaches
-// it without re-wiring. Until then it holds the fail-closed stand-in.
-type storeSlot[T any] struct {
-	cur atomic.Pointer[storeSlotRef[T]]
-}
-
-type storeSlotRef[T any] struct{ v T }
-
-// newStoreSlot returns a slot serving standIn.
-func newStoreSlot[T any](standIn T) *storeSlot[T] {
-	s := &storeSlot[T]{}
-	s.Store(standIn)
-	return s
-}
-
-// Load returns the current store.
-func (s *storeSlot[T]) Load() T { return s.cur.Load().v }
-
-// Store swaps v in. Safe while serving.
-func (s *storeSlot[T]) Store(v T) { s.cur.Store(&storeSlotRef[T]{v: v}) }
 
 // installInto is the Install step for a family whose serving path reads
 // slot: open the durable store over the shared pool and swap it in. On error
