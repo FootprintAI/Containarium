@@ -41,6 +41,9 @@ func (f *fakeBackupAPI) DeleteBackup(string) (*pb.DeleteBackupResponse, error) {
 func (f *fakeBackupAPI) PruneBackups(*pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
 	return nil, errors.New("not used")
 }
+func (f *fakeBackupAPI) RestoreBoxBackup(*pb.RestoreBoxBackupRequest) (*pb.RestoreBoxBackupResponse, error) {
+	return nil, errors.New("not used")
+}
 func (f *fakeBackupAPI) Close() error { f.closed = true; return nil }
 
 func withFakeBackupClient(t *testing.T, f *fakeBackupAPI) {
@@ -62,6 +65,8 @@ func TestBackupVerifyExitCodeReflectsResult(t *testing.T) {
 		{"passed exits zero", pb.VerificationResult_VERIFICATION_RESULT_PASSED, false},
 		{"failed exits non-zero", pb.VerificationResult_VERIFICATION_RESULT_FAILED, true},
 		{"unspecified exits non-zero", pb.VerificationResult_VERIFICATION_RESULT_UNSPECIFIED, true},
+		// #2802: a box comparison cut short by the time cap is never a pass.
+		{"incomplete exits non-zero", pb.VerificationResult_VERIFICATION_RESULT_INCOMPLETE, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeBackupAPI{resp: &pb.VerifyBackupResponse{
@@ -90,6 +95,15 @@ func TestBackupVerifyExitCodeReflectsResult(t *testing.T) {
 				t.Error("client was not closed")
 			}
 		})
+	}
+}
+
+// A capped whole-box verification (#2802) lists as INCOMPLETE, not as
+// "unknown" and never as a pass.
+func TestVerifiedLabelIncomplete(t *testing.T) {
+	got := verifiedLabel(&pb.BackupVerification{Result: pb.VerificationResult_VERIFICATION_RESULT_INCOMPLETE, VerifiedAt: "t"})
+	if got != "INCOMPLETE t" {
+		t.Errorf("label = %q, want %q", got, "INCOMPLETE t")
 	}
 }
 

@@ -67,14 +67,25 @@ containarium backup delete <tenant>-app-<timestamp> --server <host>
 
 # Prune: keep only the newest N backups per database (#1839; see below).
 containarium backup prune <tenant> --database app --keep 7 --server <host>
+
+# Restore a whole-box backup into a new, stopped box (#3358). --as defaults
+# to <box>-restored; --force replaces a STOPPED box of that name only. The
+# identity is read from the file, never argv.
+containarium backup restore --box <box> --backup <box>-box-<timestamp> \
+  --as <new-box> --age-identity-file box.key --server <host>
 ```
+
+A whole-box restore is authorized against both the backup's tenant and the
+target box. A non-admin token can therefore restore only into a box named
+for its own tenant, and the default `<box>-restored` needs an admin token.
 
 Connection defaults target a per-container local Postgres: user
 `postgres`, host `127.0.0.1`, port `5432`. Override with
 `--db-user/--db-host/--db-port` as needed.
 
 The same operations are available as MCP tools (`create_backup`,
-`list_backups`, `restore_backup`, `verify_backup`) and over REST
+`list_backups`, `restore_backup`, `verify_backup`, and `restore_box_backup`
+for a whole-box backup) and over REST
 (`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface. `delete` and `prune` are deliberately CLI/REST-only,
@@ -774,6 +785,31 @@ verification only needs the engine, never the target's own data.
 > request receives `ResourceExhausted` until verification and cleanup finish.
 > See #1159 for the source-isolation rationale.
 
+### Verifying a whole-box backup (#2802)
+
+A whole-box backup (`backup create --box`) is verified with the same
+command and the same verifier token. `--target` is the backup's own
+tenant, and the identity file is required because a box backup is always
+encrypted:
+
+```bash
+containarium backup verify <tenant>-box-<timestamp> --target <tenant> \
+    --age-identity-file backup.key --server <host>
+```
+
+The daemon restores the backup into a scratch box named
+`containarium-verify-…`, never into the tenant's box. It then compares
+every regular file of the restored box with the manifest of SHA-256
+digests written when the backup was created, and deletes the scratch box,
+on a failure too. The checks are `integrity`, `decrypt`, `restore`,
+`manifest` and `cleanup`. A tampered backup fails at the first check it
+breaks and names the cause: the checksum, the identity, or the file that
+differs. The comparison stops after 15 minutes. A run cut short is
+recorded as `INCOMPLETE` with the number of files it covered. It is never
+a pass, and the command exits non-zero. A scratch box that could not be
+deleted fails the verification and is named, so it can be removed by
+hand.
+
 Restore (`backup restore`) shares the same integrity gate: the SHA-256 is
 checked before the dump touches the database, and a mismatch aborts
 rather than loading corrupt data.
@@ -805,7 +841,7 @@ rather than loading corrupt data.
 
 - **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
-- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
+- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `restore_box_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
 - **Auth scopes**: `backups:read` (list/get), `backups:verify` (verify only), `backups:write` (create/restore/delete/prune)
 - **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)

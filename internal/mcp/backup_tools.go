@@ -156,7 +156,11 @@ func backupTools() []Tool {
 				"came from is never touched, and a target that resolves to it is " +
 				"refused. A dump that fails to load is reported as a failed " +
 				"verification with the engine's own error, not as a tool error. The " +
-				"outcome is recorded on the backup as audit evidence. Mirrors " +
+				"outcome is recorded on the backup as audit evidence. A whole-box " +
+				"backup is restored into a scratch box instead, its files compared " +
+				"with the manifest of digests and the scratch box deleted; set " +
+				"target_username to the backup's own tenant. A comparison cut short " +
+				"by the 15-minute cap is INCOMPLETE, never a pass. Mirrors " +
 				"`containarium backup verify`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -183,6 +187,7 @@ func backupTools() []Tool {
 			Handler: handleVerifyBackup,
 		},
 	}
+	tools = append(tools, restoreBoxBackupTool())
 	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
 	for _, t := range tools {
 		if t.Name == "restore_backup" || t.Name == "verify_backup" {
@@ -395,10 +400,12 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 	if v == nil {
 		return "", fmt.Errorf("daemon returned no verification result")
 	}
-	passed := v.Result == "VERIFICATION_RESULT_PASSED"
-	if passed {
+	switch v.Result {
+	case "VERIFICATION_RESULT_PASSED":
 		fmt.Fprintf(&b, "✅ %s\n\n", resp.Message)
-	} else {
+	case "VERIFICATION_RESULT_INCOMPLETE":
+		fmt.Fprintf(&b, "⚠️ %s\n\n", resp.Message)
+	default:
 		fmt.Fprintf(&b, "❌ %s\n\n", resp.Message)
 	}
 	for _, c := range v.Checks {
@@ -408,7 +415,11 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 		}
 		fmt.Fprintf(&b, "  %s %-18s %s\n", mark, c.Name, c.Detail)
 	}
-	fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	if v.ScratchDatabase == "" {
+		fmt.Fprintf(&b, "\n  target: %s (scratch box, deleted)\n", v.TargetContainer)
+	} else {
+		fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	}
 	fmt.Fprintf(&b, "  when:   %s", v.VerifiedAt)
 	if v.VerifiedBy != "" {
 		fmt.Fprintf(&b, " by %s", v.VerifiedBy)

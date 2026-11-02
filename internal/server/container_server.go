@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -120,11 +119,18 @@ type ContainerServer struct {
 	// snapshots is the container-snapshot surface (#1160). nil when the
 	// storage backend is not ZFS, which the handlers report rather than
 	// panic on.
-	snapshots           *snapshotOps
-	collaboratorManager *container.CollaboratorManager
+	snapshots *snapshotOps
+	// collaboratorManager is installed at startup or, after a degraded
+	// start, by the late-install helper (#3330), so it is read through
+	// loadCollaboratorManager. collaboratorsPending is set while that
+	// install is pending: the collaborator RPCs answer UNAVAILABLE.
+	collaboratorManager  atomic.Pointer[container.CollaboratorManager]
+	collaboratorsPending atomic.Bool
 	// sshKeys is the ssh_keys registry the key write paths record into
-	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
-	sshKeys sshauthz.KeyRegistry
+	// (#2517, ssh_key_registry.go), read through loadSSHKeyRegistry. Nil
+	// when the daemon has no Postgres; installed late after a degraded
+	// start (#3330).
+	sshKeys atomic.Pointer[sshKeyRegistryRef]
 	// collabAccess and hostSessionKill are test seams for
 	// TerminateUserSessions (terminate_user_sessions.go); nil means the
 	// collaborator store and container.TerminateJumpAccountSessions.
@@ -198,9 +204,9 @@ type ContainerServer struct {
 	victoriaMetricsURL string
 	grafanaURL         string
 	// Alerting (set by DualServer after setup)
-	alertStore         *alert.Store
-	alertManager       *alert.Manager
-	alertDeliveryStore *alert.DeliveryStore
+	// alerts is the alert rule, manager and delivery family; installed at
+	// startup or late (#3334), read atomically on every call.
+	alerts             alertFamilyState
 	alertWebhookURL    string
 	alertWebhookSecret string
 	hostRelayURL       string                          // e.g. "http://10.100.0.1:8080/internal/alert-relay"
@@ -343,7 +349,9 @@ type ContainerServer struct {
 	// passthrough analog of routeStore above. nil on a daemon with no
 	// Postgres-backed passthrough store configured, in which case this
 	// cascade step is skipped (matching routeStore's own nil handling).
-	passthroughStore network.PassthroughStore
+	// Read through loadPassthroughStore: it can be installed while serving
+	// (#3333).
+	passthroughStore storeSlot[network.PassthroughStore]
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
@@ -1851,13 +1859,13 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	//     forever — a later recipe deploy wanting that same port fails with
 	//     a stale "already claimed" conflict against a container that no
 	//     longer exists.
-	if s.passthroughStore != nil {
-		routes, err := s.passthroughStore.ListByContainer(ctx, containerName)
+	if pt := s.loadPassthroughStore(); pt != nil {
+		routes, err := pt.ListByContainer(ctx, containerName)
 		if err != nil {
 			log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
 		}
 		for _, r := range routes {
-			if err := s.passthroughStore.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
+			if err := pt.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
 				log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
 				continue
 			}
@@ -2364,6 +2372,9 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 
 // CleanupDisk frees disk space inside a container
 func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRequest) (*pb.CleanupDiskResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -2429,6 +2440,9 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 
 // InstallStack installs a software stack or base script on a running container
 func (s *ContainerServer) InstallStack(ctx context.Context, req *pb.InstallStackRequest) (*pb.InstallStackResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -2517,6 +2531,9 @@ func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequ
 // container is a no-op; etc. So a transient network failure
 // mid-adoption can be safely re-driven.
 func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -3173,6 +3190,9 @@ var daemonReleaseChecker = releasecheck.New()
 // Best-effort: a failed/rate-limited GitHub lookup yields an empty
 // latest_release (and update_available=false) rather than an error. #354.
 func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLatestReleaseRequest) (*pb.GetLatestReleaseResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3216,6 +3236,9 @@ func (s *ContainerServer) upgradeTargetVersion(ctx context.Context, githubTag st
 // own host; a peer backend_id forwards to that peer's daemon, which runs the
 // same check locally on its host. See #316.
 func (s *ContainerServer) ValidateGPU(ctx context.Context, req *pb.ValidateGPURequest) (*pb.ValidateGPUResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3464,6 +3487,9 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 
 // GetSystemInfo gets information about the Incus host
 func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	// Admin-only: exposes fleet-internal details (hostname, OS,
 	// Incus version, container counts across tenants). A user
 	// token has no legitimate reason to read this — they care
@@ -3635,6 +3661,9 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 // GPU inventory), which is operator-grade, not tenant-grade. The cloud
 // control plane redacts it per-tenant at its own boundary.
 func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRequest) (*pb.ListBackendsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3957,6 +3986,9 @@ func headroomToProto(h capacity.Headroom) *pb.CapacityHeadroom {
 // control plane, bounded by the supplied local policy. The advertisement is
 // surfaced through ListBackends. Admin-only. See #680.
 func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.AdvertiseCapacityRequest) (*pb.AdvertiseCapacityResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3992,6 +4024,9 @@ func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.Adverti
 // the drainer coalesces an overlapping drain rather than stacking a second one.
 // See #680, #682.
 func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4053,6 +4088,9 @@ func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.Withdraw
 // GetCapacityHeadroom returns this backend's current advertisement with spare
 // figures recomputed against the live host snapshot. Admin-only. See #680.
 func (s *ContainerServer) GetCapacityHeadroom(ctx context.Context, _ *pb.GetCapacityHeadroomRequest) (*pb.GetCapacityHeadroomResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4209,6 +4247,9 @@ func profileToProto(p capabilities.Profile) *pb.CapabilityProfile {
 // Admin-only. An empty (or local) backend_id profiles this daemon; a peer
 // backend_id forwards to that peer, which profiles itself. See #681.
 func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBackendRequest) (*pb.ProfileBackendResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4259,6 +4300,9 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 // forwards to that peer. Returns a null profile when nothing has been recorded
 // yet. See #681.
 func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetCapabilityProfileRequest) (*pb.GetCapabilityProfileResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4302,6 +4346,9 @@ func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetC
 // itself). Admin-only. The control plane verifies the measurement to detect
 // tampering; the verification half lives elsewhere. See #683.
 func (s *ContainerServer) GetSelfMeasurement(ctx context.Context, req *pb.GetSelfMeasurementRequest) (*pb.GetSelfMeasurementResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -5087,13 +5134,42 @@ func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyM
 // cascade-clean a container's TCP/UDP passthrough routes (#1462), mirroring
 // SetRouteCleanupDeps above. store may be nil if the daemon has no
 // Postgres-backed passthrough store configured; the cascade skips gracefully.
+// Safe while serving: a late install (#3333) calls it after startup.
 func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStore) {
-	s.passthroughStore = store
+	s.passthroughStore.Store(store)
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations
 func (s *ContainerServer) SetCollaboratorManager(cm *container.CollaboratorManager) {
-	s.collaboratorManager = cm
+	s.collaboratorManager.Store(cm)
+}
+
+// loadCollaboratorManager returns the installed collaborator manager, or nil.
+func (s *ContainerServer) loadCollaboratorManager() *container.CollaboratorManager {
+	return s.collaboratorManager.Load()
+}
+
+// collaboratorStoreService is the collaborator family's grpc.health.v1
+// readiness entry (#3330, collaborator_store_recovery.go).
+const collaboratorStoreService = "containarium.collaborators"
+
+// errCollaboratorsNotInstalled is the collaborator RPCs' answer while the
+// late install is pending.
+var errCollaboratorsNotInstalled = status.Error(codes.Unavailable,
+	"collaborator store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+collaboratorStoreService)
+
+// errCollaboratorsNotEnabled is the answer with no collaborator store
+// configured (and no peer that has the box).
+var errCollaboratorsNotEnabled = errors.New("collaborator management not enabled")
+
+// collaboratorsMissing is the answer when no collaborator manager is
+// installed: UNAVAILABLE while the late install is pending (#3330), else
+// "not enabled".
+func (s *ContainerServer) collaboratorsMissing() error {
+	if s.collaboratorsPending.Load() {
+		return errCollaboratorsNotInstalled
+	}
+	return errCollaboratorsNotEnabled
 }
 
 // AddCollaborator adds a collaborator to a container
@@ -5112,6 +5188,9 @@ func collaboratorKeysFromRequest(req *pb.AddCollaboratorRequest) []string {
 }
 
 func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollaboratorRequest) (*pb.AddCollaboratorResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -5128,7 +5207,8 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5173,10 +5253,10 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collab, err := s.collaboratorManager.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
+	collab, err := collabMgr.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add collaborator: %w", err)
 	}
@@ -5185,12 +5265,15 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	return &pb.AddCollaboratorResponse{
 		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
 		Collaborator: collaboratorToProto(collab),
-		SshCommand:   s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
+		SshCommand:   collabMgr.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
 	}, nil
 }
 
 // RemoveCollaborator removes a collaborator from a container
 func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.RemoveCollaboratorRequest) (*pb.RemoveCollaboratorResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -5201,7 +5284,8 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5225,10 +5309,10 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	if err := s.collaboratorManager.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
+	if err := collabMgr.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
 		return nil, fmt.Errorf("failed to remove collaborator: %w", err)
 	}
 
@@ -5239,6 +5323,9 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 
 // ListCollaborators lists all collaborators for a container
 func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCollaboratorsRequest) (*pb.ListCollaboratorsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -5246,7 +5333,8 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5272,10 +5360,10 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 				return &pb.ListCollaboratorsResponse{}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collaborators, err := s.collaboratorManager.ListCollaborators(req.OwnerUsername)
+	collaborators, err := collabMgr.ListCollaborators(req.OwnerUsername)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collaborators: %w", err)
 	}

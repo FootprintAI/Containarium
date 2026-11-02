@@ -29,6 +29,9 @@ type boxRunPolicy struct {
 	Tools []string
 	// Allowed are the permission rules that need no approval (--allowedTools).
 	Allowed []string
+	// Denied are rules that refuse a command even when an Allowed rule matches
+	// (--disallowedTools).
+	Denied []string
 }
 
 // bashRules spells each command prefix both bare and with arguments, because
@@ -41,16 +44,111 @@ func bashRules(prefixes ...string) []string {
 	return rules
 }
 
-// The base every level gets: the file tools, git (by subcommand, deliberately
-// WITHOUT push or remote, so the platform, not the agent, publishes), a few
+// boxRunGitSubcommands are the git subcommands every level may run, deliberately
+// WITHOUT push or remote, so the platform, not the agent, publishes.
+var boxRunGitSubcommands = []string{
+	"clone", "fetch", "checkout", "switch", "branch", "add", "commit",
+	"status", "diff", "log", "show", "rev-parse", "ls-files",
+}
+
+// boxRunGitLeadOptions are the global options an allowed git command may start
+// with (#3385): `-C <dir>`, `--git-dir=`, `--work-tree=`. They only choose which
+// repository the same subcommand runs in. `-c` (runs arbitrary commands through
+// config), `--exec-path` and the like are not here.
+var boxRunGitLeadOptions = []string{"-C", "--git-dir=", "--work-tree="}
+
+// boxRunGitOptionRules allows each allowed subcommand after a leading global
+// option. The CLI's `*` also matches spaces, so these rules alone would match
+// `git -C x push status`, `git -C x -c k=v fetch` and the like; boxRunGitDenyRules
+// closes that, and deny wins over allow.
+func boxRunGitOptionRules() []string {
+	var prefixes []string
+	for _, opt := range boxRunGitLeadOptions {
+		for _, sub := range boxRunGitSubcommands {
+			prefixes = append(prefixes, "git "+opt+"* "+sub)
+		}
+	}
+	return bashRules(prefixes...)
+}
+
+// boxRunGitDenyRules refuses the dangerous words anywhere after a leading
+// global option. Fail-closed by design: a harmless argument that happens to be
+// one of these words (`git -C x log --grep push`) is refused too.
+func boxRunGitDenyRules() []string {
+	var prefixes []string
+	for _, opt := range boxRunGitLeadOptions {
+		for _, w := range []string{"push", "remote", "-c", "--exec-path*", "--upload-pack*", "--receive-pack*", "--config-env*"} {
+			prefixes = append(prefixes, "git "+opt+"* "+w)
+		}
+	}
+	return bashRules(prefixes...)
+}
+
+// boxRunGitCommandHeads are the ways an allowed git command can begin: bare, or
+// after one of the leading global options.
+func boxRunGitCommandHeads() []string {
+	heads := []string{"git"}
+	for _, opt := range boxRunGitLeadOptions {
+		heads = append(heads, "git "+opt+"*")
+	}
+	return heads
+}
+
+// boxRunCloneNoArgShorts are the short options of `git clone` that take no value.
+// Git lets them bundle in front of an option that does (`-qu <cmd>`), so each is
+// also listed in front of `u` and `c` below.
+var boxRunCloneNoArgShorts = []string{"l", "s", "q", "v", "n", "4", "6"}
+
+// boxRunGitTransportDenied are, per allowed subcommand, the option words that make
+// git run a program or load configuration chosen by the command line (#3397).
+// Git accepts any unambiguous prefix of a long option, so `--upload-pack` is also
+// reachable as `--upl` (fetch) or `--u` (clone); the shortest forms are listed.
+// Fail-closed: a harmless argument that matches is refused too (a clone URL or
+// directory argument starting with `-u` or `-c`, for example).
+func boxRunGitTransportDenied() map[string][]string {
+	clone := []string{"--u*", "-u*", "--receive-pack*", "--con*", "-c*", "--te*"}
+	for _, l := range boxRunCloneNoArgShorts {
+		clone = append(clone, "-"+l+"u*", "-"+l+"c*")
+	}
+	return map[string][]string{
+		"fetch": {"--upload-pack*", "--upl*", "--receive-pack*", "--config*"},
+		"clone": clone,
+	}
+}
+
+// boxRunGitTransportDenyRules spells those words as deny rules. The CLI's `*`
+// also matches spaces, so each word is matched right after the subcommand and
+// anywhere later in the arguments (git accepts options after the positionals).
+func boxRunGitTransportDenyRules() []string {
+	var rules []string
+	denied := boxRunGitTransportDenied()
+	for _, head := range boxRunGitCommandHeads() {
+		for _, sub := range []string{"fetch", "clone"} {
+			for _, w := range denied[sub] {
+				rules = append(rules,
+					"Bash("+head+" "+sub+" "+w+")",
+					"Bash("+head+" "+sub+" * "+w+")")
+			}
+		}
+	}
+	return rules
+}
+
+// The base every level gets: the file tools, git (by subcommand), a few
 // read-only shell words, and the skills fetch tool. This is the same set the box
-// bootstrap writes for today's runs.
-var boxRunBaseAllowed = append(append([]string{"Read", "Edit", "Write", "Glob", "Grep"},
-	bashRules(
-		"git clone", "git fetch", "git checkout", "git switch", "git branch", "git add", "git commit",
-		"git status", "git diff", "git log", "git show", "git rev-parse", "git ls-files",
-		"ls", "pwd", "cd", "mkdir", "command -v",
-	)...), boxRunSkillFetchTool)
+// bootstrap writes for today's runs, plus the option-led git forms.
+var boxRunBaseAllowed = append(append(append([]string{"Read", "Edit", "Write", "Glob", "Grep"},
+	bashRules(gitRulePrefixes()...)...),
+	bashRules("ls", "pwd", "cd", "mkdir", "command -v")...),
+	append(boxRunGitOptionRules(), boxRunSkillFetchTool)...)
+
+func gitRulePrefixes() []string {
+	out := make([]string, 0, len(boxRunGitSubcommands))
+	for _, s := range boxRunGitSubcommands {
+		out = append(out, "git "+s)
+	}
+	return out
+}
 
 // BUILD_TOOLS adds the build and test toolchains. Building and testing run code
 // the repository provides; that is the consent the level records.
@@ -83,15 +181,23 @@ func boxRunPolicyFor(level string) (boxRunPolicy, error) {
 	default:
 		return boxRunPolicy{}, fmt.Errorf("no policy for tool-access level %q", level)
 	}
-	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed}, nil
+	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed, Denied: append(boxRunGitDenyRules(), boxRunGitTransportDenyRules()...)}, nil
 }
 
 // commandFlags renders the policy as flags to append to the run command. Every
-// value is single-quoted; --allowedTools is variadic, so it comes last.
+// value is single-quoted; --disallowedTools and --allowedTools are variadic, so
+// they come last, allowed last of all.
 func (p boxRunPolicy) commandFlags() string {
 	q := shellSingleQuote
 	var b strings.Builder
-	b.WriteString(" --restricted --tools " + q(strings.Join(p.Tools, ",")) + " --allowedTools")
+	b.WriteString(" --restricted --tools " + q(strings.Join(p.Tools, ",")))
+	if len(p.Denied) > 0 {
+		b.WriteString(" --disallowedTools")
+		for _, r := range p.Denied {
+			b.WriteString(" " + q(r))
+		}
+	}
+	b.WriteString(" --allowedTools")
 	for _, r := range p.Allowed {
 		b.WriteString(" " + q(r))
 	}
