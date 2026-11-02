@@ -9,8 +9,9 @@ The tests below do not replace this deployed control-plane verification.
 ## Automated regression coverage
 
 ```bash
-go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server \
-  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestCollaboratorRecovery_'
+go test -race -count=1 ./internal/gateway ./internal/cmd ./internal/server ./internal/pentest ./internal/zap \
+  -run 'TestHealthEndpoint_|TestStartupListener_|TestGatewayStart_|TestStartupHealth_|TestBindStartupHealth|TestWaitForPostgres_|TestPostgresStartupGate_|TestNetworkPolicy_Degraded|TestNetworkPolicy_InstallDurableStore|TestRecoveryWatcher_|TestNewPostgresRecoveryWatcher_|TestDualServer_RecoveryWatcher|TestStoreRecovery_|TestSecretsRecovery_|TestTrackerRecovery_|TestStoreConfigRefusal_|TestPassthroughRecovery_|TestCascadeContainerCleanup_|TestExposePorts_|TestAppRouteRecovery_|TestCollaboratorRecovery_|TestTrafficRecovery_|TestLiveTrafficSource_|TestScanRecovery_|TestTargetCollector_|TestCollectTargets_'
+go test -race -count=1 ./internal/traffic -run 'TestCollectorSetStore_|TestCollectorStart_|TestCollectorStop_'
 ```
 
 The startup tests hold the wait for core services and use an unreachable
@@ -62,6 +63,50 @@ held in memory, so a daemon restarted before the store installs loses it.
 The delete-cascade and recipe expose-ports tests
 run in the same set because they now set the store through the same
 accessor.
+The app-hosting and route tests (#3331) cover the app-hosting store
+(`containarium.app_hosting`) and the route store with its Caddy sync
+(`containarium.routes`): while Postgres is down every AppService RPC and
+every route RPC answers `UNAVAILABLE`, both entries are `NOT_SERVING`, and
+a route write touches nothing in Caddy (decision Q13 on #3335; the
+direct-to-Caddy fallback remains only on a daemon with no route
+persistence configured). Once Postgres answers the stores install with no
+restart, the Caddy set-up boot would have run runs exactly once, the route
+sync job is created once and started with the daemon's serving context
+(not the helper's), the management routes are ensured, and the consumers
+that used to hold the store by value (the network server, the container
+server's route cleanup, the wake proxy, the cloud actuator) read the
+installed store on their next call. A route store open error is not a
+configuration refusal and holds the self-restart.
+The traffic persistence tests (#3401) cover `containarium.traffic`: while
+Postgres is down the collector runs without a store, the traffic API
+answers live connections from its in-memory window, history answers
+`FAILED_PRECONDITION`, and the entry is `NOT_SERVING`. Once Postgres
+answers, the store is installed into the same running collector with no
+restart: no second collector is built, the collector is not started again,
+its live window is kept, the retention cleanup loop starts once, and the
+entry turns `SERVING`. Flows that closed before the store arrived are not
+persisted; a flow still live at install is persisted, with its full
+counters, when it closes.
+The scan tests (#3332) cover the security, pentest and ZAP scan stores and
+their managers, one family each (`containarium.security`,
+`containarium.pentest`, `containarium.zap`): while Postgres is down the
+three services are registered anyway, every store-backed RPC answers
+`UNAVAILABLE` and the entries are `NOT_SERVING`. Once Postgres answers the
+three install over one shared pool with no restart, the entries turn
+`SERVING`, the stand-ins forward to the installed servers, and each scanner
+loop starts exactly once on the daemon's serving context, in whichever
+order the install and the daemon start arrive, and stops at shutdown. A
+scanner disabled by configuration (`--disable-security-scanner`,
+`--disable-pentest-scanner`, `--disable-zap-scanner`) registers no service
+and no readiness entry and is not pending. A failed Incus client for the
+security scanner or the pentest manager is a configuration refusal, checked
+before Postgres is touched: the family stays pending and `NOT_SERVING` but
+does not hold the self-restart. The late install arms the pentest server
+with the audit store and the security server with the peer pool before
+either is visible to RPCs, as boot does. The pentest and ZAP target
+collectors read the route store through the live accessor, so a route
+store that installs after them reaches them; the collector test against a
+real route store runs only with `CONTAINARIUM_TEST_DSN` set.
 
 The JWT revocation list is another such family (#3328):
 

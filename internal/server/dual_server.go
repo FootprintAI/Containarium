@@ -47,7 +47,6 @@ import (
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/notify"
-	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/poolcapacity"
 	"github.com/footprintai/containarium/internal/retention"
@@ -64,7 +63,6 @@ import (
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/waf"
 	"github.com/footprintai/containarium/internal/wake"
-	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	clustercore "github.com/footprintai/containarium/pkg/core/cluster"
@@ -301,32 +299,24 @@ type DualServer struct {
 	retentionChainSource     *retentionpg.ChainSource // audit_logs prefix purge (#2878); nil without an audit store
 	credentialWatch          *credentialWatch         // credential-expiry alert (#2371); starts once installed and serving (#3334)
 	postgresRecovery         *postgresRecoveryWatcher // opt-in self-restart once Postgres is back (#2824); nil otherwise
-	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
 	trafficCollector         *traffic.Collector
 	gatewayServer            *gateway.GatewayServer
 	tokenManager             *auth.TokenManager
 	authMiddleware           *auth.AuthMiddleware
-	routeStore               *app.RouteStore
-	routeSyncJob             *app.RouteSyncJob
+	routeHosting             *routeHosting    // route store + Caddy sync (#3331); nil without route persistence
 	passthroughSync          *passthroughSync // nil without a NetworkServer and Postgres; built and started once the store installs (#3333)
 	collaboratorStore        *collaborator.Store
 	daemonConfigStore        *app.DaemonConfigStore
 	metricsCollector         *metrics.Collector
-	securityScanner          *security.Scanner
-	securityStore            *security.Store
-	securityServer           *SecurityServer
+	scanStores               *scanStores // security, pentest and ZAP scan families (#3332); nil families for disabled scanners
 	auditStore               *audit.Store
 	auditEventSubscriber     *audit.EventSubscriber
 	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
 	sshCollector             *audit.SSHCollector
 	revocationCleanup        *revocationCleanup // Phase 1.2 expired-row pruning; starts once the store and Start's context are both in (#3365)
 	alertPool                *pgxpool.Pool      // the alert family's startup pool; nil when it installed late (#3334)
-	pentestManager           *pentest.Manager
-	pentestStore             *pentest.Store
-	zapManager               *zapscanner.Manager
-	zapStore                 *zapscanner.Store
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
 	ttlSweeperManager        *ttlsweeper.Manager     // ephemeral CI box auto-delete (#299)
@@ -655,6 +645,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// the cloud status probe reads it in-process.
 	policyStoreHealth := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
+	reportOTelCollectorReadiness(policyStoreHealth, nil) // SERVING until the collector is refused (#3443)
 
 	// One bounded Postgres check gates every database-backed store below
 	// (#2824): if it fails, they are skipped rather than each retried.
@@ -859,10 +850,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		}
 	}
 
-	// Create and register AppServer if app hosting is enabled
-	var appServer *AppServer
-	var routeStore *app.RouteStore
-	var routeSyncJob *app.RouteSyncJob
+	// App hosting and route persistence are late-install families (#3331):
+	// appHostingFamily is nil unless app hosting is enabled; routeHostingFamily
+	// is nil unless route persistence (Postgres + Caddy) is configured. Each
+	// is registered with storeRecovery, installed at boot or in-process once
+	// Postgres answers, and read by its consumers through a live accessor.
+	var appHostingFamily *appHosting
+	var routeHostingFamily *routeHosting
 	// coreServices is hoisted so alert setup can reference it later
 	var coreServices *CoreServices
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
@@ -1028,7 +1022,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					}
 				}
 				if vmIP != "" {
-					if _, err := coreServices.EnsureOTelCollector(context.Background(), vmIP, config.OTelDropLabels); err != nil {
+					_, otelErr := coreServices.EnsureOTelCollector(context.Background(), vmIP, config.OTelDropLabels)
+					reportOTelCollectorReadiness(policyStoreHealth, otelErr)
+					if errors.Is(otelErr, errOTelAuthBearerUnavailable) {
+						log.Printf("DEGRADED: OTel collector NOT started: %v. App-emitted telemetry is off until the bearer is available and the daemon restarts (containarium doctor reports it)", otelErr)
+					} else if err := otelErr; err != nil {
 						log.Printf("Warning: Failed to setup OTel collector: %v. App-emitted telemetry disabled.", err)
 					} else {
 						endpoint := coreServices.GetOTelCollectorEndpoint()
@@ -1128,115 +1126,48 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				log.Printf("Notify channel store ready")
 			}
 
-			// Connect to app store
-			appStore, err := gatedStore(pgGate, postgresConnString, app.NewStore)
-			if err != nil {
-				log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
-			} else {
-				appManager := app.NewManager(appStore, incusClient, app.ManagerConfig{
+			// App hosting (#3331): the AppService is registered now, through a
+			// stand-in that answers UNAVAILABLE until the store installs, at
+			// boot here or in-process once Postgres answers. The route family
+			// follows, over the app store's pool when that opened.
+			appHostingFamily = newAppHosting(func(st *app.Store) *AppServer {
+				return NewAppServer(app.NewManager(st, incusClient, app.ManagerConfig{
 					BaseDomain:    config.BaseDomain,
 					CaddyAdminURL: caddyAdminURL,
-				})
-				appServer = NewAppServer(appManager, appStore)
-				pb.RegisterAppServiceServer(grpcServer, appServer)
+				}), st)
+			})
+			pb.RegisterAppServiceServer(grpcServer, appHostingFamily.service)
+			appFamily := appHostingFamily.family(app.NewStoreWithPool)
+			var appPool *pgxpool.Pool
+			if p, perr := pgGate.connect(postgresConnString, 5, 3*time.Second); perr != nil {
+				log.Printf("Warning: Failed to connect to Postgres for app store: %v. App hosting answers UNAVAILABLE until it installs in-process; readiness %s is NOT_SERVING", perr, appHostingStoreService)
+				storeRecovery.Register(appFamily)
+			} else if ierr := appFamily.Install(context.Background(), p); ierr != nil {
+				log.Printf("Warning: Failed to init app store: %v. App hosting answers UNAVAILABLE until it installs in-process; readiness %s is NOT_SERVING", ierr, appHostingStoreService)
+				p.Close()
+				storeRecovery.Register(appFamily)
+			} else {
+				appPool = p
+				storeRecovery.RegisterInstalled(appFamily)
 				log.Printf("App hosting service enabled")
+			}
+			if networkServer != nil {
+				networkServer.appStore = appHostingFamily.lister()
+				networkServer.baseDomain = config.BaseDomain
+				log.Printf("Network service updated with app hosting features")
+			}
+			if caddyAdminURL != "" {
+				routeHostingFamily = newRouteHosting(routeHostingConfigFrom(config, caddyAdminURL))
+				routeHostingFamily.registerAtBoot(storeRecovery, appPool, func() (*pgxpool.Pool, error) {
+					return pgGate.connect(postgresConnString, 5, 3*time.Second)
+				}, app.NewRouteStore)
+			}
 
-				// Update NetworkServer with app hosting dependencies
-				if networkServer != nil {
-					var proxyManager *app.ProxyManager
-
-					if caddyAdminURL != "" {
-						proxyManager = byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
-						// Ensure Caddy has basic server config for routes
-						if err := proxyManager.EnsureServerConfig(); err != nil {
-							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
-						}
-						if config.ProxyProtocol {
-							if err := proxyManager.EnableProxyProtocol(config.ProxyProtocolTrusted); err != nil {
-								log.Printf("Warning: Failed to enable PROXY protocol on Caddy: %v", err)
-							} else {
-								log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
-							}
-						}
-						if len(config.ClientIPHeaders) > 0 || len(config.TrustedProxyCIDRs) > 0 {
-							if err := proxyManager.ConfigureClientIP(config.ClientIPHeaders, config.TrustedProxyCIDRs); err != nil {
-								log.Printf("Warning: Failed to configure client-IP trust on Caddy: %v", err)
-							} else {
-								log.Printf("Caddy client-IP trust: headers=%v extra_trusted=%v", config.ClientIPHeaders, config.TrustedProxyCIDRs)
-							}
-						}
-
-						// With DNS-01 configured, provision a single `*.<base-domain>`
-						// wildcard so every per-region / subdomain endpoint
-						// (region-a.<base>, …) gets a cert from one issuance — no
-						// per-hostname HTTP-01, which sidesteps both the HTTP-01
-						// redirect failure and Let's Encrypt per-domain rate limits
-						// as regions scale (#389). Best-effort; per-route ProvisionTLS
-						// still covers individual hostnames if this is skipped.
-						if proxyManager.HasDNSChallenge() {
-							if err := proxyManager.ProvisionWildcardTLS(); err != nil {
-								log.Printf("Warning: failed to provision wildcard TLS (*.%s): %v", config.BaseDomain, err)
-							} else {
-								log.Printf("Caddy TLS: provisioned wildcard *.%s via DNS-01", config.BaseDomain)
-							}
-						}
-
-						// Create L4ProxyManager for TLS passthrough (SNI-based) routing
-						l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
-						if config.ProxyProtocol {
-							if err := l4ProxyManager.EnableL4ProxyProtocol(config.ProxyProtocolTrusted); err != nil {
-								log.Printf("Warning: Failed to enable PROXY protocol on caddy-l4: %v", err)
-							}
-						}
-
-						// Create RouteStore for persistent route storage
-						routeStore, err = app.NewRouteStore(context.Background(), appStore.Pool())
-						if err != nil {
-							log.Printf("Warning: Failed to create route store: %v", err)
-						} else {
-							// Create RouteSyncJob to sync PostgreSQL -> Caddy
-							syncInterval := config.RouteSyncInterval
-							if syncInterval == 0 {
-								syncInterval = 5 * time.Second
-							}
-							routeSyncJob = app.NewRouteSyncJob(routeStore, proxyManager, syncInterval)
-							routeSyncJob.SetL4ProxyManager(l4ProxyManager)
-							log.Printf("Route persistence enabled with %v sync interval", syncInterval)
-						}
-					}
-					networkServer.proxyManager = proxyManager
-					networkServer.appStore = appStore
-					networkServer.routeStore = routeStore
-					networkServer.baseDomain = config.BaseDomain
-					log.Printf("Network service updated with app hosting features")
-
-					// ContainerServer also needs route store + proxy
-					// manager so DeleteContainer can cascade-clean.
-					containerServer.SetRouteCleanupDeps(routeStore, proxyManager)
-				}
-
-				// Update TrafficCollector with store for persistence
-				if trafficCollector != nil && postgresConnString != "" {
-					trafficStore, err := gatedStore(pgGate, postgresConnString, traffic.NewStore)
-					if err != nil {
-						log.Printf("Warning: Failed to create traffic store: %v. Traffic persistence disabled.", err)
-					} else {
-						// Re-create collector with store
-						emitter := events.NewEmitter(events.GetBus())
-						collectorConfig := traffic.DefaultCollectorConfig()
-						collectorConfig.NetworkCIDR = networkCIDR
-						collectorConfig.PostgresConnString = postgresConnString
-
-						newCollector, err := traffic.NewCollector(collectorConfig, incusClient, trafficStore, emitter)
-						if err != nil {
-							log.Printf("Warning: Failed to update traffic collector with store: %v", err)
-						} else {
-							trafficCollector = newCollector
-							trafficServer = NewTrafficServer(trafficCollector)
-							log.Printf("Traffic monitoring updated with persistence")
-						}
-					}
-				}
+			// Traffic persistence (#3401): the store is installed into the
+			// running collector, at boot over the app store's pool or
+			// in-process once Postgres answers.
+			if trafficCollector != nil && postgresConnString != "" {
+				setupTrafficStore(storeRecovery, trafficCollector, appPool, traffic.NewStoreWithPool)
 			}
 		}
 	}
@@ -1335,66 +1266,28 @@ skipAppHosting:
 	}
 
 	// Setup route persistence and Caddy sync (independent of app hosting).
-	// When app hosting is enabled, routeStore/routeSyncJob are already created above.
-	// When it's not, we still need them for the management route to work after VM recreation.
+	// When app hosting is enabled, the route family is already registered above.
+	// When it's not, we still need it for the management route to work after VM recreation.
 	caddyAdminURL := config.CaddyAdminURL
-	if routeStore == nil && postgresConnString != "" && caddyAdminURL != "" && config.BaseDomain != "" {
-		pool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for route store: %v", poolErr)
-		} else {
-			routeStore, err = app.NewRouteStore(context.Background(), pool)
-			if err != nil {
-				log.Printf("Warning: Failed to create route store: %v", err)
-				pool.Close()
-			} else {
-				proxyManager := byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
-				if err := proxyManager.EnsureServerConfig(); err != nil {
-					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
-				}
-				if config.ProxyProtocol {
-					if err := proxyManager.EnableProxyProtocol(config.ProxyProtocolTrusted); err != nil {
-						log.Printf("Warning: Failed to enable PROXY protocol on Caddy: %v", err)
-					} else {
-						log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
-					}
-				}
-				if len(config.ClientIPHeaders) > 0 || len(config.TrustedProxyCIDRs) > 0 {
-					if err := proxyManager.ConfigureClientIP(config.ClientIPHeaders, config.TrustedProxyCIDRs); err != nil {
-						log.Printf("Warning: Failed to configure client-IP trust on Caddy: %v", err)
-					} else {
-						log.Printf("Caddy client-IP trust: headers=%v extra_trusted=%v", config.ClientIPHeaders, config.TrustedProxyCIDRs)
-					}
-				}
-
-				// Create L4ProxyManager for TLS passthrough (SNI-based) routing.
-				// L4 is activated lazily by RouteSyncJob when passthrough routes exist.
-				l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
-				if config.ProxyProtocol {
-					if err := l4ProxyManager.EnableL4ProxyProtocol(config.ProxyProtocolTrusted); err != nil {
-						log.Printf("Warning: Failed to enable PROXY protocol on caddy-l4: %v", err)
-					}
-				}
-
-				syncInterval := config.RouteSyncInterval
-				if syncInterval == 0 {
-					syncInterval = 5 * time.Second
-				}
-				routeSyncJob = app.NewRouteSyncJob(routeStore, proxyManager, syncInterval)
-				routeSyncJob.SetL4ProxyManager(l4ProxyManager)
-				log.Printf("Route persistence enabled (standalone) with %v sync interval", syncInterval)
-
-				// Update NetworkServer so the /v1/network/routes API returns routes from PostgreSQL
-				if networkServer != nil {
-					networkServer.routeStore = routeStore
-					networkServer.proxyManager = proxyManager
-					networkServer.baseDomain = config.BaseDomain
-					log.Printf("Network service updated with route store (standalone)")
-				}
-			}
-		}
+	if routeHostingFamily == nil && postgresConnString != "" && caddyAdminURL != "" && config.BaseDomain != "" {
+		routeHostingFamily = newRouteHosting(routeHostingConfigFrom(config, caddyAdminURL))
+		routeHostingFamily.registerAtBoot(storeRecovery, nil, func() (*pgxpool.Pool, error) {
+			return pgGate.connect(postgresConnString, 5, 3*time.Second)
+		}, app.NewRouteStore)
+		log.Printf("Route persistence enabled (standalone)")
 	}
-
+	// The route store's consumers read it through the live accessor (#3331),
+	// so a store installed after a degraded start reaches them with no
+	// re-wiring: the /v1/network/routes API, and DeleteContainer's cascade.
+	if routeHostingFamily != nil {
+		if networkServer != nil {
+			networkServer.routes = routeHostingFamily.store()
+			networkServer.proxyManager = routeHostingFamily.proxyManager()
+			networkServer.baseDomain = config.BaseDomain
+			log.Printf("Network service updated with route store")
+		}
+		containerServer.SetRouteCleanupDeps(routeHostingFamily.store(), routeHostingFamily.proxyManager())
+	}
 	// Cloud-actuation client (#354): if this host is enrolled with a cloud
 	// control plane, run the actuation client — heartbeat + WatchAssignments,
 	// syncing each org's egress policy into the NetworkPolicyServer store
@@ -1450,7 +1343,7 @@ skipAppHosting:
 			// through managedSSHIdentities (#2602).
 			Sessions: cloudSessionTerminator{s: containerServer, ids: managedSSHIdentities},
 		}
-		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
+		if cloudActuator, actErr := newCloudContainerActuator(routeHostingFamily.lister()); actErr != nil {
 			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
 		} else {
 			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
@@ -1789,123 +1682,49 @@ skipAppHosting:
 		containerServer.SetMonitoringURLs(config.VictoriaMetricsURL, grafanaURL)
 	}
 
-	// Setup ClamAV security scanner
-	var securityScanner *security.Scanner
-	var securityStore *security.Store
-	var securityServerInstance *SecurityServer
-	if postgresConnString != "" && !config.DisableSecurityScanner {
-		securityPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
-		} else {
-			securityStore, err = security.NewStore(context.Background(), securityPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create security store: %v", err)
-				securityPool.Close()
-			} else {
-				// Register SecurityService gRPC handler
-				securityIncusClient, incusErr := incus.New()
-				if incusErr != nil {
-					log.Printf("Warning: Failed to create incus client for security: %v", incusErr)
-				} else {
-					// Create scanner first so we can pass it to the server
-					securityScanner = security.NewScanner(securityStore, securityIncusClient)
-
-					// Auto-quarantine (#659): on malware detection, block the
-					// tenant's egress via a deny rule; release on a clean scan.
-					// Opt-in — the quarantine only bites when the network-policy BPF
-					// enforcer is also armed. Uses npServer's deny-rule store directly
-					// (in-process, no RPC/auth).
-					switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
-					case "1", "true", "yes", "on":
-						aq := NewAutoQuarantine(npServer.Store())
-						securityScanner.SetScanResultHook(aq.OnScanResult)
-						log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
-					}
-
-					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
-					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
-					log.Printf("Security service enabled")
-
-					// Ensure security container exists (background, non-blocking)
-					go func() {
-						coreServices := NewCoreServices(securityIncusClient, CoreServicesConfig{
-							NetworkCIDR: networkCIDR,
-						})
-						if err := coreServices.EnsureSecurity(context.Background()); err != nil {
-							log.Printf("Warning: Failed to setup security container: %v. ClamAV scanning disabled.", err)
-						} else {
-							log.Printf("Security container ready")
-						}
-					}()
+	// Security, pentest and ZAP scan stores and their managers (#3332): each
+	// enabled scanner's service is registered now and answers UNAVAILABLE
+	// until its store installs, at boot over one shared boot pool or
+	// in-process once Postgres answers. A disabled scanner is not a family.
+	var pentestMeterProvider *sdkmetric.MeterProvider
+	if metricsCollector != nil {
+		pentestMeterProvider = metricsCollector.MeterProvider()
+	}
+	scanRoutes := scanRouteLister(routeHostingFamily)
+	scanFamilies := setupScanStores(storeRecovery, grpcServer, scanStoreSetup{
+		PostgresDSN:     postgresConnString,
+		DisableSecurity: config.DisableSecurityScanner,
+		DisablePentest:  config.DisablePentestScanner,
+		DisableZap:      config.DisableZapScanner,
+		Connect:         func() (*pgxpool.Pool, error) { return pgGate.connect(postgresConnString, 5, 3*time.Second) },
+		OpenSecurity: openSecurityScan(securityScanDeps{
+			NewIncus: incus.New,
+			ConfigureScanner: func(scanner *security.Scanner) {
+				// Auto-quarantine (#659): on malware detection, block the
+				// tenant's egress via a deny rule; release on a clean scan.
+				// Opt-in — the quarantine only bites when the network-policy BPF
+				// enforcer is also armed. Uses npServer's deny-rule store directly
+				// (in-process, no RPC/auth).
+				switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
+				case "1", "true", "yes", "on":
+					aq := NewAutoQuarantine(npServer.Store())
+					scanner.SetScanResultHook(aq.OnScanResult)
+					log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
 				}
-			}
-		}
-	}
-
-	// Setup pentest manager
-	var pentestManager *pentest.Manager
-	var pentestServerRef *PentestServer // armed with the audit store once it exists
-
-	var pentestStore *pentest.Store
-	if postgresConnString != "" && !config.DisablePentestScanner {
-		pentestPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
-		} else {
-			pentestStore, err = pentest.NewStore(context.Background(), pentestPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create pentest store: %v", err)
-				pentestPool.Close()
-			} else {
-				pentestIncusClient, incusErr := incus.New()
-				if incusErr != nil {
-					log.Printf("Warning: Failed to create incus client for pentest: %v", incusErr)
+			},
+			// Ensure the security container exists (background, non-blocking).
+			EnsureSecurityContainer: func(ic *incus.Client) {
+				coreServices := NewCoreServices(ic, CoreServicesConfig{NetworkCIDR: networkCIDR})
+				if err := coreServices.EnsureSecurity(context.Background()); err != nil {
+					log.Printf("Warning: Failed to setup security container: %v. ClamAV scanning disabled.", err)
 				} else {
-					var meterProvider *sdkmetric.MeterProvider
-					if metricsCollector != nil {
-						meterProvider = metricsCollector.MeterProvider()
-					}
-					pentestManager = pentest.NewManager(
-						pentestStore,
-						pentestIncusClient,
-						routeStore,
-						meterProvider,
-						pentest.ManagerConfig{},
-					)
-					pentestServer := NewPentestServer(pentestStore, pentestManager)
-					pentestServerRef = pentestServer
-					pb.RegisterPentestServiceServer(grpcServer, pentestServer)
-					log.Printf("Pentest service enabled")
+					log.Printf("Security container ready")
 				}
-			}
-		}
-	}
-
-	// Setup ZAP scanner manager
-	var zapManager *zapscanner.Manager
-	var zapStore *zapscanner.Store
-	if postgresConnString != "" && !config.DisableZapScanner {
-		zapPool, poolErr := pgGate.connect(postgresConnString, 5, 3*time.Second)
-		if poolErr != nil {
-			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
-		} else {
-			zapStore, err = zapscanner.NewStore(context.Background(), zapPool)
-			if err != nil {
-				log.Printf("Warning: Failed to create ZAP store: %v", err)
-				zapPool.Close()
-			} else {
-				zapManager = zapscanner.NewManager(
-					zapStore,
-					routeStore,
-					zapscanner.ManagerConfig{},
-				)
-				zapServer := NewZapServer(zapStore, zapManager)
-				pb.RegisterZapServiceServer(grpcServer, zapServer)
-				log.Printf("ZAP service enabled")
-			}
-		}
-	}
+			},
+		}),
+		OpenPentest: openPentestScan(pentestScanDeps{NewIncus: incus.New, Routes: scanRoutes, MeterProvider: pentestMeterProvider}),
+		OpenZap:     openZapScan(scanRoutes),
+	})
 
 	// TokensService is registered whether or not the JWT revocation list
 	// installs: it answers UNAVAILABLE until it does, and after a degraded
@@ -1950,9 +1769,7 @@ skipAppHosting:
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
 				codeEgressServer.SetAuditStore(auditStore)
-				if pentestServerRef != nil {
-					pentestServerRef.SetAuditStore(auditStore)
-				}
+				scanFamilies.setAuditStore(auditStore)
 				// #2415 — the sentinel ships its SSH session records here.
 				// Registered only when the store exists; without Postgres the
 				// RPC is simply absent (Unimplemented) rather than a stub.
@@ -2885,8 +2702,9 @@ skipAppHosting:
 			log.Printf("[gateway] /authorized-keys/sentinel authorizes the sentinel at the K8s in-cluster gateway")
 		}
 
-		// Wire security store for CSV export
-		if securityStore != nil {
+		// Wire security store for CSV export (the store installed at boot; the
+		// export route is registered at mux build time only).
+		if securityStore := scanFamilies.securityStore(); securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)
 		}
 
@@ -2967,10 +2785,13 @@ skipAppHosting:
 	// degrades to a no-op: containers still auto-sleep, but they
 	// won't wake on request — which mirrors the daemon's behaviour
 	// before Phase 3.
-	if routeStore != nil && routeSyncJob != nil && routeSyncJob.ProxyManager() != nil && config.HostIP != "" {
+	// The route store is read through the live accessor and the wake tracker
+	// reaches the sync job whenever it is created (#3331), so a store
+	// installed after a degraded start wakes containers too.
+	if routeHostingFamily != nil && config.HostIP != "" {
 		wakeTracker := wake.New()
-		wakeRouter := wake.NewRouter(routeSyncJob.ProxyManager(), wakeTracker, config.HostIP, config.HTTPPort)
-		routeSyncJob.SetWakeTracker(wakeTracker)
+		wakeRouter := wake.NewRouter(routeHostingFamily.proxyManager(), wakeTracker, config.HostIP, config.HTTPPort)
+		routeHostingFamily.setWakeTracker(wakeTracker)
 		containerServer.SetWakeRouter(wakeRouter)
 
 		if gatewayServer != nil {
@@ -2983,8 +2804,8 @@ skipAppHosting:
 			}
 			wakeProxy := wake.NewWakeProxy(
 				NewWakeStarter(containerServer, 30),
-				&routeLookupAdapter{store: routeStore},
-				routeStore,
+				&routeLookupAdapter{store: routeHostingFamily.store()},
+				routeHostingFamily.store(),
 				wakeRouter,
 				wakeAudit,
 				30*time.Second,
@@ -3043,32 +2864,24 @@ skipAppHosting:
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
-		appServer:              appServer,
 		networkServer:          networkServer,
 		trafficServer:          trafficServer,
 		trafficCollector:       trafficCollector,
 		gatewayServer:          gatewayServer,
 		tokenManager:           tokenManager,
 		authMiddleware:         authMiddleware,
-		routeStore:             routeStore,
-		routeSyncJob:           routeSyncJob,
+		routeHosting:           routeHostingFamily,
 		passthroughSync:        passthroughSyncLoop,
 		collaboratorStore:      collabStore,
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
-		securityScanner:        securityScanner,
+		scanStores:             scanFamilies,
 		sshdPosture:            sshdPosture,
-		securityStore:          securityStore,
-		securityServer:         securityServerInstance,
 		auditStore:             auditStore,
 		auditEventSubscriber:   auditEventSubscriber,
 		sshCollector:           sshCollector,
 		revocationCleanup:      revocationCleanupLoop,
 		alertPool:              alertBootPool,
-		pentestManager:         pentestManager,
-		pentestStore:           pentestStore,
-		zapManager:             zapManager,
-		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
 		coreGuard:              coreGuard,
@@ -3561,10 +3374,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.trafficServer.SetPeerPool(ds.peerPool)
 		}
 
-		// Wire peer pool into security server so peer containers show in summaries
-		if ds.securityServer != nil {
-			ds.securityServer.SetPeerPool(ds.peerPool)
-		}
+		// Wire peer pool into security server so peer containers show in
+		// summaries, now or when the server installs in-process (#3332).
+		ds.scanStores.setPeerPool(ds.peerPool)
 
 		// Stamp the now-known local backend id onto every finding the threat
 		// sentry writes from here on (#1640) — same reason SetPeerPool itself
@@ -3620,18 +3432,15 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 
 	// Start auto-sleep ticker. Always-on by daemon policy; per-container
 	// opt-in (AutoSleepEnabled) gates real stop behavior. Wired here so
-	// the traffic collector's store, finalized during NewDualServer's
-	// app-hosting block, can feed network-activity signals if present.
+	// the traffic collector's store, installed at boot or in-process
+	// (#3401), can feed network-activity signals once present.
 	if incusClient, err := incus.New(); err != nil {
 		log.Printf("[autosleep] incus client unavailable: %v (ticker disabled)", err)
 	} else {
 		var trafficSrc autosleep.TrafficSource
 		if ds.trafficCollector != nil {
-			if store := ds.trafficCollector.GetStore(); store != nil {
-				if pool := store.Pool(); pool != nil {
-					trafficSrc = autosleep.NewTrafficStoreAdapter(pool)
-				}
-			}
+			// Read per call: the store may install after a degraded start (#3401).
+			trafficSrc = liveTrafficSource{collector: ds.trafficCollector}
 		}
 		var auditAdapter autosleep.AuditLogger
 		if ds.auditStore != nil {
@@ -3882,22 +3691,10 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		ds.sshdPosture.Start(ctx)
 	}
 
-	if ds.securityScanner != nil {
-		ds.securityScanner.Start(ctx)
-		log.Printf("Security scanner started")
-	}
-
-	// Start pentest manager if available
-	if ds.pentestManager != nil {
-		ds.pentestManager.Start(ctx)
-		log.Printf("Pentest manager started")
-	}
-
-	// Start ZAP manager if available
-	if ds.zapManager != nil {
-		ds.zapManager.Start(ctx)
-		log.Printf("ZAP manager started")
-	}
+	// Security scanner, pentest manager and ZAP manager: each starts now if
+	// its store installed at boot, or when it installs in-process (#3332).
+	// Stopped at shutdown below.
+	ds.scanStores.start(ctx)
 
 	// Start audit event subscriber if available
 	if ds.auditEventSubscriber != nil {
@@ -3916,11 +3713,10 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		log.Printf("Grafana available at /grafana/ (reverse proxy)")
 	}
 
-	// Start route sync job if available (syncs PostgreSQL -> Caddy)
-	if ds.routeSyncJob != nil {
-		ds.routeSyncJob.Start(ctx)
-		log.Printf("Route sync job started")
-	}
+	// Route sync (PostgreSQL -> Caddy) and the management routes: served
+	// now when the route store installed at boot, or from a late install
+	// once it has this serving context (#3331). Stopped at shutdown below.
+	ds.routeHosting.start(ctx)
 
 	// Passthrough sync job (syncs PostgreSQL -> iptables): starts now if the
 	// store is installed, or when it installs in-process (#3333).
@@ -4024,31 +3820,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		}
 	}
 
-	// Ensure a management route per served base domain persists in
-	// PostgreSQL (RouteSyncJob pushes each to Caddy — host matcher + TLS
-	// subject). One route per PublicBaseDomains entry, so the daemon
-	// Caddies+serves the apex of every parent domain the sentinel routes
-	// here (#213). Single-domain deployments resolve to [BaseDomain],
-	// unchanged.
-	if ds.routeStore != nil && ds.config.HostIP != "" {
-		for _, domain := range managementRouteDomains(ds.config) {
-			mgmtRoute := &app.RouteRecord{
-				Subdomain:   domain,
-				FullDomain:  domain,
-				TargetIP:    ds.config.HostIP,
-				TargetPort:  ds.config.HTTPPort,
-				Protocol:    "http",
-				Description: "Containarium management UI",
-				Active:      true,
-				CreatedBy:   string(app.RouteCreatorSystem),
-			}
-			if err := ds.routeStore.Save(ctx, mgmtRoute); err != nil {
-				log.Printf("Warning: Failed to ensure management route for %s: %v", domain, err)
-			} else {
-				log.Printf("Management route ensured: %s -> %s:%d", domain, ds.config.HostIP, ds.config.HTTPPort)
-			}
-		}
-	}
+	// The management route per served base domain (#213) is ensured by the
+	// route family when it serves (routeHosting.start above, or the late
+	// install), so a store installed after a degraded start gets it too.
 
 	// Persist current daemon config to PostgreSQL for future self-bootstrap
 	if ds.daemonConfigStore != nil {
@@ -4142,9 +3916,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
 		ds.credentialWatch.stop()
-		if ds.routeSyncJob != nil {
-			ds.routeSyncJob.Stop()
-		}
+		ds.routeHosting.stop()
 		ds.passthroughSync.stop()
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
@@ -4185,21 +3957,7 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		if ds.sshdPosture != nil {
 			ds.sshdPosture.Stop()
 		}
-		if ds.securityScanner != nil {
-			ds.securityScanner.Stop()
-		}
-		if ds.pentestManager != nil {
-			ds.pentestManager.Stop()
-		}
-		if ds.pentestStore != nil {
-			ds.pentestStore.Close()
-		}
-		if ds.zapManager != nil {
-			ds.zapManager.Stop()
-		}
-		if ds.zapStore != nil {
-			ds.zapStore.Close()
-		}
+		ds.scanStores.stop()
 		if ds.sshCollector != nil {
 			ds.sshCollector.Stop()
 		}
