@@ -204,6 +204,9 @@ type Manager struct {
 	freeSpace      func(path string) (diskSpace, error)
 	// boxClaims serializes backups per box and reserves their space (#3116).
 	boxClaims boxClaims
+	// boxVerifyLimit caps the restored-box comparison of VerifyBox (#2802);
+	// zero means DefaultBoxVerifyTimeLimit.
+	boxVerifyLimit time.Duration
 	// wrapper, when set, wraps a per-backup age identity with a KMS
 	// (#2402): backups default to KeyModeManaged (or KeyModeBoth when a
 	// legacy recipient is also given). Nil keeps today's behaviour byte
