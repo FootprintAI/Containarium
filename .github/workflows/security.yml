@@ -43,14 +43,18 @@ jobs:
 
   gosec:
     name: SAST (gosec)
-    # Never skipped, unlike the other fast-path jobs: the required `gosec`
-    # check is created by the SARIF upload below, so a skipped job would leave
-    # it missing and block the merge. On a release-only diff the job uploads
+    # Never skipped by the release-only fast path, unlike the other jobs: on a
+    # push/merge_group the SARIF upload below must still happen. (It IS skipped
+    # on PR pushes; see the `if` below.) On a release-only diff the job uploads
     # the base commit's stored analysis instead of rescanning: the code is
     # identical, so it is the same result, in seconds rather than ~5 minutes.
     # !cancelled() keeps it running when the detector job fails.
     needs: changes
-    if: ${{ !cancelled() }}
+    # Long tier: skipped on PR pushes, runs in the merge queue (merge_group) and
+    # on push to main. gosec runs with -no-fail, so it is a findings report, not
+    # a pass/fail gate; running it once per PR (at merge) instead of on every
+    # push saves ~6 runner-minutes per push. A skipped required check passes.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
