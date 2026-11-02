@@ -19,36 +19,12 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/footprintai/containarium/internal/alert"
-	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-// SetAlertManager sets the alert store and manager on the container server.
-// Called from dual_server.go after the alert components are initialized.
-func (s *ContainerServer) SetAlertManager(store *alert.Store, manager *alert.Manager, webhookURL string, webhookSecret string, coreServices *CoreServices, daemonConfigStore *app.DaemonConfigStore) {
-	s.alertStore = store
-	s.alertManager = manager
-	s.alertWebhookURL = webhookURL
-	s.alertWebhookSecret = webhookSecret
-	s.coreServices = coreServices
-	// Nil-guarded: the field is an interface (daemonConfigKV), and
-	// wrapping a nil *app.DaemonConfigStore would defeat every
-	// `!= nil` check downstream. SetDaemonConfigStore wires it much
-	// earlier in startup; this assignment is kept for callers that
-	// only go through the alert path.
-	if daemonConfigStore != nil {
-		s.daemonConfigStore = daemonConfigStore
-	}
-}
-
-// SetAlertDeliveryStore sets the delivery store for recording webhook delivery attempts
-func (s *ContainerServer) SetAlertDeliveryStore(ds *alert.DeliveryStore) {
-	s.alertDeliveryStore = ds
-}
 
 // CreateAlertRule creates a new custom alert rule. Admin-only
 // — alert rules drive cluster-wide notifications.
@@ -59,8 +35,9 @@ func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAle
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
-		return nil, status.Error(codes.Unavailable, "alerting is not configured")
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		return nil, s.alertsUnavailable()
 	}
 
 	if req.Name == "" {
@@ -93,16 +70,14 @@ func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAle
 		Enabled:     req.Enabled,
 	}
 
-	created, err := s.alertStore.Create(ctx, rule)
+	created, err := alerts.rules.Create(ctx, rule)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create alert rule: %v", err)
 	}
 
 	// Sync rules to vmalert (best-effort)
-	if s.alertManager != nil {
-		if err := s.alertManager.SyncRules(ctx); err != nil {
-			log.Printf("Warning: failed to sync alert rules after create: %v", err)
-		}
+	if err := alerts.syncer.SyncRules(ctx); err != nil {
+		log.Printf("Warning: failed to sync alert rules after create: %v", err)
 	}
 
 	return &pb.CreateAlertRuleResponse{
@@ -119,11 +94,15 @@ func (s *ContainerServer) ListAlertRules(ctx context.Context, req *pb.ListAlertR
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		if s.alerts.pending.Load() {
+			return nil, errAlertsNotInstalled
+		}
 		return &pb.ListAlertRulesResponse{}, nil
 	}
 
-	rules, err := s.alertStore.List(ctx)
+	rules, err := alerts.rules.List(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list alert rules: %v", err)
 	}
@@ -144,15 +123,16 @@ func (s *ContainerServer) GetAlertRule(ctx context.Context, req *pb.GetAlertRule
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
-		return nil, status.Error(codes.Unavailable, "alerting is not configured")
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		return nil, s.alertsUnavailable()
 	}
 
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 
-	rule, err := s.alertStore.Get(ctx, req.Id)
+	rule, err := alerts.rules.Get(ctx, req.Id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, status.Errorf(codes.NotFound, "alert rule not found: %s", req.Id)
@@ -171,8 +151,9 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
-		return nil, status.Error(codes.Unavailable, "alerting is not configured")
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		return nil, s.alertsUnavailable()
 	}
 
 	if req.Id == "" {
@@ -180,7 +161,7 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 	}
 
 	// Get existing rule to preserve fields not in the update
-	existing, err := s.alertStore.Get(ctx, req.Id)
+	existing, err := alerts.rules.Get(ctx, req.Id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, status.Errorf(codes.NotFound, "alert rule not found: %s", req.Id)
@@ -217,16 +198,14 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 		existing.Enabled = *req.Enabled
 	}
 
-	updated, err := s.alertStore.Update(ctx, existing)
+	updated, err := alerts.rules.Update(ctx, existing)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update alert rule: %v", err)
 	}
 
 	// Sync rules to vmalert (best-effort)
-	if s.alertManager != nil {
-		if err := s.alertManager.SyncRules(ctx); err != nil {
-			log.Printf("Warning: failed to sync alert rules after update: %v", err)
-		}
+	if err := alerts.syncer.SyncRules(ctx); err != nil {
+		log.Printf("Warning: failed to sync alert rules after update: %v", err)
 	}
 
 	return &pb.UpdateAlertRuleResponse{Rule: alertRuleToProto(updated)}, nil
@@ -241,15 +220,16 @@ func (s *ContainerServer) DeleteAlertRule(ctx context.Context, req *pb.DeleteAle
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
-		return nil, status.Error(codes.Unavailable, "alerting is not configured")
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		return nil, s.alertsUnavailable()
 	}
 
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 
-	if err := s.alertStore.Delete(ctx, req.Id); err != nil {
+	if err := alerts.rules.Delete(ctx, req.Id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, status.Errorf(codes.NotFound, "alert rule not found: %s", req.Id)
 		}
@@ -257,10 +237,8 @@ func (s *ContainerServer) DeleteAlertRule(ctx context.Context, req *pb.DeleteAle
 	}
 
 	// Sync rules to vmalert (best-effort)
-	if s.alertManager != nil {
-		if err := s.alertManager.SyncRules(ctx); err != nil {
-			log.Printf("Warning: failed to sync alert rules after delete: %v", err)
-		}
+	if err := alerts.syncer.SyncRules(ctx); err != nil {
+		log.Printf("Warning: failed to sync alert rules after delete: %v", err)
 	}
 
 	return &pb.DeleteAlertRuleResponse{}, nil
@@ -274,10 +252,11 @@ func (s *ContainerServer) GetAlertingInfo(ctx context.Context, req *pb.GetAlerti
 		return nil, err
 	}
 	resp := &pb.GetAlertingInfoResponse{
-		Enabled: s.alertStore != nil,
+		Enabled: s.loadAlerts() != nil,
 	}
 
-	if s.alertStore == nil {
+	alerts := s.loadAlerts()
+	if alerts == nil {
 		return resp, nil
 	}
 
@@ -296,7 +275,7 @@ func (s *ContainerServer) GetAlertingInfo(ctx context.Context, req *pb.GetAlerti
 	resp.WebhookSecretConfigured = s.alertWebhookSecret != ""
 
 	// Count rules
-	rules, err := s.alertStore.List(ctx)
+	rules, err := alerts.rules.List(ctx)
 	if err == nil {
 		resp.CustomRules = safecast.I32(len(rules))
 	}
@@ -417,8 +396,9 @@ func (s *ContainerServer) UpdateAlertingConfig(ctx context.Context, req *pb.Upda
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertStore == nil {
-		return nil, status.Error(codes.Unavailable, "alerting is not configured")
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		return nil, s.alertsUnavailable()
 	}
 
 	if s.coreServices == nil {
@@ -514,8 +494,8 @@ func (s *ContainerServer) TestWebhook(ctx context.Context, req *pb.TestWebhookRe
 	amStatus := checkHTTPHealth(fmt.Sprintf("http://%s:%d/alertmanager/-/healthy", vmIP, DefaultAlertmanagerPort))
 
 	customRuleCount := 0
-	if s.alertStore != nil {
-		if rules, err := s.alertStore.List(ctx); err == nil {
+	if alerts := s.loadAlerts(); alerts != nil {
+		if rules, err := alerts.rules.List(ctx); err == nil {
 			customRuleCount = len(rules)
 		}
 	}
@@ -612,10 +592,7 @@ func (s *ContainerServer) TestWebhook(ctx context.Context, req *pb.TestWebhookRe
 
 // recordDelivery records a webhook delivery attempt (best-effort)
 func (s *ContainerServer) recordDelivery(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int) {
-	if s.alertDeliveryStore == nil {
-		return
-	}
-	d := &alert.WebhookDelivery{
+	s.recordAlertDelivery(ctx, &alert.WebhookDelivery{
 		AlertName:    alertName,
 		Source:       source,
 		WebhookURL:   maskURL(webhookURL),
@@ -624,10 +601,7 @@ func (s *ContainerServer) recordDelivery(ctx context.Context, alertName, source,
 		ErrorMessage: errMsg,
 		PayloadSize:  payloadSize,
 		DurationMs:   durationMs,
-	}
-	if err := s.alertDeliveryStore.Record(ctx, d); err != nil {
-		log.Printf("Warning: failed to record delivery: %v", err)
-	}
+	})
 }
 
 // ListWebhookDeliveries returns webhook delivery history.
@@ -640,14 +614,18 @@ func (s *ContainerServer) ListWebhookDeliveries(ctx context.Context, req *pb.Lis
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
-	if s.alertDeliveryStore == nil {
+	alerts := s.loadAlerts()
+	if alerts == nil {
+		if s.alerts.pending.Load() {
+			return nil, errAlertsNotInstalled
+		}
 		return &pb.ListWebhookDeliveriesResponse{}, nil
 	}
 
 	limit := int(req.Limit)
 	offset := int(req.Offset)
 
-	deliveries, total, err := s.alertDeliveryStore.List(ctx, limit, offset)
+	deliveries, total, err := alerts.deliveries.List(ctx, limit, offset)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list deliveries: %v", err)
 	}
