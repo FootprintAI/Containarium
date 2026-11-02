@@ -72,6 +72,31 @@ recorded in memory are carried into Postgres keeping the latest per owner,
 a failed copy is retried with nothing half-installed, and the cleanup loop
 starts exactly once from the install.
 
+Alerting is two more families (#3334):
+
+```bash
+go test -race -count=1 ./internal/policyreadiness ./internal/server \
+  -run 'TestDetail_|TestAlertRecovery_|TestCredentialWatchRecovery_|TestCredentialWatch_|TestNewDualServer_WiresAlertFamilies'
+```
+
+`containarium.alerts` (alert rules, the rules manager and the webhook
+delivery store) exists only when Postgres and VictoriaMetrics are both
+configured, and `containarium.credential_watch` (the credential-expiry
+watch) only when Postgres and the daemon config store are; an unconfigured
+family has no entry and is not pending. While Postgres is down, the entry
+is `NOT_SERVING` and every alert-rule, alerting-config and delivery-list
+RPC answers `UNAVAILABLE`; `GetAlertingInfo` reports `enabled: false`.
+Once Postgres answers, the store installs over the shared pool with no
+restart, the entry turns `SERVING`, and the rules are synced once, as at
+boot. Without an Incus client the alert install is refused by
+configuration: the family stays `NOT_SERVING` but does not hold the
+self-restart. A delivery raised before the store installs is not buffered
+(decision Q15 on #3335): it is logged as an `alert_delivery_unrecorded`
+line and counted, and the install line reports the count. The watcher
+starts exactly once, with the daemon's serving context, and reads each
+box's last-seen state from Postgres first, so a box alerted before the
+outage is not alerted again.
+
 ## Deployed outage drill
 
 1. Confirm the disposable host is not in use by another verification pass.
