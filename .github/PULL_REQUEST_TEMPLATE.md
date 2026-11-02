@@ -12,7 +12,7 @@ Closes #
 - [ ] Tests added or updated, and they pass locally for the packages I changed.
 - [ ] API change: defined in `proto/containarium/v1/*.proto` first, regenerated with `make proto` (no hand-edited generated code), typed enums instead of strings.
 - [ ] New platform action: a `containarium <verb>` CLI subcommand first; any MCP tool is a thin wrapper over the same function.
-- [ ] `CHANGELOG.md` entry added under `## [Unreleased]`.
+- [ ] User-visible change: one new fragment file `changelog.d/<number>.<category>.md` (see `changelog.d/README.md`); do **not** edit `CHANGELOG.md`. No user-visible change: say so here.
 - [ ] No instance, host, IP or tenant names in docs, comments, the PR description or commit messages (I grepped the diff).
 
 ### Dependencies, build and CI
