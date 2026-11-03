@@ -89,9 +89,9 @@ func (ch *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) 
 	}
 	defer func() { _ = conn.Close() }()
 
-	log.Printf("console attached for container %s", containerName)
+	log.Printf("console attached for container %q", containerName)
 	ch.attachConsole(conn, containerName)
-	log.Printf("console detached for container %s", containerName)
+	log.Printf("console detached for container %q", containerName)
 }
 
 // attachConsole bridges conn (the caller's WebSocket) to the instance's
@@ -122,7 +122,7 @@ func (ch *ConsoleHandler) attachConsole(conn *websocket.Conn, containerName stri
 	}
 
 	if err := op.Wait(); err != nil {
-		log.Printf("console session for %s ended with error: %v", containerName, err)
+		log.Printf("console session for %q ended with error: %v", containerName, err)
 	}
 	closeDisconnect()
 }

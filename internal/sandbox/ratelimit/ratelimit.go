@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -32,14 +33,20 @@ type Limiter struct {
 	// for clusterCaps.configErr (internal/server/cluster_caps.go).
 	configErr error
 
-	mu      sync.Mutex
-	buckets map[string]*rate.Limiter
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	lastSweep time.Time
+}
+
+type bucket struct {
+	lim      *rate.Limiter
+	lastSeen time.Time
 }
 
 // New builds an enabled Limiter. ratePerSecond and burst must both be
 // positive — use Disabled for "no limiting", not New(0, 0).
 func New(ratePerSecond float64, burst int) *Limiter {
-	return &Limiter{ratePerSecond: ratePerSecond, burst: burst, buckets: make(map[string]*rate.Limiter)}
+	return &Limiter{ratePerSecond: ratePerSecond, burst: burst, buckets: make(map[string]*bucket)}
 }
 
 // Disabled returns a Limiter whose Allow always returns true — the
@@ -86,11 +93,8 @@ func NewFromEnv(ratePerMinute, burst string) *Limiter {
 
 // Allow reports whether subject may spawn right now, consuming one
 // token from its bucket if so. Always true when Disabled, always false
-// when Poisoned. Buckets are created lazily per subject and never
-// evicted — bounded in practice by the operator's tenant population
-// (subject comes from an authenticated token, not unauthenticated
-// caller-controlled input), the same non-eviction tradeoff pool.Pool
-// accepts for its own per-template maps.
+// when Poisoned. Buckets are created lazily per subject and evicted
+// opportunistically after idling long enough to refill completely.
 func (l *Limiter) Allow(subject string) bool {
 	if l.configErr != nil {
 		return false
@@ -101,12 +105,33 @@ func (l *Limiter) Allow(subject string) bool {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := time.Now()
+	l.evictLocked(now)
 	b, ok := l.buckets[subject]
 	if !ok {
-		b = rate.NewLimiter(rate.Limit(l.ratePerSecond), l.burst)
+		b = &bucket{lim: rate.NewLimiter(rate.Limit(l.ratePerSecond), l.burst)}
 		l.buckets[subject] = b
 	}
-	return b.Allow()
+	b.lastSeen = now
+	return b.lim.AllowN(now, 1)
+}
+
+// evictLocked drops buckets idle for a full refill window, when they are
+// equivalent to a new bucket. Sweep at most once per window rather than
+// scanning the map on every call. Caller holds l.mu.
+func (l *Limiter) evictLocked(now time.Time) {
+	// Keep the window in seconds: a very slow configured rate can exceed
+	// time.Duration's range, and truncating it could reset a live budget.
+	windowSeconds := float64(l.burst) / l.ratePerSecond
+	if !l.lastSweep.IsZero() && now.Sub(l.lastSweep).Seconds() < windowSeconds {
+		return
+	}
+	for subject, b := range l.buckets {
+		if now.Sub(b.lastSeen).Seconds() >= windowSeconds {
+			delete(l.buckets, subject)
+		}
+	}
+	l.lastSweep = now
 }
 
 // Err returns the configuration error for a Poisoned limiter, nil

@@ -71,7 +71,7 @@ func (th *TerminalHandler) resolveTerminalUser(containerName, username string, a
 	}
 	level, err := levelFn(containerName)
 	if err != nil {
-		log.Printf("terminal %s: read tool-access level: %v", containerName, err)
+		log.Printf("terminal %q: read tool-access level: %v", containerName, err)
 		return "", &terminalRefusal{http.StatusServiceUnavailable, "could not read the box's tool-access level; try again"}
 	}
 	if toolaccess.FromConfig(level) == pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED {
@@ -79,7 +79,7 @@ func (th *TerminalHandler) resolveTerminalUser(containerName, username string, a
 	}
 	exists, err := existsFn(containerName)
 	if err != nil {
-		log.Printf("terminal %s: check run user: %v", containerName, err)
+		log.Printf("terminal %q: check run user: %v", containerName, err)
 		return "", &terminalRefusal{http.StatusServiceUnavailable, "could not check for the run user; try again"}
 	}
 	if !exists {
@@ -298,7 +298,7 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 				peerURL += "?" + asRunUserParam + "=true"
 			}
 			// Proxy WebSocket to peer
-			log.Printf("Proxying terminal for %s to peer: %s", containerName, peerURL)
+			log.Printf("Proxying terminal for %q to peer: %s", containerName, peerURL)
 			th.proxyWebSocket(w, r, peerURL, authToken)
 			return
 		}
@@ -331,7 +331,7 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 	}
 	defer func() { _ = conn.Close() }()
 
-	log.Printf("Terminal WebSocket connected for container %s (login user %s)", containerName, loginUser)
+	log.Printf("Terminal WebSocket connected for container %q (login user %q)", containerName, loginUser)
 
 	// Start terminal session
 	th.startTerminalSession(conn, containerName, loginUser)
@@ -538,7 +538,7 @@ func (th *TerminalHandler) startTerminalSession(conn *websocket.Conn, containerN
 	_ = stdinWriter.Close()
 	_ = stdoutWriter.Close()
 
-	log.Printf("Terminal session ended for container %s", containerName)
+	log.Printf("Terminal session ended for container %q", containerName)
 }
 
 // sendError sends an error message over WebSocket

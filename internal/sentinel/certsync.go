@@ -139,14 +139,14 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 	for _, cp := range certsResp.Certs {
 		tlsCert, err := tls.X509KeyPair([]byte(cp.CertPEM), []byte(cp.KeyPEM))
 		if err != nil {
-			log.Printf("[certsync] warning: failed to parse cert for %s: %v", cp.Domain, err)
+			log.Printf("[certsync] warning: failed to parse cert for %q: %v", cp.Domain, err)
 			continue
 		}
 		parsed++
 		domain := strings.ToLower(cp.Domain)
 		if scope.match(domain) == 0 {
 			rejected++
-			log.Printf("[certsync] backend %s sent a certificate for %q, which is not among its registered domains; dropped", backendID, cp.Domain)
+			log.Printf("[certsync] backend %q sent a certificate for %q, which is not among its registered domains; dropped", backendID, cp.Domain)
 			continue
 		}
 		newCerts[domain] = tlsCert
@@ -184,7 +184,7 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 	cs.mu.Lock()
 	if cs.dropGen[backendID] != gen {
 		cs.mu.Unlock()
-		log.Printf("[certsync] backend %s was removed during its sync; discarding the result", backendID)
+		log.Printf("[certsync] backend %q was removed during its sync; discarding the result", backendID)
 		return nil
 	}
 	cs.sets[backendID] = backendCertSet{scope: scope, certs: newCerts}
@@ -295,7 +295,7 @@ func (cs *CertStore) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 // 6h interval, one transient failure used to mean stale certificates for
 // most of a day (#953).
 func (cs *CertStore) RunSyncLoop(ctx context.Context, backendID, backendIP string, httpPort int, interval time.Duration) {
-	log.Printf("[certsync] starting sync loop (backend=%s at %s:%d, interval=%s)", backendID, backendIP, httpPort, interval)
+	log.Printf("[certsync] starting sync loop (backend=%q at %s:%d, interval=%s)", backendID, backendIP, httpPort, interval)
 
 	runSyncLoop(ctx, "certsync", interval, syncRetryDelays(interval), func() error {
 		if err := cs.Sync(backendID, backendIP, httpPort); err != nil {
@@ -305,7 +305,7 @@ func (cs *CertStore) RunSyncLoop(ctx context.Context, backendID, backendIP strin
 		cs.mu.RLock()
 		count := cs.syncedCount
 		cs.mu.RUnlock()
-		log.Printf("[certsync] sync OK from %s: %d certificates served", backendID, count)
+		log.Printf("[certsync] sync OK from %q: %d certificates served", backendID, count)
 		return nil
 	})
 
