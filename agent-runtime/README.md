@@ -128,6 +128,81 @@ this just shows in the audit log; **before ENFORCE is armed** the provider API
 must be in the agent box's egress allowlist or the agent is stranded (issue
 #611). The daemon's `defaultAgentEgressDomains` covers all three providers.
 
+## Python toolchain (opt-in, #3491)
+
+The `agent-runtime` recipe takes an optional `toolchains` parameter, a
+comma-separated list. Empty (the default) is the box as it always was. The only
+supported value is `python`; any other value fails `post_start` before the box
+installs anything:
+
+```text
+agent-runtime: unsupported toolchain "ruby" in toolchains="ruby" (supported: python)
+```
+
+With `toolchains=python`, `post_start` installs `python3-venv`, `python3-pip`
+and `python3-pytest` from the Ubuntu archive, after the in-box loop assembly,
+and fails if the `agent-python` helper did not come with that assembly (the
+helper ships in this package's `helpers/`, inside the release bundle). Python itself
+is part of the Ubuntu 24.04 image.
+
+`agent-python` is what a skill runs, through its shell tool, in its checkout:
+
+| Command | Does |
+| --- | --- |
+| `agent-python setup [DIR]` | Creates (or reuses) a venv for `DIR` outside the checkout, then installs what `DIR` declares: `requirements.txt` and every other `requirements*.txt`, then `DIR` itself (`pip install -e .`, or `-e .[test]` / `-e .[tests]` when that extra is declared) if `pyproject.toml` has a `[project]` table or `setup.cfg` has `[metadata] name`. |
+| `agent-python test [DIR] [-- CMD...]` | Runs `CMD` (default `python -m pytest`) in `DIR` inside that venv, prints `agent-python: test command executed: exit=N` on stderr, and exits `N`. |
+| `agent-python venv [DIR]` | Prints the venv path. |
+| `agent-test [-C DIR] [--] CMD...` | Any language: runs `CMD` (for example `go test ./...`, `npm test`), prints `agent-test: test command executed: exit=N` on stderr, and exits `N`. Installed in every agent-runtime box, with or without a toolchain. |
+
+Nothing beyond the repo's own manifests is installed: a `setup.py` without
+`pyproject.toml` `[project]` or `setup.cfg` `[metadata]` is not run, and a
+`pyproject.toml` with only tool configuration is not installed. A repo with no
+manifest gets an empty venv and a note saying so. The venv sees the system
+site-packages, so the toolchain's pytest is used when the repo does not declare
+its own.
+
+Every failure is one line on stderr starting `agent-python: error:` and a
+non-zero exit; pip's output goes to a log file whose last lines are printed and
+whose path is in the error. Dependency installs can take minutes: call the shell
+tool with a `timeout_seconds` long enough for them (its default is 30 s).
+
+**Egress.** No default network policy changes. `setup` needs the Python package
+index: by default `pypi.org` (the index) and `files.pythonhosted.org` (the
+files it links to). Before installing, `setup` checks that the index answers
+(`PIP_INDEX_URL` if set, else `https://pypi.org/simple/`); if not, it fails at
+once with:
+
+```text
+agent-python: error: package index unreachable: pypi.org (...); dependencies were NOT installed; under restricted egress allow the Python package index (default hosts: pypi.org and files.pythonhosted.org); ...
+```
+
+A file host that is blocked while the index answers fails the install itself,
+with the same host class named. A deployment that arms enforcement for agent
+boxes (`CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE=1`) and wants Python installs
+must add both hosts to `CONTAINARIUM_AGENT_EGRESS_DOMAINS`. Setting that
+variable replaces the built-in model-provider list, so list the providers too,
+for example
+`CONTAINARIUM_AGENT_EGRESS_DOMAINS=api.anthropic.com,api.openai.com,generativelanguage.googleapis.com,pypi.org,files.pythonhosted.org`.
+The enforcer resolves domains to addresses, and `files.pythonhosted.org` is
+served from a CDN, so a mirror reached through `PIP_INDEX_URL` on a stable
+address is the more predictable choice. There is no recipe-level egress
+allowlist, and the toolchain does not add one. The box's `apt-get` installs run
+in `post_start`, at first provision, before the skill's egress policy is
+applied.
+
+**Getting a skill run into a Python box.** A skill run provisions its box
+(`agent-<skill-id>`) with only the `release` parameter, and reuses a box that
+already exists. To run a skill with the Python toolchain, deploy that box
+yourself first:
+
+```bash
+containarium recipe deploy agent-runtime agent-<skill-id> \
+  --param release=<daemon release tag> --param toolchains=python --server <host>
+```
+
+An existing box keeps the toolchains it was deployed with; delete it and deploy
+again to change them.
+
 ## Build
 
 ```bash

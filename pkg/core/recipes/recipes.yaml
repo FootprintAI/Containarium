@@ -106,13 +106,29 @@ recipes:
         description: GitHub owner/repo the release artifacts live in.
         type: string
         default: FootprintAI/Containarium
+      # toolchains (#3491) is opt-in: empty (the default, and what the daemon
+      # passes when a skill run provisions the box) installs exactly what the
+      # box always had. "python" adds python3-venv, python3-pip and
+      # python3-pytest; the agent-python helper (shipped in the agent-runtime
+      # bundle) installs a checkout's declared dependencies and runs its tests.
+      # Any other value fails post_start before anything is installed.
+      - name: toolchains
+        label: Language toolchains
+        description: Comma-separated language toolchains to install for skills to build and test with. Supported - python (venv, pip, pytest and the agent-python helper). Empty installs none.
+        type: string
     post_start:
+      # First, before any download: refuse an unknown toolchain. set -f keeps
+      # a value such as "*" from expanding to file names.
+      - '( set -f; for t in $(printf "%s" "${CONTAINARIUM_PARAM_TOOLCHAINS:-}" | tr "," " "); do case "$t" in python) ;; *) echo "agent-runtime: unsupported toolchain \"$t\" in toolchains=\"${CONTAINARIUM_PARAM_TOOLCHAINS:-}\" (supported: python)" >&2; exit 1 ;; esac; done )'
       - mkdir -p /etc/containarium/agent
       - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
       - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
       # Best-effort assembly: never fail provisioning if the release lacks the
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+      # The Python toolchain, after the assembly that ships agent-python. Not
+      # best-effort: a box that asked for python and cannot have it fails.
+      - 'if printf "%s" "${CONTAINARIUM_PARAM_TOOLCHAINS:-}" | tr "," "\n" | tr -d " \t" | grep -qx python; then apt-get update -q || { echo "agent-runtime: python toolchain: apt-get update failed" >&2; exit 1; }; DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip python3-pytest || { echo "agent-runtime: python toolchain: apt-get install python3-venv python3-pip python3-pytest failed" >&2; exit 1; }; command -v agent-python >/dev/null || { echo "agent-runtime: python toolchain: the agent-python helper is not installed; it ships with the in-box loop assembly, so set the release parameter to a release whose agent-runtime bundle includes it" >&2; exit 1; }; echo "agent-runtime: python toolchain installed ($(python3 --version 2>&1), agent-python)"; fi'
 
   # coding-agent is a box with the coding-agent toolchain and NO credential of
   # any kind: agent-box + mcp-server from a Containarium release, plus Claude

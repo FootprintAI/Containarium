@@ -12,7 +12,8 @@ import (
 // come from a file:// base, PREFIX/APP_DIR point at temp dirs, and npm is a stub
 // (the real one would hit the network). Returns the script's combined output,
 // its error, and the PREFIX dir.
-func runInstallScript(t *testing.T, withMCPServer bool) (out string, prefix string, err error) {
+// bundleHelpers are helpers/<name> scripts added to the bundle.
+func runInstallScript(t *testing.T, withMCPServer bool, bundleHelpers ...string) (out string, prefix string, err error) {
 	t.Helper()
 	for _, tool := range []string{"bash", "curl", "tar", "flock"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -39,7 +40,21 @@ func runInstallScript(t *testing.T, withMCPServer bool) (out string, prefix stri
 			t.Fatal(err)
 		}
 	}
-	if out, err := exec.Command("tar", "-czf", filepath.Join(art, "agent-runtime-bundle.tar.gz"), "-C", stage, "dist", "package.json").CombinedOutput(); err != nil {
+	entries := []string{"dist", "package.json"}
+	if len(bundleHelpers) > 0 {
+		if err := os.MkdirAll(filepath.Join(stage, "helpers"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range bundleHelpers {
+			if err := os.WriteFile(filepath.Join(stage, "helpers", h), []byte("#!/bin/sh\necho "+h+"\n"), 0o755); err != nil { //nolint:gosec // test stand-in
+				t.Fatal(err)
+			}
+		}
+		entries = append(entries, "helpers")
+	}
+	tarArgs := append([]string{"-czf", filepath.Join(art, "agent-runtime-bundle.tar.gz"), "-C", stage}, entries...)
+	if out, err := exec.Command("tar", tarArgs...).CombinedOutput(); err != nil { //nolint:gosec // test-only, temp paths
+
 		t.Fatalf("tar: %v\n%s", err, out)
 	}
 
@@ -131,5 +146,24 @@ func TestInstallAgentRuntime_UnknownFlagRejected(t *testing.T) {
 	cmd.Env = append(os.Environ(), "ARTIFACT_BASE_URL=file:///nonexistent")
 	if err := cmd.Run(); err == nil {
 		t.Error("unknown flag must fail")
+	}
+}
+
+// The bundle's helpers/ (agent-python, agent-test; #3491) land on PATH,
+// executable; a bundle without helpers/ (an older release) still installs, as the tests above
+// show — the recipe's toolchain step is what refuses a missing helper.
+func TestInstallAgentRuntime_InstallsBundledHelpers(t *testing.T) {
+	out, prefix, err := runInstallScript(t, true, "agent-python", "agent-test")
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	for _, h := range []string{"agent-python", "agent-test"} {
+		fi, statErr := os.Stat(filepath.Join(prefix, h))
+		if statErr != nil {
+			t.Fatalf("%s not installed: %v\n%s", h, statErr, out)
+		}
+		if fi.Mode()&0o111 == 0 {
+			t.Errorf("%s is not executable (mode %v)", h, fi.Mode())
+		}
 	}
 }

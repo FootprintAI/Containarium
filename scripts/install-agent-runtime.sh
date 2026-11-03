@@ -6,7 +6,8 @@
 #   1. agent-box  (Go binary, the in-box MCP tool surface)
 #   2. mcp-server (Go binary, the platform MCP — spawned by agent-runtime for a
 #      run bound to a tracker connection; #1922 D4). Best-effort, see below.
-#   3. agent-runtime (the Node loop component) + a PATH launcher
+#   3. agent-runtime (the Node loop component) + a PATH launcher, and the box
+#      helpers the bundle ships under helpers/ (agent-python, agent-test; #3491)
 # Node itself is installed by the recipe's post_start (Node 20).
 #
 # Artifacts are pulled from a GitHub release:
@@ -89,6 +90,18 @@ tar -xzf /tmp/agent-runtime-bundle.tar.gz -C "${APP_DIR}"
 # The bundle ships dist/ + package manifests; install runtime deps (the agent
 # harness SDKs) in-box. --omit=dev: we only need the runtime deps, not tsc.
 ( cd "${APP_DIR}" && npm ci --omit=dev )
+
+# Box helpers the bundle ships under helpers/ (agent-python, the Python toolchain
+# helper, and agent-test, the test-command runner; #3491) go onto PATH beside the launcher. A bundle from a
+# release that predates them has no helpers/; that is not an error here — the
+# recipe step that needs a helper checks for it and fails loudly.
+if [[ -d "${APP_DIR}/helpers" ]]; then
+  for helper in "${APP_DIR}"/helpers/*; do
+    [[ -f "$helper" ]] || continue
+    install -m 0755 "$helper" "${PREFIX}/$(basename "$helper")"
+    echo "==> installed box helper $(basename "$helper")"
+  done
+fi
 
 # PATH launcher so the daemon's `agent-runtime` exec resolves (run + serve mode).
 cat > "${PREFIX}/agent-runtime" <<LAUNCH
