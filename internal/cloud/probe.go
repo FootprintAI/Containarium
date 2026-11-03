@@ -30,6 +30,40 @@ type DefaultStatusProbe struct {
 	// reports none. Its results are advisory checks named "readiness: …"
 	// and, like posture, never change SelfCheckOK.
 	Readiness policyreadiness.CheckFunc
+	// Pools reports the Incus storage pool capacity that holds container
+	// workloads (#3449). nil, an error, or zero pools falls back to statfs
+	// of the Incus data dir, so non-Incus hosts and an unreachable daemon
+	// still report a figure.
+	Pools PoolSpaceSource
+}
+
+// PoolSpaceSource sums the Incus storage pools. Defined here, implemented by
+// the server wiring, so this package does not import the Incus client.
+type PoolSpaceSource interface {
+	// StoragePoolSpace returns total and used bytes across all pools and
+	// the number of pools that contributed.
+	StoragePoolSpace(ctx context.Context) (totalBytes, usedBytes int64, pools int, err error)
+}
+
+const bytesPerGB = int64(1024 * 1024 * 1024)
+
+// disk returns (total, avail) GB: the storage pool sum when available (the
+// same figure `backends profile` records: sum of pool Space.Total, avail =
+// total - sum of Space.Used), else the statfs fallback.
+func (p DefaultStatusProbe) disk(ctx context.Context) (total, avail int32) {
+	if p.Pools != nil {
+		if t, u, n, err := p.Pools.StoragePoolSpace(ctx); err == nil && n > 0 && t > 0 {
+			free := t - u
+			if free < 0 {
+				free = 0
+			}
+			if free > t {
+				free = t
+			}
+			return safecast.I32(int(t / bytesPerGB)), safecast.I32(int(free / bytesPerGB))
+		}
+	}
+	return diskGB()
 }
 
 // Probe gathers the current capability snapshot. Best-effort: a field it can't
@@ -39,7 +73,7 @@ type DefaultStatusProbe struct {
 // its hardened systemd unit (same caveat as `containarium doctor`).
 func (p DefaultStatusProbe) Probe(ctx context.Context) (HostStatus, error) {
 	totalRAM, availRAM := readMemInfoMB()
-	totalDisk, availDisk := diskGB()
+	totalDisk, availDisk := p.disk(ctx)
 	gpuCount, gpuSpec := gpuInfo()
 	raw := hostcheck.Run()
 	// Timestamp the start of the actual measurement, so slow probes cannot

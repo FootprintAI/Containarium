@@ -7,6 +7,8 @@
 #
 # A release cut (docs/RELEASE-PROCESS.md) changes exactly two files:
 # CHANGELOG.md, and the `Version = "..."` constant in pkg/version/version.go.
+# Deleting changelog.d/ fragment files (assembled into CHANGELOG.md by
+# scripts/changelog-assemble.sh) is part of the cut; adding or editing one is not.
 # Such a diff cannot change what the test, lint and SAST jobs measure, so
 # those jobs may skip on it — but only when BASE itself already passed them,
 # which the caller (.github/actions/release-only-diff) checks separately.
@@ -17,9 +19,10 @@
 set -euo pipefail
 
 release_only() {
-  local base="$1" head="$2" files f other
+  local base="$1" head="$2" files deleted f other
 
   files="$(git diff --no-renames --name-only "$base" "$head")"
+  deleted="$(git diff --no-renames --diff-filter=D --name-only "$base" "$head")"
   if [ -z "$files" ]; then
     echo "empty diff" >&2
     echo false
@@ -29,6 +32,13 @@ release_only() {
   while IFS= read -r f; do
     case "$f" in
       CHANGELOG.md | pkg/version/version.go) ;;
+      changelog.d/*.md)
+        if [ "$f" = changelog.d/README.md ] || ! grep -qxF "$f" <<<"$deleted"; then
+          echo "touches $f (only deleting a fragment is part of a cut)" >&2
+          echo false
+          return
+        fi
+        ;;
       *)
         echo "touches $f" >&2
         echo false
@@ -63,6 +73,9 @@ self_test() {
   printf '# Changelog\n\n## [Unreleased]\n' >"$dir/CHANGELOG.md"
   printf 'package version\n\nvar (\n\tVersion = "0.1.0"\n\tGitCommit = "unknown"\n)\n' >"$dir/pkg/version/version.go"
   printf 'package internal\n' >"$dir/internal/x.go"
+  mkdir -p "$dir/changelog.d"
+  printf 'readme\n' >"$dir/changelog.d/README.md"
+  printf -- '- a\n' >"$dir/changelog.d/1.added.md"
   git -C "$dir" add -A && git -C "$dir" commit -qm base
   base="$(git -C "$dir" rev-parse HEAD)"
 
@@ -84,6 +97,10 @@ self_test() {
 
   expect true  "changelog only"          "printf '\n## [0.2.0]\n- x\n' >>CHANGELOG.md"
   expect true  "changelog + version"     "printf '\n## [0.2.0]\n' >>CHANGELOG.md; sed -i.bak 's/0.1.0/0.2.0/' pkg/version/version.go; rm pkg/version/version.go.bak"
+  expect true  "changelog + fragment deleted" "printf '\n## [0.2.0]\n' >>CHANGELOG.md; git rm -q changelog.d/1.added.md"
+  expect false "fragment added"          "printf -- '- b\n' >changelog.d/2.fixed.md"
+  expect false "fragment edited"         "printf -- '- c\n' >changelog.d/1.added.md"
+  expect false "fragments README deleted" "git rm -q changelog.d/README.md"
   expect false "empty diff"              ":"
   expect false "other file"              "printf '// y\n' >>internal/x.go; printf 'x\n' >>CHANGELOG.md"
   expect false "other version.go line"   "sed -i.bak 's/\"unknown\"/\"abc\"/' pkg/version/version.go; rm pkg/version/version.go.bak"
