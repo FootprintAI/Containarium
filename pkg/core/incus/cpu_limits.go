@@ -61,7 +61,9 @@ type cpuLimit struct {
 // (ceil(cores), so LXCFS can report an honest /proc/cpuinfo processor count)
 // and limits.cpu.allowance (the hard CFS quota) — see the cpuLimit doc
 // comment, #1029 and #1034. Only CPU-set/pinning notation sets Count alone.
-// An empty request returns a zero cpuLimit (no keys to set).
+// An empty request returns a zero cpuLimit (no keys to set). A numeric
+// request that is zero, negative, NaN, infinite or above maxCPURequestCores
+// is an error.
 func parseCPULimit(cpu string) (cpuLimit, error) {
 	cpu = strings.TrimSpace(cpu)
 	if cpu == "" {
@@ -95,6 +97,14 @@ func parseCPULimit(cpu string) (cpuLimit, error) {
 	if cores == 0 {
 		return cpuLimit{}, fmt.Errorf("CPU request %q resolves to zero cores", cpu)
 	}
+	// ParseFloat accepts "NaN", "Inf" and exponents ("1e30"). Converting any
+	// of them to the int64 core count and quota below gives an
+	// implementation-specific value: on amd64 math.MinInt64, so a negative
+	// limits.cpu and a 1ms quota that CommittedCores (and so the CPU
+	// admission gate) counts as 0.01 cores; on arm64 a saturated or zero one.
+	if math.IsNaN(cores) || cores > maxCPURequestCores {
+		return cpuLimit{}, fmt.Errorf("CPU request %q is not a core count between 0 and %d", cpu, maxCPURequestCores)
+	}
 
 	// Whole-core requests map to an integer limits.cpu count, plus a matching
 	// quota so the visible cores are also time-bounded (#1029) — a bare
@@ -116,6 +126,12 @@ func parseCPULimit(cpu string) (cpuLimit, error) {
 		Allowance: cpuQuota(cores),
 	}, nil
 }
+
+// maxCPURequestCores bounds a numeric CPU request. It is far above the CPU
+// count a Linux kernel supports (NR_CPUS tops out at 8192), so it refuses no
+// real request, and far below the point where the core count or the quota in
+// milliseconds would overflow int64.
+const maxCPURequestCores = 1 << 16
 
 // cpuQuotaPeriodMs is the CFS period the quota is expressed against. 100ms is
 // the kernel default and what Incus's own documentation uses, so an operator

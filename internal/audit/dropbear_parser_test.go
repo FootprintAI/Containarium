@@ -20,6 +20,10 @@ import (
 
 const parseYear = 2026
 
+// parseNow is the read time the parsers resolve stamps against: late in
+// parseYear, so every fixture line falls in parseYear.
+var parseNow = time.Date(parseYear, time.December, 31, 12, 0, 0, 0, time.UTC)
+
 // THE reason this parser exists: the sshd pattern matches nothing dropbear
 // writes. If this ever stops being true, the second parser is dead weight.
 func TestSSHDPatternCannotMatchDropbearOutput(t *testing.T) {
@@ -27,7 +31,7 @@ func TestSSHDPatternCannotMatchDropbearOutput(t *testing.T) {
 		`Mar 12 14:30:01 box dropbear[42]: Pubkey auth succeeded for 'alice' with ssh-ed25519 key SHA256:abc from 10.0.0.1:54321`,
 		`Mar 12 14:30:01 box dropbear[42]: Password auth succeeded for 'alice' from 10.0.0.1:54321`,
 	} {
-		if _, _, _, _, ok := parseAuthLogLine(line, parseYear); ok {
+		if _, _, _, _, ok := parseAuthLogLine(line, parseNow); ok {
 			t.Errorf("the sshd parser matched a dropbear line — if it genuinely handles both, this "+
 				"second parser is unnecessary:\n%s", line)
 		}
@@ -37,7 +41,7 @@ func TestSSHDPatternCannotMatchDropbearOutput(t *testing.T) {
 func TestParseDropbearLine_Pubkey(t *testing.T) {
 	line := `Mar 12 14:30:01 Pubkey auth succeeded for 'cld-alice' with ssh-ed25519 key SHA256:abc123 from 10.0.0.7:54321`
 
-	ts, user, source, method, ok := parseDropbearLine(line, parseYear, time.Time{})
+	ts, user, source, method, ok := parseDropbearLine(line, parseNow, time.Time{})
 	if !ok {
 		t.Fatal("failed to parse a pubkey login — the most common case on this platform, since " +
 			"boxes are key-only")
@@ -59,7 +63,7 @@ func TestParseDropbearLine_Pubkey(t *testing.T) {
 
 func TestParseDropbearLine_Password(t *testing.T) {
 	line := `Mar 12 14:30:01 Password auth succeeded for 'cld-bob' from 10.0.0.8:1234`
-	_, user, source, method, ok := parseDropbearLine(line, parseYear, time.Time{})
+	_, user, source, method, ok := parseDropbearLine(line, parseNow, time.Time{})
 	if !ok {
 		t.Fatal("failed to parse a password login")
 	}
@@ -73,7 +77,7 @@ func TestParseDropbearLine_Password(t *testing.T) {
 // exactly the wrong thing.
 func TestParseDropbearLine_BlankPasswordIsCaptured(t *testing.T) {
 	line := `Mar 12 14:30:01 Auth succeeded with blank password for 'cld-carol' from 10.0.0.9:2222`
-	_, user, source, method, ok := parseDropbearLine(line, parseYear, time.Time{})
+	_, user, source, method, ok := parseDropbearLine(line, parseNow, time.Time{})
 	if !ok {
 		t.Fatal("a blank-password login was not recorded — the one login an auditor most needs")
 	}
@@ -95,7 +99,7 @@ func TestParseDropbearLine_IgnoresNonLogins(t *testing.T) {
 		``,
 		`random noise`,
 	} {
-		if _, _, _, _, ok := parseDropbearLine(line, parseYear, time.Time{}); ok {
+		if _, _, _, _, ok := parseDropbearLine(line, parseNow, time.Time{}); ok {
 			t.Errorf("recorded a login for a line that is not one:\n%s", line)
 		}
 	}
@@ -108,7 +112,7 @@ func TestParseDropbearLine_FallsBackToTheReadersTimestamp(t *testing.T) {
 	fallback := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	line := `Pubkey auth succeeded for 'alice' with ssh-ed25519 key SHA256:abc from 10.0.0.1:54321`
 
-	ts, _, _, _, ok := parseDropbearLine(line, parseYear, fallback)
+	ts, _, _, _, ok := parseDropbearLine(line, parseNow, fallback)
 	if !ok {
 		t.Fatal("a line without a timestamp should still parse")
 	}
@@ -120,7 +124,7 @@ func TestParseDropbearLine_FallsBackToTheReadersTimestamp(t *testing.T) {
 // dropbear prefixes a pid in some configurations.
 func TestParseDropbearLine_ToleratesThePidPrefix(t *testing.T) {
 	line := `[123] Mar 12 14:30:01 Pubkey auth succeeded for 'alice' with ssh-rsa key SHA256:abc from 10.0.0.1:54321`
-	ts, user, _, _, ok := parseDropbearLine(line, parseYear, time.Time{})
+	ts, user, _, _, ok := parseDropbearLine(line, parseNow, time.Time{})
 	if !ok || user != "alice" {
 		t.Fatalf("pid-prefixed line did not parse: ok=%v user=%q", ok, user)
 	}

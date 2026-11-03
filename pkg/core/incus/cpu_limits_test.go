@@ -33,6 +33,13 @@ func TestParseCPULimit(t *testing.T) {
 		{name: "negative", cpu: "-1.5", wantErr: true},
 		{name: "zero", cpu: "0", wantErr: true},
 		{name: "zero millicpu", cpu: "0m", wantErr: true},
+		{name: "largest accepted request", cpu: "65536", wantCount: "65536", wantAllowance: "6553600ms/100ms"},
+		{name: "NaN", cpu: "NaN", wantErr: true},
+		{name: "infinity", cpu: "Inf", wantErr: true},
+		{name: "spelled-out infinity", cpu: "+Infinity", wantErr: true},
+		{name: "exponent past int64", cpu: "1e30", wantErr: true},
+		{name: "above the core bound", cpu: "65537", wantErr: true},
+		{name: "millicpu above the core bound", cpu: "65536001m", wantErr: true},
 	}
 
 	for _, tt := range tests {

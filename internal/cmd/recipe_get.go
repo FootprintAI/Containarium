@@ -49,7 +49,11 @@ func runRecipeGet(cmd *cobra.Command, args []string) error {
 			r.Resources.Cpu, r.Resources.Memory, r.Resources.Disk)
 	}
 	for _, p := range r.Ports {
-		fmt.Printf("Port:        %d -> %s\n", p.ContainerPort, p.Subdomain)
+		role := ""
+		if p.Role == pb.RecipePortRole_RECIPE_PORT_ROLE_AUTH_PROXY {
+			role = " (auth proxy)"
+		}
+		fmt.Printf("Port:        %d -> %s%s\n", p.ContainerPort, p.Subdomain, role)
 	}
 	for _, v := range r.Volumes {
 		fmt.Printf("Volume:      %s at %s\n", v.Name, v.Path)
