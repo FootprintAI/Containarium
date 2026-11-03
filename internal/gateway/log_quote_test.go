@@ -138,18 +138,54 @@ func TestLogQuote_TerminalRunUserLookupFailure(t *testing.T) {
 	}
 }
 
-type hostilePeerProxy struct{}
+// fixedPeerProxy hands back a canned peer URL.
+type fixedPeerProxy string
 
-func (hostilePeerProxy) PeerTerminalURL(string, string) (string, error) {
-	return "ws://peer.example.com/" + logQuoteHostile, nil
-}
+func (p fixedPeerProxy) PeerTerminalURL(string, string) (string, error) { return string(p), nil }
 
 // #3476: the peer URL is built from request-derived text and is logged with %q.
+// #3484: the test must reach the "Proxying terminal for" line; the escaped
+// URL assertion alone would also pass if the handler returned before logging.
 func TestLogQuote_TerminalPeerURL(t *testing.T) {
 	th := &TerminalHandler{}
-	th.SetPeerProxy(hostilePeerProxy{})
+	th.SetPeerProxy(fixedPeerProxy("ws://peer.example.com/" + logQuoteHostile))
 	buf := captureStdLog(t)
 	rec := httptest.NewRecorder()
 	th.HandleTerminal(rec, httptest.NewRequest(http.MethodGet, "/v1/containers/alice/terminal", nil))
+	if !strings.Contains(buf.String(), `Proxying terminal for "alice-container" to peer: "ws://peer.example.com/`) {
+		t.Fatalf("the Proxying terminal line was never logged: %q", buf.String())
+	}
 	assertLogQuoted(t, buf.String())
+}
+
+// #3484: past the "Proxying terminal" line, a peer URL that cannot be parsed
+// or dialled must not put a raw control byte into the log, whichever error
+// path it takes.
+func TestLogQuote_TerminalPeerDialFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, url string
+		status    int
+	}{
+		// url.Parse rejects a raw control byte.
+		{"unparseable url", "ws://peer.example.com/" + logQuoteHostile, http.StatusInternalServerError},
+		// Parses, but nothing listens on port 1, so the dial fails.
+		{"refused dial", "ws://127.0.0.1:1/" + logQuoteHostilePath, http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			th := &TerminalHandler{}
+			th.SetPeerProxy(fixedPeerProxy(tc.url))
+			buf := captureStdLog(t)
+			rec := httptest.NewRecorder()
+			th.HandleTerminal(rec, httptest.NewRequest(http.MethodGet, "/v1/containers/alice/terminal", nil))
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tc.status, rec.Body.String())
+			}
+			if !strings.Contains(buf.String(), "Proxying terminal for") {
+				t.Fatalf("the Proxying terminal line was never logged: %q", buf.String())
+			}
+			if strings.ContainsAny(buf.String(), "\x1b\r") || strings.Contains(buf.String(), "\n[forged]") {
+				t.Fatalf("raw control byte in log output: %q", buf.String())
+			}
+		})
+	}
 }
