@@ -107,6 +107,26 @@ func TestStampBirthAutoSleep_EnablesWithThreshold(t *testing.T) {
 	}
 }
 
+// TestStampBirthAutoSleep_ClockFailureLeavesPolicyDisabled ensures that
+// a failed start clock cannot silently enable an unevaluable idle timer.
+func TestStampBirthAutoSleep_ClockFailureLeavesPolicyDisabled(t *testing.T) {
+	s, _, mock := newTTLTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	var keys []string
+	mock.SetConfigFunc = func(_, key, _ string) error {
+		keys = append(keys, key)
+		if key == incus.LastStartedAtKey {
+			return errors.New("failed to persist start time")
+		}
+		return nil
+	}
+	s.stampBirthAutoSleep("alice-container", 20)
+	if len(keys) != 1 || keys[0] != incus.LastStartedAtKey {
+		t.Fatalf("clock failure must not write auto-sleep policy: keys=%v", keys)
+	}
+}
+
 // TestStampBirthDeleteAfterStopped_PersistsWindow — #525: a create-time
 // stopped→delete window is persisted under the Incus key the two-phase reaper
 // reads, so the box is born with its disk-reclaim timer (the clock starts only
