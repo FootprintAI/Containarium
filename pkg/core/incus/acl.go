@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -358,7 +359,7 @@ func (c *Client) DetachACLFromContainer(containerName, deviceName string) error 
 		return fmt.Errorf("failed to detach ACL from container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to detach ACL (operation failed): %w", err)
 	}
 

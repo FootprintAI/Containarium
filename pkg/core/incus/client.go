@@ -1086,8 +1086,8 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 		return fmt.Errorf("failed to create container: %w", err)
 	}
 
-	// Wait for operation to complete
-	if err := op.Wait(); err != nil {
+	// Long class: creating may pull and unpack an image (#3470).
+	if err := waitOp(context.Background(), op, longOpTimeout); err != nil {
 		return fmt.Errorf("failed to create container (operation failed): %w", err)
 	}
 
@@ -1106,7 +1106,7 @@ func (c *Client) StartContainer(name string) error {
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to start container (operation failed): %w", err)
 	}
 
@@ -1126,7 +1126,7 @@ func (c *Client) StopContainer(name string, force bool) error {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to stop container (operation failed): %w", err)
 	}
 
@@ -1150,7 +1150,7 @@ func (c *Client) updateState(name, action string) error {
 	if err != nil {
 		return fmt.Errorf("failed to %s container: %w", action, err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to %s container (operation failed): %w", action, err)
 	}
 	return nil
@@ -1171,7 +1171,7 @@ func (c *Client) DeleteContainer(name string) error {
 		return fmt.Errorf("failed to delete container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to delete container (operation failed): %w", err)
 	}
 
@@ -1575,8 +1575,9 @@ func stateWithRetry(what string, attempt func() (*api.InstanceState, string, err
 	return state, etag, err
 }
 
-// Exec executes a command inside a container. Unbounded wait — see
-// ExecWithTimeout for a caller that needs a deadline instead.
+// Exec executes a command inside a container. The wait is bounded only by
+// ExecOperationTimeout (#3470) — see ExecWithTimeout for a caller that needs
+// a tighter deadline.
 func (c *Client) Exec(containerName string, command []string) error {
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -1588,7 +1589,7 @@ func (c *Client) Exec(containerName string, command []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to execute command: %w", err)
 		}
-		if err := op.Wait(); err != nil {
+		if err := waitOp(context.Background(), op, execOpTimeout); err != nil {
 			return fmt.Errorf("command execution failed: %w", err)
 		}
 		return nil
@@ -1842,7 +1843,7 @@ func (c *Client) UpdateContainerConfig(name, key, value string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // GetRawInstance returns the raw config map for a container.
@@ -2117,7 +2118,7 @@ func (c *Client) UnsetEnv(containerName, key string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // GetContainerImageFingerprint returns the Incus-computed
@@ -2165,7 +2166,7 @@ func (c *Client) PublishImage(containerName, alias string, properties map[string
 	if err != nil {
 		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, longOpTimeout); err != nil {
 		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
 	}
 	fingerprint, _ := op.Get().Metadata["fingerprint"].(string)
@@ -2189,7 +2190,7 @@ func (c *Client) PublishImage(containerName, alias string, properties map[string
 	// image behind (disk cost), never a broken alias.
 	if oldFingerprint != "" && oldFingerprint != fingerprint {
 		if delOp, derr := c.server.DeleteImage(oldFingerprint); derr == nil {
-			_ = delOp.Wait()
+			_ = waitOp(context.Background(), delOp, opTimeout)
 		}
 	}
 	return fingerprint, nil
@@ -2254,7 +2255,7 @@ func (c *Client) SetCPULimit(containerName, cpu string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2278,7 +2279,7 @@ func (c *Client) SetCPUConfig(containerName, count, allowance string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2301,7 +2302,7 @@ func (c *Client) SetConfig(containerName, key, value string) error {
 	}
 
 	// Wait for the operation to complete
-	err = op.Wait()
+	err = waitOp(context.Background(), op, opTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
@@ -2329,7 +2330,7 @@ func (c *Client) UnsetConfig(containerName, key string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2369,7 +2370,7 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	}
 
 	// Wait for the operation to complete
-	err = op.Wait()
+	err = waitOp(context.Background(), op, opTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to wait for device update: %w", err)
 	}
@@ -3005,7 +3006,7 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		if err != nil {
 			return fmt.Errorf("failed to execute command: %w", err)
 		}
-		if err := op.Wait(); err != nil {
+		if err := waitOp(context.Background(), op, execOpTimeout); err != nil {
 			return fmt.Errorf("command execution failed: %w", err)
 		}
 		// A non-zero exit is a genuine command failure, not the transient
@@ -3052,7 +3053,7 @@ func (c *Client) ExecWithExitCode(containerName string, command []string) (stdou
 		if opErr != nil {
 			return fmt.Errorf("failed to execute command: %w", opErr)
 		}
-		if opErr := op.Wait(); opErr != nil {
+		if opErr := waitOp(context.Background(), op, execOpTimeout); opErr != nil {
 			return fmt.Errorf("command execution failed: %w", opErr)
 		}
 		if opMeta := op.Get(); opMeta.Metadata != nil {
@@ -3201,7 +3202,7 @@ func (c *Client) SetLabels(containerName string, labels map[string]string) error
 		return fmt.Errorf("failed to update container labels: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // AddLabel adds or updates a single label on a container
@@ -3218,7 +3219,7 @@ func (c *Client) AddLabel(containerName, key, value string) error {
 		return fmt.Errorf("failed to add label: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // RemoveLabel removes a single label from a container
@@ -3235,7 +3236,7 @@ func (c *Client) RemoveLabel(containerName, key string) error {
 		return fmt.Errorf("failed to remove label: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // MatchLabels checks if a container's labels match the given filter

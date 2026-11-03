@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -140,7 +141,7 @@ func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance,
 
 	op, updateErr := c.server.UpdateInstance(containerName, inst.Writable(), etag)
 	if updateErr == nil {
-		updateErr = op.Wait()
+		updateErr = waitOp(context.Background(), op, opTimeout)
 		if updateErr != nil {
 			updateErr = fmt.Errorf("%s on %s (operation failed): %w", what, containerName, updateErr)
 		}

@@ -2,6 +2,7 @@ package incus
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"strings"
@@ -18,6 +19,8 @@ type doneOp struct {
 }
 
 func (o doneOp) Wait() error { return o.err }
+
+func (o doneOp) WaitContext(context.Context) error { return o.err }
 
 // exportServer fakes the slice of the Incus API ExportInstance and
 // ImportInstance touch (#2801). Anything else panics on the nil embed.
