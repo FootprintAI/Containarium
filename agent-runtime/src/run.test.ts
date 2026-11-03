@@ -46,6 +46,26 @@ describe("runOnce (run mode)", () => {
     expect(a.usage).toEqual({ output_tokens: 12 });
   });
 
+  it("records modelUsage and whether a session was resumed in artifact.json (#3467)", async () => {
+    const { seedDir, root } = dirs();
+    const mu = { "claude-opus-4-8": { inputTokens: 3, outputTokens: 1 } };
+    const engine: Engine = {
+      name: "fake",
+      async run() {
+        return { outputJson: '{"ok":true}', usage: { output_tokens: 1 }, modelUsage: mu, resumedSession: true };
+      },
+    };
+    const code = await runOnce({
+      env: { CONTAINARIUM_RUN_ID: "run-mu", CONTAINARIUM_SKILL_ID: "s" },
+      seedDir, inputJson: "{}", tokenPath: null, engine, cfg, model: "m", journalRoot: root,
+    });
+    expect(code).toBe(0);
+    const a = JSON.parse(readFileSync(join(seedDir, "artifact.json"), "utf8")) as Record<string, unknown>;
+    expect(a.modelUsage).toEqual(mu);
+    expect(a.usage).toEqual({ output_tokens: 1 });
+    expect(a.resumedSession).toBe(true);
+  });
+
   it("journals the run under <root>/<CONTAINARIUM_RUN_ID>/<CONTAINARIUM_SKILL_ID>.jsonl", async () => {
     const { seedDir, root } = dirs();
     const code = await runOnce({

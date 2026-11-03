@@ -329,6 +329,8 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 		// What each member will run with (#3259), recorded with the run so a
 		// client can show the model that ran.
 		MemberModels: crewMemberModels(crew.GetSkillIds(), req, s.skillByID),
+		// Members answer over A2A, whose artifact carries no usage (#3467).
+		Usage: unavailableRunUsage(),
 	}
 
 	// Record the run before driving it, so an in-flight run is observable.

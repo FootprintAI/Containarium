@@ -15,6 +15,11 @@ export interface Artifact {
   model: string;
   // Best-effort usage/cost metadata, engine-shaped.
   usage?: unknown;
+  // Per-model usage keyed by model id, when the engine reports it (Claude:
+  // the result's modelUsage). The daemon prefers it over usage (#3467).
+  modelUsage?: unknown;
+  // True when the run resumed a session, so modelUsage is cumulative over it.
+  resumedSession?: boolean;
   // Populated when the run failed.
   error?: string;
 }

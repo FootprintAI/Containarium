@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -75,6 +77,9 @@ type RecipeServer struct {
 type recipeBoxes interface {
 	CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error)
 	Exec(containerName string, command []string) error
+	// ExecWithOutput runs a command in the box and returns its stdout and
+	// stderr (GetWorkspaceAccess reads the box's login token with it).
+	ExecWithOutput(containerName string, command []string) (string, string, error)
 	// PushFile streams a file into the box (never buffering it whole).
 	PushFile(containerName, path string, content io.ReadSeeker, mode string) error
 	Get(username string) (*incus.ContainerInfo, error)
@@ -93,6 +98,9 @@ func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.Creat
 }
 func (c containerServerBoxes) Exec(name string, command []string) error {
 	return c.s.manager.Exec(name, command)
+}
+func (c containerServerBoxes) ExecWithOutput(name string, command []string) (string, string, error) {
+	return c.s.manager.ExecWithOutput(name, command)
 }
 func (c containerServerBoxes) PushFile(name, path string, content io.ReadSeeker, mode string) error {
 	return c.s.manager.PushFile(name, path, content, mode)
@@ -263,12 +271,34 @@ func (s *RecipeServer) GetRecipe(ctx context.Context, req *pb.GetRecipeRequest) 
 	return &pb.GetRecipeResponse{Recipe: r}, nil
 }
 
+// workspaceMint is the body the slides-agent login helper answers /__mint with
+// (images/slides-agent/wsauth). A JSON object, where the librechat helper
+// prints the bare token, marks a box whose proxy takes the token in the URL
+// fragment (#3486).
+type workspaceMint struct {
+	Token string `json:"token"`
+}
+
+// fragmentTokenPattern is the slides-agent helper's token shape (32 random
+// bytes, unpadded base64url): safe in a URL fragment without escaping.
+var fragmentTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
+// parseWorkspaceMint returns the token of a slides-agent /__mint body, or ""
+// when the body is not one.
+func parseWorkspaceMint(body string) string {
+	var m workspaceMint
+	if json.Unmarshal([]byte(body), &m) != nil || !fragmentTokenPattern.MatchString(m.Token) {
+		return ""
+	}
+	return m.Token
+}
+
 // GetWorkspaceAccess returns a zero-click bootstrap URL for a workspace box
-// (librechat or agent-workspace): it obtains the box's in-box auth token —
-// minted single-use by the librechat helper, or read from the static
-// /opt/wsauth/token for agent-workspace — and composes the /__ws_login URL the
-// console embeds in an iframe to authenticate the workspace UI without showing a
-// sign-in prompt.
+// (librechat, slides-agent or agent-workspace): it obtains the box's in-box
+// auth token — minted single-use by the librechat or slides-agent helper, or
+// read from the static /opt/wsauth/token for agent-workspace — and composes the
+// /__ws_login URL the console embeds in an iframe to authenticate the workspace
+// UI without showing a sign-in prompt.
 func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorkspaceAccessRequest) (*pb.GetWorkspaceAccessResponse, error) {
 	// containers:write, not read: this mints an interactive-access credential
 	// (the in-box session token + a zero-click /__ws_login URL), so it is a
@@ -285,25 +315,38 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 
 	containerName := req.Name + "-container"
 
-	// Two workspace flavours expose a /__ws_login bootstrap, with different
+	// Three workspace flavours expose a /__ws_login bootstrap, with different
 	// token semantics:
 	//   * librechat: an in-box helper mints a SINGLE-USE, short-lived token on
 	//     127.0.0.1:9099/__mint and does a fresh LibreChat login per access
 	//     (LibreChat rotates its refresh token, so a session can't be replayed).
-	//     Its exposed subdomain is "<name>-chat".
-	//   * agent-workspace: a STATIC per-box token in /opt/wsauth/token (the
-	//     proxy IS the auth). Its subdomain is "<name>-workspace".
+	//     It prints the bare token; the URL carries it as ?t=. Its exposed
+	//     subdomain is "<name>-chat".
+	//   * slides-agent: an in-box helper on the same port and path mints a
+	//     SINGLE-USE, 120 s token and answers {"token":"..."}. The URL carries
+	//     it in the fragment (#t=), which a browser never sends; the proxy's
+	//     bootstrap page posts it. Its subdomain is "<name>-workspace".
+	//   * agent-workspace (and slides-agent boxes from before #3486): a STATIC
+	//     per-box token in /opt/wsauth/token (the proxy IS the auth), as ?t=.
+	//     Its subdomain is "<name>-workspace".
 	// Probe the helper first (preferred, single-use); fall back to the static
-	// token so both recipe shapes work without the daemon tracking the recipe.
+	// token so every recipe shape works without the daemon tracking the recipe.
 	var token, subdomain string
-	if out, _, err := s.containers.manager.ExecWithOutput(containerName,
+	inFragment := false
+	if out, _, err := s.boxOps().ExecWithOutput(containerName,
 		[]string{"curl", "-s", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
-		if t := strings.TrimSpace(out); t != "" {
+		t := strings.TrimSpace(out)
+		switch {
+		case strings.HasPrefix(t, "{"):
+			if ft := parseWorkspaceMint(t); ft != "" {
+				token, subdomain, inFragment = ft, req.Name+"-workspace", true
+			}
+		case t != "":
 			token, subdomain = t, req.Name+"-chat"
 		}
 	}
 	if token == "" {
-		out, _, err := s.containers.manager.ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
+		out, _, err := s.boxOps().ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound,
 				"no workspace access on %s (is this a workspace box?): %v", containerName, err)
@@ -321,8 +364,11 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	// cloud the ossshim passthrough rebuilds the URL with the box's managed
 	// subdomain; this URL is for self-hosted OSS.)
 	if s.network != nil && s.network.baseDomain != "" {
-		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) +
-			"/__ws_login?t=" + url.QueryEscape(token)
+		login := "/__ws_login?t=" + url.QueryEscape(token)
+		if inFragment {
+			login = "/__ws_login#t=" + token
+		}
+		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) + login
 	}
 	return resp, nil
 }

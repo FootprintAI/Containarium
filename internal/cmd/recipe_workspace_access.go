@@ -8,13 +8,15 @@ import (
 
 var recipeWorkspaceAccessCmd = &cobra.Command{
 	Use:   "workspace-access <name>",
-	Short: "Print the zero-click access URL for an agent-workspace box",
-	Long: `Print a zero-click bootstrap URL for an agent-workspace box.
+	Short: "Print the zero-click access URL for a workspace box",
+	Long: `Print a zero-click bootstrap URL for a workspace box.
 
 The daemon reads the box's in-box auth token and returns a URL of the form
-https://<box>-workspace.<domain>/__ws_login?t=<token>. Loading it sets the
-in-box session cookie and redirects to the workspace UI, so the embedded
-console panel authenticates without a sign-in prompt.
+https://<box>-workspace.<domain>/__ws_login?t=<token>. For a slides-agent box
+the token is minted single-use per call (it expires after 120 seconds) and
+travels in the URL fragment: https://<box>-workspace.<domain>/__ws_login#t=<token>.
+Loading the URL sets the in-box session cookie and redirects to the workspace
+UI, so the embedded console panel authenticates without a sign-in prompt.
 
   containarium recipe workspace-access ws1 --server <host>`,
 	Args: cobra.ExactArgs(1),

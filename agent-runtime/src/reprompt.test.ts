@@ -208,3 +208,42 @@ describe("runWithFinalJsonReprompt (#2513 item 2)", () => {
     expect(j.entries.at(-1)).toEqual({ kind: "assistant", text: '{"a":1}' });
   });
 });
+
+// #3467: Claude Code's modelUsage on a resumed session's result is cumulative
+// (it already counts the first turn), while its usage is that turn's only. So
+// the reply's modelUsage is kept as it is, never summed with the first turn's.
+describe("runWithFinalJsonReprompt modelUsage (#3467)", () => {
+  const mu = (input: number) => ({ "claude-opus-4-8": { inputTokens: input, outputTokens: 1 } });
+  const engineWith = (reply: Partial<EngineResult>): Engine => ({
+    name: "scripted",
+    async run(_t, _c, j) {
+      editsFile("write_file")(j);
+      return {
+        outputJson: "",
+        usage: { input_tokens: 10 },
+        modelUsage: mu(10),
+        followUp: async () => ({ outputJson: '{"a":1}', ...reply }),
+      };
+    },
+  });
+
+  it("keeps a resumed reply's cumulative modelUsage and still sums usage", async () => {
+    const res = await runWithFinalJsonReprompt(
+      engineWith({ usage: { input_tokens: 5 }, modelUsage: mu(15), resumedSession: true }),
+      "task", cfg, new CaptureJournal(),
+    );
+    expect(res.modelUsage).toEqual(mu(15));
+    expect(res.usage).toEqual({ input_tokens: 15 });
+    expect(res.resumedSession).toBe(true);
+  });
+
+  it("drops modelUsage when a resumed reply reported none, rather than keep the first turn's partial count", async () => {
+    const res = await runWithFinalJsonReprompt(engineWith({ usage: { input_tokens: 5 }, resumedSession: true }), "task", cfg, new CaptureJournal());
+    expect(res.modelUsage).toBeUndefined();
+  });
+
+  it("sums modelUsage when the reply did not resume a session", async () => {
+    const res = await runWithFinalJsonReprompt(engineWith({ modelUsage: mu(5) }), "task", cfg, new CaptureJournal());
+    expect(res.modelUsage).toEqual({ "claude-opus-4-8": { inputTokens: 15, outputTokens: 2 } });
+  });
+});

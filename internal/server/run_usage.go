@@ -52,7 +52,7 @@ func structuredRunUsage(log []byte, resumed bool) *pb.RunUsage {
 			if !validBoxRunModel(model) {
 				return unavailableRunUsage()
 			}
-			row, ok := usageRow(model, counts, "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", false)
+			row, ok := boxRunUsageRow(model, counts, "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", false)
 			if !ok {
 				return unavailableRunUsage()
 			}
@@ -61,7 +61,7 @@ func structuredRunUsage(log []byte, resumed bool) *pb.RunUsage {
 		sort.Slice(u.Models, func(i, j int) bool { return u.Models[i].GetModel() < u.Models[j].GetModel() })
 	case res.Usage != nil:
 		u.Status = pb.RunUsageStatus_RUN_USAGE_STATUS_AGGREGATE_ONLY
-		row, ok := usageRow("", res.Usage, "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", true)
+		row, ok := boxRunUsageRow("", res.Usage, "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", true)
 		if !ok {
 			return unavailableRunUsage()
 		}
@@ -72,9 +72,9 @@ func structuredRunUsage(log []byte, resumed bool) *pb.RunUsage {
 	return u
 }
 
-// usageRow reads one row's four counts from counts under the given keys. Every
+// boxRunUsageRow reads one row's four counts from counts under the given keys. Every
 // key must be present; a cache count may be null only when nullCache is set.
-func usageRow(model string, counts map[string]json.RawMessage, inKey, outKey, cacheReadKey, cacheWriteKey string, nullCache bool) (*pb.RunModelUsage, bool) {
+func boxRunUsageRow(model string, counts map[string]json.RawMessage, inKey, outKey, cacheReadKey, cacheWriteKey string, nullCache bool) (*pb.RunModelUsage, bool) {
 	var vals [4]int64
 	for i, key := range []string{inKey, outKey, cacheReadKey, cacheWriteKey} {
 		raw, present := counts[key]
@@ -84,7 +84,7 @@ func usageRow(model string, counts map[string]json.RawMessage, inKey, outKey, ca
 		if string(raw) == "null" && nullCache && i >= 2 {
 			continue
 		}
-		n, ok := tokenCount(raw)
+		n, ok := boxRunTokenCount(raw)
 		if !ok {
 			return nil, false
 		}
@@ -93,9 +93,9 @@ func usageRow(model string, counts map[string]json.RawMessage, inKey, outKey, ca
 	return &pb.RunModelUsage{Model: model, InputTokens: vals[0], OutputTokens: vals[1], CacheReadTokens: vals[2], CacheWriteTokens: vals[3]}, true
 }
 
-// tokenCount accepts only a plain non-negative JSON integer literal that fits
+// boxRunTokenCount accepts only a plain non-negative JSON integer literal that fits
 // in int64: no fraction, exponent, sign, quotes or null.
-func tokenCount(raw json.RawMessage) (int64, bool) {
+func boxRunTokenCount(raw json.RawMessage) (int64, bool) {
 	s := string(bytes.TrimSpace(raw))
 	if s == "" || s[0] < '0' || s[0] > '9' {
 		return 0, false
