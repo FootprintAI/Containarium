@@ -826,7 +826,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 			// Only reachable behind daemonAuthGate: the request authenticated,
 			// so its pool may now be tied to its source address (#2892).
 			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
-			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%q:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
 

@@ -1,8 +1,12 @@
 package sentinel
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -78,4 +82,23 @@ func TestLogQuote_FailoverNamesTunnelBackend(t *testing.T) {
 	r.tick(6)
 	require.Equal(t, "gcp", r.primaryID(), "and fails back once the preferred primary is healthy again")
 	assertLogQuoted(t, buf.String())
+}
+
+// A registering primary supplies its own pool, hostname, base domains and IP
+// in the request body; the handler only checks that they are non-empty.
+func TestLogQuote_PrimaryRegistrationFields(t *testing.T) {
+	for _, field := range []string{"pool", "hostname", "ip"} {
+		t.Run(field, func(t *testing.T) {
+			body := map[string]any{"pool": "prod", "hostname": "app.example.com", "ip": "10.0.0.1", "port": 443}
+			body[field] = logQuoteHostile
+			raw, err := json.Marshal(body)
+			require.NoError(t, err)
+			m := &Manager{primaries: NewPrimaryRegistry()}
+			buf := captureSyncLog(t)
+			rec := httptest.NewRecorder()
+			m.PrimariesHandler()(rec, httptest.NewRequest(http.MethodPost, "/sentinel/primaries", bytes.NewReader(raw)))
+			require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+			assertLogQuoted(t, buf.String())
+		})
+	}
 }
