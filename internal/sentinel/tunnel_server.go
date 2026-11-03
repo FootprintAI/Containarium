@@ -253,7 +253,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 
 	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {
-		log.Printf("[tunnel-server] yamux client creation failed for %s: %v", hs.SpotID, err)
+		log.Printf("[tunnel-server] yamux client creation failed for %q: %v", hs.SpotID, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: "yamux init failed"})
 		_ = conn.Close()
 		return
@@ -262,7 +262,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// Register in the registry (assigns loopback alias)
 	localIP, gen, err := ts.registry.Register(hs, session, transport)
 	if err != nil {
-		log.Printf("[tunnel-server] registration failed for %s: %v", hs.SpotID, err)
+		log.Printf("[tunnel-server] registration failed for %q: %v", hs.SpotID, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = session.Close()
 		return
@@ -270,7 +270,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Send success response
 	if err := writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: true, AssignedIP: localIP}); err != nil {
-		log.Printf("[tunnel-server] failed to send handshake response to %s: %v", hs.SpotID, err)
+		log.Printf("[tunnel-server] failed to send handshake response to %q: %v", hs.SpotID, err)
 		ts.registry.Unregister(hs.SpotID)
 		_ = session.Close()
 		return
@@ -375,12 +375,12 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 			fallbackAddr := fmt.Sprintf("127.0.0.1:%d", listenPort)
 			ln, err = net.Listen("tcp", fallbackAddr)
 			if err != nil {
-				log.Printf("[tunnel-server] failed to listen on %s (and fallback %s) for spot %s: %v", addr, fallbackAddr, spotID, err)
+				log.Printf("[tunnel-server] failed to listen on %s (and fallback %s) for spot %q: %v", addr, fallbackAddr, spotID, err)
 				continue
 			}
-			log.Printf("[tunnel-server] proxy listening on %s (fallback) → tunnel → spot %s (remote port %d)", fallbackAddr, spotID, port)
+			log.Printf("[tunnel-server] proxy listening on %s (fallback) → tunnel → spot %q (remote port %d)", fallbackAddr, spotID, port)
 		} else {
-			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s (remote port %d)", addr, spotID, port)
+			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %q (remote port %d)", addr, spotID, port)
 		}
 		listeners = append(listeners, ln)
 		ts.spawn(func() { ts.proxyLoop(ctx, ln, port, session, spotID) })
@@ -394,9 +394,9 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 			extAddr := net.JoinHostPort(bindIP, strconv.Itoa(externalPort))
 			extLn, extErr := net.Listen("tcp", extAddr)
 			if extErr != nil {
-				log.Printf("[tunnel-server] failed to bind external port %s for spot %s: %v", extAddr, spotID, extErr)
+				log.Printf("[tunnel-server] failed to bind external port %s for spot %q: %v", extAddr, spotID, extErr)
 			} else {
-				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (per-backend API port)", extAddr, spotID)
+				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %q (per-backend API port)", extAddr, spotID)
 				listeners = append(listeners, extLn)
 				ts.spawn(func() { ts.proxyLoop(ctx, extLn, port, session, spotID) })
 			}
@@ -432,7 +432,7 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 	// Open a yamux stream to the spot
 	stream, err := session.Open()
 	if err != nil {
-		log.Printf("[tunnel-server] failed to open yamux stream to spot %s for port %d: %v", spotID, port, err)
+		log.Printf("[tunnel-server] failed to open yamux stream to spot %q for port %d: %v", spotID, port, err)
 		return
 	}
 	defer func() { _ = stream.Close() }()
@@ -440,7 +440,7 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 	// Send the target port as a 2-byte big-endian header
 	portBytes := []byte{byte((port >> 8) & 0xff), byte(port & 0xff)}
 	if _, err := stream.Write(portBytes); err != nil {
-		log.Printf("[tunnel-server] failed to write port header to spot %s: %v", spotID, err)
+		log.Printf("[tunnel-server] failed to write port header to spot %q: %v", spotID, err)
 		return
 	}
 

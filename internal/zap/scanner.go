@@ -143,7 +143,7 @@ func (s *Scanner) isRunning() bool {
 // ScanURL performs a full spider + active scan on a URL and returns alerts
 func (s *Scanner) ScanURL(ctx context.Context, targetURL string) ([]Alert, error) {
 	// Step 1: Spider the URL to discover pages
-	log.Printf("ZAP: Spidering %s", targetURL)
+	log.Printf("ZAP: Spidering %q", targetURL)
 	spiderScanID, err := s.startSpider(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start spider: %w", err)
@@ -152,10 +152,10 @@ func (s *Scanner) ScanURL(ctx context.Context, targetURL string) ([]Alert, error
 	if err := s.waitForSpider(ctx, spiderScanID); err != nil {
 		return nil, fmt.Errorf("spider failed: %w", err)
 	}
-	log.Printf("ZAP: Spider completed for %s", targetURL)
+	log.Printf("ZAP: Spider completed for %q", targetURL)
 
 	// Step 2: Active scan the URL
-	log.Printf("ZAP: Active scanning %s", targetURL)
+	log.Printf("ZAP: Active scanning %q", targetURL)
 	activeScanID, err := s.startActiveScan(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start active scan: %w", err)
@@ -164,7 +164,7 @@ func (s *Scanner) ScanURL(ctx context.Context, targetURL string) ([]Alert, error
 	if err := s.waitForActiveScan(ctx, activeScanID); err != nil {
 		return nil, fmt.Errorf("active scan failed: %w", err)
 	}
-	log.Printf("ZAP: Active scan completed for %s", targetURL)
+	log.Printf("ZAP: Active scan completed for %q", targetURL)
 
 	// Step 3: Collect alerts for this URL
 	return s.getAlerts(targetURL)

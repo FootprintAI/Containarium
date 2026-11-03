@@ -502,7 +502,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// See #370.
 	if len(config.Env) > 0 {
 		if err := m.WriteOTelEnvFile(containerName, config.Env); err != nil {
-			log.Printf("[otel] %s: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
+			log.Printf("[otel] %q: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
 		}
 	}
 
@@ -541,7 +541,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 			// Optional for box creation (NONE/FULL_SUDO must remain usable).
 			// BUILD_TOOLS repeats this check and refuses a broken/conflicting
 			// tool setup before starting any run.
-			log.Printf("[toolchains] %s: tools unavailable: %v", containerName, err)
+			log.Printf("[toolchains] %q: tools unavailable: %v", containerName, err)
 		}
 	}
 
@@ -861,7 +861,7 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		// configured. Best-effort: a mirror-config failure must not fail box
 		// provisioning — podman still pulls from upstream (today's behavior).
 		if err := m.writeRegistryMirrors(containerName); err != nil {
-			log.Printf("Warning: registry-mirror config on %s: %v", containerName, err)
+			log.Printf("Warning: registry-mirror config on %q: %v", containerName, err)
 		}
 
 		// Install podman-compose via pip
@@ -974,7 +974,7 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 func (m *Manager) enablePodmanRestartDurability(containerName, username string) {
 	// Rootful: system-wide podman-restart.service.
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "podman-restart.service"}); err != nil {
-		log.Printf("Warning: failed to enable system podman-restart.service in %s: %v", containerName, err)
+		log.Printf("Warning: failed to enable system podman-restart.service in %q: %v", containerName, err)
 	}
 
 	// Rootless: linger + user podman-restart.service for the tenant user.
@@ -982,7 +982,7 @@ func (m *Manager) enablePodmanRestartDurability(containerName, username string) 
 		return
 	}
 	if err := m.incus.Exec(containerName, []string{"loginctl", "enable-linger", username}); err != nil {
-		log.Printf("Warning: failed to enable-linger for %s in %s: %v", username, containerName, err)
+		log.Printf("Warning: failed to enable-linger for %q in %q: %v", username, containerName, err)
 	}
 	// Enable the user unit by creating the wants symlink directly. `systemctl
 	// --user enable` would need a live user bus (not guaranteed mid-provision),
@@ -997,7 +997,7 @@ mkdir -p "$home/.config/systemd/user/default.target.wants"
 ln -sf "$unit" "$home/.config/systemd/user/default.target.wants/podman-restart.service"
 chown -R "$1:$1" "$home/.config"`
 	if err := m.incus.Exec(containerName, []string{"bash", "-c", enableUserUnit, "bash", username}); err != nil {
-		log.Printf("Warning: failed to enable user podman-restart.service for %s in %s: %v", username, containerName, err)
+		log.Printf("Warning: failed to enable user podman-restart.service for %q in %q: %v", username, containerName, err)
 	}
 }
 
@@ -1391,7 +1391,7 @@ func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-
 		select {
 		case <-jumpAccountDone:
 		case <-time.After(jumpAccountJoinTimeout):
-			log.Printf("[create] %s: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
+			log.Printf("[create] %q: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
 			return cause
 		}
 	}
@@ -1399,7 +1399,7 @@ func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-
 		return cause
 	}
 	if err := deleteJumpServerAccountFn(username, false); err != nil {
-		log.Printf("[create] %s: could not remove the host account %q left by the failed create: %v", containerName, username, err)
+		log.Printf("[create] %q: could not remove the host account %q left by the failed create: %v", containerName, username, err)
 	}
 	return cause
 }
@@ -1572,7 +1572,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 
 	// Verify the effective user exists in the container; fall back to "ubuntu"
 	if err := m.incus.Exec(containerName, []string{"id", effectiveUser}); err != nil {
-		log.Printf("User %q not found in %s, falling back to ubuntu", effectiveUser, containerName)
+		log.Printf("User %q not found in %q, falling back to ubuntu", effectiveUser, containerName)
 		effectiveUser = "ubuntu"
 	}
 
@@ -1649,7 +1649,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 			err = m.incus.SetConfig(containerName, incus.StackKey, stackID)
 		}
 		if err != nil {
-			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
+			log.Printf("Warning: installed stack %q in %q but could not record it: %v", stackID, containerName, err)
 		}
 	}
 
@@ -1765,6 +1765,6 @@ func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.Contain
 // reconciler's silent first-pass backfill instead of tamper detection.
 func (m *Manager) markSSHDPolicy(containerName string) {
 	if err := m.incus.SetConfig(containerName, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
-		log.Printf("[sshd-policy] %s: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
+		log.Printf("[sshd-policy] %q: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
 	}
 }
