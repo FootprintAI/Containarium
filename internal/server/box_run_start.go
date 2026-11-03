@@ -579,6 +579,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   startedAt,
 		Model:       req.GetModel(),
+		Resumed:     boxRunResumed(req),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -760,3 +761,9 @@ func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), b
 var boxRunModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$`)
 
 func validBoxRunModel(id string) bool { return boxRunModelPattern.MatchString(id) }
+
+// boxRunResumed reports whether the run continues an earlier engine session,
+// whose usage the engine then reports cumulatively (#3467).
+func boxRunResumed(req *pb.StartBoxRunRequest) bool {
+	return req.GetSessionId() != "" || req.GetContinueSession()
+}
