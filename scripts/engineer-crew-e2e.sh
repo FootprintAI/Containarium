@@ -697,6 +697,23 @@ ARTIFACT="$(printf '%s' "$run_body" | jq -r '.run.artifactJson // empty')"
 run_commit="$(printf '%s' "$run_body" | jq -r '.run.gitCommit // empty')"
 ok "assertion 2: run $RUN_ID is CREW_RUN_STATE_COMPLETED with a $(printf '%s' "$ARTIFACT" | wc -c | tr -d ' ')-byte artifact (git_commit $run_commit)"
 
+# --- assertion 2a: usage is set and never zero counts (#3467) -------------
+# CrewRun.usage is always set. These members answer over A2A, whose artifact
+# carries no usage, so UNAVAILABLE (with no rows) is the expected answer today;
+# a reported usage must have a non-empty model id on REPORTED rows and a
+# positive token count on every row: zero rows posing as usage is the bug.
+usage_status="$(printf '%s' "$run_body" | jq -r '.run.usage.status // empty')"
+case "$usage_status" in
+  RUN_USAGE_STATUS_UNAVAILABLE)
+    [ "$(printf '%s' "$run_body" | jq '.run.usage.models // [] | length')" = "0" ] \
+      || fail "assertion 2a: usage is UNAVAILABLE but carries model rows: $(printf '%s' "$run_body" | jq -c '.run.usage')" ;;
+  RUN_USAGE_STATUS_REPORTED|RUN_USAGE_STATUS_AGGREGATE_ONLY)
+    printf '%s' "$run_body" | jq -e '(.run.usage.models | length) > 0 and all(.run.usage.models[]; ((.inputTokens // "0" | tonumber) + (.outputTokens // "0" | tonumber)) > 0) and (.run.usage.status != "RUN_USAGE_STATUS_REPORTED" or all(.run.usage.models[]; (.model // "") != ""))' >/dev/null \
+      || fail "assertion 2a: usage is $usage_status but a row is empty or zero: $(printf '%s' "$run_body" | jq -c '.run.usage')" ;;
+  *) fail "assertion 2a: CrewRun.usage.status = '$usage_status', want a RUN_USAGE_STATUS_* value (the field is always set)" ;;
+esac
+ok "assertion 2a: CrewRun.usage is $usage_status"
+
 # --- assertion 2b: the Proof Pack came from a box other than the coder's ---
 # (#2799.) The fixture declares no test commands and has no Makefile, so the
 # expected status is NO_COMMANDS; any status proves the commands were run in

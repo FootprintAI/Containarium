@@ -688,18 +688,18 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// its caller — so artifact.json is always read into this Go string BEFORE
 	// endRunLease's directory removal ever runs. A run whose artifact was
 	// returned never loses it to the wipe.
-	artifact, err := s.runInBoxAgentResult(containerName, lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
+	artifact, err := s.runInBoxAgentRun(containerName, lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
 	if err != nil {
 		log.Printf("[agent-skill] run %q: %v", runID, err)
 		return nil, inBoxRunStatus(runID, err)
 	}
 	return &pb.RunAgentSkillResponse{
 		Container:     box,
-		ArtifactJson:  artifact,
+		ArtifactJson:  artifact.output,
 		RunId:         runID,
 		GitCommit:     gitCommit,
 		WorkspacePath: workspacePath,
-		Usage:         unavailableRunUsage(),
+		Usage:         artifact.usage,
 	}, nil
 }
 
@@ -1696,38 +1696,45 @@ func inBoxRunStatus(runID string, err error) error {
 // this function only renders them into the exec, it never resolves anything
 // itself.
 func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (string, error) {
+	a, err := s.runInBoxAgentRun(containerName, seedDir, runID, skillID, engineRes, model)
+	return a.output, err
+}
+
+// runInBoxAgentRun is runInBoxAgentResult keeping the artifact's token usage
+// too (#3467).
+func (s *AgentSkillServer) runInBoxAgentRun(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (inBoxArtifact, error) {
 	box := s.inBox()
 	if box == nil {
-		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
+		return inBoxArtifact{}, fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
 	}
 
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID, engineRes, model)})
 	if err != nil && !incusExecCommandMissing(err) {
-		return "", fmt.Errorf("could not exec the in-box agent on %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not exec the in-box agent on %s: %w", containerName, err)
 	}
 	if err != nil || exitCode == exitCommandNotFound {
 		log.Printf("[agent-skill] agent-runtime not found on %q (image may not ship it yet); stderr=%q",
 			containerName, scrubInBoxText(stderr))
-		return "", fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+		return inBoxArtifact{}, fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
 	}
 	if exitCode != 0 {
 		log.Printf("[agent-skill] in-box agent on %q exited %d; stderr=%q", containerName, exitCode, scrubInBoxText(stderr))
 		if reason := s.inBoxArtifactError(box, containerName, seedDir); reason != "" {
-			return "", fmt.Errorf("in-box agent on %s exited %d: %s", containerName, exitCode, reason)
+			return inBoxArtifact{}, fmt.Errorf("in-box agent on %s exited %d: %s", containerName, exitCode, reason)
 		}
-		return "", fmt.Errorf("in-box agent on %s exited %d (no error recorded in artifact.json)", containerName, exitCode)
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %s exited %d (no error recorded in artifact.json)", containerName, exitCode)
 	}
 
 	raw, err := box.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
-		return "", fmt.Errorf("could not read artifact from %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not read artifact from %s: %w", containerName, err)
 	}
-	out, err := parseArtifactOutput(raw)
+	a, err := parseArtifact(raw)
 	if err != nil {
-		return "", fmt.Errorf("in-box agent on %s reported an error: %s", containerName, scrubInBoxText(err.Error()))
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %s reported an error: %s", containerName, scrubInBoxText(err.Error()))
 	}
-	return out, nil
+	return a, nil
 }
 
 // inBoxArtifactError is the scrubbed `error` artifact.json recorded for a
@@ -1760,19 +1767,10 @@ func (s *AgentSkillServer) inBox() inBoxRunner {
 
 // parseArtifactOutput extracts the agent's output JSON from artifact.json
 // (written by agent-runtime). A non-empty `error` field is surfaced as an
-// error so the run is reported failed.
+// error so the run is reported failed. parseArtifact also keeps the usage.
 func parseArtifactOutput(raw []byte) (string, error) {
-	var a struct {
-		OutputJSON string `json:"outputJson"`
-		Error      string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return "", fmt.Errorf("decode artifact.json: %w", err)
-	}
-	if a.Error != "" {
-		return "", fmt.Errorf("%s", a.Error)
-	}
-	return a.OutputJSON, nil
+	a, err := parseArtifact(raw)
+	return a.output, err
 }
 
 // applyAllowedPeersPolicy compiles a skill's allowed_peers into a per-box

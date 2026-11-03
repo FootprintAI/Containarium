@@ -4,7 +4,8 @@
 # #3434) runs inside a box via podman: Node, the open-slide slide framework
 # (MIT) built from a pinned commit with its dependencies installed, a headless
 # Chromium with the `slides-print-pdf <site> <out.pdf>` entrypoint that prints
-# a built site to PDF, and the Caddy auth proxy that fronts the dev server.
+# a built site to PDF, the Caddy auth proxy that fronts the dev server, and
+# the in-box login helper behind the proxy's zero-click login (#3486).
 # Everything a box needs at start is in here, so starting a box fetches
 # nothing from a package registry; the image pull is the only fetch.
 #
@@ -17,6 +18,7 @@
 #                               into the bind-mounted /workspace on first start
 #   /workspace                  bind mount: the deck tree on the box disk
 #   /etc/caddy/Caddyfile        the auth proxy (images/slides-agent/Caddyfile)
+#   /usr/local/bin/slides-wsauth the login helper (images/slides-agent/wsauth)
 #
 # Upstream open-slide is data: it is fetched by commit, the checkout is verified
 # against the pin, its lockfile decides its dependency set, and no dependency
@@ -52,6 +54,17 @@ RUN scripts/install-xcaddy.sh /usr/local/bin/xcaddy \
     # Only /out/caddy leaves this stage; drop the module and build caches so
     # the layer stays small.
     && rm -rf /root/.cache /go/pkg/mod /tmp/*
+
+# --- the login helper ---------------------------------------------------------
+# Go standard library only, built on the same pinned Go image as Caddy. Only the
+# non-test sources are copied, into a module of their own, so the build needs
+# nothing but the toolchain.
+FROM ${GO_IMAGE} AS wsauth
+WORKDIR /src
+COPY images/slides-agent/wsauth/main.go images/slides-agent/wsauth/wsauth.go ./
+RUN go mod init slides-wsauth \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/slides-wsauth . \
+    && rm -rf /root/.cache /tmp/*
 
 # --- build open-slide from the pinned commit ---------------------------------
 FROM ${NODE_IMAGE} AS build
@@ -157,6 +170,7 @@ RUN apt-get update \
     && node --version
 
 COPY --from=caddy /out/caddy /usr/bin/caddy
+COPY --from=wsauth /out/slides-wsauth /usr/local/bin/slides-wsauth
 COPY --from=build /opt/open-slide /opt/open-slide
 COPY images/slides-agent/Caddyfile /etc/caddy/Caddyfile
 # Plain COPY + chmod (not COPY --chmod) so the image also builds with the
@@ -172,7 +186,6 @@ RUN chmod 0755 /usr/local/bin/slides-agent-entrypoint /usr/local/bin/slides-rend
     # that fails here would otherwise fail on every box start.
     && SLIDES_AUTH_USER=build-check \
        SLIDES_AUTH_HASH="$(caddy hash-password --plaintext build-check)" \
-       SLIDES_WS_TOKEN=0123456789abcdef0123456789abcdef \
        caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
     && chromium --version
 

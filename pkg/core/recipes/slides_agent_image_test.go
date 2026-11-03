@@ -13,8 +13,11 @@ import (
 // The prebaked slides-agent image definition (#3434) lives in
 // images/slides-agent/. These tests pin what the recipe relies on at the
 // definition level: the framework commit, what is installed at build time,
-// that the proxy fronts every path with the forwarded scheme, and that the
-// entrypoint fails closed and seeds the deck tree without clobbering it.
+// that the proxy fronts every path with the forwarded scheme and takes the
+// zero-click login only as a single-use token posted to the login helper
+// (#3486; the helper's behaviour and the real Caddyfile are tested in
+// images/slides-agent/wsauth), and that the entrypoint fails closed and seeds
+// the deck tree without clobbering it.
 
 const slidesAgentImageDir = "../../../images/slides-agent"
 
@@ -48,6 +51,11 @@ func TestSlidesAgentDockerfile(t *testing.T) {
 		"images/slides-agent/entrypoint.sh",
 		"images/slides-agent/open-slide.config.ts",
 		"images/slides-agent/slides-print-pdf",
+		// The login helper (#3486): built from the non-test sources alone,
+		// standard library only, on the pinned Go image.
+		"COPY images/slides-agent/wsauth/main.go images/slides-agent/wsauth/wsauth.go ./",
+		"go mod init slides-wsauth",
+		"COPY --from=wsauth /out/slides-wsauth /usr/local/bin/slides-wsauth",
 		"node --check /usr/local/bin/slides-print-pdf", // the printer is syntax-checked at build
 		"USER ",
 	} {
@@ -86,42 +94,94 @@ func TestSlidesAgentDockerfile(t *testing.T) {
 func TestSlidesAgentCaddyfile(t *testing.T) {
 	cf := readImageFile(t, "Caddyfile")
 	for _, want := range []string{
-		"auto_https off",          // the edge terminates TLS
-		"admin off",               // no admin API on the box network
-		"basic_auth",              // unauthenticated requests are refused
-		"{$SLIDES_AUTH_USER}",     // credentials come from the staged env, never the image
-		"{$SLIDES_AUTH_HASH}",     // bcrypt hash
-		"{$SLIDES_WS_TOKEN}",      // per-box session token
-		"/__ws_login",             // zero-click bootstrap route
-		"SameSite=None",           // cookie sent from the embedding console's iframe
-		`(^|;\s*)ws_auth=`,        // anchored cookie match
-		"127.0.0.1:5173",          // the dev server stays on loopback
-		"X-Forwarded-Proto https", // the request guard compares Origin against the forwarded scheme
+		"auto_https off",      // the edge terminates TLS
+		"admin off",           // no admin API on the box network
+		"basic_auth",          // unauthenticated requests are refused
+		"{$SLIDES_AUTH_USER}", // credentials come from the staged env, never the image
+		"{$SLIDES_AUTH_HASH}", // bcrypt hash
+		// Zero-click login (#3486): exactly the bootstrap path goes to the
+		// login helper's proxy-facing listener, which serves the page and
+		// redeems the token.
+		"handle /__ws_login {\n\t\treverse_proxy 127.0.0.1:9098\n\t}",
+		// The session cookie, anchored to the name boundary and of the
+		// helper's shape, checked with the helper on every request.
+		`header_regexp Cookie "(^|;\s*)ws_session=[A-Za-z0-9_-]{43}($|;)"`,
+		"forward_auth 127.0.0.1:9098 {\n\t\t\turi /__session\n\t\t}",
+		"not header Authorization *", // basic-auth credentials always take the basic-auth path
+		"127.0.0.1:5173",             // the dev server stays on loopback
+		"X-Forwarded-Proto https",    // the request guard compares Origin against the forwarded scheme
 	} {
 		if !strings.Contains(cf, want) {
 			t.Errorf("Caddyfile missing %q", want)
 		}
 	}
-	// Every proxied path forwards the https scheme: one header_up per
-	// reverse_proxy block, and no upstream other than the loopback dev server.
-	proxies := strings.Count(cf, "reverse_proxy")
-	if proxies == 0 || proxies != strings.Count(cf, "header_up X-Forwarded-Proto https") {
-		t.Errorf("want one X-Forwarded-Proto https per reverse_proxy block; got %d blocks", proxies)
-	}
-	if proxies != strings.Count(cf, "reverse_proxy 127.0.0.1:5173") {
-		t.Error("every reverse_proxy must target 127.0.0.1:5173")
-	}
-	// The only handle without the cookie gate is the one carrying basic_auth:
-	// no path reaches the dev server unauthenticated.
-	handles := regexp.MustCompile(`(?m)^\s*handle(\s+@\w+)?\s*\{`).FindAllStringSubmatch(cf, -1)
-	var open int
-	for _, h := range handles {
-		if strings.TrimSpace(h[1]) == "" {
-			open++
+	for _, banned := range []string{
+		"SLIDES_WS_TOKEN", // no static zero-click token
+		"ws_auth",         // nor its cookie
+		"query t",         // no token in a query string
+		"9099",            // the daemon-facing mint listener is never proxied
+		"Set-Cookie",      // the proxy sets no cookie itself; the helper does
+	} {
+		if strings.Contains(cf, banned) {
+			t.Errorf("Caddyfile must not contain %q (#3486)", banned)
 		}
 	}
-	if open != 1 {
-		t.Errorf("want exactly one unmatched handle (the basic_auth fallback); got %d", open)
+	// No access log: a `log` directive would write request lines.
+	if regexp.MustCompile(`(?m)^\s*log\b`).MatchString(cf) {
+		t.Error("Caddyfile must not enable an access log")
+	}
+	// Every request proxied to the dev server forwards the https scheme, and
+	// the only other upstream is the helper.
+	toDev := strings.Count(cf, "reverse_proxy 127.0.0.1:5173")
+	if toDev != 2 || toDev != strings.Count(cf, "header_up X-Forwarded-Proto https") {
+		t.Errorf("want the two dev-server reverse_proxy blocks, each with X-Forwarded-Proto https; got %d", toDev)
+	}
+	if strings.Count(cf, "reverse_proxy") != toDev+1 || strings.Count(cf, "reverse_proxy 127.0.0.1:9098") != 1 {
+		t.Error("the only upstreams are the dev server and, for /__ws_login, the helper")
+	}
+	// Exactly three routes: the bootstrap, the cookie path, and the
+	// basic-auth fallback. The cookie path checks the session before it
+	// proxies; the fallback carries basic_auth: no path reaches the dev
+	// server unauthenticated.
+	handles := regexp.MustCompile(`(?m)^\s*handle(\s+\S+)?\s*\{`).FindAllStringSubmatch(cf, -1)
+	var got []string
+	for _, h := range handles {
+		got = append(got, strings.TrimSpace(h[1]))
+	}
+	if strings.Join(got, ",") != "/__ws_login,@session," {
+		t.Errorf("handles = %q, want /__ws_login, @session and one unmatched fallback", got)
+	}
+	session := cf[strings.Index(cf, "handle @session {"):]
+	session = session[:strings.Index(session, "\n\t}\n")]
+	if fa, rp := strings.Index(session, "forward_auth"), strings.Index(session, "reverse_proxy 127.0.0.1:5173"); fa < 0 || rp < fa {
+		t.Errorf("the cookie path must check the session before it proxies:\n%s", session)
+	}
+	fallback := cf[strings.LastIndex(cf, "handle {"):]
+	if ba, rp := strings.Index(fallback, "basic_auth"), strings.Index(fallback, "reverse_proxy"); ba < 0 || rp < ba {
+		t.Error("the fallback must authenticate with basic_auth before it proxies")
+	}
+}
+
+// The helper listens where the daemon's probe and the Caddyfile expect it.
+func TestSlidesAgentLoginHelperContract(t *testing.T) {
+	src := readImageFile(t, "wsauth/wsauth.go")
+	for _, want := range []string{
+		`mintAddr  = "127.0.0.1:9099"`, // GetWorkspaceAccess's in-box probe
+		`proxyAddr = "127.0.0.1:9098"`, // the Caddyfile's helper upstream
+		`"GET /__mint"`,
+		`"POST /__ws_login"`,
+		`"/__session"`,
+		"tokenTTL = 120 * time.Second",
+		"cookieSameSite = http.SameSiteNoneMode",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("wsauth.go missing %q", want)
+		}
+	}
+	// Standard library only: the image build has no module download.
+	imports := regexp.MustCompile(`(?s)import \((.*?)\)`).FindStringSubmatch(src)
+	if imports == nil || regexp.MustCompile(`"[^"/]+\.[^"/]+/`).MatchString(imports[1]) {
+		t.Error("wsauth.go must import only the standard library")
 	}
 }
 
@@ -148,6 +208,11 @@ func TestSlidesAgentEntrypointBindsLoopback(t *testing.T) {
 	ep := readImageFile(t, "entrypoint.sh")
 	if !strings.Contains(ep, "bin.js dev --host 127.0.0.1 --port 5173") {
 		t.Error("entrypoint must start the dev server with --host 127.0.0.1 --port 5173")
+	}
+	// The login helper runs beside the proxy, and its exit stops the
+	// container like the other two (#3486).
+	if !strings.Contains(ep, "slides-wsauth &") || !strings.Contains(ep, `wait -n "$DEV_PID" "$AUTH_PID" "$CADDY_PID"`) {
+		t.Error("entrypoint must run slides-wsauth and stop when it exits")
 	}
 	if strings.Contains(ep, "--host 0.0.0.0") || strings.Contains(ep, "--host true") {
 		t.Error("entrypoint must not expose the dev server beyond loopback")
@@ -248,16 +313,15 @@ func TestSlidesAgentScriptsShellcheck(t *testing.T) {
 // the dev server or the proxy. PATH carries no node or caddy, so reaching
 // either would fail differently from the refusal asserted here.
 func TestSlidesAgentEntrypointFailsClosed(t *testing.T) {
-	for _, tc := range []struct{ name, user, hash, token string }{
-		{"no hash", "deck", "", "0123456789abcdef0123456789abcdef"},
-		{"no token", "deck", "$2a$14$x", ""},
-		{"no user", "", "$2a$14$x", "0123456789abcdef0123456789abcdef"},
+	for _, tc := range []struct{ name, user, hash string }{
+		{"no hash", "deck", ""},
+		{"no user", "", "$2a$14$x"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("bash", filepath.Join(slidesAgentImageDir, "entrypoint.sh")) //nolint:gosec // fixed path
 			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(),
 				"SLIDES_WORKSPACE=" + t.TempDir(), "SLIDES_TEMPLATE=" + t.TempDir(),
-				"SLIDES_AUTH_USER=" + tc.user, "SLIDES_AUTH_HASH=" + tc.hash, "SLIDES_WS_TOKEN=" + tc.token}
+				"SLIDES_AUTH_USER=" + tc.user, "SLIDES_AUTH_HASH=" + tc.hash}
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("entrypoint started without auth material:\n%s", out)
@@ -296,7 +360,7 @@ func TestSlidesAgentEntrypointSeedsWorkspace(t *testing.T) {
 		cmd := exec.Command("bash", filepath.Join(slidesAgentImageDir, "entrypoint.sh")) //nolint:gosec // fixed path
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "SLIDES_SEED_ONLY=1",
 			"SLIDES_WORKSPACE=" + ws, "SLIDES_TEMPLATE=" + tpl, "SLIDES_APP=" + app,
-			"SLIDES_AUTH_USER=deck", "SLIDES_AUTH_HASH=$2a$14$x", "SLIDES_WS_TOKEN=0123456789abcdef0123456789abcdef"}
+			"SLIDES_AUTH_USER=deck", "SLIDES_AUTH_HASH=$2a$14$x"}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("entrypoint seed: %v\n%s", err, out)

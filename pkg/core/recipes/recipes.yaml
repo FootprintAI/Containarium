@@ -267,16 +267,20 @@ recipes:
   # proxy is the only listener on the box address (:8080, exposed as
   # <name>-workspace).
   #
-  # Auth is the agent-workspace shape: HTTP basic auth (bcrypt hash computed at
-  # deploy) or the SameSite=None session cookie the proxy issues, with the
-  # per-box token persisted at /opt/wsauth/token so GetWorkspaceAccess vends a
-  # zero-click /__ws_login URL. The proxy fronts EVERY path: the dev server's
-  # own request guard compares Origin against X-Forwarded-Proto + Host (so the
-  # proxy forwards X-Forwarded-Proto: https and the config sets allowedHosts),
-  # and its in-app agent route is gated only on a loopback peer, which every
-  # proxied request is on the host network, so that route is disabled in the
-  # image's open-slide.config.ts. A deploy ends with an unauthenticated probe
-  # that must be refused, or the deploy fails.
+  # Auth: HTTP basic auth (bcrypt hash computed at deploy) or the session
+  # cookie of a zero-click login (#3486). The image's login helper mints a
+  # single-use, 120-second token on 127.0.0.1:9099/__mint, which
+  # GetWorkspaceAccess fetches per call and hands out as /__ws_login#t=<token>
+  # (the token in the URL fragment, never in a request line); the helper
+  # redeems it once and sets a separate random session cookie, which the proxy
+  # checks with the helper on every request. The proxy fronts EVERY path: the
+  # dev server's own request guard compares Origin against X-Forwarded-Proto +
+  # Host (so the proxy forwards X-Forwarded-Proto: https and the config sets
+  # allowedHosts), and its in-app agent route is gated only on a loopback
+  # peer, which every proxied request is on the host network, so that route is
+  # disabled in the image's open-slide.config.ts. A deploy ends with an
+  # unauthenticated probe that must be refused and a zero-click login whose
+  # replay must be refused, or the deploy fails.
   #
   # Builds and exports run inside the container; the box user reaches it
   # through the box's NOPASSWD sudo:
@@ -338,22 +342,21 @@ recipes:
       - |
         # Auth material for the proxy, staged under /opt/wsauth (root, 0600):
         # the bcrypt hash of the password (computed by the image's own caddy,
-        # so no second image is pulled), a per-box random session token the
-        # daemon vends for zero-click access, and the env file the container
-        # reads them from. The daemon reads /opt/wsauth/token for
-        # GetWorkspaceAccess, the same path agent-workspace uses. The plaintext
-        # password is never written. Fail loudly rather than start with a
-        # degenerate auth config.
+        # so no second image is pulled) in the env file the container reads.
+        # The plaintext password is never written. There is no static
+        # zero-click token: the login helper mints one per access (#3486), and
+        # a static token left by an earlier image is removed so the daemon
+        # never hands it out. Fail loudly rather than start with a degenerate
+        # auth config.
         WSAUTH=/opt/wsauth
         umask 077
         mkdir -p "$WSAUTH"
+        rm -f "$WSAUTH/token"
         WS_HASH=$(podman run --rm --entrypoint caddy "$IMAGE" hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
-        WS_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-        [ -n "$CONTAINARIUM_PARAM_AUTH_USER" ] && [ -n "$WS_HASH" ] && [ -n "$WS_TOKEN" ] || { echo "slides-agent: empty auth user/hash/token; aborting" >&2; exit 1; }
-        printf '%s' "$WS_TOKEN" > "$WSAUTH/token"
-        printf 'SLIDES_AUTH_USER=%s\nSLIDES_AUTH_HASH=%s\nSLIDES_WS_TOKEN=%s\nSLIDES_ALLOWED_HOSTS=%s\n' \
-          "$CONTAINARIUM_PARAM_AUTH_USER" "$WS_HASH" "$WS_TOKEN" "${CONTAINARIUM_PARAM_ALLOWED_HOSTS:-}" > "$WSAUTH/env"
-        chmod 600 "$WSAUTH/token" "$WSAUTH/env"
+        [ -n "$CONTAINARIUM_PARAM_AUTH_USER" ] && [ -n "$WS_HASH" ] || { echo "slides-agent: empty auth user/hash; aborting" >&2; exit 1; }
+        printf 'SLIDES_AUTH_USER=%s\nSLIDES_AUTH_HASH=%s\nSLIDES_ALLOWED_HOSTS=%s\n' \
+          "$CONTAINARIUM_PARAM_AUTH_USER" "$WS_HASH" "${CONTAINARIUM_PARAM_ALLOWED_HOSTS:-}" > "$WSAUTH/env"
+        chmod 600 "$WSAUTH/env"
       - |
         # The deck tree on the box disk, owned by the box user; the container
         # runs as that user so Claude Code and the dev server share the files.
@@ -371,20 +374,35 @@ recipes:
           -v "$SLIDES_HOME:/workspace" \
           "$IMAGE" >/dev/null
       - |
-        # Readiness gate, then the two checks the recipe promises. First the
+        # Readiness gate, then the checks the recipe promises. First the
         # proxy: an unauthenticated request is refused (401); anything else
-        # fails the deploy. Then the dev server behind it: the proxy answers
-        # 401 as soon as Caddy is up, before the dev server listens, so a
-        # request carrying the staged session cookie must get 200 within the
-        # budget, or the box would be marked provisioned while unusable.
+        # fails the deploy. Then the zero-click login end to end: the helper
+        # mints a token, the proxy redeems it for a session cookie, and a
+        # replay of the token is refused (403). Then the dev server behind it:
+        # the proxy answers as soon as Caddy is up, before the dev server
+        # listens, so a request carrying the session cookie must get 200
+        # within the budget, or the box would be marked provisioned while
+        # unusable. Token and cookie go to curl on stdin, not argv.
         for _ in $(seq 1 90); do
           CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)
           [ "$CODE" = "000" ] || break
           sleep 1
         done
         [ "$CODE" = "401" ] || { echo "slides-agent: expected 401 from the proxy without credentials, got '$CODE'" >&2; exit 1; }
+        TOK=""
+        for _ in $(seq 1 30); do
+          TOK=$(curl -s --max-time 3 http://127.0.0.1:9099/__mint | sed -n 's/^{"token":"\([A-Za-z0-9_-]\{43\}\)"}$/\1/p' || true)
+          [ -n "$TOK" ] && break
+          sleep 1
+        done
+        [ -n "$TOK" ] || { echo "slides-agent: the login helper did not mint a token" >&2; exit 1; }
+        SESS=$(printf '%s' "$TOK" | curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
+          | sed -n 's/^[Ss]et-[Cc]ookie: ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p' || true)
+        [ -n "$SESS" ] || { echo "slides-agent: the proxy did not redeem a fresh login token" >&2; exit 1; }
+        REPLAY=$(printf '%s' "$TOK" | curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login || true)
+        [ "$REPLAY" = "403" ] || { echo "slides-agent: a replayed login token was not refused (got '$REPLAY')" >&2; exit 1; }
         for _ in $(seq 1 120); do
-          AUTHED=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: ws_auth=$WS_TOKEN" http://127.0.0.1:8080/ || true)
+          AUTHED=$(printf 'Cookie: ws_session=%s' "$SESS" | curl -s -o /dev/null -w '%{http_code}' -H @- http://127.0.0.1:8080/ || true)
           [ "$AUTHED" = "200" ] && break
           sleep 1
         done

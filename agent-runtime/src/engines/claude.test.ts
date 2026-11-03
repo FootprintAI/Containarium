@@ -399,3 +399,53 @@ describe("ClaudeEngine follow-up", () => {
     expect(res.followUp).toBeUndefined();
   });
 });
+
+// #3467: the result's per-model modelUsage (it counts subagents; the aggregate
+// usage does not) is recorded beside usage. A follow-up resumes the session,
+// and Claude Code's modelUsage on a resumed result is cumulative over the
+// session, so that turn says it resumed one.
+describe("ClaudeEngine modelUsage (#3467)", () => {
+  const modelUsage = (input: number, output: number) => ({
+    "claude-opus-4-8": { inputTokens: input, outputTokens: output, cacheReadInputTokens: 7, cacheCreationInputTokens: 2, costUSD: 0.01 },
+  });
+
+  it("records the result's modelUsage, keyed by model id", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([
+        assistant({ type: "text", text: "{}" }),
+        { type: "result", subtype: "success", is_error: false, result: "", usage: { output_tokens: 3 }, modelUsage: modelUsage(10, 3) },
+      ]),
+    ).run("task", cfg, new CaptureJournal());
+    expect(res.modelUsage).toEqual(modelUsage(10, 3));
+    expect(res.usage).toEqual({ output_tokens: 3 });
+    expect(res.resumedSession).toBeUndefined();
+  });
+
+  it("records modelUsage on a schema-bound run too", async () => {
+    const res = await new ClaudeEngine(
+      fakeQuery([{ type: "result", subtype: "success", is_error: false, result: "", structured_output: { ok: true }, modelUsage: modelUsage(4, 1) }]),
+    ).run("task", { ...cfg, outputSchema: { type: "object" } }, new CaptureJournal());
+    expect(res.modelUsage).toEqual(modelUsage(4, 1));
+  });
+
+  it("marks the follow-up turn as a resumed session and keeps that turn's cumulative modelUsage", async () => {
+    const turns: unknown[][] = [
+      [
+        assistant({ type: "tool_use", id: "tu1", name: "mcp__agent-box__write_file", input: {} }),
+        { type: "result", subtype: "success", is_error: false, result: "", session_id: "sess-1", modelUsage: modelUsage(10, 3) },
+      ],
+      [
+        assistant({ type: "text", text: "{}" }),
+        { type: "result", subtype: "success", is_error: false, result: "", session_id: "sess-1", modelUsage: modelUsage(15, 5) },
+      ],
+    ];
+    const engine = new ClaudeEngine(async function* () {
+      for (const m of turns.shift() ?? []) yield m as SDKMessage;
+    });
+    const first = await engine.run("task", cfg, new CaptureJournal());
+    expect(first.resumedSession).toBeUndefined();
+    const second = await first.followUp!("give me the JSON", new CaptureJournal());
+    expect(second.resumedSession).toBe(true);
+    expect(second.modelUsage).toEqual(modelUsage(15, 5));
+  });
+});

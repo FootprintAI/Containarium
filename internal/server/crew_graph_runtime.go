@@ -102,13 +102,17 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 	}
 	s.agents.graphPeers.Store(runID, peers)
 	defer s.agents.graphPeers.Delete(runID)
+	// The skill node's usage, recorded on its run record; the graph run sums
+	// its nodes' records (graphRunUsage, #3467).
+	usage := unavailableRunUsage()
 	if crew == nil {
 		defer func() {
 			record := &pb.CrewRun{Id: runID, SkillId: ids[0], Owner: s.owner, InputJson: input,
 				State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: output,
-				GitSource: parent.GitSource, GitRef: parent.GitRef}
+				GitSource: parent.GitSource, GitRef: parent.GitRef, Usage: usage}
 			if err != nil {
 				record.State, record.Error, record.ArtifactJson = pb.CrewRunState_CREW_RUN_STATE_FAILED, err.Error(), ""
+				record.Usage = unavailableRunUsage()
 			}
 			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
@@ -136,7 +140,12 @@ func (s *CrewServer) executeGraphNode(ctx context.Context, node *pb.TaskNode, ru
 			return "", err
 		}
 		defer s.agents.endRunLease(ctx, run.lease, s.agents.boxWiper(), runExitReason)
-		return s.agents.runInBoxAgentResult(run.containerName, run.lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
+		a, err := s.agents.runInBoxAgentRun(run.containerName, run.lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
+		if err != nil {
+			return "", err
+		}
+		usage = a.usage
+		return a.output, nil
 	}
 	req := graphCrewNodeRequest(parent, crew, runID, input)
 	deps := crewRunDeps{send: func(ctx context.Context, task *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {

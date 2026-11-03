@@ -45,7 +45,14 @@ export async function runOnce(o: RunOnceOptions): Promise<number> {
 
   try {
     const res = await runJournaled(engine, o.inputJson, o.cfg, journal);
-    writeArtifact(o.seedDir, { outputJson: res.outputJson, engine: engine.name, model, usage: res.usage });
+    writeArtifact(o.seedDir, {
+      outputJson: res.outputJson,
+      engine: engine.name,
+      model,
+      usage: res.usage,
+      modelUsage: res.modelUsage,
+      ...(res.resumedSession ? { resumedSession: true } : {}),
+    });
     process.stdout.write(`agent-runtime: ${engine.name} run complete\n`);
     return 0;
   } catch (e) {
