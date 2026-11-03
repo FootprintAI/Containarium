@@ -180,7 +180,7 @@ func (w *CredentialWatcher) Sweep(ctx context.Context) int {
 		}
 		cur, perr := w.prober.ProbeCredential(ctx, t)
 		if perr != nil {
-			log.Printf("[credential-watch] probe %s: %v", t.Box, perr)
+			log.Printf("[credential-watch] probe %q: %v", t.Box, perr)
 			continue
 		}
 
@@ -191,7 +191,7 @@ func (w *CredentialWatcher) Sweep(ctx context.Context) int {
 			var err error
 			episodes, err = ep.CredentialEpisodes(ctx, t)
 			if err != nil {
-				log.Printf("[credential-watch] runtime state unavailable for %s", t.Box)
+				log.Printf("[credential-watch] runtime state unavailable for %q", t.Box)
 				episodes = CredentialEpisodes{} // Timestamp policy remains available independently.
 			}
 			if episodes.Active {
@@ -204,7 +204,7 @@ func (w *CredentialWatcher) Sweep(ctx context.Context) int {
 		}
 		prev, seen, serr := w.state.LastSeen(ctx, t.SkillID)
 		if serr != nil {
-			log.Printf("[credential-watch] read last-seen state for skill %s: %v", t.SkillID, serr)
+			log.Printf("[credential-watch] read last-seen state for skill %q: %v", t.SkillID, serr)
 			continue
 		}
 		if seen && prev == cur && len(episodes.Pending) == 0 {
@@ -235,13 +235,13 @@ func (w *CredentialWatcher) Sweep(ctx context.Context) int {
 					continue
 				}
 				if err := ep.AcknowledgeCredentialEpisodes(ctx, t, acknowledged); err != nil {
-					log.Printf("[credential-watch] runtime acknowledgement pending for %s", t.Box)
+					log.Printf("[credential-watch] runtime acknowledgement pending for %q", t.Box)
 				}
 			}
 			continue
 		}
 		if rerr := w.state.Record(ctx, t.SkillID, cur, now); rerr != nil {
-			log.Printf("[credential-watch] record state for skill %s: %v", t.SkillID, rerr)
+			log.Printf("[credential-watch] record state for skill %q: %v", t.SkillID, rerr)
 			continue
 		}
 

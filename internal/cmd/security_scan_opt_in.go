@@ -131,7 +131,7 @@ func runScanOptInList(cmd *cobra.Command, args []string) error {
 			decision = "allowed"
 		}
 		fmt.Fprintf(w, "%-32s %-24s %-9s %-16s %-22s %s\n",
-			o.ContainerName, strings.TrimPrefix(o.Scanner, "PENTEST_SCANNER_"), decision, o.UpdatedBy, o.UpdatedAt, o.Reason)
+			escapeControl(o.ContainerName), strings.TrimPrefix(o.Scanner, "PENTEST_SCANNER_"), decision, escapeControl(o.UpdatedBy), o.UpdatedAt, escapeControl(o.Reason))
 	}
 	return nil
 }

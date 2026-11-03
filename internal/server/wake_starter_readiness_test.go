@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
-	"strconv"
 	"testing"
 	"time"
 
@@ -15,35 +15,28 @@ import (
 )
 
 func TestAwaitWakeEndpoint_OnlyReadyAfterApplicationListens(t *testing.T) {
-	// Reserve an ephemeral loopback port, then delay listening to mimic
-	// the application startup lag after the Box reports Running.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	listenResult := make(chan error, 1)
+	// Model an app becoming reachable after startup without releasing
+	// and rebinding a TCP port, which could be claimed by another process.
+	listening := make(chan struct{})
 	go func() {
 		time.Sleep(250 * time.Millisecond)
-		srv, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-		listenResult <- err
-		if err != nil {
-			return
-		}
-		defer func() { _ = srv.Close() }()
-		<-release
+		close(listening)
 	}()
+
 	start := time.Now()
-	ip, ready := awaitWakeEndpoint(context.Background(), time.Second, port, func() string { return "127.0.0.1" })
-	elapsed := time.Since(start) // Measure the probe, not the listener's lifetime.
-	close(release)
-	if err := <-listenResult; err != nil {
-		t.Fatalf("delayed listener: %v", err)
-	}
+	ip, ready := awaitWakeEndpointWithDial(context.Background(), time.Second, 8080,
+		func() string { return "127.0.0.1" },
+		func(_ context.Context, _ string) (net.Conn, error) {
+			select {
+			case <-listening:
+				client, server := net.Pipe()
+				_ = server.Close()
+				return client, nil
+			default:
+				return nil, errors.New("application has not started listening")
+			}
+		})
+	elapsed := time.Since(start)
 	if !ready || ip != "127.0.0.1" {
 		t.Fatalf("result=(%q,%t) expected ready", ip, ready)
 	}

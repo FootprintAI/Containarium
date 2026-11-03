@@ -438,14 +438,14 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		// source that cannot be queried, the manifest is simply unset.
 		if hookFormat == HookFormatPGCustom {
 			if n, err := m.countArchiveTables(opts.ContainerName, inContainerPath); err != nil {
-				log.Printf("[backup] could not record relation manifest for %s hook %s: %v (verification will have nothing to compare against)",
+				log.Printf("[backup] could not record relation manifest for %q hook %s: %v (verification will have nothing to compare against)",
 					opts.Username, opts.Hook, err)
 			} else {
 				relationCount = &n
 			}
 		}
 	} else if n, err := m.countUserRelations(opts.ContainerName, conn, conn.Database); err != nil {
-		log.Printf("[backup] could not record relation manifest for %s/%s: %v (verification will have nothing to compare against)",
+		log.Printf("[backup] could not record relation manifest for %q/%s: %v (verification will have nothing to compare against)",
 			opts.Username, conn.Database, err)
 	} else {
 		relationCount = &n

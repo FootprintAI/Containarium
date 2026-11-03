@@ -287,7 +287,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	// Kill-switch. Deliberately ahead of the key lookup and the Director, so a
 	// revoked token never causes the real provider key to be touched.
 	if g.isRevoked(r.Context(), claims.ID) {
-		g.cfg.Logger.Printf("model-gateway: REVOKED tenant=%s skill=%s provider=%s jti=%s",
+		g.cfg.Logger.Printf("model-gateway: REVOKED tenant=%q skill=%q provider=%s jti=%s",
 			claims.Tenant, claims.SkillID, provName, claims.ID)
 		http.Error(w, "gateway token revoked", http.StatusUnauthorized)
 		return
@@ -298,7 +298,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	// beside the per-jti check and ahead of the key lookup for the same reason
 	// — a revoked token must never cause a real provider key to be touched.
 	if g.isOwnerRevoked(r.Context(), claims) {
-		g.cfg.Logger.Printf("model-gateway: REVOKED-OWNER tenant=%s key_owner=%s provider=%s jti=%s",
+		g.cfg.Logger.Printf("model-gateway: REVOKED-OWNER tenant=%q key_owner=%q provider=%s jti=%s",
 			claims.Tenant, claims.KeyOwner, provName, claims.ID)
 		http.Error(w, OwnerRevokedMessage, http.StatusUnauthorized)
 		return
@@ -465,7 +465,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(secs))
 		}
-		g.cfg.Logger.Printf("model-gateway: DENY tenant=%s skill=%s provider=%s model=%s state=%s reason=%q",
+		g.cfg.Logger.Printf("model-gateway: DENY tenant=%q skill=%q provider=%s model=%s state=%s reason=%q",
 			claims.Tenant, claims.SkillID, provName, logModel, dec.State, dec.Reason)
 		http.Error(w, "model gateway: "+dec.Reason, dec.Status)
 		return
@@ -611,7 +611,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	reqID := g.reqSeq.Add(1)
 	start := time.Now()
 	inflight := g.inflight.Add(1)
-	g.cfg.Logger.Printf("model-gateway: req=%d START tenant=%s skill=%s provider=%s model=%s inflight=%d",
+	g.cfg.Logger.Printf("model-gateway: req=%d START tenant=%q skill=%q provider=%s model=%s inflight=%d",
 		reqID, claims.Tenant, claims.SkillID, provName, logModel, inflight)
 
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}

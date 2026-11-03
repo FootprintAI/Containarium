@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -30,8 +32,9 @@ const logQuoteEscaped = `evil\n[forged] admin login ok\x1b[2J`
 func captureSyncLog(t *testing.T) *syncBuffer {
 	t.Helper()
 	var buf syncBuffer
+	prev := log.Writer()
 	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(prev) })
 	return &buf
 }
 
@@ -99,6 +102,50 @@ func TestLogQuote_PrimaryRegistrationFields(t *testing.T) {
 			m.PrimariesHandler()(rec, httptest.NewRequest(http.MethodPost, "/sentinel/primaries", bytes.NewReader(raw)))
 			require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 			assertLogQuoted(t, buf.String())
+			// #3476: the port is its own key=value, not glued to the quoted IP.
+			require.Regexp(t, `ip="[^"\n]*" port=443`, buf.String())
 		})
 	}
+}
+
+// #3476: a tunnelled backend's ID is "tunnel-" + a self-reported spot ID.
+func TestLogQuote_BackendStatusLine(t *testing.T) {
+	p := &fakeRecoveryProvider{status: StatusProvisioning}
+	m, b := newMaintenanceManager(t, p, Config{})
+	b.ID = "tunnel-" + logQuoteHostile
+	buf := captureSyncLog(t)
+	m.diagnoseAndRecover(context.Background(), b)
+	// Only the status line is asserted: the "is provisioning..." line that
+	// follows it still prints the ID raw and is not part of #3476.
+	require.Contains(t, buf.String(), `[sentinel] backend "tunnel-`+logQuoteEscaped+`" status: provisioning`)
+}
+
+// #3476: the alert webhook line carries the backend ID.
+func TestLogQuote_AlertWebhookBackend(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	buf := captureSyncLog(t)
+	postAlertPayload(srv.URL, alertPayload{Event: "preempted", Backend: "tunnel-" + logQuoteHostile})
+	require.Eventually(t, func() bool { return strings.Contains(buf.String(), "delivered") },
+		5*time.Second, 10*time.Millisecond, "webhook delivery line never logged")
+	assertLogQuoted(t, buf.String())
+}
+
+// #3476: probe error text embeds what the primary registered (and what the
+// dial returns); the UNREACHABLE line must quote it.
+func TestLogQuote_PrimaryUnreachableError(t *testing.T) {
+	m := &Manager{primaries: NewPrimaryRegistry()}
+	m.reachabilityDial = func(string, int) (net.Conn, error) {
+		return nil, errors.New(logQuoteHostile)
+	}
+	m.primaries.Register(Primary{
+		Pool: "prod", Hostname: "prod.example.com", IP: "127.0.0.2", Port: 443,
+		BackendID: "tunnel-spot-1",
+	})
+	buf := captureSyncLog(t)
+	m.checkTunnelPrimaries(context.Background())
+	require.Contains(t, buf.String(), "UNREACHABLE")
+	assertLogQuoted(t, buf.String())
 }

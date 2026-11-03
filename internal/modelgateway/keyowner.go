@@ -142,7 +142,7 @@ func (g *Gateway) resolveKeyOwner(ctx context.Context, claims *GatewayClaims, pr
 			return key, true, ownerKind(claims.KeyOwner)
 		}
 		if global := g.cfg.ProviderKeys[provider]; global != "" {
-			g.cfg.Logger.Printf("model-gateway: key_owner=%s has no %s key; falling back to the daemon-global key (this call is billed to the operator, not the owner)",
+			g.cfg.Logger.Printf("model-gateway: key_owner=%q has no %s key; falling back to the daemon-global key (this call is billed to the operator, not the owner)",
 				claims.KeyOwner, provider)
 			return global, true, pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_OPERATOR_FALLBACK
 		}
@@ -242,7 +242,7 @@ func (g *Gateway) isOwnerRevoked(ctx context.Context, claims *GatewayClaims) boo
 
 	cutoff, err := g.cfg.OwnerRevocations.RevokedBefore(ctx, claims.KeyOwner)
 	if err != nil {
-		log.Printf("model-gateway: owner-revocation lookup failed for key_owner=%s: %v (allowing; the revocation list is a kill-switch, not the primary gate)", claims.KeyOwner, err)
+		log.Printf("model-gateway: owner-revocation lookup failed for key_owner=%q: %v (allowing; the revocation list is a kill-switch, not the primary gate)", claims.KeyOwner, err)
 		return false
 	}
 	if cutoff.IsZero() {

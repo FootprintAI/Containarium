@@ -57,7 +57,7 @@ func (f FileHolders) OtherAccountHolds(ctx context.Context, fingerprint, exclude
 	// account's own state does not matter to whether another account holds it.
 	for _, u := range res.Unreadable {
 		if u.Username != excludeUsername {
-			log.Printf("[ssh-keys] cannot rule out account %s as a key holder, failing the revoke closed: %v (#3241)", u.Username, u.Err)
+			log.Printf("[ssh-keys] cannot rule out account %q as a key holder, failing the revoke closed: %v (#3241)", u.Username, u.Err)
 			return false, ErrHolderUnknown
 		}
 	}

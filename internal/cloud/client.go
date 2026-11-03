@@ -787,7 +787,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 		log.Printf("[cloud] WARN terminate-sessions assignment %s: %v; no sessions ended", id, err)
 		outcome = terminationUnmapped
 	} else if err != nil {
-		log.Printf("[cloud] terminate sessions for %s (assignment %s): %v", user, id, err)
+		log.Printf("[cloud] terminate sessions for %q (assignment %s): %v", user, id, err)
 		recordTerminationOutcome(c.ctx, terminationFailed)
 		return terminationFailed
 	}
@@ -801,7 +801,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 	}
 	recordTerminationOutcome(c.ctx, outcome)
 	if outcome == terminationEnded {
-		log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+		log.Printf("[cloud] terminated sessions for %q (assignment %s)", user, id)
 	}
 	return outcome
 }
