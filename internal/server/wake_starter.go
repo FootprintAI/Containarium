@@ -77,12 +77,11 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool
 	// Port is the route's TargetPort — we don't have it here, but
 	// the wake proxy falls back to route.TargetPort when the
 	// starter doesn't report one.
-	// StartContainer's generic readiness check intentionally short-circuits
-	// when the first post-start Incus read has no IP address. For an HTTP wake
-	// that is *not* evidence of a listening app: treating it as ready makes
-	// the first request fail with 502 while the Box is still booting.
-	// Recheck the live (not previously cached) Box IP and the trusted route
-	// port under the original wake budget before proxying request bytes.
+	// StartContainer's readiness probe can be skipped when a Box was
+	// already running. An HTTP wake must still wait for the authorized
+	// route's TCP port on the live Box IP before proxying the request.
+	// Both probes share the original wake timeout; they must not use a
+	// stale route IP as evidence that the application is listening.
 	if ready && s.cs.routeStore != nil {
 		routes, rerr := s.cs.routeStore.ListByContainer(ctx, username+"-container")
 		if rerr != nil {
@@ -112,6 +111,14 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool
 // address is trusted for the readiness check. A lack of IP, a timeout or a
 // cancelled wake is NOT a successful warmup.
 func awaitWakeEndpoint(ctx context.Context, budget time.Duration, port int, readIP func() string) (string, bool) {
+	return awaitWakeEndpointWithDial(ctx, budget, port, readIP, func(ctx context.Context, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	})
+}
+
+// awaitWakeEndpointWithDial allows tests to hold an in-flight TCP probe
+// until cancellation. Production always uses net.Dialer.DialContext.
+func awaitWakeEndpointWithDial(ctx context.Context, budget time.Duration, port int, readIP func() string, dial func(context.Context, string) (net.Conn, error)) (string, bool) {
 	if budget <= 0 || port <= 0 {
 		return "", false
 	}
@@ -127,10 +134,15 @@ func awaitWakeEndpoint(ctx context.Context, budget time.Duration, port int, read
 				dialTimeout = rem
 			}
 			if dialTimeout > 0 {
-				conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), dialTimeout)
+				probeCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+				conn, err := dial(probeCtx, net.JoinHostPort(ip, strconv.Itoa(port)))
+				cancel()
 				if err == nil {
 					_ = conn.Close()
-					return ip, true
+					if ctx.Err() == nil {
+						return ip, true
+					}
+					return "", false
 				}
 			}
 		}
@@ -145,9 +157,7 @@ func awaitWakeEndpoint(ctx context.Context, budget time.Duration, port int, read
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 			return "", false
 		case <-timer.C:
 		}

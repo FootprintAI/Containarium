@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -2052,13 +2051,11 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 	}, nil
 }
 
-// waitForContainerReady polls a TCP dial against the container's
-// primary exposed port until it accepts or the deadline elapses.
-// Returns true when the probe timed out. A nil routeStore, an absent
-// route record, an empty container IP, or a non-positive port all
-// short-circuit to "ready immediately" — the probe is opportunistic.
+// waitForContainerReady polls the first routed TCP port using the Box's
+// current IP, rather than the possibly stale IP captured just after start.
+// No configured route means there is no application port to wait for.
 func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, containerIP string, total time.Duration) bool {
-	if s.routeStore == nil || containerIP == "" {
+	if s.routeStore == nil {
 		return false
 	}
 	containerName := username + "-container"
@@ -2071,21 +2068,20 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 		return false
 	}
 
-	addr := net.JoinHostPort(containerIP, strconv.Itoa(port))
-	deadline := time.Now().Add(total)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return false
+	// Test-only servers without a Box backend retain the supplied IP.
+	// Real backends always re-read it, including the K8s implementation.
+	readIP := func() string {
+		if s.manager == nil && s.boxBackend == nil {
+			return containerIP
 		}
-		select {
-		case <-ctx.Done():
-			return true
-		case <-time.After(250 * time.Millisecond):
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: username})
+		if err != nil || info == nil {
+			return ""
 		}
+		return info.IPAddress
 	}
-	return true
+	_, ready := awaitWakeEndpoint(ctx, total, port, readIP)
+	return !ready
 }
 
 // StopContainer stops a running container
