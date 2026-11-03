@@ -68,6 +68,10 @@ func TestCaddyfileProxy(t *testing.T) {
 			_ = conn.Close()
 			return
 		}
+		if r.Method == http.MethodPost {
+			_, _ = io.Copy(w, r.Body) // echo: the body must survive the forward_auth check
+			return
+		}
 		_, _ = io.WriteString(w, "dev server")
 	}))
 
@@ -172,6 +176,18 @@ func TestCaddyfileProxy(t *testing.T) {
 	cookie := map[string]string{"Cookie": "other=1; " + sessionCookie + "=" + sess.Value}
 	if resp := do(http.MethodGet, "/s/deck", nil, cookie); resp.StatusCode != http.StatusOK {
 		t.Errorf("session cookie: %d, want 200", resp.StatusCode)
+	}
+	// A request body reaches the dev server intact on the cookie path.
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/save", strings.NewReader("deck-body"))
+	req.Header.Set("Cookie", cookie["Cookie"])
+	if resp, err := client.Do(req); err != nil {
+		t.Errorf("POST on the cookie path: %v", err)
+	} else {
+		echoed, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(echoed) != "deck-body" {
+			t.Errorf("POST on the cookie path: %d %q, want 200 echoing the body", resp.StatusCode, echoed)
+		}
 	}
 	// A cookie of the right shape the helper does not know: 401 with the
 	// basic-auth challenge and the cookie cleared.
