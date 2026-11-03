@@ -26,6 +26,7 @@ type SSHCollector struct {
 	lastSeen map[string]time.Time // per-box high-water mark
 	mu       sync.Mutex
 	cancel   context.CancelFunc
+	now      func() time.Time // read time; a field so tests can cross a new year
 }
 
 // NewSSHCollector creates a collector over the LXC session source.
@@ -50,6 +51,7 @@ func NewSSHCollectorWithSource(source SessionSource, store entryLogger) *SSHColl
 		store:    store,
 		interval: 2 * time.Minute,
 		lastSeen: make(map[string]time.Time),
+		now:      time.Now,
 	}
 }
 
@@ -116,14 +118,14 @@ func (sc *SSHCollector) collectFromBox(ctx context.Context, box SessionBox) erro
 	highWater := sc.lastSeen[containerName]
 	sc.mu.Unlock()
 
-	year := time.Now().Year()
-	// Used for sources whose lines carry no timestamp of their own.
-	readAt := time.Now()
+	// Resolves the year syslog stamps leave out, and stands in for the time
+	// of lines that carry no timestamp of their own.
+	readAt := sc.now()
 	var maxTS time.Time
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 
 	for _, line := range lines {
-		ts, sshUser, sourceIP, method, ok := sc.source.ParseLine(line, year, readAt)
+		ts, sshUser, sourceIP, method, ok := sc.source.ParseLine(line, readAt, readAt)
 		if !ok {
 			continue
 		}
@@ -168,9 +170,10 @@ var authLogPattern = regexp.MustCompile(
 	`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+sshd\[\d+\]:\s+Accepted\s+(\S+)\s+for\s+(\S+)\s+from\s+(\S+)\s+port\s+\d+`,
 )
 
-// parseAuthLogLine parses a single auth.log "Accepted" line.
+// parseAuthLogLine parses a single auth.log "Accepted" line. now is when the
+// log was read; it supplies the year the line's stamp leaves out.
 // Returns timestamp, sshUser, sourceIP, method, and whether parsing succeeded.
-func parseAuthLogLine(line string, year int) (time.Time, string, string, string, bool) {
+func parseAuthLogLine(line string, now time.Time) (time.Time, string, string, string, bool) {
 	matches := authLogPattern.FindStringSubmatch(line)
 	if matches == nil {
 		return time.Time{}, "", "", "", false
@@ -181,15 +184,51 @@ func parseAuthLogLine(line string, year int) (time.Time, string, string, string,
 	// matches[3] = SSH username
 	// matches[4] = source IP
 
-	tsStr := fmt.Sprintf("%d %s", year, matches[1])
-	ts, err := time.Parse("2006 Jan  2 15:04:05", tsStr)
-	if err != nil {
-		// Try single-digit day without leading space
-		ts, err = time.Parse("2006 Jan 2 15:04:05", tsStr)
-		if err != nil {
-			return time.Time{}, "", "", "", false
-		}
+	ts, ok := parseSyslogStamp(matches[1], now)
+	if !ok {
+		return time.Time{}, "", "", "", false
 	}
 
 	return ts, matches[3], matches[4], matches[2], true
+}
+
+// syslogFutureSlack is how far past the reader's clock a syslog stamp may
+// fall and still be accepted. It absorbs a box whose log is written in a zone
+// ahead of the daemon's (offsets reach +14h) and ordinary clock skew, and is
+// far below the months that separate the candidate years.
+const syslogFutureSlack = 24 * time.Hour
+
+// parseSyslogStamp reads a year-less syslog stamp ("Mar 12 14:30:01" or
+// "Mar  2 14:30:01") against now, the time the log was read.
+//
+// The stamp carries no year, and a log read in early January still holds
+// December's lines. Pinning them to now's year would date them eleven months
+// in the future; the collector's high-water mark would then sit past every
+// later login until that December and drop them all. A log never records an
+// event that has not happened yet, so the stamp is given the latest year in
+// which it is not past now (beyond syslogFutureSlack). Next year is a
+// candidate too, for a New Year's line from a box in a zone ahead of the
+// reader, and the previous year also catches a Feb 29 stamp read in a
+// non-leap year. Stamps parse as UTC, so the years are counted in UTC.
+func parseSyslogStamp(stamp string, now time.Time) (time.Time, bool) {
+	year := now.UTC().Year()
+	latest := now.Add(syslogFutureSlack)
+	for _, y := range []int{year + 1, year, year - 1} {
+		if ts, ok := parseSyslogStampInYear(stamp, y); ok && !ts.After(latest) {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseSyslogStampInYear parses stamp as a time in year. Two layouts because
+// the day is space-padded for single digits in some writers and not others.
+func parseSyslogStampInYear(stamp string, year int) (time.Time, bool) {
+	tsStr := fmt.Sprintf("%d %s", year, stamp)
+	for _, layout := range []string{"2006 Jan  2 15:04:05", "2006 Jan 2 15:04:05"} {
+		if ts, err := time.Parse(layout, tsStr); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
 }

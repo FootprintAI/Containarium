@@ -21,7 +21,7 @@ type fakeSource struct {
 	logs     map[string]string
 	boxesErr error
 	readErr  error
-	parse    func(line string, year int, fallback time.Time) (time.Time, string, string, string, bool)
+	parse    func(line string, now, fallback time.Time) (time.Time, string, string, string, bool)
 	reads    int
 }
 
@@ -37,8 +37,8 @@ func (f *fakeSource) ReadSessions(_ context.Context, box SessionBox) (string, er
 	return f.logs[box.Name], nil
 }
 
-func (f *fakeSource) ParseLine(line string, year int, fallback time.Time) (time.Time, string, string, string, bool) {
-	return f.parse(line, year, fallback)
+func (f *fakeSource) ParseLine(line string, now, fallback time.Time) (time.Time, string, string, string, bool) {
+	return f.parse(line, now, fallback)
 }
 
 // recordingStore captures what the collector wrote.
@@ -192,11 +192,14 @@ func TestCollector_BothBackendsProduceTheSameRecordShape(t *testing.T) {
 		logs: map[string]string{
 			"alice-container": `Mar 12 14:30:01 host sshd[123]: Accepted publickey for alice from 10.0.0.7 port 54321 ssh2: ED25519 SHA256:abc`,
 		},
-		parse: func(line string, year int, _ time.Time) (time.Time, string, string, string, bool) {
-			return parseAuthLogLine(line, year)
+		parse: func(line string, now, _ time.Time) (time.Time, string, string, string, bool) {
+			return parseAuthLogLine(line, now)
 		},
 	}
-	NewSSHCollectorWithSource(lxcSrc, lxcStore).collectAll(context.Background())
+	lxcCollector := NewSSHCollectorWithSource(lxcSrc, lxcStore)
+	// The sshd stamp has no year; read it in the year the K8s stamp names.
+	lxcCollector.now = func() time.Time { return parseNow }
+	lxcCollector.collectAll(context.Background())
 
 	// The same login as the K8s path reads it: a stamped pod-log line.
 	k8sStore := newAuditStore(t)
