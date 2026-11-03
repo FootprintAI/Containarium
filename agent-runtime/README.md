@@ -112,6 +112,29 @@ before a line is written.
 
 `/var/log/agent-runtime.log` is unchanged: it stays the serve-mode process log.
 
+## `tests_run` is observed, not self-reported (#3491)
+
+When a run's final output is a JSON object with a top-level `tests_run` key
+(the `issue-implementer` artifact, for example), the runtime sets it to whether
+the run actually executed a test command, both turns of a re-prompted run
+included. The evidence is the line the box's test runners print once a command
+has run, `agent-test: test command executed: exit=N` or
+`agent-python: test command executed: exit=N` (the helpers in `helpers/`),
+seen in a tool result. A failing suite still counts as executed; a runner error
+(command not found, no venv) prints no such line. When the value changes, a
+`status` journal line says so, for example:
+
+```text
+tests_run set to false: no test command execution was observed in this run (the agent reported true); run tests through agent-test or agent-python test
+```
+
+A `tests_run` that the task input itself carries is a value passed through from
+a peer (`diff-reviewer` relays the implementer's), so it is left alone. Output
+that is not a JSON object is left alone too. This guards against a mistaken
+self-report; it is not an attestation, because anything in the box can print
+that line. The platform's evidence that tests ran and passed is the Proof Pack
+(`docs/PROOF-PACK.md`), which never reads `tests_run`.
+
 ## Two credentials, never interchangeable
 
 - **Model-provider key** (Anthropic / OpenAI / Gemini) → drives the model.

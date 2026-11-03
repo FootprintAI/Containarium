@@ -333,7 +333,9 @@ skills:
   # PR description a human reviewer reads first), and tests_run (whether
   # this box actually executed a test command — the actuator's only signal
   # that "PR ready for CI to judge" is not the same claim as "PR passed
-  # tests").
+  # tests"). The in-box runtime sets tests_run from the test-command
+  # executions it observed (agent-test / agent-python test reports, #3491),
+  # not from the model's claim; see agent-runtime/src/tests-run.ts.
   - id: issue-implementer
     name: Issue Implementer
     description: Reads an issue-shaped task and makes a small, well-scoped change, emitting the changed files plus a PR title/body for a reviewer to build on.
@@ -356,11 +358,17 @@ skills:
       Do not commit.
 
       If a fast, obvious test command exists for this repo (for example
-      `go test ./...` for a Go module, `npm test` for a Node package) and
-      running it is compatible with the size of the change, run it in your
-      workspace before you finish. Do not spend significant time chasing a
-      slow or flaky suite — a small, well-scoped change does not require
-      proving the whole repo's test suite passes, only that you tried.
+      `go test ./...` for a Go module, `npm test` for a Node package,
+      `pytest` for a Python project) and running it is compatible with the
+      size of the change, run it in your workspace before you finish,
+      through the box's test runner so the run is recorded: `agent-test
+      <command>` (for example `agent-test go test ./...`), or, for a Python
+      repo, `agent-python setup` (installs the repo's declared dependencies
+      into a venv) followed by `agent-python test`. Give the shell tool a
+      timeout long enough for the install and the tests. Do not spend
+      significant time chasing a slow or flaky suite — a small, well-scoped
+      change does not require proving the whole repo's test suite passes,
+      only that you tried.
 
       When you are done, your FINAL message must contain ONLY a single JSON
       object and NOTHING else — no markdown code fence, no explanation
@@ -374,7 +382,8 @@ skills:
       why, and a closing reference to the issue url from the task input>",
       "tests_run": <true only if you actually executed a test command in
       this workspace, false otherwise — never true because you believe the
-      change is correct>, "max_files": <the "constraints.max_files" value
+      change is correct; the runtime replaces it with whether it observed
+      agent-test or agent-python test execute a test command in this run>, "max_files": <the "constraints.max_files" value
       from your task input, echoed back so your reviewer peer knows the
       same ceiling applies to their own edits>}. Include only files you
       actually changed. If the issue cannot be resolved as a small,
