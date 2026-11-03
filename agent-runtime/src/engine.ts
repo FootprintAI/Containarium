@@ -41,6 +41,15 @@ export interface EngineResult {
   outputJson: string;
   // Engine-shaped usage/cost, if available.
   usage?: unknown;
+  // Per-model usage keyed by model id, as Claude Code's result reports it
+  // (modelUsage: inputTokens, outputTokens, cacheReadInputTokens,
+  // cacheCreationInputTokens; it counts subagents, which usage does not).
+  // Absent for an engine that reports none (#3467).
+  modelUsage?: unknown;
+  // True when this turn resumed an earlier session. Claude Code's modelUsage
+  // on a resumed result is cumulative over the session, so it already counts
+  // the earlier turns and must not be summed with them (#3467).
+  resumedSession?: boolean;
   // followUp sends one more user message in the same conversation (the same
   // thread or session, with what the run just did in context) and returns
   // that turn's result, journaling it to the journal it is given. Absent when
