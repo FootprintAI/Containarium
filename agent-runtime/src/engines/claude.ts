@@ -77,6 +77,7 @@ export class ClaudeEngine implements Engine {
     // contract asks for (#2513), as opposed to narration between tool calls.
     let finalText = "";
     let usage: unknown;
+    let modelUsage: unknown;
     let result: ClaudeResult | undefined;
     // tool_use id -> tool name, so a tool_result line can name its tool.
     const toolNames = new Map<string, string>();
@@ -180,6 +181,7 @@ export class ClaudeEngine implements Engine {
           if ("api_error_status" in m && m.api_error_status === 401)
             throw new CredentialAuthenticationError(source);
           usage = m.usage;
+          modelUsage = m.modelUsage;
           result = m;
           if (m.subtype !== "success") {
             journal.append({ kind: "error", text: resultErrorText(m) });
@@ -208,12 +210,14 @@ export class ClaudeEngine implements Engine {
       claudeEnding(result, finalText, !!cfg.outputSchema),
     );
     if (ending) journal.append({ kind: "status", text: ending });
+    // A resumed turn's modelUsage is cumulative over the session (#3467).
+    const usageFields = { usage, modelUsage, ...(resume ? { resumedSession: true } : {}) };
     const authenticated =
       result?.subtype === "success" && result.is_error === false;
     if (cfg.outputSchema) {
       return {
         outputJson: JSON.stringify(structuredOutput(result)),
-        usage,
+        ...usageFields,
         authenticationSucceeded: authenticated,
         authenticationSource: source,
       };
@@ -223,7 +227,7 @@ export class ClaudeEngine implements Engine {
     const resumeFrom = sessionId;
     return {
       outputJson: text.trim(),
-      usage,
+      ...usageFields,
       authenticationSucceeded: authenticated,
       authenticationSource: source,
       ...(resumeFrom

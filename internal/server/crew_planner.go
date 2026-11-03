@@ -47,11 +47,11 @@ func (s *CrewServer) runPlannerSkill(ctx context.Context, req *pb.RunAgentSkillR
 	defer s.agents.endRunLease(ctx, run.lease, s.agents.boxWiper(), runExitReason)
 	// Planning requires an artifact; use the standalone run's status mapping
 	// so a missing runtime remains distinguishable from execution failure.
-	out, err := s.agents.runInBoxAgentResult(run.containerName, run.lease.SeedDir, run.runID, run.skillID, run.engineRes, run.model)
+	out, err := s.agents.runInBoxAgentRun(run.containerName, run.lease.SeedDir, run.runID, run.skillID, run.engineRes, run.model)
 	if err != nil {
 		return nil, inBoxRunStatus(run.runID, err)
 	}
-	return &pb.RunAgentSkillResponse{ArtifactJson: out, RunId: run.runID, GitCommit: run.gitCommit, Usage: unavailableRunUsage()}, nil
+	return &pb.RunAgentSkillResponse{ArtifactJson: out.output, RunId: run.runID, GitCommit: run.gitCommit, Usage: out.usage}, nil
 }
 
 func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphRequest, run func(context.Context, *pb.RunAgentSkillRequest) (*pb.RunAgentSkillResponse, error)) (*pb.PlanTaskGraphResponse, error) {

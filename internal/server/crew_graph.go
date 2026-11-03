@@ -214,6 +214,8 @@ func (s *CrewServer) runCrewGraph(ctx context.Context, req *pb.RunCrewRequest, c
 	if ctx.Err() != nil {
 		run.State = pb.CrewRunState_CREW_RUN_STATE_CANCELLED
 	}
+	// Summed from the nodes' own run records (#3467).
+	run.Usage = s.graphRunUsage(context.WithoutCancel(ctx), run.NodeResults)
 	if err := persist(); err != nil {
 		return nil, status.Errorf(codes.Internal, "record graph result: %v", err)
 	}
