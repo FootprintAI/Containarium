@@ -5,7 +5,6 @@ package cmd
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -439,7 +438,7 @@ func syncSSHAccounts() error {
 			failed++
 			continue
 		}
-		sshKeys, dropped, err := dropRevokedKeys(context.Background(), registry, sshKeys)
+		sshKeys, dropped, err := sshauthz.DropRevokedKeys(context.Background(), registry, sshKeys)
 		if err != nil {
 			fmt.Printf("  ! %s: could not check keys for revocation: %v\n", username, err)
 			failed++
@@ -485,32 +484,6 @@ func syncSSHAccounts() error {
 	}
 
 	return nil
-}
-
-// dropRevokedKeys returns keys (authorized_keys lines) without the ones the
-// registry has revoked, preserving order, plus how many were dropped. A key the
-// registry has no row for is kept: it predates the registry and cannot be
-// known revoked. An unparseable line is dropped (it could not be authorized
-// anyway). Any other lookup error fails closed: nothing is returned.
-func dropRevokedKeys(ctx context.Context, reg sshauthz.KeyLookup, keys []string) (kept []string, dropped int, err error) {
-	for _, k := range keys {
-		rec, perr := sshauthz.NewKeyRecord(k, "", "", time.Time{})
-		if perr != nil {
-			dropped++
-			continue
-		}
-		cur, lerr := reg.Lookup(ctx, rec.Fingerprint)
-		switch {
-		case errors.Is(lerr, sshauthz.ErrKeyNotFound):
-		case lerr != nil:
-			return nil, 0, fmt.Errorf("look up %s: %w", rec.Fingerprint, lerr)
-		case !cur.RevokedAt.IsZero():
-			dropped++
-			continue
-		}
-		kept = append(kept, k)
-	}
-	return kept, dropped, nil
 }
 
 // SaveRecoveryConfig saves the current recovery configuration to a file
