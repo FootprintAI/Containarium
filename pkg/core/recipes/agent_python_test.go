@@ -467,3 +467,84 @@ func TestAgentTest(t *testing.T) {
 		}
 	}
 }
+
+// The probe checks the index pip will actually use: pip's configured
+// index-url when PIP_INDEX_URL is unset, and none at all when a requirements
+// file chooses its own index (pip's own failure is then the error).
+func TestAgentPython_ProbeFollowsPipsIndex(t *testing.T) {
+	requireVenv(t)
+	closed := closedAddr(t)
+
+	t.Run("pip config index-url", func(t *testing.T) {
+		repo, conf := t.TempDir(), filepath.Join(t.TempDir(), "pip.conf")
+		writeFiles(t, repo, map[string]string{"requirements.txt": "tinydep==1.0\n"})
+		writeFiles(t, filepath.Dir(conf), map[string]string{"pip.conf": "[global]\nindex-url = http://" + closed + "/simple/\n"})
+		r := runAgentPython(t, []string{"PIP_CONFIG_FILE=" + conf, "AGENT_PYTHON_VENV=" + filepath.Join(t.TempDir(), "venv")}, "setup", repo)
+		line := lastLine(r.stderr)
+		if r.code == 0 || !strings.Contains(line, "package index unreachable: 127.0.0.1") || !strings.Contains(line, "NOT installed") {
+			t.Errorf("exit %d, error line %q", r.code, line)
+		}
+	})
+
+	t.Run("requirements file picks its own index", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFiles(t, repo, map[string]string{"requirements.txt": "--index-url http://" + closed + "/simple/\ntinydep==1.0\n"})
+		// The environment's index is unreachable too: probing it would fail
+		// with the probe's error instead of letting pip use the file's index.
+		r := runAgentPython(t, []string{"PIP_INDEX_URL=http://" + closedAddr(t) + "/simple/", "AGENT_PYTHON_VENV=" + filepath.Join(t.TempDir(), "venv")}, "setup", repo)
+		line := lastLine(r.stderr)
+		if r.code == 0 || !strings.Contains(line, "dependency install failed: package index unreachable") || strings.Contains(line, "NOT installed") {
+			t.Errorf("want pip's own failure, not the probe's: exit %d, error line %q", r.code, line)
+		}
+	})
+
+	t.Run("an unusable index URL never prints its credentials", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFiles(t, repo, map[string]string{"requirements.txt": "tinydep==1.0\n"})
+		r := runAgentPython(t, []string{"PIP_INDEX_URL=http://user:s3cr3t-token@127.0.0.1:notaport/simple/",
+			"AGENT_PYTHON_VENV=" + filepath.Join(t.TempDir(), "venv")}, "setup", repo)
+		if r.code == 0 || !strings.Contains(lastLine(r.stderr), "package index unreachable") {
+			t.Errorf("exit %d, stderr %q", r.code, r.stderr)
+		}
+		if strings.Contains(r.stdout+r.stderr, "s3cr3t-token") || strings.Contains(r.stderr, "Traceback") {
+			t.Errorf("credentials leaked or the probe crashed:\n%s%s", r.stdout, r.stderr)
+		}
+	})
+}
+
+// A relative AGENT_PYTHON_VENV means a path relative to where agent-python
+// was started, for setup and test alike, whatever DIR is.
+func TestAgentPython_RelativeVenvOverride(t *testing.T) {
+	requireVenv(t)
+	work, repo := t.TempDir(), t.TempDir()
+	run := func(args ...string) helperResult {
+		cmd := exec.Command("bash", append([]string{filepath.Join(mustAbs(t, "."), agentPythonScript)}, args...)...) //nolint:gosec // test-only, fixed path
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(), "PIP_CONFIG_FILE=/dev/null", "PIP_NO_INDEX=1", "AGENT_PYTHON_VENV=rel-venv", "HOME="+t.TempDir())
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		code := 0
+		if err := cmd.Run(); err != nil {
+			code = err.(*exec.ExitError).ExitCode() //nolint:errorlint // test: only exit errors expected
+		}
+		return helperResult{stdout.String(), stderr.String(), code}
+	}
+	if r := run("setup", repo); r.code != 0 {
+		t.Fatalf("setup: %s%s", r.stdout, r.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(work, "rel-venv", "bin", "python")); err != nil {
+		t.Fatalf("venv not created relative to the caller: %v", err)
+	}
+	if r := run("test", repo, "--", "python", "-c", "import sys; sys.exit(0 if sys.prefix.endswith('rel-venv') else 7)"); r.code != 0 {
+		t.Errorf("test did not run in the relative venv: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}

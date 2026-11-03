@@ -175,7 +175,7 @@ is part of the Ubuntu 24.04 image.
 | `agent-python setup [DIR]` | Creates (or reuses) a venv for `DIR` outside the checkout, then installs what `DIR` declares: `requirements.txt` and every other `requirements*.txt`, then `DIR` itself (`pip install -e .`, or `-e .[test]` / `-e .[tests]` when that extra is declared) if `pyproject.toml` has a `[project]` table or `setup.cfg` has `[metadata] name`. |
 | `agent-python test [DIR] [-- CMD...]` | Runs `CMD` (default `python -m pytest`) in `DIR` inside that venv, prints `agent-python: test command executed: exit=N` on stderr, and exits `N`. |
 | `agent-python venv [DIR]` | Prints the venv path. |
-| `agent-test [-C DIR] [--] CMD...` | Any language: runs `CMD` (for example `go test ./...`, `npm test`), prints `agent-test: test command executed: exit=N` on stderr, and exits `N`. Installed in every agent-runtime box, with or without a toolchain. |
+| `agent-test [-C DIR] [--] CMD...` | Any language: runs `CMD` (for example `go test ./...`, `npm test`), prints `agent-test: test command executed: exit=N` on stderr, and exits `N`. Installed with the in-box loop assembly whenever its bundle ships `helpers/` (this release on), with or without a toolchain; a box assembled from an older release, or without assembly, has no `agent-test`. |
 
 Nothing beyond the repo's own manifests is installed: a `setup.py` without
 `pyproject.toml` `[project]` or `setup.cfg` `[metadata]` is not run, and a
@@ -184,16 +184,18 @@ manifest gets an empty venv and a note saying so. The venv sees the system
 site-packages, so the toolchain's pytest is used when the repo does not declare
 its own.
 
-Every failure is one line on stderr starting `agent-python: error:` and a
-non-zero exit; pip's output goes to a log file whose last lines are printed and
-whose path is in the error. Dependency installs can take minutes: call the shell
+Every failure ends with one line on stderr starting `agent-python: error:` and
+a non-zero exit. Diagnostics may come before it: pip's output goes to a log file
+whose last lines are printed and whose path is in the error, and a failed
+`python3 -m venv` prints its own output. Dependency installs can take minutes: call the shell
 tool with a `timeout_seconds` long enough for them (its default is 30 s).
 
 **Egress.** No default network policy changes. `setup` needs the Python package
 index: by default `pypi.org` (the index) and `files.pythonhosted.org` (the
-files it links to). Before installing, `setup` checks that the index answers
-(`PIP_INDEX_URL` if set, else `https://pypi.org/simple/`); if not, it fails at
-once with:
+files it links to). Before installing, `setup` checks that the index pip will
+use answers (`PIP_INDEX_URL` if set, else pip's configured `index-url`, else
+`https://pypi.org/simple/`; no check when a requirements file sets its own
+index options); if not, it fails at once with:
 
 ```text
 agent-python: error: package index unreachable: pypi.org (...); dependencies were NOT installed; under restricted egress allow the Python package index (default hosts: pypi.org and files.pythonhosted.org); ...
