@@ -298,7 +298,7 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 				peerURL += "?" + asRunUserParam + "=true"
 			}
 			// Proxy WebSocket to peer
-			log.Printf("Proxying terminal for %q to peer: %s", containerName, peerURL)
+			log.Printf("Proxying terminal for %q to peer: %q", containerName, peerURL)
 			th.proxyWebSocket(w, r, peerURL, authToken)
 			return
 		}

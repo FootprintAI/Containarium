@@ -97,7 +97,7 @@ func postAlertPayload(url string, payload alertPayload) {
 			log.Printf("[sentinel] alert webhook POST %s returned %d", payload.Event, resp.StatusCode)
 			return
 		}
-		log.Printf("[sentinel] alert webhook %s delivered (backend=%s outstanding=%d)", payload.Event, payload.Backend, payload.Outstanding)
+		log.Printf("[sentinel] alert webhook %s delivered (backend=%q outstanding=%d)", payload.Event, payload.Backend, payload.Outstanding)
 	}()
 }
 
