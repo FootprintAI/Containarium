@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/limitio"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -22,6 +23,10 @@ const a2aPort = 8674
 // a2aTasksPath is the in-box A2A endpoint that accepts a task and returns an
 // artifact. Body in = AgentTask (protojson); body out = AgentArtifact.
 const a2aTasksPath = "/tasks"
+
+// a2aDrainBytes bounds how much of an unread response body sendA2ATask
+// discards before closing it.
+const a2aDrainBytes = 64 << 10
 
 // a2aSecretPurpose domain-separates the per-box A2A credential from every other
 // secret derived from the daemon's signing key. Versioned: bumping it rotates
@@ -81,9 +86,17 @@ func sendA2ATask(ctx context.Context, baseURL string, task *pb.AgentTask, bearer
 	if err != nil {
 		return nil, fmt.Errorf("a2a request: %w", err)
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	// Drain a little for connection reuse, but never the rest of an
+	// over-cap body: that would keep reading an endless response (#3469).
+	defer func() { _, _ = io.CopyN(io.Discard, resp.Body, a2aDrainBytes); _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	// Capped (#3469): the peer is a box, and a box can answer with an endless
+	// body. Other read errors stay ignored, as before; the decode below
+	// reports a short body.
+	respBody, readErr := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
+	if errors.Is(readErr, limitio.ErrTooLarge) {
+		return nil, fmt.Errorf("a2a peer response (status %d): %w", resp.StatusCode, readErr)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("%w (%d): %s", errA2AUnauthorized, resp.StatusCode, string(respBody))
 	}

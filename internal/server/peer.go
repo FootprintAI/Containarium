@@ -23,6 +23,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/limitio"
 	metricsPackage "github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -600,8 +601,9 @@ func (p *PeerPool) discover() {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
+		log.Printf("[peers] discovery failed: read response: %v", err)
 		return
 	}
 
@@ -946,7 +948,7 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -1065,7 +1067,7 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -1136,7 +1138,7 @@ func (pc *PeerClient) ForwardRequestCtx(ctx context.Context, method, path, authT
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
