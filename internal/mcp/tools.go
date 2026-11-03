@@ -191,6 +191,12 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Create the box with NO auto-sleep timer (default: false). Only matters on a hosted platform that defaults some orgs (for example seat-billed ones) to a 30-minute idle-stop; a self-hosted daemon never auto-sleeps a new box and ignores it.",
 					},
+					"idle_stop_minutes": map[string]interface{}{
+						"type":        "integer",
+						"minimum":     0,
+						"maximum":     2147483647,
+						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. Applied atomically during create (no second toggle call). Cannot be combined with disable_auto_sleep=true.",
+					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
 						"description": "Deprecated single-GPU field; prefer 'gpus'. GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
@@ -2125,6 +2131,42 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		return "", fmt.Errorf("username is required")
 	}
 
+	// MCP JSON numbers are float64, but birth idle-stop accepts only
+	// integral non-negative minutes within protobuf int32 bounds. Do not
+	// truncate fractional values into an unintended policy.
+	var idleStopMinutes int32
+	if raw, present := args["idle_stop_minutes"]; present {
+		const maxMinutes = 2147483647
+		switch value := raw.(type) {
+		case float64:
+			if value < 0 || value > maxMinutes || value != float64(int64(value)) {
+				return "", fmt.Errorf("idle_stop_minutes must be a non-negative whole number of minutes")
+			}
+			idleStopMinutes = int32(value)
+		case int:
+			if value < 0 || value > maxMinutes {
+				return "", fmt.Errorf("idle_stop_minutes must be in [0, %d]", maxMinutes)
+			}
+			idleStopMinutes = int32(value)
+		case int32:
+			if value < 0 {
+				return "", fmt.Errorf("idle_stop_minutes must not be negative")
+			}
+			idleStopMinutes = value
+		case int64:
+			if value < 0 || value > maxMinutes {
+				return "", fmt.Errorf("idle_stop_minutes must be in [0, %d]", maxMinutes)
+			}
+			idleStopMinutes = int32(value)
+		default:
+			return "", fmt.Errorf("idle_stop_minutes must be an integer")
+		}
+	}
+	disableAutoSleep := getBoolArg(args, "disable_auto_sleep", false)
+	if idleStopMinutes > 0 && disableAutoSleep {
+		return "", fmt.Errorf("idle_stop_minutes and disable_auto_sleep=true are contradictory")
+	}
+
 	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
 	isolation, err := ostype.ParseIsolation(getStringArg(args, "isolation", ""))
 	if err != nil {
@@ -2154,7 +2196,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		},
 		Image:            getStringArg(args, "image", "images:ubuntu/24.04"),
 		EnablePodman:     getBoolArg(args, "enable_podman", true),
-		DisableAutoSleep: getBoolArg(args, "disable_auto_sleep", false),
+		DisableAutoSleep: disableAutoSleep,
+		IdleStopMinutes:  idleStopMinutes,
 		GPU:              getStringArg(args, "gpu", ""),
 		GPUs:             getStringSliceArg(args, "gpus"),
 		Monitoring:       getBoolArg(args, "monitoring", false),

@@ -2076,6 +2076,10 @@ type CreateContainerRequest struct {
 	// standalone daemon ignores it.
 	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
 
+	// IdleStopMinutes opts a newly-created Box into the daemon's birth
+	// idle-stop policy. Zero (or omitted) preserves the default-off behavior.
+	IdleStopMinutes int32 `json:"idleStopMinutes,omitempty"`
+
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.
 	GPU string `json:"gpu,omitempty"`
