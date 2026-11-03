@@ -97,7 +97,7 @@ func (s *AgentSkillServer) reapRunJournals(ctx context.Context, boxes []string, 
 	for _, box := range boxes {
 		out, err := exec(box, runJournalListScript)
 		if err != nil {
-			log.Printf("[run-journal-reaper] list %s: %v", box, err)
+			log.Printf("[run-journal-reaper] list %q: %v", box, err)
 			continue
 		}
 		stale := staleRunDirs(parseRunDirListing(out), now, s.runJournalRetention())
@@ -109,14 +109,14 @@ func (s *AgentSkillServer) reapRunJournals(ctx context.Context, boxes []string, 
 			paths[i] = shellSingleQuote(runJournalRoot + "/" + name)
 		}
 		if _, err := exec(box, "rm -rf -- "+strings.Join(paths, " ")); err != nil {
-			log.Printf("[run-journal-reaper] remove on %s: %v", box, err)
+			log.Printf("[run-journal-reaper] remove on %q: %v", box, err)
 			continue
 		}
 		for _, name := range stale {
 			removed = append(removed, box+":"+runJournalRoot+"/"+name)
 			if s.reapSkillRun != nil {
 				if err := s.reapSkillRun(ctx, name); err != nil {
-					log.Printf("[run-journal-reaper] delete run record %s: %v", name, err)
+					log.Printf("[run-journal-reaper] delete run record %q: %v", name, err)
 				}
 			}
 		}

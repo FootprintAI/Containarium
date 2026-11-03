@@ -62,7 +62,7 @@ func (s *ContainerServer) SetContainerDeletePolicy(ctx context.Context, req *pb.
 		if err := s.manager.SetConfig(containerName, incus.DeletePolicyKey, incus.DeletePolicyProtected); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.DeletePolicyKey, err)
 		}
-		log.Printf("[delete-policy] protected container=%s", containerName)
+		log.Printf("[delete-policy] protected container=%q", containerName)
 		return &pb.SetContainerDeletePolicyResponse{DeletePolicy: pb.DeletePolicy_DELETE_POLICY_PROTECTED}, nil
 	}
 
@@ -72,6 +72,6 @@ func (s *ContainerServer) SetContainerDeletePolicy(ctx context.Context, req *pb.
 	if err := s.manager.UnsetConfig(containerName, incus.DeletePolicyKey); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to clear %s: %v", incus.DeletePolicyKey, err)
 	}
-	log.Printf("[delete-policy] unprotected container=%s", containerName)
+	log.Printf("[delete-policy] unprotected container=%q", containerName)
 	return &pb.SetContainerDeletePolicyResponse{DeletePolicy: pb.DeletePolicy_DELETE_POLICY_UNSPECIFIED}, nil
 }

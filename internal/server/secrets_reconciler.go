@@ -150,7 +150,7 @@ func (r *secretsReconciler) tick(ctx context.Context) {
 			continue
 		}
 		if _, serr := r.stamp(ctx, username); serr != nil {
-			log.Printf("[secrets-reconciler] re-stamp %s: %v", username, serr)
+			log.Printf("[secrets-reconciler] re-stamp %q: %v", username, serr)
 		}
 	}
 }

@@ -121,11 +121,11 @@ func (s *ContainerServer) revokeSSHKey(ctx context.Context, username, pubKey str
 func (s *ContainerServer) syncCreateRequestKeys(ctx context.Context, username string, keys []string) {
 	for _, key := range keys {
 		if err := s.authorizedKeys.addKey(username, key); err != nil {
-			log.Printf("Warning: failed to sync create-request ssh key to jump account for %s: %v", username, err)
+			log.Printf("Warning: failed to sync create-request ssh key to jump account for %q: %v", username, err)
 			continue
 		}
 		if err := s.registerSSHKey(ctx, username, key, sshauthz.SourceBoxCreate); err != nil {
-			log.Printf("Warning: failed to register create-request ssh key for %s: %v", username, err)
+			log.Printf("Warning: failed to register create-request ssh key for %q: %v", username, err)
 		}
 	}
 }
@@ -136,7 +136,7 @@ func (s *ContainerServer) syncCreateRequestKeys(ctx context.Context, username st
 func (s *ContainerServer) registerCollaboratorKeys(ctx context.Context, accountName string, keys []string) {
 	for _, key := range keys {
 		if err := s.registerSSHKey(ctx, accountName, key, sshauthz.SourceCollaborator); err != nil {
-			log.Printf("Warning: failed to register collaborator ssh key for %s: %v", accountName, err)
+			log.Printf("Warning: failed to register collaborator ssh key for %q: %v", accountName, err)
 		}
 	}
 }

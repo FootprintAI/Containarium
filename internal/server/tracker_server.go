@@ -54,7 +54,7 @@ func (s *ContainerServer) auditTrackerConnectionWrite(ctx context.Context, actio
 		ResourceID:   fmt.Sprintf("%s/%s", username, connection),
 		Detail:       string(payload),
 	}); err != nil {
-		log.Printf("[tracker] audit %s %s/%s: %v", action, username, connection, err)
+		log.Printf("[tracker] audit %s %q/%q: %v", action, username, connection, err)
 	}
 }
 
@@ -170,7 +170,7 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	// describeCredentialBestEffort's own doc comment.
 	s.describeCredentialBestEffort(ctx, conn)
 
-	log.Printf("[tracker] connection set %s/%s provider=%s project=%s", req.Username, req.Name, req.Provider, req.Project)
+	log.Printf("[tracker] connection set %q/%q provider=%s project=%q", req.Username, req.Name, req.Provider, req.Project)
 
 	msg := "connection created"
 	action := "tracker.connection_created"
@@ -264,7 +264,7 @@ func (s *ContainerServer) DeleteTrackerConnection(ctx context.Context, req *pb.D
 	if err := s.loadTrackerStore().Delete(ctx, req.Username, req.Name); err != nil {
 		return nil, mapTrackerError(err)
 	}
-	log.Printf("[tracker] connection deleted %s/%s", req.Username, req.Name)
+	log.Printf("[tracker] connection deleted %q/%q", req.Username, req.Name)
 	detail := trackerConnectionAuditDetail{}
 	if existing != nil {
 		detail.Provider = existing.Provider.String()
@@ -343,7 +343,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		// Keep the stored expiry in sync with what was just observed —
 		// the same best-effort persistence SetTrackerConnection does.
 		if serr := s.loadTrackerStore().SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); serr != nil {
-			log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, serr)
+			log.Printf("[tracker] %q/%q: persist credential expiry: %v", conn.Username, conn.Name, serr)
 		} else if resp.Connection != nil {
 			resp.Connection.CredentialExpiresAt = resp.CredentialExpiresAt
 		}
@@ -373,28 +373,28 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 func (s *ContainerServer) describeCredentialBestEffort(ctx context.Context, conn *tracker.Connection) {
 	describer, err := s.trackerProviderFor(conn.Provider)
 	if err != nil {
-		log.Printf("[tracker] %s/%s: %v", conn.Username, conn.Name, err)
+		log.Printf("[tracker] %q/%q: %v", conn.Username, conn.Name, err)
 		return
 	}
 	store := s.loadSecretsStore()
 	if store == nil {
-		log.Printf("[tracker] %s/%s: secrets store not configured on this daemon", conn.Username, conn.Name)
+		log.Printf("[tracker] %q/%q: secrets store not configured on this daemon", conn.Username, conn.Name)
 		return
 	}
 	cred, err := store.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
 	if err != nil {
-		log.Printf("[tracker] %s/%s: resolve broker credential: %v", conn.Username, conn.Name, err)
+		log.Printf("[tracker] %q/%q: resolve broker credential: %v", conn.Username, conn.Name, err)
 		return
 	}
 	info, err := describer.DescribeCredential(ctx, tracker.Conn{
 		BaseURL: conn.BaseURL, Project: conn.Project, Credential: cred,
 	})
 	if err != nil {
-		log.Printf("[tracker] %s/%s: describe credential: %v", conn.Username, conn.Name, err)
+		log.Printf("[tracker] %q/%q: describe credential: %v", conn.Username, conn.Name, err)
 		return
 	}
 	if err := s.loadTrackerStore().SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); err != nil {
-		log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, err)
+		log.Printf("[tracker] %q/%q: persist credential expiry: %v", conn.Username, conn.Name, err)
 		return
 	}
 	conn.CredentialExpiresAt = info.ExpiresAt

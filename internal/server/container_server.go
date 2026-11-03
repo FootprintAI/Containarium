@@ -1125,7 +1125,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			s.pendingMu.Unlock()
 
 			if cancelled {
-				log.Printf("Async container creation for %s cancelled by delete request (provisioning aborted; any error above is a consequence of the delete, not a creation failure)", req.Username)
+				log.Printf("Async container creation for %q cancelled by delete request (provisioning aborted; any error above is a consequence of the delete, not a creation failure)", req.Username)
 				// The delete can land in the narrow window before the
 				// instance exists, in which case it deleted nothing and
 				// this goroutine went on to finish the box. Reap it —
@@ -1133,9 +1133,9 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 				// container it asked to remove.
 				if err == nil && info != nil {
 					if delErr := s.manager.Delete(req.Username, true); delErr != nil {
-						log.Printf("Async container creation for %s completed after its delete; removing it failed: %v", req.Username, delErr)
+						log.Printf("Async container creation for %q completed after its delete; removing it failed: %v", req.Username, delErr)
 					} else {
-						log.Printf("Async container creation for %s completed after its delete; removed the late box", req.Username)
+						log.Printf("Async container creation for %q completed after its delete; removed the late box", req.Username)
 					}
 				}
 				return
@@ -1151,7 +1151,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			s.platformStats.RecordProvisionAttempt(platformstats.OperationCreate, err == nil, time.Since(provisionStart))
 
 			if err != nil {
-				log.Printf("Async container creation failed for %s: %v", req.Username, err)
+				log.Printf("Async container creation failed for %q: %v", req.Username, err)
 			}
 
 			// Emit event on success
@@ -1259,9 +1259,9 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// that namespace is created with the box.
 	if s.loadSecretsStore() != nil {
 		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
-			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
+			log.Printf("[secrets] failed to stamp on %q: %v (continuing)", info.Ref.Name, err)
 		} else if n > 0 {
-			log.Printf("[secrets] stamped %d secret(s) on %s at create time", n, info.Ref.Name)
+			log.Printf("[secrets] stamped %d secret(s) on %q at create time", n, info.Ref.Name)
 		}
 	}
 
@@ -1306,10 +1306,10 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		resp.SshCommand = sshCommandFor(req.Username, protoContainer.SshHost, info.IPAddress)
 		go func() {
 			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
-				log.Printf("Warning: failed to create jump server account for %s: %v", req.Username, err)
+				log.Printf("Warning: failed to create jump server account for %q: %v", req.Username, err)
 				return
 			}
-			log.Printf("Jump server account ensured for %s", req.Username)
+			log.Printf("Jump server account ensured for %q", req.Username)
 
 			// Write the create-request ssh_keys to the HOST-SIDE
 			// authorized_keys (the jump-server account's file), the same
@@ -1589,7 +1589,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 
 	if hasPending && pending.Done && pending.Error != nil {
 		// Creation failed - return ERROR state with error details
-		log.Printf("Async creation failed for %s: %v", req.Username, pending.Error)
+		log.Printf("Async creation failed for %q: %v", req.Username, pending.Error)
 		return &pb.GetContainerResponse{
 			Container: &pb.Container{
 				Name:     fmt.Sprintf("%s-container", req.Username),
@@ -1686,7 +1686,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 	// misleading exec errors are produced by the delete itself.
 	cancelledCreate := s.cancelPendingCreation(req.Username)
 	if cancelledCreate {
-		log.Printf("Delete for %s arrived while its creation was still provisioning; cancelling the create", req.Username)
+		log.Printf("Delete for %q arrived while its creation was still provisioning; cancelling the create", req.Username)
 	}
 
 	// Before deleting, deregister Guacamole connection if this is a Windows VM
@@ -1838,21 +1838,21 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	if s.routeStore != nil {
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[delete-cascade] list routes for %s failed: %v", containerName, err)
+			log.Printf("[delete-cascade] list routes for %q failed: %v", containerName, err)
 		}
 		for _, r := range routes {
 			if err := s.routeStore.Delete(ctx, r.FullDomain); err != nil {
-				log.Printf("[delete-cascade] delete route %s failed: %v", r.FullDomain, err)
+				log.Printf("[delete-cascade] delete route %q failed: %v", r.FullDomain, err)
 				continue
 			}
-			log.Printf("[delete-cascade] removed route %s (RouteSyncJob will reap Caddy entry)", r.FullDomain)
+			log.Printf("[delete-cascade] removed route %q (RouteSyncJob will reap Caddy entry)", r.FullDomain)
 
 			// 2. TLS subject: only if we also have a proxy manager.
 			if s.proxyManager != nil {
 				if err := s.proxyManager.RemoveTLSSubject(r.FullDomain); err != nil {
-					log.Printf("[delete-cascade] remove TLS subject %s failed: %v", r.FullDomain, err)
+					log.Printf("[delete-cascade] remove TLS subject %q failed: %v", r.FullDomain, err)
 				} else {
-					log.Printf("[delete-cascade] removed TLS automation subject %s", r.FullDomain)
+					log.Printf("[delete-cascade] removed TLS automation subject %q", r.FullDomain)
 				}
 			}
 		}
@@ -1872,9 +1872,9 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	// 3. Host user. DeleteJumpServerAccount is idempotent (no-op if the
 	//    user doesn't exist), so calling it when there isn't one is fine.
 	if err := container.DeleteJumpServerAccount(username, false); err != nil {
-		log.Printf("[delete-cascade] delete host user %s failed: %v (manual: sudo userdel -r %s)", username, err, username)
+		log.Printf("[delete-cascade] delete host user %q failed: %v (manual: sudo userdel -r %q)", username, err, username)
 	} else {
-		log.Printf("[delete-cascade] removed host user %s", username)
+		log.Printf("[delete-cascade] removed host user %q", username)
 	}
 }
 
@@ -1945,7 +1945,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 						// stamp: a failure here just means one extra
 						// wake→sleep flap, not a broken start.
 						if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-							log.Printf("[autosleep] failed to stamp %s on %s after peer-forward: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+							log.Printf("[autosleep] failed to stamp %s on %q after peer-forward: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
 						}
 						return &pb.StartContainerResponse{
 							Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
@@ -1978,7 +1978,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// the container is already running, and the worst case is one
 		// extra wake → sleep flap.
 		if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+			log.Printf("[autosleep] failed to stamp %s on %q: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
 		}
 
 		// Two-phase reaping (#525): the box is running again, so clear stopped_at.
@@ -1987,7 +1987,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// its window does. Best-effort + idempotent (UnsetConfig of an absent key
 		// is a no-op).
 		if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
-			log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
+			log.Printf("[ttl] failed to clear %s on %q: %v (continuing)", incus.StoppedAtKey, req.Username, err)
 		}
 
 		// Re-deliver tenant secrets from the current DB state. Picks up
@@ -1996,9 +1996,9 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// execs and new sessions will.
 		if s.loadSecretsStore() != nil {
 			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
-				log.Printf("[secrets] failed to re-deliver on start of %s's box: %v (continuing)", req.Username, err)
+				log.Printf("[secrets] failed to re-deliver on start of %q's box: %v (continuing)", req.Username, err)
 			} else if n > 0 {
-				log.Printf("[secrets] re-delivered %d secret(s) to %s's box at start time", n, req.Username)
+				log.Printf("[secrets] re-delivered %d secret(s) to %q's box at start time", n, req.Username)
 			}
 		}
 	}
@@ -2032,10 +2032,10 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		containerName := req.Username + "-container"
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[wake] list routes for %s: %v (skipping swap-to-direct)", containerName, err)
+			log.Printf("[wake] list routes for %q: %v (skipping swap-to-direct)", containerName, err)
 		} else if len(routes) > 0 {
 			if err := s.wakeRouter.SwapToDirect(ctx, containerName, routes); err != nil {
-				log.Printf("[wake] swap-to-direct %s: %v", containerName, err)
+				log.Printf("[wake] swap-to-direct %q: %v", containerName, err)
 			}
 		}
 	}
@@ -2178,7 +2178,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	// stopped→delete rule isn't modeled on the k8s runtime yet.
 	if _, isK8s := s.k8sBoxes(); !isK8s {
 		if serr := s.manager.SetConfig(info.Ref.Name, incus.StoppedAtKey, time.Now().UTC().Format(time.RFC3339)); serr != nil {
-			log.Printf("[ttl] failed to stamp %s on %s: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
+			log.Printf("[ttl] failed to stamp %s on %q: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
 		}
 	}
 
@@ -2203,7 +2203,7 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 	// Autosleep is daemon-internal — promote the context to the system
 	// identity so the StopContainer authz check passes.
 	ctx = auth.ContextWithSystemIdentity(ctx)
-	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
+	log.Printf("[autosleep] stopping username=%q reason=%q idle_minutes=%d", username, reason, idleMinutes)
 
 	// Swap Caddy routes to the wake handler BEFORE stopping the
 	// container. Doing the swap first means any request arriving in
@@ -2217,10 +2217,10 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 		containerName := username + "-container"
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[autosleep] list routes for %s: %v (skipping swap-to-wake)", containerName, err)
+			log.Printf("[autosleep] list routes for %q: %v (skipping swap-to-wake)", containerName, err)
 		} else if len(routes) > 0 {
 			if err := s.wakeRouter.SwapToWake(ctx, containerName, routes); err != nil {
-				log.Printf("[autosleep] swap-to-wake %s: %v", containerName, err)
+				log.Printf("[autosleep] swap-to-wake %q: %v", containerName, err)
 				// Don't fail the stop — RouteSyncJob will re-converge.
 			}
 		}
@@ -2314,7 +2314,7 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 		// Container not found locally — check peers
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			log.Printf("[resize] container %s not local, searching peers (token len=%d)", containerName, len(authToken))
+			log.Printf("[resize] container %q not local, searching peers (token len=%d)", containerName, len(authToken))
 			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
 			if peer == nil && len(unreachablePeers) > 0 {
 				// #1905: don't report "failed to resize" as if the
@@ -2324,7 +2324,7 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
-				log.Printf("[resize] found %s on peer %s, forwarding", containerName, peer.ID)
+				log.Printf("[resize] found %q on peer %s, forwarding", containerName, peer.ID)
 				body, _ := json.Marshal(map[string]string{
 					"cpu":           req.Cpu,
 					"memory":        req.Memory,
@@ -2584,15 +2584,15 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 			)
 			for k, v := range envVars {
 				if err := s.manager.SetEnv(containerName, k, v); err != nil {
-					log.Printf("[adopt] failed to re-stamp %s on %s: %v (continuing — partial OTel beats none)", k, containerName, err)
+					log.Printf("[adopt] failed to re-stamp %s on %q: %v (continuing — partial OTel beats none)", k, containerName, err)
 				}
 			}
 			// Re-drop the dotenv file at the destination too, so
 			// docker apps pick up the new collector endpoint. #370.
 			if err := s.manager.WriteOTelEnvFile(containerName, envVars); err != nil {
-				log.Printf("[adopt] failed to write env file on %s: %v (continuing)", containerName, err)
+				log.Printf("[adopt] failed to write env file on %q: %v (continuing)", containerName, err)
 			}
-			log.Printf("[adopt] re-stamped OTel env vars on %s for destination collector", containerName)
+			log.Printf("[adopt] re-stamped OTel env vars on %q for destination collector", containerName)
 		}
 	}
 
@@ -2639,7 +2639,7 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	// destination to be authoritative over its own route store, the
 	// data is already on the wire.
 	if len(req.SourceRoutes) > 0 {
-		log.Printf("[adopt] %s arriving with %d source routes (source owns the swap)", req.Username, len(req.SourceRoutes))
+		log.Printf("[adopt] %q arriving with %d source routes (source owns the swap)", req.Username, len(req.SourceRoutes))
 	}
 
 	return &pb.AdoptMigratedContainerResponse{
@@ -2728,7 +2728,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 		// via `env_file:`. Best-effort — the Incus-config env above
 		// already covers native-LXC apps. See #370.
 		if err := s.manager.WriteOTelEnvFile(containerName, envVars); err != nil {
-			log.Printf("[togglemonitor] %s: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
+			log.Printf("[togglemonitor] %q: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
 		}
 	} else {
 		for _, k := range otelEnvKeys {
@@ -2737,7 +2737,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 			}
 		}
 		if err := s.manager.RemoveOTelEnvFile(containerName); err != nil {
-			log.Printf("[togglemonitor] %s: failed to remove env file: %v", containerName, err)
+			log.Printf("[togglemonitor] %q: failed to remove env file: %v", containerName, err)
 		}
 	}
 
@@ -2747,7 +2747,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 	wasRunning := info.State == pb.ContainerState_CONTAINER_STATE_RUNNING
 	if wasRunning {
 		if err := s.manager.Stop(req.Username, false); err != nil {
-			log.Printf("[togglemonitor] %s stop returned %v (continuing)", containerName, err)
+			log.Printf("[togglemonitor] %q stop returned %v (continuing)", containerName, err)
 		}
 		if err := s.manager.Start(req.Username); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to start container after env update: %v", err)
@@ -2897,7 +2897,7 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	if err != nil {
 		// Counting failed but the add succeeded — return success with
 		// zero so the caller still knows the add went through.
-		log.Printf("[add-ssh-key] count after add failed for %s: %v", req.Username, err)
+		log.Printf("[add-ssh-key] count after add failed for %q: %v", req.Username, err)
 		total = 0
 	}
 
@@ -3047,7 +3047,7 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		// (#3222), as SetSSHKeys does. The response does not name the holder; an
 		// unreadable account fails the call with ErrHolderUnknown, which names
 		// no account either (the daemon log does).
-		log.Printf("[remove-ssh-key] %s dropped a key another account still holds; registry entry left active", req.Username)
+		log.Printf("[remove-ssh-key] %q dropped a key another account still holds; registry entry left active", req.Username)
 	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
@@ -3055,7 +3055,7 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 
 	total, err := s.authorizedKeys.countKeys(req.Username)
 	if err != nil {
-		log.Printf("[remove-ssh-key] count after remove failed for %s: %v", req.Username, err)
+		log.Printf("[remove-ssh-key] count after remove failed for %q: %v", req.Username, err)
 		total = 0
 	}
 
@@ -3387,7 +3387,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	if usingGitHub {
-		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%s, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%q, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
 	} else {
 		log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
 	}
@@ -5427,11 +5427,11 @@ func (s *ContainerServer) registerGuacamoleConnection(containerName, hostname, r
 		Password: rdpPassword,
 	})
 	if err != nil {
-		log.Printf("Warning: Failed to register Guacamole connection for %s: %v", containerName, err)
+		log.Printf("Warning: Failed to register Guacamole connection for %q: %v", containerName, err)
 		return ""
 	}
 
-	log.Printf("Guacamole RDP connection registered for %s (id=%s)", containerName, connID)
+	log.Printf("Guacamole RDP connection registered for %q (id=%s)", containerName, connID)
 	return connID
 }
 
@@ -5463,5 +5463,5 @@ func (s *ContainerServer) deregisterGuacamoleConnection(username string) {
 		return
 	}
 
-	log.Printf("Guacamole RDP connection removed for %s (id=%s)", username, connID)
+	log.Printf("Guacamole RDP connection removed for %q (id=%s)", username, connID)
 }

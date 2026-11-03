@@ -65,7 +65,7 @@ func (s *ContainerServer) notifySentinelKeyChange(ctx context.Context, reason st
 
 	resp, err := postKeyResync(ctx, sentinelURL, s.peerPool.LocalBackendID(), reason, secret)
 	if err != nil {
-		log.Printf("[keysync-notify] sentinel resync after %s failed: %v "+
+		log.Printf("[keysync-notify] sentinel resync after %q failed: %v "+
 			"(the box is created; SSH becomes reachable on the sentinel's next periodic keysync instead)", reason, err)
 		return
 	}
@@ -75,11 +75,11 @@ func (s *ContainerServer) notifySentinelKeyChange(ctx context.Context, reason st
 		// CONTAINARIUM_SENTINEL_AUTH_SECRET (#687), which the sentinel logs
 		// in full. Say so rather than reporting a success the box can't
 		// cash: SSH stays broken until that is fixed, tick or no tick.
-		log.Printf("[keysync-notify] sentinel accepted the resync after %s but its key pull from this daemon failed "+
+		log.Printf("[keysync-notify] sentinel accepted the resync after %q but its key pull from this daemon failed "+
 			"— SSH will not work until that is fixed; check the sentinel log for the keysync error", reason)
 		return
 	}
-	log.Printf("[keysync-notify] sentinel resynced after %s: %d users routed (coalesced=%v)", reason, resp.Users, resp.Coalesced)
+	log.Printf("[keysync-notify] sentinel resynced after %q: %d users routed (coalesced=%v)", reason, resp.Users, resp.Coalesced)
 }
 
 // sentinelConfigWarning returns a startup warning when this daemon holds the

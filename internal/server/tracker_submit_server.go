@@ -272,9 +272,9 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 	// on the provider whatever happens here, and a run the dispatcher did
 	// not start has no row to annotate.
 	if recorded, err := s.loadTrackerStore().RecordDispatchChange(ctx, runID, change.URL, change.Number); err != nil {
-		log.Printf("[tracker] record change on dispatch for run %s: %v", runID, err)
+		log.Printf("[tracker] record change on dispatch for run %q: %v", runID, err)
 	} else if !recorded {
-		log.Printf("[tracker] run %s has no dispatch row to record change %s on", runID, change.URL)
+		log.Printf("[tracker] run %q has no dispatch row to record change %q on", runID, change.URL)
 	}
 
 	s.auditTrackerWrite(ctx, "tracker.submit_change", req.Username, req.Connection, req.Issue, submitChangeAuditDetail{

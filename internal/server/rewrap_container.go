@@ -103,7 +103,7 @@ func (s *ContainerServer) RewrapContainer(ctx context.Context, req *pb.RewrapCon
 				"start until the ref is corrected", root, err)
 	}
 
-	log.Printf("[encryption] rotated the key for encryptionroot %s; %d container(s) now resolve the new ref",
+	log.Printf("[encryption] rotated the key for encryptionroot %q; %d container(s) now resolve the new ref",
 		root, len(rewrapped))
 	return &pb.RewrapContainerResponse{
 		Message: fmt.Sprintf(

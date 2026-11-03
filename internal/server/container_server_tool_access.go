@@ -53,7 +53,7 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 		if err := s.manager.SetConfig(containerName, incus.ToolAccessKey, value); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.ToolAccessKey, err)
 		}
-		log.Printf("[tool-access] container=%s level=%s", containerName, value)
+		log.Printf("[tool-access] container=%q level=%s", containerName, value)
 		return &pb.SetContainerToolAccessResponse{ToolAccess: req.ToolAccess}, nil
 	}
 
@@ -62,6 +62,6 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 	if err := s.manager.UnsetConfig(containerName, incus.ToolAccessKey); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to clear %s: %v", incus.ToolAccessKey, err)
 	}
-	log.Printf("[tool-access] container=%s level cleared", containerName)
+	log.Printf("[tool-access] container=%q level cleared", containerName)
 	return &pb.SetContainerToolAccessResponse{ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED}, nil
 }

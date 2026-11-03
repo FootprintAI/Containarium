@@ -207,7 +207,7 @@ func authorizeRunOrg(ctx context.Context, orgID string) (string, error) {
 func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider, model string, box *pb.Container, orgID string) (string, tokenid.MintedID, error) {
 	keyOwner := runKeyOwner(ctx, box, orgID)
 	if keyOwner == "" {
-		log.Printf("[agent-skill] run %s on %s has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
+		log.Printf("[agent-skill] run %q on %q has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
 	}
 	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner, provider, model)
 }
@@ -385,7 +385,7 @@ func (gatewayPolicyLogSink) PolicyTransition(ev modelgateway.PolicyEvent) {
 	for _, s := range ev.Signals {
 		names = append(names, s.Name)
 	}
-	log.Printf("model-gateway: tenant=%s skill=%s %s -> %s reason=%q score=%.2f quota=%.0f%% signals=%v",
+	log.Printf("model-gateway: tenant=%q skill=%q %s -> %s reason=%q score=%.2f quota=%.0f%% signals=%v",
 		ev.Tenant, ev.Skill, ev.From, ev.To, ev.Reason, ev.Score, ev.Quota*100, names)
 }
 

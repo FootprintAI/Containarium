@@ -101,10 +101,10 @@ func (s *TokensServer) RevokeToken(ctx context.Context, req *pb.RevokeTokenReque
 	// query confirms the canonical revoke timestamp if it
 	// matters.
 	if err := s.store.Revoke(ctx, req.Jti, expiresAt, reason); err != nil {
-		log.Printf("[tokens] revoke jti=%s failed: %v", req.Jti, err)
+		log.Printf("[tokens] revoke jti=%q failed: %v", req.Jti, err)
 		return nil, status.Errorf(codes.Internal, "revoke failed: %v", err)
 	}
-	log.Printf("[tokens] revoked jti=%s reason=%q expires_at=%s", req.Jti, reason, expiresAt.Format(time.RFC3339))
+	log.Printf("[tokens] revoked jti=%q reason=%q expires_at=%s", req.Jti, reason, expiresAt.Format(time.RFC3339))
 
 	return &pb.RevokeTokenResponse{
 		NewlyRevoked: true,
@@ -222,7 +222,7 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 		refreshExp = newRefreshClaims.ExpiresAt.Unix()
 	}
 
-	log.Printf("[tokens] refresh rotated: user=%s old_jti=%s new_access_jti=%s new_refresh_jti=%s",
+	log.Printf("[tokens] refresh rotated: user=%q old_jti=%s new_access_jti=%s new_refresh_jti=%s",
 		claims.Username,
 		claims.ID,
 		safeID(newAccessClaims),

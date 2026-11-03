@@ -214,7 +214,7 @@ func (cs *CoreServices) ensureCoreReservation(containerName, size string) {
 	cmd := exec.Command("zfs", "set", "reservation="+size, dataset)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// ZFS may not be present (dir-backed pool) — not fatal
-		log.Printf("Note: skipping ZFS reservation for %s: %v (output: %s)", containerName, err, string(out))
+		log.Printf("Note: skipping ZFS reservation for %q: %v (output: %s)", containerName, err, string(out))
 	}
 }
 
@@ -1249,7 +1249,7 @@ func (cs *CoreServices) applyBaseScripts(containerName, username string) {
 		return
 	}
 
-	log.Printf("Applying base scripts to %s (user=%s)...", containerName, username)
+	log.Printf("Applying base scripts to %q (user=%q)...", containerName, username)
 
 	// Collect all packages
 	var allPkgs []string
@@ -1277,7 +1277,7 @@ func (cs *CoreServices) applyBaseScripts(containerName, username string) {
 		}
 	}
 
-	log.Printf("Base scripts applied to %s", containerName)
+	log.Printf("Base scripts applied to %q", containerName)
 }
 
 // GetGrafanaURL returns the Grafana URL
@@ -1662,7 +1662,7 @@ func (cs *CoreServices) setupSecurity(ctx context.Context) error {
 // settings the creation flow should not fail on; a failure is logged.
 func (cs *CoreServices) setContainerConfigBestEffort(containerName, key, value string) {
 	if err := cs.incusClient.UpdateContainerConfig(containerName, key, value); err != nil {
-		log.Printf("Warning: failed to set %s=%s on %s: %v", key, value, containerName, err)
+		log.Printf("Warning: failed to set %s=%s on %q: %v", key, value, containerName, err)
 	}
 }
 
@@ -1674,14 +1674,14 @@ func (cs *CoreServices) backfillConfig(containerName string, role incus.Role, pr
 	}
 	if cfg[incus.RoleKey] == "" {
 		if err := cs.incusClient.UpdateContainerConfig(containerName, incus.RoleKey, string(role)); err != nil {
-			log.Printf("Warning: failed to backfill role on %s: %v", containerName, err)
+			log.Printf("Warning: failed to backfill role on %q: %v", containerName, err)
 		} else {
-			log.Printf("Backfilled role=%s on %s", role, containerName)
+			log.Printf("Backfilled role=%s on %q", role, containerName)
 		}
 	}
 	if cfg["boot.autostart.priority"] == "" {
 		if err := cs.incusClient.UpdateContainerConfig(containerName, "boot.autostart.priority", priority); err != nil {
-			log.Printf("Warning: failed to backfill boot priority on %s: %v", containerName, err)
+			log.Printf("Warning: failed to backfill boot priority on %q: %v", containerName, err)
 		}
 	}
 	if cfg["boot.autostart"] == "" {

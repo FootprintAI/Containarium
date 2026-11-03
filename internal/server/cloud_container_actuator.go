@@ -63,7 +63,7 @@ func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.C
 		// Best-effort: a stamp failure here shouldn't block start/route
 		// convergence for an otherwise-healthy container — it retries next cycle.
 		if terr := a.ensureTenantLabel(spec.LocalName, spec.OrgID, info.Tenant); terr != nil {
-			log.Printf("[cloud] stamp tenant label on %s: %v", spec.LocalName, terr)
+			log.Printf("[cloud] stamp tenant label on %q: %v", spec.LocalName, terr)
 		}
 		if isRunning(info.State) {
 			a.applyRoutes(ctx, spec) // already running — still converge routes
@@ -186,7 +186,7 @@ func (a *cloudContainerActuator) applyRoutes(ctx context.Context, spec cloud.Con
 	}
 	info, err := a.incus.GetContainer(spec.LocalName)
 	if err != nil || info.IPAddress == "" {
-		log.Printf("[cloud] %s: IP not ready, deferring route exposure to next reconcile", spec.LocalName)
+		log.Printf("[cloud] %q: IP not ready, deferring route exposure to next reconcile", spec.LocalName)
 		return
 	}
 	desired := make(map[string]bool, len(spec.Routes))
@@ -197,7 +197,7 @@ func (a *cloudContainerActuator) applyRoutes(ctx context.Context, spec cloud.Con
 		desired[r.Domain] = true
 		rec := routeRecordFor(spec.LocalName, info.IPAddress, r)
 		if err := a.routes.Save(ctx, rec); err != nil {
-			log.Printf("[cloud] expose route %s → %s:%d: %v", r.Domain, info.IPAddress, r.TargetPort, err)
+			log.Printf("[cloud] expose route %q → %s:%d: %v", r.Domain, info.IPAddress, r.TargetPort, err)
 		}
 	}
 	a.pruneRoutes(ctx, spec.LocalName, desired)
@@ -214,7 +214,7 @@ func (a *cloudContainerActuator) pruneRoutes(ctx context.Context, localName stri
 	for _, r := range existing {
 		if r.CreatedBy == cloudRouteCreatedBy && !keep[r.FullDomain] {
 			if err := a.routes.Delete(ctx, r.FullDomain); err != nil {
-				log.Printf("[cloud] prune route %s: %v", r.FullDomain, err)
+				log.Printf("[cloud] prune route %q: %v", r.FullDomain, err)
 			}
 		}
 	}
