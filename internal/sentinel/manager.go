@@ -1363,7 +1363,7 @@ func (m *Manager) startHTTPSProxy(backend *Backend) {
 		spotID := strings.TrimPrefix(backend.ID, "tunnel-")
 		port := m.config.HTTPSPort
 		fb = func() (net.Conn, error) { return m.tunnelRegistry.DialTunnel(spotID, port) }
-		desc = fmt.Sprintf("fallback via tunnel %s:%d", spotID, port)
+		desc = fmt.Sprintf("fallback via tunnel %q:%d", spotID, port)
 	}
 	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandlerDial(fb))
 	log.Printf("[sentinel] HTTPS proxy started → %s (SNI routing via primary registry)", desc)
@@ -1954,7 +1954,7 @@ func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) recoveryOu
 
 	status, err := b.Provider.GetInstanceStatus(ctx)
 	if err != nil {
-		log.Printf("[sentinel] failed to get status for %s: %v", b.ID, err)
+		log.Printf("[sentinel] failed to get status for %q: %v", b.ID, err)
 		// Treat an unreadable status like a failed attempt: keep trying,
 		// but backed off, rather than hammering the status API.
 		m.advanceRecoveryBackoff()
@@ -1965,26 +1965,26 @@ func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) recoveryOu
 
 	switch status {
 	case StatusStopped, StatusTerminated:
-		log.Printf("[sentinel] attempting to start %s...", b.ID)
+		log.Printf("[sentinel] attempting to start %q...", b.ID)
 		if err := b.Provider.StartInstance(ctx); err != nil {
-			log.Printf("[sentinel] failed to start %s: %v (will retry, backing off)", b.ID, err)
+			log.Printf("[sentinel] failed to start %q: %v (will retry, backing off)", b.ID, err)
 			m.advanceRecoveryBackoff()
 			return recoveryStartFailed
 		}
-		log.Printf("[sentinel] start command sent for %s", b.ID)
+		log.Printf("[sentinel] start command sent for %q", b.ID)
 		// Start accepted — re-probe soon (initial interval) so we catch
 		// it either coming healthy or, if capacity is then lost again,
 		// retrying without a long stall.
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryStartOK
 	case StatusProvisioning:
-		log.Printf("[sentinel] %s is provisioning...", b.ID)
+		log.Printf("[sentinel] %q is provisioning...", b.ID)
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryNoop
 	case StatusRunning:
 		// Cloud says running but TCP health failed — starting won't help;
 		// the health check will flip it healthy when the daemon answers.
-		log.Printf("[sentinel] %s reports running but health check failed", b.ID)
+		log.Printf("[sentinel] %q reports running but health check failed", b.ID)
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryNoop
 	}

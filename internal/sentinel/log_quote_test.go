@@ -115,8 +115,6 @@ func TestLogQuote_BackendStatusLine(t *testing.T) {
 	b.ID = "tunnel-" + logQuoteHostile
 	buf := captureSyncLog(t)
 	m.diagnoseAndRecover(context.Background(), b)
-	// Only the status line is asserted: the "is provisioning..." line that
-	// follows it still prints the ID raw and is not part of #3476.
 	require.Contains(t, buf.String(), `[sentinel] backend "tunnel-`+logQuoteEscaped+`" status: provisioning`)
 }
 
@@ -147,5 +145,79 @@ func TestLogQuote_PrimaryUnreachableError(t *testing.T) {
 	buf := captureSyncLog(t)
 	m.checkTunnelPrimaries(context.Background())
 	require.Contains(t, buf.String(), "UNREACHABLE")
+	assertLogQuoted(t, buf.String())
+}
+
+// statusErrProvider fails the status read, so diagnoseAndRecover takes its
+// "failed to get status" branch.
+type statusErrProvider struct{ fakeRecoveryProvider }
+
+func (statusErrProvider) GetInstanceStatus(context.Context) (InstanceStatus, error) {
+	return "", errors.New("status api down")
+}
+
+// #3484: every log call in diagnoseAndRecover that names the backend quotes
+// its ID. A tunnelled backend's ID is "tunnel-" + a self-reported spot ID.
+// Each log call must come out as exactly one clean line that carries the
+// escaped ID, and no raw control byte may appear anywhere.
+func TestLogQuote_DiagnoseAndRecoverBranches(t *testing.T) {
+	id := "tunnel-" + logQuoteHostile
+	quoted := `"tunnel-` + logQuoteEscaped + `"`
+	for _, tc := range []struct {
+		name    string
+		prov    func() CloudProvider
+		wantAll []string // substrings, one per expected log line, in order
+	}{
+		{"status read fails", func() CloudProvider { return &statusErrProvider{} }, []string{
+			"[sentinel] failed to get status for " + quoted + ": status api down",
+		}},
+		{"start succeeds", func() CloudProvider { return &fakeRecoveryProvider{status: StatusTerminated} }, []string{
+			"[sentinel] backend " + quoted + " status: terminated",
+			"[sentinel] attempting to start " + quoted + "...",
+			"[sentinel] start command sent for " + quoted,
+		}},
+		{"start fails", func() CloudProvider {
+			return &fakeRecoveryProvider{status: StatusStopped, startErr: errors.New("no capacity")}
+		}, []string{
+			"[sentinel] backend " + quoted + " status: stopped",
+			"[sentinel] attempting to start " + quoted + "...",
+			"[sentinel] failed to start " + quoted + ": no capacity",
+		}},
+		{"provisioning", func() CloudProvider { return &fakeRecoveryProvider{status: StatusProvisioning} }, []string{
+			"[sentinel] backend " + quoted + " status: provisioning",
+			"[sentinel] " + quoted + " is provisioning...",
+		}},
+		{"running but unhealthy", func() CloudProvider { return &fakeRecoveryProvider{status: StatusRunning} }, []string{
+			"[sentinel] backend " + quoted + " status: running",
+			"[sentinel] " + quoted + " reports running but health check failed",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.prov()
+			m := NewManager(Config{}, p)
+			m.state.Store(StateMaintenance)
+			b := &Backend{ID: id, Type: BackendTunnel, IP: "10.0.0.1", Provider: p}
+			m.backends.Add(b)
+			buf := captureSyncLog(t)
+			m.diagnoseAndRecover(context.Background(), b)
+
+			out := buf.String()
+			assertLogQuoted(t, out)
+			lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+			require.Len(t, lines, len(tc.wantAll), "one line per log call; got %q", out)
+			for i, want := range tc.wantAll {
+				require.Contains(t, lines[i], want)
+			}
+		})
+	}
+}
+
+// #3484: startHTTPSProxy names the tunnel spot in its log line.
+func TestLogQuote_HTTPSProxyTunnelSpot(t *testing.T) {
+	m := &Manager{primaries: NewPrimaryRegistry(), tunnelRegistry: NewTunnelRegistry(), config: Config{HTTPSPort: 443}}
+	m.httpsDispatch = newDispatchListener(newChanListener(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}))
+	buf := captureSyncLog(t)
+	m.startHTTPSProxy(&Backend{ID: "tunnel-" + logQuoteHostile, Type: BackendTunnel, IP: "10.0.0.1"})
+	require.Contains(t, buf.String(), "HTTPS proxy started")
 	assertLogQuoted(t, buf.String())
 }
