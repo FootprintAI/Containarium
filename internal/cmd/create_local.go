@@ -115,13 +115,7 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 	// born with its idle→stop timer. Best-effort — auto-sleep is an
 	// optimization, not a leak contract, so a failed stamp warns and the box
 	// keeps running (unlike the TTL path, we do NOT delete the box).
-	if idleStopMinutes > 0 {
-		if serr := mgr.SetConfig(info.Name, incus.AutoSleepEnabledKey, "true"); serr != nil {
-			fmt.Printf("warning: failed to enable birth auto-sleep on %s: %v (continuing; box has no idle-stop)\n", info.Name, serr)
-		} else if serr := mgr.SetConfig(info.Name, incus.IdleThresholdMinutesKey, fmt.Sprintf("%d", idleStopMinutes)); serr != nil {
-			fmt.Printf("warning: enabled auto-sleep on %s but failed to set idle threshold: %v\n", info.Name, serr)
-		}
-	}
+	stampLocalBirthAutoSleep(mgr.SetConfig, info.Name, idleStopMinutes)
 
 	// Birth stopped→delete (#525), local path. Best-effort, same as the
 	// server path — persist the window; the clock starts when the box stops.
@@ -132,4 +126,28 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 	}
 
 	return info, nil
+}
+
+// stampLocalBirthAutoSleep mirrors the daemon's birth idle-stop policy.
+// A fresh, already-running local Box was not started through StartContainer,
+// so its LastStartedAt can be missing. Record the clock *before* enabling
+// auto-sleep: otherwise the manager cannot infer idle time for a quiet Box.
+// Clock and threshold must persist before the enable flag: a failed stamp
+// leaves the policy disabled, preserving the safe default.
+func stampLocalBirthAutoSleep(setConfig func(string, string, string) error, containerName string, idleMinutes int32) {
+	if idleMinutes <= 0 {
+		return
+	}
+	if err := setConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		fmt.Printf("warning: failed to initialize birth auto-sleep clock on %q: %v (auto-sleep not enabled)\n", containerName, err)
+		return
+	}
+	if err := setConfig(containerName, incus.IdleThresholdMinutesKey, fmt.Sprintf("%d", idleMinutes)); err != nil {
+		fmt.Printf("warning: failed to set birth idle threshold on %q: %v (auto-sleep not enabled)\n", containerName, err)
+		return
+	}
+	if err := setConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
+		fmt.Printf("warning: failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)\n", containerName, err)
+		return
+	}
 }

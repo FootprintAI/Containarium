@@ -90,20 +90,20 @@ func TestStampBirthAutoSleep_EnablesWithThreshold(t *testing.T) {
 	s.stampBirthAutoSleep("alice-container", 20)
 
 	if len(*calls) != 3 {
-		t.Fatalf("expected clock + enable + threshold, got %d: %+v", len(*calls), *calls)
+		t.Fatalf("expected clock + threshold + enable, got %d: %+v", len(*calls), *calls)
 	}
-	stamp, enable, thresh := (*calls)[0], (*calls)[1], (*calls)[2]
+	stamp, thresh, enable := (*calls)[0], (*calls)[1], (*calls)[2]
 	if stamp.key != incus.LastStartedAtKey {
 		t.Errorf("first call = %+v, want %s", stamp, incus.LastStartedAtKey)
 	}
 	if _, err := time.Parse(time.RFC3339, stamp.value); err != nil {
 		t.Errorf("birth clock value %q invalid: %v", stamp.value, err)
 	}
-	if enable.key != incus.AutoSleepEnabledKey || enable.value != "true" {
-		t.Errorf("first call = %+v, want %s=true", enable, incus.AutoSleepEnabledKey)
-	}
 	if thresh.key != incus.IdleThresholdMinutesKey || thresh.value != "20" {
 		t.Errorf("second call = %+v, want %s=20", thresh, incus.IdleThresholdMinutesKey)
+	}
+	if enable.key != incus.AutoSleepEnabledKey || enable.value != "true" {
+		t.Errorf("third call = %+v, want %s=true", enable, incus.AutoSleepEnabledKey)
 	}
 }
 
@@ -124,6 +124,26 @@ func TestStampBirthAutoSleep_ClockFailureLeavesPolicyDisabled(t *testing.T) {
 	s.stampBirthAutoSleep("alice-container", 20)
 	if len(keys) != 1 || keys[0] != incus.LastStartedAtKey {
 		t.Fatalf("clock failure must not write auto-sleep policy: keys=%v", keys)
+	}
+}
+
+// TestStampBirthAutoSleep_ThresholdFailureLeavesPolicyDisabled ensures a
+// failed requested threshold never enables the fallback idle-stop timer.
+func TestStampBirthAutoSleep_ThresholdFailureLeavesPolicyDisabled(t *testing.T) {
+	s, _, mock := newTTLTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	var keys []string
+	mock.SetConfigFunc = func(_, key, _ string) error {
+		keys = append(keys, key)
+		if key == incus.IdleThresholdMinutesKey {
+			return errors.New("failed to persist idle threshold")
+		}
+		return nil
+	}
+	s.stampBirthAutoSleep("alice-container", 60)
+	if len(keys) != 2 || keys[0] != incus.LastStartedAtKey || keys[1] != incus.IdleThresholdMinutesKey {
+		t.Fatalf("threshold failure must not enable auto-sleep: keys=%v", keys)
 	}
 }
 
