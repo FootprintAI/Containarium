@@ -3,6 +3,7 @@ package sentinel
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -33,11 +34,17 @@ const watchOnlyStatusPollInterval = time.Minute
 // recoveryBackoff fields used by the primary "gcp" backend — those
 // assume a single outage timeline, which multiple independent targets
 // would corrupt if they shared it. Each watchedBackend is touched only
-// by its own runWatchOnlyRecovery goroutine, so it needs no lock (same
-// single-goroutine-owns-it convention as the primary recovery fields).
+// by its own runWatchOnlyRecovery goroutine, so the recovery-timeline fields
+// need no lock (same single-goroutine-owns-it convention as the primary
+// recovery fields). The four fields under metricsMu are the exception: the
+// /metrics handler and the metrics exporter read them from other goroutines
+// (#3485), so every write goes through the mark* helpers and readers take a
+// snapshot().
 type watchedBackend struct {
 	id       string
 	provider CloudProvider
+
+	metricsMu sync.Mutex
 
 	down                bool      // true once observed stopped/terminated; cleared on running
 	lastStatusCheck     time.Time // last time the cloud status was read (event-driven or polled)
@@ -46,6 +53,64 @@ type watchedBackend struct {
 	lastPreemption      time.Time
 	preemptCount        int
 	recoveredCount      int
+}
+
+// watchTargetSnapshot is a consistent copy of the exported counters for one
+// watch-only target.
+type watchTargetSnapshot struct {
+	ID             string
+	Down           bool
+	PreemptCount   int
+	RecoveredCount int
+	LastPreemption time.Time // zero if never preempted
+}
+
+func (wb *watchedBackend) snapshot() watchTargetSnapshot {
+	wb.metricsMu.Lock()
+	defer wb.metricsMu.Unlock()
+	return watchTargetSnapshot{
+		ID:             wb.id,
+		Down:           wb.down,
+		PreemptCount:   wb.preemptCount,
+		RecoveredCount: wb.recoveredCount,
+		LastPreemption: wb.lastPreemption,
+	}
+}
+
+func (wb *watchedBackend) markPreempted(at time.Time) {
+	wb.metricsMu.Lock()
+	defer wb.metricsMu.Unlock()
+	wb.lastPreemption = at
+	wb.preemptCount++
+}
+
+func (wb *watchedBackend) markDown() {
+	wb.metricsMu.Lock()
+	defer wb.metricsMu.Unlock()
+	wb.down = true
+}
+
+// markRecovered clears down and counts one recovery; it reports whether the
+// target was down.
+func (wb *watchedBackend) markRecovered() bool {
+	wb.metricsMu.Lock()
+	defer wb.metricsMu.Unlock()
+	if !wb.down {
+		return false
+	}
+	wb.down = false
+	wb.recoveredCount++
+	return true
+}
+
+// WatchTargetSnapshots returns one snapshot per --watch-spot-vm target, in
+// registration order. Safe to call from any goroutine.
+func (m *Manager) WatchTargetSnapshots() []watchTargetSnapshot {
+	out := make([]watchTargetSnapshot, 0, len(m.watchOnly))
+	for _, wb := range m.watchOnly {
+		out = append(out, wb.snapshot())
+	}
+	return out
 }
 
 // AddWatchOnlyBackend registers an additional GCP-backed instance for
@@ -101,8 +166,7 @@ func (m *Manager) runWatchOnlyRecovery(ctx context.Context, wb *watchedBackend) 
 func (m *Manager) handleWatchOnlyEvent(ctx context.Context, wb *watchedBackend, event VMEvent) {
 	switch event.Type {
 	case EventPreempted, EventStopped, EventTerminated:
-		wb.lastPreemption = event.Timestamp
-		wb.preemptCount++
+		wb.markPreempted(event.Timestamp)
 		log.Printf("[sentinel] watch-only(%s): EVENT %s at %s — %s",
 			wb.id, event.Type, event.Timestamp.Format(time.RFC3339), event.Detail)
 		m.fireWatchOnlyAlert("preempted", wb, 0)
@@ -129,8 +193,7 @@ func (m *Manager) maybeRetryWatchOnlyRecovery(ctx context.Context, wb *watchedBa
 		m.diagnoseAndRecoverWatchOnly(ctx, wb)
 		if wb.down {
 			// No event announced this outage, so count and report it here.
-			wb.lastPreemption = time.Now()
-			wb.preemptCount++
+			wb.markPreempted(time.Now())
 			log.Printf("[sentinel] watch-only(%s): found down by the status poll (no event was delivered)", wb.id)
 			m.fireWatchOnlyAlert("preempted", wb, 0)
 		}
@@ -158,7 +221,7 @@ func (m *Manager) diagnoseAndRecoverWatchOnly(ctx context.Context, wb *watchedBa
 
 	switch status {
 	case StatusStopped, StatusTerminated:
-		wb.down = true
+		wb.markDown()
 		log.Printf("[sentinel] watch-only(%s): attempting to start...", wb.id)
 		if err := wb.provider.StartInstance(ctx); err != nil {
 			log.Printf("[sentinel] watch-only(%s): failed to start: %v (will retry, backing off)", wb.id, err)
@@ -176,12 +239,10 @@ func (m *Manager) diagnoseAndRecoverWatchOnly(ctx context.Context, wb *watchedBa
 		// to Stopped — nothing else drives a re-check (EventStarted is
 		// log-only, and there is no TCP health check for watch-only
 		// targets the way there is for the primary backend).
-		wb.down = true
+		wb.markDown()
 		m.scheduleWatchOnlyRecovery(wb, m.config.RecoveryBackoffInitial)
 	case StatusRunning:
-		if wb.down {
-			wb.down = false
-			wb.recoveredCount++
+		if wb.markRecovered() {
 			wb.recoveryBackoff = 0
 			wb.nextRecoveryAttempt = time.Time{}
 			log.Printf("[sentinel] watch-only(%s): recovered (running)", wb.id)
@@ -206,7 +267,7 @@ func (m *Manager) advanceWatchOnlyBackoff(wb *watchedBackend) {
 	if next > m.config.RecoveryBackoffMax {
 		next = m.config.RecoveryBackoffMax
 	}
-	wb.down = true
+	wb.markDown()
 	m.scheduleWatchOnlyRecovery(wb, next)
 }
 
@@ -218,12 +279,13 @@ func (m *Manager) fireWatchOnlyAlert(event string, wb *watchedBackend, outage ti
 	if m.config.AlertWebhookURL == "" {
 		return
 	}
+	snap := wb.snapshot()
 	payload := alertPayload{
 		Event:          event,
 		Backend:        wb.id,
-		PreemptedTotal: wb.preemptCount,
-		RecoveredTotal: wb.recoveredCount,
-		Outstanding:    wb.preemptCount - wb.recoveredCount,
+		PreemptedTotal: snap.PreemptCount,
+		RecoveredTotal: snap.RecoveredCount,
+		Outstanding:    snap.PreemptCount - snap.RecoveredCount,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 	}
 	if outage > 0 {

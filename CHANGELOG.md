@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-target preemption metrics for `--watch-spot-vm`** (#3485). Each watched VM now appears on the sentinel's `/metrics` and, with `--metrics-export`, in the pushed series: `sentinel_preempted_total{backend="<target>"}`, `sentinel_recovered_total{backend="<target>"}`, `sentinel_watch_target_down{backend="<target>"}` (1 while the VM is known down) and `sentinel_watch_target_last_preemption_timestamp_seconds{backend="<target>"}`. The existing unlabeled series still describe the primary backend and are unchanged; a preemption found by the status poll is counted like an event-driven one.
+
 ## [0.127.0] - 2026-11-03
 
 
