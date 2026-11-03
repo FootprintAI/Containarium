@@ -695,11 +695,13 @@ const (
 	DaemonCapBoxRunModel = "box_run_model"
 	// DaemonCapBoxRunCommand: StartBoxRunRequest.command and timeout_seconds (#3322).
 	DaemonCapBoxRunCommand = "box_run_command"
+	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
+	DaemonCapRunUsage = "run_usage"
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

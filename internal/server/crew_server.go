@@ -524,6 +524,9 @@ func (s *CrewServer) GetCrewRun(ctx context.Context, req *pb.GetCrewRunRequest) 
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "crew run %q not found", req.Id)
 	}
+	if run.Usage == nil {
+		run.Usage = unavailableRunUsage()
+	}
 	return &pb.GetCrewRunResponse{Run: run}, nil
 }
 

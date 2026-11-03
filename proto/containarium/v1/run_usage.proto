@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Run token usage, shared by BoxRun, RunAgentSkillResponse and CrewRun. Lives in
+// its own file because box_run.proto imports agent.proto, so neither can host
+// the types for the other.
+
+// RunUsageStatus says how much of a run's token usage the daemon could read.
+enum RunUsageStatus {
+  RUN_USAGE_STATUS_UNSPECIFIED = 0;
+  // Per-model usage as reported by the engine.
+  RUN_USAGE_STATUS_REPORTED = 1;
+  // Only an aggregate was reported: one row with an empty model.
+  RUN_USAGE_STATUS_AGGREGATE_ONLY = 2;
+  // No usable usage (no structured result, invalid or oversized output, or the
+  // run is still live). Distinct from zero tokens.
+  RUN_USAGE_STATUS_UNAVAILABLE = 3;
+}
+
+// RunModelUsage is the token counts one model accrued in a run.
+message RunModelUsage {
+  // Model id; empty on the single row of an AGGREGATE_ONLY usage.
+  string model = 1;
+  int64 input_tokens = 2;
+  int64 output_tokens = 3;
+  int64 cache_read_tokens = 4;
+  int64 cache_write_tokens = 5;
+}
+
+// RunUsage is the token usage the engine inside the box reported for a run.
+// It is cost-visibility data reported by the engine, not tamper-proof billing
+// data.
+message RunUsage {
+  RunUsageStatus status = 1;
+  // One row per model. Empty unless status is REPORTED or AGGREGATE_ONLY.
+  repeated RunModelUsage models = 2;
+  // True when the run resumed an earlier session and the counts are
+  // cumulative across it.
+  bool includes_prior_session = 3;
+  // The engine that reported the usage (for example "claude-code").
+  string engine = 4;
+}

@@ -51,7 +51,7 @@ func (s *CrewServer) runPlannerSkill(ctx context.Context, req *pb.RunAgentSkillR
 	if err != nil {
 		return nil, inBoxRunStatus(run.runID, err)
 	}
-	return &pb.RunAgentSkillResponse{ArtifactJson: out, RunId: run.runID, GitCommit: run.gitCommit}, nil
+	return &pb.RunAgentSkillResponse{ArtifactJson: out, RunId: run.runID, GitCommit: run.gitCommit, Usage: unavailableRunUsage()}, nil
 }
 
 func (s *CrewServer) planTaskGraph(ctx context.Context, req *pb.PlanTaskGraphRequest, run func(context.Context, *pb.RunAgentSkillRequest) (*pb.RunAgentSkillResponse, error)) (*pb.PlanTaskGraphResponse, error) {

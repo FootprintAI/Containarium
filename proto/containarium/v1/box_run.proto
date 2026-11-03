@@ -6,6 +6,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
 import "containarium/v1/agent.proto";
+import "containarium/v1/run_usage.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -59,6 +60,10 @@ message BoxRun {
   // Empty when none was requested: the engine's own default ran, and the
   // daemon does not claim to know which. Empty for a run from before the field.
   string model = 10;
+  // Tokens the engine reported for this run (capability "run_usage"). Always
+  // set; check usage.status before reading usage.models. UNAVAILABLE means the
+  // daemon has no usage for the run (never zeros).
+  RunUsage usage = 11;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says

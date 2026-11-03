@@ -588,7 +588,11 @@ type BoxRun struct {
 	// The model id the run was started with (StartBoxRunRequest.model, #3259).
 	// Empty when none was requested: the engine's own default ran, and the
 	// daemon does not claim to know which. Empty for a run from before the field.
-	Model         string `protobuf:"bytes,10,opt,name=model,proto3" json:"model,omitempty"`
+	Model string `protobuf:"bytes,10,opt,name=model,proto3" json:"model,omitempty"`
+	// Tokens the engine reported for this run (capability "run_usage"). Always
+	// set; check usage.status before reading usage.models. UNAVAILABLE means the
+	// daemon has no usage for the run (never zeros).
+	Usage         *RunUsage `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -691,6 +695,13 @@ func (x *BoxRun) GetModel() string {
 		return x.Model
 	}
 	return ""
+}
+
+func (x *BoxRun) GetUsage() *RunUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -2235,7 +2246,7 @@ var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\"\xc3\x03\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\"\xf4\x03\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -2249,7 +2260,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"session_id\x18\b \x01(\tR\tsessionId\x121\n" +
 	"\x05tools\x18\t \x03(\v2\x1b.containarium.v1.BoxRunToolR\x05tools\x12\x14\n" +
 	"\x05model\x18\n" +
-	" \x01(\tR\x05modelB\f\n" +
+	" \x01(\tR\x05model\x12/\n" +
+	"\x05usage\x18\v \x01(\v2\x19.containarium.v1.RunUsageR\x05usageB\f\n" +
 	"\n" +
 	"_exit_code\"\xc2\x01\n" +
 	"\n" +
@@ -2457,8 +2469,9 @@ var file_containarium_v1_box_run_proto_goTypes = []any{
 	(*GetRunApprovalKeyResponse)(nil),    // 30: containarium.v1.GetRunApprovalKeyResponse
 	(*timestamppb.Timestamp)(nil),        // 31: google.protobuf.Timestamp
 	(CaptureMode)(0),                     // 32: containarium.v1.CaptureMode
-	(CodeCredentialSource)(0),            // 33: containarium.v1.CodeCredentialSource
-	(*durationpb.Duration)(nil),          // 34: google.protobuf.Duration
+	(*RunUsage)(nil),                     // 33: containarium.v1.RunUsage
+	(CodeCredentialSource)(0),            // 34: containarium.v1.CodeCredentialSource
+	(*durationpb.Duration)(nil),          // 35: google.protobuf.Duration
 }
 var file_containarium_v1_box_run_proto_depIdxs = []int32{
 	31, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
@@ -2466,31 +2479,32 @@ var file_containarium_v1_box_run_proto_depIdxs = []int32{
 	0,  // 2: containarium.v1.BoxRun.outcome:type_name -> containarium.v1.BoxRunOutcome
 	32, // 3: containarium.v1.BoxRun.capture_mode:type_name -> containarium.v1.CaptureMode
 	10, // 4: containarium.v1.BoxRun.tools:type_name -> containarium.v1.BoxRunTool
-	1,  // 5: containarium.v1.BoxRunTool.provenance:type_name -> containarium.v1.BoxRunToolProvenance
-	2,  // 6: containarium.v1.BoxRunTool.location:type_name -> containarium.v1.BoxRunToolLocation
-	9,  // 7: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
-	33, // 8: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
-	9,  // 9: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
-	9,  // 10: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
-	3,  // 11: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
-	31, // 12: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
-	4,  // 13: containarium.v1.BoxRunCheckout.disposition:type_name -> containarium.v1.BoxRunCheckoutDisposition
-	34, // 14: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
-	21, // 15: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
-	5,  // 16: containarium.v1.RunInput.kind:type_name -> containarium.v1.RunInputKind
-	31, // 17: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
-	31, // 18: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
-	24, // 19: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
-	6,  // 20: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
-	8,  // 21: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
-	6,  // 22: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
-	7,  // 23: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
-	31, // 24: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	33, // 5: containarium.v1.BoxRun.usage:type_name -> containarium.v1.RunUsage
+	1,  // 6: containarium.v1.BoxRunTool.provenance:type_name -> containarium.v1.BoxRunToolProvenance
+	2,  // 7: containarium.v1.BoxRunTool.location:type_name -> containarium.v1.BoxRunToolLocation
+	9,  // 8: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	34, // 9: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
+	9,  // 10: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
+	9,  // 11: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	3,  // 12: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
+	31, // 13: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
+	4,  // 14: containarium.v1.BoxRunCheckout.disposition:type_name -> containarium.v1.BoxRunCheckoutDisposition
+	35, // 15: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
+	21, // 16: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
+	5,  // 17: containarium.v1.RunInput.kind:type_name -> containarium.v1.RunInputKind
+	31, // 18: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
+	31, // 19: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
+	24, // 20: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
+	6,  // 21: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
+	8,  // 22: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
+	6,  // 23: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
+	7,  // 24: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
+	31, // 25: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_box_run_proto_init() }
@@ -2500,6 +2514,7 @@ func file_containarium_v1_box_run_proto_init() {
 	}
 	file_containarium_v1_sandbox_proto_init()
 	file_containarium_v1_agent_proto_init()
+	file_containarium_v1_run_usage_proto_init()
 	file_containarium_v1_box_run_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
