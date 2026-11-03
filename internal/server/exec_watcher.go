@@ -372,7 +372,7 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	w.mu.Lock()
 	for name, msg := range failed {
 		if w.resolveFail[name] != msg {
-			log.Printf("[exec-telemetry] %s: cannot resolve cgroup id: %s (execs not watched until it resolves)", name, msg)
+			log.Printf("[exec-telemetry] %q: cannot resolve cgroup id: %s (execs not watched until it resolves)", name, msg)
 			w.resolveFail[name] = msg
 		}
 	}
@@ -405,13 +405,13 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	// Phase 3, unlocked: kernel map writes, removals first.
 	for _, r := range toRemove {
 		if err := maps.UnwatchCgroup(r.id); err != nil {
-			log.Printf("[exec-telemetry] %s: unwatch cgroup %d: %v", r.name, r.id, err)
+			log.Printf("[exec-telemetry] %q: unwatch cgroup %d: %v", r.name, r.id, err)
 		}
 	}
 	var added []change
 	for _, a := range toAdd {
 		if err := maps.WatchCgroup(a.id, a.idx); err != nil {
-			log.Printf("[exec-telemetry] %s: watch cgroup %d: %v", a.name, a.id, err)
+			log.Printf("[exec-telemetry] %q: watch cgroup %d: %v", a.name, a.id, err)
 			continue
 		}
 		added = append(added, a)

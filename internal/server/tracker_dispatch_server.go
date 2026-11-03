@@ -132,7 +132,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.TimedOut {
 		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
+	log.Printf("[tracker] dispatch %q/%q: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
 		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
 		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth, res.LeftUndispatched)
 	return out, nil
@@ -400,7 +400,7 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 		// failure (#2513): name the contract the run broke and where the
 		// evidence is, in the log and in the dispatch row's reason.
 		aerr = errors.New("the agent ended without a final message (no artifact); the skill contract requires one final JSON object — see the run journal for the tool calls it made")
-		log.Printf("[agent-skill] run %s: ended with no artifact (exit clean, empty final message)", run.runID)
+		log.Printf("[agent-skill] run %q: ended with no artifact (exit clean, empty final message)", run.runID)
 	}
 	err = aerr
 }
@@ -419,6 +419,6 @@ func logDispatchedRunPanic(runID, step string, recovered any) bool {
 	if recovered == nil {
 		return false
 	}
-	log.Printf("[agent-skill] run %s: %s panicked (value withheld); recovered\n%s", runID, step, debug.Stack())
+	log.Printf("[agent-skill] run %q: %s panicked (value withheld); recovered\n%s", runID, step, debug.Stack())
 	return true
 }

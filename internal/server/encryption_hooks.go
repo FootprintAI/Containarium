@@ -360,7 +360,7 @@ func (h *encryptionHooks) PreStart(ctx context.Context, containerName string) er
 func (h *encryptionHooks) PostStop(ctx context.Context, containerName string) {
 	dataset, ref, ok, err := h.encryptionRootFor(containerName)
 	if err != nil {
-		log.Printf("[encryption] could not resolve encryption state for %s while stopping: %v", containerName, err)
+		log.Printf("[encryption] could not resolve encryption state for %q while stopping: %v", containerName, err)
 		return
 	}
 	if !ok {
@@ -373,14 +373,14 @@ func (h *encryptionHooks) PostStop(ctx context.Context, containerName string) {
 		// leaving it resident would keep tenant key material in daemon
 		// memory for a container that is no longer running.
 		h.cacheEvict(tenantFromRef(ref, containerName))
-		log.Printf("[encryption] unloaded the key for %s; its dataset is now ciphertext at rest", containerName)
+		log.Printf("[encryption] unloaded the key for %q; its dataset is now ciphertext at rest", containerName)
 	case errors.Is(err, zfscrypt.ErrKeyInUse):
 		// Another container under the same encryptionroot is still
 		// running. Its key must stay loaded, and the cache entry stays
 		// with it.
-		log.Printf("[encryption] key for %s stays loaded: another container under the same encryptionroot is still running", containerName)
+		log.Printf("[encryption] key for %q stays loaded: another container under the same encryptionroot is still running", containerName)
 	default:
-		log.Printf("[encryption] WARNING: could not unload the key for %s, so its dataset remains readable while stopped: %v",
+		log.Printf("[encryption] WARNING: could not unload the key for %q, so its dataset remains readable while stopped: %v",
 			containerName, err)
 	}
 }
@@ -531,7 +531,7 @@ func (s incusEncryptionState) ListEncrypted() ([]string, error) {
 			// One unreadable container must not hide the rest; the caller
 			// re-keys what it can see and the omission surfaces as that
 			// container failing to start, which is loud.
-			log.Printf("[encryption] could not read the key ref of %s while enumerating: %v", name, err)
+			log.Printf("[encryption] could not read the key ref of %q while enumerating: %v", name, err)
 			continue
 		}
 		if raw != "" {

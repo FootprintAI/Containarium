@@ -385,6 +385,6 @@ func (s *ContainerServer) auditTrackerWrite(ctx context.Context, action, usernam
 		Detail:       string(payload),
 		RunID:        runID,
 	}); err != nil {
-		log.Printf("[tracker] audit %s %s/%s#%d: %v", action, username, connection, number, err)
+		log.Printf("[tracker] audit %s %q/%q#%d: %v", action, username, connection, number, err)
 	}
 }

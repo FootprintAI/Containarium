@@ -86,7 +86,7 @@ func (s *VolumeServer) CreateVolume(ctx context.Context, req *pb.CreateVolumeReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	log.Printf("[volume] created name=%s pool=%s size=%d", v.Name, v.Pool, v.SizeBytes)
+	log.Printf("[volume] created name=%q pool=%q size=%d", v.Name, v.Pool, v.SizeBytes)
 	return &pb.CreateVolumeResponse{Volume: volumeToProto(v), Message: "volume created: " + v.Name}, nil
 }
 
@@ -134,7 +134,7 @@ func (s *VolumeServer) DeleteVolume(ctx context.Context, req *pb.DeleteVolumeReq
 	if err := s.backend.DeleteVolume(ctx, tenant, req.Name, req.Pool, req.Force); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	log.Printf("[volume] deleted name=%s force=%t", req.Name, req.Force)
+	log.Printf("[volume] deleted name=%q force=%t", req.Name, req.Force)
 	return &pb.DeleteVolumeResponse{Message: "volume deleted: " + req.Name}, nil
 }
 
@@ -153,7 +153,7 @@ func (s *VolumeServer) AttachVolume(ctx context.Context, req *pb.AttachVolumeReq
 	if err := s.backend.AttachVolume(ctx, tenant, req.Volume, req.Pool, req.Container, req.MountPath, req.ReadOnly); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	log.Printf("[volume] attached vol=%s container=%s path=%s ro=%t", req.Volume, req.Container, req.MountPath, req.ReadOnly)
+	log.Printf("[volume] attached vol=%q container=%q path=%q ro=%t", req.Volume, req.Container, req.MountPath, req.ReadOnly)
 	return &pb.AttachVolumeResponse{Message: "volume attached to " + req.Container}, nil
 }
 
@@ -172,7 +172,7 @@ func (s *VolumeServer) DetachVolume(ctx context.Context, req *pb.DetachVolumeReq
 	if err := s.backend.DetachVolume(ctx, tenant, req.Volume, req.Container); err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
-	log.Printf("[volume] detached vol=%s container=%s", req.Volume, req.Container)
+	log.Printf("[volume] detached vol=%q container=%q", req.Volume, req.Container)
 	return &pb.DetachVolumeResponse{Message: "volume detached from " + req.Container}, nil
 }
 

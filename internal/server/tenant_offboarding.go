@@ -121,6 +121,6 @@ func (h *encryptionHooks) DestroyTenantStorage(ctx context.Context, tenant strin
 				"needs manual removal", pool, dataset, err, tenant)
 	}
 
-	log.Printf("[encryption] offboarded tenant %s: pool %s deleted, dataset %s destroyed", tenant, pool, dataset)
+	log.Printf("[encryption] offboarded tenant %q: pool %q deleted, dataset %q destroyed", tenant, pool, dataset)
 	return nil
 }

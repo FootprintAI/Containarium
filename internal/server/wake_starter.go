@@ -67,7 +67,7 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool
 	if info, ierr := s.cs.GetManager().Get(username); ierr == nil && info != nil {
 		ip = info.IPAddress
 	} else if ierr != nil {
-		log.Printf("[wake] post-start container.Get(%s): %v", username, ierr)
+		log.Printf("[wake] post-start container.Get(%q): %v", username, ierr)
 	}
 
 	// Port is the route's TargetPort — we don't have it here, but

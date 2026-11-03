@@ -257,6 +257,6 @@ func (s *CodingToolEgressPolicyServer) auditChange(ctx context.Context, action, 
 		ResourceID:   id,
 		Detail:       string(payload),
 	}); err != nil {
-		log.Printf("[code-egress] audit %s %s: %v", action, id, err)
+		log.Printf("[code-egress] audit %s %q: %v", action, id, err)
 	}
 }

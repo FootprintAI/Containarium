@@ -60,7 +60,7 @@ func (s *ContainerServer) recordEncryptedPlacement(req *pb.CreateContainerReques
 		return nil
 	}
 
-	log.Printf("[encryption] could not record placement for %s (pool %s): %v — removing the container, "+
+	log.Printf("[encryption] could not record placement for %q (pool %q): %v — removing the container, "+
 		"because nothing could name its encryptionroot afterwards", containerName, pool, err)
 
 	if delErr := s.manager.Delete(req.GetUsername(), true); delErr != nil {

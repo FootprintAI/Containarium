@@ -186,7 +186,7 @@ func (r *ClusterReconciler) ReconcileOnce(ctx context.Context) {
 	}
 	for _, c := range clusters {
 		if err := r.reconcileCluster(ctx, c); err != nil {
-			log.Printf("[cluster] reconcile %s/%s: %v", c.Owner, c.Name, err)
+			log.Printf("[cluster] reconcile %q/%q: %v", c.Owner, c.Name, err)
 			// Provisioning failures surface on the record; the next
 			// pass retries (interval = natural backoff).
 			_ = r.store.SetState(ctx, c.Owner, c.Name, clusterstore.StateError, err.Error())
@@ -270,7 +270,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 				Role: clusterstore.RoleControlPlane, State: clusterstore.NodeStateReady,
 				CreatedAt: time.Now().UTC(),
 			})
-			log.Printf("[cluster] %s/%s: control plane up at %s", c.Owner, c.Name, cpIP)
+			log.Printf("[cluster] %q/%q: control plane up at %s", c.Owner, c.Name, cpIP)
 
 		case clustercore.ActionCreateWorker:
 			g := groupByName[act.Group]
@@ -328,7 +328,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 			if err := r.store.Delete(ctx, c.Owner, c.Name); err != nil {
 				return fmt.Errorf("delete record: %w", err)
 			}
-			log.Printf("[cluster] %s/%s: deleted", c.Owner, c.Name)
+			log.Printf("[cluster] %q/%q: deleted", c.Owner, c.Name)
 		}
 		return nil
 	}
@@ -437,7 +437,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 				_ = r.store.UpsertNode(ctx, n)
 			}
 		}
-		log.Printf("[cluster] %s/%s: READY (%d nodes)", c.Owner, c.Name, ready)
+		log.Printf("[cluster] %q/%q: READY (%d nodes)", c.Owner, c.Name, ready)
 	} else if ready < expected && c.State == clusterstore.StateReady {
 		if err := r.store.SetState(ctx, c.Owner, c.Name, clusterstore.StateDegraded,
 			fmt.Sprintf("%d of %d expected nodes Ready", ready, expected)); err != nil {

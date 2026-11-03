@@ -235,7 +235,7 @@ func (sw runCheckoutSweep) sweepHome(user, home string) ([]*pb.BoxRunCheckout, e
 	}
 	entries, refused := parseRunCheckoutList(out)
 	if refused {
-		sw.logf("[run-checkout-sweep] %s: %s's ~/work is a symlink or under one; not swept", sw.box, user)
+		sw.logf("[run-checkout-sweep] %q: %q's ~/work is a symlink or under one; not swept", sw.box, user)
 		return nil, nil
 	}
 	cutoff := sw.now.Add(-sw.maxAge)
@@ -278,10 +278,10 @@ func (sw runCheckoutSweep) sweepHome(user, home string) ([]*pb.BoxRunCheckout, e
 		switch verdict {
 		case "R":
 			c.Disposition = pb.BoxRunCheckoutDisposition_BOX_RUN_CHECKOUT_DISPOSITION_REMOVED
-			sw.logf("[run-checkout-sweep] %s: removed %s from %s's ~/work (%d bytes)", sw.box, name, user, c.SizeBytes)
+			sw.logf("[run-checkout-sweep] %q: removed %q from %q's ~/work (%d bytes)", sw.box, name, user, c.SizeBytes)
 		case "F":
 			c.Disposition = pb.BoxRunCheckoutDisposition_BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED
-			sw.logf("[run-checkout-sweep] %s: removing %s from %s's ~/work failed", sw.box, name, user)
+			sw.logf("[run-checkout-sweep] %q: removing %q from %q's ~/work failed", sw.box, name, user)
 		}
 	}
 	return result, nil
@@ -503,7 +503,7 @@ func (s *ContainerServer) sweepAllBoxRunCheckouts(ctx context.Context) {
 			continue
 		}
 		if _, _, err := s.sweepBoxRunCheckouts(b.Ref.Tenant, b.ToolAccess, false); err != nil {
-			s.runCheckoutLogf("[run-checkout-sweep] %s-container: %v", b.Ref.Tenant, err)
+			s.runCheckoutLogf("[run-checkout-sweep] %q: %v", b.Ref.Tenant+"-container", err)
 		}
 	}
 }
@@ -522,7 +522,7 @@ func (s *ContainerServer) sweepBoxRunCheckoutsAfterRun(username string) {
 			return
 		}
 		if _, _, err := s.sweepBoxRunCheckouts(username, info.ToolAccess, false); err != nil {
-			s.runCheckoutLogf("[run-checkout-sweep] %s-container: %v", username, err)
+			s.runCheckoutLogf("[run-checkout-sweep] %q: %v", username+"-container", err)
 		}
 	}()
 }

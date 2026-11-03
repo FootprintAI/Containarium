@@ -74,7 +74,7 @@ func (q *AutoQuarantine) OnScanResult(containerName, tenant, status string) {
 		return
 	}
 	if status == "clean" {
-		log.Printf("[auto-quarantine] clean verdict for %s (tenant %q) not used to release any quarantine (self-reported; release is operator/TTL)", containerName, tenant)
+		log.Printf("[auto-quarantine] clean verdict for %q (tenant %q) not used to release any quarantine (self-reported; release is operator/TTL)", containerName, tenant)
 		return
 	}
 	if status != "infected" {
@@ -88,7 +88,7 @@ func (q *AutoQuarantine) OnScanResult(containerName, tenant, status string) {
 		log.Printf("[auto-quarantine] infected tenant=%q: %v", tenant, err)
 		return
 	}
-	log.Printf("[auto-quarantine] QUARANTINED tenant %q (egress blocked) — malware in %s", tenant, containerName)
+	log.Printf("[auto-quarantine] QUARANTINED tenant %q (egress blocked) — malware in %q", tenant, containerName)
 }
 
 // applyQuarantine ensures a quarantine deny rule is present, refreshing its

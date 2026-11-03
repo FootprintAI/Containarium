@@ -33,7 +33,7 @@ func (h *encryptionHooks) encryptionStateFor(ctx context.Context, containerName 
 
 	root, _, encrypted, err := h.encryptionRootFor(containerName)
 	if err != nil {
-		log.Printf("[encryption] could not determine the encryption state of %s: %v", containerName, err)
+		log.Printf("[encryption] could not determine the encryption state of %q: %v", containerName, err)
 		return pb.EncryptionState_ENCRYPTION_STATE_UNSPECIFIED
 	}
 	if !encrypted {
@@ -42,7 +42,7 @@ func (h *encryptionHooks) encryptionStateFor(ctx context.Context, containerName 
 
 	status, err := h.zfs.KeyStatus(ctx, root)
 	if err != nil {
-		log.Printf("[encryption] could not read the key status of %s (%s): %v", containerName, root, err)
+		log.Printf("[encryption] could not read the key status of %q (%q): %v", containerName, root, err)
 		return pb.EncryptionState_ENCRYPTION_STATE_UNSPECIFIED
 	}
 	if status == zfscrypt.KeyAvailable {

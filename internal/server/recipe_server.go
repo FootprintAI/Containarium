@@ -193,7 +193,7 @@ func recipeKeyOwner(labels map[string]string, boxName string) string {
 		if err := modelgateway.ValidateKeyOwner(owner); err == nil {
 			return owner
 		}
-		log.Printf("[recipe] cloud_org_id label %q on %s does not form a valid key_owner; falling back to the self-hosted username", orgID, boxName)
+		log.Printf("[recipe] cloud_org_id label %q on %q does not form a valid key_owner; falling back to the self-hosted username", orgID, boxName)
 	}
 	owner := modelgateway.UserKeyOwner(boxName)
 	if err := modelgateway.ValidateKeyOwner(owner); err != nil {
@@ -224,7 +224,7 @@ func (s *RecipeServer) gatewayEnvForRecipe(recipe *pb.Recipe, boxName, provider,
 		KeyOwner: keyOwner,
 	}, recipeGatewayTokenTTL)
 	if err != nil {
-		log.Printf("[recipe] mint gateway token for %s failed (box runs unmanaged): %v", boxName, err)
+		log.Printf("[recipe] mint gateway token for %q failed (box runs unmanaged): %v", boxName, err)
 		return ""
 	}
 	return gatewayRecipeEnvExports(provider, s.gateway.httpPort, tok)
@@ -441,7 +441,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// precedes post_start.)
 	if dataset != nil {
 		if err := deliverGuardrailDataset(s.boxOps(), containerName, recipe.GetGuardrailGate().GetDatasetPath(), dataset.Dir); err != nil {
-			log.Printf("[recipe] guardrail gate: deliver dataset to %s: %v", containerName, err)
+			log.Printf("[recipe] guardrail gate: deliver dataset to %q: %v", containerName, err)
 			return nil, status.Errorf(codes.Internal, "could not deliver the verified dataset to %s", containerName)
 		}
 	}
@@ -466,12 +466,12 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
 				if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
-					log.Printf("[recipe] async post_start failed on %s (recipe %q): %v", containerName, recipe.Id, err)
+					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v", containerName, recipe.Id, err)
 					return
 				}
 			}
 			if _, _, warnings := s.exposePorts(bg, recipe, req.Name); len(warnings) > 0 {
-				log.Printf("[recipe] async expose warnings on %s: %s", containerName, strings.Join(warnings, "; "))
+				log.Printf("[recipe] async expose warnings on %q: %q", containerName, strings.Join(warnings, "; "))
 			}
 		}()
 		info, _ := s.boxOps().Get(req.Name)
