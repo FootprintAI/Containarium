@@ -179,3 +179,42 @@ func TestMetricsExport_NoWatchTargetsAddsNoSeries(t *testing.T) {
 		t.Errorf("primary preempted = %d, want 0", got)
 	}
 }
+
+// The exported fields are written by the recovery goroutine and read by the
+// /metrics handler and the exporter callback. Under -race this fails if the
+// mark*/snapshot helpers stop sharing metricsMu.
+func TestWatchTargetMetrics_ConcurrentWritersAndReaders(t *testing.T) {
+	m, providers := newWatchMetricsManager("host-a")
+	wb := m.watchOnly[0]
+	ctx := context.Background()
+
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for i := 0; i < 200; i++ {
+			providers["host-a"].status = StatusTerminated
+			m.handleWatchOnlyEvent(ctx, wb, VMEvent{Type: EventPreempted, Timestamp: time.Unix(1700000000+int64(i), 0)})
+			providers["host-a"].status = StatusRunning
+			m.diagnoseAndRecoverWatchOnly(ctx, wb)
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = m.renderMetrics(1, 0)
+				_ = m.WatchTargetSnapshots()
+			}
+		}
+	}()
+
+	<-finished
+	close(done)
+
+	if s := wb.snapshot(); s.PreemptCount != 200 || s.RecoveredCount != 200 || s.Down {
+		t.Fatalf("snapshot = %+v, want 200 preempted, 200 recovered, up", s)
+	}
+}
