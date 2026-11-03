@@ -11964,6 +11964,10 @@
         "model": {
           "type": "string",
           "description": "The model id the run was started with (StartBoxRunRequest.model, #3259).\nEmpty when none was requested: the engine's own default ran, and the\ndaemon does not claim to know which. Empty for a run from before the field."
+        },
+        "usage": {
+          "$ref": "#/definitions/RunUsage",
+          "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; check usage.status before reading usage.models. UNAVAILABLE means the\ndaemon has no usage for the run (never zeros)."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -13850,6 +13854,10 @@
             "type": "string"
           },
           "description": "The model id each member was driven with (#3259), keyed by skill_id: the\nrun's model_overrides entry, else the skill's own pinned `model`. A member\nthat exports no model (none requested or pinned, or no named engine) is\nabsent: its engine's default ran, and the daemon does not claim to know which."
+        },
+        "usage": {
+          "$ref": "#/definitions/RunUsage",
+          "description": "Token usage of the run, summed over its members by model (capability\n\"run_usage\"). Always set; UNAVAILABLE when the daemon has no usage."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -20532,6 +20540,10 @@
         "message": {
           "type": "string",
           "description": "Human-readable status from the server, e.g. how to follow a run that is\nstill in flight on a server that runs skills asynchronously. Empty when\nthe server has nothing to add; clients print it as-is when present."
+        },
+        "usage": {
+          "$ref": "#/definitions/RunUsage",
+          "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; UNAVAILABLE when the daemon has no usage for the run."
         }
       }
     },
@@ -20678,6 +20690,68 @@
       ],
       "default": "RUN_INPUT_KIND_UNSPECIFIED",
       "description": "RunInputKind is what a request asks for.\n\n - RUN_INPUT_KIND_PERMISSION: Allow or deny one tool call."
+    },
+    "RunModelUsage": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "Model id; empty on the single row of an AGGREGATE_ONLY usage."
+        },
+        "inputTokens": {
+          "type": "string",
+          "format": "int64"
+        },
+        "outputTokens": {
+          "type": "string",
+          "format": "int64"
+        },
+        "cacheReadTokens": {
+          "type": "string",
+          "format": "int64"
+        },
+        "cacheWriteTokens": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "RunModelUsage is the token counts one model accrued in a run."
+    },
+    "RunUsage": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/RunUsageStatus"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RunModelUsage"
+          },
+          "description": "One row per model. Empty unless status is REPORTED or AGGREGATE_ONLY."
+        },
+        "includesPriorSession": {
+          "type": "boolean",
+          "description": "True when the run resumed an earlier session and the counts are\ncumulative across it."
+        },
+        "engine": {
+          "type": "string",
+          "description": "The engine that reported the usage (for example \"claude-code\")."
+        }
+      },
+      "description": "RunUsage is the token usage the engine inside the box reported for a run.\nIt is cost-visibility data reported by the engine, not tamper-proof billing\ndata."
+    },
+    "RunUsageStatus": {
+      "type": "string",
+      "enum": [
+        "RUN_USAGE_STATUS_UNSPECIFIED",
+        "RUN_USAGE_STATUS_REPORTED",
+        "RUN_USAGE_STATUS_AGGREGATE_ONLY",
+        "RUN_USAGE_STATUS_UNAVAILABLE"
+      ],
+      "default": "RUN_USAGE_STATUS_UNSPECIFIED",
+      "description": "RunUsageStatus says how much of a run's token usage the daemon could read.\n\n - RUN_USAGE_STATUS_REPORTED: Per-model usage as reported by the engine.\n - RUN_USAGE_STATUS_AGGREGATE_ONLY: Only an aggregate was reported: one row with an empty model.\n - RUN_USAGE_STATUS_UNAVAILABLE: No usable usage (no structured result, invalid or oversized output, or the\nrun is still live). Distinct from zero tokens."
     },
     "SSHAuthMethod": {
       "type": "string",

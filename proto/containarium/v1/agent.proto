@@ -9,6 +9,7 @@ import "containarium/v1/container.proto";
 import "containarium/v1/recipe.proto";
 import "containarium/v1/model_gateway.proto";
 import "containarium/v1/proof_pack.proto";
+import "containarium/v1/run_usage.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -386,6 +387,9 @@ message RunAgentSkillResponse {
   // still in flight on a server that runs skills asynchronously. Empty when
   // the server has nothing to add; clients print it as-is when present.
   string message = 6;
+  // Tokens the engine reported for this run (capability "run_usage"). Always
+  // set; UNAVAILABLE when the daemon has no usage for the run.
+  RunUsage usage = 7;
 }
 
 // ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
@@ -958,6 +962,9 @@ message CrewRun {
   // that exports no model (none requested or pinned, or no named engine) is
   // absent: its engine's default ran, and the daemon does not claim to know which.
   map<string, string> member_models = 16;
+  // Token usage of the run, summed over its members by model (capability
+  // "run_usage"). Always set; UNAVAILABLE when the daemon has no usage.
+  RunUsage usage = 17;
 }
 
 // CrewProofPack summarizes the Proof Pack a crew's PACK_PRODUCER produced

@@ -699,6 +699,7 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		RunId:         runID,
 		GitCommit:     gitCommit,
 		WorkspacePath: workspacePath,
+		Usage:         unavailableRunUsage(),
 	}, nil
 }
 
