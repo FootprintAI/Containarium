@@ -142,7 +142,7 @@ func (m *Manager) DeployApp(ctx context.Context, req *v1.DeployAppRequest) (*v1.
 		app.State = v1.AppState_APP_STATE_FAILED
 		app.ErrorMessage = fmt.Sprintf("failed to extract source: %v", err)
 		if saveErr := m.store.Save(ctx, app); saveErr != nil {
-			log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+			log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 		}
 		return nil, nil, fmt.Errorf("failed to extract source: %w", err)
 	}
@@ -163,7 +163,7 @@ func (m *Manager) DeployApp(ctx context.Context, req *v1.DeployAppRequest) (*v1.
 			app.State = v1.AppState_APP_STATE_FAILED
 			app.ErrorMessage = fmt.Sprintf("failed to detect language: %v", err)
 			if saveErr := m.store.Save(ctx, app); saveErr != nil {
-				log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+				log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 			}
 			return nil, nil, fmt.Errorf("failed to detect language: %w", err)
 		}
@@ -187,7 +187,7 @@ func (m *Manager) DeployApp(ctx context.Context, req *v1.DeployAppRequest) (*v1.
 		app.State = v1.AppState_APP_STATE_FAILED
 		app.ErrorMessage = fmt.Sprintf("failed to upload source: %v", err)
 		if saveErr := m.store.Save(ctx, app); saveErr != nil {
-			log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+			log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 		}
 		return nil, nil, fmt.Errorf("failed to upload source: %w", err)
 	}
@@ -210,7 +210,7 @@ func (m *Manager) DeployApp(ctx context.Context, req *v1.DeployAppRequest) (*v1.
 		app.State = v1.AppState_APP_STATE_FAILED
 		app.ErrorMessage = fmt.Sprintf("build failed: %v", err)
 		if saveErr := m.store.Save(ctx, app); saveErr != nil {
-			log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+			log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 		}
 		return nil, nil, fmt.Errorf("build failed: %w", err)
 	}
@@ -222,7 +222,7 @@ func (m *Manager) DeployApp(ctx context.Context, req *v1.DeployAppRequest) (*v1.
 		app.State = v1.AppState_APP_STATE_FAILED
 		app.ErrorMessage = fmt.Sprintf("failed to run container: %v", err)
 		if saveErr := m.store.Save(ctx, app); saveErr != nil {
-			log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+			log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 		}
 		return nil, nil, fmt.Errorf("failed to run container: %w", err)
 	}
@@ -321,7 +321,7 @@ func (m *Manager) RestartApp(ctx context.Context, username, appName string) (*v1
 		app.State = v1.AppState_APP_STATE_FAILED
 		app.ErrorMessage = fmt.Sprintf("restart failed: %v", err)
 		if saveErr := m.store.Save(ctx, app); saveErr != nil {
-			log.Printf("[Manager] failed to persist FAILED state for app %s: %v", app.Name, saveErr)
+			log.Printf("[Manager] failed to persist FAILED state for app %q: %v", app.Name, saveErr)
 		}
 		return nil, fmt.Errorf("failed to restart podman container: %w", err)
 	}
@@ -348,14 +348,14 @@ func (m *Manager) DeleteApp(ctx context.Context, username, appName string, remov
 	podmanContainerName := m.podmanContainerName(app)
 	rmCmd := []string{"podman", "rm", "-f", podmanContainerName}
 	if err := m.incusClient.Exec(app.ContainerName, rmCmd); err != nil {
-		log.Printf("[Manager] DeleteApp: best-effort podman rm for %s: %v", podmanContainerName, err)
+		log.Printf("[Manager] DeleteApp: best-effort podman rm for %q: %v", podmanContainerName, err)
 	}
 
 	// Remove Podman image
 	if app.ContainerImage != "" {
 		rmiCmd := []string{"podman", "rmi", "-f", app.ContainerImage}
 		if err := m.incusClient.Exec(app.ContainerName, rmiCmd); err != nil {
-			log.Printf("[Manager] DeleteApp: best-effort podman rmi for %s: %v", app.ContainerImage, err)
+			log.Printf("[Manager] DeleteApp: best-effort podman rmi for %q: %v", app.ContainerImage, err)
 		}
 	}
 
@@ -364,13 +364,13 @@ func (m *Manager) DeleteApp(ctx context.Context, username, appName string, remov
 		appDir := fmt.Sprintf("/home/%s/apps/%s", username, appName)
 		rmDirCmd := []string{"rm", "-rf", appDir}
 		if err := m.incusClient.Exec(app.ContainerName, rmDirCmd); err != nil {
-			log.Printf("[Manager] DeleteApp: best-effort rm -rf %s: %v", appDir, err)
+			log.Printf("[Manager] DeleteApp: best-effort rm -rf %q: %v", appDir, err)
 		}
 	}
 
 	// Remove proxy route
 	if err := m.proxy.RemoveRoute(app.Subdomain); err != nil {
-		log.Printf("[Manager] DeleteApp: best-effort RemoveRoute %s: %v", app.Subdomain, err)
+		log.Printf("[Manager] DeleteApp: best-effort RemoveRoute %q: %v", app.Subdomain, err)
 	}
 
 	// Delete from store
@@ -482,7 +482,7 @@ func (m *Manager) uploadSource(ctx context.Context, containerName, appDir string
 	// Clean up tarball
 	rmCmd := []string{"rm", tarPath}
 	if err := m.incusClient.Exec(containerName, rmCmd); err != nil {
-		log.Printf("[Manager] best-effort tarball cleanup %s: %v", tarPath, err)
+		log.Printf("[Manager] best-effort tarball cleanup %q: %v", tarPath, err)
 	}
 
 	return nil
@@ -525,7 +525,7 @@ func (m *Manager) runContainer(ctx context.Context, containerName string, app *v
 	// Remove existing container if any
 	rmCmd := []string{"podman", "rm", "-f", podmanContainerName}
 	if err := m.incusClient.Exec(containerName, rmCmd); err != nil {
-		log.Printf("[Manager] best-effort remove existing container %s: %v", podmanContainerName, err)
+		log.Printf("[Manager] best-effort remove existing container %q: %v", podmanContainerName, err)
 	}
 
 	// Run the new container

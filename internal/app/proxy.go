@@ -309,7 +309,7 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 	// RouteSyncJob re-checks TLS subjects on every tick (#1584), so a failure
 	// here is repaired on the next sync rather than persisting forever.
 	if err := p.ProvisionTLS(fullDomain); err != nil {
-		log.Printf("[ProxyManager] route for %s is live but TLS provisioning failed: %v — "+
+		log.Printf("[ProxyManager] route for %q is live but TLS provisioning failed: %v — "+
 			"HTTPS will fail for this host until the next route-sync tick reconciles it (#1584/#1585)",
 			fullDomain, err)
 	}
@@ -843,7 +843,7 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	}
 
 	log.Printf("[ProxyManager] reconciling %d TLS subject(s) missing from Caddy's automation "+
-		"policies: %v — these hosts would otherwise serve on :80 with no certificate (#1584)",
+		"policies: %q — these hosts would otherwise serve on :80 with no certificate (#1584)",
 		len(missing), missing)
 	warnUncoveredDNSZones(missing)
 
@@ -1085,7 +1085,7 @@ func (p *ProxyManager) UpdateGRPCRoute(subdomain, containerIP string, port int) 
 func (p *ProxyManager) UpdateRouteWithProtocol(subdomain, containerIP string, port int, protocol RouteProtocol) error {
 	// Remove existing route first (idempotent; route may not exist yet)
 	if err := p.RemoveRoute(subdomain); err != nil {
-		log.Printf("[ProxyManager] RemoveRoute(%s) before update: %v", subdomain, err)
+		log.Printf("[ProxyManager] RemoveRoute(%q) before update: %v", subdomain, err)
 	}
 
 	// Add new route with protocol

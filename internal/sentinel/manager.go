@@ -826,7 +826,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 			// Only reachable behind daemonAuthGate: the request authenticated,
 			// so its pool may now be tied to its source address (#2892).
 			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
-			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%q:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
 
@@ -1046,7 +1046,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 						log.Printf("[sentinel] SSH recovery hint: %v", err)
 					}
 				}
-				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
+				log.Printf("[sentinel] backend %q (%s) is healthy", b.ID, b.IP)
 			}
 		} else {
 			b.healthyCount = 0
@@ -1054,7 +1054,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.unhealthyCount >= m.config.UnhealthyThreshold && b.Healthy {
 				b.Healthy = false
 				m.recordBackendHealth(b.ID, false)
-				log.Printf("[sentinel] backend %s (%s) is unhealthy", b.ID, b.IP)
+				log.Printf("[sentinel] backend %q (%s) is unhealthy", b.ID, b.IP)
 
 				// If this was the primary, try failover
 				m.mu.RLock()
@@ -1075,7 +1075,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 	if anyHealthy && m.currentState() == StateMaintenance {
 		best := m.backends.SelectPrimary()
 		if best != nil {
-			log.Printf("[sentinel] backend available, switching to proxy via %s (%s)", best.ID, best.IP)
+			log.Printf("[sentinel] backend available, switching to proxy via %q (%s)", best.ID, best.IP)
 			if err := m.switchToProxy(best); err != nil {
 				log.Printf("[sentinel] failed to switch to proxy: %v", err)
 			}
@@ -1170,10 +1170,10 @@ func (m *Manager) maybeFailback() {
 		// The primary is unchanged; try again on the next check. Not logged as
 		// a failback: nothing moved, and a consumer counting "failback:" lines
 		// must not count a refused switch.
-		log.Printf("[sentinel] switch back to %s (%s) refused, staying on %s: %v", best.ID, best.IP, cur.ID, err)
+		log.Printf("[sentinel] switch back to %q (%s) refused, staying on %q: %v", best.ID, best.IP, cur.ID, err)
 		return
 	}
-	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
+	log.Printf("[sentinel] failback: %q → %q (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
 	m.recordFailback()
 }
 
@@ -1190,7 +1190,7 @@ func (m *Manager) doSwitchToProxy(b *Backend) error {
 func (m *Manager) failoverPrimary(ctx context.Context, failed *Backend) {
 	next := m.backends.SelectPrimary()
 	if next != nil && next != failed {
-		log.Printf("[sentinel] failover: %s → %s (%s)", failed.ID, next.ID, next.IP)
+		log.Printf("[sentinel] failover: %q → %q (%s)", failed.ID, next.ID, next.IP)
 		if err := m.doSwitchToProxy(next); err != nil {
 			log.Printf("[sentinel] failover failed: %v", err)
 		} else {
@@ -1237,10 +1237,10 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	// Immediate key sync from ALL healthy backends + apply
 	for _, b := range m.backends.Healthy() {
 		if err := m.keyStore.Sync(b.ID, b.IP, m.config.HealthPort); err != nil {
-			log.Printf("[sentinel] key sync for %s on proxy switch failed: %v", b.ID, err)
+			log.Printf("[sentinel] key sync for %q on proxy switch failed: %v", b.ID, err)
 		}
 		if err := m.keyStore.PushSentinelKey(b.IP, m.config.HealthPort); err != nil {
-			log.Printf("[sentinel] push sentinel key for %s failed: %v", b.ID, err)
+			log.Printf("[sentinel] push sentinel key for %q failed: %v", b.ID, err)
 		}
 	}
 	if err := m.keyStore.Apply(); err != nil {
@@ -1287,7 +1287,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	}
 
 	m.state.Store(StateProxy)
-	log.Printf("[sentinel] mode: PROXY → primary=%s (%s), total backends=%d",
+	log.Printf("[sentinel] mode: PROXY → primary=%q (%s), total backends=%d",
 		backend.ID, backend.IP, m.backends.Count())
 	return nil
 }
@@ -2072,7 +2072,7 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 	}
 	m.backends.Add(b)
 
-	log.Printf("[sentinel] tunnel connected: %s at %s (total backends: %d)", b.ID, b.IP, m.backends.Count())
+	log.Printf("[sentinel] tunnel connected: %q at %s (total backends: %d)", b.ID, b.IP, m.backends.Count())
 
 	// If the tunnel handshake declared this spot is a primary (slice 6),
 	// auto-register it in the primary registry pointing at its loopback
@@ -2088,7 +2088,7 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 			Port:        spot.PublicPort,
 			BackendID:   b.ID,
 		})
-		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%v base_domains=%v -> %s:%d",
+		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%q base_domains=%q -> %s:%d",
 			spot.Pool, spot.PublicHostname, spot.PublicAliases, spot.PublicBaseDomains, spot.LocalIP, spot.PublicPort)
 	}
 
@@ -2104,7 +2104,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 	backendID := "tunnel-" + spot.ID
 	if m.primaries != nil {
 		if n := m.primaries.UnregisterByBackendID(backendID); n > 0 {
-			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %s", n, backendID)
+			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %q", n, backendID)
 		}
 	}
 	if m.certStore != nil {
@@ -2115,7 +2115,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 		return
 	}
 
-	log.Printf("[sentinel] tunnel disconnected: %s (remaining backends: %d)", backendID, m.backends.Count())
+	log.Printf("[sentinel] tunnel disconnected: %q (remaining backends: %d)", backendID, m.backends.Count())
 
 	// Remove this backend's users from sshpiper config. Apply() rewrites
 	// config.yaml, which sshpiperd's yaml plugin re-reads per connection — no
@@ -2133,7 +2133,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 	if wasPrimary && m.currentState() == StateProxy {
 		next := m.backends.SelectPrimary()
 		if next != nil {
-			log.Printf("[sentinel] failover after tunnel disconnect: → %s (%s)", next.ID, next.IP)
+			log.Printf("[sentinel] failover after tunnel disconnect: → %q (%s)", next.ID, next.IP)
 			if err := m.switchToProxy(next); err != nil {
 				log.Printf("[sentinel] failover failed: %v", err)
 			}

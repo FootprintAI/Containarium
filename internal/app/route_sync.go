@@ -322,14 +322,14 @@ func (j *RouteSyncJob) syncHTTPRoutes(dbRoutes []*RouteRecord) error {
 
 		if !exists {
 			if err := j.addRouteToCaddy(dbRoute); err != nil {
-				log.Printf("[RouteSyncJob] Failed to add route %s: %v", domain, err)
+				log.Printf("[RouteSyncJob] Failed to add route %q: %v", domain, err)
 				continue
 			}
 			added++
 		} else {
 			if j.needsUpdate(dbRoute, caddyRoute) {
 				if err := j.updateRouteInCaddy(dbRoute); err != nil {
-					log.Printf("[RouteSyncJob] Failed to update route %s: %v", domain, err)
+					log.Printf("[RouteSyncJob] Failed to update route %q: %v", domain, err)
 					continue
 				}
 				updated++
@@ -341,7 +341,7 @@ func (j *RouteSyncJob) syncHTTPRoutes(dbRoutes []*RouteRecord) error {
 	for domain := range caddyRouteMap {
 		if _, exists := dbRouteMap[domain]; !exists {
 			if err := j.proxyManager.RemoveRoute(domain); err != nil {
-				log.Printf("[RouteSyncJob] Failed to remove route %s: %v", domain, err)
+				log.Printf("[RouteSyncJob] Failed to remove route %q: %v", domain, err)
 				continue
 			}
 			removed++
@@ -371,7 +371,7 @@ func (j *RouteSyncJob) syncHTTPRoutes(dbRoutes []*RouteRecord) error {
 				// Non-fatal: the route is already gone, which is the
 				// user-visible half. A leftover subject costs ACME retries,
 				// not availability, and the next reap attempt will retry.
-				log.Printf("[RouteSyncJob] Removed route %s but failed to drop its TLS subject: %v "+
+				log.Printf("[RouteSyncJob] Removed route %q but failed to drop its TLS subject: %v "+
 					"— it will keep retrying ACME until cleaned up (#1618)", domain, err)
 			}
 		}
@@ -454,13 +454,13 @@ func (j *RouteSyncJob) syncL4Routes(dbRoutes []*RouteRecord) error {
 
 		if !exists {
 			if err := j.l4ProxyManager.AddL4Route(dbRoute.FullDomain, dbRoute.TargetIP, dbRoute.TargetPort); err != nil {
-				log.Printf("[RouteSyncJob] Failed to add L4 route %s: %v", domain, err)
+				log.Printf("[RouteSyncJob] Failed to add L4 route %q: %v", domain, err)
 				continue
 			}
 			added++
 		} else if existing.UpstreamIP != dbRoute.TargetIP || existing.UpstreamPort != dbRoute.TargetPort {
 			if err := j.l4ProxyManager.AddL4Route(dbRoute.FullDomain, dbRoute.TargetIP, dbRoute.TargetPort); err != nil {
-				log.Printf("[RouteSyncJob] Failed to update L4 route %s: %v", domain, err)
+				log.Printf("[RouteSyncJob] Failed to update L4 route %q: %v", domain, err)
 				continue
 			}
 			updated++
@@ -471,7 +471,7 @@ func (j *RouteSyncJob) syncL4Routes(dbRoutes []*RouteRecord) error {
 	for sni := range caddyL4Map {
 		if _, exists := dbRouteMap[sni]; !exists {
 			if err := j.l4ProxyManager.RemoveL4Route(sni); err != nil {
-				log.Printf("[RouteSyncJob] Failed to remove L4 route %s: %v", sni, err)
+				log.Printf("[RouteSyncJob] Failed to remove L4 route %q: %v", sni, err)
 				continue
 			}
 			removed++

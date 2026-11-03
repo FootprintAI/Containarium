@@ -325,16 +325,16 @@ func applySentinelKey(homeRoot, pubKey string) (updated, rotated int, err error)
 		writeErr := writeAuthorizedKeys(akPath, sshDir, newContent)
 		unlock()
 		if writeErr != nil {
-			log.Printf("[keys] failed to write %s: %v", akPath, writeErr)
+			log.Printf("[keys] failed to write %q: %v", akPath, writeErr)
 			continue
 		}
 
 		updated++
 		if hadPriorKey && priorKeyDiffers {
 			rotated++
-			log.Printf("[keys] rotated sentinel key in %s", akPath)
+			log.Printf("[keys] rotated sentinel key in %q", akPath)
 		} else {
-			log.Printf("[keys] added sentinel key to %s", akPath)
+			log.Printf("[keys] added sentinel key to %q", akPath)
 		}
 	}
 	return updated, rotated, nil
