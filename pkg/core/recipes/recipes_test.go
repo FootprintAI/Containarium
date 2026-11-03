@@ -763,9 +763,8 @@ func TestSlidesAgentRecipe(t *testing.T) {
 	if r.RequiresGpu {
 		t.Error("slides-agent should not require a GPU")
 	}
-	// Only the in-box auth proxy is exposed, under the "workspace" subdomain
-	// so GetWorkspaceAccess's <name>-workspace URL and /opt/wsauth/token
-	// bootstrap apply unchanged.
+	// Only the in-box auth proxy is exposed, under the "workspace" subdomain:
+	// the host GetWorkspaceAccess composes its /__ws_login#t= URL on.
 	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 8080 || r.Ports[0].Subdomain != "workspace" {
 		t.Errorf("slides-agent should expose only the auth proxy on :8080 as 'workspace'; got %+v", r.Ports)
 	}
@@ -822,16 +821,20 @@ func TestSlidesAgentRecipe(t *testing.T) {
 		"ghcr.io/footprintai/containarium-slides-agent", // the prebaked image, tag = the release
 		"CONTAINARIUM_PARAM_SLIDES_IMAGE",               // mirror / override hook
 		"CONTAINARIUM_PARAM_RELEASE",
-		"--network host",            // proxy on the box's address, dev server on loopback
-		"--restart=always",          // survives box reboot and idle-stop/start
-		"--env-file",                // auth material never on the command line
-		"hash-password",             // password bcrypt-hashed at deploy
-		"/opt/wsauth/token",         // token the daemon vends for zero-click access
-		":/workspace",               // the deck tree stays on the box disk
-		"--user",                    // container runs as the box user so files stay editable
-		"exit 1",                    // fail closed on empty auth material
-		`[ "$CODE" = "401" ]`,       // unauthenticated request refused, or the deploy fails
-		`Cookie: ws_auth=$WS_TOKEN`, // the dev server must answer through the proxy (200)
+		"--network host",                         // proxy on the box's address, dev server on loopback
+		"--restart=always",                       // survives box reboot and idle-stop/start
+		"--env-file",                             // auth material never on the command line
+		"hash-password",                          // password bcrypt-hashed at deploy
+		`rm -f "$WSAUTH/token"`,                  // no static zero-click token (#3486)
+		":/workspace",                            // the deck tree stays on the box disk
+		"--user",                                 // container runs as the box user so files stay editable
+		"exit 1",                                 // fail closed on empty auth material
+		`[ "$CODE" = "401" ]`,                    // unauthenticated request refused, or the deploy fails
+		"http://127.0.0.1:9099/__mint",           // the zero-click login works end to end at deploy (#3486)
+		`--data-urlencode 't@-'`,                 // the token is POSTed, from stdin, never in a URL or argv
+		"ws_session=",                            // redeemed for the session cookie
+		`[ "$REPLAY" = "403" ]`,                  // a replayed token is refused, or the deploy fails
+		`printf 'Cookie: ws_session=%s' "$SESS"`, // the dev server must answer through the proxy (200)
 		`[ "$AUTHED" = "200" ]`,
 	} {
 		if !strings.Contains(joined, want) {
@@ -903,6 +906,14 @@ func TestSlidesAgentRecipe_AuthStaging(t *testing.T) {
 				t.Fatal(err)
 			}
 			wsauth := filepath.Join(dir, "wsauth")
+			// A static token left by an image from before #3486 must go, so
+			// the daemon never hands it out.
+			if err := os.MkdirAll(wsauth, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(wsauth, "token"), []byte("old-static-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			script := strings.Replace(step, "WSAUTH=/opt/wsauth\n", "WSAUTH="+wsauth+"\n", 1)
 			cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+script) //nolint:gosec // embedded recipe text
 			cmd.Env = append(os.Environ(),
@@ -922,24 +933,24 @@ func TestSlidesAgentRecipe_AuthStaging(t *testing.T) {
 				}
 				return
 			}
-			for _, name := range []string{"token", "env"} {
-				fi, err := os.Stat(filepath.Join(wsauth, name))
-				if err != nil {
-					t.Fatalf("%s: %v", name, err)
-				}
-				if fi.Mode().Perm() != 0o600 {
-					t.Errorf("%s mode = %o, want 0600", name, fi.Mode().Perm())
-				}
+			fi, err := os.Stat(filepath.Join(wsauth, "env"))
+			if err != nil {
+				t.Fatalf("env: %v", err)
 			}
-			token, _ := os.ReadFile(filepath.Join(wsauth, "token"))
-			if len(strings.TrimSpace(string(token))) < 32 {
-				t.Errorf("token too short: %q", token)
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("env mode = %o, want 0600", fi.Mode().Perm())
+			}
+			if _, err := os.Stat(filepath.Join(wsauth, "token")); !os.IsNotExist(err) {
+				t.Errorf("a static zero-click token must not be staged (#3486): %v", err)
 			}
 			env, _ := os.ReadFile(filepath.Join(wsauth, "env"))
-			for _, want := range []string{"SLIDES_AUTH_USER=deck\n", "SLIDES_AUTH_HASH=" + tc.hash + "\n", "SLIDES_WS_TOKEN=" + strings.TrimSpace(string(token)) + "\n"} {
+			for _, want := range []string{"SLIDES_AUTH_USER=deck\n", "SLIDES_AUTH_HASH=" + tc.hash + "\n"} {
 				if !strings.Contains(string(env), want) {
 					t.Errorf("env file missing %q:\n%s", want, env)
 				}
+			}
+			if strings.Contains(string(env), "SLIDES_WS_TOKEN") {
+				t.Error("the env file must not carry a static zero-click token (#3486)")
 			}
 			if strings.Contains(string(env), "s3cret") {
 				t.Error("the plaintext password must never reach the env file")

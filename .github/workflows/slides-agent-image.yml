@@ -51,6 +51,7 @@ jobs:
             test -x /usr/local/bin/slides-render
             test -x /usr/local/bin/open-slide
             test -x /usr/bin/caddy
+            test -x /usr/local/bin/slides-wsauth
             command -v chromium
             command -v node
             test -f /opt/open-slide/app/node_modules/@open-slide/core/bin.js
@@ -60,6 +61,58 @@ jobs:
           if docker run --rm --network none containarium-slides-agent:ci; then
             echo "entrypoint started without auth material" >&2; exit 1
           fi
+
+      - name: Zero-click login through the running image (#3486)
+        # The image as a box runs it: entrypoint, login helper, proxy and dev
+        # server. A minted token redeems once for a session cookie distinct
+        # from it, the replay is refused, the cookie and basic auth both reach
+        # the dev server, a token sent in a query is burned, and nothing the
+        # container logs carries a token or the cookie.
+        run: |
+          set -euo pipefail
+          HASH=$(docker run --rm --entrypoint caddy containarium-slides-agent:ci hash-password --plaintext ci-pass)
+          docker run -d --name slides-login -e SLIDES_AUTH_USER=ci -e SLIDES_AUTH_HASH="$HASH" containarium-slides-agent:ci >/dev/null
+          trap 'docker rm -f slides-login >/dev/null' EXIT
+          in_box() { docker exec -i slides-login "$@"; }
+          code() { in_box curl -s -o /dev/null -w '%{http_code}' "$@" || true; }
+          for _ in $(seq 1 60); do
+            [ "$(code http://127.0.0.1:8080/)" = "401" ] && break
+            sleep 1
+          done
+          [ "$(code http://127.0.0.1:8080/)" = "401" ]
+          TOK=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
+          SESS=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
+            | sed -n 's/^[Ss]et-[Cc]ookie: ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p')
+          [ -n "$SESS" ] && [ "$SESS" != "$TOK" ]
+          REPLAY=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)
+          [ "$REPLAY" = "403" ] || { echo "replayed token: $REPLAY, want 403" >&2; exit 1; }
+          for _ in $(seq 1 120); do
+            [ "$(code -H "Cookie: ws_session=$SESS" http://127.0.0.1:8080/)" = "200" ] && break
+            sleep 1
+          done
+          [ "$(code -H "Cookie: ws_session=$SESS" http://127.0.0.1:8080/)" = "200" ]
+          [ "$(code -u ci:ci-pass http://127.0.0.1:8080/)" = "200" ]
+          [ "$(code -H "Cookie: ws_session=$TOK" http://127.0.0.1:8080/)" = "401" ]
+          TOK2=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
+          [ "$(code "http://127.0.0.1:8080/__ws_login?t=$TOK2")" = "400" ]
+          [ "$(printf '%s' "$TOK2" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)" = "403" ]
+          if docker logs slides-login 2>&1 | grep -F -e "$TOK" -e "$SESS"; then
+            echo "the container's log carries a token or the session cookie" >&2; exit 1
+          fi
+
+      # The real Caddyfile in front of the helper, with this image's own caddy:
+      # images/slides-agent/wsauth's proxy-level test skips without a caddy
+      # on PATH, so it runs here.
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.10'
+          cache-name: shared
+      - name: Proxy-level login test with the image's caddy (#3486)
+        run: |
+          docker create --name caddy-src containarium-slides-agent:ci >/dev/null
+          docker cp caddy-src:/usr/bin/caddy "$RUNNER_TEMP/caddy"
+          docker rm caddy-src >/dev/null
+          PATH="$RUNNER_TEMP:$PATH" WSAUTH_REQUIRE_CADDY=1 go test -race -count=1 -run TestCaddyfileProxy -v ./images/slides-agent/wsauth/
 
       # This is the image slides-agent boxes actually run — security.yml's Trivy job only
       # scans source dependencies (scan-type: fs), it never looks at the built

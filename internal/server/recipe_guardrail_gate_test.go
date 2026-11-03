@@ -65,6 +65,10 @@ func (f *fakeRecipeBoxes) Exec(_ string, command []string) error {
 	return nil
 }
 
+func (f *fakeRecipeBoxes) ExecWithOutput(string, []string) (string, string, error) {
+	return "", "", errors.New("fakeRecipeBoxes: ExecWithOutput not modelled")
+}
+
 func (f *fakeRecipeBoxes) PushFile(_ string, path string, content io.ReadSeeker, mode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

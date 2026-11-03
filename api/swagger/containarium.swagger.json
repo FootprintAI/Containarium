@@ -16330,11 +16330,11 @@
       "properties": {
         "token": {
           "type": "string",
-          "description": "The in-box auth proxy's per-box session token."
+          "description": "The in-box login token: minted single-use per call where the box's login\nhelper provides one (librechat, slides-agent), else the box's static\nper-box token."
         },
         "url": {
           "type": "string",
-          "description": "Ready-to-embed bootstrap URL (https://\u003cworkspace-domain\u003e/__ws_login?t=...);\nloading it sets the session cookie and redirects to the workspace UI."
+          "description": "Ready-to-embed bootstrap URL. For a slides-agent box it is\nhttps://\u003cworkspace-domain\u003e/__ws_login#t=... (the token in the URL\nfragment, which the proxy's bootstrap page posts; a token sent in the\nquery is refused); otherwise https://\u003cworkspace-domain\u003e/__ws_login?t=....\nLoading it sets the session cookie and redirects to the workspace UI."
         }
       },
       "description": "GetWorkspaceAccessResponse carries a bootstrap URL the console can load in an\niframe to sign the user into the in-box workspace proxy without a prompt."
