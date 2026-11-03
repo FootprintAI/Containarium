@@ -350,7 +350,7 @@ func (m *L4ProxyManager) AddL4Route(sni, upstreamIP string, port int) error {
 	// Remove existing route for this SNI first (idempotent).
 	// Route may not exist yet; that's fine — log and continue.
 	if err := m.RemoveL4Route(sni); err != nil {
-		log.Printf("[L4ProxyManager] RemoveL4Route(%s) before add: %v", sni, err)
+		log.Printf("[L4ProxyManager] RemoveL4Route(%q) before add: %v", sni, err)
 	}
 
 	route := CaddyL4Route{

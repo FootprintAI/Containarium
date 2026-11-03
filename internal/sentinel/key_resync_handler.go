@@ -103,7 +103,7 @@ func (m *Manager) KeyResyncHandler() http.HandlerFunc {
 		// live" for a backend whose keys never arrived — the exact false
 		// confidence this endpoint exists to remove.
 		users, syncErr := m.keyStore.lastSyncResult(backend.ID)
-		log.Printf("[keysync] event-driven resync for backend %s: %d users (coalesced=%v, ok=%v, reason=%q)",
+		log.Printf("[keysync] event-driven resync for backend %q: %d users (coalesced=%v, ok=%v, reason=%q)",
 			backend.ID, users, coalesced, syncErr == nil, req.Reason)
 
 		w.Header().Set("Content-Type", "application/json")
