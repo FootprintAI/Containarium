@@ -820,7 +820,14 @@ func recoverJumpServerAccounts() {
 		log.Printf("[account-sync] skipped (cannot connect to Incus): %v", err)
 		return
 	}
-	res, err := mgr.SyncOwnerAccounts(container.OwnerSyncOptions{})
+	// Revoked keys stay in the box's own authorized_keys, so filter through the
+	// ssh_keys registry. Fail closed: if it cannot be reached no account is
+	// restored (logged below), rather than seeding one from unchecked keys.
+	dsn := postgresConnString
+	if dsn == "" {
+		dsn = getPostgresConnString()
+	}
+	res, err := syncOwnerAccountsFiltered(mgr, dsn, container.OwnerSyncOptions{})
 	if err != nil {
 		log.Printf("[account-sync] skipped (list containers failed): %v", err)
 		return
@@ -832,6 +839,15 @@ func recoverJumpServerAccounts() {
 	} else {
 		log.Printf("[account-sync] host accounts up to date (%d present, %d container(s) without a tenant key)",
 			res.Skipped, len(res.NoKey))
+	}
+	if res.FilterErr != nil {
+		log.Printf("[account-sync] WARNING: key registry unavailable (%v); owner accounts were NOT restored because the box keys cannot be checked for revocation. Restart the daemon or run `containarium sync-accounts` once the database is reachable.", res.FilterErr)
+	}
+	for u, n := range res.RevokedDropped {
+		log.Printf("[account-sync] %s: skipped %d revoked key(s)", u, n)
+	}
+	if len(res.AllRevoked) > 0 {
+		log.Printf("[account-sync] every key is revoked for %s; account not restored", strings.Join(res.AllRevoked, ", "))
 	}
 	if len(res.Failed) > 0 {
 		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %q",

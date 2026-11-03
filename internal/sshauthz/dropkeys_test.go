@@ -1,6 +1,4 @@
-//go:build !windows && !containarium_client
-
-package cmd
+package sshauthz
 
 import (
 	"context"
@@ -11,24 +9,22 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/footprintai/containarium/internal/sshauthz"
 )
 
 // fakeKeyLookup is an in-memory registry: fingerprint -> row. A missing
 // fingerprint answers ErrKeyNotFound like the real store; err forces a failure.
 type fakeKeyLookup struct {
-	rows map[string]sshauthz.KeyRecord
+	rows map[string]KeyRecord
 	err  error
 }
 
-func (f fakeKeyLookup) Lookup(_ context.Context, fp string) (sshauthz.KeyRecord, error) {
+func (f fakeKeyLookup) Lookup(_ context.Context, fp string) (KeyRecord, error) {
 	if f.err != nil {
-		return sshauthz.KeyRecord{}, f.err
+		return KeyRecord{}, f.err
 	}
 	r, ok := f.rows[fp]
 	if !ok {
-		return sshauthz.KeyRecord{}, sshauthz.ErrKeyNotFound
+		return KeyRecord{}, ErrKeyNotFound
 	}
 	return r, nil
 }
@@ -52,13 +48,13 @@ func TestDropRevokedKeys(t *testing.T) {
 	unregistered, _ := testAuthorizedKey(t)
 	now := time.Now()
 
-	lookup := fakeKeyLookup{rows: map[string]sshauthz.KeyRecord{
+	lookup := fakeKeyLookup{rows: map[string]KeyRecord{
 		activeFP:  {Fingerprint: activeFP},
 		revokedFP: {Fingerprint: revokedFP, RevokedAt: now},
 	}}
 
 	// Revoked key first: the seed key must not be the revoked one.
-	kept, dropped, err := dropRevokedKeys(context.Background(), lookup, []string{revoked, active, unregistered})
+	kept, dropped, err := DropRevokedKeys(context.Background(), lookup, []string{revoked, active, unregistered})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,8 +68,8 @@ func TestDropRevokedKeys(t *testing.T) {
 
 func TestDropRevokedKeys_AllRevoked(t *testing.T) {
 	revoked, fp := testAuthorizedKey(t)
-	lookup := fakeKeyLookup{rows: map[string]sshauthz.KeyRecord{fp: {Fingerprint: fp, RevokedAt: time.Now()}}}
-	kept, dropped, err := dropRevokedKeys(context.Background(), lookup, []string{revoked})
+	lookup := fakeKeyLookup{rows: map[string]KeyRecord{fp: {Fingerprint: fp, RevokedAt: time.Now()}}}
+	kept, dropped, err := DropRevokedKeys(context.Background(), lookup, []string{revoked})
 	if err != nil || len(kept) != 0 || dropped != 1 {
 		t.Fatalf("kept=%q dropped=%d err=%v, want none kept, 1 dropped", kept, dropped, err)
 	}
@@ -84,7 +80,7 @@ func TestDropRevokedKeys_AllRevoked(t *testing.T) {
 func TestDropRevokedKeys_RegistryErrorFailsClosed(t *testing.T) {
 	k, _ := testAuthorizedKey(t)
 	boom := errors.New("registry down")
-	kept, _, err := dropRevokedKeys(context.Background(), fakeKeyLookup{err: boom}, []string{k})
+	kept, _, err := DropRevokedKeys(context.Background(), fakeKeyLookup{err: boom}, []string{k})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want wrapped %v", err, boom)
 	}
@@ -94,7 +90,7 @@ func TestDropRevokedKeys_RegistryErrorFailsClosed(t *testing.T) {
 }
 
 func TestDropRevokedKeys_UnparseableKeyIsDropped(t *testing.T) {
-	kept, dropped, err := dropRevokedKeys(context.Background(), fakeKeyLookup{}, []string{"not a key"})
+	kept, dropped, err := DropRevokedKeys(context.Background(), fakeKeyLookup{}, []string{"not a key"})
 	if err != nil || len(kept) != 0 || dropped != 1 {
 		t.Fatalf("kept=%q dropped=%d err=%v", kept, dropped, err)
 	}
