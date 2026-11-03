@@ -1103,10 +1103,15 @@ func (x *GetWorkspaceAccessRequest) GetName() string {
 // iframe to sign the user into the in-box workspace proxy without a prompt.
 type GetWorkspaceAccessResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The in-box auth proxy's per-box session token.
+	// The in-box login token: minted single-use per call where the box's login
+	// helper provides one (librechat, slides-agent), else the box's static
+	// per-box token.
 	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	// Ready-to-embed bootstrap URL (https://<workspace-domain>/__ws_login?t=...);
-	// loading it sets the session cookie and redirects to the workspace UI.
+	// Ready-to-embed bootstrap URL. For a slides-agent box it is
+	// https://<workspace-domain>/__ws_login#t=... (the token in the URL
+	// fragment, which the proxy's bootstrap page posts; a token sent in the
+	// query is refused); otherwise https://<workspace-domain>/__ws_login?t=....
+	// Loading it sets the session cookie and redirects to the workspace UI.
 	Url           string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

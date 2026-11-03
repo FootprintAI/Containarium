@@ -2,8 +2,10 @@
 #
 # slides-agent image entrypoint: refuse to start without auth material, seed
 # the deck tree on the bind-mounted workspace, then run the open-slide dev
-# server on loopback and the auth proxy in front of it. Either one exiting
-# ends the container (the recipe runs it with --restart=always).
+# server on loopback, the login helper (slides-wsauth, loopback only) and the
+# auth proxy in front of them. Any one of them exiting ends the container (the
+# recipe runs it with --restart=always); a restarted helper starts with no
+# session, so every browser signs in again.
 # See images/slides-agent/Dockerfile.
 set -euo pipefail
 
@@ -13,7 +15,7 @@ APP="${SLIDES_APP:-/opt/open-slide/app}"
 
 # Fail closed: the proxy must never come up with a degenerate auth config, and
 # the dev server must never come up without the proxy.
-for v in SLIDES_AUTH_USER SLIDES_AUTH_HASH SLIDES_WS_TOKEN; do
+for v in SLIDES_AUTH_USER SLIDES_AUTH_HASH; do
   if [ -z "${!v:-}" ]; then
     echo "[slides-agent] $v is empty; refusing to start without auth material" >&2
     exit 1
@@ -56,17 +58,19 @@ cd "$APP"
 # bare `localhost` can resolve to ::1 alone inside the container).
 node node_modules/@open-slide/core/bin.js dev --host 127.0.0.1 --port 5173 --no-skills-check &
 DEV_PID=$!
+slides-wsauth &
+AUTH_PID=$!
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 CADDY_PID=$!
 
 shutdown() {
-  kill -TERM "$DEV_PID" "$CADDY_PID" 2>/dev/null || true
-  wait "$DEV_PID" "$CADDY_PID" 2>/dev/null || true
+  kill -TERM "$DEV_PID" "$AUTH_PID" "$CADDY_PID" 2>/dev/null || true
+  wait "$DEV_PID" "$AUTH_PID" "$CADDY_PID" 2>/dev/null || true
 }
 trap shutdown TERM INT
 
-# The first of the two to exit takes the container down with it.
-wait -n "$DEV_PID" "$CADDY_PID" || true
-echo "[slides-agent] dev server or proxy exited; stopping" >&2
+# The first of the three to exit takes the container down with it.
+wait -n "$DEV_PID" "$AUTH_PID" "$CADDY_PID" || true
+echo "[slides-agent] dev server, login helper or proxy exited; stopping" >&2
 shutdown
 exit 1
