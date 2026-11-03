@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -73,6 +74,8 @@ func (f *fakeDeviceServer) GetStoragePoolVolume(string, string, string) (*api.St
 type fakeOp struct{ incusclient.Operation }
 
 func (fakeOp) Wait() error { return nil }
+
+func (fakeOp) WaitContext(context.Context) error { return nil }
 
 func cloneDevices(in map[string]map[string]string) map[string]map[string]string {
 	out := make(map[string]map[string]string, len(in))
