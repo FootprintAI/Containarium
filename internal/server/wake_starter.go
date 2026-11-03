@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -48,6 +51,7 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool
 	if s == nil || s.cs == nil {
 		return false, "", 0, fmt.Errorf("wake starter not configured")
 	}
+	started := time.Now()
 	resp, err := s.cs.StartContainer(ctx, &pb.StartContainerRequest{
 		Username:            username,
 		WaitForReady:        true,
@@ -73,5 +77,79 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool
 	// Port is the route's TargetPort — we don't have it here, but
 	// the wake proxy falls back to route.TargetPort when the
 	// starter doesn't report one.
+	// StartContainer's generic readiness check intentionally short-circuits
+	// when the first post-start Incus read has no IP address. For an HTTP wake
+	// that is *not* evidence of a listening app: treating it as ready makes
+	// the first request fail with 502 while the Box is still booting.
+	// Recheck the live (not previously cached) Box IP and the trusted route
+	// port under the original wake budget before proxying request bytes.
+	if ready && s.cs.routeStore != nil {
+		routes, rerr := s.cs.routeStore.ListByContainer(ctx, username+"-container")
+		if rerr != nil {
+			log.Printf("[wake] route read after start %q: %v", username, rerr)
+			return false, ip, 0, nil
+		}
+		if len(routes) != 0 && routes[0].TargetPort > 0 {
+			remaining := time.Duration(s.readyTimeoutS)*time.Second - time.Since(started)
+			if remaining <= 0 {
+				return false, ip, routes[0].TargetPort, nil
+			}
+			ip, ready = awaitWakeEndpoint(ctx, remaining, routes[0].TargetPort, func() string {
+				info, err := s.cs.GetManager().Get(username)
+				if err != nil || info == nil {
+					return ""
+				}
+				return info.IPAddress
+			})
+			return ready, ip, routes[0].TargetPort, nil
+		}
+	}
 	return ready, ip, 0, nil
+}
+
+// awaitWakeEndpoint only returns ready when the live Box's own current IP
+// accepts TCP on the already-authorized route port. No route Host or client
+// address is trusted for the readiness check. A lack of IP, a timeout or a
+// cancelled wake is NOT a successful warmup.
+func awaitWakeEndpoint(ctx context.Context, budget time.Duration, port int, readIP func() string) (string, bool) {
+	if budget <= 0 || port <= 0 {
+		return "", false
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", false
+		}
+		ip := readIP()
+		if ip != "" {
+			dialTimeout := 200 * time.Millisecond
+			if rem := time.Until(deadline); rem < dialTimeout {
+				dialTimeout = rem
+			}
+			if dialTimeout > 0 {
+				conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), dialTimeout)
+				if err == nil {
+					_ = conn.Close()
+					return ip, true
+				}
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", false
+		}
+		wait := 100 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return "", false
+		case <-timer.C:
+		}
+	}
 }

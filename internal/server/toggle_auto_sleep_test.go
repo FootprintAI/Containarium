@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -57,7 +58,7 @@ func newAutoSleepTestServer(t *testing.T, seed map[string]*incus.ContainerInfo) 
 }
 
 // TestToggleAutoSleep_EnableSetsFlagsAndThreshold — happy path: both
-// the flag and an explicit threshold land in two SetConfig calls.
+// the flag and an explicit threshold land after arming the last-start clock.
 func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Running"},
@@ -73,14 +74,20 @@ func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	if !resp.AutoSleepEnabled || resp.IdleThresholdMinutes != 30 {
 		t.Errorf("response = %+v, want enabled=true, threshold=30", resp)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 SetConfig calls, got %d: %+v", len(*calls), *calls)
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 SetConfig calls including clock, got %d: %+v", len(*calls), *calls)
+	}
+	if (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("first SetConfig key = %s, want %s", (*calls)[0].key, incus.LastStartedAtKey)
+	}
+	if _, err := time.Parse(time.RFC3339, (*calls)[0].value); err != nil {
+		t.Fatalf("bad auto-sleep birth timestamp: %v", err)
 	}
 	wantPairs := map[string]string{
 		incus.AutoSleepEnabledKey:     "true",
 		incus.IdleThresholdMinutesKey: "30",
 	}
-	for _, c := range *calls {
+	for _, c := range (*calls)[1:] {
 		if c.name != "alice-container" {
 			t.Errorf("SetConfig name = %q, want alice-container", c.name)
 		}
@@ -95,6 +102,28 @@ func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	}
 	if len(wantPairs) != 0 {
 		t.Errorf("missing SetConfig calls for: %v", wantPairs)
+	}
+}
+
+func TestToggleAutoSleep_ClockFailureCannotEnableUnverifiableSleep(t *testing.T) {
+	s, calls, mock := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	mock.SetConfigFunc = func(name, key, value string) error {
+		*calls = append(*calls, setConfigCall{name: name, key: key, value: value})
+		if key != incus.LastStartedAtKey {
+			t.Fatalf("opt-in was written despite failing clock initialization: %s", key)
+		}
+		return errors.New("clock write refused")
+	}
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true, IdleThresholdMinutes: 1,
+	})
+	if err == nil {
+		t.Fatal("expected failure on missing durable clock")
+	}
+	if len(*calls) != 1 || (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("wrong writes after failed clock: %+v", *calls)
 	}
 }
 

@@ -174,6 +174,14 @@ func (s *ContainerServer) stampBirthTTL(ctx context.Context, containerName, user
 // later) rather than failing the create. idleMinutes must be > 0 (the zero case
 // is "no auto-sleep" and never reaches here).
 func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes int32) {
+	// A create does not call StartContainer, so its freshly running Box
+	// otherwise has no last-start time. Start the idle clock at birth,
+	// before enabling the timer. If this stamp fails, leave auto-sleep off
+	// rather than accepting an opt-in that can never trigger.
+	if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		log.Printf("[autosleep] birth clock stamp failed for %q: %v (auto-sleep not enabled)", containerName, err)
+		return
+	}
 	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
 		log.Printf("[autosleep] failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)", containerName, err)
 		return

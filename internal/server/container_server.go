@@ -2816,6 +2816,16 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 		effectiveThreshold = incus.DefaultIdleThresholdMinutes
 	}
 
+	// A newly created Running box can have no last-start stamp: Create
+	// starts the workload without calling StartContainer. The auto-sleep
+	// ticker then sees neither a start nor network activity and will never
+	// stop it. Arm the clock before accepting opt-in; on failure do not
+	// enable a timer that the ticker cannot evaluate.
+	if req.Enabled && info.State == pb.ContainerState_CONTAINER_STATE_RUNNING {
+		if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to arm auto-sleep clock: %v", err)
+		}
+	}
 	enabledStr := "false"
 	if req.Enabled {
 		enabledStr = "true"

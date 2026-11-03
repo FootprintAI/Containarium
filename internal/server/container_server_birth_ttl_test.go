@@ -89,10 +89,16 @@ func TestStampBirthAutoSleep_EnablesWithThreshold(t *testing.T) {
 	})
 	s.stampBirthAutoSleep("alice-container", 20)
 
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 SetConfig calls (enable + threshold), got %d: %+v", len(*calls), *calls)
+	if len(*calls) != 3 {
+		t.Fatalf("expected clock + enable + threshold, got %d: %+v", len(*calls), *calls)
 	}
-	enable, thresh := (*calls)[0], (*calls)[1]
+	stamp, enable, thresh := (*calls)[0], (*calls)[1], (*calls)[2]
+	if stamp.key != incus.LastStartedAtKey {
+		t.Errorf("first call = %+v, want %s", stamp, incus.LastStartedAtKey)
+	}
+	if _, err := time.Parse(time.RFC3339, stamp.value); err != nil {
+		t.Errorf("birth clock value %q invalid: %v", stamp.value, err)
+	}
 	if enable.key != incus.AutoSleepEnabledKey || enable.value != "true" {
 		t.Errorf("first call = %+v, want %s=true", enable, incus.AutoSleepEnabledKey)
 	}
