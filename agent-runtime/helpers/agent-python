@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# agent-python — the Python toolchain helper in an agent-runtime box (#3491).
+#
+# Installed onto PATH by scripts/install-agent-runtime.sh (it ships in the
+# agent-runtime bundle); the box gets python3-venv, python3-pip and
+# python3-pytest when it is deployed with the recipe parameter
+# toolchains=python.
+#
+# Usage:
+#   agent-python setup [DIR]              create (or reuse) DIR's venv and install
+#                                         the dependencies DIR itself declares
+#   agent-python test  [DIR] [-- CMD...]  run CMD (default: python -m pytest) in
+#                                         DIR inside that venv
+#   agent-python venv  [DIR]              print the venv path for DIR
+# DIR defaults to the current directory.
+#
+# What `setup` installs, in this order, and nothing else:
+#   1. requirements.txt, then every other requirements*.txt in DIR (sorted);
+#   2. DIR itself, editable (pip install -e .), when pyproject.toml has a
+#      [project] table or setup.cfg has [metadata] name; with the extra
+#      [test] (or [tests]) when the project declares one.
+# A setup.py on its own is not run, and a pyproject.toml holding only tool
+# configuration is not installed. The venv sees the system site-packages, so
+# the toolchain's pytest is available when the repo does not declare its own.
+#
+# Every failure prints one line starting "agent-python: error:" on stderr
+# and exits non-zero; nothing is skipped silently. When the package index
+# cannot be reached (restricted egress), the error names the index host and
+# the hosts a deployment must allow.
+#
+# `test` reports "agent-python: test command executed: exit=N" on stderr once
+# the command has run, and exits with the command's own status N.
+#
+# Env:
+#   AGENT_PYTHON_VENV       use this venv path instead of the per-DIR default
+#   AGENT_PYTHON_VENV_ROOT  where per-DIR venvs live
+#                           (default ${XDG_CACHE_HOME:-$HOME/.cache}/agent-python)
+#   AGENT_PYTHON_PROBE_TIMEOUT  seconds to wait for the index (default 10)
+#   PIP_INDEX_URL, PIP_NO_INDEX, PIP_FIND_LINKS, ...  read by pip as usual;
+#                           PIP_INDEX_URL is also the host the reachability
+#                           probe checks (default https://pypi.org/simple/)
+set -euo pipefail
+
+PROG=agent-python
+DEFAULT_INDEX_URL="https://pypi.org/simple/"
+EGRESS_HINT="under restricted egress allow the Python package index (default hosts: pypi.org and files.pythonhosted.org); see the Python toolchain section of the agent-runtime README"
+
+die() {
+  echo "${PROG}: error: $*" >&2
+  exit 1
+}
+
+usage() {
+  echo "${PROG}: usage: ${PROG} setup [DIR] | test [DIR] [-- CMD...] | venv [DIR]" >&2
+  exit 2
+}
+
+# resolve_dir prints DIR as an absolute path, or fails.
+resolve_dir() {
+  local d="${1:-.}"
+  [ -d "$d" ] || die "no such directory: $d"
+  (cd "$d" && pwd -P)
+}
+
+# venv_for prints the venv path for an absolute DIR.
+venv_for() {
+  if [ -n "${AGENT_PYTHON_VENV:-}" ]; then
+    printf '%s\n' "$AGENT_PYTHON_VENV"
+    return
+  fi
+  local root="${AGENT_PYTHON_VENV_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-python}"
+  local sum
+  sum="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"
+  printf '%s/%s-%s\n' "$root" "$(basename "$1")" "$sum"
+}
+
+truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    "" | 0 | false | no | off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# probe_index checks the package index answers at all (any HTTP status is an
+# answer). Skipped when pip is told not to use an index.
+probe_index() {
+  if truthy "${PIP_NO_INDEX:-}"; then
+    return 0
+  fi
+  local url="${PIP_INDEX_URL:-$DEFAULT_INDEX_URL}" out
+  if ! out="$(python3 -I - "$url" "${AGENT_PYTHON_PROBE_TIMEOUT:-10}" <<'PY'
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+parts = urllib.parse.urlsplit(sys.argv[1])
+host = parts.hostname or sys.argv[1]
+# Probe without any credentials in the URL: reachability needs none, and the
+# host is all that is ever printed.
+netloc = host if parts.port is None else "%s:%d" % (host, parts.port)
+url = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path or "/", "", ""))
+try:
+    urllib.request.urlopen(url, timeout=float(sys.argv[2])).close()
+except urllib.error.HTTPError:
+    pass  # the index answered; a 401/404 is pip's business, not egress
+except Exception as e:  # noqa: BLE001 - every other failure means unreachable
+    reason = getattr(e, "reason", e)
+    print("%s\t%s" % (host, str(reason).replace("\n", " ")), end="")
+    sys.exit(1)
+PY
+)"; then
+    local host="${out%%$'\t'*}" reason="${out#*$'\t'}"
+    die "package index unreachable: ${host:-$url} (${reason:-no answer}); dependencies were NOT installed; ${EGRESS_HINT}"
+  fi
+}
+
+# pip_install VENV LOG DESC ARGS... runs pip install, its output to LOG; on
+# failure prints the log's tail and dies with one line naming DESC.
+pip_install() {
+  local venv="$1" log="$2" desc="$3"
+  shift 3
+  echo "${PROG}: installing ${desc}"
+  local rc=0
+  PIP_RETRIES="${PIP_RETRIES:-1}" PIP_TIMEOUT="${PIP_TIMEOUT:-15}" \
+    "$venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off "$@" >>"$log" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  echo "--- last lines of ${log} ---"
+  tail -n 20 "$log" || true
+  if grep -Eq "NewConnectionError|ConnectTimeoutError|Failed to establish a new connection|Temporary failure in name resolution|Name or service not known|Network is unreachable|Connection refused|ProxyError|Max retries exceeded|ReadTimeoutError|Connection broken" "$log"; then
+    local host
+    host="$(grep -Eo "host='[^']+'" "$log" | head -n 1 | cut -d"'" -f2 || true)"
+    die "dependency install failed: package index unreachable${host:+: $host} while installing ${desc}; ${EGRESS_HINT}; log: ${log}"
+  fi
+  die "dependency install failed: pip install ${desc} exited ${rc}; log: ${log}"
+}
+
+# project_manifest prints how DIR declares itself as a package:
+#   "install<TAB><extra>"  install DIR (editable), with [extra] when non-empty
+#   "skip<TAB><reason>"    a manifest that is deliberately not installed
+#   "none"                 no package manifest
+project_manifest() {
+  python3 -I - "$1" <<'PY'
+import configparser
+import os
+import sys
+
+d = sys.argv[1]
+pyproject = os.path.join(d, "pyproject.toml")
+setup_cfg = os.path.join(d, "setup.cfg")
+TEST_EXTRAS = ("test", "tests")
+
+
+def pick(extras):
+    return next((e for e in TEST_EXTRAS if e in extras), "")
+
+
+has_pyproject = os.path.isfile(pyproject)
+if has_pyproject:
+    import tomllib
+
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print("error\tpyproject.toml is not valid TOML: %s" % str(e).replace("\n", " "))
+        sys.exit(0)
+    project = data.get("project")
+    if isinstance(project, dict):
+        extras = project.get("optional-dependencies") or {}
+        print("install\t%s" % pick(extras if isinstance(extras, dict) else {}))
+        sys.exit(0)
+
+if os.path.isfile(setup_cfg):
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(setup_cfg)
+    except configparser.Error as e:
+        print("error\tsetup.cfg is not readable: %s" % str(e).replace("\n", " "))
+        sys.exit(0)
+    if cfg.has_option("metadata", "name"):
+        extras = cfg.options("options.extras_require") if cfg.has_section("options.extras_require") else []
+        print("install\t%s" % pick(extras))
+        sys.exit(0)
+
+if has_pyproject:
+    print("skip\tpyproject.toml has no [project] table (tool configuration only); the repo is not installed as a package")
+elif os.path.isfile(os.path.join(d, "setup.py")):
+    print("skip\tsetup.py without a pyproject.toml [project] table or setup.cfg [metadata] is not installed (agent-python does not run setup scripts)")
+else:
+    print("none")
+PY
+}
+
+cmd_setup() {
+  local dir venv log
+  dir="$(resolve_dir "${1:-.}")"
+  venv="$(venv_for "$dir")"
+  command -v python3 >/dev/null || die "python3 is not installed; deploy the agent-runtime box with toolchains=python"
+
+  if [ -x "$venv/bin/python" ]; then
+    echo "${PROG}: reusing venv ${venv}"
+  else
+    echo "${PROG}: creating venv ${venv}"
+    mkdir -p "$(dirname "$venv")" || die "cannot create $(dirname "$venv")"
+    local out
+    if ! out="$(python3 -m venv --system-site-packages "$venv" 2>&1)"; then
+      printf '%s\n' "$out"
+      die "python3 -m venv failed for ${venv} (is python3-venv installed? deploy the agent-runtime box with toolchains=python)"
+    fi
+  fi
+
+  # What the repo declares, decided before anything is installed.
+  local reqs=() f
+  [ -f "$dir/requirements.txt" ] && reqs+=(requirements.txt)
+  while IFS= read -r f; do
+    [ "$f" = requirements.txt ] || reqs+=("$f")
+  done < <(cd "$dir" && LC_ALL=C find . -maxdepth 1 -type f -name 'requirements*.txt' -printf '%f\n' | LC_ALL=C sort)
+
+  local manifest kind detail
+  manifest="$(project_manifest "$dir")" || die "could not read the package manifest in ${dir}"
+  kind="${manifest%%$'\t'*}"
+  detail=""
+  [ "$kind" != "$manifest" ] && detail="${manifest#*$'\t'}"
+  [ "$kind" = error ] && die "$detail"
+
+  if [ "${#reqs[@]}" -eq 0 ] && [ "$kind" != install ]; then
+    [ "$kind" = skip ] && echo "${PROG}: note: ${detail}"
+    echo "${PROG}: no dependency manifest found in ${dir} (requirements*.txt, pyproject.toml [project], setup.cfg [metadata]); nothing to install"
+    echo "${PROG}: venv ready: ${venv}"
+    return 0
+  fi
+  [ "$kind" = skip ] && echo "${PROG}: note: ${detail}"
+
+  probe_index
+  log="$(mktemp "${TMPDIR:-/tmp}/agent-python-setup.XXXXXX.log")"
+  if [ "${#reqs[@]}" -gt 0 ]; then
+    local args=() r
+    for r in "${reqs[@]}"; do args+=(-r "$r"); done
+    (cd "$dir" && pip_install "$venv" "$log" "${args[*]}" "${args[@]}")
+  fi
+  if [ "$kind" = install ]; then
+    local target="."
+    [ -n "$detail" ] && target=".[${detail}]"
+    (cd "$dir" && pip_install "$venv" "$log" "-e ${target}" -e "$target")
+  fi
+  rm -f "$log"
+  echo "${PROG}: venv ready: ${venv}"
+}
+
+cmd_test() {
+  local dir="." venv
+  if [ $# -gt 0 ] && [ "$1" != "--" ]; then
+    dir="$1"
+    shift
+  fi
+  if [ $# -gt 0 ]; then
+    [ "$1" = "--" ] || usage
+    shift
+  fi
+  dir="$(resolve_dir "$dir")"
+  venv="$(venv_for "$dir")"
+  [ -x "$venv/bin/python" ] || die "no venv for ${dir} (${venv}); run 'agent-python setup ${dir}' first"
+
+  local cmd=("$@")
+  if [ "${#cmd[@]}" -eq 0 ]; then
+    cmd=(python -m pytest)
+  fi
+  export VIRTUAL_ENV="$venv"
+  export PATH="$venv/bin:$PATH"
+  command -v "${cmd[0]}" >/dev/null 2>&1 || die "test command not found: ${cmd[0]} (looked in ${venv}/bin and PATH)"
+  if [ "${cmd[*]}" = "python -m pytest" ] && ! python -c "import pytest" >/dev/null 2>&1; then
+    die "pytest is not installed in ${venv} (declare it in the repo or deploy the agent-runtime box with toolchains=python)"
+  fi
+
+  echo "${PROG}: running in ${dir}: ${cmd[*]}"
+  local rc=0
+  (cd "$dir" && "${cmd[@]}") || rc=$?
+  echo "${PROG}: test command executed: exit=${rc}" >&2
+  exit "$rc"
+}
+
+[ $# -gt 0 ] || usage
+sub="$1"
+shift
+case "$sub" in
+  setup) [ $# -le 1 ] || usage; cmd_setup "$@" ;;
+  test) cmd_test "$@" ;;
+  venv) [ $# -le 1 ] || usage; venv_for "$(resolve_dir "${1:-.}")" ;;
+  -h | --help | help) usage ;;
+  *) echo "${PROG}: unknown command: ${sub}" >&2; usage ;;
+esac

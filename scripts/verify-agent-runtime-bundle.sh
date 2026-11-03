@@ -6,7 +6,7 @@
 #      (so an engine can't silently drop from a release — e.g. gemini was missing
 #      from v0.33.0 because that tag predated the engine; this fails the build if
 #      tsc/packaging ever skips one),
-#   2. the box helpers under bin/ (agent-python), executable, and
+#   2. the box helpers under helpers/ (agent-python, agent-test), executable, and
 #   3. each runtime SDK as a package.json *dependency* (not devDependency), so the
 #      box's `npm ci --omit=dev` actually installs it.
 #
@@ -20,7 +20,7 @@ SRC_ENGINES_DIR="${2:-agent-runtime/src/engines}"
 # Runtime SDKs the engines import; each must be a (non-dev) dependency.
 REQUIRED_DEPS=(@anthropic-ai/claude-agent-sdk @openai/codex-sdk @google/genai @modelcontextprotocol/sdk)
 # Box helpers install-agent-runtime.sh puts on PATH.
-REQUIRED_HELPERS=(agent-python)
+REQUIRED_HELPERS=(agent-python agent-test)
 
 [ -f "$BUNDLE" ] || { echo "verify-bundle: no such bundle: $BUNDLE" >&2; exit 2; }
 [ -d "$SRC_ENGINES_DIR" ] || { echo "verify-bundle: no src engines dir: $SRC_ENGINES_DIR" >&2; exit 2; }
@@ -54,10 +54,11 @@ if [ ! -f "$tmp/dist/credential-state-cli.js" ] || [ ! -f "$tmp/dist/credential-
 fi
 
 # The box helpers install-agent-runtime.sh puts on PATH (#3491): a bundle
-# without agent-python would leave a toolchains=python box failing at post_start.
+# without agent-python would leave a toolchains=python box failing at post_start,
+# and one without agent-test leaves skills no way to report a test run.
 for helper in "${REQUIRED_HELPERS[@]}"; do
-  if [ ! -x "$tmp/bin/$helper" ]; then
-    echo "MISSING HELPER: bundle has no executable bin/$helper" >&2
+  if [ ! -x "$tmp/helpers/$helper" ]; then
+    echo "MISSING HELPER: bundle has no executable helpers/$helper" >&2
     fail=1
   fi
 done

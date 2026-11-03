@@ -15,12 +15,12 @@ import (
 	"testing"
 )
 
-// Tests for agent-runtime/bin/agent-python (#3491), the Python toolchain
+// Tests for agent-runtime/helpers/agent-python (#3491), the Python toolchain
 // helper the agent-runtime box gets with toolchains=python. Real pip runs
 // offline against a wheel built here (PIP_NO_INDEX + PIP_FIND_LINKS); manifest
 // selection runs against a stub venv python that records its arguments.
 
-const agentPythonScript = "../../../agent-runtime/bin/agent-python"
+const agentPythonScript = "../../../agent-runtime/helpers/agent-python"
 
 // requireVenv skips when the host python cannot create a venv with pip.
 func requireVenv(t *testing.T) {
@@ -416,6 +416,54 @@ func TestAgentPython_UsageErrors(t *testing.T) {
 		}
 		if !strings.Contains(lastLine(r.stderr), "agent-python") {
 			t.Errorf("%v: unclear error: %q", args, r.stderr)
+		}
+	}
+}
+
+// agent-test is the language-neutral sibling: it runs any test command,
+// reports that it executed, and passes its exit status through.
+func TestAgentTest(t *testing.T) {
+	run := func(args ...string) helperResult {
+		t.Helper()
+		cmd := exec.Command("bash", append([]string{"../../../agent-runtime/helpers/agent-test"}, args...)...) //nolint:gosec // test-only, fixed path
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		code := 0
+		if err := cmd.Run(); err != nil {
+			ee, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatal(err)
+			}
+			code = ee.ExitCode()
+		}
+		return helperResult{stdout.String(), stderr.String(), code}
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"marker": "x"})
+
+	r := run("-C", dir, "--", "sh", "-c", "test -f marker && exit 4")
+	if r.code != 4 || lastLine(r.stderr) != "agent-test: test command executed: exit=4" {
+		t.Errorf("-C run: exit %d, stderr %q", r.code, r.stderr)
+	}
+	r = run("true")
+	if r.code != 0 || lastLine(r.stderr) != "agent-test: test command executed: exit=0" {
+		t.Errorf("plain run: exit %d, stderr %q", r.code, r.stderr)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"no-such-test-runner-xyz"}, "agent-test: error: test command not found: no-such-test-runner-xyz"},
+		{[]string{"-C", filepath.Join(dir, "absent"), "true"}, "agent-test: error: no such directory"},
+		{nil, "agent-test: usage"},
+		{[]string{"-C"}, "agent-test: usage"},
+	} {
+		r := run(tc.args...)
+		if r.code == 0 || !strings.Contains(lastLine(r.stderr), tc.want) {
+			t.Errorf("%v: exit %d, stderr %q, want %q", tc.args, r.code, r.stderr, tc.want)
+		}
+		if strings.Contains(r.stderr, "test command executed") {
+			t.Errorf("%v: reported a test run that never happened", tc.args)
 		}
 	}
 }

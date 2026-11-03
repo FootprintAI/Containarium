@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# agent-test — run a repository's test command in an agent-runtime box and
+# report that it ran (#3491).
+#
+# Installed onto PATH by scripts/install-agent-runtime.sh (it ships in the
+# agent-runtime bundle). Language-neutral: `agent-test go test ./...`,
+# `agent-test npm test`. For a Python checkout, `agent-python test` does the
+# same inside the checkout's venv.
+#
+# Usage:
+#   agent-test [-C DIR] [--] CMD [ARGS...]
+#
+# Runs CMD (in DIR when -C is given), then prints
+#   agent-test: test command executed: exit=N
+# on stderr and exits with CMD's own status N. A CMD that cannot be found or
+# a DIR that does not exist is an error: one line starting "agent-test: error:"
+# and exit 127 / 2, with no execution report, because nothing ran.
+set -euo pipefail
+
+PROG=agent-test
+
+usage() {
+  echo "${PROG}: usage: ${PROG} [-C DIR] [--] CMD [ARGS...]" >&2
+  exit 2
+}
+
+dir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C)
+      [ $# -ge 2 ] || usage
+      dir="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -h | --help) usage ;;
+    *) break ;;
+  esac
+done
+[ $# -gt 0 ] || usage
+
+if [ -n "$dir" ]; then
+  cd "$dir" 2>/dev/null || { echo "${PROG}: error: no such directory: ${dir}" >&2; exit 2; }
+fi
+command -v "$1" >/dev/null 2>&1 || { echo "${PROG}: error: test command not found: $1" >&2; exit 127; }
+
+echo "${PROG}: running in $(pwd -P): $*"
+rc=0
+"$@" || rc=$?
+echo "${PROG}: test command executed: exit=${rc}" >&2
+exit "$rc"

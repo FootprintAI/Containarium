@@ -142,7 +142,7 @@ agent-runtime: unsupported toolchain "ruby" in toolchains="ruby" (supported: pyt
 With `toolchains=python`, `post_start` installs `python3-venv`, `python3-pip`
 and `python3-pytest` from the Ubuntu archive, after the in-box loop assembly,
 and fails if the `agent-python` helper did not come with that assembly (the
-helper ships in this package's `bin/`, inside the release bundle). Python itself
+helper ships in this package's `helpers/`, inside the release bundle). Python itself
 is part of the Ubuntu 24.04 image.
 
 `agent-python` is what a skill runs, through its shell tool, in its checkout:
@@ -152,6 +152,7 @@ is part of the Ubuntu 24.04 image.
 | `agent-python setup [DIR]` | Creates (or reuses) a venv for `DIR` outside the checkout, then installs what `DIR` declares: `requirements.txt` and every other `requirements*.txt`, then `DIR` itself (`pip install -e .`, or `-e .[test]` / `-e .[tests]` when that extra is declared) if `pyproject.toml` has a `[project]` table or `setup.cfg` has `[metadata] name`. |
 | `agent-python test [DIR] [-- CMD...]` | Runs `CMD` (default `python -m pytest`) in `DIR` inside that venv, prints `agent-python: test command executed: exit=N` on stderr, and exits `N`. |
 | `agent-python venv [DIR]` | Prints the venv path. |
+| `agent-test [-C DIR] [--] CMD...` | Any language: runs `CMD` (for example `go test ./...`, `npm test`), prints `agent-test: test command executed: exit=N` on stderr, and exits `N`. Installed in every agent-runtime box, with or without a toolchain. |
 
 Nothing beyond the repo's own manifests is installed: a `setup.py` without
 `pyproject.toml` `[project]` or `setup.cfg` `[metadata]` is not run, and a
