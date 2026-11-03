@@ -25,7 +25,7 @@ import (
 // Defined as an interface so the HTTP handler can be unit-tested
 // without standing up Incus.
 type WakeStarter interface {
-	WakeForRequest(ctx context.Context, username string) (ready bool, containerIP string, port int, err error)
+	WakeForRequest(ctx context.Context, username string, targetPort int) (ready bool, containerIP string, port int, err error)
 }
 
 // RouteLookup resolves an incoming request's Host header to the
@@ -192,7 +192,7 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// and peer forwarders use. Without it, every wake fails with
 		// "no authenticated subject in request context".
 		ctx, cancel := context.WithTimeout(auth.ContextWithSystemIdentity(context.Background()), w.waitTimeout)
-		ready, ip, port, werr := w.starter.WakeForRequest(ctx, username)
+		ready, ip, port, werr := w.starter.WakeForRequest(ctx, username, route.TargetPort)
 		cancel()
 		if werr != nil {
 			entry.err = werr
@@ -227,6 +227,29 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Share the Box start, but never a different application's port.
+	// A follower on another route rechecks that route after the leader
+	// finishes; StartContainer is idempotent for an already-running Box.
+	targetIP, targetPort := entry.ip, entry.port
+	if !leader && entry.err == nil && route.TargetPort > 0 && route.TargetPort != entry.port {
+		ctx, cancel := context.WithDeadline(auth.ContextWithSystemIdentity(req.Context()), start.Add(w.waitTimeout))
+		ready, ip, port, err := w.starter.WakeForRequest(ctx, username, route.TargetPort)
+		cancel()
+		if err != nil || !ready {
+			if err == nil {
+				err = fmt.Errorf("wake: timeout after %s", w.waitTimeout)
+			}
+			w.logEvent(username, time.Since(start).Milliseconds(), "error", err.Error())
+			rw.Header().Set("Retry-After", "5")
+			http.Error(rw, fmt.Sprintf("wake: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+		targetIP, targetPort = ip, port
+		if targetIP == "" {
+			targetIP = route.TargetIP
+		}
+	}
+
 	latencyMs := time.Since(start).Milliseconds()
 
 	if entry.err != nil {
@@ -251,7 +274,7 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// first hop (Caddy already added them; we're the second hop).
 	target := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("%s:%d", entry.ip, entry.port),
+		Host:   fmt.Sprintf("%s:%d", targetIP, targetPort),
 	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {

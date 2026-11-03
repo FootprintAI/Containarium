@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 )
 
 type fakeRouteLister struct {
@@ -185,5 +188,21 @@ func TestWaitForContainerReady_ListByContainerErrors(t *testing.T) {
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("error path should return immediately, took %v", elapsed)
+	}
+}
+
+func TestWaitForContainerReady_UsesLiveIPInsteadOfCachedIP(t *testing.T) {
+	ln, port := listenLocal(t)
+	defer func() { _ = ln.Close() }()
+	backend := incustest.NewMockBackend()
+	backend.Containers["alice-container"] = &incus.ContainerInfo{
+		Name: "alice-container", State: "Running", IPAddress: "127.0.0.1",
+	}
+	s := &ContainerServer{
+		manager:    container.NewWithBackend(backend),
+		routeStore: &fakeRouteLister{routes: []*app.RouteRecord{{TargetPort: port}}},
+	}
+	if timedOut := s.waitForContainerReady(context.Background(), "alice", "192.0.2.1", time.Second); timedOut {
+		t.Fatal("current Box IP should succeed even when post-start cached IP is stale")
 	}
 }

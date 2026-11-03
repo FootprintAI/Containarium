@@ -146,9 +146,11 @@ func (m *Manager) tick(ctx context.Context) {
 		if m.traffic != nil {
 			lastNet, err = m.traffic.LastNetworkActivity(ctx, c.Name)
 			if err != nil {
-				log.Printf("[autosleep] last activity for %s: %v", c.Name, err)
-				// Treat error as no signal — fall through with zero time.
-				lastNet = time.Time{}
+				log.Printf("[autosleep] last activity for %q: %v", c.Name, err)
+				// An unsuccessful read is unknown activity, not evidence
+				// of idleness. Keep the since-start fallback for an
+				// actual successful zero-activity result.
+				continue
 			}
 		}
 
