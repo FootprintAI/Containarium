@@ -65,7 +65,11 @@ resolve_dir() {
 # venv_for prints the venv path for an absolute DIR.
 venv_for() {
   if [ -n "${AGENT_PYTHON_VENV:-}" ]; then
-    printf '%s\n' "$AGENT_PYTHON_VENV"
+    # Absolute, so it means the same thing after `cd DIR`.
+    case "$AGENT_PYTHON_VENV" in
+      /*) printf '%s\n' "$AGENT_PYTHON_VENV" ;;
+      *) printf '%s/%s\n' "$(pwd -P)" "$AGENT_PYTHON_VENV" ;;
+    esac
     return
   fi
   local root="${AGENT_PYTHON_VENV_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-python}"
@@ -81,24 +85,46 @@ truthy() {
   esac
 }
 
-# probe_index checks the package index answers at all (any HTTP status is an
-# answer). Skipped when pip is told not to use an index.
+# probe_index VENV DIR REQS... checks the index pip will use answers at all
+# (any HTTP status is an answer): PIP_INDEX_URL, else pip's configured
+# global.index-url, else the default index. Skipped when pip is told not to
+# use an index, and when a requirements file picks its own index options
+# (pip then decides; its own failure is still classified below).
 probe_index() {
+  local venv="$1" dir="$2"
+  shift 2
   if truthy "${PIP_NO_INDEX:-}"; then
     return 0
   fi
-  local url="${PIP_INDEX_URL:-$DEFAULT_INDEX_URL}" out
+  local r
+  for r in "$@"; do
+    if grep -Eq '^[[:space:]]*(-i[[:space:]]|--index-url|--extra-index-url|--no-index|-f[[:space:]]|--find-links)' "$dir/$r"; then
+      return 0
+    fi
+  done
+  local url="${PIP_INDEX_URL:-}" out
+  if [ -z "$url" ]; then
+    # `pip config list` (not `get`) also reports a PIP_CONFIG_FILE's values.
+    url="$("$venv/bin/python" -m pip config list 2>/dev/null | sed -nE "s/^(global|install)\.index-url='(.*)'\$/\2/p" | tail -n 1 || true)"
+  fi
+  url="${url:-$DEFAULT_INDEX_URL}"
   if ! out="$(python3 -I - "$url" "${AGENT_PYTHON_PROBE_TIMEOUT:-10}" <<'PY'
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-parts = urllib.parse.urlsplit(sys.argv[1])
-host = parts.hostname or sys.argv[1]
 # Probe without any credentials in the URL: reachability needs none, and the
-# host is all that is ever printed.
-netloc = host if parts.port is None else "%s:%d" % (host, parts.port)
+# host is all that is ever printed (never the URL itself).
+try:
+    parts = urllib.parse.urlsplit(sys.argv[1])
+    host = parts.hostname
+    if not host or parts.scheme not in ("http", "https"):
+        raise ValueError("not an http(s) URL")
+    netloc = host if parts.port is None else "%s:%d" % (host, parts.port)
+except ValueError as e:
+    print("the configured index\tunusable index URL: %s" % e, end="")
+    sys.exit(1)
 url = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path or "/", "", ""))
 try:
     urllib.request.urlopen(url, timeout=float(sys.argv[2])).close()
@@ -111,7 +137,7 @@ except Exception as e:  # noqa: BLE001 - every other failure means unreachable
 PY
 )"; then
     local host="${out%%$'\t'*}" reason="${out#*$'\t'}"
-    die "package index unreachable: ${host:-$url} (${reason:-no answer}); dependencies were NOT installed; ${EGRESS_HINT}"
+    die "package index unreachable: ${host:-the configured index} (${reason:-no answer}); dependencies were NOT installed; ${EGRESS_HINT}"
   fi
 }
 
@@ -234,7 +260,7 @@ cmd_setup() {
   fi
   [ "$kind" = skip ] && echo "${PROG}: note: ${detail}"
 
-  probe_index
+  probe_index "$venv" "$dir" "${reqs[@]}"
   log="$(mktemp "${TMPDIR:-/tmp}/agent-python-setup.XXXXXX.log")"
   if [ "${#reqs[@]}" -gt 0 ]; then
     local args=() r
