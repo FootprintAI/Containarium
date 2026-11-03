@@ -134,6 +134,9 @@ type boxRunView struct {
 	record    agentbox.RunRecord
 	sessionID string
 	tools     []*pb.BoxRunTool
+	// result is the exited structured run's result log as shipped (up to
+	// boxRunResultReadLimit bytes); nil when there is none.
+	result []byte
 }
 
 func decodeB64Field(s string) ([]byte, error) {
@@ -189,7 +192,9 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 			// A structured run's own result object, when present and valid,
 			// is authoritative over any sidecar (the engine's reported id is
 			// the one to resume next).
+			var result []byte
 			if resBytes, err := decodeB64Field(fields[4]); err == nil && len(resBytes) > 0 {
+				result = resBytes
 				if id := structuredSessionID(resBytes); id != "" {
 					sessionID = id
 				}
@@ -205,6 +210,7 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 				record:    agentbox.FoldExitSidecar(record, sidecar),
 				sessionID: sessionID,
 				tools:     tools,
+				result:    result,
 			})
 		}
 	}
@@ -227,6 +233,11 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 		run := boxRunProto(v.fileName, dir, v.record, outcome)
 		run.SessionId = v.sessionID
 		run.Tools = v.tools
+		// Usage only once the run has exited: the list script ships a result
+		// log only then, and a live run's counts are not final.
+		if outcome == agentbox.RunOutcomeExited && len(v.result) > 0 {
+			run.Usage = structuredRunUsage(v.result, v.record.Resumed)
+		}
 		runs = append(runs, run)
 	}
 	return runs
