@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	incus "github.com/lxc/incus/v7/client"
@@ -2928,13 +2929,21 @@ const maxSymlinkHops = 10
 // path string where the caller expects file bytes. k3s's join token
 // at server/node-token is exactly such a symlink, which is how
 // workers were pushed a "token" with no CA hash (#1446).
+//
+// The read is capped at limitio.MaxFileReadBytes (#3469): a larger file
+// returns an error matching limitio.ErrTooLarge instead of being buffered
+// whole. Use ReadFileStream for transfers that may be larger.
 func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
 	r, err := c.ReadFileStream(containerName, filePath)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	data, err := limitio.ReadAll(r, limitio.MaxFileReadBytes)
+	if errors.Is(err, limitio.ErrTooLarge) {
+		return data, fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	return data, err
 }
 
 // ReadFileStream follows bounded symlink targets and transfers ownership
@@ -2982,9 +2991,15 @@ func (c *Client) ReadFileStream(containerName, filePath string) (io.ReadCloser, 
 	}
 }
 
-// ExecWithOutput executes a command inside a container and returns stdout/stderr
+// ExecWithOutput executes a command inside a container and returns stdout/stderr.
+//
+// Each stream is capped at limitio.MaxExecOutputBytes (#3469). Output past the
+// cap is drained and dropped, so the command still runs to completion, and
+// the call then returns the kept prefix with an error matching
+// limitio.ErrTooLarge (joined with the command's own error, if any).
 func (c *Client) ExecWithOutput(containerName string, command []string) (string, string, error) {
-	var stdout, stderr bytes.Buffer
+	stdout := limitio.NewBuffer(limitio.MaxExecOutputBytes)
+	stderr := limitio.NewBuffer(limitio.MaxExecOutputBytes)
 
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -2999,7 +3014,7 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		// output replaces (not appends to) a failed attempt's partial output.
 		stdout.Reset()
 		stderr.Reset()
-		args := &incus.InstanceExecArgs{Stdout: &stdout, Stderr: &stderr}
+		args := &incus.InstanceExecArgs{Stdout: stdout, Stderr: stderr}
 
 		op, err := c.server.ExecInstance(containerName, req, args)
 		if err != nil {
@@ -3018,7 +3033,24 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		}
 		return nil
 	})
+	if capErr := execOutputErr(stdout, stderr); capErr != nil {
+		err = errors.Join(err, capErr)
+	}
 	return stdout.String(), stderr.String(), err
+}
+
+// execOutputErr reports which captured exec stream, if any, hit its cap. Nil
+// when neither did, so callers join it only on truncation and an under-cap
+// error is returned unwrapped, exactly as before.
+func execOutputErr(stdout, stderr *limitio.Buffer) error {
+	var errs []error
+	if err := stdout.Err(); err != nil {
+		errs = append(errs, fmt.Errorf("exec stdout: %w", err))
+	}
+	if err := stderr.Err(); err != nil {
+		errs = append(errs, fmt.Errorf("exec stderr: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // ExecWithExitCode is ExecWithOutput's sibling that reports a non-zero exit
@@ -3033,8 +3065,12 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 // stops the retry loop after one attempt, exactly as the folded-error
 // version did — just without inventing an error value only to immediately
 // discard its meaning into an int.
+//
+// Output is capped per stream exactly as in ExecWithOutput (#3469); over the
+// cap, err matches limitio.ErrTooLarge and exitCode is still reported.
 func (c *Client) ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error) {
-	var stdoutBuf, stderrBuf bytes.Buffer
+	stdoutBuf := limitio.NewBuffer(limitio.MaxExecOutputBytes)
+	stderrBuf := limitio.NewBuffer(limitio.MaxExecOutputBytes)
 
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -3046,7 +3082,7 @@ func (c *Client) ExecWithExitCode(containerName string, command []string) (stdou
 		stdoutBuf.Reset()
 		stderrBuf.Reset()
 		exitCode = 0
-		args := &incus.InstanceExecArgs{Stdout: &stdoutBuf, Stderr: &stderrBuf}
+		args := &incus.InstanceExecArgs{Stdout: stdoutBuf, Stderr: stderrBuf}
 
 		op, opErr := c.server.ExecInstance(containerName, req, args)
 		if opErr != nil {
@@ -3062,6 +3098,9 @@ func (c *Client) ExecWithExitCode(containerName string, command []string) (stdou
 		}
 		return nil
 	})
+	if capErr := execOutputErr(stdoutBuf, stderrBuf); capErr != nil {
+		err = errors.Join(err, capErr)
+	}
 	return stdoutBuf.String(), stderrBuf.String(), exitCode, err
 }
 

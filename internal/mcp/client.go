@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/runlog"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -174,7 +175,9 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Capped (#3469): the whole body is held in memory and handed to the
+	// agent, so an endless response must not grow this process unbounded.
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
