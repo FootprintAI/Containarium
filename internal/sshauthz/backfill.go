@@ -152,7 +152,7 @@ func Backfill(ctx context.Context, store BackfillStore, homeRoot string, now tim
 	// not stop the registry for everyone. Its keys stay unregistered, so the
 	// decider refuses them until the home is fixed and the daemon restarts.
 	for _, u := range res.Unreadable {
-		log.Printf("[ssh-keys] backfill skipped account %s: %v (#3241)", u.Username, u.Err)
+		log.Printf("[ssh-keys] backfill skipped account %q: %v (#3241)", u.Username, u.Err)
 	}
 	added := 0
 	for _, rec := range res.Records {

@@ -41,12 +41,12 @@ func (b *Backend) ListClientKeys(ctx context.Context) (map[string]string, error)
 		tenant := boxes[i].Ref.Tenant
 		sec, gerr := b.clientset.CoreV1().Secrets(b.namespaceFor(tenant)).Get(ctx, secretName(tenant), metav1.GetOptions{})
 		if gerr != nil {
-			log.Printf("[k8s] client keys for %s unavailable: %v (skipping)", tenant, gerr)
+			log.Printf("[k8s] client keys for %q unavailable: %v (skipping)", tenant, gerr)
 			continue
 		}
 		keys := string(sec.Data[clientKeysKey])
 		if keys == "" {
-			log.Printf("[k8s] box %s has no recorded client_keys (created pre-advertisement?); skipping until next key rotation", tenant)
+			log.Printf("[k8s] box %q has no recorded client_keys (created pre-advertisement?); skipping until next key rotation", tenant)
 			continue
 		}
 		out[tenant] = keys

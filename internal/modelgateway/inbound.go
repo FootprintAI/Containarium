@@ -417,7 +417,7 @@ type inboundSubject struct {
 // happens off the request path and failing is logged and counted, never a
 // reason to let the response through or to delay it.
 func (in *inbound) block(sub inboundSubject, dec guardrail.InboundDecision, revision int64) *inboundBlockError {
-	in.logger.Printf("model-gateway: INBOUND-BLOCK tenant=%s skill=%s provider=%s model=%s reason=%s kinds=%v findings=%d gaps=%d engine=%q revision=%d",
+	in.logger.Printf("model-gateway: INBOUND-BLOCK tenant=%q skill=%q provider=%s model=%q reason=%s kinds=%v findings=%d gaps=%d engine=%q revision=%d",
 		sub.tenant, sub.skill, sub.provider, sub.model, dec.Reason, kindNames(dec.Kinds), dec.Findings, dec.Gaps, dec.EngineID, revision)
 	in.mu.Lock()
 	in.blocked[dec.Reason]++

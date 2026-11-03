@@ -151,7 +151,7 @@ func (sc *SSHCollector) collectFromBox(ctx context.Context, box SessionBox) erro
 		}
 
 		if err := sc.store.Log(ctx, entry); err != nil {
-			log.Printf("SSH collector: failed to log entry for %s: %v", containerName, err)
+			log.Printf("SSH collector: failed to log entry for %q: %v", containerName, err)
 		}
 	}
 

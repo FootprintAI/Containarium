@@ -120,7 +120,7 @@ func (s *Store) MigrateLegacyToEnvelope(ctx context.Context, opts MigrateOptions
 				res.Errors = append(res.Errors, MigrationError{
 					Username: r.username, Name: r.name, Err: migrateErr.Error(),
 				})
-				log.Printf("[secrets-migrate] %s/%s failed: %v", r.username, r.name, migrateErr)
+				log.Printf("[secrets-migrate] %q/%s failed: %v", r.username, r.name, migrateErr)
 			}
 		}
 	}

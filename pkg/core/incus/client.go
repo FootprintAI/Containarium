@@ -3081,7 +3081,7 @@ dnf clean all 2>/dev/null
 journalctl --vacuum-size=50M 2>/dev/null
 `
 	if _, _, err := c.ExecWithOutput(containerName, []string{"/bin/bash", "-c", cleanupScript}); err != nil {
-		log.Printf("[incus] CleanupDisk %s: best-effort cleanup script error (ignored): %v", containerName, err)
+		log.Printf("[incus] CleanupDisk %q: best-effort cleanup script error (ignored): %v", containerName, err)
 	}
 
 	// Get disk usage after cleanup

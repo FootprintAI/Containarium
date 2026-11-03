@@ -61,14 +61,14 @@ func NewCredentialWebhookNotifier(config WebhookConfigSource, delivery *Delivery
 func (n *CredentialWebhookNotifier) NotifyCredentialExpired(ctx context.Context, a CredentialExpiredAlert) {
 	url, err := n.config.Get(ctx, WebhookURLConfigKey)
 	if err != nil || url == "" {
-		log.Printf("[credential-watch] %s for %s: no operator webhook configured, not delivered", CredentialExpiredAlertName, a.Box)
+		log.Printf("[credential-watch] %s for %q: no operator webhook configured, not delivered", CredentialExpiredAlertName, a.Box)
 		return
 	}
 	secret, _ := n.config.Get(ctx, WebhookSecretConfigKey) // optional: unsigned if absent
 
 	body, merr := json.Marshal(a)
 	if merr != nil {
-		log.Printf("[credential-watch] marshal alert for %s: %v", a.Box, merr)
+		log.Printf("[credential-watch] marshal alert for %q: %v", a.Box, merr)
 		return
 	}
 
@@ -92,7 +92,7 @@ func (n *CredentialWebhookNotifier) NotifyCredentialExpired(ctx context.Context,
 	errMsg := ""
 	if lastErr != nil {
 		errMsg = lastErr.Error()
-		log.Printf("[credential-watch] webhook delivery failed for %s: %v", a.Box, lastErr)
+		log.Printf("[credential-watch] webhook delivery failed for %q: %v", a.Box, lastErr)
 	}
 	if n.delivery == nil {
 		return
@@ -107,7 +107,7 @@ func (n *CredentialWebhookNotifier) NotifyCredentialExpired(ctx context.Context,
 		PayloadSize:  len(body),
 		DurationMs:   int(time.Since(start).Milliseconds()),
 	}); rerr != nil {
-		log.Printf("[credential-watch] record webhook delivery for %s: %v", a.Box, rerr)
+		log.Printf("[credential-watch] record webhook delivery for %q: %v", a.Box, rerr)
 	}
 }
 

@@ -271,11 +271,11 @@ func (w *WakeProxy) scheduleSwapToDirect(containerName string) {
 	defer cancel()
 	routes, err := w.routeStore.ListByContainer(ctx, containerName)
 	if err != nil {
-		log.Printf("[wake] post-wake route lookup for %s: %v", containerName, err)
+		log.Printf("[wake] post-wake route lookup for %q: %v", containerName, err)
 		return
 	}
 	if err := w.router.SwapToDirect(ctx, containerName, routes); err != nil {
-		log.Printf("[wake] post-wake swap-to-direct for %s: %v", containerName, err)
+		log.Printf("[wake] post-wake swap-to-direct for %q: %v", containerName, err)
 	}
 }
 
@@ -293,5 +293,5 @@ func (w *WakeProxy) logEvent(username string, latencyMs int64, result, errMsg st
 		w.audit.Log("autosleep.woken", fields)
 		return
 	}
-	log.Printf("[wake] username=%s result=%s latency_ms=%d err=%q", username, result, latencyMs, errMsg)
+	log.Printf("[wake] username=%q result=%s latency_ms=%d err=%q", username, result, latencyMs, errMsg)
 }

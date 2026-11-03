@@ -271,7 +271,7 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 	case !cur.RevokedAt.IsZero():
 		return nil // already revoked: keep the original revocation time
 	case cur.ReleasedAt.IsZero() && !ownsRow(cur, rec):
-		log.Printf("[ssh-keys] revoke by %s left %s active: its registry entry is owned by another account (#3187)",
+		log.Printf("[ssh-keys] revoke by %q left %s active: its registry entry is owned by another account (#3187)",
 			rec.Username, rec.Fingerprint)
 		return nil
 	default: // the caller owns an active row, or the row is released
@@ -286,7 +286,7 @@ func (s *PGKeyStore) Revoke(ctx context.Context, rec KeyRecord, at time.Time) er
 			if cerr := tx.Commit(ctx); cerr != nil {
 				return fmt.Errorf("release ssh key: %w", cerr)
 			}
-			log.Printf("[ssh-keys] %s dropped %s while another account holds it: registry entry released and left active (#3217)",
+			log.Printf("[ssh-keys] %q dropped %s while another account holds it: registry entry released and left active (#3217)",
 				rec.Username, rec.Fingerprint)
 			return err
 		}

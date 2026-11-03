@@ -105,7 +105,7 @@ func (t *baselineTee) finish() {
 // detect records one baseline detection: a log line (ids and counts only),
 // the counter, and a queued audit entry.
 func (in *inbound) detect(sub inboundSubject, d guardrail.BaselineDetection, action guardrail.BaselineAction) {
-	in.logger.Printf("model-gateway: INBOUND-BASELINE tenant=%s skill=%s provider=%s model=%s rule=%s kind=%s action=%s matches=%d",
+	in.logger.Printf("model-gateway: INBOUND-BASELINE tenant=%q skill=%q provider=%s model=%q rule=%s kind=%s action=%s matches=%d",
 		sub.tenant, sub.skill, sub.provider, sub.model, d.RuleID, kindName(d.Kind), action, d.Matches)
 	in.mu.Lock()
 	in.baselineHits[d.RuleID]++
