@@ -7,10 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.126.0] - 2026-11-03
+
+
 ### Added
 
 - **Traffic persistence recovers in-process after a degraded start** (#3401; part of #2855, on the #3326 helper; split from #3331 by decision Q12 on #3335). With Postgres down at startup the traffic collector ran without a store until the daemon restarted, so no traffic history was recorded; when Postgres did answer, startup built a second collector with the store, which the registered `TrafficService` never used. Traffic persistence is now a late-install family with the readiness entry `containarium.traffic` (`/v1/health?service=…`): `NOT_SERVING` while the store is absent, `SERVING` once it installs, with no restart. The store is installed into the one running collector (an atomic swap; the first store wins), so the traffic API, the eBPF flow feed and auto-sleep keep reading the same collector, its live connections are kept, it is never started a second time, and the retention cleanup starts once. While the store is absent the traffic API still answers live connections from memory and history answers `FAILED_PRECONDITION`. Flows that closed before the store arrived are not persisted (nothing is buffered); a flow still open at install is persisted, with its full counters, when it closes. Auto-sleep now reads the traffic store per check, so its network-activity signal starts once the store installs. Traffic persistence is still wired only when app hosting is enabled.
 - **App hosting and route persistence recover in-process after a degraded start** (#3331; part of #2855, on the #3326 helper; decision Q12 on #3335). A daemon that started while Postgres was down used to run without the app-hosting store, the route store and the Caddy route sync until it was restarted. Both are now late-install families. `AppService` is registered whenever app hosting is enabled and answers `UNAVAILABLE` until its store installs; the new readiness entries `containarium.app_hosting` and `containarium.routes` (`/v1/health?service=…`) are `NOT_SERVING` meanwhile and turn `SERVING` at install, with no restart. The route family installs over the shared pool, runs the Caddy set-up boot would have run (server config, PROXY protocol, client-IP trust, the wildcard certificate, the L4 manager) exactly once, creates the route sync job once and starts it with the daemon's serving context, and ensures the management routes. While the route store is absent, route reads and writes answer `UNAVAILABLE` and nothing is applied in Caddy (decision Q13 on #3335): before, with app hosting enabled and Postgres down, a route write could be applied directly in Caddy and would then be removed by the sync job once the store came back. A daemon with no route persistence configured at all keeps the direct-to-Caddy behaviour. The network server, the container delete cascade, the wake proxy and the cloud actuator read the route store through a live accessor; the pentest and ZAP managers follow in the #3332 entry, and traffic persistence follows in the #3401 entry. The standalone route path (app hosting off, Postgres and Caddy configured) now runs the same shared Caddy set-up as the app-hosting path, including the `*.<base-domain>` wildcard certificate when a DNS-01 challenge is configured; before, it ran its own copy of the set-up without the wildcard step.
+
+- The `slides-agent` recipe image is published on release tags as `ghcr.io/footprintai/containarium-slides-agent:v<version>`
+  (plus `:v<minor>` and `:latest-stable`, keyless cosign signature, Trivy scan) by `sidecars.yml`, and built and scanned on
+  every change to `images/slides-agent/**` by `slides-agent-image.yml` (#3434).
+- `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
+  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium with a
+  `slides-print-pdf <site> <out.pdf>` entrypoint (one 1920x1080 page per slide page of a built site) and a Caddy auth proxy, so
+  a box start installs nothing from a package registry. The proxy fronts every path of the dev server, forwards
+  `X-Forwarded-Proto: https`, and refuses unauthenticated requests (the deploy checks this); decks persist under the box
+  user's `~/slides`. The recipe shares coding-agent's `post_start` steps through YAML anchors. Publishing the image from the
+  release pipeline is a follow-up; `slides_image` points a deploy at a mirror or rehearsal build meanwhile.
+
 ### Upgrading
 
 - **`CONTAINARIUM_OTEL_REQUIRE_AUTH=true` without a usable OTel bearer now keeps the OTel collector from starting** (#3443). Before, the daemon logged "collector will NOT enforce auth" and ran the collector with open ingest. Now it does not create, start or reconfigure the collector, logs a DEGRADED line, and reports `containarium.otel_collector_auth` as NOT_SERVING (shown by `containarium doctor`). Check that the bearer source resolves (`CONTAINARIUM_OTEL_BEARER`, `CONTAINARIUM_OTEL_BEARER_FILE` or a writable `/etc/containarium/otel.bearer`) before upgrading; app-emitted telemetry stays off until it does and the daemon restarts. With the flag unset or false nothing changes.
@@ -49,22 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `authorized_keys` is refused for that login even while its registry row is still active. This changes the premise of decision
   Q14 on #3335 (a stale row used to be allowed while the account kept another key); the reconcile step is unchanged.
 
-### Added
-
-- The `slides-agent` recipe image is published on release tags as `ghcr.io/footprintai/containarium-slides-agent:v<version>`
-  (plus `:v<minor>` and `:latest-stable`, keyless cosign signature, Trivy scan) by `sidecars.yml`, and built and scanned on
-  every change to `images/slides-agent/**` by `slides-agent-image.yml` (#3434).
-- `slides-agent` recipe (#3434): a coding-agent box plus a prebaked slides image. The image (`images/slides-agent/Dockerfile`)
-  bakes Node, the open-slide framework pinned by commit with its dependencies, a headless Chromium with a
-  `slides-print-pdf <site> <out.pdf>` entrypoint (one 1920x1080 page per slide page of a built site) and a Caddy auth proxy, so
-  a box start installs nothing from a package registry. The proxy fronts every path of the dev server, forwards
-  `X-Forwarded-Proto: https`, and refuses unauthenticated requests (the deploy checks this); decks persist under the box
-  user's `~/slides`. The recipe shares coding-agent's `post_start` steps through YAML anchors. Publishing the image from the
-  release pipeline is a follow-up; `slides_image` points a deploy at a mirror or rehearsal build meanwhile.
-
 ### Changed
 
 - **CI pins `aquasecurity/trivy-action` to its v0.36.0 release and keeps the Trivy binary at v0.76.1** (#3402, #3409). All 11 steps (7 workflows) now point at the commit behind the v0.36.0 release tag instead of a `master`-branch commit, and each sets `version: 'v0.76.1'` explicitly: without it the pinned action installs Trivy v0.70.0 by default, six minor versions behind what the previous pin ran. The Trivy version therefore no longer follows action bumps; raise it deliberately.
+- **Changelog entries are now one file per PR in `changelog.d/`** (#3461). A PR adds `changelog.d/<number>.<category>.md` instead of editing `CHANGELOG.md`, so open PRs no longer conflict on the changelog. `scripts/changelog-assemble.sh X.Y.Z` builds the release section and deletes the fragments; the tag build fails if any remain. See `changelog.d/README.md`.
 
 ### Documentation
 
@@ -72,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`golang.org/x/crypto` is bumped to the fixed release for GO-2026-5932** (#3465). The advisory is in a module the daemon requires; `govulncheck` reports the vulnerable code is not called, but a fixed version exists and the release gate refuses an available fix that is not applied.
 - **`containarium list --format yaml` no longer prints tenant-controlled values raw** (#3454, follow-up to #3343). Container names, states, addresses, CPU/memory and label keys and values (flat and `--group-by` output) that contain control characters such as ESC, CR or LF are now emitted as double-quoted YAML scalars (`\x1b`, `\r`, `\n` escapes), so they cannot drive the terminal and parsing the output returns the original value. Ordinary values print exactly as before; JSON output already escaped control characters.
 - **The host status probe reported the root disk instead of the Incus storage pools** (#3449). The disk figure the cloud actuation client sends (`TotalDiskGB`/`AvailDiskGB`) came from `statfs` of `/var/lib/incus`, so a host whose pools live on another disk reported far less capacity than `containarium backends profile`, which sums the pools. The probe now uses the same pool sum (total = sum of pool `Space.Total`, available = total minus sum of `Space.Used`), and falls back to the old `statfs` figure when the Incus daemon is unreachable, there are no pools, or the pools report no capacity.
 - **More CLI tables no longer print tenant-supplied text raw** (#3453, follow-up to #3343). `secrets list` names, the `token list-revoked` reason, `snapshot list` and `volume list` names (and volume pool), `ssh list` key names, `agent list` and `crew list` ids, skills and descriptions, the `scale-down status` box name, and the `audit query` username and resource columns now pass through the same control-character escape as the other tables. ESC, CR, LF and NUL print as `\x1b`, `\r`, `\n`, `\x00`; clean values print unchanged. `audit query --raw` is not changed yet.
