@@ -278,10 +278,10 @@ func (sw runCheckoutSweep) sweepHome(user, home string) ([]*pb.BoxRunCheckout, e
 		switch verdict {
 		case "R":
 			c.Disposition = pb.BoxRunCheckoutDisposition_BOX_RUN_CHECKOUT_DISPOSITION_REMOVED
-			sw.logf("[run-checkout-sweep] %q: removed %s from %q's ~/work (%d bytes)", sw.box, name, user, c.SizeBytes)
+			sw.logf("[run-checkout-sweep] %q: removed %q from %q's ~/work (%d bytes)", sw.box, name, user, c.SizeBytes)
 		case "F":
 			c.Disposition = pb.BoxRunCheckoutDisposition_BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED
-			sw.logf("[run-checkout-sweep] %q: removing %s from %q's ~/work failed", sw.box, name, user)
+			sw.logf("[run-checkout-sweep] %q: removing %q from %q's ~/work failed", sw.box, name, user)
 		}
 	}
 	return result, nil

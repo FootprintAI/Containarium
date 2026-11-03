@@ -1872,7 +1872,7 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	// 3. Host user. DeleteJumpServerAccount is idempotent (no-op if the
 	//    user doesn't exist), so calling it when there isn't one is fine.
 	if err := container.DeleteJumpServerAccount(username, false); err != nil {
-		log.Printf("[delete-cascade] delete host user %q failed: %v (manual: sudo userdel -r %q)", username, err, username)
+		log.Printf("[delete-cascade] delete host user %q failed: %v (manual cleanup: run userdel -r for the account named above)", username, err)
 	} else {
 		log.Printf("[delete-cascade] removed host user %q", username)
 	}

@@ -9,6 +9,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -329,7 +330,7 @@ func TestSweepHome_Table(t *testing.T) {
 			for _, c := range got {
 				if c.GetDisposition() == dispRemoved {
 					removed++
-					if !strings.Contains(logs.all(), "removed "+c.GetName()+" ") || !strings.Contains(logs.all(), fmt.Sprintf("(%d bytes)", c.GetSizeBytes())) || c.GetSizeBytes() <= 0 {
+					if !strings.Contains(logs.all(), "removed "+strconv.Quote(c.GetName())+" ") || !strings.Contains(logs.all(), fmt.Sprintf("(%d bytes)", c.GetSizeBytes())) || c.GetSizeBytes() <= 0 {
 						t.Errorf("removal of %s (size %d) not logged with name and size: %q", c.GetName(), c.GetSizeBytes(), logs.all())
 					}
 				}
@@ -534,7 +535,7 @@ func TestSweepBoxRunCheckouts_RPC(t *testing.T) {
 		if resp.GetMaxAge().AsDuration() != DefaultRunCheckoutMaxAge {
 			t.Errorf("max_age = %v", resp.GetMaxAge().AsDuration())
 		}
-		if !strings.Contains(logs.all(), "removed "+name) {
+		if !strings.Contains(logs.all(), "removed "+strconv.Quote(name)) {
 			t.Errorf("log = %q", logs.all())
 		}
 	})

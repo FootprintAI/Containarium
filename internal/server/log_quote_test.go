@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -235,16 +236,69 @@ func TestLogQuote_MoveFamily(t *testing.T) {
 }
 
 // Run-checkout sweep family: the box and in-box user names it reports.
+// The fake exec answers the list script with listOut and the remove script
+// with removeOut, so the removed (R) and remove-failed (F) branches run.
 func TestLogQuote_RunCheckoutSweepFamily(t *testing.T) {
-	logs := &logRecorder{}
-	sw := runCheckoutSweep{
-		exec: func(string, string) (string, error) { return "X\n", nil },
-		box:  hostileTenantValue, logf: logs.logf,
+	old := sweepNow.Add(-30 * 24 * time.Hour).Unix()
+	const checkout = "repo-run-0123abcd"
+	listed := fmt.Sprintf("C %s d %d 4 0\n", checkout, old)
+	cases := []struct {
+		name               string
+		listOut, removeOut string
+	}{
+		{"home refused", "X\n", ""},
+		{"checkout removed", listed, "R " + checkout + "\n"},
+		{"checkout remove failed", listed, "F " + checkout + "\n"},
 	}
-	if _, err := sw.sweepHome(hostileTenantValue, "/home/alice"); err != nil {
-		t.Fatalf("sweepHome: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &logRecorder{}
+			calls := 0
+			sw := runCheckoutSweep{
+				exec: func(string, string) (string, error) {
+					calls++
+					if calls == 1 {
+						return tc.listOut, nil
+					}
+					return tc.removeOut, nil
+				},
+				box: hostileTenantValue, now: sweepNow, maxAge: 7 * 24 * time.Hour, logf: logs.logf,
+			}
+			if _, err := sw.sweepHome(hostileTenantValue, "/home/alice"); err != nil {
+				t.Fatalf("sweepHome: %v", err)
+			}
+			assertHostileValueContained(t, logs.all())
+		})
 	}
-	assertHostileValueContained(t, logs.all())
+
+	// A checkout name carrying "\n" or ESC never gets as far as the R / F
+	// log lines: the list parser drops any name outside runCheckoutNameERE,
+	// and a verdict line for a name that was not listed is ignored.
+	t.Run("hostile checkout name", func(t *testing.T) {
+		hostileName := "x\x1b[2J-run-0123abcd"
+		logs := &logRecorder{}
+		calls := 0
+		sw := runCheckoutSweep{
+			exec: func(string, string) (string, error) {
+				calls++
+				if calls == 1 {
+					return fmt.Sprintf("C %s d %d 4 0\n%s", hostileName, old, listed), nil
+				}
+				return "R " + checkout + "\nR " + hostileName + "\nF evil\n[forged] x\n", nil
+			},
+			box: "alice-container", now: sweepNow, maxAge: 7 * 24 * time.Hour, logf: logs.logf,
+		}
+		if _, err := sw.sweepHome("alice", "/home/alice"); err != nil {
+			t.Fatalf("sweepHome: %v", err)
+		}
+		out := logs.all()
+		if !strings.Contains(out, `removed "`+checkout+`"`) {
+			t.Fatalf("listed checkout's removal not logged quoted: %q", out)
+		}
+		if strings.ContainsAny(out, "\x1b") || strings.Contains(out, "\n[forged]") {
+			t.Fatalf("hostile checkout name reached the log raw: %q", out)
+		}
+	})
 }
 
 // tenantLoggedExprs are the argument expressions in this package that carry
@@ -282,11 +336,19 @@ var tenantLoggedExprs = map[string]bool{
 	"encryption_hooks.go:name": true, "exec_watcher.go:name": true, "network_server.go:name": true,
 	"passthrough_store_access.go:name": true, "run_journal_reaper.go:name": true,
 	"sandbox_ttlsweeper_adapter.go:name": true, "ttlsweeper_adapter.go:name": true,
+
+	// Token ids and run-checkout sweep values (box, checkout name).
+	"claims.ID": true, "familyID": true, "safeID(newAccessClaims)": true,
+	"safeID(newRefreshClaims)": true, "sw.box": true, "box_run_checkout_sweep.go:name": true,
+	"b.Ref.Tenant": true, `b.Ref.Tenant + "-container"`: true, `username + "-container"`: true,
 }
 
-// TestLogQuote_NoTenantValueWithBareVerb walks every log.Printf / Fatalf /
-// Panicf in this package's non-test sources and fails on any that binds a
-// tenant-controlled expression to %s or %v.
+// TestLogQuote_NoTenantValueWithBareVerb walks every log call in this
+// package's non-test sources and fails on any that hands a tenant-controlled
+// expression to the log unescaped. It covers the std logger's printf forms
+// (log.Printf / Fatalf / Panicf), its print forms (log.Print / Println /
+// Fatal / Panic, which never escape an argument), and the package's
+// injected printf-style loggers (<x>.logf, s.runCheckoutLogf).
 func TestLogQuote_NoTenantValueWithBareVerb(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -303,9 +365,26 @@ func TestLogQuote_NoTenantValueWithBareVerb(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", f, err)
 		}
+		tenantValued := func(arg ast.Expr) (string, bool) {
+			expr := types.ExprString(arg)
+			return expr, tenantLoggedExprs[expr] || tenantLoggedExprs[f+":"+expr]
+		}
 		ast.Inspect(af, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || !isStdLogPrintf(call) || len(call.Args) == 0 {
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			switch logCallKind(call) {
+			case logCallPrintf:
+			case logCallPrint:
+				for _, arg := range call.Args {
+					if expr, ok := tenantValued(arg); ok {
+						checked++
+						bad = append(bad, fmt.Sprintf("%s: %s logged by a print-style call", fset.Position(arg.Pos()), expr))
+					}
+				}
+				return true
+			default:
 				return true
 			}
 			format, ok := constFormat(call.Args[0])
@@ -322,8 +401,8 @@ func TestLogQuote_NoTenantValueWithBareVerb(t *testing.T) {
 					break
 				}
 				arg := call.Args[i+1]
-				expr := types.ExprString(arg)
-				if !tenantLoggedExprs[expr] && !tenantLoggedExprs[f+":"+expr] {
+				expr, ok := tenantValued(arg)
+				if !ok {
 					continue
 				}
 				checked++
@@ -343,18 +422,34 @@ func TestLogQuote_NoTenantValueWithBareVerb(t *testing.T) {
 	}
 }
 
-func isStdLogPrintf(call *ast.CallExpr) bool {
+type logCall int
+
+const (
+	logCallNone logCall = iota
+	logCallPrintf
+	logCallPrint
+)
+
+// logCallKind classifies call as a printf-style or print-style log call.
+func logCallKind(call *ast.CallExpr) logCall {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return false
+		return logCallNone
+	}
+	if id, ok := sel.X.(*ast.Ident); ok && id.Name == "log" {
+		switch sel.Sel.Name {
+		case "Printf", "Fatalf", "Panicf":
+			return logCallPrintf
+		case "Print", "Println", "Fatal", "Fatalln", "Panic", "Panicln":
+			return logCallPrint
+		}
+		return logCallNone
 	}
 	switch sel.Sel.Name {
-	case "Printf", "Fatalf", "Panicf":
-	default:
-		return false
+	case "logf", "runCheckoutLogf":
+		return logCallPrintf
 	}
-	id, ok := sel.X.(*ast.Ident)
-	return ok && id.Name == "log"
+	return logCallNone
 }
 
 // constFormat returns the value of a string literal or a "+" concatenation
