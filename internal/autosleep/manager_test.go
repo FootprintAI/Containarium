@@ -565,11 +565,11 @@ func (f *fakeIncusCounting) ListContainers() ([]incus.ContainerInfo, error) {
 func TestManager_TrafficReadFailureSkipsSleepUntilRecovered(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	inc := &fakeIncus{containers: []incus.ContainerInfo{{
-		Name: "alice-container",
-		State: "Running",
-		AutoSleepEnabled: true,
+		Name:                 "alice-container",
+		State:                "Running",
+		AutoSleepEnabled:     true,
 		IdleThresholdMinutes: 15,
-		LastStartedAt: now.Add(-2 * time.Hour),
+		LastStartedAt:        now.Add(-2 * time.Hour),
 	}}}
 	traffic := &fakeTraffic{err: errors.New("activity lookup failed")}
 	stopper := &fakeStopper{}

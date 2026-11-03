@@ -109,13 +109,13 @@ func TestWakeStarter_ProbesTriggeringRouteRatherThanFirstRoute(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	backend := incustest.NewMockBackend()
 	backend.Containers["alice-container"] = &incus.ContainerInfo{
-		Name: "alice-container",
-		State: "Stopped",
+		Name:      "alice-container",
+		State:     "Stopped",
 		IPAddress: "127.0.0.1",
 	}
 	s := &ContainerServer{
-		manager: container.NewWithBackend(backend),
-		emitter: events.NewEmitter(events.NewBus()),
+		manager:    container.NewWithBackend(backend),
+		emitter:    events.NewEmitter(events.NewBus()),
 		routeStore: &fakeRouteLister{routes: []*app.RouteRecord{{TargetPort: 1}, {TargetPort: port}}},
 	}
 	ready, ip, gotPort, err := NewWakeStarter(s, 1).WakeForRequest(testCtx(), "alice", port)
