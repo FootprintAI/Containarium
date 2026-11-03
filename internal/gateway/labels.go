@@ -67,7 +67,7 @@ func (h *LabelHandler) HandleSetLabels(w http.ResponseWriter, r *http.Request) {
 	// Set labels (Manager expects username, not containerName)
 	for key, value := range req.Labels {
 		if err := h.manager.AddLabel(username, key, value); err != nil {
-			log.Printf("Failed to set label %s=%s on %s: %v", key, value, containerName, err)
+			log.Printf("Failed to set label %q=%q on %q: %v", key, value, containerName, err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to set label: " + err.Error()})
@@ -109,7 +109,7 @@ func (h *LabelHandler) HandleRemoveLabel(w http.ResponseWriter, r *http.Request)
 
 	// Remove label (Manager expects username, not containerName)
 	if err := h.manager.RemoveLabel(username, labelKey); err != nil {
-		log.Printf("Failed to remove label %s from %s: %v", labelKey, containerName, err)
+		log.Printf("Failed to remove label %q from %q: %v", labelKey, containerName, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to remove label: " + err.Error()})
