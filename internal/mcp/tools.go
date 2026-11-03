@@ -195,7 +195,7 @@ func (s *Server) registerTools() {
 						"type":        "integer",
 						"minimum":     0,
 						"maximum":     2147483647,
-						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. Applied atomically during create (no second toggle call). Cannot be combined with disable_auto_sleep=true.",
+						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. The daemon applies the policy best-effort during create; creation may succeed without auto-sleep if the settings cannot be saved. Cannot be combined with disable_auto_sleep=true.",
 					},
 					"gpu": map[string]interface{}{
 						"type":        "string",

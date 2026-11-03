@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ func TestStampLocalBirthAutoSleep(t *testing.T) {
 	}{
 		{
 			name:         "successful birth policy",
-			minutes:      1,
-			expectedKeys: []string{incus.LastStartedAtKey, incus.AutoSleepEnabledKey, incus.IdleThresholdMinutesKey},
+			minutes:      60,
+			expectedKeys: []string{incus.LastStartedAtKey, incus.IdleThresholdMinutesKey, incus.AutoSleepEnabledKey},
 		},
 		{
 			name:    "default off",
@@ -34,10 +35,16 @@ func TestStampLocalBirthAutoSleep(t *testing.T) {
 			expectedKeys: []string{incus.LastStartedAtKey},
 		},
 		{
-			name:         "enable failure never writes threshold",
+			name:         "threshold failure leaves policy disabled",
+			minutes:      60,
+			failKey:      incus.IdleThresholdMinutesKey,
+			expectedKeys: []string{incus.LastStartedAtKey, incus.IdleThresholdMinutesKey},
+		},
+		{
+			name:         "enable failure after threshold",
 			minutes:      15,
 			failKey:      incus.AutoSleepEnabledKey,
-			expectedKeys: []string{incus.LastStartedAtKey, incus.AutoSleepEnabledKey},
+			expectedKeys: []string{incus.LastStartedAtKey, incus.IdleThresholdMinutesKey, incus.AutoSleepEnabledKey},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,10 +75,11 @@ func TestStampLocalBirthAutoSleep(t *testing.T) {
 					t.Fatalf("UTC birth clock %q invalid or out of bounds: %v", calls[0].value, err)
 				}
 			}
-			if len(calls) == 3 {
-				if calls[1].value != "true" || calls[2].value != "1" {
-					t.Fatalf("bad successful enabled/threshold values: %+v", calls)
-				}
+			if len(calls) >= 2 && calls[1].value != strconv.Itoa(int(tc.minutes)) {
+				t.Fatalf("threshold = %q, want %d", calls[1].value, tc.minutes)
+			}
+			if len(calls) == 3 && calls[2].value != "true" {
+				t.Fatalf("unexpected auto-sleep enable value: %+v", calls)
 			}
 		})
 	}

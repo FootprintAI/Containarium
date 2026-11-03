@@ -132,7 +132,8 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 // A fresh, already-running local Box was not started through StartContainer,
 // so its LastStartedAt can be missing. Record the clock *before* enabling
 // auto-sleep: otherwise the manager cannot infer idle time for a quiet Box.
-// A failed stamp leaves the policy disabled, preserving the safe default.
+// Clock and threshold must persist before the enable flag: a failed stamp
+// leaves the policy disabled, preserving the safe default.
 func stampLocalBirthAutoSleep(setConfig func(string, string, string) error, containerName string, idleMinutes int32) {
 	if idleMinutes <= 0 {
 		return
@@ -141,11 +142,12 @@ func stampLocalBirthAutoSleep(setConfig func(string, string, string) error, cont
 		fmt.Printf("warning: failed to initialize birth auto-sleep clock on %q: %v (auto-sleep not enabled)\n", containerName, err)
 		return
 	}
+	if err := setConfig(containerName, incus.IdleThresholdMinutesKey, fmt.Sprintf("%d", idleMinutes)); err != nil {
+		fmt.Printf("warning: failed to set birth idle threshold on %q: %v (auto-sleep not enabled)\n", containerName, err)
+		return
+	}
 	if err := setConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
 		fmt.Printf("warning: failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)\n", containerName, err)
 		return
-	}
-	if err := setConfig(containerName, incus.IdleThresholdMinutesKey, fmt.Sprintf("%d", idleMinutes)); err != nil {
-		fmt.Printf("warning: enabled auto-sleep on %q but failed to set idle threshold: %v\n", containerName, err)
 	}
 }
