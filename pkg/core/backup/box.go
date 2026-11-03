@@ -256,7 +256,7 @@ func (m *Manager) CreateBox(opts BoxCreateOptions) (*Record, error) {
 	// streamed from) does not make the archive incomplete; Incus expires
 	// that backup on its own.
 	if closeErr != nil {
-		log.Printf("[backup] whole-box backup %s: closing the export of %s: %v", id, opts.ContainerName, closeErr)
+		log.Printf("[backup] whole-box backup %s: closing the export of %q: %v", id, opts.ContainerName, closeErr)
 	}
 
 	record := &Record{
@@ -504,7 +504,7 @@ func filterBoxArchive(src io.Reader, dst io.Writer, box string, now time.Time, l
 					if !ok {
 						// The target was not a regular file (nothing was set
 						// aside); there is no content to keep.
-						log.Printf("[backup] whole-box backup of %s: hard link %s points at excluded %s, which has no content; dropped", box, name, targetName)
+						log.Printf("[backup] whole-box backup of %q: hard link %s points at excluded %s, which has no content; dropped", box, name, targetName)
 						continue
 					}
 					reg := *src

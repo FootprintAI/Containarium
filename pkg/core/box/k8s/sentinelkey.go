@@ -78,7 +78,7 @@ func (b *Backend) SetSentinelKey(ctx context.Context, pubKey string) (updated, r
 		tenant := boxes[i].Ref.Tenant
 		clientKeys := splitKeys(b.clientKeysOf(ctx, tenant))
 		if perr := b.router.ProgramRoute(ctx, tenant, clientKeys); perr != nil {
-			log.Printf("[k8s] sentinel re-key: box %s Pipe update failed: %v", tenant, perr)
+			log.Printf("[k8s] sentinel re-key: box %q Pipe update failed: %v", tenant, perr)
 			continue
 		}
 		updated++

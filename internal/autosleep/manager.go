@@ -168,7 +168,7 @@ func (m *Manager) tick(ctx context.Context) {
 		}
 
 		if err := m.stopper.StopForAutoSleep(ctx, username, d.Reason, d.IdleMinutes); err != nil {
-			log.Printf("[autosleep] stop %s: %v", username, err)
+			log.Printf("[autosleep] stop %q: %v", username, err)
 			continue
 		}
 		m.logSleep(ctx, username, d)
@@ -185,5 +185,5 @@ func (m *Manager) logSleep(_ context.Context, username string, d Decision) {
 		m.audit.Log("autosleep.stopped", fields)
 		return
 	}
-	log.Printf("[autosleep] stopped username=%s reason=%q idle_minutes=%d", username, d.Reason, d.IdleMinutes)
+	log.Printf("[autosleep] stopped username=%q reason=%q idle_minutes=%d", username, d.Reason, d.IdleMinutes)
 }

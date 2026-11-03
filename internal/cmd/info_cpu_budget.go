@@ -23,11 +23,11 @@ func renderCPUBudget(b *incus.CPUBudget) string {
 		physical = fmt.Sprintf("%.0f", b.PhysicalCPUs)
 	}
 	fmt.Fprintf(&sb, "  %-18s %s\n", "Physical CPUs:", physical)
-	tenant := fmt.Sprintf("%.2f cores", b.TenantCommittedCores)
+	tenantCores := fmt.Sprintf("%.2f cores", b.TenantCommittedCores)
 	if b.PhysicalCPUs > 0 {
-		tenant += fmt.Sprintf(" (%.2f×)", b.TenantRatio())
+		tenantCores += fmt.Sprintf(" (%.2f×)", b.TenantRatio())
 	}
-	fmt.Fprintf(&sb, "  %-18s %s\n", "Tenant committed:", tenant)
+	fmt.Fprintf(&sb, "  %-18s %s\n", "Tenant committed:", tenantCores)
 	fmt.Fprintf(&sb, "  %-18s %.2f cores\n", "Core committed:", b.CoreCommittedCores)
 	fmt.Fprintf(&sb, "  %-18s %s\n", "Admission gate:", describeCPUAdmission(b))
 	if msg, warn := b.AdvisoryWarning(); warn {

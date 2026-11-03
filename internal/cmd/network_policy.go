@@ -463,7 +463,7 @@ func runNetworkPolicyList(cmd *cobra.Command, args []string) error {
 	// `get`/`patch list <tenant>`. The --json path above carries the full rules.
 	fmt.Fprintf(w, "%-20s %-12s %-6s %-8s %s\n", "TENANT", "MODE", "INTRA", "PATCHES", "EGRESS")
 	for _, p := range out.Policies {
-		fmt.Fprintf(w, "%-20s %-12s %-6v %-8d %s\n", p.Tenant, shortMode(p.Mode), p.AllowIntraTenant, len(p.DenyRules), egressSummary(p))
+		fmt.Fprintf(w, "%-20s %-12s %-6v %-8d %s\n", escapeControl(p.Tenant), shortMode(p.Mode), p.AllowIntraTenant, len(p.DenyRules), egressSummary(p))
 	}
 	return nil
 }

@@ -153,7 +153,7 @@ func showSystemInfo() error {
 			if ip == "" {
 				ip = "N/A"
 			}
-			fmt.Printf("  %-20s  %-10s  %s\n", username, status, ip)
+			fmt.Printf("  %-20s  %-10s  %s\n", escapeControl(username), status, ip)
 		}
 		fmt.Println()
 	}

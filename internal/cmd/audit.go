@@ -289,7 +289,7 @@ func runAuditQuery(cmd *cobra.Command, args []string) error {
 		for _, r := range rows {
 			fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 				r.Timestamp.UTC().Format(time.RFC3339),
-				r.Username, r.Action, r.ResourceType, r.ResourceID, r.StatusCode,
+				escapeControl(r.Username), r.Action, r.ResourceType, r.ResourceID, r.StatusCode,
 				sanitizeDetailForCLI(r.Detail),
 			)
 		}

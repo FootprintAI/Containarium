@@ -219,7 +219,7 @@ func formatAnonBoxes(boxes []*pb.AnonymousBox) string {
 		if b.GetClaimed() {
 			claimed = "yes"
 		}
-		fmt.Fprintf(&sb, "%-28s %-16s %-16s %-20s %s\n", b.GetBoxName(), fp, b.GetSshHost(), exp, claimed)
+		fmt.Fprintf(&sb, "%-28s %-16s %-16s %-20s %s\n", escapeControl(b.GetBoxName()), fp, b.GetSshHost(), exp, claimed)
 	}
 	fmt.Fprintf(&sb, "Total: %d\n", len(boxes))
 	return sb.String()
