@@ -86,17 +86,19 @@ jobs:
           [ "$(code /)" = "401" ]
           TOK=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
           SESS=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
-            | sed -n 's/^[Ss]et-[Cc]ookie: ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p')
+            | sed -n 's/^[Ss]et-[Cc]ookie: __Host-ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p')
           [ -n "$SESS" ] && [ "$SESS" != "$TOK" ]
           REPLAY=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)
           [ "$REPLAY" = "403" ] || { echo "replayed token: $REPLAY, want 403" >&2; exit 1; }
           for _ in $(seq 1 120); do
-            [ "$(code / -H "Cookie: ws_session=$SESS")" = "200" ] && break
+            [ "$(code / -H "Cookie: __Host-ws_session=$SESS")" = "200" ] && break
             sleep 1
           done
-          [ "$(code / -H "Cookie: ws_session=$SESS")" = "200" ]
+          [ "$(code / -H "Cookie: __Host-ws_session=$SESS")" = "200" ]
           [ "$(code / -u ci:ci-pass)" = "200" ]
-          [ "$(code / -H "Cookie: ws_session=$TOK")" = "401" ]
+          [ "$(code / -H "Cookie: __Host-ws_session=$TOK")" = "401" ]
+          # A planted duplicate ahead of the real cookie does not lock the user out.
+          [ "$(code / -H "Cookie: __Host-ws_session=$(printf 'B%.0s' $(seq 43)); __Host-ws_session=$SESS")" = "200" ]
           TOK2=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
           [ "$(code "/__ws_login?t=$TOK2")" = "400" ]
           [ "$(printf '%s' "$TOK2" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)" = "403" ]

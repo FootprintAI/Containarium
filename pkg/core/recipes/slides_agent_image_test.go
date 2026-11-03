@@ -105,7 +105,10 @@ func TestSlidesAgentCaddyfile(t *testing.T) {
 		"handle /__ws_login {\n\t\treverse_proxy 127.0.0.1:9098\n\t}",
 		// The session cookie, anchored to the name boundary and of the
 		// helper's shape, checked with the helper on every request.
-		`header_regexp Cookie "(^|;\s*)ws_session=[A-Za-z0-9_-]{43}($|;)"`,
+		// __Host-: a sibling subdomain cannot plant it (#3486 follow-up).
+		`header_regexp Cookie "(^|;\s*)__Host-ws_session=[A-Za-z0-9_-]{43}($|;)"`,
+		// Stripped before the dev server; the app's own cookies pass.
+		`header_up Cookie "__Host-ws_session=[^;]*;?\s*" ""`,
 		"forward_auth 127.0.0.1:9098 {\n\t\t\turi /__session\n\t\t}",
 		"not header Authorization *", // basic-auth credentials always take the basic-auth path
 		"127.0.0.1:5173",             // the dev server stays on loopback
@@ -133,6 +136,12 @@ func TestSlidesAgentCaddyfile(t *testing.T) {
 	// Every request proxied to the dev server forwards the https scheme, and
 	// the only other upstream is the helper.
 	toDev := strings.Count(cf, "reverse_proxy 127.0.0.1:5173")
+	if strings.Count(cf, `header_up Cookie "__Host-ws_session=`) != toDev {
+		t.Error("every dev-server reverse_proxy block must strip the session cookie")
+	}
+	if regexp.MustCompile(`[^-]ws_session`).MatchString(cf) {
+		t.Error("the session cookie must carry the __Host- prefix everywhere")
+	}
 	if toDev != 2 || toDev != strings.Count(cf, "header_up X-Forwarded-Proto https") {
 		t.Errorf("want the two dev-server reverse_proxy blocks, each with X-Forwarded-Proto https; got %d", toDev)
 	}
@@ -173,6 +182,7 @@ func TestSlidesAgentLoginHelperContract(t *testing.T) {
 		`"/__session"`,
 		"tokenTTL = 120 * time.Second",
 		"cookieSameSite = http.SameSiteNoneMode",
+		`sessionCookie = "__Host-ws_session"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("wsauth.go missing %q", want)
