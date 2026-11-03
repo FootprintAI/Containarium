@@ -137,3 +137,19 @@ func TestLogQuote_TerminalRunUserLookupFailure(t *testing.T) {
 		})
 	}
 }
+
+type hostilePeerProxy struct{}
+
+func (hostilePeerProxy) PeerTerminalURL(string, string) (string, error) {
+	return "ws://peer.example.com/" + logQuoteHostile, nil
+}
+
+// #3476: the peer URL is built from request-derived text and is logged with %q.
+func TestLogQuote_TerminalPeerURL(t *testing.T) {
+	th := &TerminalHandler{}
+	th.SetPeerProxy(hostilePeerProxy{})
+	buf := captureStdLog(t)
+	rec := httptest.NewRecorder()
+	th.HandleTerminal(rec, httptest.NewRequest(http.MethodGet, "/v1/containers/alice/terminal", nil))
+	assertLogQuoted(t, buf.String())
+}

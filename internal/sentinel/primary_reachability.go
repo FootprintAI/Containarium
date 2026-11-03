@@ -168,7 +168,7 @@ func (m *Manager) checkTunnelPrimaries(ctx context.Context) {
 			}
 			result := probeHostname(dial, spotID, p.Port, h, defaultReachabilityTimeout)
 			if !result.Reachable && wasReachable(p, h) {
-				log.Printf("[sentinel] primary reachability: pool=%q hostname=%q became UNREACHABLE: %s", p.Pool, h, result.Error)
+				log.Printf("[sentinel] primary reachability: pool=%q hostname=%q became UNREACHABLE: %q", p.Pool, h, result.Error)
 			}
 			results = append(results, result)
 		}

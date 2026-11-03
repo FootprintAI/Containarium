@@ -835,7 +835,7 @@ func recoverJumpServerAccounts() {
 
 	if len(res.Restored) > 0 {
 		log.Printf("[account-sync] restored %d missing host account(s) on startup (spot boot-disk recovery): %q",
-			len(res.Restored), strings.Join(res.Restored, ", "))
+			len(res.Restored), res.Restored)
 	} else {
 		log.Printf("[account-sync] host accounts up to date (%d present, %d container(s) without a tenant key)",
 			res.Skipped, len(res.NoKey))
@@ -847,11 +847,11 @@ func recoverJumpServerAccounts() {
 		log.Printf("[account-sync] %q: skipped %d revoked key(s)", u, n)
 	}
 	if len(res.AllRevoked) > 0 {
-		log.Printf("[account-sync] every key is revoked for %q; account not restored", strings.Join(res.AllRevoked, ", "))
+		log.Printf("[account-sync] every key is revoked for %q; account not restored", res.AllRevoked)
 	}
 	if len(res.Failed) > 0 {
 		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %q",
-			len(res.Failed), strings.Join(res.Failed, ", "))
+			len(res.Failed), res.Failed)
 	}
 }
 

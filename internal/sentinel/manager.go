@@ -826,7 +826,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 			// Only reachable behind daemonAuthGate: the request authenticated,
 			// so its pool may now be tied to its source address (#2892).
 			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
-			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%q:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%q port=%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
 
@@ -1961,7 +1961,7 @@ func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) recoveryOu
 		return recoveryStartFailed
 	}
 
-	log.Printf("[sentinel] backend %s status: %s", b.ID, status)
+	log.Printf("[sentinel] backend %q status: %s", b.ID, status)
 
 	switch status {
 	case StatusStopped, StatusTerminated:
