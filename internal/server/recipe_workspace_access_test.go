@@ -14,9 +14,13 @@ import (
 
 // workspaceBox is a recipeBoxes fake for GetWorkspaceAccess: it answers the
 // in-box mint probe and the static-token read, and records every command.
+// mintStatus is the helper's HTTP status (0 = 200). It models curl: with -f a
+// status of 400 or more is a failed command (curl exits 22) and prints no
+// body; without -f curl prints the body and exits 0 whatever the status.
 type workspaceBox struct {
 	recipeBoxes // nil: GetWorkspaceAccess uses only ExecWithOutput
 	mint        func(call int) (string, error)
+	mintStatus  int
 	static      string
 	staticErr   error
 	mints       int
@@ -30,9 +34,12 @@ func (b *workspaceBox) ExecWithOutput(name string, command []string) (string, st
 	cmd := strings.Join(command, " ")
 	b.commands = append(b.commands, cmd)
 	switch cmd {
-	case "curl -s --max-time 3 http://127.0.0.1:9099/__mint":
+	case "curl -sf --max-time 3 http://127.0.0.1:9099/__mint", "curl -s --max-time 3 http://127.0.0.1:9099/__mint":
 		b.mints++
 		out, err := b.mint(b.mints)
+		if err == nil && b.mintStatus >= 400 && strings.Contains(cmd, " -sf ") {
+			return "", "", errors.New("exit status 22")
+		}
 		return out, "", err
 	case "cat /opt/wsauth/token":
 		return b.static, "", b.staticErr
@@ -112,12 +119,12 @@ func TestGetWorkspaceAccess_FallsBackToStaticToken(t *testing.T) {
 // The chat workspace's helper prints the bare token: unchanged, ?t= on the
 // chat subdomain.
 func TestGetWorkspaceAccess_ChatWorkspaceUnchanged(t *testing.T) {
-	box := &workspaceBox{mint: func(int) (string, error) { return "chat-tok_1\n", nil }}
+	box := &workspaceBox{mint: func(int) (string, error) { return chatTok + "\n", nil }}
 	resp := getAccess(t, workspaceServer(box, "example.com"))
-	if resp.GetToken() != "chat-tok_1" {
+	if resp.GetToken() != chatTok {
 		t.Errorf("token = %q", resp.GetToken())
 	}
-	if want := "https://deck-chat.example.com/__ws_login?t=chat-tok_1"; resp.GetUrl() != want {
+	if want := "https://deck-chat.example.com/__ws_login?t=" + chatTok; resp.GetUrl() != want {
 		t.Errorf("url = %q, want %q", resp.GetUrl(), want)
 	}
 	if len(box.commands) != 1 {
@@ -161,5 +168,57 @@ func TestParseWorkspaceMint(t *testing.T) {
 		if got := parseWorkspaceMint(body); got != want {
 			t.Errorf("parseWorkspaceMint(%q) = %q, want %q", body, got, want)
 		}
+	}
+}
+
+// chatTok has the chat workspace helper's token shape:
+// secrets.token_urlsafe(24), 32 base64url characters.
+const chatTok = "Zm9vYmFyYmF6cXV4X2NoYXQtdG9rZW4x"
+
+// Review reproduction (#3486 follow-up): a helper at its pending-token cap
+// answers 503 "mint refused". curl -s exited 0 on it, and the daemon took the
+// error text for a chat token and built .../__ws_login?t=mint+refused with no
+// error. An error body never becomes a token or a URL.
+func TestGetWorkspaceAccess_MintErrorBodyIsNotAToken(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"503 text body", "mint refused\n", 503},
+		{"503 json body", `{"error":"mint refused"}` + "\n", 503},
+		{"200 text body", "mint refused\n", 200},
+		{"200 html body", "<html>not found</html>", 200},
+		{"200 short token", "abc", 200},
+		{"200 long non-token", "../../%3Cscript%3E/not-a-token-but-long-enough", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mint := func(int) (string, error) { return tc.body, nil }
+			// A slides-agent box (no static token): NotFound, not a URL.
+			box := &workspaceBox{mint: mint, mintStatus: tc.status, staticErr: errors.New("no such file")}
+			resp, err := workspaceServer(box, "example.com").GetWorkspaceAccess(adminCtx(), &pb.GetWorkspaceAccessRequest{Name: "deck"})
+			if status.Code(err) != codes.NotFound {
+				t.Fatalf("resp %+v err %v, want NotFound", resp, err)
+			}
+			// A box that also has a static token falls back to it.
+			box = &workspaceBox{mint: mint, mintStatus: tc.status, static: "static-tok\n"}
+			resp = getAccess(t, workspaceServer(box, "example.com"))
+			if resp.GetToken() != "static-tok" || resp.GetUrl() != "https://deck-workspace.example.com/__ws_login?t=static-tok" {
+				t.Errorf("resp = %+v, want the static fallback", resp)
+			}
+		})
+	}
+}
+
+// The probe fails on an HTTP error status (curl -f), so a helper's error
+// response is a failed probe, exactly like a box with no helper.
+func TestGetWorkspaceAccess_MintProbeFailsOnHTTPError(t *testing.T) {
+	box := &workspaceBox{mint: func(int) (string, error) { return chatTok, nil }, mintStatus: 503, static: "static-tok"}
+	resp := getAccess(t, workspaceServer(box, "example.com"))
+	if resp.GetToken() != "static-tok" {
+		t.Errorf("token = %q: a 503 body must not be used, even one shaped like a token", resp.GetToken())
+	}
+	if len(box.commands) == 0 || !strings.Contains(box.commands[0], "curl -sf ") {
+		t.Errorf("commands = %q, want the mint probe run with curl -sf", box.commands)
 	}
 }

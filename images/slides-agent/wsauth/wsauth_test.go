@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -377,6 +379,13 @@ func TestHTTPLoginRefusals(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("mint past the cap: %d", rec.Code)
 	}
+	// The refusal is JSON with no token, so no consumer can take its body
+	// for a token (a 503 text body once became ?t=mint+refused).
+	var refused map[string]any
+	if rec.Header().Get("Content-Type") != "application/json" || json.Unmarshal(rec.Body.Bytes(), &refused) != nil ||
+		refused["error"] == nil || refused["token"] != nil {
+		t.Errorf("mint refusal: %q %q, want a JSON error with no token", rec.Header().Get("Content-Type"), rec.Body)
+	}
 }
 
 func TestHTTPBootstrapPage(t *testing.T) {
@@ -401,8 +410,19 @@ func TestHTTPBootstrapPage(t *testing.T) {
 		}
 	}
 	csp := rec.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "form-action 'self'") || !strings.Contains(csp, "'sha256-") {
+	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "form-action 'self'") {
 		t.Errorf("CSP %q", csp)
+	}
+	// The CSP's script hash is the hash of the script the page carries, so
+	// the browser runs it (and nothing else).
+	start := strings.Index(body, "<script>") + len("<script>")
+	end := strings.Index(body, "</script>")
+	if start < len("<script>") || end < start {
+		t.Fatalf("no inline script in the page")
+	}
+	sum := sha256.Sum256([]byte(body[start:end]))
+	if want := "script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"; !strings.Contains(csp, want) {
+		t.Errorf("CSP %q does not carry %q, the hash of the page's script", csp, want)
 	}
 	if rec := postLogin(proxyHandler(s), "", "same-origin"); rec.Code != http.StatusForbidden {
 		t.Errorf("empty post: %d", rec.Code)
@@ -420,5 +440,70 @@ func TestHTTPLoginBodyLimit(t *testing.T) {
 	proxyHandler(s).ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("oversized body: %d, want 403", rec.Code)
+	}
+}
+
+// The session cookie is a __Host- cookie: a browser refuses one that carries a
+// Domain attribute, so a sibling subdomain cannot plant it.
+func TestSessionCookieIsHostPrefixed(t *testing.T) {
+	if sessionCookie != "__Host-ws_session" {
+		t.Fatalf("sessionCookie = %q", sessionCookie)
+	}
+	c := sessionCookieFor("v")
+	if !c.Secure || c.Path != "/" || c.Domain != "" {
+		t.Fatalf("a __Host- cookie needs Secure, Path=/ and no Domain: %+v", c)
+	}
+}
+
+func sessionCheck(h http.Handler, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/__session", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// Review finding (#3486 follow-up): only the first session cookie was read,
+// and a refusal cleared the host's cookie, so a planted bogus cookie sorted
+// first locked the user out. Any valid one is accepted; the cookie is cleared
+// only when none is valid.
+func TestHTTPSessionAcceptsAnyValidDuplicate(t *testing.T) {
+	s, _ := newTestStore()
+	proxy := proxyHandler(s)
+	sess, _ := s.redeem(mustMint(t, s))
+	valid := &http.Cookie{Name: sessionCookie, Value: sess}
+	bogus := &http.Cookie{Name: sessionCookie, Value: strings.Repeat("B", 43)}
+	for name, cookies := range map[string][]*http.Cookie{
+		"valid first": {valid, bogus},
+		"bogus first": {bogus, valid},
+	} {
+		rec := sessionCheck(proxy, cookies...)
+		if rec.Code != http.StatusNoContent || rec.Header().Get("Set-Cookie") != "" {
+			t.Errorf("%s: %d %v, want 204 and no Set-Cookie", name, rec.Code, rec.Header())
+		}
+	}
+	rec := sessionCheck(proxy, bogus, &http.Cookie{Name: sessionCookie, Value: strings.Repeat("C", 43)})
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Header().Get("Set-Cookie"), sessionCookie+"=;") {
+		t.Errorf("no valid cookie: %d %v, want 401 and the cookie cleared", rec.Code, rec.Header())
+	}
+	// The pre-follow-up name is not accepted.
+	if rec := sessionCheck(proxy, &http.Cookie{Name: "ws_session", Value: sess}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("plain ws_session: %d, want 401", rec.Code)
+	}
+	// A reload of a spent link also accepts any valid duplicate.
+	tok := mustMint(t, s)
+	if _, ok := s.redeem(tok); !ok {
+		t.Fatal("redeem")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/__ws_login", strings.NewReader(url.Values{"t": {tok}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(bogus)
+	req.AddCookie(valid)
+	rec = httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Errorf("reload with bogus-first duplicates: %d, want 303", rec.Code)
 	}
 }

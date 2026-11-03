@@ -821,20 +821,20 @@ func TestSlidesAgentRecipe(t *testing.T) {
 		"ghcr.io/footprintai/containarium-slides-agent", // the prebaked image, tag = the release
 		"CONTAINARIUM_PARAM_SLIDES_IMAGE",               // mirror / override hook
 		"CONTAINARIUM_PARAM_RELEASE",
-		"--network host",                         // proxy on the box's address, dev server on loopback
-		"--restart=always",                       // survives box reboot and idle-stop/start
-		"--env-file",                             // auth material never on the command line
-		"hash-password",                          // password bcrypt-hashed at deploy
-		`rm -f "$WSAUTH/token"`,                  // no static zero-click token (#3486)
-		":/workspace",                            // the deck tree stays on the box disk
-		"--user",                                 // container runs as the box user so files stay editable
-		"exit 1",                                 // fail closed on empty auth material
-		`[ "$CODE" = "401" ]`,                    // unauthenticated request refused, or the deploy fails
-		"http://127.0.0.1:9099/__mint",           // the zero-click login works end to end at deploy (#3486)
-		`--data-urlencode 't@-'`,                 // the token is POSTed, from stdin, never in a URL or argv
-		"ws_session=",                            // redeemed for the session cookie
-		`[ "$REPLAY" = "403" ]`,                  // a replayed token is refused, or the deploy fails
-		`printf 'Cookie: ws_session=%s' "$SESS"`, // the dev server must answer through the proxy (200)
+		"--network host",                                // proxy on the box's address, dev server on loopback
+		"--restart=always",                              // survives box reboot and idle-stop/start
+		"--env-file",                                    // auth material never on the command line
+		"hash-password",                                 // password bcrypt-hashed at deploy
+		`rm -f "$WSAUTH/token"`,                         // no static zero-click token (#3486)
+		":/workspace",                                   // the deck tree stays on the box disk
+		"--user",                                        // container runs as the box user so files stay editable
+		"exit 1",                                        // fail closed on empty auth material
+		`[ "$CODE" = "401" ]`,                           // unauthenticated request refused, or the deploy fails
+		"http://127.0.0.1:9099/__mint",                  // the zero-click login works end to end at deploy (#3486)
+		`--data-urlencode 't@-'`,                        // the token is POSTed, from stdin, never in a URL or argv
+		"__Host-ws_session=",                            // redeemed for the session cookie
+		`[ "$REPLAY" = "403" ]`,                         // a replayed token is refused, or the deploy fails
+		`printf 'Cookie: __Host-ws_session=%s' "$SESS"`, // the dev server must answer through the proxy (200)
 		`[ "$AUTHED" = "200" ]`,
 	} {
 		if !strings.Contains(joined, want) {

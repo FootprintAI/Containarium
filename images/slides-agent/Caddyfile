@@ -3,14 +3,16 @@
 #
 # Fronts EVERY path of the open-slide dev server on 127.0.0.1:5173, websockets
 # included. Two ways in:
-#   * the ws_session cookie, checked on every request against the in-box login
-#     helper (images/slides-agent/wsauth, 127.0.0.1:9098) with forward_auth;
+#   * the __Host-ws_session cookie, checked on every request against the login
+#     helper (images/slides-agent/wsauth, 127.0.0.1:9098) with forward_auth
+#     (the __Host- prefix: a sibling subdomain cannot plant one);
 #   * HTTP basic auth, for direct access.
 # Zero-click access (#3486): the daemon mints a single-use login token from the
 # helper and hands out /__ws_login#t=<token>. The token is in the URL fragment,
 # which a browser never sends; the helper's bootstrap page POSTs it, the helper
-# redeems it once and sets ws_session, a separate random value. A token in the
-# query string is burned, never redeemed.
+# redeems it once and sets __Host-ws_session, a separate random value. A token
+# in the query string is burned, never redeemed. The session cookie is stripped
+# from every request proxied to the dev server; the app's own cookies pass.
 #
 # No `log` directive: Caddy writes no access log, and no request line carries a
 # token anyway.
@@ -42,7 +44,7 @@
 	# a basic-auth challenge plus the cookie cleared, so the browser's retry
 	# carries the password and takes the basic-auth path below.
 	@session {
-		header_regexp Cookie "(^|;\s*)ws_session=[A-Za-z0-9_-]{43}($|;)"
+		header_regexp Cookie "(^|;\s*)__Host-ws_session=[A-Za-z0-9_-]{43}($|;)"
 		not header Authorization *
 	}
 	handle @session {
@@ -51,6 +53,8 @@
 		}
 		reverse_proxy 127.0.0.1:5173 {
 			header_up X-Forwarded-Proto https
+			# The session cookie is the proxy's, not the app's: strip it.
+			header_up Cookie "__Host-ws_session=[^;]*;?\s*" ""
 		}
 	}
 
@@ -61,6 +65,8 @@
 		}
 		reverse_proxy 127.0.0.1:5173 {
 			header_up X-Forwarded-Proto https
+			# The session cookie is the proxy's, not the app's: strip it.
+			header_up Cookie "__Host-ws_session=[^;]*;?\s*" ""
 		}
 	}
 }
