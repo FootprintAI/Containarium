@@ -43,15 +43,17 @@ import (
 // review-gate reason the daemon's allowlist exists.
 
 const (
-	metricSentinelState          = "containarium.sentinel.state"
-	metricSentinelPreempted      = "containarium.sentinel.preempted_total"
-	metricSentinelRecovered      = "containarium.sentinel.recovered_total"
-	metricSentinelFailover       = "containarium.sentinel.failover_total"
-	metricSentinelBackendHealthy = "containarium.sentinel.backend_healthy"
-	metricSentinelPrimaryPref    = "containarium.sentinel.primary_preferred"
-	metricSentinelRSS            = "containarium.sentinel.process.resident_memory_bytes"
-	metricSentinelGoroutines     = "containarium.sentinel.process.goroutines"
-	metricSentinelOpenFDs        = "containarium.sentinel.process.open_fds"
+	metricSentinelState                  = "containarium.sentinel.state"
+	metricSentinelPreempted              = "containarium.sentinel.preempted_total"
+	metricSentinelRecovered              = "containarium.sentinel.recovered_total"
+	metricSentinelWatchTargetDown        = "containarium.sentinel.watch_target_down"
+	metricSentinelWatchTargetLastPreempt = "containarium.sentinel.watch_target_last_preemption_timestamp_seconds"
+	metricSentinelFailover               = "containarium.sentinel.failover_total"
+	metricSentinelBackendHealthy         = "containarium.sentinel.backend_healthy"
+	metricSentinelPrimaryPref            = "containarium.sentinel.primary_preferred"
+	metricSentinelRSS                    = "containarium.sentinel.process.resident_memory_bytes"
+	metricSentinelGoroutines             = "containarium.sentinel.process.goroutines"
+	metricSentinelOpenFDs                = "containarium.sentinel.process.open_fds"
 
 	// sentinelMeterName is the instrumentation scope for these series.
 	sentinelMeterName = "github.com/footprintai/containarium/internal/sentinel"
@@ -138,6 +140,17 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 	if err != nil {
 		return err
 	}
+	watchDown, err := meter.Int64ObservableGauge(metricSentinelWatchTargetDown,
+		metric.WithDescription("1 while a --watch-spot-vm target is known stopped/terminated, 0 once it is running again."))
+	if err != nil {
+		return err
+	}
+	watchLastPreempt, err := meter.Int64ObservableGauge(metricSentinelWatchTargetLastPreempt,
+		metric.WithDescription("Unix time of the last observed preemption of a --watch-spot-vm target; absent if none."),
+		metric.WithUnit("s"))
+	if err != nil {
+		return err
+	}
 	failover, err := meter.Int64ObservableCounter(metricSentinelFailover,
 		metric.WithDescription("Total primary-backend failovers, including those absorbed without entering maintenance."))
 	if err != nil {
@@ -183,6 +196,21 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 		o.ObserveInt64(recovered, int64(m.RecoveredCount()), baseSet)
 		o.ObserveInt64(failover, m.FailoverCount(), baseSet)
 
+		for _, s := range m.WatchTargetSnapshots() {
+			targetSet := metric.WithAttributes(
+				append(append([]attribute.KeyValue{}, base...), attribute.String("backend", s.ID))...)
+			o.ObserveInt64(preempted, int64(s.PreemptCount), targetSet)
+			o.ObserveInt64(recovered, int64(s.RecoveredCount), targetSet)
+			down := int64(0)
+			if s.Down {
+				down = 1
+			}
+			o.ObserveInt64(watchDown, down, targetSet)
+			if !s.LastPreemption.IsZero() {
+				o.ObserveInt64(watchLastPreempt, s.LastPreemption.Unix(), targetSet)
+			}
+		}
+
 		for id, healthy := range m.BackendHealthSnapshot() {
 			v := int64(0)
 			if healthy {
@@ -215,7 +243,7 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 			}
 		}
 		return nil
-	}, state, preempted, recovered, failover, backendHealthy, primaryPreferred, rss, goroutines, openFDs)
+	}, state, preempted, recovered, watchDown, watchLastPreempt, failover, backendHealthy, primaryPreferred, rss, goroutines, openFDs)
 
 	return err
 }
