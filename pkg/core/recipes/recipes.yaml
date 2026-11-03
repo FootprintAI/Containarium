@@ -381,12 +381,12 @@ recipes:
         done
         [ -n "$TOK" ] || { echo "slides-agent: the login helper did not mint a token" >&2; exit 1; }
         SESS=$(printf '%s' "$TOK" | curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
-          | sed -n 's/^[Ss]et-[Cc]ookie: ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p' || true)
+          | sed -n 's/^[Ss]et-[Cc]ookie: __Host-ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p' || true)
         [ -n "$SESS" ] || { echo "slides-agent: the proxy did not redeem a fresh login token" >&2; exit 1; }
         REPLAY=$(printf '%s' "$TOK" | curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login || true)
         [ "$REPLAY" = "403" ] || { echo "slides-agent: a replayed login token was not refused (got '$REPLAY')" >&2; exit 1; }
         for _ in $(seq 1 120); do
-          AUTHED=$(printf 'Cookie: ws_session=%s' "$SESS" | curl -s -o /dev/null -w '%{http_code}' -H @- http://127.0.0.1:8080/ || true)
+          AUTHED=$(printf 'Cookie: __Host-ws_session=%s' "$SESS" | curl -s -o /dev/null -w '%{http_code}' -H @- http://127.0.0.1:8080/ || true)
           [ "$AUTHED" = "200" ] && break
           sleep 1
         done

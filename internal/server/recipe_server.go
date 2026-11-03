@@ -283,6 +283,12 @@ type workspaceMint struct {
 // bytes, unpadded base64url): safe in a URL fragment without escaping.
 var fragmentTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
+// bareTokenPattern is the shape a bare-token /__mint body must have to be
+// used: the chat workspace helper's secrets.token_urlsafe(24) is 32
+// base64url characters. Anything else (an error message, an HTML page) is a
+// failed probe, never a token in a URL.
+var bareTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
+
 // parseWorkspaceMint returns the token of a slides-agent /__mint body, or ""
 // when the body is not one.
 func parseWorkspaceMint(body string) string {
@@ -331,17 +337,20 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	//     Its subdomain is "<name>-workspace".
 	// Probe the helper first (preferred, single-use); fall back to the static
 	// token so every recipe shape works without the daemon tracking the recipe.
+	// curl -f: an HTTP error from a helper (e.g. 503 at its pending-token cap)
+	// is a failed probe, and a 2xx body that is not a well-formed token is
+	// treated the same; neither ever becomes a URL.
 	var token, subdomain string
 	inFragment := false
 	if out, _, err := s.boxOps().ExecWithOutput(containerName,
-		[]string{"curl", "-s", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
+		[]string{"curl", "-sf", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
 		t := strings.TrimSpace(out)
 		switch {
 		case strings.HasPrefix(t, "{"):
 			if ft := parseWorkspaceMint(t); ft != "" {
 				token, subdomain, inFragment = ft, req.Name+"-workspace", true
 			}
-		case t != "":
+		case bareTokenPattern.MatchString(t):
 			token, subdomain = t, req.Name+"-chat"
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -34,7 +35,28 @@ func TestCaddyfileProxy(t *testing.T) {
 		}
 		t.Skip("caddy not on PATH")
 	}
-	for _, addr := range []string{"127.0.0.1:8080", "127.0.0.1:5173", mintAddr, proxyAddr} {
+	// The proxy's own port is the one thing rewritten (to a free port, so a
+	// host already using 8080 can still run this); the rest of the
+	// Caddyfile is the image's, byte for byte.
+	pl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyHost := pl.Addr().String()
+	_ = pl.Close()
+	src, err := os.ReadFile("../Caddyfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(src), "\n:8080 {\n") != 1 {
+		t.Fatal("the Caddyfile must have exactly one :8080 site")
+	}
+	caddyfile := filepath.Join(t.TempDir(), "Caddyfile")
+	_, port, _ := net.SplitHostPort(proxyHost)
+	if err := os.WriteFile(caddyfile, []byte(strings.Replace(string(src), "\n:8080 {\n", "\n:"+port+" {\n", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, addr := range []string{"127.0.0.1:5173", mintAddr, proxyAddr} {
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			if os.Getenv("WSAUTH_REQUIRE_CADDY") == "1" {
@@ -53,10 +75,11 @@ func TestCaddyfileProxy(t *testing.T) {
 	// The stand-in dev server records every request line it is sent and
 	// answers websocket upgrades with 101.
 	var mu sync.Mutex
-	var seen []string
+	var seen, cookies []string
 	serve(t, "127.0.0.1:5173", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.RequestURI()+" proto="+r.Header.Get("X-Forwarded-Proto"))
+		cookies = append(cookies, r.Header.Values("Cookie")...)
 		mu.Unlock()
 		if r.Header.Get("Upgrade") == "websocket" {
 			conn, rw, err := w.(http.Hijacker).Hijack()
@@ -81,7 +104,7 @@ func TestCaddyfileProxy(t *testing.T) {
 	}
 	var caddyLog lockedBuffer
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, caddy, "run", "--config", "../Caddyfile", "--adapter", "caddyfile") //nolint:gosec // test binary
+	cmd := exec.CommandContext(ctx, caddy, "run", "--config", caddyfile, "--adapter", "caddyfile") //nolint:gosec // test binary
 	cmd.Env = append(os.Environ(), "SLIDES_AUTH_USER=deck", "SLIDES_AUTH_HASH="+strings.TrimSpace(string(hash)), "HOME="+t.TempDir())
 	cmd.Stdout, cmd.Stderr = &caddyLog, &caddyLog
 	if err := cmd.Start(); err != nil {
@@ -89,7 +112,7 @@ func TestCaddyfileProxy(t *testing.T) {
 	}
 	t.Cleanup(func() { cancel(); _ = cmd.Wait() })
 
-	const base = "http://127.0.0.1:8080"
+	base := "http://" + proxyHost
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	do := func(method, path string, body io.Reader, hdr map[string]string) *http.Response {
 		t.Helper()
@@ -196,6 +219,25 @@ func TestCaddyfileProxy(t *testing.T) {
 		!strings.Contains(resp.Header.Get("Set-Cookie"), sessionCookie+"=;") {
 		t.Errorf("unknown session: %d %v", resp.StatusCode, resp.Header)
 	}
+	// Duplicate session cookies (one planted, one real): accepted in either
+	// order, and the real one is not cleared.
+	bogus := sessionCookie + "=" + strings.Repeat("B", 43)
+	real := sessionCookie + "=" + sess.Value
+	for _, hdr := range []string{bogus + "; " + real, real + "; " + bogus} {
+		if resp := do(http.MethodGet, "/", nil, map[string]string{"Cookie": hdr}); resp.StatusCode != http.StatusOK || resp.Header.Get("Set-Cookie") != "" {
+			t.Errorf("duplicates %q: %d %v, want 200 and no Set-Cookie", hdr, resp.StatusCode, resp.Header)
+		}
+	}
+	if resp := do(http.MethodGet, "/", nil, map[string]string{"Cookie": bogus + "; " + sessionCookie + "=" + strings.Repeat("C", 43)}); resp.StatusCode != http.StatusUnauthorized ||
+		!strings.Contains(resp.Header.Get("Set-Cookie"), sessionCookie+"=;") {
+		t.Errorf("no valid duplicate: %d %v, want 401 and the cookie cleared", resp.StatusCode, resp.Header)
+	}
+	// The name without the __Host- prefix is not a session cookie.
+	if resp := do(http.MethodGet, "/", nil, map[string]string{"Cookie": "ws_session=" + sess.Value}); resp.StatusCode != http.StatusUnauthorized ||
+		resp.Header.Get("Set-Cookie") != "" {
+		t.Errorf("plain ws_session: %d %v, want basic auth's 401", resp.StatusCode, resp.Header)
+	}
+
 	// A cookie name that only ends in ws_session does not take the cookie
 	// path: basic auth's 401, not the helper's (which clears the cookie).
 	if resp := do(http.MethodGet, "/", nil, map[string]string{"Cookie": "x" + sessionCookie + "=" + sess.Value}); resp.StatusCode != http.StatusUnauthorized ||
@@ -208,7 +250,7 @@ func TestCaddyfileProxy(t *testing.T) {
 	if resp := do(http.MethodGet, "/", nil, basic); resp.StatusCode != http.StatusOK {
 		t.Errorf("basic auth: %d, want 200", resp.StatusCode)
 	}
-	basic["Cookie"] = sessionCookie + "=" + strings.Repeat("A", 43)
+	basic["Cookie"] = "basicapp=1; " + sessionCookie + "=" + strings.Repeat("A", 43)
 	if resp := do(http.MethodGet, "/", nil, basic); resp.StatusCode != http.StatusOK {
 		t.Errorf("basic auth with a stale cookie: %d, want 200", resp.StatusCode)
 	}
@@ -227,11 +269,11 @@ func TestCaddyfileProxy(t *testing.T) {
 	}
 
 	// Websocket upgrade on the cookie path reaches the dev server.
-	conn, err := net.Dial("tcp", "127.0.0.1:8080")
+	conn, err := net.Dial("tcp", proxyHost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Fprintf(conn, "GET /@vite/ws HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+	fmt.Fprintf(conn, "GET /@vite/ws HTTP/1.1\r\nHost: "+proxyHost+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
 		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCookie: %s=%s\r\n\r\n", sessionCookie, sess.Value)
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	status, _ := bufio.NewReader(conn).ReadString('\n')
@@ -252,6 +294,21 @@ func TestCaddyfileProxy(t *testing.T) {
 	}
 	if len(seen) == 0 {
 		t.Error("the dev server saw no request")
+	}
+	// The session cookie never reaches the dev server; the app's own do.
+	sawOther := false
+	for _, c := range cookies {
+		if strings.Contains(c, sessionCookie) {
+			t.Errorf("the session cookie reached the dev server: %q", c)
+		}
+		sawOther = sawOther || strings.Contains(c, "other=1")
+	}
+	sawBasic := false
+	for _, c := range cookies {
+		sawBasic = sawBasic || strings.Contains(c, "basicapp=1")
+	}
+	if !sawOther || !sawBasic {
+		t.Errorf("the app's own cookies were stripped too (cookie path %v, basic path %v): %q", sawOther, sawBasic, cookies)
 	}
 	if strings.Contains(caddyLog.String(), tok) || strings.Contains(caddyLog.String(), sess.Value) {
 		t.Errorf("the proxy's log carries a token or session:\n%s", caddyLog.String())

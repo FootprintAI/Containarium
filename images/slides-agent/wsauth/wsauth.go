@@ -46,7 +46,11 @@ const (
 	maxPending  = 256
 	maxSessions = 1024
 
-	sessionCookie = "ws_session"
+	// sessionCookie carries the __Host- prefix: a browser stores it only
+	// with Secure, Path=/ and no Domain attribute, so a site on a sibling
+	// subdomain cannot plant a cookie of this name for this host (which
+	// would otherwise be sent alongside, or ahead of, the real one).
+	sessionCookie = "__Host-ws_session"
 
 	// cookieSameSite is the session cookie's SameSite attribute. None, as the
 	// proxy used before #3486, so the cookie is still sent when the workspace
@@ -74,6 +78,12 @@ var (
 // the token in the URL fragment.
 type mintResponse struct {
 	Token string `json:"token"`
+}
+
+// mintError is the body of a refused GET /__mint (non-2xx status): JSON with
+// no token field, so no consumer can mistake it for a token.
+type mintError struct {
+	Error string `json:"error"`
 }
 
 type digest [sha256.Size]byte
@@ -208,13 +218,14 @@ func mintHandler(s *store) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		t, err := s.mint()
-		if err != nil {
-			http.Error(w, "mint refused", http.StatusServiceUnavailable)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		t, err := s.mint()
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(mintError{Error: "mint refused"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(mintResponse{Token: t})
 	})
 	return mux
@@ -239,6 +250,18 @@ func sessionCookieFor(value string) *http.Cookie {
 	}
 }
 
+// hasValidSession reports whether any session cookie on the request is live.
+// A request can carry several cookies of one name (a browser sends every
+// match, most specific Path first); one valid one is enough.
+func hasValidSession(s *store, r *http.Request) bool {
+	for _, c := range r.CookiesNamed(sessionCookie) {
+		if s.valid(c.Value) {
+			return true
+		}
+	}
+	return false
+}
+
 // proxyHandler serves the Caddy-facing listener.
 func proxyHandler(s *store) http.Handler {
 	mux := http.NewServeMux()
@@ -257,8 +280,10 @@ func proxyHandler(s *store) http.Handler {
 	})
 	mux.HandleFunc("POST /__ws_login", func(w http.ResponseWriter, r *http.Request) {
 		noStore(w.Header())
-		// Only the bootstrap page, on this origin, posts here. A browser
-		// labels a cross-site form post; refuse it (login CSRF).
+		// The bootstrap page posts here from this origin (same-origin, by
+		// design). A browser labels a POST from another site cross-site;
+		// refuse it, so another site cannot submit a token on the user's
+		// behalf. That would need an already valid, unredeemed token.
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
 			http.Error(w, "cross-site login refused", http.StatusForbidden)
 			return
@@ -269,7 +294,7 @@ func proxyHandler(s *store) http.Handler {
 			// A reload of the same link (an embedding console re-rendering its
 			// iframe) posts the spent token again: a browser that already
 			// holds a live session goes on to the app, and gains nothing new.
-			if c, err := r.Cookie(sessionCookie); err == nil && s.valid(c.Value) {
+			if hasValidSession(s, r) {
 				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
 			}
@@ -282,9 +307,11 @@ func proxyHandler(s *store) http.Handler {
 	// Caddy's forward_auth subrequest for every request carrying the session
 	// cookie. 2xx lets the request through; anything else is written to the
 	// client as is: 401 with the basic-auth challenge and the dead cookie
-	// cleared, so the browser falls back to the workspace password.
+	// cleared, so the browser falls back to the workspace password. The
+	// cookie is cleared only when none of the request's session cookies is
+	// valid.
 	mux.HandleFunc("/__session", func(w http.ResponseWriter, r *http.Request) {
-		if c, err := r.Cookie(sessionCookie); err == nil && s.valid(c.Value) {
+		if hasValidSession(s, r) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
