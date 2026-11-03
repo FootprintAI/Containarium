@@ -105,7 +105,15 @@ func TestHandleCreateContainerBirthIdleStopRejectsInvalid(t *testing.T) {
 				"idle_stop_minutes":  tc.value,
 				"disable_auto_sleep": tc.disable,
 			}
-			_, err := handleCreateContainer(NewClient("http://127.0.0.1:1", "test"), args)
+			// A reachable server that fails the test if it is ever hit, so a
+			// regression that validates after the HTTP call cannot pass on a
+			// connection error alone.
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("%s: request reached the server; validation must reject first", tc.name)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+			_, err := handleCreateContainer(NewClient(srv.URL, "test"), args)
 			if err == nil {
 				t.Fatalf("%s must reject invalid birth auto-sleep before request", tc.name)
 			}
