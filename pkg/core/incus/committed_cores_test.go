@@ -32,6 +32,9 @@ func TestCommittedCores(t *testing.T) {
 		{"0,2-4", 4}, // 0 + {2,3,4}
 		{"0-7", 8},
 		{"garbage", 0}, // unparseable → 0, not a panic
+		{"Inf", 0},     // not a core count, so it commits nothing
+		{"NaN", 0},
+		{"1e30", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {

@@ -282,6 +282,7 @@ recipes:
       # The in-box auth proxy; the dev server itself stays on 127.0.0.1.
       - container_port: 8080
         subdomain: workspace
+        role: auth_proxy
     parameters:
       - *coding_agent_param_release
       - *coding_agent_param_claude_code_version
@@ -459,6 +460,7 @@ recipes:
       # conversation list). OpenHands itself stays on 127.0.0.1.
       - container_port: 8080
         subdomain: workspace
+        role: auth_proxy
     parameters:
       - name: auth_password
         label: Workspace password
@@ -592,6 +594,7 @@ recipes:
       # the proxy as a fallback.
       - container_port: 8080
         subdomain: chat
+        role: auth_proxy
     parameters:
       - name: auth_email
         label: Owner email

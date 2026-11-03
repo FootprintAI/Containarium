@@ -121,7 +121,7 @@ func TestK8sSource_PrefersTheApiserverTimestamp(t *testing.T) {
 	line := podTS.Format(time.RFC3339Nano) +
 		` Mar 12 14:30:01 Pubkey auth succeeded for 'alice' with ssh-ed25519 key SHA256:abc from 10.0.0.1:54321`
 
-	ts, user, source, method, ok := src.ParseLine(line, 2026, time.Time{})
+	ts, user, source, method, ok := src.ParseLine(line, parseNow, time.Time{})
 	if !ok {
 		t.Fatal("a stamped pod-log line did not parse")
 	}
@@ -139,7 +139,7 @@ func TestK8sSource_ParsesAnUnstampedLine(t *testing.T) {
 	src := NewK8sSessionSource(fake.NewSimpleClientset(), "")
 	line := `Mar 12 14:30:01 Pubkey auth succeeded for 'alice' with ssh-ed25519 key SHA256:abc from 10.0.0.1:54321`
 
-	ts, user, _, _, ok := src.ParseLine(line, 2026, time.Time{})
+	ts, user, _, _, ok := src.ParseLine(line, parseNow, time.Time{})
 	if !ok || user != "alice" {
 		t.Fatalf("unstamped line did not parse: ok=%v user=%q", ok, user)
 	}
@@ -156,7 +156,7 @@ func TestK8sSource_NonLoginLinesAreIgnored(t *testing.T) {
 		stamp + " Exit before auth: Disconnect received",
 		stamp + " Not a log line at all",
 	} {
-		if _, _, _, _, ok := src.ParseLine(line, 2026, time.Time{}); ok {
+		if _, _, _, _, ok := src.ParseLine(line, parseNow, time.Time{}); ok {
 			t.Errorf("recorded a login for a line that is not one:\n%s", line)
 		}
 	}

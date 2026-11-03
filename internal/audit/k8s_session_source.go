@@ -175,13 +175,13 @@ func (s *k8sSessionSource) ReadSessions(ctx context.Context, box SessionBox) (st
 // present: dropbear's carries neither a year nor a zone, so it has to be
 // reassembled from a guessed year, while the kubelet's is complete and is
 // what every other view of this pod's log agrees with.
-func (s *k8sSessionSource) ParseLine(line string, year int, fallback time.Time) (time.Time, string, string, string, bool) {
+func (s *k8sSessionSource) ParseLine(line string, now, fallback time.Time) (time.Time, string, string, string, bool) {
 	podTS, rest, hasPodTS := splitPodLogTimestamp(line)
 	if hasPodTS {
 		line, fallback = rest, podTS
 	}
 
-	ts, user, source, method, ok := parseDropbearLine(line, year, fallback)
+	ts, user, source, method, ok := parseDropbearLine(line, now, fallback)
 	if !ok {
 		return time.Time{}, "", "", "", false
 	}
