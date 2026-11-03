@@ -44,6 +44,7 @@ func TestHandleCreateContainerBirthIdleStopWire(t *testing.T) {
 		{name: "omitted keeps default", extra: map[string]interface{}{}},
 		{name: "zero keeps default", extra: map[string]interface{}{"idle_stop_minutes": float64(0)}},
 		{name: "disable flag unaffected", extra: map[string]interface{}{"disable_auto_sleep": true}, disable: true},
+		{name: "zero with disable true allowed", extra: map[string]interface{}{"idle_stop_minutes": float64(0), "disable_auto_sleep": true}, disable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured map[string]interface{}
@@ -83,7 +84,7 @@ func TestHandleCreateContainerBirthIdleStopRejectsInvalid(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		value   interface{}
-		disable bool
+		disable interface{}
 	}{
 		{"negative", float64(-1), false},
 		{"fractional", float64(1.25), false},
@@ -92,6 +93,10 @@ func TestHandleCreateContainerBirthIdleStopRejectsInvalid(t *testing.T) {
 		{"string", "1", false},
 		{"bool", true, false},
 		{"contradictory flag", float64(5), true},
+		{"string true must not bypass conflict", float64(5), "true"},
+		{"string false must be rejected", float64(5), "false"},
+		{"numeric disable flag must be rejected", float64(5), float64(1)},
+		{"null disable flag must be rejected", float64(5), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := map[string]interface{}{

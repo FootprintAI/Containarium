@@ -195,7 +195,7 @@ func (s *Server) registerTools() {
 						"type":        "integer",
 						"minimum":     0,
 						"maximum":     2147483647,
-						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. The daemon applies the policy best-effort during create; creation may succeed without auto-sleep if the settings cannot be saved. Cannot be combined with disable_auto_sleep=true.",
+						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. The daemon applies the policy best-effort during create; creation may succeed without auto-sleep if the settings cannot be saved. Positive values cannot be combined with disable_auto_sleep=true.",
 					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
@@ -2162,7 +2162,14 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 			return "", fmt.Errorf("idle_stop_minutes must be an integer")
 		}
 	}
-	disableAutoSleep := getBoolArg(args, "disable_auto_sleep", false)
+	disableAutoSleep := false
+	if raw, present := args["disable_auto_sleep"]; present {
+		var ok bool
+		disableAutoSleep, ok = raw.(bool)
+		if !ok {
+			return "", fmt.Errorf("disable_auto_sleep must be a boolean")
+		}
+	}
 	if idleStopMinutes > 0 && disableAutoSleep {
 		return "", fmt.Errorf("idle_stop_minutes and disable_auto_sleep=true are contradictory")
 	}
