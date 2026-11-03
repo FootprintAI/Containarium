@@ -176,18 +176,18 @@ func (s *ContainerServer) stampBirthTTL(ctx context.Context, containerName, user
 func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes int32) {
 	// A create does not call StartContainer, so its freshly running Box
 	// otherwise has no last-start time. Start the idle clock at birth,
-	// before enabling the timer. If this stamp fails, leave auto-sleep off
-	// rather than accepting an opt-in that can never trigger.
+	// before enabling the timer. The requested threshold must also be
+	// persisted before enabling, avoiding an unintended fallback timer.
 	if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		log.Printf("[autosleep] birth clock stamp failed for %q: %v (auto-sleep not enabled)", containerName, err)
 		return
 	}
-	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
-		log.Printf("[autosleep] failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)", containerName, err)
+	if err := s.manager.SetConfig(containerName, incus.IdleThresholdMinutesKey, strconv.Itoa(int(idleMinutes))); err != nil {
+		log.Printf("[autosleep] birth idle threshold stamp failed for %q: %v (auto-sleep not enabled)", containerName, err)
 		return
 	}
-	if err := s.manager.SetConfig(containerName, incus.IdleThresholdMinutesKey, strconv.Itoa(int(idleMinutes))); err != nil {
-		log.Printf("[autosleep] enabled auto-sleep on %q but failed to set idle threshold: %v (autosleep loop falls back to its %dm default)", containerName, err, incus.DefaultIdleThresholdMinutes)
+	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
+		log.Printf("[autosleep] failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)", containerName, err)
 		return
 	}
 	log.Printf("[autosleep] birth auto-sleep enabled container=%q idle_threshold=%dm", containerName, idleMinutes)
