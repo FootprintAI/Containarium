@@ -30,7 +30,7 @@ type countingStarter struct {
 	err   error
 }
 
-func (c *countingStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+func (c *countingStarter) WakeForRequest(ctx context.Context, username string, targetPort int) (bool, string, int, error) {
 	c.calls.Add(1)
 	if c.delay > 0 {
 		select {
@@ -614,5 +614,56 @@ func TestWakeProxy_InflightMapClearsAfterCompletion(t *testing.T) {
 	// the inflight entry must be cleared after each completes.
 	if got := starter.calls.Load(); got != 3 {
 		t.Errorf("starter calls = %d, want 3 (inflight not cleared between waves)", got)
+	}
+}
+
+type routePortStarter struct {
+	calls atomic.Int64
+	ip    string
+}
+
+func (s *routePortStarter) WakeForRequest(ctx context.Context, _ string, port int) (bool, string, int, error) {
+	if s.calls.Add(1) == 1 {
+		select {
+		case <-time.After(80 * time.Millisecond):
+		case <-ctx.Done():
+			return false, "", 0, ctx.Err()
+		}
+	}
+	return true, s.ip, port, nil
+}
+
+func TestWakeProxy_ConcurrentRoutesDoNotShareWrongPort(t *testing.T) {
+	host, portOne, _, first := startUpstream(t, "first app")
+	defer first.Close()
+	_, portTwo, _, second := startUpstream(t, "second app")
+	defer second.Close()
+
+	starter := &routePortStarter{ip: host}
+	lookup := &multiLookup{stubs: []lookupStub{
+		{"first.example.test", "alice-container", host, portOne},
+		{"second.example.test", "alice-container", host, portTwo},
+	}}
+	proxy := NewWakeProxy(starter, lookup, &fakeRouteStore{}, nil, nil, time.Second)
+	var wg sync.WaitGroup
+	for _, tc := range []struct{ domain, body string }{
+		{"first.example.test", "first app"},
+		{"second.example.test", "second app"},
+	} {
+		wg.Add(1)
+		go func(domain, want string) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "http://"+domain+"/", nil)
+			req.Host = domain
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || rec.Body.String() != want {
+				t.Errorf("%s: got %d %q; want 200 %q", domain, rec.Code, rec.Body.String(), want)
+			}
+		}(tc.domain, tc.body)
+	}
+	wg.Wait()
+	if got := starter.calls.Load(); got != 2 {
+		t.Fatalf("separate route ports require separate readiness checks: %d", got)
 	}
 }

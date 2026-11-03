@@ -2064,6 +2064,11 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 		return false
 	}
 	port := routes[0].TargetPort
+	// Only an internal HTTP wake may select the already-authorized
+	// triggering route, rather than the first route in the store.
+	if wakePort, ok := ctx.Value(wakeTargetPortKey{}).(int); ok && wakePort > 0 {
+		port = wakePort
+	}
 	if port <= 0 {
 		return false
 	}
@@ -2818,8 +2823,21 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 	// stop it. Arm the clock before accepting opt-in; on failure do not
 	// enable a timer that the ticker cannot evaluate.
 	if req.Enabled && info.State == pb.ContainerState_CONTAINER_STATE_RUNNING {
-		if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to arm auto-sleep clock: %v", err)
+		// Re-enabling an already armed policy must not indefinitely
+		// extend the anti-thrash window. Repair legacy opt-ins when
+		// their last-start clock is still absent.
+		needsClock := !info.AutoSleepEnabled
+		if !needsClock {
+			current, getErr := s.manager.Get(req.Username)
+			if getErr != nil {
+				return nil, status.Errorf(codes.Internal, "failed to read auto-sleep clock: %v", getErr)
+			}
+			needsClock = current == nil || current.LastStartedAt.IsZero()
+		}
+		if needsClock {
+			if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to arm auto-sleep clock: %v", err)
+			}
 		}
 	}
 	enabledStr := "false"

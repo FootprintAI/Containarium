@@ -45,6 +45,11 @@ func newAutoSleepTestServer(t *testing.T, seed map[string]*incus.ContainerInfo) 
 			if key == incus.AutoSleepEnabledKey {
 				c.AutoSleepEnabled = value == "true"
 			}
+			if key == incus.LastStartedAtKey {
+				if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+					c.LastStartedAt = parsed
+				}
+			}
 			if key == incus.IdleThresholdMinutesKey {
 				if n, err := strconv.Atoi(value); err == nil {
 					c.IdleThresholdMinutes = safecast.I32(n)
@@ -291,5 +296,44 @@ func TestToggleAutoSleep_NegativeThresholdClampsToDefault(t *testing.T) {
 	}
 	if resp.IdleThresholdMinutes != incus.DefaultIdleThresholdMinutes {
 		t.Errorf("threshold = %d, want default %d", resp.IdleThresholdMinutes, incus.DefaultIdleThresholdMinutes)
+	}
+}
+
+func TestToggleAutoSleep_ReenablePreservesClock(t *testing.T) {
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {
+			Name: "alice-container", State: "Running", AutoSleepEnabled: true,
+			IdleThresholdMinutes: 15, LastStartedAt: old,
+		},
+	})
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true, IdleThresholdMinutes: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range *calls {
+		if call.key == incus.LastStartedAtKey {
+			t.Fatal("updating an enabled policy must not reset its start clock")
+		}
+	}
+}
+
+func TestToggleAutoSleep_LegacyEnabledWithoutClockGetsRepaired(t *testing.T) {
+	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {
+			Name: "alice-container", State: "Running", AutoSleepEnabled: true,
+			IdleThresholdMinutes: 15,
+		},
+	})
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) == 0 || (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("legacy opt-in without a start clock should be repaired: %+v", *calls)
 	}
 }

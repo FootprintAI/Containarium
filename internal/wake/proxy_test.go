@@ -23,7 +23,7 @@ type fakeStarter struct {
 	err   error
 }
 
-func (f *fakeStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+func (f *fakeStarter) WakeForRequest(ctx context.Context, username string, targetPort int) (bool, string, int, error) {
 	return f.ready, f.ip, f.port, f.err
 }
 
@@ -115,7 +115,7 @@ type subjectCapturingStarter struct {
 	gotCtx context.Context
 }
 
-func (s *subjectCapturingStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+func (s *subjectCapturingStarter) WakeForRequest(ctx context.Context, username string, targetPort int) (bool, string, int, error) {
 	s.gotCtx = ctx
 	return s.ready, s.ip, s.port, nil
 }

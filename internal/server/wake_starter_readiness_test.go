@@ -6,6 +6,12 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 )
 
 func TestAwaitWakeEndpoint_OnlyReadyAfterApplicationListens(t *testing.T) {
@@ -28,7 +34,7 @@ func TestAwaitWakeEndpoint_OnlyReadyAfterApplicationListens(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer srv.Close()
+		defer func() { _ = srv.Close() }()
 		<-release
 	}()
 	start := time.Now()
@@ -91,5 +97,29 @@ func TestAwaitWakeEndpoint_CancellationInterruptsDial(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("in-flight TCP probe ignored cancellation")
+	}
+}
+
+func TestWakeStarter_ProbesTriggeringRouteRatherThanFirstRoute(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+	backend := incustest.NewMockBackend()
+	backend.Containers["alice-container"] = &incus.ContainerInfo{
+		Name: "alice-container",
+		State: "Stopped",
+		IPAddress: "127.0.0.1",
+	}
+	s := &ContainerServer{
+		manager: container.NewWithBackend(backend),
+		emitter: events.NewEmitter(events.NewBus()),
+		routeStore: &fakeRouteLister{routes: []*app.RouteRecord{{TargetPort: 1}, {TargetPort: port}}},
+	}
+	ready, ip, gotPort, err := NewWakeStarter(s, 1).WakeForRequest(testCtx(), "alice", port)
+	if err != nil || !ready || ip != "127.0.0.1" || gotPort != port {
+		t.Fatalf("triggering route got ready=%t ip=%q port=%d err=%v", ready, ip, gotPort, err)
 	}
 }

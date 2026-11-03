@@ -193,13 +193,13 @@ func TestWaitForContainerReady_ListByContainerErrors(t *testing.T) {
 
 func TestWaitForContainerReady_UsesLiveIPInsteadOfCachedIP(t *testing.T) {
 	ln, port := listenLocal(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	backend := incustest.NewMockBackend()
 	backend.Containers["alice-container"] = &incus.ContainerInfo{
 		Name: "alice-container", State: "Running", IPAddress: "127.0.0.1",
 	}
 	s := &ContainerServer{
-		manager: container.NewWithBackend(backend),
+		manager:    container.NewWithBackend(backend),
 		routeStore: &fakeRouteLister{routes: []*app.RouteRecord{{TargetPort: port}}},
 	}
 	if timedOut := s.waitForContainerReady(context.Background(), "alice", "192.0.2.1", time.Second); timedOut {

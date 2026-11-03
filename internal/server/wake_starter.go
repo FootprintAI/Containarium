@@ -3,11 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"time"
 
+	"github.com/footprintai/containarium/pkg/core/box"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -36,74 +36,47 @@ func NewWakeStarter(cs *ContainerServer, readyTimeoutSeconds int32) *WakeStarter
 	return &WakeStarter{cs: cs, readyTimeoutS: readyTimeoutSeconds}
 }
 
-// WakeForRequest implements wake.WakeStarter. Returns:
-//   - ready=true when StartContainer reports the container is up and
-//     its primary port is dial-ready.
-//   - ready=false (no err) on probe timeout — the wake proxy responds
-//     503 Retry-After: 5 in this case.
-//   - err on a hard failure of the Start call itself.
-//
-// containerIP / port are read from the post-Start container info so the
-// wake proxy can build a reverse-proxy target. We don't rely on the
-// route store here — the route's TargetIP may be stale during a fresh
-// start cycle, but `manager.Get` reads the live Incus state.
-func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+// wakeTargetPortKey is an internal context hint for the triggering HTTP
+// route. Other StartContainer callers retain the generic first-route probe.
+type wakeTargetPortKey struct{}
+
+// WakeForRequest starts the Box and probes only the authorized triggering
+// route. Already-running Boxes need the explicit probe because their
+// StartContainer fast path intentionally skips generic readiness.
+func (s *WakeStarter) WakeForRequest(ctx context.Context, username string, targetPort int) (bool, string, int, error) {
 	if s == nil || s.cs == nil {
 		return false, "", 0, fmt.Errorf("wake starter not configured")
 	}
+	if targetPort <= 0 {
+		return false, "", 0, nil
+	}
 	started := time.Now()
-	resp, err := s.cs.StartContainer(ctx, &pb.StartContainerRequest{
+	startCtx := context.WithValue(ctx, wakeTargetPortKey{}, targetPort)
+	resp, err := s.cs.StartContainer(startCtx, &pb.StartContainerRequest{
 		Username:            username,
 		WaitForReady:        true,
 		ReadyTimeoutSeconds: s.readyTimeoutS,
 	})
 	if err != nil {
-		return false, "", 0, fmt.Errorf("start: %w", err)
+		return false, "", targetPort, fmt.Errorf("start: %w", err)
 	}
-	ready := resp != nil && !resp.ReadyTimedOut
-
-	// Pull the IP from the live Incus state. The container.Manager
-	// is the canonical place — it's what StartContainer queried for
-	// the response we already have, but the pb.Container shape
-	// doesn't expose IPAddress directly in all proto versions, so
-	// we re-fetch.
-	var ip string
-	if info, ierr := s.cs.GetManager().Get(username); ierr == nil && info != nil {
-		ip = info.IPAddress
-	} else if ierr != nil {
-		log.Printf("[wake] post-start container.Get(%q): %v", username, ierr)
+	if resp == nil || resp.ReadyTimedOut {
+		return false, "", targetPort, nil
 	}
 
-	// Port is the route's TargetPort — we don't have it here, but
-	// the wake proxy falls back to route.TargetPort when the
-	// starter doesn't report one.
-	// StartContainer's readiness probe can be skipped when a Box was
-	// already running. An HTTP wake must still wait for the authorized
-	// route's TCP port on the live Box IP before proxying the request.
-	// Both probes share the original wake timeout; they must not use a
-	// stale route IP as evidence that the application is listening.
-	if ready && s.cs.routeStore != nil {
-		routes, rerr := s.cs.routeStore.ListByContainer(ctx, username+"-container")
-		if rerr != nil {
-			log.Printf("[wake] route read after start %q: %v", username, rerr)
-			return false, ip, 0, nil
-		}
-		if len(routes) != 0 && routes[0].TargetPort > 0 {
-			remaining := time.Duration(s.readyTimeoutS)*time.Second - time.Since(started)
-			if remaining <= 0 {
-				return false, ip, routes[0].TargetPort, nil
-			}
-			ip, ready = awaitWakeEndpoint(ctx, remaining, routes[0].TargetPort, func() string {
-				info, err := s.cs.GetManager().Get(username)
-				if err != nil || info == nil {
-					return ""
-				}
-				return info.IPAddress
-			})
-			return ready, ip, routes[0].TargetPort, nil
-		}
+	remaining := time.Duration(s.readyTimeoutS)*time.Second - time.Since(started)
+	if remaining <= 0 {
+		return false, "", targetPort, nil
 	}
-	return ready, ip, 0, nil
+	readIP := func() string {
+		info, err := s.cs.boxes().Get(ctx, box.BoxRef{Tenant: username})
+		if err != nil || info == nil {
+			return ""
+		}
+		return info.IPAddress
+	}
+	ip, ready := awaitWakeEndpoint(ctx, remaining, targetPort, readIP)
+	return ready, ip, targetPort, nil
 }
 
 // awaitWakeEndpoint only returns ready when the live Box's own current IP
