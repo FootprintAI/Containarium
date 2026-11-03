@@ -61,7 +61,7 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 	}
 
 	// Audit. Never log the value.
-	log.Printf("[secrets] set %s/%s version=%d delivery=%s", req.Username, req.Name, meta.Version, meta.Delivery)
+	log.Printf("[secrets] set %q/%q version=%d delivery=%s", req.Username, req.Name, meta.Version, meta.Delivery)
 
 	msg := "secret created"
 	if meta.Version > 1 {
@@ -101,14 +101,14 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 		if errors.Is(err, secrets.ErrBrokerOnly) {
 			// Write-only by design: the metadata is real, the value
 			// isn't returned regardless of the caller's scopes.
-			log.Printf("[secrets] get %s/%s version=%d delivery=broker (write-only, no value returned)",
+			log.Printf("[secrets] get %q/%q version=%d delivery=broker (write-only, no value returned)",
 				req.Username, req.Name, meta.Version)
 			return &pb.GetSecretResponse{Secret: toProtoSecretMetadata(meta)}, nil
 		}
 		return nil, mapSecretError(err)
 	}
 
-	log.Printf("[secrets] get %s/%s version=%d", req.Username, req.Name, meta.Version)
+	log.Printf("[secrets] get %q/%q version=%d", req.Username, req.Name, meta.Version)
 	return &pb.GetSecretResponse{
 		Secret: toProtoSecretMetadata(meta),
 		Value:  value,
@@ -167,7 +167,7 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 		return nil, mapSecretError(err)
 	}
 
-	log.Printf("[secrets] delete %s/%s", req.Username, req.Name)
+	log.Printf("[secrets] delete %q/%q", req.Username, req.Name)
 	return &pb.DeleteSecretResponse{
 		Message: fmt.Sprintf("secret %s deleted", req.Name),
 	}, nil
@@ -196,7 +196,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 		return nil, status.Errorf(codes.Internal, "refresh secrets: %v", err)
 	}
 
-	log.Printf("[secrets] refresh %s: stamped=%d", req.Username, stamped)
+	log.Printf("[secrets] refresh %q: stamped=%d", req.Username, stamped)
 	return &pb.RefreshSecretsResponse{
 		Message: refreshSecretsMessage(s.boxes().Kind(), req.Username, stamped),
 		Stamped: safecast.I32(stamped),
@@ -254,7 +254,7 @@ func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenant
 	// Audit. Never log the key resource name's full path isn't
 	// sensitive (GCP resource names aren't secrets), but keep the log
 	// line's shape consistent with the other secrets RPCs regardless.
-	log.Printf("[secrets] set-tenant-kms-key %s has_tenant_key=%v", req.Username, hasTenantKey)
+	log.Printf("[secrets] set-tenant-kms-key %q has_tenant_key=%v", req.Username, hasTenantKey)
 	return &pb.SetTenantKMSKeyResponse{
 		Message:      msg,
 		HasTenantKey: hasTenantKey,
@@ -330,14 +330,14 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 			username,
 		)
 		if err := s.manager.Exec(containerName, []string{"sh", "-c", prepCmd}); err != nil {
-			log.Printf("[secrets] tenant chown on /run/secrets failed for %s (%v) — falling back to root-only mode", containerName, err)
+			log.Printf("[secrets] tenant chown on /run/secrets failed for %q (%v) — falling back to root-only mode", containerName, err)
 			// Fallback: root-only dir. Files will be
 			// 0400 root, app must run as root or use
 			// sudo. Better than failing the whole stamp.
 			if err := s.manager.Exec(containerName, []string{"sh", "-c",
 				"mkdir -p /run/secrets && chmod 0700 /run/secrets",
 			}); err != nil {
-				log.Printf("[secrets] failed to prepare /run/secrets on %s: %v (file-mode rows will be skipped)", containerName, err)
+				log.Printf("[secrets] failed to prepare /run/secrets on %q: %v (file-mode rows will be skipped)", containerName, err)
 				hasFileMode = false
 			}
 		}
@@ -366,7 +366,7 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 			// truth for the UID; resolving it server-side
 			// would be fragile.
 			if err := s.manager.WriteFile(containerName, path, []byte(sv.Value), "0400"); err != nil {
-				log.Printf("[secrets] failed to write file-mode %s on %s: %v (continuing)", k, containerName, err)
+				log.Printf("[secrets] failed to write file-mode %q on %q: %v (continuing)", k, containerName, err)
 				continue
 			}
 			// Try the chown+chmod fix-up. Best-effort —
@@ -379,11 +379,11 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 				username, path, path,
 			)
 			if err := s.manager.Exec(containerName, []string{"sh", "-c", fixupCmd}); err != nil {
-				log.Printf("[secrets] chown/chmod %s on %s failed (%v) — file stays root-only 0400", k, containerName, err)
+				log.Printf("[secrets] chown/chmod %q on %q failed (%v) — file stays root-only 0400", k, containerName, err)
 			}
 		default: // env (and any unknown future mode falls back to env semantics)
 			if err := s.manager.SetEnv(containerName, k, sv.Value); err != nil {
-				log.Printf("[secrets] failed to stamp %s on %s: %v (continuing)", k, containerName, err)
+				log.Printf("[secrets] failed to stamp %q on %q: %v (continuing)", k, containerName, err)
 				continue
 			}
 		}
@@ -396,10 +396,10 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 	// the last compose secret is deleted or switched to another mode.
 	if len(composeEnv) > 0 {
 		if err := s.manager.WriteEnvFile(containerName, container.SecretsEnvFile, composeEnv); err != nil {
-			log.Printf("[secrets] failed to write compose env_file on %s: %v", containerName, err)
+			log.Printf("[secrets] failed to write compose env_file on %q: %v", containerName, err)
 		}
 	} else if err := s.manager.RemoveEnvFile(containerName, container.SecretsEnvFile); err != nil {
-		log.Printf("[secrets] failed to remove compose env_file on %s: %v (best-effort)", containerName, err)
+		log.Printf("[secrets] failed to remove compose env_file on %q: %v (best-effort)", containerName, err)
 	}
 
 	return stamped, nil

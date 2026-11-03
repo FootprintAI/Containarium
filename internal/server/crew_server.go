@@ -342,7 +342,7 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 	// Safe to store now because the store clones: the mutations below act on
 	// the local run, and each put replaces the stored copy.
 	if err := s.runs.Put(ctx, run); err != nil {
-		log.Printf("[crew] record run %s: %v", run.GetId(), err)
+		log.Printf("[crew] record run %q: %v", run.GetId(), err)
 	}
 
 	// Every member's lease, in provisioning order. RunAgentSkill holds ONE
@@ -384,7 +384,7 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
 			if putErr := s.runs.Put(ctx, run); putErr != nil {
-				log.Printf("[crew] record run %s: %v", run.GetId(), putErr)
+				log.Printf("[crew] record run %q: %v", run.GetId(), putErr)
 			}
 			// The earlier members provisioned and are serving; this RPC IS the
 			// run, so nothing will ever come back for them. End their leases
@@ -438,7 +438,7 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 	}
 
 	if err := s.runs.Put(ctx, run); err != nil {
-		log.Printf("[crew] record run %s: %v", run.GetId(), err)
+		log.Printf("[crew] record run %q: %v", run.GetId(), err)
 	}
 
 	// The run is over on either branch, so every member's lease ends on either

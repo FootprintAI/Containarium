@@ -82,6 +82,6 @@ func (s *ContainerServer) SetContainerAttribution(ctx context.Context, req *pb.S
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to read labels back: %v", err)
 	}
-	log.Printf("[attribution] container=%s labels+=%d", info.Ref.Name, len(req.Labels))
+	log.Printf("[attribution] container=%q labels+=%d", info.Ref.Name, len(req.Labels))
 	return &pb.SetContainerAttributionResponse{Labels: labels}, nil
 }

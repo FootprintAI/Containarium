@@ -240,7 +240,7 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	// key at all is refused here, before any container is touched, so no
 	// plaintext object is ever written.
 	if err := refusePlaintext(req.RequireEncryption, req.Username, keyMode, ageRecipient, s.mgr.HasWrapper()); err != nil {
-		log.Printf("[backup] REFUSED user=%s: %v", req.Username, err)
+		log.Printf("[backup] REFUSED user=%q: %v", req.Username, err)
 		return nil, err
 	}
 
@@ -285,14 +285,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		}
 		for _, r := range records {
 			resp.Records = append(resp.Records, recordToProto(r))
-			log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
+			log.Printf("[backup] created id=%s user=%q db=%q dest=%q size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
 			if backupStoredPlaintext(r) {
-				log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", r.Username, r.ID)
+				log.Printf("[backup] WARNING UNENCRYPTED user=%q id=%s: stored without encryption (no age recipient registered or given)", r.Username, r.ID)
 			}
 		}
 		for _, e := range errs {
 			resp.Failures = append(resp.Failures, e.Error())
-			log.Printf("[backup] partial failure user=%s: %v", req.Username, e)
+			log.Printf("[backup] partial failure user=%q: %v", req.Username, e)
 		}
 		resp.Message = fmt.Sprintf("backed up %d database(s)", len(records))
 		if len(errs) > 0 {
@@ -305,9 +305,9 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "backup failed: %v", err)
 	}
-	log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	log.Printf("[backup] created id=%s user=%q db=%q dest=%q size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
 	if backupStoredPlaintext(rec) {
-		log.Printf("[backup] WARNING UNENCRYPTED user=%s id=%s: stored without encryption (no age recipient registered or given)", rec.Username, rec.ID)
+		log.Printf("[backup] WARNING UNENCRYPTED user=%q id=%s: stored without encryption (no age recipient registered or given)", rec.Username, rec.ID)
 	}
 	return &pb.CreateBackupResponse{
 		Message: "backup created: " + rec.ID,
@@ -371,7 +371,7 @@ func (s *BackupServer) createBoxBackup(ctx context.Context, req *pb.CreateBackup
 	if err != nil {
 		return nil, boxCreateStatus(err)
 	}
-	log.Printf("[backup] created id=%s user=%s box=%s dest=%s size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
+	log.Printf("[backup] created id=%s user=%q box=%q dest=%q size=%d", rec.ID, rec.Username, rec.Database, rec.Destination, rec.SizeBytes)
 	return &pb.CreateBackupResponse{
 		Message: "box backup created: " + rec.ID,
 		Record:  recordToProto(rec),
@@ -486,7 +486,7 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	if target == "" {
 		target = info.Name
 	}
-	log.Printf("[backup] restored id=%s user=%s db=%s target=%s clean=%t", rec.ID, rec.Username, rec.Database, target, req.Clean)
+	log.Printf("[backup] restored id=%s user=%q db=%q target=%q clean=%t", rec.ID, rec.Username, rec.Database, target, req.Clean)
 	return &pb.RestoreBackupResponse{Message: "restore complete: " + rec.ID}, nil
 }
 
@@ -538,10 +538,10 @@ func (s *BackupServer) RestoreBoxBackup(ctx context.Context, req *pb.RestoreBoxB
 		Force:           req.Force,
 		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored
 	}); err != nil {
-		log.Printf("[backup] box restore FAILED id=%s user=%s target=%s force=%t: %v", rec.ID, rec.Username, target, req.Force, err)
+		log.Printf("[backup] box restore FAILED id=%s user=%q target=%q force=%t: %v", rec.ID, rec.Username, target, req.Force, err)
 		return nil, boxRestoreStatus(err)
 	}
-	log.Printf("[backup] restored box id=%s user=%s target=%s force=%t", rec.ID, rec.Username, target, req.Force)
+	log.Printf("[backup] restored box id=%s user=%q target=%q force=%t", rec.ID, rec.Username, target, req.Force)
 	return &pb.RestoreBoxBackupResponse{
 		Message: "restore complete: " + rec.ID + " restored as box " + box,
 		Box:     box,
@@ -651,7 +651,7 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		conn = backup.PgConn{Host: "127.0.0.1", Port: 5432, User: "postgres", Password: password}
 		defer func() {
 			if err := cleanup(); err != nil {
-				log.Printf("[backup] verifier cleanup failed target=%s: %v", name, err)
+				log.Printf("[backup] verifier cleanup failed target=%q: %v", name, err)
 			}
 		}()
 	} else {
@@ -719,7 +719,7 @@ func (s *BackupServer) verifyResponse(rec *backup.Record, v *backup.Verification
 	if err != nil {
 		updated = rec
 	}
-	log.Printf("[backup] verified id=%s user=%s db=%s target=%s result=%s duration_ms=%d",
+	log.Printf("[backup] verified id=%s user=%q db=%q target=%q result=%s duration_ms=%d",
 		rec.ID, rec.Username, rec.Database, v.TargetContainer, v.Result, v.DurationMS)
 
 	msg := "verification passed: " + rec.ID
@@ -765,10 +765,10 @@ func (s *BackupServer) PruneBackups(ctx context.Context, req *pb.PruneBackupsReq
 		return nil, status.Errorf(codes.Internal, "prune failed: %v", err)
 	}
 	for _, id := range res.Deleted {
-		log.Printf("[backup] pruned id=%s user=%s", id, req.Username)
+		log.Printf("[backup] pruned id=%s user=%q", id, req.Username)
 	}
 	for _, f := range res.Failures {
-		log.Printf("[backup] prune failure user=%s: %s", req.Username, f)
+		log.Printf("[backup] prune failure user=%q: %q", req.Username, f)
 	}
 	msg := fmt.Sprintf("pruned %d backup(s)", len(res.Deleted))
 	if len(res.Failures) > 0 {
@@ -799,7 +799,7 @@ func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupReq
 	if err := s.mgr.Delete(req.Id); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete backup: %v", err)
 	}
-	log.Printf("[backup] deleted id=%s user=%s", rec.ID, rec.Username)
+	log.Printf("[backup] deleted id=%s user=%q", rec.ID, rec.Username)
 	return &pb.DeleteBackupResponse{Message: "backup deleted: " + rec.ID}, nil
 }
 

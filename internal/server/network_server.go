@@ -1392,7 +1392,7 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start egress relay: %v", err)
 	}
-	log.Printf("[egress-via-client] box %s (%s) -> relay %s -> host-loopback:%d", name, info.IPAddress, addr, req.GetUpstreamPort())
+	log.Printf("[egress-via-client] box %q (%s) -> relay %s -> host-loopback:%d", name, info.IPAddress, addr, req.GetUpstreamPort())
 	return &pb.StartEgressProxyResponse{SocksAddress: addr}, nil
 }
 

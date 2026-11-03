@@ -182,7 +182,7 @@ func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect
 		return true
 	default:
 		if n := r.dropped.Add(1); n == 1 || n%100 == 0 {
-			log.Printf("[process-responder] work queue full (cap %d): dropped response for finding %d on %s (%d dropped so far)",
+			log.Printf("[process-responder] work queue full (cap %d): dropped response for finding %d on %q (%d dropped so far)",
 				processResponseQueue, f.ID, f.Container, n)
 		}
 		return false
@@ -227,7 +227,7 @@ func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
 	r.onFindingChecked(ctx, job.f, job.target, func() (*threatdetect.Finding, string) {
 		v := r.readJob(ctx, job)
 		if v.err != nil {
-			log.Printf("[process-responder] finding %d on %s: read for queued response: %v; reading again", job.f.ID, job.f.Container, v.err)
+			log.Printf("[process-responder] finding %d on %q: read for queued response: %v; reading again", job.f.ID, job.f.Container, v.err)
 			v = r.readJob(ctx, job)
 		}
 		reason := v.stale(job)
@@ -235,7 +235,7 @@ func (r *ProcessResponder) runJob(ctx context.Context, job responseJob) {
 		case reason != "":
 			r.auditSkip(ctx, job, reason)
 		case v.err != nil:
-			log.Printf("[process-responder] finding %d on %s: read for queued response failed twice (%v); acting on the queued copy", job.f.ID, job.f.Container, v.err)
+			log.Printf("[process-responder] finding %d on %q: read for queued response failed twice (%v); acting on the queued copy", job.f.ID, job.f.Container, v.err)
 		}
 		return v.current(job), reason
 	})
@@ -315,7 +315,7 @@ func (v jobView) current(job responseJob) *threatdetect.Finding {
 func (r *ProcessResponder) auditSkip(ctx context.Context, job responseJob, reason string) {
 	r.auditLog(ctx, "response-skipped", job.f.Container, fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s queued_at=%s reason=%q",
 		job.f.ID, job.f.Rule, job.f.TenantID, job.f.Container, job.at.UTC().Format(time.RFC3339Nano), reason))
-	log.Printf("[process-responder] queued response for finding %d on %s skipped: %s", job.f.ID, job.f.Container, reason)
+	log.Printf("[process-responder] queued response for finding %d on %q skipped: %q", job.f.ID, job.f.Container, reason)
 }
 
 // auditDrops writes one audit row per batch of newly dropped responses, so a
@@ -426,7 +426,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		// One action per container; the open one stands.
 		return r.recordKill(ctx, f, kill)
 	} else if !errors.Is(err, threatdetect.ErrNoOpenAction) {
-		log.Printf("[process-responder] finding %d on %s: read open action: %v", f.ID, f.Container, err)
+		log.Printf("[process-responder] finding %d on %q: read open action: %v", f.ID, f.Container, err)
 		return r.recordKill(ctx, f, kill)
 	}
 	if last, err := r.actions.Latest(ctx, f.Container); err == nil &&
@@ -434,7 +434,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		// The last apply failed moments ago: re-firing would only write
 		// another error row. Say so once, on the first suppressed re-fire.
 		if f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_FAILED {
-			log.Printf("[process-responder] finding %d on %s: last %s failed at %s; not retrying for %s",
+			log.Printf("[process-responder] finding %d on %q: last %s failed at %s; not retrying for %s",
 				f.ID, f.Container, last.Action, last.AppliedAt.UTC().Format(time.RFC3339), processActionRetryBackoff)
 		}
 		return r.recordKill(ctx, f, kill)
@@ -444,7 +444,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		// Unknown policy: no policy action rather than guess. The finding
 		// itself is already recorded and delivered; a kill that already ran
 		// is still recorded.
-		log.Printf("[process-responder] finding %d on %s: read policy: %v", f.ID, f.Container, err)
+		log.Printf("[process-responder] finding %d on %q: read policy: %v", f.ID, f.Container, err)
 		return r.recordKill(ctx, f, kill)
 	}
 	action := policy.GetAction()
@@ -494,7 +494,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 	if id, err := r.act.InstanceID(row.Container); err == nil {
 		row.InstanceID = id
 	} else {
-		log.Printf("[process-responder] finding %d on %s: read instance id: %v", f.ID, f.Container, err)
+		log.Printf("[process-responder] finding %d on %q: read instance id: %v", f.ID, f.Container, err)
 	}
 	row.Pending = true
 	if err := r.actions.Insert(ctx, row); err != nil {
@@ -504,7 +504,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 		return r.recordFailure(ctx, f, row, err, detail, kill)
 	}
 	if err := r.actions.MarkApplied(ctx, row.ID); err != nil {
-		log.Printf("[process-responder] confirm %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
+		log.Printf("[process-responder] confirm %s on %q (action %d): %v", row.Action, row.Container, row.ID, err)
 	}
 	row.Pending = false
 	out := r.setResponse(ctx, f.ID, kill.on(threatdetect.FindingResponse{
@@ -512,7 +512,7 @@ func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect
 	}))
 	r.auditLog(ctx, "apply", fmt.Sprintf("%d", row.ID), fmt.Sprintf("%s action=%s prev_cpu=%q prev_allowance=%q allowance=%q expires_at=%s",
 		detail, action, row.PrevCPUCount, row.PrevCPUAllowance, policy.GetThrottleAllowance(), row.ExpiresAt.UTC().Format(time.RFC3339)))
-	log.Printf("[process-responder] %s applied to %s (finding %d, expires %s)", action, f.Container, f.ID, row.ExpiresAt.UTC().Format(time.RFC3339))
+	log.Printf("[process-responder] %s applied to %q (finding %d, expires %s)", action, f.Container, f.ID, row.ExpiresAt.UTC().Format(time.RFC3339))
 	return out
 }
 
@@ -653,7 +653,7 @@ func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Findin
 	}
 	policy, err := policyOf()
 	if err != nil {
-		log.Printf("[process-responder] finding %d on %s: read policy for kill: %v", f.ID, f.Container, err)
+		log.Printf("[process-responder] finding %d on %q: read policy for kill: %v", f.ID, f.Container, err)
 		r.auditLog(ctx, "kill-skipped", f.Container, fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s pid=%d kill_skipped=%q",
 			f.ID, f.Rule, f.TenantID, f.Container, target.PID, "read policy: "+err.Error()))
 		return killOutcome{skip: pb.KillSkipReason_KILL_SKIP_REASON_POLICY_UNREADABLE}
@@ -666,11 +666,11 @@ func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Findin
 		f.ID, f.Rule, f.TenantID, f.Container, ex.PID, ex.StartTime, ex.Comm, ex.Filename, ex.Matched)
 	if err := r.killer.KillInContainer(f.Container, ex.PID, ex.StartTime); err != nil {
 		r.auditLog(ctx, "kill-skipped", f.Container, fmt.Sprintf("%s kill_skipped=%q", detail, err.Error()))
-		log.Printf("[process-responder] kill pid %d on %s (finding %d) skipped: %v", ex.PID, f.Container, f.ID, err)
+		log.Printf("[process-responder] kill pid %d on %q (finding %d) skipped: %v", ex.PID, f.Container, f.ID, err)
 		return killOutcome{skip: killSkipReasonOf(err)}
 	}
 	r.auditLog(ctx, "kill", f.Container, detail)
-	log.Printf("[process-responder] SIGKILL pid %d (%s) on %s (finding %d, %s)", ex.PID, ex.Comm, f.Container, f.ID, ex.Matched)
+	log.Printf("[process-responder] SIGKILL pid %d (%q) on %q (finding %d, %q)", ex.PID, ex.Comm, f.Container, f.ID, ex.Matched)
 	return killOutcome{pid: ex.PID}
 }
 
@@ -735,7 +735,7 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 			err = r.actions.Insert(ctx, row)
 		}
 		if err != nil {
-			log.Printf("[process-responder] record failed %s on %s: %v", row.Action, row.Container, err)
+			log.Printf("[process-responder] record failed %s on %q: %v", row.Action, row.Container, err)
 		}
 	}
 	if action == pb.ProcessAction_PROCESS_ACTION_UNSPECIFIED {
@@ -743,7 +743,7 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 			action = p.GetAction()
 		}
 	}
-	log.Printf("[process-responder] %s on %s (finding %d) FAILED: %v", action, f.Container, f.ID, cause)
+	log.Printf("[process-responder] %s on %q (finding %d) FAILED: %v", action, f.Container, f.ID, cause)
 	out := r.writeBox(ctx, f.ID, kill.on(threatdetect.FindingResponse{
 		Action: action, State: pb.ResponseState_RESPONSE_STATE_FAILED, AppliedAt: r.now(), Error: cause.Error(), Container: f.Container,
 	}))
@@ -869,18 +869,18 @@ func (r *ProcessResponder) release(ctx context.Context, container string) (f *th
 	switch {
 	case h.applied != nil:
 		keptOpen = true
-		log.Printf("[process-responder] finding %d left open after release on %s: an action is still open on %s", row.FindingID, container, h.applied.Container)
+		log.Printf("[process-responder] finding %d left open after release on %q: an action is still open on %q", row.FindingID, container, h.applied.Container)
 		f = r.setResponseHeld(ctx, row.FindingID, box, standingOf(h.applied, kill))
 	case h.unconfirmed != nil:
 		keptOpen = true
-		log.Printf("[process-responder] finding %d left open after release on %s: an apply on %s was never confirmed (the orphan sweep ends it)", row.FindingID, container, h.unconfirmed.Container)
+		log.Printf("[process-responder] finding %d left open after release on %q: an apply on %q was never confirmed (the orphan sweep ends it)", row.FindingID, container, h.unconfirmed.Container)
 		f = r.setResponse(ctx, row.FindingID, box)
 	default:
 		f = r.resolveWith(ctx, row.FindingID, box)
 	}
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s restored_cpu=%q restored_allowance=%q finding_kept_open=%t",
 		row.FindingID, container, row.Action, threatdetect.ReleasedByOperator, row.PrevCPUCount, row.PrevCPUAllowance, keptOpen))
-	log.Printf("[process-responder] %s released on %s by operator (finding %d)", row.Action, container, row.FindingID)
+	log.Printf("[process-responder] %s released on %q by operator (finding %d)", row.Action, container, row.FindingID)
 	return f, keptOpen, box, nil
 }
 
@@ -936,7 +936,7 @@ func (r *ProcessResponder) holders(ctx context.Context, id int64, container stri
 	var h findingHolders
 	rows, err := r.actions.ListByFinding(ctx, id)
 	if err != nil {
-		log.Printf("[process-responder] finding %d: list actions for %s: %v", id, container, err)
+		log.Printf("[process-responder] finding %d: list actions for %q: %v", id, container, err)
 		return h
 	}
 	h.operatorReleased = operatorReleaseStands(rows)
@@ -997,7 +997,7 @@ func (r *ProcessResponder) endBox(ctx context.Context, id int64, box threatdetec
 	f := r.resolveWith(ctx, id, box)
 	r.auditLog(ctx, "resolve", box.Container, fmt.Sprintf("finding=%d container=%s reason=%q",
 		id, box.Container, "released by operator on another box; the last box holding it ended ("+box.ReleasedBy+")"))
-	log.Printf("[process-responder] finding %d resolved: released by operator earlier, and the last box holding it (%s) ended (%s)", id, box.Container, box.ReleasedBy)
+	log.Printf("[process-responder] finding %d resolved: released by operator earlier, and the last box holding it (%q) ended (%q)", id, box.Container, box.ReleasedBy)
 	return f
 }
 
@@ -1013,7 +1013,7 @@ func (r *ProcessResponder) resolveWith(ctx context.Context, id int64, box threat
 	case err == nil, errors.Is(err, threatdetect.ErrFindingNotOpen), errors.Is(err, threatdetect.ErrFindingNotFound):
 		return f
 	default:
-		log.Printf("[process-responder] resolve finding %d with %s's %s: %v", id, box.Container, box.State, err)
+		log.Printf("[process-responder] resolve finding %d with %q's %s: %v", id, box.Container, box.State, err)
 		return r.setResponse(ctx, id, box)
 	}
 }
@@ -1032,7 +1032,7 @@ func (r *ProcessResponder) SweepExpired(ctx context.Context, now time.Time) int 
 	for _, row := range rows {
 		done, err := r.expire(ctx, row, now)
 		if err != nil {
-			log.Printf("[process-responder] expire %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
+			log.Printf("[process-responder] expire %s on %q (action %d): %v", row.Action, row.Container, row.ID, err)
 			continue
 		}
 		if done {
@@ -1072,11 +1072,11 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 		Subject:   row.Container,
 		Evidence:  threatdetect.Evidence{Configs: []threatdetect.ConfigEvidence{{Note: note}}},
 	}); err != nil {
-		log.Printf("[process-responder] raise PROCESS_ACTION_EXPIRED for %s: %v", row.Container, err)
+		log.Printf("[process-responder] raise PROCESS_ACTION_EXPIRED for %q: %v", row.Container, err)
 	}
 	r.auditLog(ctx, "expire", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s ttl=%s",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByTTL, ttl))
-	log.Printf("[process-responder] %s on %s expired after %s; released (finding %d)", row.Action, row.Container, ttl, row.FindingID)
+	log.Printf("[process-responder] %s on %q expired after %s; released (finding %d)", row.Action, row.Container, ttl, row.FindingID)
 	return true, nil
 }
 
@@ -1102,7 +1102,7 @@ func (r *ProcessResponder) sweepOrphans(ctx context.Context, now time.Time) int 
 	n := 0
 	for _, row := range rows {
 		if err := r.reapOrphan(ctx, row, now); err != nil {
-			log.Printf("[process-responder] orphan %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
+			log.Printf("[process-responder] orphan %s on %q (action %d): %v", row.Action, row.Container, row.ID, err)
 			continue
 		}
 		n++
@@ -1130,7 +1130,7 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	}))
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (pending apply never confirmed)",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByOrphanSweep))
-	log.Printf("[process-responder] orphaned %s on %s undone (finding %d)", row.Action, row.Container, row.FindingID)
+	log.Printf("[process-responder] orphaned %s on %q undone (finding %d)", row.Action, row.Container, row.FindingID)
 	return nil
 }
 
@@ -1174,7 +1174,7 @@ func (r *ProcessResponder) closeDeleted(parent context.Context, container, insta
 	case errors.Is(err, threatdetect.ErrNoOpenAction):
 		return
 	case err != nil:
-		log.Printf("[process-responder] %s deleted: read its open action: %v (the next sweep closes it)", container, err)
+		log.Printf("[process-responder] %q deleted: read its open action: %v (the next sweep closes it)", container, err)
 		return
 	case row.InstanceID != "" && instanceID != "" && row.InstanceID != instanceID:
 		return // another instance's action: not this delete's
@@ -1186,13 +1186,13 @@ func (r *ProcessResponder) closeDeleted(parent context.Context, container, insta
 		gone, err := r.boxGone(row)
 		if err != nil || !gone {
 			if err != nil {
-				log.Printf("[process-responder] %s deleted: %v; its action is left to the sweep", container, err)
+				log.Printf("[process-responder] %q deleted: %v; its action is left to the sweep", container, err)
 			}
 			return
 		}
 	}
 	if err := r.closeGone(ctx, row, r.now(), "container deleted"); err != nil {
-		log.Printf("[process-responder] %s deleted: close %s (action %d): %v (the next sweep closes it)", container, row.Action, row.ID, err)
+		log.Printf("[process-responder] %q deleted: close %s (action %d): %v (the next sweep closes it)", container, row.Action, row.ID, err)
 	}
 }
 
@@ -1245,7 +1245,7 @@ func (r *ProcessResponder) closeGone(ctx context.Context, row *threatdetect.Secu
 	}))
 	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (box no longer exists, found by %s; nothing to restore)",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByContainerDeleted, how))
-	log.Printf("[process-responder] %s on %s closed: the box no longer exists (%s; finding %d)", row.Action, row.Container, how, row.FindingID)
+	log.Printf("[process-responder] %s on %q closed: the box no longer exists (%s; finding %d)", row.Action, row.Container, how, row.FindingID)
 	return nil
 }
 
@@ -1286,7 +1286,7 @@ func (r *ProcessResponder) setResponse(ctx context.Context, id int64, resp threa
 func (r *ProcessResponder) setResponseHeld(ctx context.Context, id int64, box, standing threatdetect.FindingResponse) *threatdetect.Finding {
 	f, err := r.findings.SetResponseHeld(ctx, id, box, standing)
 	if err != nil {
-		log.Printf("[process-responder] record response %s/%s on %s (finding %d, held by %s): %v", box.Action, box.State, box.Container, id, standing.Container, err)
+		log.Printf("[process-responder] record response %s/%s on %q (finding %d, held by %q): %v", box.Action, box.State, box.Container, id, standing.Container, err)
 		return nil
 	}
 	return f
@@ -1299,7 +1299,7 @@ func (r *ProcessResponder) auditLog(ctx context.Context, action, resourceID, det
 	if err := r.audit.Log(ctx, &audit.AuditEntry{
 		Action: action, ResourceType: actionAuditResourceType, ResourceID: resourceID, Detail: detail,
 	}); err != nil {
-		log.Printf("[process-responder] audit %s %s: %v", action, resourceID, err)
+		log.Printf("[process-responder] audit %s %q: %v", action, resourceID, err)
 	}
 }
 

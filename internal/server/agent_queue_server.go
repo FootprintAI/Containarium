@@ -158,7 +158,7 @@ func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, sk
 	cmd := buildWorkerPollCommand(queueToken, workerID, skillID, seedDir, engineRes, model)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
-		log.Printf("[agent-worker] could not start poll mode on %s (image may not ship runtime): %v; stderr=%s",
+		log.Printf("[agent-worker] could not start poll mode on %q (image may not ship runtime): %v; stderr=%q",
 			containerName, err, strings.TrimSpace(stderr))
 	}
 }

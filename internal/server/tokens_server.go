@@ -101,10 +101,10 @@ func (s *TokensServer) RevokeToken(ctx context.Context, req *pb.RevokeTokenReque
 	// query confirms the canonical revoke timestamp if it
 	// matters.
 	if err := s.store.Revoke(ctx, req.Jti, expiresAt, reason); err != nil {
-		log.Printf("[tokens] revoke jti=%s failed: %v", req.Jti, err)
+		log.Printf("[tokens] revoke jti=%q failed: %v", req.Jti, err)
 		return nil, status.Errorf(codes.Internal, "revoke failed: %v", err)
 	}
-	log.Printf("[tokens] revoked jti=%s reason=%q expires_at=%s", req.Jti, reason, expiresAt.Format(time.RFC3339))
+	log.Printf("[tokens] revoked jti=%q reason=%q expires_at=%s", req.Jti, reason, expiresAt.Format(time.RFC3339))
 
 	return &pb.RevokeTokenResponse{
 		NewlyRevoked: true,
@@ -169,9 +169,9 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 
 	if s.store != nil && claims.ID != "" {
 		if revoked, rerr := s.store.IsFamilyRevoked(ctx, familyID); rerr != nil {
-			log.Printf("[tokens] refresh family lookup failed for family=%s: %v (continuing; the per-jti claim below is the primary gate)", familyID, rerr)
+			log.Printf("[tokens] refresh family lookup failed for family=%q: %v (continuing; the per-jti claim below is the primary gate)", familyID, rerr)
 		} else if revoked {
-			log.Printf("[tokens] refresh denied: family=%s already revoked", familyID)
+			log.Printf("[tokens] refresh denied: family=%q already revoked", familyID)
 			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
 		}
 
@@ -181,14 +181,14 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 		}
 		claimed, cerr := s.store.RevokeClaim(ctx, claims.ID, exp, "refresh_rotation")
 		if cerr != nil {
-			log.Printf("[tokens] refresh rotation claim failed for jti=%s: %v", claims.ID, cerr)
+			log.Printf("[tokens] refresh rotation claim failed for jti=%q: %v", claims.ID, cerr)
 			return nil, status.Errorf(codes.Internal, "rotate failed: %v", cerr)
 		}
 		if !claimed {
 			if ferr := s.store.RevokeFamily(ctx, familyID, "refresh_reuse_detected"); ferr != nil {
-				log.Printf("[tokens] refresh reuse: failed to revoke family=%s: %v", familyID, ferr)
+				log.Printf("[tokens] refresh reuse: failed to revoke family=%q: %v", familyID, ferr)
 			}
-			log.Printf("[tokens] refresh DENIED — reuse of already-rotated jti=%s; family=%s revoked", claims.ID, familyID)
+			log.Printf("[tokens] refresh DENIED — reuse of already-rotated jti=%q; family=%q revoked", claims.ID, familyID)
 			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
 		}
 	}
@@ -222,7 +222,7 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 		refreshExp = newRefreshClaims.ExpiresAt.Unix()
 	}
 
-	log.Printf("[tokens] refresh rotated: user=%s old_jti=%s new_access_jti=%s new_refresh_jti=%s",
+	log.Printf("[tokens] refresh rotated: user=%q old_jti=%q new_access_jti=%q new_refresh_jti=%q",
 		claims.Username,
 		claims.ID,
 		safeID(newAccessClaims),

@@ -183,7 +183,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 					"into; refusing rather than landing it outside its tenant's encryptionroot",
 				req.TargetBackendId, containerName)
 		}
-		log.Printf("[move] pre-flight ok: %s (tenant %s) lands on %s's storage pool %s",
+		log.Printf("[move] pre-flight ok: %q (tenant %q) lands on %q's storage pool %q",
 			containerName, tenant, req.TargetBackendId, encStoragePool)
 	}
 
@@ -202,7 +202,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	cleanupSnaps := func() {
 		for _, s2 := range createdSnaps {
 			if err := s.moveRunner.DeleteSnapshot(containerName, s2); err != nil {
-				log.Printf("[move] cleanup snapshot %s/%s: %v (ignored)", containerName, s2, err)
+				log.Printf("[move] cleanup snapshot %q/%s: %v (ignored)", containerName, s2, err)
 			}
 		}
 	}
@@ -218,7 +218,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 			return
 		}
 		if err := s.moveRunner.DeleteTarget(containerName, targetRemote); err != nil {
-			log.Printf("[move] remove failed copy %s:%s: %v (ignored)", targetRemote, containerName, err)
+			log.Printf("[move] remove failed copy %s:%q: %v (ignored)", targetRemote, containerName, err)
 		}
 	}
 
@@ -236,7 +236,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		return nil, fmt.Errorf("phase 1: prepare network ACLs on %s: %w", targetRemote, err)
 	}
 
-	log.Printf("[move] phase 1: initial copy of %s/%s to %s ...", containerName, syncName, targetRemote)
+	log.Printf("[move] phase 1: initial copy of %q/%s to %s ...", containerName, syncName, targetRemote)
 	if err := s.moveRunner.CopyInitial(containerName, syncName, targetRemote, encStoragePool); err != nil {
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 1: initial copy: %w", err)
@@ -256,7 +256,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		}
 		createdSnaps = append(createdSnaps, syncName)
 
-		log.Printf("[move] phase 2 iter %d: delta refresh of %s/%s ...", i, containerName, syncName)
+		log.Printf("[move] phase 2 iter %d: delta refresh of %q/%s ...", i, containerName, syncName)
 		if err := s.moveRunner.CopyRefreshLive(containerName, syncName, targetRemote, encStoragePool); err != nil {
 			abortTarget()
 			cleanupSnaps()
@@ -277,7 +277,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	// downtime_seconds.
 	cutoverStart := time.Now()
 
-	log.Printf("[move] phase 3: stopping source container %s", containerName)
+	log.Printf("[move] phase 3: stopping source container %q", containerName)
 	if err := s.moveRunner.Stop(containerName); err != nil {
 		abortTarget()
 		cleanupSnaps()
@@ -361,7 +361,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 			for _, r := range routes {
 				r.TargetIP = newIP
 				if err := s.routeStore.Save(ctx, r); err != nil {
-					log.Printf("[move] warning: update route %s target_ip failed: %v", r.FullDomain, err)
+					log.Printf("[move] warning: update route %q target_ip failed: %v", r.FullDomain, err)
 				}
 			}
 		}
@@ -380,7 +380,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	// effort, like the source cleanup: the move has already succeeded.
 	for _, snap := range createdSnaps {
 		if err := s.moveRunner.DeleteSnapshot(targetRemote+":"+containerName, snap); err != nil {
-			log.Printf("[move] cleanup snapshot %s:%s/%s: %v (ignored)", targetRemote, containerName, snap, err)
+			log.Printf("[move] cleanup snapshot %s:%q/%s: %v (ignored)", targetRemote, containerName, snap, err)
 		}
 	}
 

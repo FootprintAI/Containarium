@@ -117,7 +117,7 @@ func (s *ContainerServer) passthroughStoreForCascade(containerName string) netwo
 	}
 	if s.passthroughSkipped.required {
 		s.passthroughSkipped.boxes = append(s.passthroughSkipped.boxes, containerName)
-		log.Printf("[delete-cascade] passthrough store not installed yet; %s's passthrough routes are removed when it installs", containerName)
+		log.Printf("[delete-cascade] passthrough store not installed yet; %q's passthrough routes are removed when it installs", containerName)
 	}
 	return nil
 }
@@ -141,7 +141,7 @@ func (s *ContainerServer) installPassthroughStore(ctx context.Context, st networ
 		replayed++
 		if err := removePassthroughRoutes(ctx, st, name); err != nil {
 			failed++
-			log.Printf("Warning: passthrough replay for deleted box %s failed: %v; its passthrough rows remain in Postgres and will be reconciled back into host rules by the sync job", name, err)
+			log.Printf("Warning: passthrough replay for deleted box %q failed: %v; its passthrough rows remain in Postgres and will be reconciled back into host rules by the sync job", name, err)
 		}
 	}
 	return replayed, failed
@@ -152,7 +152,7 @@ func (s *ContainerServer) installPassthroughStore(ctx context.Context, st networ
 // delete cascade.
 func cascadePassthroughRoutes(ctx context.Context, pt network.PassthroughStore, containerName string) {
 	if err := removePassthroughRoutes(ctx, pt, containerName); err != nil {
-		log.Printf("[delete-cascade] passthrough routes for %s: %v", containerName, err)
+		log.Printf("[delete-cascade] passthrough routes for %q: %v", containerName, err)
 	}
 }
 

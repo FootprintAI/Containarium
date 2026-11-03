@@ -118,12 +118,12 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) (release
 
 	physical, err := s.hostPhysicalCores()
 	if err != nil || physical <= 0 {
-		log.Printf("[cpu-admission] capacity check skipped (host cores unavailable: %v) — allowing create for %s", err, username)
+		log.Printf("[cpu-admission] capacity check skipped (host cores unavailable: %v) — allowing create for %q", err, username)
 		return noopRelease, nil
 	}
 	committed, err := s.committedCoresExcluding(username)
 	if err != nil {
-		log.Printf("[cpu-admission] capacity check skipped (container list failed: %v) — allowing create for %s", err, username)
+		log.Printf("[cpu-admission] capacity check skipped (container list failed: %v) — allowing create for %q", err, username)
 		return noopRelease, nil
 	}
 	request := incus.CommittedCores(cpuRequest)
@@ -151,7 +151,7 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) (release
 		detail := fmt.Sprintf(
 			"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
 			physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
-		log.Printf("[cpu-admission] REJECT %s — %s", username, detail)
+		log.Printf("[cpu-admission] REJECT %q — %s", username, detail)
 		return noopRelease, status.Errorf(codes.ResourceExhausted,
 			"CPU capacity exceeded on this backend: %s. Retry on a less-loaded backend/pool or a larger host, or ask an operator to raise the overcommit factor.", detail)
 	}
@@ -179,7 +179,7 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) (release
 		detail := fmt.Sprintf(
 			"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
 			physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
-		log.Printf("[cpu-admission] ADVISORY (not enforced): would reject %s — %s", username, detail)
+		log.Printf("[cpu-admission] ADVISORY (not enforced): would reject %q — %s", username, detail)
 	}
 	return release, nil
 }

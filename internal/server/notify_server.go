@@ -240,7 +240,7 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	stored, err := s.store.Set(ctx, ch)
 	if err != nil {
 		if derr := s.removeTokenSecret(ctx, username, created); derr != nil {
-			log.Printf("[notify] remove uncommitted token secret of %s: %v", username, derr)
+			log.Printf("[notify] remove uncommitted token secret of %q: %v", username, derr)
 		}
 		return nil, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
@@ -248,10 +248,10 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	// delete fails the secret stays behind (broker-only, never delivered).
 	if prev.TokenSecret != stored.TokenSecret {
 		if err := s.removeTokenSecret(ctx, username, prev.TokenSecret); err != nil {
-			log.Printf("[notify] remove the previous token secret of %s: %v", username, err)
+			log.Printf("[notify] remove the previous token secret of %q: %v", username, err)
 		}
 	}
-	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
+	log.Printf("[notify] channel set for %q: ntfy %q (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
 	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
 }
 
@@ -328,7 +328,7 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 	if err := s.sender.Send(ctx, ch, token, msg); err != nil {
 		// The reason (an HTTP status, a dial error) says something about
 		// the daemon's network; it goes to the daemon log, not the caller.
-		log.Printf("[notify] test push for %s: %v", username, err)
+		log.Printf("[notify] test push for %q: %v", username, err)
 		return nil, status.Error(codes.Unavailable, "the ntfy server did not accept the test push; check the server URL, topic and token (the daemon log has the details)")
 	}
 	return &pb.TestNotifyChannelResponse{Message: "test push accepted by " + ch.Server}, nil
@@ -569,7 +569,7 @@ func (s *NotifyServer) execBounded(ctx context.Context, exec boxScriptFunc, user
 		return "", ctx.Err()
 	case <-t.C:
 	}
-	log.Printf("[notify] reading %s's box took over %s; freeing its slot until the read returns", user, s.execTimeout)
+	log.Printf("[notify] reading %q's box took over %s; freeing its slot until the read returns", user, s.execTimeout)
 	release()
 	select {
 	case <-done:
@@ -599,7 +599,7 @@ func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user st
 			continue
 		}
 		if err := s.deliver(ctx, user, p); err != nil {
-			log.Printf("[notify] push for %s/%s: %v", user, p.Run, err)
+			log.Printf("[notify] push for %q/%q: %v", user, p.Run, err)
 			s.coalescer.Requeue(p)
 			continue
 		}

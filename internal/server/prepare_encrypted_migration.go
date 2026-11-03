@@ -92,7 +92,7 @@ func (s *ContainerServer) PrepareEncryptedMigration(ctx context.Context, req *pb
 			"for them", req.GetTenant()), nil
 	}
 
-	log.Printf("[move] pre-flight accepted for %s (tenant %s): key resolved, storage pool %s ready",
+	log.Printf("[move] pre-flight accepted for %q (tenant %q): key resolved, storage pool %q ready",
 		req.GetUsername(), req.GetTenant(), pool)
 	return &pb.PrepareEncryptedMigrationResponse{CanResolve: true, StoragePool: pool}, nil
 }
@@ -100,7 +100,7 @@ func (s *ContainerServer) PrepareEncryptedMigration(ctx context.Context, req *pb
 // refused builds a plain "no, and here is why" answer.
 func refused(format string, args ...any) *pb.PrepareEncryptedMigrationResponse {
 	reason := fmt.Sprintf(format, args...)
-	log.Printf("[move] pre-flight refused: %s", reason)
+	log.Printf("[move] pre-flight refused: %q", reason)
 	return &pb.PrepareEncryptedMigrationResponse{CanResolve: false, Reason: reason}
 }
 
@@ -170,7 +170,7 @@ func (s *ContainerServer) recordAdoptedPlacement(req *pb.AdoptMigratedContainerR
 	if err := s.encryption.RecordPlacement(containerName, ref, pool); err != nil {
 		return fmt.Errorf("record the encryption placement of adopted container %s: %w", containerName, err)
 	}
-	log.Printf("[move] adopted %s under storage pool %s; its encryptionroot is that pool's source",
+	log.Printf("[move] adopted %q under storage pool %q; its encryptionroot is that pool's source",
 		containerName, pool)
 	return nil
 }
