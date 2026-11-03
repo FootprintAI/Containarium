@@ -71,15 +71,19 @@ jobs:
         run: |
           set -euo pipefail
           HASH=$(docker run --rm --entrypoint caddy containarium-slides-agent:ci hash-password --plaintext ci-pass)
-          docker run -d --name slides-login -e SLIDES_AUTH_USER=ci -e SLIDES_AUTH_HASH="$HASH" containarium-slides-agent:ci >/dev/null
-          trap 'docker rm -f slides-login >/dev/null' EXIT
+          # The deck tree is a bind mount on a box, as here.
+          mkdir -p "$RUNNER_TEMP/workspace" && chmod 0777 "$RUNNER_TEMP/workspace"
+          docker run -d --name slides-login -v "$RUNNER_TEMP/workspace:/workspace" \
+            -e SLIDES_AUTH_USER=ci -e SLIDES_AUTH_HASH="$HASH" containarium-slides-agent:ci >/dev/null
+          trap 'rc=$?; [ "$rc" = 0 ] || docker logs slides-login 2>&1 | tail -50; docker rm -f slides-login >/dev/null' EXIT
           in_box() { docker exec -i slides-login "$@"; }
-          code() { in_box curl -s -o /dev/null -w '%{http_code}' "$@" || true; }
+          # code <path> [curl args...]: the proxy's status for a request.
+          code() { local p=$1; shift; in_box curl -s -o /dev/null -w '%{http_code}' "$@" "http://127.0.0.1:8080$p" || true; }
           for _ in $(seq 1 60); do
-            [ "$(code http://127.0.0.1:8080/)" = "401" ] && break
+            [ "$(code /)" = "401" ] && break
             sleep 1
           done
-          [ "$(code http://127.0.0.1:8080/)" = "401" ]
+          [ "$(code /)" = "401" ]
           TOK=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
           SESS=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
             | sed -n 's/^[Ss]et-[Cc]ookie: ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p')
@@ -87,14 +91,14 @@ jobs:
           REPLAY=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)
           [ "$REPLAY" = "403" ] || { echo "replayed token: $REPLAY, want 403" >&2; exit 1; }
           for _ in $(seq 1 120); do
-            [ "$(code -H "Cookie: ws_session=$SESS" http://127.0.0.1:8080/)" = "200" ] && break
+            [ "$(code / -H "Cookie: ws_session=$SESS")" = "200" ] && break
             sleep 1
           done
-          [ "$(code -H "Cookie: ws_session=$SESS" http://127.0.0.1:8080/)" = "200" ]
-          [ "$(code -u ci:ci-pass http://127.0.0.1:8080/)" = "200" ]
-          [ "$(code -H "Cookie: ws_session=$TOK" http://127.0.0.1:8080/)" = "401" ]
+          [ "$(code / -H "Cookie: ws_session=$SESS")" = "200" ]
+          [ "$(code / -u ci:ci-pass)" = "200" ]
+          [ "$(code / -H "Cookie: ws_session=$TOK")" = "401" ]
           TOK2=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
-          [ "$(code "http://127.0.0.1:8080/__ws_login?t=$TOK2")" = "400" ]
+          [ "$(code "/__ws_login?t=$TOK2")" = "400" ]
           [ "$(printf '%s' "$TOK2" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)" = "403" ]
           if docker logs slides-login 2>&1 | grep -F -e "$TOK" -e "$SESS"; then
             echo "the container's log carries a token or the session cookie" >&2; exit 1
