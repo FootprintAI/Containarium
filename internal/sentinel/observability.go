@@ -154,14 +154,40 @@ func (m *Manager) renderMetrics(state int, outageSecs int64) string {
 	fmt.Fprint(&b, "# HELP sentinel_preempted_total Total spot-VM preemption events observed.\n")
 	fmt.Fprint(&b, "# TYPE sentinel_preempted_total counter\n")
 	fmt.Fprintf(&b, "sentinel_preempted_total %d\n", m.PreemptCount())
+	snaps := m.WatchTargetSnapshots()
+	for _, s := range snaps {
+		fmt.Fprintf(&b, "sentinel_preempted_total{backend=\"%s\"} %d\n", escapeLabelValue(s.ID), s.PreemptCount)
+	}
 	fmt.Fprint(&b, "# HELP sentinel_recovered_total Total returns to proxy after an outage.\n")
 	fmt.Fprint(&b, "# TYPE sentinel_recovered_total counter\n")
 	fmt.Fprintf(&b, "sentinel_recovered_total %d\n", m.RecoveredCount())
+	for _, s := range snaps {
+		fmt.Fprintf(&b, "sentinel_recovered_total{backend=\"%s\"} %d\n", escapeLabelValue(s.ID), s.RecoveredCount)
+	}
 	fmt.Fprint(&b, "# HELP sentinel_state Backend serving state: 1 proxy (up), 0 maintenance (down).\n")
 	fmt.Fprint(&b, "# TYPE sentinel_state gauge\n")
 	fmt.Fprintf(&b, "sentinel_state %d\n", state)
 	fmt.Fprint(&b, "# HELP sentinel_outage_seconds Duration of the current outage; 0 when serving.\n")
 	fmt.Fprint(&b, "# TYPE sentinel_outage_seconds gauge\n")
 	fmt.Fprintf(&b, "sentinel_outage_seconds %d\n", outageSecs)
+	if len(snaps) > 0 {
+		// --watch-spot-vm targets (#3485): 1 while the target is known down.
+		fmt.Fprint(&b, "# HELP sentinel_watch_target_down 1 while a watched spot VM is known stopped/terminated, 0 once it is running again.\n")
+		fmt.Fprint(&b, "# TYPE sentinel_watch_target_down gauge\n")
+		for _, s := range snaps {
+			down := 0
+			if s.Down {
+				down = 1
+			}
+			fmt.Fprintf(&b, "sentinel_watch_target_down{backend=\"%s\"} %d\n", escapeLabelValue(s.ID), down)
+		}
+		fmt.Fprint(&b, "# HELP sentinel_watch_target_last_preemption_timestamp_seconds Unix time of the last observed preemption of a watched spot VM; absent if none.\n")
+		fmt.Fprint(&b, "# TYPE sentinel_watch_target_last_preemption_timestamp_seconds gauge\n")
+		for _, s := range snaps {
+			if !s.LastPreemption.IsZero() {
+				fmt.Fprintf(&b, "sentinel_watch_target_last_preemption_timestamp_seconds{backend=\"%s\"} %d\n", escapeLabelValue(s.ID), s.LastPreemption.Unix())
+			}
+		}
+	}
 	return b.String()
 }
