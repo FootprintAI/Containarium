@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.127.0] - 2026-11-03
+
+
+### Added
+
+- **Recipe ports can name their authenticated entry point** (#3464). A port in `recipes.yaml` may now carry `role: auth_proxy`, exposed as `role` (`RECIPE_PORT_ROLE_AUTH_PROXY`) on each recipe port in the API and shown by `containarium recipe get`. It marks the port fronted by the recipe's in-box authentication proxy, so tools can pick the gated front door deterministically instead of guessing by position. At most one port per recipe may carry it and it must be HTTP-routed; a recipe that breaks either rule fails to load, as does an unknown role. The built-in `slides-agent`, `agent-workspace` and `librechat` recipes set it. Unset keeps today's behaviour; how ports are exposed does not change.
+
+### Security
+
+- **Daemon logs quote tenant-supplied names** (#3455). `containarium`
+  daemon log lines now write tenant-supplied values with Go `%q` quoting:
+  usernames, box and container names, tracker connection and project names,
+  volume names, secret key names, process names, run ids and token ids. A
+  newline or escape sequence in one of these values now shows up escaped
+  inside the quotes and no longer starts a new log line or reaches the
+  terminal. Error text appended to a log line (`%v` of an error) is not
+  quoted yet, so a value carried inside a wrapped error can still break a
+  line; that is tracked separately. Log filters that match the old unquoted
+  form need updating:
+  - values now appear in double quotes, e.g. `user="alice"` instead of
+    `user=alice`;
+  - run-checkout sweep lines start with
+    `[run-checkout-sweep] "<name>-container":` instead of
+    `[run-checkout-sweep] <name>-container:`;
+  - stderr captured from a box is logged as one escaped, quoted line
+    (`stderr="line one\nline two"`) instead of spanning several lines.
+- **Sentinel, gateway and container logs quote tenant-supplied names**
+  (#3456). Log lines from the sentinel, the HTTP gateway, app routing, the
+  ZAP and pentest scanners, box provisioning and the startup account sync now
+  write tenant-supplied values with Go `%q` quoting: box names, usernames,
+  label keys and values, app names and images, route domains, scan targets,
+  and tunnel spot and backend ids. A newline or escape sequence in one of
+  these values now shows up escaped inside the quotes and no longer starts a
+  new log line or reaches the terminal. Error text appended to a log line
+  (`%v` of an error) is not quoted yet. Log filters that match the old
+  unquoted form need updating: values now appear in double quotes, e.g.
+  `spot "edge-1"` instead of `spot edge-1`.
+- **Reclaim idle sandbox spawn rate-limit buckets** (#3471). Buckets for
+  inactive callers are removed after a full refill window, preventing the
+  per-caller map from retaining every caller seen over the daemon's lifetime.
+  Active callers keep their existing rate and burst limits.
+
 ## [0.126.0] - 2026-11-03
 
 
