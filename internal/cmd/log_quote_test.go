@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,13 +12,14 @@ import (
 	"testing"
 )
 
-// #3456: the startup account sync logs the usernames it restored and the
-// boxes it could not restore. Both lists are tenant names and are logged with
-// %q, so a newline cannot start a forged log line and an ESC byte cannot reach
-// the operator's terminal.
+// #3456: the startup account sync logs the usernames and box names it
+// restored, skipped or could not restore. They are tenant names and are
+// logged with %q, so a newline cannot start a forged log line and an ESC byte
+// cannot reach the operator's terminal.
 //
-// The sync needs a live Incus, so this test reads the two format strings out
-// of daemon.go and logs them with a hostile name, the way the daemon does.
+// The sync needs a live Incus, so this test reads every "[account-sync]"
+// format string out of daemon.go and logs it the way the daemon does: a
+// hostile name for each string verb, a count for %d and an error for %v.
 
 // logQuoteHostile carries a newline followed by a forged log prefix, and an
 // ANSI clear-screen sequence.
@@ -26,9 +28,9 @@ const logQuoteHostile = "evil\n[forged] admin login ok\x1b[2J"
 // logQuoteEscaped is how logQuoteHostile reads once %q has escaped it.
 const logQuoteEscaped = `evil\n[forged] admin login ok\x1b[2J`
 
-// accountSyncNameFormats returns the format strings of the account-sync log
-// calls in daemon.go that list names.
-func accountSyncNameFormats(t *testing.T) []string {
+// accountSyncFormats returns the format strings of the "[account-sync]"
+// log.Printf calls in daemon.go.
+func accountSyncFormats(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
@@ -38,7 +40,7 @@ func accountSyncNameFormats(t *testing.T) []string {
 	var formats []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) != 3 {
+		if !ok || len(call.Args) == 0 {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -56,11 +58,7 @@ func accountSyncNameFormats(t *testing.T) []string {
 		if err != nil {
 			t.Fatalf("unquote %s: %v", lit.Value, err)
 		}
-		join, ok := call.Args[2].(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if js, ok := join.Fun.(*ast.SelectorExpr); ok && js.Sel.Name == "Join" && strings.HasPrefix(format, "[account-sync]") {
+		if strings.HasPrefix(format, "[account-sync]") {
 			formats = append(formats, format)
 		}
 		return true
@@ -68,24 +66,55 @@ func accountSyncNameFormats(t *testing.T) []string {
 	return formats
 }
 
-func TestLogQuote_AccountSyncNameLists(t *testing.T) {
-	formats := accountSyncNameFormats(t)
-	if len(formats) != 2 {
-		t.Fatalf("want the restored and failed account-sync log calls, found %d: %q", len(formats), formats)
+// hostileArgs builds one argument per verb in format: a count for %d, an
+// error for %v and the hostile name for every string verb.
+func hostileArgs(t *testing.T, format string) (args []any, names int) {
+	t.Helper()
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' || i+1 >= len(format) {
+			continue
+		}
+		switch format[i+1] {
+		case '%':
+		case 'd':
+			args = append(args, 2)
+		case 'v':
+			args = append(args, errors.New("boom"))
+		case 's', 'q':
+			args = append(args, strings.Join([]string{"alice", logQuoteHostile}, ", "))
+			names++
+		default:
+			t.Fatalf("unexpected verb %%%c in %q", format[i+1], format)
+		}
+		i++
 	}
+	return args, names
+}
+
+func TestLogQuote_AccountSyncNames(t *testing.T) {
+	formats := accountSyncFormats(t)
+	withNames := 0
 	for _, format := range formats {
+		args, names := hostileArgs(t, format)
+		if names == 0 {
+			continue
+		}
+		withNames++
 		var buf bytes.Buffer
-		logger := log.New(&buf, "", 0)
-		logger.Printf(format, 2, strings.Join([]string{"alice", logQuoteHostile}, ", "))
+		log.New(&buf, "", 0).Printf(format, args...)
 		out := buf.String()
 		if strings.ContainsAny(out, "\x1b\r") {
-			t.Fatalf("raw control byte in log output: %q", out)
+			t.Fatalf("raw control byte in log output of %q: %q", format, out)
 		}
 		if strings.Count(out, "\n") != 1 {
-			t.Fatalf("want one log line, got %q", out)
+			t.Fatalf("want one log line from %q, got %q", format, out)
 		}
 		if !strings.Contains(out, logQuoteEscaped) {
-			t.Fatalf("hostile value not logged in escaped form; got %q", out)
+			t.Fatalf("hostile value not logged in escaped form by %q; got %q", format, out)
 		}
+	}
+	// restored, revoked-skipped, all-revoked and failed.
+	if withNames < 4 {
+		t.Fatalf("want at least 4 account-sync log calls that name accounts, found %d in %q", withNames, formats)
 	}
 }

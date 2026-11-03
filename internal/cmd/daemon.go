@@ -844,10 +844,10 @@ func recoverJumpServerAccounts() {
 		log.Printf("[account-sync] WARNING: key registry unavailable (%v); owner accounts were NOT restored because the box keys cannot be checked for revocation. Restart the daemon or run `containarium sync-accounts` once the database is reachable.", res.FilterErr)
 	}
 	for u, n := range res.RevokedDropped {
-		log.Printf("[account-sync] %s: skipped %d revoked key(s)", u, n)
+		log.Printf("[account-sync] %q: skipped %d revoked key(s)", u, n)
 	}
 	if len(res.AllRevoked) > 0 {
-		log.Printf("[account-sync] every key is revoked for %s; account not restored", strings.Join(res.AllRevoked, ", "))
+		log.Printf("[account-sync] every key is revoked for %q; account not restored", strings.Join(res.AllRevoked, ", "))
 	}
 	if len(res.Failed) > 0 {
 		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %q",
