@@ -227,10 +227,10 @@ build-agent-runtime: ## Build the in-box agent-runtime loop (Node/TS sibling pac
 	@cd agent-runtime && npm ci && npm run build
 	@echo "==> agent-runtime built: agent-runtime/dist/"
 
-bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release tarball (dist + manifests; `npm ci --omit=dev` runs in-box)
+bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release tarball (dist + bin helpers + manifests; `npm ci --omit=dev` runs in-box)
 	@echo "==> Packaging agent-runtime bundle..."
 	@mkdir -p $(BUILD_DIR)
-	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist package.json package-lock.json
+	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist bin package.json package-lock.json
 	@scripts/verify-agent-runtime-bundle.sh $(BUILD_DIR)/agent-runtime-bundle.tar.gz
 	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
 
