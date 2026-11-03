@@ -19606,9 +19606,22 @@
           "type": "integer",
           "format": "int32",
           "description": "Host-side port for a TCP/UDP passthrough. Defaults to container_port\nwhen zero. Ignored for HTTP/GRPC. Passthrough binds a host-wide port,\nso a deploy whose external_port is already claimed by a different\ncontainer fails loudly rather than silently stealing it."
+        },
+        "role": {
+          "$ref": "#/definitions/RecipePortRole",
+          "description": "What this port is for. ROLE_UNSPECIFIED (the default) leaves routing\nexactly as it is today. RECIPE_PORT_ROLE_AUTH_PROXY marks the port that\nsits behind the recipe's own in-box authentication proxy, so a consumer\ncan pick the gated entry point deterministically instead of guessing by\nposition. At most one port per recipe may carry it, and it must be\nHTTP-routed (not TCP/UDP passthrough). Metadata only: it does not change\nhow the daemon exposes the port. See #3464."
         }
       },
       "description": "RecipePort maps a container port to a public subdomain, or to a raw\nTCP/UDP passthrough port for a wire protocol no HTTP client speaks\n(e.g. Postgres wire, Redis, Kafka). See #1462."
+    },
+    "RecipePortRole": {
+      "type": "string",
+      "enum": [
+        "RECIPE_PORT_ROLE_UNSPECIFIED",
+        "RECIPE_PORT_ROLE_AUTH_PROXY"
+      ],
+      "default": "RECIPE_PORT_ROLE_UNSPECIFIED",
+      "description": "RecipePortRole labels what a recipe port is for.\n\n - RECIPE_PORT_ROLE_AUTH_PROXY: The port is fronted by the recipe's in-box authentication proxy."
     },
     "RecipeResources": {
       "type": "object",
