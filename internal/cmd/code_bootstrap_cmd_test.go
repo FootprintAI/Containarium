@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
@@ -62,8 +63,11 @@ func runCodeBootstrapWith(t *testing.T, box, url, urlCmd string, f installFakes,
 		}
 		return nil
 	})
-	runURLCmdFn = func(_ context.Context, command, gotBox string, _ io.Writer) (string, error) {
+	runURLCmdFn = func(ctx context.Context, command, gotBox string, stderr io.Writer) (string, error) {
 		r.urlCmdCalls = append(r.urlCmdCalls, command)
+		if f.urlCmd != nil {
+			return f.urlCmd(ctx, command, gotBox, stderr)
+		}
 		if f.events != nil {
 			*f.events = append(*f.events, "url-cmd")
 		}
@@ -229,5 +233,89 @@ func TestRunURLCmd(t *testing.T) {
 	}
 	if _, err := runURLCmd(context.Background(), `printf '\n'`, "alice", &stderr); err == nil {
 		t.Error("a hook that prints no URL must error")
+	}
+}
+
+// withURLCmdLimits shortens the hook's timeout and wait delay for one test.
+func withURLCmdLimits(t *testing.T, timeout, waitDelay time.Duration) {
+	t.Helper()
+	origTimeout, origDelay := urlCmdTimeout, urlCmdWaitDelay
+	t.Cleanup(func() { urlCmdTimeout, urlCmdWaitDelay = origTimeout, origDelay })
+	urlCmdTimeout, urlCmdWaitDelay = timeout, waitDelay
+}
+
+// TestRunURLCmd_KilledAfterTimeout: a hook that never exits must not hang the
+// CLI. It is killed, and the error says so without echoing its stdout.
+func TestRunURLCmd_KilledAfterTimeout(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	withURLCmdLimits(t, 300*time.Millisecond, 200*time.Millisecond)
+	start := time.Now()
+	_, err := runURLCmd(context.Background(), `printf 'https://b.example.test/s3cr3t\n'; sleep 30`, "alice", io.Discard)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the hook was not killed: runURLCmd took %s", elapsed)
+	}
+	if err == nil {
+		t.Fatal("a hook that outlives the timeout must error")
+	}
+	if !strings.Contains(err.Error(), "killed") {
+		t.Errorf("error %q does not say the hook was killed", err)
+	}
+	if strings.Contains(err.Error(), "s3cr3t") {
+		t.Errorf("the timeout error printed the hook's stdout: %q", err)
+	}
+}
+
+// TestCodeBootstrap_URLCmdTimeoutAppliesNothing drives the real hook runner
+// through the verb: the timeout is reported as "nothing was applied".
+func TestCodeBootstrap_URLCmdTimeoutAppliesNothing(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	withURLCmdLimits(t, 300*time.Millisecond, 200*time.Millisecond)
+	r, err := runCodeBootstrapWith(t, "alice", "", "sleep 30", installFakes{urlCmd: runURLCmd}, "", nil)
+	if err == nil {
+		t.Fatal("bootstrap succeeded although --url-cmd timed out")
+	}
+	for _, want := range []string{"killed", "nothing was applied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+	if len(r.runs) != 0 {
+		t.Errorf("%d scripts ran after --url-cmd timed out", len(r.runs))
+	}
+}
+
+// TestRunURLCmd_BackgroundChildDoesNotBlock: a hook that leaves a background
+// child holding stdout returns its URL once the hook itself exits.
+func TestRunURLCmd_BackgroundChildDoesNotBlock(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	withURLCmdLimits(t, 10*time.Second, 200*time.Millisecond)
+	start := time.Now()
+	got, err := runURLCmd(context.Background(), `sleep 3 & printf 'https://b.example.test/x\n'`, "alice", io.Discard)
+	if err != nil {
+		t.Fatalf("runURLCmd: %v", err)
+	}
+	if got != "https://b.example.test/x" {
+		t.Errorf("url = %q", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("runURLCmd waited %s for the hook's background child", elapsed)
+	}
+}
+
+// TestRunURLCmd_OutputIsBounded: only the first line is kept, at most
+// urlCmdMaxOutput bytes of it; a first line longer than that is an error.
+func TestRunURLCmd_OutputIsBounded(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	withURLCmdLimits(t, 10*time.Second, 200*time.Millisecond)
+	got, err := runURLCmd(context.Background(), `printf 'https://b.example.test/x\n'; head -c 1048576 /dev/zero | tr '\0' a`, "alice", io.Discard)
+	if err != nil || got != "https://b.example.test/x" {
+		t.Fatalf("url = %q, err = %v; want the first line despite 1 MiB after it", got, err)
+	}
+	_, err = runURLCmd(context.Background(), `head -c 1048576 /dev/zero | tr '\0' a`, "alice", io.Discard)
+	if err == nil {
+		t.Fatal("a first line longer than the cap must error")
+	}
+	if strings.Contains(err.Error(), "aaaa") {
+		t.Errorf("the error echoed the hook's output: %.200q", err)
 	}
 }
